@@ -36,8 +36,8 @@ func (s *PGStore) ChainHead(ctx context.Context, repository string) (int64, erro
 // recorded and that the newest green run on main sits at or after — so a
 // green run later than the card's own red carry deploys it (the deployed
 // digest holds the change), and a card nothing recorded yet does not
-// cover. The map is the merged wait's fact and the poller's signal list
-// alike.
+// cover. The map is the reconciler's list and the merged inform's
+// covered fact.
 func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[string]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id,
 		       COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = $1 AND green.status = 'success'), 0)
@@ -61,49 +61,6 @@ func (s *PGStore) ChainCovered(ctx context.Context, repository string) (map[stri
 		covered[id] = run
 	}
 	return covered, rows.Err()
-}
-
-// MigrateChainLimbo moves repository's done cards the chain never
-// confirmed live to merged — the chain-done migration: a card whose
-// carry row is recorded and no green run on main sits at or after, the
-// coverage read's complement, the done-but-not-live limbo. A card a
-// green run covers and one the chain names at no run stay done; the
-// moved ids answer, the transition's own event recording each move.
-//
-// The pass runs every poll tick, so the one class it cannot catch is a
-// card that finished done, never gained a carry row before the poller
-// stopped seeing runs, and stayed done past every tick — accepted: it
-// needs the poller dead across the whole window and the chain never
-// carrying the change again, and the repository's chain_stalled alert
-// surfaces the silence.
-func (s *PGStore) MigrateChainLimbo(ctx context.Context, repository string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM tasks
-		WHERE repository = $1 AND status = 'done' AND pr_number > 0
-		  AND EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
-		  AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = $1 AND green.status = 'success'), 0)
-		      < (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = $1 AND mine.pr_number = tasks.pr_number)
-		ORDER BY id`, repository)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var moved []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		moved = append(moved, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for _, id := range moved {
-		if err := s.TransitionTask(ctx, id, []string{"done"}, "merged"); err != nil {
-			return nil, err
-		}
-	}
-	return moved, nil
 }
 
 // OpenRepairCard reports whether repository has a repair card open: one
@@ -229,14 +186,11 @@ func (f *Forgejo) WorkflowList(ctx context.Context, repo Repo) ([]string, error)
 }
 
 // ChainStore is the chain's rows — what the poller reads and writes of
-// chain_runs — the repair card its red or stalled head files, and the
-// card moves the chain's facts own: the migration's done-to-merged move
-// and a covered merged card's end without a workflow to wake.
+// chain_runs, the covered merged cards among them — and the repair card
+// its red or stalled head files.
 type ChainStore interface {
 	ChainHead(ctx context.Context, repository string) (int64, error)
 	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
-	MigrateChainLimbo(ctx context.Context, repository string) ([]string, error)
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
@@ -292,8 +246,9 @@ type chainEpisode struct {
 // carrying the AND of every push run on that commit and every required
 // context of the repository's file, so a fast green run never greens a
 // red one and a required context the commit does not carry holds the
-// head pending. A head pending past the project's stall bound or
-// concluded red is work, not a verdict: stalled and repair are its
+// head pending; then every merged card a green run covers ends through
+// End. A head pending past the project's stall bound or concluded red
+// is work, not a verdict: stalled and repair are its
 // seams, and each files the one repair card per repository the ladder
 // starts with — never for the factory's own, whose red is mainfix's and
 // the roll task's. A repository without a workflow degrades to none for
@@ -307,10 +262,11 @@ type ChainPoller struct {
 	// carries its chain block; a repository no file names runs the
 	// default.
 	Policy func() policy.Version
-	// Workflows receives the covered signal a green head sends each
-	// merged card it covers, and starts the repair card a red or stalled
-	// head files; nil: none to tell.
+	// Workflows starts the repair card a red or stalled head files.
 	Workflows Workflows
+	// End ends a covered merged card: the runner's Finish, the one
+	// function that ends a task.
+	End func(ctx context.Context, taskID, final, reason string) error
 	// Timeline records the events of the repair cards the poller files;
 	// nil records none.
 	Timeline *Timeline
@@ -326,7 +282,6 @@ type ChainPoller struct {
 	noted    map[string]bool          // the chain-block complaints logged, once each
 	failed   map[string]string        // repository -> the failure it last logged
 	episodes map[headKey]chainEpisode // the head rows watched between polls
-	covered  map[string]int64         // repository -> the head run its covered signal last named
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -334,7 +289,7 @@ func (p *ChainPoller) Run(ctx context.Context) {
 	p.once()
 	var last string
 	for {
-		if err := p.poll(ctx); err != nil && err.Error() != last {
+		if err := p.Tick(ctx); err != nil && err.Error() != last {
 			log.Printf("chain poller: %v", err)
 			last = err.Error()
 		} else if err == nil {
@@ -352,11 +307,12 @@ func (p *ChainPoller) Run(ctx context.Context) {
 func (p *ChainPoller) once() {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
-		p.covered = map[string]int64{}
 	}
 }
 
-func (p *ChainPoller) poll(ctx context.Context) error {
+// Tick polls every active project's chain once; one repository's failure
+// logs and stops no other's.
+func (p *ChainPoller) Tick(ctx context.Context) error {
 	p.once()
 	projects, err := p.Projects.Projects(ctx)
 	if err != nil {
@@ -381,10 +337,8 @@ func (p *ChainPoller) poll(ctx context.Context) error {
 }
 
 // project serves one repository: its file's chain block read, its
-// workflow list watched, its chain recorded and the done limbo that
-// recording answers moved — the migration runs after the record so the
-// very tick that writes a carry row spanning a factoryd-down gap also
-// moves the limbo cards it holds.
+// workflow list watched, its chain recorded and the merged cards that
+// recording covers ended.
 func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 	serving, chain, err := p.serves(ctx, proj)
 	if err != nil || !serving {
@@ -393,32 +347,24 @@ func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 	if err := p.record(ctx, proj, chain); err != nil {
 		return err
 	}
-	p.moveLimbo(ctx, proj.Repository)
+	p.reconcile(ctx, proj.Repository)
 	return nil
 }
 
-// moveLimbo is the chain-done migration's pass over one repository:
-// its done cards the chain never confirmed live move to merged, where
-// the chain's facts drive them from then on — their workflows
-// completed done long before and past waking, so the store is where
-// they wait and end. Idempotent and near-free, it runs every tick; a
-// failure logs and leaves the rest to the next tick.
-func (p *ChainPoller) moveLimbo(ctx context.Context, repository string) {
-	moved, err := p.Store.MigrateChainLimbo(ctx, repository)
+// reconcile ends every merged card of repository a green run covers, on
+// every tick, so a card that reached merged after its green run was
+// recorded ends all the same. End on a card already done is a no-op; a
+// failed end logs and leaves the card merged for the next tick.
+func (p *ChainPoller) reconcile(ctx context.Context, repository string) {
+	covered, err := p.Store.ChainCovered(ctx, repository)
 	if err != nil {
-		log.Printf("chain poller: migration: %s: %v", repository, err)
+		log.Printf("chain poller: %s: covered cards: %v", repository, err)
 		return
 	}
-	for _, id := range moved {
-		if p.Timeline != nil {
-			if err := p.Timeline.Append(ctx, id, "chain", map[string]any{"state": "merged",
-				"reason": "moved to merged: the chain had not confirmed it live"}); err != nil {
-				log.Printf("chain poller: migration: %s: record %s: %v", repository, id, err)
-			}
+	for id, run := range covered {
+		if err := p.End(ctx, id, "done", fmt.Sprintf("live: covered by run %d", run)); err != nil {
+			log.Printf("chain poller: %s: end %s: %v", repository, id, err)
 		}
-	}
-	if len(moved) > 0 {
-		log.Printf("chain poller: migration: %s: %d card(s) moved from the done limbo to merged", repository, len(moved))
 	}
 }
 
@@ -720,67 +666,7 @@ func (p *ChainPoller) watch(ctx context.Context, repository, sha, verdict string
 		if err := p.Store.ResolveChainAlerts(ctx, repository); err != nil {
 			log.Printf("chain poller: %s: resolve the chain alerts: %v", repository, err)
 		}
-		p.cover(ctx, repository, run.ID)
 	}
-}
-
-// cover tells every merged card the repository's green head covers that
-// its change runs live, once per head: the signal ends the card's wait
-// done, naming the run. One that died is started by the signal and
-// reads the facts on entry, so a green chain while factoryd was down
-// still decides every card it covers; a card whose workflow completed
-// — the migration's, done long before and past waking — ends in the
-// store.
-func (p *ChainPoller) cover(ctx context.Context, repository string, run int64) {
-	if p.Workflows == nil || p.covered[repository] >= run {
-		return
-	}
-	covered, err := p.Store.ChainCovered(ctx, repository)
-	if err != nil {
-		log.Printf("chain poller: %s: covered cards: %v", repository, err)
-		return
-	}
-	for id := range covered {
-		if err := p.Workflows.Signal(ctx, id, SignalChainCovered, TaskSignal{Author: FactoryDecider}); err != nil {
-			log.Printf("chain poller: %s: signal %s: %v", repository, id, err)
-		}
-		p.finishCovered(ctx, repository, id, covered[id])
-	}
-	p.covered[repository] = run
-}
-
-// livingWorkflow is the Workflows half a covered card's store finish
-// probes: whether its workflow stands to decide. TemporalWorkflows
-// carries it; a half without it leaves every card to its workflow.
-type livingWorkflow interface {
-	Alive(ctx context.Context, taskID string) (bool, error)
-}
-
-// finishCovered ends a covered merged card whose workflow cannot decide
-// — one that completed, its run unrestartable and the signal dropped:
-// the migration's cards, done long before. The move is the workflow's
-// own end: merged to done, the ended event's reason naming the run, its
-// poke telling the card is live. The card's cleanup ran at the end it
-// already had.
-func (p *ChainPoller) finishCovered(ctx context.Context, repository, id string, run int64) {
-	living, ok := p.Workflows.(livingWorkflow)
-	if !ok {
-		return
-	}
-	alive, err := living.Alive(ctx, id)
-	if err != nil {
-		log.Printf("chain poller: %s: the workflow of %s: %v", repository, id, err)
-		return
-	}
-	if alive {
-		return
-	}
-	if err := p.Store.TransitionTask(ctx, id, []string{"merged"}, "done"); err != nil {
-		log.Printf("chain poller: %s: finish %s: %v", repository, id, err)
-		return
-	}
-	p.Timeline.recordEvent(ctx, id, EventTaskEnded, map[string]any{"state": "done",
-		"reason": fmt.Sprintf("live: covered by run %d", run)})
 }
 
 func (p *ChainPoller) now() time.Time {

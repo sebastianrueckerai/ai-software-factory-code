@@ -44,10 +44,11 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 // Every agent task not yet finished gets its workflow (re)started: a task
 // whose workflow died in review or mid-completion is not stranded. A task
 // waiting on Forgejo (in review, on a human) is re-read there too; a
-// running one is not, its own run reads Forgejo.
+// running one is not, its own run reads Forgejo. A merged card's workflow
+// ended at its merge: the chain poller ends it, nothing restarts it.
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()
-	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "tc": "closing", "td": "done", "tf": "failed"} {
+	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "tc": "closing", "tm": "merged", "td": "done", "tf": "failed"} {
 		store.CreateTask(context.Background(), Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	}
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})

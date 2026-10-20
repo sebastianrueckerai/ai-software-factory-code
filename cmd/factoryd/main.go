@@ -373,10 +373,7 @@ func main() {
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
 		Registry:  registry, SigningKey: rollSigningKey()}
 	go roller.Run(ctx)
-	// every run-mode repository's chain, recorded (roadmap 297): the roll
-	// stays the factory's own repository's engine and writes none of it
-	chainPoller := &factoryd.ChainPoller{Forgejo: forgejo, Store: store, Projects: store, Policy: policyLoader.Current,
-		Workflows: workflows, Timeline: runner.Timeline(), Own: own.Repo(), Now: time.Now, Poll: time.Minute}
+	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.Finish)
 	go chainPoller.Run(ctx)
 	// the factory's own dependency health (roadmap 299): the provider seam
 	// is the control-plane probe alone, so a cloud switch stays one value
@@ -1010,4 +1007,13 @@ func workerOptions(scrub *redact.Scrubber, extra ...interceptor.WorkerIntercepto
 		MaxHeartbeatThrottleInterval: factoryd.HeartbeatEvery,
 		Interceptors:                 append([]interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{Scrub: scrub}}, extra...),
 	}
+}
+
+// newChainPoller records every run-mode repository's chain (roadmap 297)
+// and ends each covered merged card through end, the runner's Finish: the
+// roll stays the factory's own repository's engine and writes none of it.
+func newChainPoller(forgejo *factoryd.Forgejo, store *factoryd.PGStore, current func() policy.Version, workflows factoryd.BoundedWorkflows,
+	timeline *factoryd.Timeline, own factoryd.Repo, end func(ctx context.Context, taskID, final, reason string) error) *factoryd.ChainPoller {
+	return &factoryd.ChainPoller{Forgejo: forgejo, Store: store, Projects: store, Policy: current,
+		Workflows: workflows, Timeline: timeline, Own: own, End: end, Now: time.Now, Poll: time.Minute}
 }

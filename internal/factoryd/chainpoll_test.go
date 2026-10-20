@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -329,7 +330,7 @@ func TestChainPollerRecordsEveryProject(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -362,7 +363,7 @@ func TestChainPollerAndsTheRuns(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.Own, _ = SplitRepo(codeRepo) // the factory's own repository: repair is mainfix's and the roll task's
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -373,7 +374,7 @@ func TestChainPollerAndsTheRuns(t *testing.T) {
 	}
 	// the red run re-ran green: both runs on the commit concluded green
 	f.runs[codeRepo] = []map[string]any{pushRun(62, commitC2, "success"), pushRun(61, commitC2, "success")}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -400,7 +401,7 @@ func TestChainPollerHoldsASkippedRunPending(t *testing.T) {
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -431,7 +432,7 @@ func TestChainPollerHoldsACancelledRunPending(t *testing.T) {
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -469,7 +470,7 @@ func TestChainPollerDegradesNoWorkflowRepos(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
 	for range 2 {
-		if err := p.poll(context.Background()); err != nil {
+		if err := p.Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -516,7 +517,7 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 	var logs bytes.Buffer
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -530,7 +531,7 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 	}
 	// the context still missing a minute past the bound: the head stalled
 	clock = clock.Add(2 * time.Minute)
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if n := strings.Count(logs.String(), "stalled"); n != 1 {
@@ -540,7 +541,7 @@ func TestChainPollerStallsAPendingHead(t *testing.T) {
 	f.statuses = map[string]map[string][]map[string]string{
 		codeRepo: {commitC2: {{"status": "success", "context": "factory/roll"}}},
 	}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); got[0].status != "success" {
@@ -589,10 +590,15 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	projects := newFakeStore()
 	projects.projects = []Project{seedProject(codeRepo)}
 	fj := f.srv(t)
+	var ended []string
+	end := func(ctx context.Context, taskID, final, reason string) error {
+		ended = append(ended, taskID+" "+reason)
+		return nil
+	}
 	poll := func() { // a fresh poller: factoryd restarted
 		t.Helper()
-		p := &ChainPoller{Forgejo: fj, Store: pg, Projects: projects, Policy: chainPolicy}
-		if err := p.poll(ctx); err != nil {
+		p := &ChainPoller{Forgejo: fj, Store: pg, Projects: projects, Policy: chainPolicy, End: end}
+		if err := p.Tick(ctx); err != nil {
 			t.Fatalf("poll: %v", err)
 		}
 	}
@@ -638,6 +644,9 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if run := covered(); run != 61 {
 		t.Fatalf("after the context concluded: covered by run %d, want live at run 61", run)
 	}
+	if !slices.Equal(ended, []string{"t-wait live: covered by run 61"}) {
+		t.Fatalf("ended %q, want t-wait once, on the tick its context concluded", ended)
+	}
 }
 
 // A chain block the poller cannot use — a mode it does not know, a
@@ -668,7 +677,7 @@ func TestChainPollerRefusesABrokenChainBlock(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
 	for range 2 {
-		if err := p.poll(context.Background()); err != nil {
+		if err := p.Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -710,7 +719,7 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	ctx := context.Background()
-	if err := p.poll(ctx); err != nil {
+	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -723,7 +732,7 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	// request: the old row moves to the final status, the new run's pull
 	// request is mapped beside it
 	f.runs[codeRepo] = []map[string]any{pushRun(62, d3, "success"), pushRun(61, commitC2, "success")}
-	if err := p.poll(ctx); err != nil {
+	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -737,7 +746,7 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	// commit; the pull requests already mapped keep their runs, their own
 	// verdicts
 	f.runs[codeRepo] = []map[string]any{pushRun(64, e4, "running"), pushRun(62, d3, "success")}
-	if err := p.poll(ctx); err != nil {
+	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, codeRepo); !slices.Equal(got, []fakeChainRun{
@@ -752,41 +761,94 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	}
 }
 
-// A green head tells every merged card it covers: one covered signal
-// each, once per head — a workflow already done drops it, one that died
-// is started by the signal and reads the facts on entry. A merged card
-// no run carries yet is told nothing.
-func TestChainPollerSignalsCoveredMerges(t *testing.T) {
+// Every tick ends every merged card a green chain covers through End,
+// naming the run: a card the chain has not covered yet is left, an End
+// that fails stops no other card, and the next tick ends a card still
+// merged again — End on a card already done is the no-op that carries
+// idempotence.
+func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
+	p, store := newTestPoller(t, &chainForgejo{}, seedProject(codeRepo))
+	store.tasks = map[string]Task{
+		"t-green": {ID: "t-green", Status: "merged", Repository: codeRepo, PRNumber: 12},
+		"t-later": {ID: "t-later", Status: "merged", Repository: codeRepo, PRNumber: 13},
+		"t-wait":  {ID: "t-wait", Status: "merged", Repository: codeRepo, PRNumber: 14},
+	}
+	// pr 13 rode the red run 11, pr 12 the green run 12 after it, pr 14
+	// the run 14 still running
+	store.chain = []fakeChainRun{
+		{repo: codeRepo, pr: 13, sha: "c11", run: 11, status: "failure"},
+		{repo: codeRepo, pr: 12, sha: "c12", run: 12, status: "success"},
+		{repo: codeRepo, pr: 14, sha: "c14", run: 14, status: "pending"},
+	}
+	var ended []string
+	p.End = func(ctx context.Context, taskID, final, reason string) error {
+		ended = append(ended, taskID+" "+final+" "+reason)
+		if taskID == "t-green" {
+			return errors.New("forgejo is down")
+		}
+		return nil
+	}
+	want := []string{"t-green done live: covered by run 12", "t-later done live: covered by run 12"}
+	for tick := 1; tick <= 2; tick++ {
+		ended = nil
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(ended)
+		if !slices.Equal(ended, want) {
+			t.Fatalf("tick %d ended %q, want %q", tick, ended, want)
+		}
+	}
+}
+
+// A card merged while the head is already green (the review's focus):
+// the green run that carried its change was recorded a tick before the
+// card reached merged, so no new head names it. The next tick ends it
+// done all the same, through the runner's Finish: one task_ended, so one
+// done poke, no alert, and a later tick ends nothing again.
+func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
+	r, hub, store, objects := chainRunner(t, withStatus(mergedCard, "in-review"), policy.ChainModeRun)
+	hub.pulls = map[int64]string{7: mergedAt(7, mergePR12)}
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{
-			codeRepo: {pushRun(61, commitC2, "success")},
-		},
+		runs: map[string][]map[string]any{"sf/repo": {pushRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
-			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
+			"sf/repo": {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
 		},
 		merged: map[string][]map[string]any{
-			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
+			"sf/repo": {{"number": 7, "merged": true, "merge_commit_sha": mergePR12}},
 		},
 	}
-	wf := &fakeWorkflows{}
-	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	p.Workflows = wf
-	store.tasks = map[string]Task{
-		"t-cov":   {ID: "t-cov", Status: "merged", Repository: codeRepo, PRNumber: 12},
-		"t-waits": {ID: "t-waits", Status: "merged", Repository: codeRepo, PRNumber: 13},
-	}
-	if err := p.poll(context.Background()); err != nil {
+	store.projects = []Project{seedProject("sf/repo")}
+	p := &ChainPoller{Forgejo: f.srv(t), Store: store, Projects: store, Policy: r.cfg.Policy, End: r.Finish}
+	ctx := context.Background()
+	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "t-cov "+SignalChainCovered+" "+FactoryDecider) {
-		t.Fatalf("signals = %v; want one covered signal for t-cov alone", wf.signals)
+	if got := chainOf(store, "sf/repo"); !slices.Equal(got, []fakeChainRun{
+		{repo: "sf/repo", pr: 0, sha: commitC2, run: 61, status: "success"},
+		{repo: "sf/repo", pr: 7, sha: commitC2, run: 61, status: "success"},
+	}) {
+		t.Fatalf("chain %+v, want the head and pr 7 green at run 61", got)
 	}
-	// the same green head again signals nobody a second time
-	if err := p.poll(context.Background()); err != nil {
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
 		t.Fatal(err)
 	}
-	if len(wf.signals) != 1 {
-		t.Fatalf("signals = %v; the covered signal fires once per head", wf.signals)
+	if got, _, _ := store.Task(ctx, "t1"); got.Status != "merged" {
+		t.Fatalf("status at the merge = %q, want merged", got.Status)
+	}
+	for range 2 {
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, _, _ := store.Task(ctx, "t1"); got.Status != "done" {
+		t.Fatalf("status = %q, want done on the tick after the merge", got.Status)
+	}
+	if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 61"}) {
+		t.Fatalf("task_ended = %q, want one naming run 61", got)
+	}
+	if len(store.alerts) != 0 {
+		t.Fatalf("alerts = %+v, want none", store.alerts)
 	}
 }
 
@@ -834,7 +896,7 @@ func TestChainAlertsRule(t *testing.T) {
 	}
 	// the red head alerts at once; the two heads held pending by a
 	// missing required context alert nothing yet
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if open(AlertChainRed, codeRepo) != 1 || open(AlertChainRed, demoRepo) != 0 {
@@ -844,7 +906,7 @@ func TestChainAlertsRule(t *testing.T) {
 	// each, and the red head's second tick adds no row
 	clock = clock.Add(2 * time.Minute)
 	for range 2 {
-		if err := p.poll(context.Background()); err != nil {
+		if err := p.Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -856,7 +918,7 @@ func TestChainAlertsRule(t *testing.T) {
 	f.statuses = map[string]map[string][]map[string]string{
 		demoRepo: {demoCommit: {{"status": "success", "context": "factory/roll"}}},
 	}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !resolved(AlertChainStalled, demoRepo) || open(AlertChainStalled, webRepo) != 1 || open(AlertChainRed, codeRepo) != 1 {
@@ -869,7 +931,7 @@ func TestChainAlertsRule(t *testing.T) {
 		demoRepo: {demoCommit: {{"status": "success", "context": "factory/roll"}}},
 		webRepo:  {webCommit: {{"status": "success", "context": "factory/roll"}}},
 	}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if !resolved(AlertChainRed, codeRepo) || !resolved(AlertChainStalled, webRepo) {
@@ -919,7 +981,7 @@ func TestRepairFilesOneCardPerRedHead(t *testing.T) {
 	p.Workflows = wf
 	p.Own, _ = SplitRepo(codeRepo)
 	for range 2 {
-		if err := p.poll(context.Background()); err != nil {
+		if err := p.Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -961,7 +1023,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 	}
 	p.Workflows = &fakeWorkflows{}
 	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged"}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	cards := repairCards(store)
@@ -1005,7 +1067,7 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 	store.chainNow = p.Now
 	// the head row pending since two minutes before this factoryd started
 	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: demoCommit, run: 21, status: "pending", updated: clock.Add(-2 * time.Minute)}}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, demoRepo); got[0].status != "stalled" {
@@ -1018,7 +1080,7 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 	// a newer head arrives still pending: the superseded episode ends, the
 	// new one's clock is its own row's
 	f.runs[demoRepo] = []map[string]any{pushRun(22, demoNext, "success")}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(p.episodes) != 1 || p.episodes[headKey{demoRepo, demoNext}].since.IsZero() {
@@ -1028,7 +1090,7 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 	f.statuses = map[string]map[string][]map[string]string{
 		demoRepo: {demoNext: {{"status": "success", "context": "factory/roll"}}},
 	}
-	if err := p.poll(context.Background()); err != nil {
+	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, demoRepo); got[0].status != "success" {
@@ -1036,160 +1098,6 @@ func TestStalledHeadRecordsAndRepairs(t *testing.T) {
 	}
 	if len(p.episodes) != 0 {
 		t.Fatalf("episodes %+v, want the concluded head's ended", p.episodes)
-	}
-}
-
-// goneWorkflows plays the Temporal half for cards whose workflow cannot
-// take a signal: Alive answers for the cards it names, as Temporal does
-// — missing, completed, failed and terminated are not alive.
-type goneWorkflows struct {
-	*fakeWorkflows
-	alive map[string]bool
-}
-
-func (w *goneWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
-	return w.alive[taskID], nil
-}
-
-// MigrateChainLimbo mirrors PGStore's migration read: every done card
-// whose carry row no green run covers, moved to merged.
-func (s *fakeStore) MigrateChainLimbo(ctx context.Context, repository string) ([]string, error) {
-	green := int64(0)
-	for _, c := range s.chain {
-		if c.repo == repository && c.status == "success" && c.run > green {
-			green = c.run
-		}
-	}
-	var moved []string
-	for _, t := range s.tasks {
-		if t.Repository != repository || t.Status != "done" || t.PRNumber <= 0 {
-			continue
-		}
-		mine := int64(0)
-		for _, c := range s.chain {
-			if c.repo == repository && c.pr == t.PRNumber && (mine == 0 || c.run < mine) {
-				mine = c.run
-			}
-		}
-		if mine == 0 || green >= mine {
-			continue
-		}
-		if err := s.TransitionTask(ctx, t.ID, []string{"done"}, "merged"); err != nil {
-			return nil, err
-		}
-		moved = append(moved, t.ID)
-	}
-	return moved, nil
-}
-
-// The migration runs every tick after the record (Task 9, the final
-// review's cadence): a served repository's done cards the chain never
-// confirmed live move to merged on each tick that finds them; a
-// repository whose chain is none the poller does not serve, so its
-// cards stay done by the grandfather clause.
-func TestEveryTickMovesTheLimbo(t *testing.T) {
-	f := &chainForgejo{}
-	p, store := newTestPoller(t, f, seedProject(codeRepo), seedProject(demoRepo))
-	p.Policy = func() policy.Version {
-		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
-			"code": {Repository: codeRepo},
-			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Mode: chainModeNone}},
-		}}}
-	}
-	store.tasks = map[string]Task{
-		"t-limbo": {ID: "t-limbo", Status: "done", Repository: codeRepo, PRNumber: 12},
-		"t-none":  {ID: "t-none", Status: "done", Repository: demoRepo, PRNumber: 5},
-	}
-	// each repository's carry row past its green run: limbo where served
-	store.chain = []fakeChainRun{
-		{repo: codeRepo, pr: 0, sha: "c2", run: 12, status: "success"},
-		{repo: codeRepo, pr: 12, sha: "c4", run: 14, status: "failure"},
-		{repo: demoRepo, pr: 5, sha: "d3", run: 3, status: "failure"},
-	}
-	for range 2 {
-		if err := p.poll(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := store.tasks["t-limbo"].Status; got != "merged" {
-		t.Fatalf("t-limbo = %s, want merged", got)
-	}
-	if got := store.tasks["t-none"].Status; got != "done" {
-		t.Fatalf("t-none = %s, want done: the poller does not serve the repository", got)
-	}
-}
-
-// The tick that records also migrates (the final review's factoryd-down
-// gap): a card that finished done while factoryd was down hears nothing
-// at any startup pass — the carry row that spans the outage appears
-// only when the poller records the run that made it, and the same
-// tick's migration moves the limbo card that row holds.
-func TestTheTickThatRecordsAlsoMigrates(t *testing.T) {
-	d3 := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
-	f := &chainForgejo{
-		runs: map[string][]map[string]any{codeRepo: {pushRun(62, d3, "failure"), pushRun(61, commitC2, "success")}},
-		carries: map[string]map[string][]map[string]any{
-			codeRepo: {"parent-of-" + d3 + "..." + d3: {{"sha": mergePR14}}},
-		},
-		merged: map[string][]map[string]any{
-			codeRepo: {{"number": 14, "merged": true, "merge_commit_sha": mergePR14}},
-		},
-	}
-	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	p.Workflows = &fakeWorkflows{}
-	store.tasks["t-gap"] = Task{ID: "t-gap", Status: "done", Repository: codeRepo, PRNumber: 14}
-	if err := p.poll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.tasks["t-gap"].Status; got != "merged" {
-		t.Fatalf("t-gap = %s after the recording tick, want merged: the tick that records its carry row moves it", got)
-	}
-	// the next tick moves nothing more
-	if err := p.poll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.tasks["t-gap"].Status; got != "merged" {
-		t.Fatalf("t-gap = %s after the second tick, want merged", got)
-	}
-}
-
-// A covered card whose workflow is gone — completed done long before, a
-// signal it drops and no restart that could take it (Task 9) — finishes
-// in the store, naming the run that covers it; a card whose workflow
-// stands takes the signal and decides itself.
-func TestCoveredCardWithoutAWorkflowFinishesInTheStore(t *testing.T) {
-	f := &chainForgejo{
-		runs: map[string][]map[string]any{
-			codeRepo: {pushRun(61, commitC2, "success")},
-		},
-		carries: map[string]map[string][]map[string]any{
-			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
-		},
-		merged: map[string][]map[string]any{
-			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}},
-		},
-	}
-	wf := &goneWorkflows{fakeWorkflows: &fakeWorkflows{}, alive: map[string]bool{"t-live": true}}
-	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	p.Workflows = wf
-	store.tasks = map[string]Task{
-		"t-gone": {ID: "t-gone", Status: "merged", Repository: codeRepo, PRNumber: 12},
-		"t-live": {ID: "t-live", Status: "merged", Repository: codeRepo, PRNumber: 12},
-	}
-	if err := p.poll(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if got := store.tasks["t-gone"].Status; got != "done" {
-		t.Fatalf("t-gone = %s, want done in the store", got)
-	}
-	if !store.finished["t-gone"].After(time.Time{}) {
-		t.Fatal("t-gone finished at nothing")
-	}
-	if got := store.tasks["t-live"].Status; got != "merged" {
-		t.Fatalf("t-live = %s, want merged: its workflow decides", got)
-	}
-	if len(wf.signals) != 2 {
-		t.Fatalf("signals = %v, want both cards told", wf.signals)
 	}
 }
 
@@ -1216,7 +1124,7 @@ func TestChainPollerAlertsOnAnInvisibleRepository(t *testing.T) {
 	defer log.SetOutput(log.Writer())
 	log.SetOutput(&logs)
 	for range 2 {
-		if err := p.poll(context.Background()); err != nil {
+		if err := p.Tick(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}

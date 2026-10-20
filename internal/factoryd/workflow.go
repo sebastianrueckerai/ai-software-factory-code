@@ -57,10 +57,6 @@ const (
 	// quiet for the stale window: SignalWithStart starts a workflow that
 	// died; a live one has no handler and drops it.
 	SignalStaleNudge = "stale_nudge"
-	// SignalChainCovered is the chain poller's notice that a green run
-	// covers a merged card's change: the card's wait ends done, naming
-	// the run. A workflow already done drops it.
-	SignalChainCovered = "chain_covered"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -576,7 +572,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalChainCovered} {
+		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}

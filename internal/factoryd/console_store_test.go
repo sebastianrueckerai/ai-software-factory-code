@@ -135,8 +135,8 @@ func TestPGStoreBoardTasks(t *testing.T) {
 // live when the run that carried its pull request went green, a card no
 // run names only while it finished before the chain began recording;
 // the wait itself is the merged card's, which the board holds with its
-// carry row's status as its chain word until the covered signal ends
-// it. Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+// carry row's status as its chain word until the chain poller ends it.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
 func TestPGStoreChainLiveness(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -218,7 +218,7 @@ func TestPGStoreChainLiveness(t *testing.T) {
 		t.Fatalf("FinishedTasks = %v, want %v", doneIDs, want)
 	}
 	// the running run settles green: the store moves the card's own row, its
-	// chain word with it — the card itself the covered signal's to finish
+	// chain word with it — the card itself the chain poller's to end
 	if err := s.RefreshChainStatus(ctx, "sf/r", "e2", "success"); err != nil {
 		t.Fatalf("RefreshChainStatus: %v", err)
 	}

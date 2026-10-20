@@ -142,7 +142,9 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // workflow, and takes in the agent and human issues no webhook turned
 // into a task (in.ResyncIssues). It wakes every merge queue's head still
 // waiting for its turn, so a lost queue_turn costs at most a pass. A
-// project's chat task runs no workflow: the pass leaves it be.
+// project's chat task runs no workflow: the pass leaves it be, and
+// neither restarts a merged card, whose workflow ended at its merge: the
+// chain poller ends it.
 //
 // It also forgets webhook deliveries older than DeliveryRetention.
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion) {
@@ -155,7 +157,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	// pulls are the projects with queued cards of a lane: their oldest
 	// queued cards start below, under the work bound, once per project
 	pulls := map[string]bool{}
-	for _, status := range []string{"backlog", "queued", "waiting-deps", "running", "in-review", "merged", "waiting-human", "waiting-poster", "closing"} {
+	for _, status := range []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %v", status, err)

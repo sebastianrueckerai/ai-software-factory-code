@@ -1418,9 +1418,8 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 // the failed end states. A done card whose chain went green sits in Done,
 // and one that finished before the chain began recording runs does too.
 // A done card the chain holds at a not-green verdict — a skipped carry is
-// not live — is on no surface at all: the migration's limbo, undone and
-// invisible until a green head covers it or the poller moves it. A roll
-// task is no card.
+// not live — is on no surface at all, invisible until a green head
+// covers it. A roll task is no card.
 func TestBoardTracksEachCardsDeploy(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -1467,10 +1466,10 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 			t.Errorf("Done holds %s, whose change is not live", id)
 		}
 	}
-	// a done card the chain holds at a skipped carry is on no surface:
-	// the migration's limbo, invisible until covered or moved
+	// a done card the chain holds at a skipped carry is on no surface,
+	// invisible until covered
 	if strings.Contains(body, `data-card="t-skip"`) {
-		t.Error("t-skip rendered: a done card no green chain covers is the migration's limbo")
+		t.Error("t-skip rendered: a done card no green chain covers is on no surface")
 	}
 	if strings.Contains(body, `data-card="t-rollcard"`) {
 		t.Error("the roll task rendered a card")

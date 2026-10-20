@@ -2,6 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
 	"time"
@@ -118,77 +121,98 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 	}
 }
 
-// The chain-done migration (Task 9): a done card the chain never
-// confirmed live — its carry row exists and no green run sits at or
-// after it — moves to merged, the state whose wait the chain's facts
-// then drive; a card a green run already covers and one the chain names
-// at no run stay done, and a second pass finds nothing. Requires a
+// The reconciler over the real store, ending through the runner's Finish:
+// a merged card a green run covers ends done, one the chain has not
+// covered yet stays merged, the covered card's task_ended event and its
+// done poke land once, and a second tick changes nothing. Requires a
 // disposable Postgres (FACTORYD_TEST_DATABASE_URL).
-func TestMigrationMovesLimboToMerged(t *testing.T) {
+func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts, events,
+		chat_messages, chat_conversations, chat_seen, chat_poke_cursor CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "t-limbo", Status: "done", PRNumber: 7},
-		{ID: "t-cov", Status: "done", PRNumber: 8},
-		{ID: "t-era", Status: "done", PRNumber: 9},
+		{ID: "t-live", PRNumber: 7},
+		{ID: "t-wait", PRNumber: 8},
 	} {
-		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
+		tk.Status, tk.BudgetEUR, tk.Repository, tk.Kind, tk.Objective = "merged", 1, "sf/r", "agent", "Feed page"
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
 		}
 	}
-	// the rows in run order: the green run carries t-cov's pull request
-	// again, so its own row turns green; t-limbo's carry is the red run
-	// after it — the done-but-not-live limbo
+	// pr 7 rode the green run 10; pr 8 rides run 12, still running
 	for _, row := range []struct {
 		pr     int64
 		sha    string
 		run    int64
 		status string
 	}{
-		{8, "e10", 10, "failure"},
-		{8, "e12", 12, "success"},
-		{0, "e12", 12, "success"},
-		{7, "e14", 14, "failure"},
-		{0, "e14", 14, "failure"},
+		{7, "e10", 10, "success"},
+		{0, "e10", 10, "success"},
+		{8, "e12", 12, "pending"},
+		{0, "e12", 12, "pending"},
 	} {
 		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.status); err != nil {
 			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
 		}
 	}
-	moved, err := s.MigrateChainLimbo(ctx, "sf/r")
+	hub := &forgejoHub{nextID: 100, mainHead: "m0"}
+	fj := &Forgejo{BaseURL: hub.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	ll := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"keys":[],"total_pages":0}`)
+	}))
+	t.Cleanup(ll.Close)
+	r, err := NewRunner(testRunnerConfig(), s, newFakeKube(), fj, &Completion{Store: s, Forgejo: fj, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}},
+		&fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
 	if err != nil {
-		t.Fatalf("MigrateChainLimbo: %v", err)
+		t.Fatal(err)
 	}
-	if !slices.Equal(moved, []string{"t-limbo"}) {
-		t.Fatalf("moved = %v, want t-limbo alone", moved)
+	tree := policy.Tree{Projects: map[string]policy.ProjectConfig{"r": {Repository: "sf/r", Notify: []string{"bob"}}}}
+	poker := &Poker{Store: s, Current: func() policy.Version { return policy.Version{Tree: tree} }, Line: &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}}
+	if err := poker.Pass(ctx); err != nil {
+		t.Fatal(err)
 	}
-	status := func(id string) string {
-		t.Helper()
-		b, ok, err := s.BoardTask(ctx, id)
-		if err != nil || !ok {
-			t.Fatalf("BoardTask(%s) = %v, %v", id, ok, err)
+	p := &ChainPoller{Store: s, End: r.Finish}
+	for range 2 {
+		p.reconcile(ctx, "sf/r")
+	}
+	for id, want := range map[string]string{"t-live": "done", "t-wait": "merged"} {
+		if got, _, err := s.Task(ctx, id); err != nil || got.Status != want {
+			t.Fatalf("%s = %q, %v; want %s", id, got.Status, err, want)
 		}
-		return b.Status
 	}
-	if got := status("t-limbo"); got != "merged" {
-		t.Fatalf("t-limbo is %s, want merged", got)
+	var ended []string
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || (detail->>'reason') FROM events WHERE kind = $1 ORDER BY id`, EventTaskEnded)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := status("t-cov"); got != "done" {
-		t.Fatalf("t-cov is %s, want done: a green run covers its carry", got)
+	defer rows.Close()
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			t.Fatal(err)
+		}
+		ended = append(ended, e)
 	}
-	if got := status("t-era"); got != "done" {
-		t.Fatalf("t-era is %s, want done: the chain names it at no run", got)
+	if !slices.Equal(ended, []string{"t-live live: covered by run 10"}) {
+		t.Fatalf("task_ended rows = %q, want one for t-live naming run 10", ended)
 	}
-	if again, err := s.MigrateChainLimbo(ctx, "sf/r"); err != nil || len(again) != 0 {
-		t.Fatalf("MigrateChainLimbo again = %v, %v; want nothing", again, err)
+	if err := poker.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := s.EnsureInbox(ctx, "sf/r", "bob")
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs, err := s.ChatMessages(ctx, "sf/r", "bob", inbox, 10)
+	if err != nil || len(msgs) != 1 || msgs[0].Content != "t-live is done and live: Feed page. €0.00 in all." || msgs[0].Repeats != 0 {
+		t.Fatalf("bob's inbox = %+v, %v; want the one done poke of t-live, unrepeated", msgs, err)
 	}
 }
 
