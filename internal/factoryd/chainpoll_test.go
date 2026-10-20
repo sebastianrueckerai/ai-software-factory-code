@@ -384,6 +384,7 @@ type chainForgejo struct {
 	reruns    []string                                  // "repository run" of every re-run asked
 	comments  []string                                  // "repository#issue body" of every comment posted
 	closed    []string                                  // "repository#issue" of every issue closed
+	labelled  []string                                  // "repository#issue label..." of every label set
 	runReads  []string                                  // the repository of every run list read
 }
 
@@ -440,6 +441,11 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"number": 30 + len(f.issues)})
 		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
+			var in struct {
+				Labels []string `json:"labels"`
+			}
+			json.NewDecoder(r.Body).Decode(&in)
+			f.labelled = append(f.labelled, repo+"#"+strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/labels")+" "+strings.Join(in.Labels, " "))
 			reply([]any{})
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
 			f.reruns = append(f.reruns, repo+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/rerun"))
@@ -1542,19 +1548,35 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	}
 }
 
-// A Forgejo without the rerun API (15 answers 404) moves the ladder to
-// the card at once, and the re-run is asked once only.
+// A Forgejo that offers no re-run moves the ladder to the card at once,
+// and the re-run is asked once only: 15 has no route (404), and on 17 a
+// token without the right (403, the infra project's read-only actions
+// token) offers none either.
 func TestAStallWithNoRerunAsksAtOnce(t *testing.T) {
-	p, store, f, clock := stallRig(t, "running")
-	f.rerun = http.StatusNotFound
-	tickAt(t, p, clock, 0)
-	tickAt(t, p, clock, 2*time.Minute)
-	if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
-		t.Fatalf("reruns %q, stall cards %+v; want the re-run asked and the card at once", f.reruns, stallCards(store))
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	// the cause as Forgejo.do words a 404 and a 403, the fake's body empty
+	causes := map[int]string{
+		http.StatusNotFound:  "POST /api/v1/repos/sf/demo-app/actions/runs/21/rerun: forgejo: not found",
+		http.StatusForbidden: "forgejo POST /api/v1/repos/sf/demo-app/actions/runs/21/rerun: forgejo: refused (forbidden): status 403: ",
 	}
-	tickAt(t, p, clock, 2*time.Minute)
-	if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
-		t.Fatalf("a later tick: reruns %q, stall cards %+v; want nothing new", f.reruns, stallCards(store))
+	for _, status := range []int{http.StatusNotFound, http.StatusForbidden} {
+		logs.Reset()
+		p, store, f, clock := stallRig(t, "running")
+		f.rerun = status
+		tickAt(t, p, clock, 0)
+		tickAt(t, p, clock, 2*time.Minute)
+		if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
+			t.Fatalf("%d: reruns %q, stall cards %+v; want the re-run asked and the card at once", status, f.reruns, stallCards(store))
+		}
+		if want := "re-run at " + demoCommit + ": run 21 of sf/demo-app: forgejo offers no re-run of an action run: " + causes[status] + ": the stall card at once"; !strings.Contains(logs.String(), want) {
+			t.Fatalf("%d: logs %q, want %q", status, logs.String(), want)
+		}
+		tickAt(t, p, clock, 2*time.Minute)
+		if len(f.reruns) != 1 || len(stallCards(store)) != 1 {
+			t.Fatalf("%d: a later tick: reruns %q, stall cards %+v; want nothing new", status, f.reruns, stallCards(store))
+		}
 	}
 }
 
@@ -1562,7 +1584,7 @@ func TestAStallWithNoRerunAsksAtOnce(t *testing.T) {
 // the ladder to the card: a failed re-run never holds it.
 func TestAFailedRerunAsksABoundLater(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
-	f.rerun = http.StatusForbidden
+	f.rerun = http.StatusBadRequest // a run Forgejo will not re-run now
 	tickAt(t, p, clock, 0)
 	tickAt(t, p, clock, 2*time.Minute)
 	tickAt(t, p, clock, 30*time.Second)
@@ -1976,6 +1998,148 @@ func TestChainHeldIssues(t *testing.T) {
 	}
 	if got, err := pg.ChainHeldIssues(ctx, demoRepo); err != nil || !slices.Equal(got, []int64{12, 13, 14}) {
 		t.Fatalf("ChainHeldIssues = %v, %v; want #12, #13, #14", got, err)
+	}
+}
+
+// noAgents is repository's seed project on agents none: no process and
+// no lanes, as the tree holds the infra project.
+func noAgents(repository string) Project {
+	p := seedProject(repository)
+	p.Agents, p.Process, p.Lanes = policy.AgentsNone, "", nil
+	return p
+}
+
+// redRig is demo's chain whose head run 21 is green and whose required
+// context flux/platform reports state on it, Flux's verdict on the
+// commit, for a project proj: the poller, its store, its Forgejo.
+func redRig(t *testing.T, proj Project, state string) (*ChainPoller, *fakeStore, *chainForgejo) {
+	t.Helper()
+	f := &chainForgejo{
+		runs:     map[string][]map[string]any{demoRepo: {chainRun(21, demoCommit, "success")}},
+		statuses: map[string]map[string][]map[string]string{demoRepo: {demoCommit: {{"status": state, "context": "flux/platform"}}}},
+	}
+	p, store := newTestPoller(t, f, proj)
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: demoRepo, Chain: policy.ChainConfig{Requires: []string{"flux/platform"}}},
+		}}}
+	}
+	p.Workflows = &fakeWorkflows{}
+	return p, store, f
+}
+
+// A red head of a project without agents (the infra project, spec 6.7)
+// files its repair card in the human lane, labelled human, starting no
+// workflow: one per repository while it stands, ChainCard finds it, and
+// a second red tick files none.
+func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
+	ctx := context.Background()
+	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	for range 2 {
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cards := repairCards(store)[demoRepo]
+	if len(cards) != 1 {
+		t.Fatalf("repair cards %+v, want one", cards)
+	}
+	card := cards[0]
+	if card.Kind != "human" || card.Status != "waiting-human" || card.SHA != demoCommit ||
+		!strings.Contains(card.Objective, "required context flux/platform: failure") {
+		t.Fatalf("repair card %+v, want a human card on the red head naming Flux", card)
+	}
+	if got, ok, err := store.ChainCard(ctx, demoRepo, SourceChainRepair); err != nil || !ok || got.ID != card.ID {
+		t.Fatalf("ChainCard = %s, %v, %v; want %s", got.ID, ok, err, card.ID)
+	}
+	if want := fmt.Sprintf("%s#%d human state/waiting-human", demoRepo, card.IssueNumber); !slices.Equal(f.labelled, []string{want}) {
+		t.Fatalf("labels %q, want %q", f.labelled, want)
+	}
+	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
+		t.Fatalf("started %v, want no workflow for a human card", started)
+	}
+}
+
+// A human repair card closes once the red it was filed for is gone: its
+// own commit turned green (Flux reconciled the same revision and healed),
+// its close recorded as factoryd's own first, one comment; a second green
+// tick posts none.
+func TestAHealedHeadClosesTheRepairCard(t *testing.T) {
+	ctx := context.Background()
+	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card := repairCards(store)[demoRepo][0]
+	f.statuses[demoRepo][demoCommit] = []map[string]string{{"status": "success", "context": "flux/platform"}}
+	for range 2 {
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	issue := fmt.Sprintf("%s#%d", demoRepo, card.IssueNumber)
+	if !slices.Equal(f.closed, []string{issue, issue}) || len(f.comments) != 1 || !strings.HasPrefix(f.comments[0], issue+" ") ||
+		!strings.Contains(f.comments[0], "concluded green") {
+		t.Fatalf("closed %q, comments %q; want the card's issue closed with one comment", f.closed, f.comments)
+	}
+	if !botCloseRecorded(store.intakeEvents, card) {
+		t.Fatalf("intake events %+v, want the close recorded as factoryd's own", store.intakeEvents)
+	}
+}
+
+// A repair card and a head that moves on: a human card closes, the red
+// it names no longer the head's; an agent's keeps its work while the new
+// head is pending and closes once a head is green; a merged one is the
+// reconciler's and stays.
+func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
+	ctx := context.Background()
+	moveOn := func(f *chainForgejo, state string) {
+		f.runs[demoRepo] = []map[string]any{chainRun(22, demoNext, "success"), chainRun(21, demoCommit, "success")}
+		f.statuses[demoRepo][demoNext] = []map[string]string{{"status": state, "context": "flux/platform"}}
+	}
+	tick := func(p *ChainPoller) {
+		t.Helper()
+		if err := p.Tick(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	tick(p)
+	human := repairCards(store)[demoRepo][0]
+	moveOn(f, "pending")
+	tick(p)
+	if want := fmt.Sprintf("%s#%d", demoRepo, human.IssueNumber); !slices.Equal(f.closed, []string{want}) ||
+		len(f.comments) != 1 || !strings.Contains(f.comments[0], "moved on to e5e5e5e") {
+		t.Fatalf("human card: closed %q, comments %q; want it closed naming the new head", f.closed, f.comments)
+	}
+
+	p, store, f = redRig(t, seedProject(demoRepo), "failure")
+	tick(p)
+	agent := repairCards(store)[demoRepo][0]
+	if agent.Kind != "agent" {
+		t.Fatalf("repair card %+v, want an agent's", agent)
+	}
+	moveOn(f, "pending")
+	tick(p)
+	if len(f.closed) != 0 {
+		t.Fatalf("closed %q while the new head is pending, want the agent's card kept", f.closed)
+	}
+	merged := store.tasks[agent.ID]
+	merged.Status, merged.FinishedAt = "merged", justNow()
+	store.tasks[agent.ID] = merged
+	f.statuses[demoRepo][demoNext] = []map[string]string{{"status": "success", "context": "flux/platform"}}
+	p.End = func(context.Context, string, int64) error { return nil }
+	tick(p)
+	if len(f.closed) != 0 {
+		t.Fatalf("closed %q, want the merged card left to the reconciler", f.closed)
+	}
+	queued := store.tasks[agent.ID]
+	queued.Status, queued.FinishedAt = "queued", nil
+	store.tasks[agent.ID] = queued
+	tick(p)
+	if want := fmt.Sprintf("%s#%d", demoRepo, agent.IssueNumber); !slices.Equal(f.closed, []string{want}) {
+		t.Fatalf("closed %q on green, want the agent's card", f.closed)
 	}
 }
 

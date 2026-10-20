@@ -1086,10 +1086,18 @@ func FileTask(ctx context.Context, store interface {
 // FileAgentTask files agent task t on project p's repository through
 // FileTask, entering its process by fileEntry, and starts it where it
 // entered a starting lane (a failed start is logged and healed by the next
-// HealPass). tl records the card's events.
+// HealPass). A project whose agents are none, or a t its caller made
+// human, gets a human card labelled human instead: it waits on a person
+// from the start, as an issue filed there does. tl records the card's
+// events.
 func FileAgentTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
+	if p.Agents == policy.AgentsNone || t.Kind == "human" {
+		t.Kind = "human"
+		labels = append(slices.DeleteFunc(slices.Clone(labels), func(n string) bool { return n == LabelAgent }), "human")
+		return FileTask(ctx, store, forgejo, p.Repo(), title, body, labels, t)
+	}
 	t, labels, err := fileEntry(p, t, labels)
 	if err != nil {
 		return Task{}, IssueRef{}, err

@@ -1056,10 +1056,10 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 // stall bound records the stall once (stalled) and climbs the stall
 // ladder every tick (climb) until a member dismisses it; concluded
 // failure calls repair; a green head ends the episode and resolves the
-// alerts. An open stall card whose commit concluded or is no longer the
-// head closes (settleStallCard). A head superseded while pending leaves
-// its episode behind, and a red head's episode ends with its repair card filed: the
-// open card, not the episode, holds the next red tick back. The clock
+// alerts. An open stall or repair card whose head no longer needs it
+// closes (settleChainCards). A head superseded while pending leaves its
+// episode behind, and a red head's episode ends with its repair card
+// filed: the open card, not the episode, holds the next red tick back. The clock
 // arms from the head row's own updated_at — frozen while its verdict
 // stands still — so a factoryd restart reads the time the pending was
 // first recorded instead of re-arming the stall.
@@ -1070,7 +1070,7 @@ func (p *ChainPoller) watch(ctx context.Context, proj Project, verdict string, s
 			delete(p.episodes, k)
 		}
 	}
-	p.settleStallCard(ctx, repository, sha, verdict)
+	p.settleChainCards(ctx, repository, sha, verdict)
 	key := headKey{repository, sha}
 	e := p.episodes[key]
 	switch verdict {
@@ -1156,6 +1156,7 @@ func (p *ChainPoller) climb(ctx context.Context, proj Project, sha string, bound
 			}
 			return
 		}
+		log.Printf("chain poller: %s: re-run at %s: %v: the stall card at once", repository, sha, err)
 		atOnce = true
 	}
 	card, ok, err := p.Store.ChainCard(ctx, repository, SourceChainStall)
@@ -1195,29 +1196,38 @@ func (p *ChainPoller) askStall(ctx context.Context, proj Project, sha string, si
 	log.Printf("chain poller: %s: head %s pending since %s: stall card %s, issue #%d", repository, sha, since.UTC().Format(time.RFC3339), t.ID, t.IssueNumber)
 }
 
-// settleStallCard closes repository's open stall card once the stall it
-// asks about stands no more: a newer commit took the head, at sha, or the
-// card's own commit concluded verdict. The close is recorded as
-// factoryd's own before the issue closes, so intake ends the card; a
-// close already recorded is repeated, its comment not.
-func (p *ChainPoller) settleStallCard(ctx context.Context, repository, sha, verdict string) {
-	card, ok, err := p.Store.ChainCard(ctx, repository, SourceChainStall)
-	if err != nil {
-		log.Printf("chain poller: %s: read the stall card: %v", repository, err)
-		return
+// settleChainCards closes repository's open stall and repair cards once
+// what they were filed for stands no more at the head at sha, concluded
+// verdict. A stall card stands while its commit is the head and pending.
+// A repair card stands until a head is green; a human one also ends when
+// the head moves on from its commit, while an agent's keeps its work
+// until green, and a merged one is the reconciler's to end. The close is
+// recorded as factoryd's own before the issue closes, so intake ends the
+// card; a close already recorded is repeated, its comment not.
+func (p *ChainPoller) settleChainCards(ctx context.Context, repository, sha, verdict string) {
+	for _, source := range []string{SourceChainStall, SourceChainRepair} {
+		card, ok, err := p.Store.ChainCard(ctx, repository, source)
+		if err != nil {
+			log.Printf("chain poller: %s: read the %s card: %v", repository, source, err)
+			continue
+		}
+		if !ok || Final(card.Status) || card.IssueNumber == 0 {
+			continue
+		}
+		repair := source == SourceChainRepair
+		switch {
+		case repair && card.Status == "merged":
+		case repair && verdict == "success", !repair && card.SHA == sha && verdict != "pending":
+			p.closeChainCard(ctx, repository, card, fmt.Sprintf("the chain of %s concluded %s at %s", repository, verdictWord(verdict), sha))
+		case card.SHA != sha && (!repair || card.Kind == "human"):
+			p.closeChainCard(ctx, repository, card, fmt.Sprintf("the head of %s moved on to %s", repository, sha[:min(7, len(sha))]))
+		}
 	}
-	if !ok || Final(card.Status) || card.IssueNumber == 0 {
-		return
-	}
-	var why string
-	switch {
-	case card.SHA != sha:
-		why = fmt.Sprintf("the head of %s moved on to %s", repository, sha[:min(7, len(sha))])
-	case verdict != "pending":
-		why = fmt.Sprintf("the chain of %s concluded %s at %s", repository, verdictWord(verdict), sha)
-	default:
-		return
-	}
+}
+
+// closeChainCard closes chain card card of repository as factoryd, why
+// its comment's reason.
+func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, card Task, why string) {
 	repo, err := SplitRepo(repository)
 	if err != nil {
 		log.Printf("chain poller: %s: %v", repository, err)
@@ -1225,17 +1235,21 @@ func (p *ChainPoller) settleStallCard(ctx context.Context, repository, sha, verd
 	}
 	first, err := recordFactoryClose(ctx, p.Store, card)
 	if err != nil {
-		log.Printf("chain poller: %s: record the stall card's close: %v", repository, err)
+		log.Printf("chain poller: %s: record the close of #%d: %v", repository, card.IssueNumber, err)
 		return
 	}
 	if first {
-		msg := "factoryd: " + why + "; this stall no longer stands. Closing this issue."
+		what := "this stall"
+		if card.Source == SourceChainRepair {
+			what = "the red this card was filed for"
+		}
+		msg := "factoryd: " + why + "; " + what + " no longer stands. Closing this issue."
 		if _, err := p.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, card.IssueNumber, msg); err != nil {
-			log.Printf("chain poller: %s: comment on stall card #%d: %v", repository, card.IssueNumber, err)
+			log.Printf("chain poller: %s: comment on #%d: %v", repository, card.IssueNumber, err)
 		}
 	}
 	if err := p.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, card.IssueNumber); err != nil {
-		log.Printf("chain poller: %s: close stall card #%d: %v", repository, card.IssueNumber, err)
+		log.Printf("chain poller: %s: close #%d: %v", repository, card.IssueNumber, err)
 	}
 }
 
@@ -1332,11 +1346,12 @@ func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind stri
 
 // fileRepair files the repair card of repository's red head: one per
 // repository while one stands (a second red tick joins the open card's
-// work), an agent card in the project's lane ready whose
-// objective carries the findings, the failing run's link and the issue
-// numbers of the cards the head carried. The factory's own repository
-// files none: mainfix owns a red push run there and the roll task a red
-// roll, each with its own card.
+// work), an agent card in the project's lane ready — a human card where
+// the project has no agents (FileAgentTask) — whose objective carries the
+// findings, the failing run's link and the issue numbers of the cards the
+// head carried. The factory's own repository files none: mainfix owns a
+// red push run there and the roll task a red roll, each with its own
+// card.
 func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run ActionRun, findings []string) {
 	if p.Own.Name != "" && repository == p.Own.String() {
 		return
@@ -1378,7 +1393,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	} else {
 		b.WriteString("\nNo card's change rides this head; the chain alone is the work.\n")
 	}
-	b.WriteString("\nRead the run's log, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
+	b.WriteString("\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
 	body := b.String()
 	t, ref, err := FileAgentTask(ctx, p.Store, p.Forgejo, p.Workflows, p.Timeline, proj, title, body, nil, Task{
 		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: p.Policy().Document.Budget.ClampBudget(0),

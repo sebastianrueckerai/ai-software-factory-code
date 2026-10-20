@@ -469,6 +469,9 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	if err != nil || !ok {
 		return 0, cmp.Or(err, fmt.Errorf("the go of %s: no project %s in the store", taskID, name))
 	}
+	if p.Agents == policy.AgentsNone {
+		return 0, ErrNoGo(fmt.Sprintf("Card #%d's project works with no agents: a person does its work and closes its issue.", t.IssueNumber))
+	}
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	if filed {
 		parts := make([]string, 0, 3)
