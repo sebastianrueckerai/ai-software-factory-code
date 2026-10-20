@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 const base = process.env.BASE || "http://127.0.0.1:8090";
 const labDir = process.env.CONSOLE_LAB_DIR || "/tmp/claude-1000/console-lab";
 const out = process.env.OUT || path.join(labDir, "shots");
-const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake"];
+const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake", "metrics"];
 const themes = ["dark", "light"];
 const desk = { width: 1440, height: 900 };
 const wide = { width: 1920, height: 1080 };
@@ -127,6 +127,12 @@ async function main() {
         }
         // the phone is one column: the chat first, the board below it
         await shot("phone-390.png", phone, "/", doIt);
+        // the metrics page (round 13, C30): the deck's rows at the desk
+        // and on the phone
+        if (s === "metrics") {
+          await shot("metrics-1440.png", desk, "/projects/ai-software-factory-code/metrics");
+          await shot("metrics-390.png", phone, "/projects/ai-software-factory-code/metrics");
+        }
         // the messenger panel's stacked rows on the phone (C19), once a theme
         if (s === "busy") await shot("notifications-390.png", phone, "/notifications");
         // the C14 faces that open on a click: the level control's menu and its

@@ -31,6 +31,9 @@ func (f *fakeFigures) ProjectMetrics(_ context.Context, repository string, from,
 	return f.report, nil
 }
 
+// SetMetrics answers the figures the lab's scene seeds.
+func (f *fakeFigures) SetMetrics(m factoryd.MetricsReport) { f.report = m }
+
 // metricsFiguresReport is one report the seam answers whole: every figure
 // carries a value that survives the JSON round trip.
 func metricsFiguresReport() factoryd.MetricsReport {

@@ -292,11 +292,14 @@ type labScene struct {
 	routines   []factoryd.RoutineView
 	runs       map[string][]factoryd.RoutineRun
 	routinesAt time.Time
+	// metrics is the figures the project's metrics page answers (round
+	// 13, C30); zero: every figure absent
+	metrics factoryd.MetricsReport
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene}
+	"history": historyScene, "wake": wakeScene, "metrics": metricsScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -475,7 +478,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation or history", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake or metrics", name)
 	}
 	now := time.Now()
 	s := scene(now)
@@ -550,6 +553,7 @@ func (r *rig) labSeed(name string) (string, error) {
 	}
 	r.mirrors.mu.Unlock()
 	r.ledger.costs = labCosts(now, s.spend, s.tasks)
+	r.figures.SetMetrics(s.metrics)
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
 	r.resources.use = map[string]cloudres.EnvelopeUse{"sf/code": {OpenServers: 1, MonthEUR: 0.43}}
@@ -1291,4 +1295,140 @@ func quietScene(now time.Time) labScene {
 	}
 	s.events = []factoryd.Event{labStatus(624, "running", factoryd.GateSession, now.Add(-3*time.Minute))}
 	return s
+}
+
+// TestLabMetricsScene pins the deck's demo rows the metrics scenario
+// seeds (round 13, C30): every value, its move, and the shape of its
+// weeks as the deck's spark words read.
+func TestLabMetricsScene(t *testing.T) {
+	scene, ok := labScenes["metrics"]
+	if !ok {
+		t.Fatal("labScenes lacks a metrics scenario")
+	}
+	s := scene(time.Now())
+	m := s.metrics
+	if m.Repository != "sf/code" {
+		t.Fatalf("repository = %q, want sf/code", m.Repository)
+	}
+	if d := m.To.Sub(m.From).Hours()/24 + 1; d != 28 {
+		t.Errorf("window = %d days, want 28", int(d))
+	}
+	for _, c := range []struct {
+		name        string
+		fig         factoryd.Figure
+		value, prev float64
+		first, last float64
+	}{
+		{"deploys", m.Deploys, 23, 19, 16, 23},
+		{"lead time", m.LeadTime, 12000000, 13500000, 16800000, 12000000},
+		{"card cycle", m.CardCycle, 21900000, 19500000, 18600000, 21900000},
+		{"throughput", m.Throughput, 31, 25, 21, 31},
+		{"change failure", m.ChangeFailure, 0.06, 0.08, 0.11, 0.06},
+		{"time to restore", m.TimeToRestore, 34200000, 37800000, 44400000, 34200000},
+		{"spend", m.Spend, 87.4, 78.3, 61.2, 87.4},
+		{"per card", m.PerCard, 2.6, 2.9, 3.4, 2.6},
+		{"interventions", m.Interventions, 1.4, 1.7, 1.9, 1.4},
+		{"human-blocked", m.HumanBlocked, 0.18, 0.22, 0.24, 0.18},
+		{"review acceptance", m.ReviewAcceptance, 0.824, 0.794, 0.74, 0.824},
+	} {
+		if !c.fig.Has || !c.fig.PrevHas {
+			t.Errorf("%s: has %v/%v, want both", c.name, c.fig.Has, c.fig.PrevHas)
+		}
+		if c.fig.Value != c.value || c.fig.Prev != c.prev {
+			t.Errorf("%s = %v from %v, want %v from %v", c.name, c.fig.Value, c.fig.Prev, c.value, c.prev)
+		}
+		if c.fig.Weeks[0] != c.first || c.fig.Weeks[6] != c.last {
+			t.Errorf("%s weeks run %v..%v, want %v..%v", c.name, c.fig.Weeks[0], c.fig.Weeks[6], c.first, c.last)
+		}
+	}
+	// the deck's flat sparks seed equal weeks: a one-unit wiggle on small
+	// counts swings the whole band under the widen rule and reads as motion
+	for _, c := range []struct {
+		name  string
+		fig   factoryd.Figure
+		value float64
+	}{
+		{"tokens / card", m.TokensPerCard, 84000},
+		{"escalations", m.Escalations, 5},
+	} {
+		if !c.fig.Has || c.fig.PrevHas {
+			t.Errorf("%s: has %v, prevHas %v, want a value with no move", c.name, c.fig.Has, c.fig.PrevHas)
+		}
+		if c.fig.Value != c.value {
+			t.Errorf("%s = %v, want %v", c.name, c.fig.Value, c.value)
+		}
+		if c.fig.Weeks[0] != c.fig.Weeks[6] {
+			t.Errorf("%s: a flat spark runs %v..%v", c.name, c.fig.Weeks[0], c.fig.Weeks[6])
+		}
+	}
+	if !m.SelfDeploys.Has || m.SelfDeploys.PrevHas || m.SelfDeploys.Value != 2 {
+		t.Errorf("self-deploys = %v (has %v, prevHas %v), want 2 with no move", m.SelfDeploys.Value, m.SelfDeploys.Has, m.SelfDeploys.PrevHas)
+	}
+	if m.SelfDeploys.Weeks[0] == m.SelfDeploys.Weeks[6] {
+		t.Error("self-deploys: the deck's low ticks read as a flat line")
+	}
+	if !m.RevertedRefiled.Has || m.RevertedRefiled.Reverted != 2 || m.RevertedRefiled.Refiled != 1 {
+		t.Errorf("reverted · refiled = %v · %v (has %v)", m.RevertedRefiled.Reverted, m.RevertedRefiled.Refiled, m.RevertedRefiled.Has)
+	}
+	if got := mMix(m.ModelMix); got != "coding-frontier 71 % · review-frontier 18 % · pulse 11 %" {
+		t.Errorf("model mix = %q", got)
+	}
+	d := m.DiffSize
+	if !d.Has || d.Files != 9 || d.Insertions != 240 || d.Deletions != 95 {
+		t.Errorf("diff size = %v", d)
+	}
+	if c := m.ChatWork; c.Calls != 312 || c.Minutes != 41 || c.PrevCalls != 274 {
+		t.Errorf("chat tool work = %v", c)
+	}
+}
+
+// metricsScene is the busy board with the project's metrics page seeded
+// by the deck's demo rows (round 13, C30).
+func metricsScene(now time.Time) labScene {
+	s := busyScene(now)
+	s.metrics = labMetricsReport(now)
+	return s
+}
+
+// labMetricsReport is the deck's demo report: every figure of the five
+// sections, its weeks traced as the deck's spark words read. The flat
+// sparks seed equal weeks — a one-unit wiggle on small counts swings the
+// whole band under the widen rule and reads as motion.
+func labMetricsReport(now time.Time) factoryd.MetricsReport {
+	move := func(value, prev float64, weeks [7]float64) factoryd.Figure {
+		return factoryd.Figure{Value: value, Prev: prev, Has: true, PrevHas: true, Weeks: weeks}
+	}
+	flat := func(value float64) factoryd.Figure {
+		return factoryd.Figure{Value: value, Has: true, Weeks: [7]float64{value, value, value, value, value, value, value}}
+	}
+	return factoryd.MetricsReport{
+		Repository:    "sf/code",
+		From:          now.AddDate(0, 0, -27),
+		To:            now,
+		Deploys:       move(23, 19, [7]float64{16, 17, 15, 18, 19, 21, 23}),
+		LeadTime:      move(12000000, 13500000, [7]float64{16800000, 16200000, 15600000, 15000000, 13800000, 12900000, 12000000}),
+		CardCycle:     move(21900000, 19500000, [7]float64{18600000, 19200000, 20100000, 19800000, 21000000, 21600000, 21900000}),
+		Throughput:    move(31, 25, [7]float64{21, 23, 25, 26, 28, 29, 31}),
+		ChangeFailure: move(0.06, 0.08, [7]float64{0.11, 0.10, 0.09, 0.08, 0.07, 0.06, 0.06}),
+		RevertedRefiled: factoryd.RevertedRefiled{Reverted: 2, Refiled: 1, Prev: [2]float64{2, 1}, Has: true,
+			Weeks: [7]float64{2, 2, 2, 2, 2, 2, 2}},
+		TimeToRestore: move(34200000, 37800000, [7]float64{44400000, 42000000, 40200000, 38400000, 36600000, 35400000, 34200000}),
+		Spend:         move(87.4, 78.3, [7]float64{61.2, 68.4, 74.9, 71.8, 79.2, 82.6, 87.4}),
+		PerCard:       move(2.6, 2.9, [7]float64{3.4, 3.3, 3.1, 3.0, 2.9, 2.7, 2.6}),
+		TokensPerCard: flat(84000),
+		ModelMix: []factoryd.MixShare{
+			{Alias: "coding-frontier", Share: 71},
+			{Alias: "review-frontier", Share: 18},
+			{Alias: "pulse", Share: 11},
+		},
+		Interventions:    move(1.4, 1.7, [7]float64{1.9, 1.8, 1.7, 1.6, 1.5, 1.5, 1.4}),
+		Escalations:      flat(5),
+		HumanBlocked:     move(0.18, 0.22, [7]float64{0.24, 0.23, 0.22, 0.21, 0.20, 0.19, 0.18}),
+		ReviewAcceptance: move(0.824, 0.794, [7]float64{0.74, 0.76, 0.77, 0.78, 0.79, 0.80, 0.824}),
+		SelfDeploys:      factoryd.Figure{Value: 2, Has: true, Weeks: [7]float64{1, 2, 1, 1, 2, 1, 2}},
+		DiffSize: factoryd.DiffSize{Files: 9, Insertions: 240, Deletions: 95, Prev: [3]float64{9, 240, 95}, Has: true,
+			Weeks: [7]float64{9, 9, 9, 9, 9, 9, 9}},
+		ChatWork: factoryd.ChatWork{Calls: 312, Minutes: 41, PrevCalls: 274, PrevMinutes: 36,
+			Weeks: [7]float64{238, 251, 262, 274, 288, 299, 312}},
+	}
 }

@@ -32,6 +32,11 @@ const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.g
 // as contrastEl is
 const notifyEl = ".notify th[scope=row], .notify td, .notify .dim, .notify .addr, .notify caption, .notify td.act a, .notify td.act button, .notify select";
 
+// metricsEl are the metrics page's text (round 13, C30), measured as
+// contrastEl is
+const metricsEl = ".mhead h2, .mintro, .mwin a, .msec > h3, .mname, .mval, .mmove";
+const metricsPath = "/projects/ai-software-factory-code/metrics";
+
 // labID is issue's task id in the lab, as lab_test.go's labID makes it.
 const labID = (issue) => "t-" + crypto.createHash("sha256").update("lab " + issue).digest("hex").slice(0, 12);
 
@@ -71,6 +76,9 @@ const mustHave = {
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
   quiet: ["1 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
+
+  metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
+    "model mix", "7 days", "28 days", "90 days"],
 };
 
 async function seed(s) {
@@ -288,7 +296,7 @@ async function text(page) {
   for (const [sc, words] of Object.entries(mustHave)) {
     const drawer = await seed(sc);
     const p = await open(browser, { width: 1440, height: 900 });
-    await p.page.goto(base + "/", { waitUntil: "load" });
+    await p.page.goto(base + (sc === "metrics" ? metricsPath : "/"), { waitUntil: "load" });
     await p.page.waitForTimeout(600);
     // the status in detail opens on its chevron: its words count too
     const xp = p.page.locator("#status-toggle");
@@ -296,6 +304,18 @@ async function text(page) {
     const low = (await text(p.page)).toLowerCase();
     if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
+    if (sc === "metrics") {
+      // the deck's rows fit the desk and the phone, no sideways scroll
+      const sw = await p.page.evaluate(() => document.documentElement.scrollWidth);
+      if (sw > 1440) fails.push("metrics: horizontal page scroll at 1440 (" + sw + ")");
+      const mp = await open(browser, { width: 390, height: 844 });
+      await mp.page.goto(base + metricsPath, { waitUntil: "load" });
+      await mp.page.waitForTimeout(400);
+      const psw = await mp.page.evaluate(() => document.documentElement.scrollWidth);
+      if (psw > 390) fails.push("metrics: horizontal scroll at 390 (" + psw + ")");
+      if (mp.errors.length) fails.push("metrics phone: " + mp.errors[0]);
+      await mp.ctx.close();
+    }
     if (sc === "busy") {
       // the theme selector (C15): the sun sets light and is pressed, a second
       // click on it changes nothing, the moon sets dark again
@@ -1480,7 +1500,8 @@ async function text(page) {
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
     for (const [sc, act, sel, pg] of [["threads", "delete", contrastEl, ""], ["escalation", "palette", contrastEl, ""], ["assisted", "level", contrastEl, ""],
-      ["poke", "", contrastEl, ""], ["busy", "docs", contrastEl, ""], ["busy", "", ghostEl, ""], ["fire", "", ghostEl, ""], ["busy", "", notifyEl, "/notifications"]]) {
+      ["poke", "", contrastEl, ""], ["busy", "docs", contrastEl, ""], ["busy", "", ghostEl, ""], ["fire", "", ghostEl, ""], ["busy", "", notifyEl, "/notifications"],
+      ["metrics", "", metricsEl, metricsPath]]) {
       await seed(sc);
       const cp = await open(browser, { width: 1440, height: 900 });
       // after open's own init script, so this theme wins
