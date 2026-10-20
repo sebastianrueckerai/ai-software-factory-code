@@ -140,15 +140,13 @@ func mDur(ms float64) string {
 
 func mDurMove(d float64) string { return msign(d) + mDur(math.Abs(d)) }
 
-func mMix(shares []factoryd.MixShare) string {
-	if len(shares) == 0 {
-		return "—"
+// mShare reads a share of 0..100 as whole percent; one that would round
+// to nothing reads as under one.
+func mShare(v float64) string {
+	if v > 0 && v < 0.5 {
+		return "< 1 %"
 	}
-	parts := make([]string, len(shares))
-	for i, s := range shares {
-		parts[i] = fmt.Sprintf("%s %s %%", s.Alias, mCount(s.Share))
-	}
-	return strings.Join(parts, " · ")
+	return mCount(v) + " %"
 }
 
 func mDiff(d factoryd.DiffSize) string {

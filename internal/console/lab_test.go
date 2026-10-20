@@ -1500,8 +1500,8 @@ func TestLabMetricsScene(t *testing.T) {
 	if !m.RevertedRefiled.Has || m.RevertedRefiled.Reverted != 2 || m.RevertedRefiled.Refiled != 1 {
 		t.Errorf("reverted · refiled = %v · %v (has %v)", m.RevertedRefiled.Reverted, m.RevertedRefiled.Refiled, m.RevertedRefiled.Has)
 	}
-	if got := mMix(m.ModelSpend); got != "big 89 % · small 11 %" {
-		t.Fatalf("model spend = %q", got)
+	if len(m.ModelSpend) != 2 || m.ModelSpend[0] != (factoryd.MixShare{Alias: "big", Share: 89}) || m.ModelSpend[1] != (factoryd.MixShare{Alias: "small", Share: 11}) {
+		t.Fatalf("model spend = %+v", m.ModelSpend)
 	}
 	d := m.DiffSize
 	if !d.Has || d.Files != 9 || d.Insertions != 240 || d.Deletions != 95 {
