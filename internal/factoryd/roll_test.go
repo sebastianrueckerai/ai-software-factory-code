@@ -496,10 +496,10 @@ func TestRollFindsTheRollsMergeByItsRecordedPullRequest(t *testing.T) {
 	}
 }
 
-// Past its timeout the watcher stops falling silent: it posts the
-// factory/roll failure verdict for the sha it watched and fails the roll
-// requests the roll task's pull request carried, each exactly once.
-func TestWatcherDeadlinePostsFailure(t *testing.T) {
+// Past its timeout the watcher fails the roll requests the roll task's
+// pull request carried, once, and posts no commit status: the roll's
+// settle owns factory/roll.
+func TestTheWatcherPostsNoStatusAtItsDeadline(t *testing.T) {
 	rolled := k8sManifests(digestOld, digestNew, digestWorkerNew, digestRunner)
 	hub := &rollHub{head: [2]string{"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c", "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"},
 		manifests: map[string]map[string]string{
@@ -524,24 +524,21 @@ func TestWatcherDeadlinePostsFailure(t *testing.T) {
 	}
 	w.deadline = time.Now().Add(-time.Second)
 	steps(t, w, 1)
-	const merge = "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d"
-	want := []rollStatusRecord{{merge, "failure", "factory/roll", "not live within 1h0m0s; the deployments did not take the digest"}}
-	if !reflect.DeepEqual(hub.statuses, want) {
-		t.Fatalf("statuses %+v, want %+v", hub.statuses, want)
+	if len(hub.statuses) != 0 {
+		t.Fatalf("statuses %+v, want none", hub.statuses)
 	}
 	if !reflect.DeepEqual(rolls.failed, []int64{21}) {
 		t.Fatalf("marked failed %v, want pull request 21's rolls", rolls.failed)
 	}
 	steps(t, w, 2)
-	if len(hub.statuses) != 1 || len(rolls.failed) != 1 {
+	if len(hub.statuses) != 0 || len(rolls.failed) != 1 {
 		t.Fatalf("after done: statuses %+v, failed %v", hub.statuses, rolls.failed)
 	}
 }
 
-// A measured live is the watcher's success verdict: posted once, only
-// once every waited-for Deployment recorded, and never a failure for a
-// roll that concluded success.
-func TestWatcherSuccessPostsOnMeasure(t *testing.T) {
+// A measured live records the roll and posts no commit status, and never
+// fails a roll that concluded success.
+func TestTheWatcherPostsNoStatus(t *testing.T) {
 	rolled := k8sManifests(digestOld, digestNew, digestWorkerNew, digestRunner)
 	hub := &rollHub{head: [2]string{"7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c7c", "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a"},
 		manifests: map[string]map[string]string{
@@ -563,20 +560,14 @@ func TestWatcherSuccessPostsOnMeasure(t *testing.T) {
 
 	steps(t, w, 2)
 	if len(hub.statuses) != 0 {
-		t.Fatalf("success posted before every Deployment is live: %+v", hub.statuses)
+		t.Fatalf("status posted before every Deployment is live: %+v", hub.statuses)
 	}
 	deps.set("factoryd", deploymentJSON("2026-09-29T12:01:00Z", "2026-09-29T12:02:00Z", registryHost+"factory-gateway@"+digestOld, registryHost+"ci-runner@"+digestRunner, registryHost+"opencode-worker@"+digestWorkerNew))
 	steps(t, w, 2)
-	const merge = "8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d8d"
-	want := []rollStatusRecord{{merge, "success", "factory/roll", "measured live: the deployments took the digest"}}
-	if !reflect.DeepEqual(hub.statuses, want) {
-		t.Fatalf("statuses %+v, want %+v", hub.statuses, want)
+	if len(hub.statuses) != 0 || len(rolls.rows) == 0 {
+		t.Fatalf("statuses %+v, rolls %+v: want the roll recorded and no status", hub.statuses, rolls.rows)
 	}
 	if len(rolls.failed) != 0 {
 		t.Fatalf("a concluded success also failed rolls: %v", rolls.failed)
-	}
-	steps(t, w, 2)
-	if len(hub.statuses) != 1 {
-		t.Fatalf("the success verdict repeated: %+v", hub.statuses)
 	}
 }

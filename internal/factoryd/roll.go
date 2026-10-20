@@ -231,12 +231,10 @@ func (w *RollWatcher) step(ctx context.Context) error {
 	}
 	if len(w.pending) == 0 {
 		w.done = true
-		w.verdict(ctx, "success", "measured live: the deployments took the digest")
 		return nil
 	}
 	if time.Now().After(w.deadline) {
 		log.Printf("roll %s: %s not live within %s; not recorded", w.sha, strings.Join(slices.Sorted(maps.Keys(w.pending)), ", "), w.Timeout)
-		w.verdict(ctx, "failure", fmt.Sprintf("not live within %s; the deployments did not take the digest", w.Timeout))
 		if w.pr > 0 {
 			if err := w.Store.MarkRollsFailed(ctx, w.Owner+"/"+w.Repo, w.pr); err != nil {
 				return err
@@ -245,17 +243,6 @@ func (w *RollWatcher) step(ctx context.Context) error {
 		w.done = true
 	}
 	return nil
-}
-
-// verdict reports the watcher's measurement of the sha it watched as the
-// factory/roll commit status CI's rollout job polls; the roller keeps the
-// skips, the watcher owns the rolls it measured. A status the API refuses
-// is logged, not fatal.
-func (w *RollWatcher) verdict(ctx context.Context, state, description string) {
-	if err := w.Forgejo.CreateCommitStatus(ctx, w.Owner, w.Repo, w.sha,
-		CommitStatus{State: state, Context: rollStatusContext, Description: description}); err != nil {
-		log.Printf("roll %s: report %s: %v", w.sha, state, err)
-	}
 }
 
 // landed maps the path query's commit to the commit that landed it on

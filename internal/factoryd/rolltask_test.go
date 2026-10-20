@@ -803,10 +803,9 @@ func TestRollerFilesOneRollPerCommit(t *testing.T) {
 }
 
 // The roller judges a run whose three image jobs are green even while the
-// run itself still runs (roadmap 296): its rollout job holds the run open
-// until its roll goes live, so the run's own state says nothing of its
+// run itself still runs (roadmap 296): the run's own state says nothing of its
 // images. A run with an image job not yet green waits.
-func TestRollerRollsARunItsRolloutJobHoldsOpen(t *testing.T) {
+func TestRollerRollsARunWhoseImagesAreGreenWhileItRuns(t *testing.T) {
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(64, commitC1, "running")},
 		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
@@ -1844,8 +1843,8 @@ func TestRollerFilesTheNewestOfSeveralGreenRuns(t *testing.T) {
 
 // The roller reports each verdict as the factory/roll commit status
 // (roadmap 297): pending while the roll task it filed carries the commit,
-// then success once the task settles merged — the status the CI chain's
-// rollout job polls, the currency the store already carries to every job.
+// then success once the task settles merged — the status the factory's
+// chain requires.
 func TestRollerReportsItsVerdictAsACommitStatus(t *testing.T) {
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(57, commitC1, "success")},

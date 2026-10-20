@@ -1692,3 +1692,93 @@ func TestAnUncarriedCardAlertsInARepositoryWhoseChainBlockIsBroken(t *testing.T)
 		t.Fatalf("alerts %+v, want one chain_uncarried for t-x", store.alerts)
 	}
 }
+
+func factoryChain(statuses ...map[string]string) (*chainForgejo, func() policy.Version) {
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}, {"sha": mergePR14}}},
+		},
+		merged: map[string][]map[string]any{
+			codeRepo: {{"number": 12, "merged": true, "merge_commit_sha": mergePR12}, {"number": 14, "merged": true, "merge_commit_sha": mergePR14}},
+		},
+		statuses: map[string]map[string][]map[string]string{codeRepo: {commitC2: statuses}},
+	}
+	return f, func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, Stall: 24 * time.Hour}},
+		}}}
+	}
+}
+
+// The three image jobs are the run; with the roll still pending the
+// head, and every carry row, stay pending, and the 24 hour bound calls no
+// stall before it passes.
+func TestAGreenRunWithAPendingRequiredStatusStaysPending(t *testing.T) {
+	f, pol := factoryChain(map[string]string{"status": "pending", "context": "factory/roll"})
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = pol
+	p.Own, _ = SplitRepo(codeRepo)
+	clock := time.Date(2026, 10, 19, 12, 0, 0, 0, time.UTC)
+	p.Now = func() time.Time { return clock }
+	ended := 0
+	p.End = func(context.Context, string, string, string) error { ended++; return nil }
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+	for _, at := range []time.Duration{0, 23 * time.Hour} {
+		clock = clock.Add(at)
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range chainOf(store, codeRepo) {
+			if r.status != "pending" {
+				t.Fatalf("at +%s row %+v, want every row pending", at, r)
+			}
+		}
+	}
+	if ended != 0 || strings.Contains(logs.String(), "stalled") {
+		t.Fatalf("ended %d, log %q: a roll within 24h is neither live nor stalled", ended, logs.String())
+	}
+	clock = clock.Add(2 * time.Hour)
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(logs.String(), "stalled") {
+		t.Fatalf("no stall 25h in: %q", logs.String())
+	}
+}
+
+// The settle's success on the commit turns every row of it green on one
+// tick, and every merged card it carried ends then.
+func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
+	f, pol := factoryChain(map[string]string{"status": "pending", "context": "factory/roll"})
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = pol
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
+	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
+	var ended []string
+	p.End = func(_ context.Context, id, final, reason string) error {
+		ended = append(ended, id+" "+final+" "+reason)
+		return nil
+	}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(ended) != 0 {
+		t.Fatalf("ended %q while the roll is pending", ended)
+	}
+	f.statuses[codeRepo][commitC2] = []map[string]string{{"status": "success", "context": "factory/roll"}}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range chainOf(store, codeRepo) {
+		if r.status != "success" {
+			t.Fatalf("row %+v, want success", r)
+		}
+	}
+	slices.Sort(ended)
+	if want := []string{"t-12 done live: covered by run 61", "t-14 done live: covered by run 61"}; !slices.Equal(ended, want) {
+		t.Fatalf("ended %q, want %q", ended, want)
+	}
+}

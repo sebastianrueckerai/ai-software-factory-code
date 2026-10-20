@@ -355,7 +355,7 @@ type RollerStore interface {
 
 // Roller opens the roll of the code repository (ruling 178): for the push
 // runs of main whose three image jobs are green (the run itself may still
-// run: its rollout job waits for the roll, roadmap 296) and it has not
+// run) and it has not
 // judged, newest first and none older than a commit a roll carries, it
 // compares the images the run published
 // (the registry tags of the commit's short sha) with the ones k8s/ pins,
@@ -480,9 +480,8 @@ func (r *Roller) poll(ctx context.Context) error {
 var imageContexts = []string{"ci / image (push)", "ci / image-sandbox (push)", "ci / image-runner (push)"}
 
 // imagesGreen reads whether sha's three image jobs report success. The
-// roller judges a run on this, not on the run's own state: the run's
-// rollout job (roadmap 296) waits for the run's roll to go live, so the
-// run stays running until its change is deployed.
+// roller judges a run on this, not on the run's own state: the run may
+// still be running when its images are green.
 func (r *Roller) imagesGreen(ctx context.Context, sha string) (bool, error) {
 	cs, err := r.Forgejo.CombinedStatus(ctx, r.Repo.Owner, r.Repo.Name, sha)
 	if err != nil {
@@ -498,7 +497,7 @@ func (r *Roller) imagesGreen(ctx context.Context, sha string) (bool, error) {
 }
 
 // rollStatusContext is the commit-status context the roller reports its
-// verdict under. CI's rollout job polls it (roadmap 297): success means the
+// verdict under, and the factory's project file requires: success means the
 // commit's change runs live, failure means it will not, pending means a
 // roll task is carrying it.
 const rollStatusContext = "factory/roll"
