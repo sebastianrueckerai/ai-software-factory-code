@@ -13,6 +13,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
@@ -332,9 +333,18 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		('alert', 'signoz', 'c5', '2026-09-15T08:00Z', 'fp-p'),   -- prev: fixed 122 h later by c5
 		('alert', 'signoz', 'c3', '2026-10-07T13:30Z', ''),       -- empty fingerprint pairs with nothing
 		('alert', 'signoz', 'c6', '2026-10-07T08:00Z', 'fp-m'),   -- its fix card c8 is merged, waiting for the chain: no restore yet
-		('escalation', 'gate', 'c3', '2026-10-07T13:00Z', NULL),
-		('escalation', 'gate', 'c5', '2026-09-21T10:00Z', NULL),
+		('escalation', 'gate', 'c3', '2026-10-07T13:00Z', NULL),   -- judged by the controller, an AI member
+		('escalation', 'gate', 'c1', '2026-10-01T12:00Z', NULL),   -- judged by sebastian
+		('escalation', 'gate', 'c6', '2026-10-06T10:00Z', NULL),   -- judged by the project agent
+		('escalation', 'gate', 'c5', '2026-09-21T10:00Z', NULL),   -- closed unjudged with its card
 		('escalation', 'gate', 'o1', '2026-10-02T18:30Z', NULL)`)
+	must(`UPDATE alerts SET resolved_by = 'controller', verdict = 'real' WHERE kind = 'escalation' AND task_id = 'c3'`)
+	must(`UPDATE alerts SET resolved_by = 'sebastian', verdict = 'noise' WHERE kind = 'escalation' AND task_id = 'c1'`)
+	must(`UPDATE alerts SET resolved_by = 'agent', verdict = 'real' WHERE kind = 'escalation' AND task_id = 'c6'`)
+	must(`UPDATE alerts SET resolved_by = 'factoryd', verdict = 'unjudged' WHERE kind = 'escalation' AND task_id = 'c5'`)
+	if _, _, err := policy.Record(ctx, s.db, "metrics-test", policy.Tree{Document: policy.Document{AIMembers: []string{"controller"}}}); err != nil {
+		t.Fatal(err)
+	}
 	must(`INSERT INTO project_rolls (repository, namespace, digest, commit, ready_at) VALUES
 		('sf/code', 'web', 'd-0', 'cr-0', '2026-09-25T10:00Z'),  -- prev, b4
 		('sf/code', 'web', 'd-1', 'cr-1', '2026-09-20T09:45Z'),  -- prev, b3
@@ -472,13 +482,20 @@ func TestMetricsFigures(t *testing.T) {
 	// card's: none); prev none over 1; b5 holds 3 over c1 and c2
 	fig(t, "interventions", r.Interventions, Figure{Value: 1, Prev: 0, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0, 0, 1.5, 0.5}})
-	// escalations: es1 window, es2 prev (es3 is sf/other's)
-	fig(t, "escalations", r.Escalations, Figure{Value: 1, Prev: 1, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 0, 1, 0, 1}})
-	// escalated share: of the window's done cards c1 c2 c3 c6, c3 escalated
-	// -> 1/4; prev c5 1/1; weeks by the cards' finish: b3 c5, b6 c3 of c3 c6
-	fig(t, "escalated share", r.EscalatedShare, Figure{Value: 0.25, Prev: 1, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0.5}})
+	// escalations: c1's, c6's and c3's in the window (b5, b6, b6), c5's
+	// in prev (b4); o1's is sf/other's
+	fig(t, "escalations", r.Escalations, Figure{Value: 3, Prev: 1, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 0, 1, 1, 2}})
+	// escalated share: of the window's done cards c1 c2 c3 c6, three
+	// escalated -> 3/4; prev c5 1/1; weeks by the cards' finish: b3 c5,
+	// b5 c1 of c1 c2, b6 c3 and c6
+	fig(t, "escalated share", r.EscalatedShare, Figure{Value: 0.75, Prev: 1, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 1, 0, 0.5, 1}})
+	// handled: sebastian judged c1's (human), the controller c3's and the
+	// agent c6's (AI); prev c5's closed unjudged; the human's per bucket
+	if r.EscalationsHandled != (EscalationsHandled{Human: 1, AI: 2, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) {
+		t.Fatalf("escalations handled = %+v", r.EscalationsHandled)
+	}
 	// human blocked: (5 h + 24 h) / (76 + 49 + 54 + 12) h; prev 22/50 h
 	fig(t, "human blocked", r.HumanBlocked, Figure{Value: 104400.0 / 687600, Prev: 0.44, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0.44, 0, 0.232, 0}})
@@ -554,7 +571,7 @@ func TestMetricsEmptyProject(t *testing.T) {
 			t.Fatalf("%s = %+v, want the zero figure", name, f)
 		}
 	}
-	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelSpend) != 0 || len(r.ServedBy) != 0 || len(r.ToolMix) != 0 {
+	if r.RevertedRefiled.Has || r.DiffSize.Has || len(r.ModelSpend) != 0 || len(r.ServedBy) != 0 || len(r.ToolMix) != 0 || r.EscalationsHandled != (EscalationsHandled{}) {
 		t.Fatalf("refiled %+v diff %+v mix %+v", r.RevertedRefiled, r.DiffSize, r.ModelSpend)
 	}
 	if r.ChatWork != (ChatWork{}) {

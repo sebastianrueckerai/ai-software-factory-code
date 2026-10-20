@@ -640,6 +640,10 @@ type ApprovalRequest struct {
 // FactoryDecider is decided_by for the factory's own decisions.
 const FactoryDecider = "factoryd"
 
+// AgentDecider resolves an alert the project agent judged for the member
+// at the autonomous level.
+const AgentDecider = "agent"
+
 // PGStore is the Postgres task store, pgx/v5 in stdlib mode.
 type PGStore struct {
 	db  *sql.DB

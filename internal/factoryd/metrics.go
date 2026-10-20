@@ -38,6 +38,18 @@ type RevertedRefiled struct {
 	Weeks    [7]float64 `json:"weeks"`
 }
 
+// EscalationsHandled splits the window's escalations by who judged them:
+// a human, or an AI (the project agent deciding for the member at the
+// autonomous level, or a member the policy lists in ai_members); the rest
+// closed unjudged when their card ended. Prev is [human, ai], Weeks counts
+// the human's per bucket.
+type EscalationsHandled struct {
+	Human float64    `json:"human"`
+	AI    float64    `json:"ai"`
+	Prev  [2]float64 `json:"prev"`
+	Weeks [7]float64 `json:"weeks"`
+}
+
 // MixShare is one class's, deployment's or tool's share of the window's
 // euros, 0..100.
 type MixShare struct {
@@ -73,29 +85,30 @@ type MetricsReport struct {
 	From       time.Time `json:"from"`
 	To         time.Time `json:"to"`
 
-	Deploys          Figure          `json:"deploys"`
-	LeadTime         Figure          `json:"lead_time"`
-	CardCycle        Figure          `json:"card_cycle"`
-	Throughput       Figure          `json:"throughput"`
-	ChangeFailure    Figure          `json:"change_failure"`
-	RevertedRefiled  RevertedRefiled `json:"reverted_refiled"`
-	TimeToRestore    Figure          `json:"time_to_restore"`
-	Spend            Figure          `json:"spend"`
-	PerCard          Figure          `json:"per_card"`
-	TokensPerCard    Figure          `json:"tokens_per_card"`
-	ModelSpend       []MixShare      `json:"model_spend"`
-	ServedBy         []MixShare      `json:"served_by"`
-	ToolSpend        Figure          `json:"tool_spend"`
-	ToolMix          []MixShare      `json:"tool_mix"`
-	Interventions    Figure          `json:"interventions"`
-	Escalations      Figure          `json:"escalations"`
-	EscalatedShare   Figure          `json:"escalated_share"`
-	HumanBlocked     Figure          `json:"human_blocked"`
-	ReviewAcceptance Figure          `json:"review_acceptance"`
-	SelfDeploys      Figure          `json:"self_deploys"`
-	DiffSize         DiffSize        `json:"diff_size"`
-	ChatWork         ChatWork        `json:"chat_tool_work"`
-	CIDuration       Figure          `json:"ci_duration"`
+	Deploys            Figure             `json:"deploys"`
+	LeadTime           Figure             `json:"lead_time"`
+	CardCycle          Figure             `json:"card_cycle"`
+	Throughput         Figure             `json:"throughput"`
+	ChangeFailure      Figure             `json:"change_failure"`
+	RevertedRefiled    RevertedRefiled    `json:"reverted_refiled"`
+	TimeToRestore      Figure             `json:"time_to_restore"`
+	Spend              Figure             `json:"spend"`
+	PerCard            Figure             `json:"per_card"`
+	TokensPerCard      Figure             `json:"tokens_per_card"`
+	ModelSpend         []MixShare         `json:"model_spend"`
+	ServedBy           []MixShare         `json:"served_by"`
+	ToolSpend          Figure             `json:"tool_spend"`
+	ToolMix            []MixShare         `json:"tool_mix"`
+	Interventions      Figure             `json:"interventions"`
+	Escalations        Figure             `json:"escalations"`
+	EscalatedShare     Figure             `json:"escalated_share"`
+	EscalationsHandled EscalationsHandled `json:"escalations_handled"`
+	HumanBlocked       Figure             `json:"human_blocked"`
+	ReviewAcceptance   Figure             `json:"review_acceptance"`
+	SelfDeploys        Figure             `json:"self_deploys"`
+	DiffSize           DiffSize           `json:"diff_size"`
+	ChatWork           ChatWork           `json:"chat_tool_work"`
+	CIDuration         Figure             `json:"ci_duration"`
 }
 
 // metricWindow is the spans every figure reads: the window, the
@@ -505,6 +518,27 @@ func metricEscalatedShare(ctx context.Context, db *sql.DB, repo string, w metric
 		fmt.Sprintf(`SELECT %s, count(*) FILTER (WHERE `+escalated+`), count(*) FROM tasks WHERE `+doneCardWhere+` GROUP BY 1`, metricBucket("finished_at")))
 }
 
+// metricEscalationsHandled: of the window's escalations, those a human
+// judged and those an AI judged; ai names the AI resolvers, the project
+// agent and the policy's ai_members.
+func metricEscalationsHandled(ctx context.Context, db *sql.DB, repo string, w metricWindow, ai []string) (EscalationsHandled, error) {
+	const pair = ` FROM alerts a JOIN tasks t ON t.id = a.task_id
+		WHERE a.kind = 'escalation' AND t.repository = $1 AND a.raised_at >= $2 AND a.raised_at < $3`
+	const byAI = `a.resolved_by = ANY($4::text[])`
+	const byHuman = `a.resolved_by IS NOT NULL AND a.resolved_by <> '` + FactoryDecider + `' AND NOT (` + byAI + `)`
+	const counts = `count(*) FILTER (WHERE ` + byHuman + `), count(*) FILTER (WHERE ` + byAI + `)`
+	var e EscalationsHandled
+	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.From, w.To, ai).Scan(&e.Human, &e.AI); err != nil {
+		return e, err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.PrevFrom, w.PrevTo, ai).Scan(&e.Prev[0], &e.Prev[1]); err != nil {
+		return e, err
+	}
+	var err error
+	e.Weeks, err = metricWeeks(ctx, db, `SELECT `+metricBucket("a.raised_at")+`, count(*) FILTER (WHERE `+byHuman+`)`+pair+` GROUP BY 1`, repo, w.SparkFrom, w.To, ai)
+	return e, err
+}
+
 // metricSelfDeploys: the factory's own rolls — every project reads the
 // same count; the table has no repository.
 func metricSelfDeploys(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
@@ -849,6 +883,15 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 		return r, err
 	}
 	if r.EscalatedShare, err = metricEscalatedShare(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	ai := []string{AgentDecider}
+	if v, ok, err := policy.Current(ctx, db); err != nil {
+		return r, err
+	} else if ok {
+		ai = append(ai, v.Document.AIMembers...)
+	}
+	if r.EscalationsHandled, err = metricEscalationsHandled(ctx, db, repository, w, ai); err != nil {
 		return r, err
 	}
 	if r.HumanBlocked, err = metricHumanBlocked(ctx, db, repository, w); err != nil {
