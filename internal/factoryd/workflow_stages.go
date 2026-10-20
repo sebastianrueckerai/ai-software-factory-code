@@ -1018,7 +1018,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 	}
 	whyHuman := card
 	if len(card) == 0 {
-		auto, unmet := AutoMerge(g, review)
+		auto, unmet := AutoMerge(g, review, t.source)
 		if !auto {
 			whyHuman = unmet
 		} else {

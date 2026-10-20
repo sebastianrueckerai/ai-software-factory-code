@@ -44,6 +44,9 @@ type PolicyGate struct {
 	// pull request (factoryPRSources), which is no agent's change: Outcome
 	// is requires_approval, and a human approves its change to Paths.
 	Factory bool
+	// OutsideK8s is the changed paths outside k8s/, which a roll may not
+	// touch.
+	OutsideK8s []string `json:",omitempty"`
 	// Cheats is the diff's anti-cheat findings (cheats): for the agent,
 	// through the checks stage's rule.
 	Cheats []string `json:",omitempty"`
@@ -146,33 +149,45 @@ type Review struct {
 	Behaviours []string           `json:"behaviours,omitempty"`
 }
 
-// AutoMerge decides the merge outcome auto (rulings 149, 167, 169): the
-// project's merge rule is auto, the risk class's outcome is auto (class
-// normal), the review approves and finds the change a strict improvement
-// with no drawback, and the fix is proven one of two ways: the
+// AutoMerge decides the merge outcome auto by who wrote the change (spec
+// 7.2). A pull request factoryd wrote (source roll or factoryPRSources)
+// has no risk class and no review: the project's merge rule is auto, the
+// checks are green, and a roll changed nothing outside k8s/. An agent's
+// change needs the merge rule auto, a class normal (or high, with the
+// security audit clear), green checks, an approving review that finds the
+// change a strict improvement with no drawback, and proof: the
 // reproduction failed at the base and passes at the head, or the agent
-// recorded the fault it fixed without reproducing it ("clear improvements
-// with no drawback just get done", with or without a reproduction
-// command). unmet names every condition that sends the pull request to a
-// human's card.
-func AutoMerge(g GateResults, rv Review) (ok bool, unmet []string) {
+// recorded the fault it fixed, or the review's criteria are all met or
+// waived (rulings 149, 167, 169). unmet names every condition that sends
+// the pull request to a human's card.
+func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string) {
 	if g.Policy.MergeRule != policy.MergeAuto {
 		unmet = append(unmet, "the project's merge rule is "+cmp.Or(g.Policy.MergeRule, policy.MergeHuman))
+	}
+	if !g.ChecksPassed {
+		unmet = append(unmet, "the checks did not run green")
+	}
+	if source == SourceRoll || factoryPRSources(source) {
+		if source == SourceRoll && len(g.Policy.OutsideK8s) > 0 {
+			unmet = append(unmet, "the roll changes paths outside k8s/: "+strings.Join(g.Policy.OutsideK8s, ", "))
+		}
+		return len(unmet) == 0, unmet
 	}
 	switch {
 	case g.Policy.large():
 		unmet = append(unmet, fmt.Sprintf("large change: %d lines over %d; split it or accept it", g.Policy.Lines, g.Policy.LargeLines))
+	case g.Policy.Class == policy.ClassHigh && g.Policy.Outcome == policy.OutcomeRequiresApproval:
+		if g.Policy.MergeRule != policy.MergeAuto || g.Audit == nil || g.Audit.Verdict != AuditClear {
+			unmet = append(unmet, "risk class high: the audit must pass for a merge without a human")
+		}
 	case g.Policy.Outcome != policy.OutcomeAuto:
 		unmet = append(unmet, fmt.Sprintf("risk class %s is %s", g.Policy.Class, g.Policy.Outcome))
-	}
-	if !g.ChecksPassed {
-		unmet = append(unmet, "the checks did not run green")
 	}
 	rp := g.Reproduction
 	switch {
 	case rp.Ran && rp.Exit != 0:
 		unmet = append(unmet, fmt.Sprintf("the reproduction exited %d at the head", rp.Exit))
-	case rp.Reproduced() || rp.NotReproduced != "":
+	case rp.Reproduced() || rp.NotReproduced != "" || criteriaProve(rv.Criteria):
 	case rp.Ran:
 		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit))
 	default:
@@ -190,6 +205,11 @@ func AutoMerge(g GateResults, rv Review) (ok bool, unmet []string) {
 		unmet = append(unmet, "the model review's verdict is "+rv.Verdict)
 	}
 	return len(unmet) == 0, unmet
+}
+
+// criteriaProve: the review answered every plan criterion met or waived.
+func criteriaProve(cs []CriterionVerdict) bool {
+	return len(cs) > 0 && !slices.ContainsFunc(cs, func(c CriterionVerdict) bool { return c.Verdict != "met" && c.Verdict != "waived" })
 }
 
 // MergeSpec is a merge approval request's spec: what the human reads on
@@ -360,13 +380,14 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		}
 		lines += f.Additions + f.Deletions
 	}
+	outside := slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return strings.HasPrefix(p, "k8s/") })
 	v, err := r.pinnedVersion(ctx, pin)
 	if err != nil {
 		return PolicyGate{}, err
 	}
 	c := v.Document.Risk.Classify(paths, lines)
 	g := PolicyGate{Class: c.Class.Name, Outcome: c.Class.Outcome, Paths: c.Paths, Migrations: c.Migrations,
-		Changed: len(paths), Lines: lines, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman}
+		Changed: len(paths), Lines: lines, OutsideK8s: outside, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman}
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}

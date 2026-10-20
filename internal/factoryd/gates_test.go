@@ -197,7 +197,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
-		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, PolicyVersion: 7, MergeRule: "human"}
+		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human"}
 	if fmt.Sprint(g) != fmt.Sprint(want) {
 		t.Fatalf("gate = %+v, want %+v", g, want)
 	}
@@ -287,7 +287,7 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 			g := getInto[PolicyGate](t, val, err)
 			want := PolicyGate{Class: "forbidden", Outcome: policy.OutcomeRequiresApproval, Paths: []string{".forgejo/workflows/ci.yml"},
-				Factory: true, Changed: 2, PolicyVersion: 7, MergeRule: "human"}
+				Factory: true, Changed: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human"}
 			if fmt.Sprint(g) != fmt.Sprint(want) {
 				t.Fatalf("gate = %+v, want %+v", g, want)
 			}
@@ -1911,5 +1911,107 @@ func TestReviewPromptNamesTheChecksOrder(t *testing.T) {
 	}
 	if !strings.Contains(beside, reviewChecksBeside) || strings.Contains(beside, reviewChecksRan) {
 		t.Error("the prompt beside the checks does not say they run in parallel")
+	}
+}
+
+func fullAutoGates(_ string) (GateResults, Review) {
+	yes := true
+	return GateResults{
+		Policy:       PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto},
+		Reproduction: ReproResult{Ran: true, Exit: 0, BaseExit: 1},
+		ChecksPassed: true,
+	}, Review{Verdict: "approve", Summary: "ok", StrictImprovement: &yes}
+}
+
+func highClass(g *GateResults) {
+	g.Policy.Class, g.Policy.Outcome = policy.ClassHigh, policy.OutcomeRequiresApproval
+}
+
+func TestARollMergesOnItsOwnAtFullAuto(t *testing.T) {
+	g, _ := fullAutoGates(SourceRoll)
+	g.Policy.Class, g.Policy.Outcome, g.Policy.Changed = policy.ClassHigh, policy.OutcomeRequiresApproval, 2
+	if ok, unmet := AutoMerge(g, Review{}, SourceRoll); !ok {
+		t.Fatalf("unmet = %q", unmet)
+	}
+}
+
+func TestARollWithANonDigestChangeAsksAHuman(t *testing.T) {
+	g, _ := fullAutoGates(SourceRoll)
+	g.Policy.OutsideK8s = []string{"internal/x.go"}
+	ok, unmet := AutoMerge(g, Review{}, SourceRoll)
+	if ok || !slices.Equal(unmet, []string{"the roll changes paths outside k8s/: internal/x.go"}) {
+		t.Fatalf("ok %v, unmet %q", ok, unmet)
+	}
+}
+
+func TestARevertMergesOnChecksAtFullAuto(t *testing.T) {
+	for _, source := range []string{SourceRevert, SourceTemplateUpdate, SourceSchemaCopy, SourceGitHubSync} {
+		g, _ := fullAutoGates(source)
+		highClass(&g)
+		g.Policy.OutsideK8s = []string{"a.go"}
+		if ok, unmet := AutoMerge(g, Review{}, source); !ok {
+			t.Fatalf("%s: unmet = %q", source, unmet)
+		}
+		g.ChecksPassed, g.Policy.MergeRule = false, policy.MergeHuman
+		if ok, unmet := AutoMerge(g, Review{}, source); ok || len(unmet) != 2 {
+			t.Fatalf("%s: ok %v, unmet %q, want the rule and the checks", source, ok, unmet)
+		}
+	}
+}
+
+func TestAHighClassChangeMergesWithTheAuditAtFullAuto(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	highClass(&g)
+	g.Audit = &AuditResult{Verdict: AuditClear}
+	if ok, unmet := AutoMerge(g, rv, "api"); !ok {
+		t.Fatalf("unmet = %q", unmet)
+	}
+}
+
+func TestAHighClassChangeWithAuditFindingsAsksAHuman(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	highClass(&g)
+	want := []string{"risk class high: the audit must pass for a merge without a human"}
+	for _, a := range []*AuditResult{nil, {Verdict: AuditFindings}} {
+		g.Audit = a
+		if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+			t.Fatalf("audit %+v: ok %v, unmet %q", a, ok, unmet)
+		}
+	}
+}
+
+func TestAHighClassChangeBelowFullAutoAsksAHuman(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	highClass(&g)
+	g.Audit, g.Policy.MergeRule = &AuditResult{Verdict: AuditClear}, policy.MergeHuman
+	want := []string{"the project's merge rule is human", "risk class high: the audit must pass for a merge without a human"}
+	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+		t.Fatalf("ok %v, unmet %q", ok, unmet)
+	}
+}
+
+func TestAForbiddenChangeAlwaysAsksAHuman(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	g.Audit = &AuditResult{Verdict: AuditClear}
+	for class, outcome := range map[string]string{"forbidden": policy.OutcomeForbidden, "migration": policy.OutcomeRequiresApproval} {
+		g.Policy.Class, g.Policy.Outcome = class, outcome
+		want := []string{"risk class " + class + " is " + outcome}
+		if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+			t.Fatalf("%s: ok %v, unmet %q", class, ok, unmet)
+		}
+	}
+}
+
+func TestCriteriaMetProveAFeature(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	g.Reproduction = ReproResult{}
+	rv.Criteria = []CriterionVerdict{{Criterion: "a", Verdict: "met"}, {Criterion: "b", Verdict: "waived"}}
+	if ok, unmet := AutoMerge(g, rv, "api"); !ok {
+		t.Fatalf("unmet = %q", unmet)
+	}
+	rv.Criteria[1].Verdict = "unmet"
+	want := []string{"no reproduction command and no fault the agent recorded"}
+	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+		t.Fatalf("ok %v, unmet %q", ok, unmet)
 	}
 }

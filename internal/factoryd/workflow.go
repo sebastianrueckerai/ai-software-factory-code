@@ -1183,6 +1183,7 @@ type taskRun struct {
 	returns   map[string]int // how often each stage sent findings to the agent
 	history   []string       // every finding sent to the agent, tagged with its stage and round
 	reviews   []Review       // the model reviews so far, oldest first
+	source    string         // the task row's arrival
 	rolling   bool           // a roll task's run (versionRoll): a fold wakes the approval wait
 	orphanPR  bool           // the card of a pull request factoryd opened outside a card's workflow (versionFactoryPRCard): verify opens none
 	// versionChecksRerun
@@ -1369,7 +1370,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v14 >= versionNeedsInfo {
 			t.posterInfo, t.infoRequest = st.PosterInfo, st.InfoRequest
 		}
-		t.standing = st.Standing
+		t.standing, t.source = st.Standing, st.Source
 		if t.factoryPRCard >= versionFactoryPRCard {
 			t.orphanPR = st.FactoryPR && st.PR.Number != 0
 		}
@@ -2379,7 +2380,7 @@ func (t *taskRun) gate(commit string) verdict {
 	}
 	var whyHuman []string
 	if t.v13 >= versionAutoMerge {
-		auto, unmet := AutoMerge(g, review)
+		auto, unmet := AutoMerge(g, review, t.source)
 		if !auto {
 			whyHuman = unmet
 		} else {
