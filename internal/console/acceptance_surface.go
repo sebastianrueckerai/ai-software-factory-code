@@ -695,7 +695,7 @@ func (a *AcceptanceRig) RaiseTaskBudget(_ context.Context, id string, eur float6
 	return 0, 0, factoryd.ErrNotFound
 }
 
-func (a *AcceptanceRig) FundCard(ctx context.Context, id string, eur float64, _ *float64, _ factoryd.Event) (float64, float64, error) {
+func (a *AcceptanceRig) FundCard(ctx context.Context, id string, eur float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
 	return a.RaiseTaskBudget(ctx, id, eur)
 }
 

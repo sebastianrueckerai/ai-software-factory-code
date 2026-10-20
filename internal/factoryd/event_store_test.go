@@ -416,9 +416,10 @@ func TestPGStoreTaskEventsFor(t *testing.T) {
 	}
 }
 
-// The agent's month is the sum of amount_eur over the repository's
-// card_funded events via chat in the UTC calendar month: hand-derived,
-// 1.25 + 0.75 = 2 in October 2026, the button's raise, the other
+// The pool's month is the sum of amount_eur over the repository's
+// card_funded events via chat decided by the agent in the UTC calendar
+// month: hand-derived, 1.25 + 0.75 = 2 in October 2026, the member's
+// decisions (confirmed or clicked), the button's raise, the other
 // repository's, the other kinds and the month's neighbours left out.
 func TestAgentFundedEURSumsTheMonth(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
@@ -433,24 +434,26 @@ func TestAgentFundedEURSumsTheMonth(t *testing.T) {
 	}
 	at := func(d string) time.Time { v, _ := time.Parse(time.RFC3339, d); return v }
 	for _, e := range []Event{
-		{At: at("2026-10-01T00:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 1.25}},
-		{At: at("2026-10-31T23:59:59Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 0.75}},
+		{At: at("2026-10-01T00:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 1.25, "decider": "agent"}},
+		{At: at("2026-10-31T23:59:59Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 0.75, "decider": "agent"}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 60, "decider": "member"}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 70}},
 		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaButton, Detail: map[string]any{"amount_eur": 10}},
-		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/other", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 20}},
-		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventChatFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 30}},
-		{At: at("2026-09-30T23:59:59Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 40}},
-		{At: at("2026-11-01T00:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 50}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/other", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 20, "decider": "agent"}},
+		{At: at("2026-10-15T12:00:00Z"), Repository: "sf/r", Kind: EventChatFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 30, "decider": "agent"}},
+		{At: at("2026-09-30T23:59:59Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 40, "decider": "agent"}},
+		{At: at("2026-11-01T00:00:00Z"), Repository: "sf/r", Kind: EventCardFunded, Via: ViaChat, Detail: map[string]any{"amount_eur": 50, "decider": "agent"}},
 	} {
 		if _, err := s.Record(ctx, e); err != nil {
 			t.Fatalf("Record: %v", err)
 		}
 	}
-	got, err := s.AgentFundedEUR(ctx, "sf/r", at("2026-10-20T08:00:00Z"))
+	got, err := agentFundedEUR(ctx, s.db, "sf/r", at("2026-10-20T08:00:00Z"))
 	if err != nil || got != 2 {
-		t.Fatalf("AgentFundedEUR = %v, %v; want 2", got, err)
+		t.Fatalf("agentFundedEUR = %v, %v; want 2", got, err)
 	}
-	if got, err := s.AgentFundedEUR(ctx, "sf/none", at("2026-10-20T08:00:00Z")); err != nil || got != 0 {
-		t.Fatalf("AgentFundedEUR of a repository with none = %v, %v; want 0", got, err)
+	if got, err := agentFundedEUR(ctx, s.db, "sf/none", at("2026-10-20T08:00:00Z")); err != nil || got != 0 {
+		t.Fatalf("agentFundedEUR of a repository with none = %v, %v; want 0", got, err)
 	}
 }
 
@@ -508,7 +511,7 @@ func TestFundCardRaisesAndRecordsOrNothing(t *testing.T) {
 func TestFundCardPoolHoldsUnderParallelTurns(t *testing.T) {
 	s := fundStore(t)
 	ctx := context.Background()
-	pool := 3.0
+	pool := &FundBounds{PoolEUR: 3, CardCapEUR: 100}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var ok, spent int
@@ -516,7 +519,7 @@ func TestFundCardPoolHoldsUnderParallelTurns(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, err := s.FundCard(ctx, "t-c", 1, &pool, fundEvent())
+			_, _, err := s.FundCard(ctx, "t-c", 1, pool, fundEvent())
 			mu.Lock()
 			defer mu.Unlock()
 			var p *PoolSpentError
@@ -538,14 +541,61 @@ func TestFundCardPoolHoldsUnderParallelTurns(t *testing.T) {
 		t.Fatalf("budget_eur = %v, want 5", got.BudgetEUR)
 	}
 	s = fundStore(t)
-	pool = 0.3
+	pool = &FundBounds{PoolEUR: 0.3, CardCapEUR: 100}
 	for _, eur := range []float64{0.1, 0.2} {
-		if _, _, err := s.FundCard(ctx, "t-c", eur, &pool, fundEvent()); err != nil {
+		if _, _, err := s.FundCard(ctx, "t-c", eur, pool, fundEvent()); err != nil {
 			t.Fatalf("FundCard %v within the pool of 0.3: %v", eur, err)
 		}
 	}
 	var p *PoolSpentError
-	if _, _, err := s.FundCard(ctx, "t-c", 0.01, &pool, fundEvent()); !errors.As(err, &p) || p.Funded != 0.3 {
+	if _, _, err := s.FundCard(ctx, "t-c", 0.01, pool, fundEvent()); !errors.As(err, &p) || p.Funded != 0.3 {
 		t.Fatalf("a cent past the pool = %v, want PoolSpentError of 0.3 funded", err)
+	}
+}
+
+// The card's cap is the UPDATE's predicate: of five parallel raises of 1
+// EUR on a card of 2 EUR under a cap of 5, exactly three land, the rest
+// get the CardCapError with the budget they met; a raise bounded by the
+// agent's limits is stamped as the agent's decision, the pool's ledger.
+func TestFundCardCapHoldsUnderParallelTurns(t *testing.T) {
+	s := fundStore(t)
+	ctx := context.Background()
+	bounds := &FundBounds{PoolEUR: 100, CardCapEUR: 5}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	var ok, capped int
+	for range 5 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _, err := s.FundCard(ctx, "t-c", 1, bounds, fundEvent())
+			mu.Lock()
+			defer mu.Unlock()
+			var c *CardCapError
+			switch {
+			case err == nil:
+				ok++
+			case errors.As(err, &c):
+				capped++
+			default:
+				t.Errorf("FundCard: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if ok != 3 || capped != 2 {
+		t.Fatalf("%d raised and %d capped, want 3 and 2", ok, capped)
+	}
+	if got, _, _ := s.Task(ctx, "t-c"); got.BudgetEUR != 5 {
+		t.Fatalf("budget_eur = %v, want 5", got.BudgetEUR)
+	}
+	rows, _ := s.TaskEvents(ctx, "t-c", 10)
+	for _, r := range rows {
+		if r.Detail["decider"] != "agent" {
+			t.Errorf("a bounded raise's row = %+v, want decider agent", r)
+		}
+	}
+	if _, _, err := s.FundCard(ctx, "nope", 1, bounds, fundEvent()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FundCard of no task = %v, want ErrNotFound", err)
 	}
 }

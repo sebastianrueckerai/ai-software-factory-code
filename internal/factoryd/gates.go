@@ -192,9 +192,9 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string
 		unmet = append(unmet, fmt.Sprintf("the reproduction exited %d at the head", rp.Exit))
 	case rp.Reproduced() || rp.NotReproduced != "" || criteriaProve(rv.Criteria):
 	case rp.Ran:
-		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit))
+		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)+unmetCriteria(rv.Criteria))
 	default:
-		unmet = append(unmet, "no reproduction command and no fault the agent recorded")
+		unmet = append(unmet, "no reproduction command and no fault the agent recorded"+unmetCriteria(rv.Criteria))
 	}
 	// ruling 169: on both routes the review must find no drawback
 	if rv.Verdict != "" && (rv.StrictImprovement == nil || !*rv.StrictImprovement) {
@@ -208,6 +208,15 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string
 		unmet = append(unmet, "the model review's verdict is "+rv.Verdict)
 	}
 	return len(unmet) == 0, unmet
+}
+
+// unmetCriteria is the tail of an unmet line when the review's criteria
+// are there and do not prove the change.
+func unmetCriteria(cs []CriterionVerdict) string {
+	if len(cs) > 0 {
+		return ", and the review's criteria are not all met"
+	}
+	return ""
 }
 
 // criteriaProve: the review answered every plan criterion met or waived.
@@ -409,6 +418,8 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	}
 	msg := fmt.Sprintf("factoryd policy gate (policy version %d): risk class **%s**, %s, over %d changed paths, %d changed lines.\n\n", v.ID, g.Class, g.Outcome, g.Changed, g.Lines)
 	switch {
+	case g.Factory && !mechanicalSource(t.Source):
+		msg += "factoryd opened this pull request from GitHub commits: a human approves its change to these paths at every position, which agents may not change:\n" + listPaths(g.Paths)
 	case g.Factory:
 		msg += "factoryd opened this pull request, no agent: it merges on the merge rule alone at full auto, else a human approves its change to these paths, which agents may not change:\n" + listPaths(g.Paths)
 	case g.Outcome == policy.OutcomeForbidden:
@@ -1276,8 +1287,11 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	}
 	g := in.Gates.Policy
 	if g.Factory {
-		in.WhyHuman = append([]string{fmt.Sprintf("factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s",
-			g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
+		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
+		if !mechanicalSource(t.Source) {
+			line = "factoryd opened this pull request from GitHub commits: a human approves its change to paths forbidden to agents at every position (risk class %s): %s"
+		}
+		in.WhyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
 	}
 	spec, err := json.Marshal(MergeSpec{
 		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,

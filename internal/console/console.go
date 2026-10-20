@@ -120,10 +120,10 @@ type Tasks interface {
 	// ErrNotFound when there is no such task.
 	RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error)
 	// FundCard raises task id's budget by eur and writes e, the raise's
-	// card_funded row, with its budgets added, in one transaction; a non-nil
-	// pool is the month's pool in EUR, checked under a lock on e's
-	// repository (*factoryd.PoolSpentError when it cannot cover eur).
-	FundCard(ctx context.Context, id string, eur float64, pool *float64, e factoryd.Event) (from, to float64, err error)
+	// card_funded row, with its budgets added, in one transaction; non-nil
+	// bounds mark the agent's own raise, checked under a lock on e's
+	// repository (*factoryd.PoolSpentError, *factoryd.CardCapError).
+	FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
