@@ -219,6 +219,8 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mCountMove down", mCountMove(-38), "−38"},
 		{"mK", mK(84000), "84 k"},
 		{"mK fractional", mK(84500), "84.5 k"},
+		{"mK millions", mK(2249900), "2.2 M"},
+		{"mK whole millions", mK(3000000), "3 M"},
 		{"mEur", mEur(87.4), "€87.40"},
 		{"mEur two sixty", mEur(2.6), "€2.60"},
 		{"mEurMove up", mEurMove(9.1), "+€9.10"},
@@ -231,6 +233,7 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mDiff one file", mDiff(factoryd.DiffSize{Files: 1, Insertions: 3, Deletions: 1, Has: true}), "1 file · +3 −1"},
 		{"mDiff absent", mDiff(factoryd.DiffSize{}), "—"},
 		{"mChat", mChat(factoryd.ChatWork{Calls: 312, Minutes: 41}), "312 calls · 41 min"},
+		{"mChat under a minute", mChat(factoryd.ChatWork{Calls: 170, Minutes: 0.04}), "170 calls · 2 s"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %q, want %q", c.name, c.got, c.want)

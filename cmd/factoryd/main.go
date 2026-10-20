@@ -285,6 +285,7 @@ func main() {
 	if err != nil || !ok {
 		log.Fatalf("no project file lists factoryd's namespace %s (%v)", kube.Namespace(), err)
 	}
+	store.SelfRepository = own.Repository
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
