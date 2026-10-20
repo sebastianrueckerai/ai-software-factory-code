@@ -522,7 +522,6 @@ type card struct {
 	Moves              []move // a backlog card: the starting lanes the viewer may move it into
 	Plan               *planCards
 	Retry              *retry // a failed plan card's Retry, for an approver who may move it into ready
-	Go                 *goForm
 	Activity           string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
@@ -576,9 +575,11 @@ type card struct {
 
 // Closes: the face offers its viewer, a writer, Close: a card in the
 // backlog or waiting on a human, or failed without an issue, which has no
-// other way out. A choice card offers its choices alone.
+// other way out. A card whose question offers a close, or a choice card,
+// offers its choices alone.
 func (k card) Closes() bool {
-	return k.MayWriteSummary && !k.ChoiceCard() && (slices.Contains([]string{"backlog", "waiting-human"}, k.Status) || k.IssueNumber == 0 && k.Status == "failed")
+	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
+	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (slices.Contains([]string{"backlog", "waiting-human"}, k.Status) || k.IssueNumber == 0 && k.Status == "failed")
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free
@@ -841,11 +842,6 @@ type acceptanceCloseForm struct{ CSRF, Evidence string }
 
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
-
-// goForm is the pair on a human card that waits without an ask: Have the
-// factory do it, which files the work as the factory's own card, and
-// Close with note.
-type goForm struct{ CSRF string }
 
 // planCards are an accepted plan's cards and, for an approver while any
 // is in the backlog, Start plan (CSRF set).
@@ -1862,9 +1858,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
-		if choiceCard(t) {
-			k.Question = bt.Question // its choices act (doChoiceAnswer)
-		}
+		k.Question = bt.Question
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
@@ -2058,11 +2052,6 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			k.CSRF = v.csrf
 		}
 		k.Filter = v.filter
-		// the pair a human card that waits without an ask offers its writer
-		// (roadmap 1131): the factory, or a close on a note
-		if ok && k.Kind == "human" && !k.Ask && (k.Status == "backlog" || k.Status == "waiting-human") {
-			k.Go = &goForm{CSRF: v.csrf}
-		}
 	}
 	each(setForms)
 }

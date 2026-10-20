@@ -216,9 +216,9 @@ func TestHumanCardQuestions(t *testing.T) {
 			"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?",
 			[]QuestionChoice{{AnswerPark, "Let it stand"}, {AnswerClose, "Decided, close"}}},
 		"routine": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov"),
-			"Bump the pins", []QuestionChoice{{AnswerClose, "Done"}}},
+			"Bump the pins", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
 		"issue": {issueQuestion("Two\nlines  here", "text", "sebastian"),
-			"Two lines here", []QuestionChoice{{AnswerClose, "Done"}}},
+			"Two lines here", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			q := tt.q

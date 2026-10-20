@@ -202,7 +202,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Errorf("title %q, objective %q", title, card.Objective)
 	}
 	if !strings.Contains(body, "\n\nWhy: the routine weekly-bump fired and files to a person\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
-		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- Done\n\nfactoryd asks (routine). ") {
+		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
 		t.Errorf("body:\n%s", body)
 	}
 	for _, want := range []string{"upstream-images.txt", "DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION",
@@ -221,7 +221,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Fatalf("routine pokes %+v, want none: the card's question_asked row pokes", pokes)
 	}
 	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Weekly bump of the pinned outside inputs" ||
-		asked[0].Detail["why"] != "the routine weekly-bump fired and files to a person" || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"Done"}) {
+		asked[0].Detail["why"] != "the routine weekly-bump fired and files to a person" || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"Have the factory do it", "Done"}) {
 		t.Fatalf("question_asked %+v, want the card's one", asked)
 	}
 
@@ -667,7 +667,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
-	if body := issues.issues[0]; !strings.Contains(body, "Why: the routine audit fired and files to a person\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- Done\n\nfactoryd asks (routine). ") {
+	if body := issues.issues[0]; !strings.Contains(body, "Why: the routine audit fired and files to a person\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
 		t.Errorf("the issue:\n%s", body)
 	}
 	if len(wf.started) != 0 {

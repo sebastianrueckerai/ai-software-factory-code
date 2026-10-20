@@ -132,10 +132,8 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	switch {
 	case t.Status != "waiting-human":
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
-	case choiceCard(t):
-		return c.doAnswer(ctx, a, id, choice)
 	case t.Kind == "human":
-		return c.doClose(ctx, a, id, "Answered in the chat: "+choice)
+		return c.doAnswer(ctx, a, id, choice)
 	}
 	note, err := c.doAnswer(ctx, a, id, choice)
 	if err != nil {

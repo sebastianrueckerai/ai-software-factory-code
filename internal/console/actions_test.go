@@ -310,3 +310,47 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 	equal(t, "the comment", r.fg.commentBodies("/api/v1/repos/sf/code/issues/42/comments"), []string{"Retry the roll"})
 	equal(t, "the patches", r.fg.patched, []string(nil))
 }
+
+// A human card's answers act by its choices: park keeps the card and
+// posts nothing, close ends it on the label, the factory choice hands it
+// over, free words are the member's comment and the card keeps waiting; a
+// value the question does not offer is refused with the labels.
+func TestHumanAnswerParksClosesAndComments(t *testing.T) {
+	const comments = "/api/v1/repos/sf/code/issues/51/comments"
+	q := func() factoryd.BoardTask {
+		return humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
+			factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
+	}
+	click := func(t *testing.T, form url.Values) (*rig, *fakeEvents, int, int, string) {
+		t.Helper()
+		r, ev := newRigWithEvents(t)
+		r.tasks.tasks = []factoryd.BoardTask{q()}
+		ck, s := r.loggedIn(t)
+		form.Set("csrf", s.csrf)
+		before := ev.count()
+		rec := r.do(post("/tasks/t-hq/answer", form), ck)
+		return r, ev, before, rec.Code, rec.Body.String()
+	}
+
+	r, ev, before, code, _ := click(t, url.Values{"value": {"park"}})
+	if code != http.StatusSeeOther || len(r.fg.patched) != 0 || r.fg.comments[comments] != "" {
+		t.Errorf("park = %d, patched %v, comment %q; want the card kept and nothing posted", code, r.fg.patched, r.fg.comments[comments])
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq", detail: map[string]any{"answer": "Wait for it", "value": "park"}})
+
+	r, _, _, code, _ = click(t, url.Values{"value": {"close"}})
+	if code != http.StatusSeeOther || r.fg.comments[comments] != "Done" || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Errorf("close = %d, comment %q, patched %v; want the label as the note and the issue closed", code, r.fg.comments[comments], r.fg.patched)
+	}
+
+	r, ev, before, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
+	if code != http.StatusSeeOther || r.fg.comments[comments] != "Use Postgres." || len(r.fg.patched) != 0 {
+		t.Errorf("free text = %d, comment %q, patched %v; want one comment and the card kept", code, r.fg.comments[comments], r.fg.patched)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq"})
+
+	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
+	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
+		t.Errorf("nonsense = %d %q; want a refusal naming the labels", code, body)
+	}
+}

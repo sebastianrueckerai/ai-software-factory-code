@@ -515,7 +515,7 @@ const rollAttemptBound = 3
 // rollAskMarker names the roll ladder's question in the card it files,
 // so StandingQuestion recognises it while it waits. rollRetryLabel is
 // the retry choice's label: the comment a press posts (the console's
-// doChoiceAnswer), and what consumeRetry answers.
+// doHumanAnswer), and what consumeRetry answers.
 const (
 	rollAskMarker  = "rolls failed since the last one merged"
 	rollRetryLabel = "Retry the roll"

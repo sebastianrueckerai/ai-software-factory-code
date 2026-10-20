@@ -357,7 +357,7 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	}
 	if e, q := store.intakeEvents[0], store.intakeEvents[0].Question; e.TaskID != task.ID || e.Kind != IntakeEscalation || q == nil ||
 		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
-		!slices.Equal(q.Labels(), []string{"Done"}) {
+		!slices.Equal(q.Labels(), []string{"Have the factory do it", "Done"}) {
 		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
 	}
 }

@@ -26,7 +26,8 @@ import (
 func TestChatAnswerRow(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code",
-		IssueNumber: 14, Objective: "needs you: which store?"}})
+		IssueNumber: 14, Objective: "needs you: which store?"},
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "close", Label: "Postgres"}, {Value: "close", Label: "SQLite"}}}})
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
@@ -67,7 +68,7 @@ func TestChatAnswerRow(t *testing.T) {
 
 	e14 := escalation("t-h", "#14 needs you: which store?", "Postgres", "SQLite")
 	answer(e14, "Postgres")
-	equal(t, "the human card's note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/14/comments"), []string{"Answered in the chat: Postgres"})
+	equal(t, "the human card's note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/14/comments"), []string{"Postgres"})
 
 	e11 := escalation("t-r", "#11 needs you: rebase?", "Yes", "No")
 	answer(e11, "Yes")

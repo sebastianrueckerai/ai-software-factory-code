@@ -159,7 +159,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		case t.IssueNumber == 0:
 			return "close ends it (close)"
 		case t.Kind == "human":
-			return "a human does its work and closes its issue"
+			return "one of its choices answers it (answer); close ends it"
 		case f.capped:
 			return "an answer with the findings grants one session (answer); close ends it"
 		case f.rerun:
@@ -643,13 +643,6 @@ func (c *Console) doGo(ctx context.Context, a actor, id string) (string, error) 
 	case t.Status != "backlog" && t.Status != "waiting-human":
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
 	}
-	bt, _, err := c.cfg.Tasks.BoardTask(ctx, id)
-	if err != nil {
-		return "", err
-	}
-	if bt.Escalation != "" {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d waits on your answer, not on the factory.", t.IssueNumber))
-	}
 	issue, err := c.cfg.GoCard(ctx, t.ID, a.s.user)
 	var no factoryd.ErrNoGo
 	switch {
@@ -944,8 +937,8 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // answer, the label retrying the card. A worded answer on a running
 // agent card steers its session (doSteer) instead of the wrongState
 // wall, so the board form and the answer tool, which both ride here,
-// reach a session too. A choice card's answer acts by its choice
-// (doChoiceAnswer).
+// reach a session too. A human card's answer acts by its choice
+// (doHumanAnswer).
 func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
 	text = strings.TrimSpace(text)
 	if len(text) > factoryd.MaxAnswer {
@@ -958,8 +951,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	if t.Kind == "agent" && t.Status == "running" && text != "" && c.cfg.Steer != nil {
 		return c.doSteer(ctx, a, id, text)
 	}
-	if choiceCard(t) && t.Status == "waiting-human" && t.IssueNumber != 0 {
-		return c.doChoiceAnswer(ctx, a, t, text, value)
+	if t.Kind == "human" && t.Status == "waiting-human" && t.IssueNumber != 0 {
+		return c.doHumanAnswer(ctx, a, t, text, value)
 	}
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a question or a session cap to answer")
@@ -1013,19 +1006,22 @@ func choiceCard(t factoryd.Task) bool {
 	return t.Source == factoryd.SourceChainStall || t.Source == factoryd.SourceRollFailed
 }
 
-// doChoiceAnswer answers choice card t with the choice value or text
-// names, one of its own. The stall card's act on the card's own commit:
-// re-run again re-runs the head's stuck runs and keeps the card waiting,
-// nothing posted; check again closes the card and lets the watch run on;
-// dismiss dismisses the stall until the head changes and closes the card.
-// A head that moved on from the card's commit, or concluded, refuses the
-// re-run and the dismissal with its own line; check again closes the
-// card all the same. The failed roll card's retry posts its label as the
-// member's comment, which the roller takes for the retry, and keeps the
-// card: the roller closes it and files the new roll; park records the
-// answer, nothing posted; close closes the card. Words that name no
-// choice are refused with the choices.
-func (c *Console) doChoiceAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
+// doHumanAnswer answers human card t with the choice value or text names,
+// one of its question's own. The stall card's act on the card's own
+// commit: re-run again re-runs the head's stuck runs and keeps the card
+// waiting, nothing posted; check again closes the card and lets the watch
+// run on; dismiss dismisses the stall until the head changes and closes
+// the card. A head that moved on from the card's commit, or concluded,
+// refuses the re-run and the dismissal with its own line; check again
+// closes the card all the same. The failed roll card's retry posts its
+// label as the member's comment, which the roller takes for the retry,
+// and keeps the card: the roller closes it and files the new roll. park
+// and keep waiting record the answer, nothing posted; go hands the card
+// to the factory; every other choice closes the card on its label. Words
+// that name no choice are the member's comment on a card that is no
+// choice card, the card still waiting; on a choice card they are refused
+// with the choices, as is a value the question does not offer.
+func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
 		return "", err
@@ -1039,6 +1035,12 @@ func (c *Console) doChoiceAnswer(ctx context.Context, a actor, t factoryd.Task, 
 	}
 	label := q.ChoiceLabel(value)
 	if label == "" {
+		if value == "" && text != "" && !choiceCard(t) {
+			if err := c.answerCardValue(ctx, a, t, text, ""); err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber), nil
+		}
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	var gone factoryd.ErrStallGone
@@ -1072,11 +1074,13 @@ func (c *Console) doChoiceAnswer(ctx context.Context, a actor, t factoryd.Task, 
 			return "", err
 		}
 		return fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber), nil
-	case factoryd.AnswerPark:
+	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, map[string]any{"answer": label, "value": value})
 		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
+	case factoryd.AnswerGo:
+		return c.doGo(ctx, a, t.ID)
 	}
-	return c.doClose(ctx, a, t.ID, label) // check again, close
+	return c.doClose(ctx, a, t.ID, label) // check again, close, any other choice
 }
 
 // answerInChatNote is doAnswerValue's note when the member's own words

@@ -847,7 +847,7 @@ func TestRetryLabelsTheReplacement(t *testing.T) {
 
 // Item 1131: the go of a card that waits on a person hands its work to
 // the factory (factoryd's Go), notes the new issue on the card's issue
-// and closes it; an agent card, a card that asks a question and a card
+// and closes it; an agent card and a card
 // already closed refuse with their sentence and file nothing.
 func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	r := newRig(t)
@@ -865,10 +865,6 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	if rec := hand("t-run", s.csrf); rec.Code != http.StatusConflict ||
 		strings.TrimSpace(rec.Body.String()) != "Card #11 is an agent card: the factory runs it." || len(r.handed) != 0 {
 		t.Fatalf("the agent card goes: %d %q, handed %v", rec.Code, rec.Body, r.handed)
-	}
-	if rec := hand("t-ask", s.csrf); rec.Code != http.StatusConflict ||
-		strings.TrimSpace(rec.Body.String()) != "Card #16 waits on your answer, not on the factory." || len(r.handed) != 0 {
-		t.Fatalf("the asking card goes: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The factory runs it as #16; card #15 closes.") {

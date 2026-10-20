@@ -33,6 +33,7 @@ const (
 	AnswerFund        = "fund"
 	AnswerClose       = "close"
 	AnswerKeepWaiting = "keep_waiting"
+	AnswerGo          = "go"
 )
 
 // HumanQuestion is the five-part question a card asks. Source names what
@@ -74,6 +75,11 @@ func (q *HumanQuestion) ChoiceLabel(value string) string {
 		}
 	}
 	return ""
+}
+
+// Offers reports whether the question has a choice valued value.
+func (q *HumanQuestion) Offers(value string) bool {
+	return q.ChoiceLabel(value) != ""
 }
 
 // Labels returns the choice labels, the words a click posts as the
@@ -450,7 +456,7 @@ func routineQuestion(rt policy.Routine, brief, provenance string) HumanQuestion 
 		Ask:     askOf(rt.Title, ""),
 		Why:     "the routine " + rt.Name + " fired and files to a person",
 		Info:    brief + "\n\n" + provenance,
-		Choices: []QuestionChoice{{AnswerClose, "Done"}},
+		Choices: []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}},
 	}
 }
 
@@ -461,7 +467,7 @@ func issueQuestion(title, body, poster string) HumanQuestion {
 		Ask:     askOf(title, ""),
 		Why:     "filed by " + poster + " into the human lane",
 		Info:    body,
-		Choices: []QuestionChoice{{AnswerClose, "Done"}},
+		Choices: []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}},
 	}
 }
 
