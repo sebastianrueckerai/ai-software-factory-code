@@ -1145,6 +1145,19 @@ func TestPlanLoopFindingsCommentsAndReject(t *testing.T) {
 	}
 }
 
+// A Reject carries no reason of its own: the verdict is final either
+// way, and the final reason names the author without an empty tail.
+func TestPlanLoopRejectWithoutReason(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.signalAfter(time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: ""})
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if got := h.planSignals(); !slices.Equal(got, []string{"plan_rejected alice 0 "}) {
+		t.Fatalf("recorded %v", got)
+	}
+}
+
 // A writer's comment made while a planner session runs (older than the
 // plan that session then posts) reaches the next session: the new plan
 // goes back at once. One made during an invalid session goes along with

@@ -1176,13 +1176,17 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 }
 
 // RejectPlan is the console's Reject, by a writer: the plan task ends
-// failed with why.
+// failed with why, which may be empty.
 func RejectPlan(ctx context.Context, store Store, wf Workflows, taskID, by, why string) error {
 	q, err := pendingPlan(ctx, store, taskID)
 	if err != nil {
 		return err
 	}
-	return decideAndSignal(ctx, store, wf, q, "denied", by, "rejected: "+why, SignalPlanRejected, TaskSignal{Author: by, Body: why})
+	reason := "rejected"
+	if why != "" {
+		reason += ": " + why
+	}
+	return decideAndSignal(ctx, store, wf, q, "denied", by, reason, SignalPlanRejected, TaskSignal{Author: by, Body: why})
 }
 
 // pendingPlan is the task's pending approval request of kind plan.
@@ -1641,12 +1645,17 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 }
 
 // planRejected takes a Reject sent while a session ran: the task ends
-// before the next session spends.
+// before the next session spends. A Reject without a reason names its
+// author alone.
 func (t *taskRun) planRejected() (final, why string, ok bool) {
 	var sig TaskSignal
 	if workflow.GetSignalChannel(t.ctx, SignalPlanRejected).ReceiveAsync(&sig) {
 		t.recordPlanSignal(SignalPlanRejected, sig, "")
-		return "failed", fmt.Sprintf("plan rejected by %s: %s", sig.Author, sig.Body), true
+		why := "plan rejected by " + sig.Author
+		if sig.Body != "" {
+			why += ": " + sig.Body
+		}
+		return "failed", why, true
 	}
 	return "", "", false
 }

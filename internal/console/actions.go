@@ -900,11 +900,12 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	return fmt.Sprintf("Your change request is on plan #%d; the planner answers a new revision.", t.IssueNumber), nil
 }
 
-// doRejectPlan ends plan task id failed with the writer's reason.
+// doRejectPlan ends plan task id failed with the writer's reason, which
+// is bookkeeping on a final verdict and may be empty.
 func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
-	if note == "" || len(note) > 64<<10 {
-		return "", refuse(http.StatusBadRequest, "a reason of up to 64 KiB is required")
+	if len(note) > 64<<10 {
+		return "", refuse(http.StatusBadRequest, "a reject reason is at most 64 KiB")
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {

@@ -495,11 +495,13 @@ func TestAcceptPlanApproversOnly(t *testing.T) {
 		!slices.Equal(r.fg.calls, []string{"SIGNAL plan_rejected t-plan by alice: not this quarter"}) {
 		t.Errorf("reject: %d, calls %v", rec.Code, r.fg.calls)
 	}
-	for name, f := range map[string]url.Values{"changes": {"text": {" "}}, "reject": {"note": {""}}} {
-		f.Set("csrf", as.csrf)
-		if rec := r.do(post("/tasks/t-plan/plan/"+name, f), ak); rec.Code != http.StatusBadRequest {
-			t.Errorf("%s without text: %d, want 400", name, rec.Code)
-		}
+	if rec := r.do(post("/tasks/t-plan/plan/changes", url.Values{"csrf": {as.csrf}, "text": {" "}}), ak); rec.Code != http.StatusBadRequest {
+		t.Errorf("changes without text: %d, want 400", rec.Code)
+	}
+	r.fg.calls = nil
+	if rec := r.do(post("/tasks/t-plan/plan/reject", url.Values{"csrf": {as.csrf}, "note": {""}}), ak); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" ||
+		!slices.Equal(r.fg.calls, []string{"SIGNAL plan_rejected t-plan by alice: "}) {
+		t.Errorf("reject without text: %d, calls %v", rec.Code, r.fg.calls)
 	}
 }
 

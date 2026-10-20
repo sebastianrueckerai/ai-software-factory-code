@@ -263,8 +263,8 @@
 </form>
 <form method="post" action="/tasks/{{.TaskID}}/plan/reject" hx-post="/tasks/{{.TaskID}}/plan/reject" hx-target="#board" hx-swap="outerHTML">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<label for="reject-{{.ID}}{{.IDSuffix}}">Reason to reject the plan</label>
-<textarea id="reject-{{.ID}}{{.IDSuffix}}" name="note" rows="2" required></textarea>
+<label for="reject-{{.ID}}{{.IDSuffix}}">Reason to reject the plan (optional)</label>
+<textarea id="reject-{{.ID}}{{.IDSuffix}}" name="note" rows="2"></textarea>
 <button type="submit" class="deny" aria-label="Reject plan #{{.Issue}}">Reject</button>
 </form>{{end}}
 
