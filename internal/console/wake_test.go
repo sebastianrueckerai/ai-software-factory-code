@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/url"
@@ -196,62 +197,147 @@ func TestAWakeOnAProjectWithoutAChatTokenIsRefused(t *testing.T) {
 	}
 }
 
-// A wake's approval is the factory's own: the merge request's approval
-// goes to the workflow as factory-chat's and no review is posted, as
-// factory-chat's would count for nothing; the merge gate's review carries
-// it at the merge. A red-checks request reads only the head's checks, with
-// the chat token. A resource request is decided as factory-chat. The
-// events stay the woken member's, decided by the agent.
-func TestAWakesApprovalIsTheFactorysOwn(t *testing.T) {
-	approve := func(t *testing.T, r *rig, id int64) string {
+// An approval the agent decided is the factory's own, in a wake or
+// unconfirmed in a member's turn: the merge request's approval goes to the
+// workflow as factory-chat's, no review is posted (the merge gate's review
+// carries it at the merge) and no human criterion is met. A red-checks
+// request reads only the head's checks, with the turn's token. A resource
+// request is decided as factory-chat. The events stay the woken or
+// chatting member's, decided by the agent. What the member decides stays
+// theirs: their review, their name, their criteria.
+func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
+	inWake := func(t *testing.T, r *rig) actor {
 		t.Helper()
 		s, err := r.c.wakeSession(factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, "sebastian")
 		if err != nil {
 			t.Fatal(err)
 		}
-		note, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent",
-			level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}, id)
+		return actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent", level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}
+	}
+	inTurn := func(t *testing.T, r *rig, decider string) actor {
+		t.Helper()
+		_, s := r.loggedIn(t)
+		r.fg.calls = nil
+		return actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: decider, level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}
+	}
+	criteria := func(r *rig) *[]string {
+		var met []string
+		r.c.cfg.RecordHumanCriteria = func(_ context.Context, taskID, approver string) (int, error) {
+			met = append(met, taskID+" by "+approver)
+			return 1, nil
+		}
+		return &met
+	}
+	approve := func(t *testing.T, r *rig, a actor, id int64) string {
+		t.Helper()
+		note, err := r.c.doApprove(t.Context(), a, id)
 		if err != nil {
 			t.Fatalf("approve %d: %v", id, err)
 		}
 		return note
 	}
-	approved := func(t *testing.T, r *rig) factoryd.Event {
+	approved := func(t *testing.T, r *rig, decider string) {
 		t.Helper()
-		rows := r.events.all()
-		if len(rows) != 1 || rows[0].Kind != factoryd.EventMergeApproved || rows[0].Actor != "sebastian" || rows[0].Detail["decider"] != "agent" {
-			t.Fatalf("events = %+v, want one merge_approved of sebastian decided by the agent", rows)
+		var rows []factoryd.Event
+		for _, e := range r.events.all() {
+			if e.Kind == factoryd.EventMergeApproved {
+				rows = append(rows, e)
+			}
 		}
-		return rows[0]
+		if len(rows) != 1 || rows[0].Actor != "sebastian" || rows[0].Detail["decider"] != decider {
+			t.Fatalf("merge_approved rows = %+v, want one of sebastian decided by the %s", rows, decider)
+		}
 	}
-	t.Run("merge", func(t *testing.T) {
+	t.Run("merge in a wake", func(t *testing.T) {
 		r := newRig(t)
-		if note := approve(t, r, 4); note != "Approved pull request #9; factoryd merges it." {
+		met := criteria(r)
+		if note := approve(t, r, inWake(t, r), 4); note != "Approved pull request #9; factoryd merges it." {
 			t.Fatalf("note = %q", note)
 		}
-		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 {
-			t.Fatalf("calls %q, reviews %v: want the approval signalled as factory-chat's and no review", r.fg.calls, r.fg.reviews)
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 || len(*met) != 0 {
+			t.Fatalf("calls %q, reviews %v, criteria %q: want the approval signalled as factory-chat's, no review, no criterion met", r.fg.calls, r.fg.reviews, *met)
 		}
-		approved(t, r)
+		approved(t, r, "agent")
 	})
-	t.Run("merge with red checks", func(t *testing.T) {
+	t.Run("merge with red checks in a wake", func(t *testing.T) {
 		r := newRig(t)
 		r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true}`)
 		r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
-		approve(t, r, 4)
+		approve(t, r, inWake(t, r), 4)
 		if !slices.Equal(r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer chat-token", "SIGNAL approved t-m #9 by factory-chat"}) ||
 			len(r.fg.reviews) != 0 {
 			t.Fatalf("calls %q, reviews %v: want the head's checks read with the chat token, the approval signalled, no review", r.fg.calls, r.fg.reviews)
 		}
+		approved(t, r, "agent")
 	})
-	t.Run("resource", func(t *testing.T) {
+	t.Run("resource in a wake", func(t *testing.T) {
 		r := newRig(t)
-		if note := approve(t, r, 3); note != "Approved the resource for its task." {
+		if note := approve(t, r, inWake(t, r), 3); note != "Approved the resource for its task." {
 			t.Fatalf("note = %q", note)
 		}
 		if q := r.approvals.get(3); q.Status != "approved" || q.DecidedBy != "factory-chat" || len(r.fg.calls) != 0 {
 			t.Fatalf("request 3 %s by %s, calls %q: want it approved by factory-chat with no Forgejo call", q.Status, q.DecidedBy, r.fg.calls)
 		}
-		approved(t, r)
+		approved(t, r, "agent")
 	})
+	t.Run("merge in a member's turn the agent decided", func(t *testing.T) {
+		r := newRig(t)
+		met := criteria(r)
+		approve(t, r, inTurn(t, r, "agent"), 4)
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 || len(*met) != 0 {
+			t.Fatalf("calls %q, reviews %v, criteria %q: want the approval signalled as factory-chat's, no review, no criterion met", r.fg.calls, r.fg.reviews, *met)
+		}
+		approved(t, r, "agent")
+	})
+	t.Run("merge the member decided", func(t *testing.T) {
+		r := newRig(t)
+		met := criteria(r)
+		approve(t, r, inTurn(t, r, "member"), 4)
+		if !slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}) ||
+			!slices.Equal(*met, []string{"t-m by sebastian"}) {
+			t.Fatalf("calls %q, criteria %q: want the member's review, their approval and their criteria", r.fg.calls, *met)
+		}
+		approved(t, r, "member")
+	})
+	t.Run("plan in a wake", func(t *testing.T) {
+		r := newRig(t)
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
+			Lane: policy.LanePlan, Process: "spec", Objective: "Uptime checker.", Repository: "sf/code", IssueNumber: 22}})
+		r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {planRevision("t-plan", 4, "11e3f66aa")}}
+		note, err := r.c.doAcceptPlan(t.Context(), inWake(t, r), "t-plan", 4, "11e3f66aa")
+		if err != nil || note != "Accepted revision 4 of plan #22; factoryd files its cards." {
+			t.Fatalf("accept = %q, %v", note, err)
+		}
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL plan_accepted t-plan 4 11e3f66aa by sebastian decided by factory-chat",
+			"POST /api/v1/repos/sf/code/issues/22/comments Bearer chat-token"}) {
+			t.Fatalf("calls %q: want the plan decided by factory-chat for sebastian's cards, the comment as the chat bot", r.fg.calls)
+		}
+	})
+}
+
+// A card a wake files is the woken member's: the issue goes out as the
+// chat bot, and the console's card_filed row, which the intake reads for
+// the card's author (factoryd.Intake.Filings), names the member.
+func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
+	r := newRig(t)
+	s, err := r.c.wakeSession(factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
+	if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.", "backlog", "", "", "", ""); err != nil || n != 41 {
+		t.Fatalf("file = #%d, %v", n, err)
+	}
+	if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues Bearer chat-token") {
+		t.Fatalf("calls %q: want the issue filed with the chat token", r.fg.calls)
+	}
+	var filed []factoryd.Event
+	for _, e := range r.events.all() {
+		if e.Kind == factoryd.EventCardFiled {
+			filed = append(filed, e)
+		}
+	}
+	if len(filed) != 1 || filed[0].Actor != "sebastian" || filed[0].IssueNumber != 41 || filed[0].Repository != "sf/code" {
+		t.Fatalf("card_filed rows = %+v, want one of sebastian for sf/code#41", filed)
+	}
 }

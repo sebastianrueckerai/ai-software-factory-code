@@ -939,6 +939,38 @@ func (w *signalRecorder) Signal(_ context.Context, taskID, name string, sig Task
 	return nil
 }
 
+// The project agent's acceptance is the factory's decision on the member's
+// behalf: the plan's request is decided by factory-chat, and the signal
+// names the member, whose cards CreateChildren files.
+func TestTheAgentsAcceptanceFilesTheMembersCards(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := newPlanRunner(t, testPlan())
+	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
+	rev, _, _ := store.PlanRevision(ctx, "t-plan", 0)
+	wf := &signalRecorder{}
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, rev.SHA256, ChatUser, "sebastian"); err != nil {
+		t.Fatalf("accept: %v", err)
+	}
+	if !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 1 " + rev.SHA256 + " "}) {
+		t.Fatalf("signals %q, want the acceptance for sebastian", wf.signals)
+	}
+	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != ChatUser {
+		t.Fatalf("approval = %+v, want it decided by factory-chat", a)
+	}
+	res := createChildren(t, r)
+	if len(res.Issues) != 4 {
+		t.Fatalf("result = %+v", res)
+	}
+	for key, c := range cardsByKey(t, store) {
+		if c.Author != "sebastian" || !c.AuthorWriter {
+			t.Fatalf("card %s author %q, writer %v: want sebastian's", key, c.Author, c.AuthorWriter)
+		}
+	}
+	if a := store.approvals[0]; a.DecidedBy != ChatUser {
+		t.Fatalf("approval after the filing = %+v, want it still factory-chat's", a)
+	}
+}
+
 // Accept plan names the revision the approver read: a newer one refuses it
 // with the card's line, in the console (AcceptPlan) and in the workflow.
 func TestAcceptRefusesStaleRevision(t *testing.T) {
@@ -946,25 +978,25 @@ func TestAcceptRefusesStaleRevision(t *testing.T) {
 	store := newFakeStore()
 	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one"}`), "sha-1")
 	wf := &signalRecorder{}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian"); err == nil || !strings.Contains(err.Error(), "no plan waiting") {
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian", "sebastian"); err == nil || !strings.Contains(err.Error(), "no plan waiting") {
 		t.Fatalf("no pending request: %v", err)
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "sha-2")
-	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian")
+	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian", "sebastian")
 	if err == nil || err.Error() != "the plan changed to revision 2; reload" || len(wf.signals) != 0 {
 		t.Fatalf("stale accept: %v, signals %v", err, wf.signals)
 	}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-1", "sebastian"); err == nil || len(wf.signals) != 0 {
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-1", "sebastian", "sebastian"); err == nil || len(wf.signals) != 0 {
 		t.Fatalf("a sha of another revision: %v, signals %v", err, wf.signals)
 	}
 	// a decision whose signal fails is undone: the request waits again
 	wf.err = errors.New("temporal unavailable")
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian"); err == nil || store.approvals[0].Status != "pending" || store.approvals[0].DecidedBy != "" {
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian", "sebastian"); err == nil || store.approvals[0].Status != "pending" || store.approvals[0].DecidedBy != "" {
 		t.Fatalf("accept with a failed signal: %v, approval %+v", err, store.approvals[0])
 	}
 	wf.err = nil
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian"); err != nil || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 2 sha-2 "}) {
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian", "sebastian"); err != nil || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 2 sha-2 "}) {
 		t.Fatalf("accept: %v, signals %v", err, wf.signals)
 	}
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "revision 2 accepted" {
@@ -2082,7 +2114,7 @@ func TestAcceptPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	store.plans["t-plan"][0].SHA256 = "sha-1"
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 	wf := &signalRecorder{}
-	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian")
+	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian", "sebastian")
 	if !errors.Is(err, ErrNoDeployOwner) || err.Error() != noDeployOwner || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 1 sha-1 "}) {
 		t.Fatalf("accept without an owner: %v, signals %v", err, wf.signals)
 	}
@@ -2106,7 +2138,7 @@ func TestAcceptPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	raw, sha, _ := planSHA(deployPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian"); err != nil || len(wf.signals) != 2 || wf.signals[1] != "t-plan plan_accepted sebastian 2 "+sha+" " {
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian", "sebastian"); err != nil || len(wf.signals) != 2 || wf.signals[1] != "t-plan plan_accepted sebastian 2 "+sha+" " {
 		t.Fatalf("accept with an owner: %v, signals %v", err, wf.signals)
 	}
 }

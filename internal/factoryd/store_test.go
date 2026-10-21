@@ -290,6 +290,17 @@ func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, ok, nil
 }
 
+// FiledFor reads the console's card_filed row of the issue among the
+// events, as PGStore.FiledFor does.
+func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) (string, bool, error) {
+	for _, e := range s.events {
+		if e.Kind == EventCardFiled && e.Repository == repository && e.IssueNumber == issue {
+			return e.Actor, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {

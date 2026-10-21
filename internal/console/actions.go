@@ -710,7 +710,7 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 			}
 		}
 	}
-	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.approver()); {
+	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.approver(), a.s.user); {
 	case errors.As(err, &stale):
 		return "", stale
 	case errors.As(err, &open):
@@ -1766,11 +1766,13 @@ func (c *Console) pendingRequest(ctx context.Context, a actor, id int64) (factor
 	return all[i], nil
 }
 
-// approver is the name a's decision on an approval request is recorded
-// under: in a wake (the fixed session) factoryd.ChatUser, the factory's
-// own decision, else the member.
+// approver is who decided a's action on an approval request, a plan or a
+// factory pull request: factoryd.ChatUser when the agent decided it (in a
+// wake, or unconfirmed in a member's turn), the factory's own decision,
+// else the member. Its approval rows, plan decisions and signal authors
+// carry it.
 func (a actor) approver() string {
-	if a.s.fixed {
+	if a.decider == "agent" {
 		return factoryd.ChatUser
 	}
 	return a.s.user
@@ -1805,13 +1807,13 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // task (one commission of that spec; the project's envelope is its file's,
 // ruling 183); a merge request gets the member's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
-// which merges as factory-merge. In a wake the approval is the factory's
-// own, decided as factoryd.ChatUser (a.approver): no review is posted, as
-// factory-chat's would count for nothing, and the merge posts the merge
-// gate's approval on the merge rule auto and refuses on any other. A
-// red-checks merge request merges only once the same head's checks turned
-// green again (#1013: a re-run); still red, its approval refuses naming
-// what fits the card.
+// which merges as factory-merge. An approval the agent decided is the
+// factory's own, decided as factoryd.ChatUser (a.approver), whoever is
+// online: no review is posted and no human criterion is met, and the merge
+// posts the merge gate's approval on the merge rule auto and refuses on
+// any other. A red-checks merge request merges only once the same head's
+// checks turned green again (#1013: a re-run); still red, its approval
+// refuses naming what fits the card.
 func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -1874,8 +1876,9 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan moved to revision %d, the card ran against revision %d, so it cannot merge: deny the merge (deny_merge) and let the planner re-file the plan.", rev.Revision, t.PlanRevision))
 			}
 		}
+		agent := a.decider == "agent"
 		unsignalled := "the task's workflow could not be signalled; approve again"
-		if !a.s.fixed {
+		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
 				return "", &forgejoRefusal{"submit the approving review", err}
 			}
@@ -1885,8 +1888,9 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, unsignalled)
 		}
-		if c.cfg.RecordHumanCriteria != nil {
-			if n, err := c.cfg.RecordHumanCriteria(ctx, q.TaskID, a.approver()); err != nil {
+		// a human-verification criterion waits for a person
+		if c.cfg.RecordHumanCriteria != nil && !agent {
+			if n, err := c.cfg.RecordHumanCriteria(ctx, q.TaskID, a.s.user); err != nil {
 				log.Printf("console: %s approved PR #%d of %s, the human criteria failed to record: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			} else if n > 0 {
 				c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"pr": q.PRNumber, "criteria": n, "verb": "met"})

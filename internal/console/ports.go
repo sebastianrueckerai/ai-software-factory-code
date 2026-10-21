@@ -22,7 +22,8 @@ type Approvals interface {
 }
 
 // MergeApprover signals a task's workflow that approver approved its pull
-// request (factoryd.ApproveMerge), after the human's review is on it.
+// request (factoryd.ApproveMerge): after the member's review is on it, or
+// with none when the agent decided (approver factoryd.ChatUser).
 type MergeApprover func(ctx context.Context, taskID string, pr int64, approver string) error
 
 // FactoryCloser signals a factory pull request card's workflow that by

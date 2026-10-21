@@ -33,8 +33,9 @@ const (
 	// answers an escalation when it is newer than the escalation comment.
 	SignalHumanComment = "human_comment"
 	// SignalApproved is the console's approve (ApproveMerge), sent after
-	// the human's APPROVED review is on the pull request: the workflow
-	// merges as factory-merge.
+	// the member's APPROVED review is on the pull request, or with none
+	// when the project agent decided (Author ChatUser): the workflow merges
+	// as factory-merge.
 	SignalApproved = "approved"
 	// SignalPosterComment is the issue author's comment when they cannot
 	// write the repository: it answers an information request newer than
@@ -3359,7 +3360,11 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 			}
 			heard = append(heard, sig.Comment)
 			if t.v7 < versionAnswers {
-				answer = append(answer, "human "+sig.Author+" answered the escalation: "+sig.Body)
+				who := "human " + sig.Author
+				if sig.Author == ChatUser {
+					who = answerer(sig.Author)
+				}
+				answer = append(answer, who+" answered the escalation: "+sig.Body)
 				continue
 			}
 			if t.besideLadder >= versionBesideLadder {
@@ -3823,7 +3828,16 @@ func escalationQuestion(reason string) string {
 // answerText is one human answer as the sessions get it, tagged with the
 // question it answers and its date.
 func answerText(author, question, body string, at time.Time) string {
-	return fmt.Sprintf("%s%s, to %q: %s", author, dated(at), textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
+	return fmt.Sprintf("%s%s, to %q: %s", answerer(author), dated(at), textutil.Truncate(question, 300), textutil.Truncate(body, MaxAnswer))
+}
+
+// answerer names an escalation's answerer to the agent: a person by their
+// login, the project agent's own user as what it is, never a human.
+func answerer(author string) string {
+	if author == ChatUser {
+		return "the project agent " + ChatUser
+	}
+	return author
 }
 
 // dated is " (YYYY-MM-DD)" in UTC, "" for no time.

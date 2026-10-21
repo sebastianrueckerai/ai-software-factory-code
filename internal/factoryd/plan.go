@@ -31,7 +31,8 @@ import (
 // a plan, an approver accepts one revision, and factoryd files its cards.
 const (
 	// SignalPlanAccepted is the console's Accept plan (AcceptPlan): Author
-	// the approver, Revision and SHA256 the revision they read.
+	// the member the cards are filed for, Revision and SHA256 the revision
+	// they read.
 	SignalPlanAccepted = "plan_accepted"
 	// SignalPlanRejected is the console's Reject (RejectPlan): Author the
 	// writer, Body why. The plan task ends failed.
@@ -1134,14 +1135,15 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
 }
 
-// AcceptPlan is the console's Accept plan, by an approver: it signals the
-// plan task's workflow when revision (at sha) is the newest and awaits
-// acceptance; a newer revision refuses it with ErrStalePlan, an open
-// question with ErrOpenQuestions. A plan
+// AcceptPlan is the console's Accept plan: decider decides the plan's
+// request (ChatUser when the project agent accepted), author, the member,
+// authors the cards. It signals the plan task's workflow when revision (at
+// sha) is the newest and awaits acceptance; a newer revision refuses it
+// with ErrStalePlan, an open question with ErrOpenQuestions. A plan
 // without the deploy owner its spec needs is signalled all the same, so
 // CreateChildren refuses it back to the planner, and answers
 // ErrNoDeployOwner.
-func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision int, sha, by string) error {
+func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision int, sha, decider, author string) error {
 	q, err := pendingPlan(ctx, store, taskID)
 	if err != nil {
 		return err
@@ -1164,7 +1166,7 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if err := json.Unmarshal(newest.Plan, &p); err != nil {
 		return err
 	}
-	sig := TaskSignal{Author: by, Revision: revision, SHA256: sha}
+	sig := TaskSignal{Author: author, Revision: revision, SHA256: sha}
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		// CreateChildren refuses it to the planner and denies the request
 		if err := wf.Signal(ctx, taskID, SignalPlanAccepted, sig); err != nil {
@@ -1172,7 +1174,7 @@ func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		}
 		return ErrNoDeployOwner
 	}
-	return decideAndSignal(ctx, store, wf, q, "approved", by, fmt.Sprintf("revision %d accepted", revision), SignalPlanAccepted, sig)
+	return decideAndSignal(ctx, store, wf, q, "approved", decider, fmt.Sprintf("revision %d accepted", revision), SignalPlanAccepted, sig)
 }
 
 // RejectPlan is the console's Reject, by a writer: the plan task ends

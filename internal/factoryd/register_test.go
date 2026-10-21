@@ -1416,7 +1416,8 @@ func TestRegistrationTakesTheProjectsApprovers(t *testing.T) {
 // Backlog 24 (ruling 203), members (ruling 254): factoryd owns who
 // administers a factory project's repository. A member (permission write)
 // stays; a collaborator with admin who is not the bot, the merge user, the
-// gate user or an approver of the project leaves.
+// gate user or an approver of the project leaves. The chat user stays and
+// is put back to write: the project agent's user never administers.
 func TestReconcileRemovesOnlyAdminsItDoesNotKeep(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
@@ -1431,8 +1432,11 @@ func TestReconcileRemovesOnlyAdminsItDoesNotKeep(t *testing.T) {
 	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"factory-agent": "admin", "factory-merge": "admin", "factory-gate": "admin", "factory-chat": "admin", "bob": "write", "dave": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
+	if want := map[string]string{"factory-agent": "admin", "factory-merge": "admin", "factory-gate": "admin", "factory-chat": "write", "bob": "write", "dave": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
 		t.Fatalf("collaborators = %v, want %v", rig.fj.collabs, want)
+	}
+	if !strings.Contains(rig.logs.String(), "project demo-app: collaborator factory-chat: updated\n") {
+		t.Errorf("log lacks factory-chat's demotion:\n%s", rig.logs)
 	}
 	if !strings.Contains(rig.logs.String(), "project demo-app: collaborators: removed mallory\n") {
 		t.Errorf("log lacks mallory's removal:\n%s", rig.logs)

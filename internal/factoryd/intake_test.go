@@ -706,6 +706,34 @@ func TestIntakeNeverTrustsTheGateUser(t *testing.T) {
 	}
 }
 
+// An issue factory-chat filed is the console's filing for the member whose
+// turn it was: the card's author is the member the console's card_filed
+// row names, judged as that member. Until the console's row is there the
+// issue is no card; the heal pass's next look, or a redelivery, files it.
+func TestIntakeTakesAChatFilingsAuthorFromTheConsole(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	in.Filings = store
+	body := issueOpenedBody(7, ChatUser, []string{"agent"}, "Bump the dep", "Bump it.")
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if len(store.tasks) != 0 {
+		t.Fatalf("tasks %+v before the console's row: want none", store.tasks)
+	}
+	store.events = append(store.events, Event{Repository: "sf/ai-software-factory-code", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat})
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("tasks = %+v, want one", store.tasks)
+	}
+	for _, task := range store.tasks {
+		if task.IssueNumber != 7 || task.Author != "sebastian" || !task.AuthorWriter {
+			t.Fatalf("task = %+v, want #7 authored by sebastian, a writer", task)
+		}
+	}
+}
+
 // factory-chat, the project agent's identity in a wake, is a writer on no
 // whitelist: the trust gate hears its comment as a member's, so the
 // agent's answer to a card waiting on a human resumes it.

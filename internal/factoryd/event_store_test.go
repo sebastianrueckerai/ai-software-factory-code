@@ -174,6 +174,40 @@ func TestPGStoreRecordEventLeavesRow(t *testing.T) {
 	}
 }
 
+// FiledFor answers the actor of the console's card_filed row of exactly
+// that repository's issue, none for another issue, repository or kind.
+func TestPGStoreFiledFor(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events, tasks CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, e := range []Event{
+		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardMoved, Actor: "alice", Via: ViaChat},
+		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat},
+		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat},
+	} {
+		if _, err := s.Record(ctx, e); err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+	}
+	for _, tc := range []struct {
+		repository string
+		issue      int64
+		who        string
+		ok         bool
+	}{{"sf/r", 7, "sebastian", true}, {"sf/r", 8, "", false}, {"sf/other", 7, "", false}} {
+		if who, ok, err := s.FiledFor(ctx, tc.repository, tc.issue); err != nil || who != tc.who || ok != tc.ok {
+			t.Errorf("FiledFor(%s, %d) = %q, %v, %v; want %q, %v", tc.repository, tc.issue, who, ok, err, tc.who, tc.ok)
+		}
+	}
+}
+
 func TestPGStoreEventRequiresRepositoryAndKind(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()

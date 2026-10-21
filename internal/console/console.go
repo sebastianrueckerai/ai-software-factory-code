@@ -188,8 +188,10 @@ type Config struct {
 	// movedBy. The console asks it only to offer and pre-check a move.
 	MayMove func(ctx context.Context, repository, user, movedBy string) (bool, error)
 	// AcceptPlan, AnswerPlan and RejectPlan signal a plan task's workflow
-	// (factoryd.AcceptPlan, factoryd.AnswerPlan, factoryd.RejectPlan).
-	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, by string) error
+	// (factoryd.AcceptPlan, factoryd.AnswerPlan, factoryd.RejectPlan);
+	// AcceptPlan's decider decides the plan's request, its author authors
+	// the cards.
+	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, decider, author string) error
 	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, answer, by string) error
 	// AnswerPlanQuestions signals a plan task's workflow with every answer
 	// of one turn at once (factoryd.AnswerPlanQuestions).

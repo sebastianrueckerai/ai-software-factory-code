@@ -727,10 +727,11 @@ func (run *reconcileRun) webhook(ctx context.Context) (Change, error) {
 	return c, run.r.Store.SetProjectTokens(ctx, run.p.Name, ProjectTokens{HookSecretHash: secretHash})
 }
 
-// collaborator keeps user a collaborator with write or more. Membership
-// is read first: the permission a site admin reads as is admin whether or
-// not it is a collaborator, and Forgejo drops a non-collaborator from the
-// whitelists.
+// collaborator keeps user a collaborator with write or more, ChatUser
+// with write exactly: the project agent's user never administers.
+// Membership is read first: the permission a site admin reads as is admin
+// whether or not it is a collaborator, and Forgejo drops a
+// non-collaborator from the whitelists.
 func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change, error) {
 	f, repo := run.r.Forgejo, run.p.Repo()
 	is, err := f.IsCollaborator(ctx, repo, user)
@@ -744,7 +745,7 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 	switch {
 	case err != nil:
 		return "", err
-	case perm == "write" || perm == "admin" || perm == "owner":
+	case perm == "write" || (perm == "admin" || perm == "owner") && user != ChatUser:
 		return Unchanged, nil
 	}
 	return Updated, f.AddProjectCollaborator(ctx, repo, user, "write")

@@ -1039,14 +1039,18 @@ func newRig(t *testing.T) *rig {
 			}
 			return slices.Contains(r.repoWriters[repository], user), nil
 		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
+		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
 			newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0)
 			if newest.Revision != revision || newest.SHA256 != sha {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
-			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, by))
+			call := fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, author)
+			if decider != author {
+				call += " decided by " + decider
+			}
+			fg.calls = append(fg.calls, call)
 			return nil
 		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {

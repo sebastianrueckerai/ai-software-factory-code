@@ -342,7 +342,7 @@ func TestAnswerPlanAndAcceptance(t *testing.T) {
 		}
 	}
 	var open ErrOpenQuestions
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian"); !errors.As(err, &open) ||
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian", "sebastian"); !errors.As(err, &open) ||
 		err.Error() != "plan #20 revision 1 has 1 unanswered questions; answer them first" {
 		t.Fatalf("accept with an open question: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestAnswerPlanAndAcceptance(t *testing.T) {
 	if a := store.approvals[0]; a.Status != "denied" || a.DecidedBy != FactoryDecider || a.DecisionNote != "superseded: the planner revises revision 1 with the answers" {
 		t.Fatalf("the approval after the last answer %+v", a)
 	}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian"); err == nil || err.Error() != "task t-plan has no plan waiting for acceptance" {
+	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, sha, "sebastian", "sebastian"); err == nil || err.Error() != "task t-plan has no plan waiting for acceptance" {
 		t.Fatalf("accept once the planner revises: %v", err)
 	}
 	qs, _ := store.PlanQuestions(ctx, "t-plan", 1)

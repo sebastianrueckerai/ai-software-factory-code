@@ -1130,8 +1130,11 @@ func TestAWakesApprovalIsRefusedWithoutTheGate(t *testing.T) {
 			if res.Merged || len(fj.merges) != 0 || len(fj.reviews) != 0 || res.Refusal != tc.refusal {
 				t.Fatalf("result %+v, merges %d, reviews %d; want refused with %q before any review or merge", res, len(fj.merges), len(fj.reviews), tc.refusal)
 			}
-			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.refusal) || !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
-				t.Fatalf("comments %q: want the refusal told on the pull request and the timeline", fj.comments)
+			want := "factoryd: the merge of c1 after factory-chat's approval signal was refused: " + tc.refusal + "\n\n" +
+				"The task keeps waiting: its approval request is decided, so the console has none to approve. " +
+				"A human on main's merge whitelist merges this head here in Forgejo, or closes the card."
+			if !slices.Equal(fj.comments, []string{want}) || !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
+				t.Fatalf("comments %q: want %q told on the pull request and the refusal on the timeline", fj.comments, want)
 			}
 		})
 	}

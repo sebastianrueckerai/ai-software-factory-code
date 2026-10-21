@@ -468,14 +468,16 @@ request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves
 by submitting the human's APPROVED review through the human's own OAuth
 token, then calling `factoryd.ApproveMerge` (a pending merge request of
 that task and pull request is required), which signals `approved` with
-signal-with-start like the webhook path. The project agent's approval in
-a wake is the factory's own: the console posts no review (factory-chat's
-would count for nothing) and decides every approval request as
-`factory-chat`. `Merge` then treats approver `factory-chat` as the merge
-gate's own decision: on the merge rule `auto` it approves the head as
-`factory-gate` with `factoryd: the project agent approved <head> on the
-project's merge rule auto`, then merges; on any other rule, or without a
-gate token, it refuses as above. `Merge` then merges as the
+signal-with-start like the webhook path. An approval the project agent
+decides (in a wake, or unconfirmed in a member's turn at full auto) is the
+factory's own, whoever is online: the console posts no review and meets
+no human criterion, and every approval request, plan decision and signal
+it decides names `factory-chat` (the cards of a plan it accepts stay the
+member's). `Merge` treats approver `factory-chat` as the merge gate's own
+decision: on the merge rule `auto` it approves the head as `factory-gate`
+with `factoryd: the project agent approved <head> on the project's merge
+rule auto`; on any other rule, or without a gate token, it refuses as
+above. `Merge` then merges as the
 dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
 `factory/forgejo-merge`, on the factory's own repositories; a registered
 project's own `projects.merge_token`, which also reads the project's
@@ -489,7 +491,10 @@ which may approve but neither merge nor push (405; a moved head or a
 conflict is 409). The intake ignores factory-gate's reviews as it does
 the bot's: they are factoryd's own, no member's decision. The trust gate
 never trusts factory-gate, a writer on the repository, so its comments
-steer no task (ruling R61). A refusal is commented and the wait goes on. Merge
+steer no task (ruling R61). A refusal is commented and the wait goes on:
+the approval decided its request, so the comment names what fits, a merge
+by hand in Forgejo by a human on main's merge whitelist or the card's
+close. Merge
 refuses by itself a pull request whose base is not `main`, and a gated
 head whose combined commit status is not green (`merge_red_head`, the
 card reads `the checks are red on <head>: the merge waits for a green
@@ -1484,8 +1489,13 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   another member's). A wake, the turn the Waker starts on a member's
   thread with no member behind it, makes every Forgejo call as
   `factory-chat` with the project's chat token (`Forgejo.Access`'s
-  `Chat`): it needs no login of the member and reads none, and its rows,
-  events and answers stay the woken member's. A project without a chat
+  `Chat`): it needs no login of the member and reads none. Its chat rows
+  and events stay the woken member's, decided by the agent, and so do the
+  cards it files (the intake reads the author of an issue `factory-chat`
+  posted from the console's `card_filed` row; an issue with none is no
+  card) and the cards of a plan it accepts. Its comments, and so its
+  answers to escalations, are `factory-chat`'s: the agent reads such an
+  answer as the project agent's, never a human's. A project without a chat
   token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
   running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation
