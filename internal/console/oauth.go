@@ -197,10 +197,11 @@ func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
 // and invalidates a refresh token on use). The refresh runs under
 // refreshMu from the row: a newer pair there is another request's refresh
 // of the same login, taken instead of a second grant. s holds the newer
-// pair only when storing its own last refresh failed.
+// pair only when storing its own last refresh failed. A fixed session's
+// token is returned as it is.
 func (c *Console) tokenFor(ctx context.Context, s *session, margin time.Duration) (string, error) {
 	s.mu.Lock()
-	if time.Until(s.expiry) > margin {
+	if s.fixed || time.Until(s.expiry) > margin {
 		defer s.mu.Unlock()
 		return s.access, nil
 	}

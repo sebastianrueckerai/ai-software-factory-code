@@ -425,9 +425,9 @@ func (r *Registrar) reconcile(ctx context.Context, p Project, rotate bool) error
 	}
 	// the caller's copy may predate a registration queued ahead on the lock
 	if row, ok, err := r.Store.Project(ctx, p.Name); !run.fail("row", err) && ok {
-		run.p.PullToken, run.p.GitToken, run.p.MergeToken, run.p.GateToken = row.PullToken, row.GitToken, row.MergeToken, row.GateToken
+		run.p.PullToken, run.p.GitToken, run.p.MergeToken, run.p.GateToken, run.p.ChatToken = row.PullToken, row.GitToken, row.MergeToken, row.GateToken, row.ChatToken
 	}
-	if rotate || run.p.PullToken == "" || run.p.GitToken == "" || run.p.MergeToken == "" || run.p.GateToken == "" {
+	if rotate || run.p.PullToken == "" || run.p.GitToken == "" || run.p.MergeToken == "" || run.p.GateToken == "" || run.p.ChatToken == "" {
 		run.register(ctx, rotate)
 	}
 	secrets, ok := run.forgejo(ctx)
@@ -539,6 +539,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 		{"collaborator " + f.BotUser, func() (Change, error) { return run.collaborator(ctx, f.BotUser) }},
 		{"collaborator " + MergeUser, func() (Change, error) { return run.collaborator(ctx, MergeUser) }},
 		{"collaborator " + GateUser, func() (Change, error) { return run.collaborator(ctx, GateUser) }},
+		{"collaborator " + ChatUser, func() (Change, error) { return run.collaborator(ctx, ChatUser) }},
 	}
 	for _, a := range run.approvers() {
 		steps = append(steps, struct {
@@ -726,10 +727,11 @@ func (run *reconcileRun) webhook(ctx context.Context) (Change, error) {
 	return c, run.r.Store.SetProjectTokens(ctx, run.p.Name, ProjectTokens{HookSecretHash: secretHash})
 }
 
-// collaborator keeps user a collaborator with write or more. Membership
-// is read first: the permission a site admin reads as is admin whether or
-// not it is a collaborator, and Forgejo drops a non-collaborator from the
-// whitelists.
+// collaborator keeps user a collaborator with write or more, ChatUser
+// with write exactly: the project agent's user never administers.
+// Membership is read first: the permission a site admin reads as is admin
+// whether or not it is a collaborator, and Forgejo drops a
+// non-collaborator from the whitelists.
 func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change, error) {
 	f, repo := run.r.Forgejo, run.p.Repo()
 	is, err := f.IsCollaborator(ctx, repo, user)
@@ -743,7 +745,7 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 	switch {
 	case err != nil:
 		return "", err
-	case perm == "write" || perm == "admin" || perm == "owner":
+	case perm == "write" || (perm == "admin" || perm == "owner") && user != ChatUser:
 		return Unchanged, nil
 	}
 	return Updated, f.AddProjectCollaborator(ctx, repo, user, "write")
@@ -751,12 +753,12 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 
 // pruneCollaborators removes every direct collaborator who administers
 // the repository (permission admin or owner) but the bot, the merge user,
-// the gate user and the approvers: factoryd owns who administers a
-// factory project's repository (ruling 203), and a member, a collaborator
-// with write, stays (ruling 254).
+// the gate user, the chat user and the approvers: factoryd owns who
+// administers a factory project's repository (ruling 203), and a member, a
+// collaborator with write, stays (ruling 254).
 func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error) {
 	f, repo := run.r.Forgejo, run.p.Repo()
-	keep := append([]string{f.BotUser, MergeUser, GateUser}, run.approvers()...)
+	keep := append([]string{f.BotUser, MergeUser, GateUser, ChatUser}, run.approvers()...)
 	users, err := f.ProjectCollaborators(ctx, repo)
 	if err != nil {
 		return "", err
@@ -1290,9 +1292,10 @@ func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Pro
 // factory-projects, the repository, the CI user in the organisation's ci
 // team (package write), and the tokens: ci-<name>'s write:package into the
 // registry Actions secrets and its read:package for the pull secret,
-// factory-projects' read:repository, and factory-merge's and
-// factory-gate's write:repository limited to the repository. A token p
-// already has is kept unless rotate.
+// factory-projects' read:repository, factory-merge's and factory-gate's
+// write:repository and factory-chat's write:repository and write:issue,
+// each limited to the repository. A token p already has is kept unless
+// rotate.
 func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 	a, err := r.adminAuth(ctx)
 	if err != nil {
@@ -1323,7 +1326,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 		return err
 	}
 	// a repository-limited token needs its user to see the repository
-	for _, u := range []struct{ name, token string }{{MergeUser, p.MergeToken}, {GateUser, p.GateToken}} {
+	for _, u := range []struct{ name, token string }{{MergeUser, p.MergeToken}, {GateUser, p.GateToken}, {ChatUser, p.ChatToken}} {
 		if u.token != "" && !rotate {
 			continue
 		}
@@ -1349,6 +1352,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 		mint(&p.GitToken, &t.GitToken, r.ProjectsUser, "git-"+p.Name, []string{"read:repository"}, []Repo{repo}),
 		mint(&p.MergeToken, &t.MergeToken, MergeUser, "project-"+p.Name, []string{"write:repository"}, []Repo{repo}),
 		mint(&p.GateToken, &t.GateToken, GateUser, "project-"+p.Name, []string{"write:repository"}, []Repo{repo}),
+		mint(&p.ChatToken, &t.ChatToken, ChatUser, "project-"+p.Name, []string{"write:repository", "write:issue"}, []Repo{repo}),
 	); err != nil {
 		return err
 	}
@@ -1374,7 +1378,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 	if err := r.Store.SetProjectTokens(ctx, p.Name, t); err != nil {
 		return err
 	}
-	for have, minted := range map[*string]string{&p.PullToken: t.PullToken, &p.GitToken: t.GitToken, &p.MergeToken: t.MergeToken, &p.GateToken: t.GateToken} {
+	for have, minted := range map[*string]string{&p.PullToken: t.PullToken, &p.GitToken: t.GitToken, &p.MergeToken: t.MergeToken, &p.GateToken: t.GateToken, &p.ChatToken: t.ChatToken} {
 		if minted != "" {
 			*have = minted
 		}

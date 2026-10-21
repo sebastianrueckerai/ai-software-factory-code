@@ -165,10 +165,17 @@ const docsPlan = "# The cache plan\n\nThe store: Postgres.\nThe window: one week
 // one; a new file takes content (roadmap 239, the 2026-10-13 plan).
 func TestDocsReadAndEdit(t *testing.T) {
 	r, _, _ := newChatRig(t)
-	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan, "README.md": "# Read me\n"})
 	ctx, a := t.Context(), actor{s: &session{user: "sebastian"}, via: factoryd.ViaChat, chatTask: "t-chat"}
 	hash := factoryd.ContentHash(docsPlan)
-	got, err := r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "", 0, 0, false)
+	got, err := r.c.readDoc(ctx, "sf/docs", "README.md", "", 0, 0, false)
+	equal(t, "a read outside the roots", []any{got, err}, []any{"README.md on sf/docs@master: 10 bytes, 1 lines, base_sha256 " + factoryd.ContentHash("# Read me\n") + ".\n\n# Read me\n", error(nil)})
+	for _, bad := range []string{"", "/README.md", "../escape.md", "docs/../README.md", "docs//roadmap.md", "docs/"} {
+		if _, err := r.c.readDoc(ctx, "sf/docs", bad, "", 0, 0, false); err == nil || err.Error() != bad+" is no file path: name a path from the repository's root, with no . or .. segments" {
+			t.Errorf("read %q: %v", bad, err)
+		}
+	}
+	got, err = r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "", 0, 0, false)
 	equal(t, "the read", []any{got, err}, []any{"docs/plans/cache.md on sf/docs@master: 61 bytes, 4 lines, base_sha256 " + hash + ".\n\n" + docsPlan, error(nil)})
 	got, _ = r.c.readDoc(ctx, "sf/docs", "docs/plans/cache.md", "WINDOW", 0, 0, false)
 	equal(t, "the find", got, "docs/plans/cache.md on sf/docs@master: 61 bytes, 4 lines, base_sha256 "+hash+".\n\nline 4: The window: one week.\n")
@@ -303,8 +310,8 @@ func TestDocsRoadmapStructure(t *testing.T) {
 
 // The drawer's document read (the 2026-10-15 plan, item 1) renders a
 // document's links by the round's engine rules: a relative target inside
-// the roots opens in the drawer as a data-doc link, one outside stays
-// quiet text with a title, an http target opens a new tab; raw HTML is
+// the repository opens in the drawer as a data-doc link, one that leaves
+// it stays quiet text with a title, an http target opens a new tab; raw HTML is
 // escaped and headings carry ids. The answer carries the title, the
 // content hash, the head commit and its time.
 func TestDocsReadRendersLinks(t *testing.T) {
@@ -315,7 +322,7 @@ func TestDocsReadRendersLinks(t *testing.T) {
 		"",
 		"The [roadmap](roadmap.md) names the sections, [an outside](../../escape.md) stays quiet, [the round](https://example.com/the-round) opens a tab, and <b>raw</b> is escaped.",
 		"",
-		"A [plan](plans/cache.md) of a sub-directory resolves.",
+		"A [plan](plans/cache.md) of a sub-directory resolves, and [the readme](../README.md) above the roots.",
 	}, "\n")
 	withDocs(t, r, map[string]string{"docs/layers.md": layers, "docs/roadmap.md": "# Roadmap\n"})
 	ck, _ := r.loggedIn(t)
@@ -332,6 +339,7 @@ func TestDocsReadRendersLinks(t *testing.T) {
 		`<a class="doc-link doc-missing" title="no document at that path">an outside</a>`,
 		`<a class="doc-link doc-ext" href="https://example.com/the-round" target="_blank" rel="noopener">the round</a>`,
 		`<a class="doc-link" data-doc="docs/plans/cache.md" href="?doc=docs/plans/cache.md">plan</a>`,
+		`<a class="doc-link" data-doc="README.md" href="?doc=README.md">the readme</a>`,
 		`<!-- raw HTML omitted -->raw<!-- raw HTML omitted --> is escaped`,
 	} {
 		if !strings.Contains(a.HTML, want) {

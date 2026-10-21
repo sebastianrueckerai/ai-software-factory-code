@@ -188,8 +188,10 @@ type Config struct {
 	// movedBy. The console asks it only to offer and pre-check a move.
 	MayMove func(ctx context.Context, repository, user, movedBy string) (bool, error)
 	// AcceptPlan, AnswerPlan and RejectPlan signal a plan task's workflow
-	// (factoryd.AcceptPlan, factoryd.AnswerPlan, factoryd.RejectPlan).
-	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, by string) error
+	// (factoryd.AcceptPlan, factoryd.AnswerPlan, factoryd.RejectPlan);
+	// AcceptPlan's decider decides the plan's request, its author authors
+	// the cards.
+	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, decider, author string) error
 	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, answer, by string) error
 	// AnswerPlanQuestions signals a plan task's workflow with every answer
 	// of one turn at once (factoryd.AnswerPlanQuestions).
@@ -243,6 +245,10 @@ type Config struct {
 	// (factoryd's forgejo-config token).
 	InfraRepo  factoryd.Repo
 	InfraToken string
+	// ChatToken is p's chat token (factoryd.ChatUser's, Forgejo.Access's
+	// Chat): every Forgejo call of a wake goes out with it; "" or nil
+	// refuses the wake.
+	ChatToken func(p factoryd.Project) string
 	// DocsToken is the docs writer's Forgejo token, which write_doc
 	// commits documents with (FORGEJO_DOCS_TOKEN); empty: no chat writes
 	// documents.
@@ -381,6 +387,9 @@ type session struct {
 	access  string
 	refresh string
 	expiry  time.Time
+	// fixed: access is a bot's token, the project's chat token of a wake,
+	// never refreshed, stored or ended.
+	fixed bool
 	// seen is when last_seen was moved last; it moves at most once a
 	// minute.
 	seen time.Time

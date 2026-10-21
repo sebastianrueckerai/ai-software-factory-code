@@ -468,7 +468,16 @@ request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves
 by submitting the human's APPROVED review through the human's own OAuth
 token, then calling `factoryd.ApproveMerge` (a pending merge request of
 that task and pull request is required), which signals `approved` with
-signal-with-start like the webhook path. `Merge` then merges as the
+signal-with-start like the webhook path. An approval the project agent
+decides (in a wake, or unconfirmed in a member's turn at full auto) is the
+factory's own, whoever is online: the console posts no review and meets
+no human criterion, and every approval request, plan decision and signal
+it decides names `factory-chat` (the cards of a plan it accepts stay the
+member's). `Merge` treats approver `factory-chat` as the merge gate's own
+decision: on the merge rule `auto` it approves the head as `factory-gate`
+with `factoryd: the project agent approved <head> on the project's merge
+rule auto`; on any other rule, or without a gate token, it refuses as
+above. `Merge` then merges as the
 dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
 `factory/forgejo-merge`, on the factory's own repositories; a registered
 project's own `projects.merge_token`, which also reads the project's
@@ -482,7 +491,11 @@ which may approve but neither merge nor push (405; a moved head or a
 conflict is 409). The intake ignores factory-gate's reviews as it does
 the bot's: they are factoryd's own, no member's decision. The trust gate
 never trusts factory-gate, a writer on the repository, so its comments
-steer no task (ruling R61). A refusal is commented and the wait goes on. Merge
+steer no task (ruling R61). A refusal is commented with what fits and the
+wait goes on: a refused auto merge goes to a human, whom the next merge
+request asks (approve it in the console, or merge it in Forgejo); any
+other approval decided its request, so what fits is a merge by hand in
+Forgejo by a human on main's merge whitelist, or the card's close. Merge
 refuses by itself a pull request whose base is not `main`, and a gated
 head whose combined commit status is not green (`merge_red_head`, the
 card reads `the checks are red on <head>: the merge waits for a green
@@ -1474,8 +1487,26 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `comment`, `set_summary` and `set_accent` answer an undo token for
   `POST /projects/{name}/chat/undo/{token}`. Both are the member's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
-  another member's). `steer` reaches a running session on the
-  supervisor's message path (`Runner.MessageSession`). The conversation
+  another member's). A wake, the turn the Waker starts on a member's
+  thread with no member behind it, makes every Forgejo call as
+  `factory-chat` with the project's chat token (`Forgejo.Access`'s
+  `Chat`): it needs no login of the member and reads none. Its chat rows
+  and events stay the woken member's, decided by the agent, and so do the
+  cards it files (the intake reads the author of an issue `factory-chat`
+  posted from the console's `card_filed` row; an issue with none is no
+  card) and the cards of a plan it accepts. A filing whose `card_filed`
+  row cannot be written is closed with a comment and refused, naming the
+  issue. Its comments, and so its answers to escalations, are
+  `factory-chat`'s: the agent reads such an answer as the project agent's,
+  never a human's. The intake judges a label move by its Forgejo actor, so
+  a wake moves as `factory-chat`, a writer; lanes only approvers may move
+  are not for the agent's own moves. A review the agent decides, in a
+  wake or in a member's turn, goes out as `factory-chat` too: an approval
+  posts none, a change request is `factory-chat`'s, which the intake
+  trusts and signals and which blocks no later merge. A project without a chat
+  token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
+  running session on the supervisor's message path
+  (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and member, each assistant row with its
   tool calls and their results; a turn's context is the project's status
   line and board, its last 30 events and the last 40 messages, every
@@ -1538,19 +1569,24 @@ cases:
 
 Which of factoryd's tokens reaches a project for what is one mapping,
 `Forgejo.Access`: a factory project's `merge_token` reads its writers and
-merges, its `gate_token` approves the merge gate's merges, the projects
+merges, its `gate_token` approves the merge gate's merges, its
+`chat_token` is the project agent's own identity in a wake, the projects
 token lists its Actions jobs and registers its runners; a seed project's
 file names seeded secrets (`tokens.read`, `.actions`, `.merge`, each one
-of `forgejo-ci-registrar`, `forgejo-merge`, `forgejo-config`, and
-`.gate`, only `forgejo-gate`), which factoryd holds as `FORGEJO_CI_REGISTRAR_TOKEN`,
-`FORGEJO_MERGE_TOKEN`, `FORGEJO_CONFIG_TOKEN` and `FORGEJO_GATE_TOKEN`.
+of `forgejo-ci-registrar`, `forgejo-merge`, `forgejo-config`, `.gate`,
+only `forgejo-gate`, and `.chat`, only `forgejo-chat`), which factoryd
+holds as `FORGEJO_CI_REGISTRAR_TOKEN`, `FORGEJO_MERGE_TOKEN`,
+`FORGEJO_CONFIG_TOKEN`, `FORGEJO_GATE_TOKEN` and `FORGEJO_CHAT_TOKEN`.
 `forgejo-projects` is no allowed value: a seed project never gets the
 projects token (ruling 164). A seed project without `tokens.gate` merges
 nothing on the merge rule `auto`: the merge is refused, naming the
 missing gate token. The code repository names `forgejo-ci-registrar`
-(read, Actions), `forgejo-merge` and `forgejo-gate`; the infra repository `forgejo-config` (read: the trust gate
-and the heal pass's close of a human-lane task; the org-read token adds the
-teams). The factory's own project is the one whose file lists factoryd's
+(read, Actions), `forgejo-merge`, `forgejo-gate` and `forgejo-chat`; the
+infra repository `forgejo-config` (read: the trust gate and the heal
+pass's close of a human-lane task; the org-read token adds the teams) and
+`forgejo-chat`. `factory-chat` is a write collaborator on no whitelist:
+the trust gate hears its comments as a writer's, as a member's, it can
+neither push to main nor merge, and no approval of its counts. The factory's own project is the one whose file lists factoryd's
 namespace: its CI runs and rolls are watched (with its Actions token), its
 writers log into the console. factoryd does not boot without it: a configuration
 whose project files list no project in factoryd's namespace stops the boot
@@ -1588,10 +1624,13 @@ no one else's), `ci-<name>`'s `read:package` (`pull`, row `pull_token`, the
 namespaces' image pull secret), `factory-projects`' `read:repository` limited
 to the repository (`git-<name>`, row `git_token`, Flux's source),
 `factory-merge`'s `write:repository` limited to it (`project-<name>`, row
-`merge_token`, the Merge activity's on this project) and `factory-gate`'s
-(`project-<name>`, row `gate_token`, the merge gate's approval). A row
-without its gate token, a project registered before the gate, registers
-again on its next reconcile, which mints that token alone. An existing token is
+`merge_token`, the Merge activity's on this project), `factory-gate`'s
+(`project-<name>`, row `gate_token`, the merge gate's approval) and
+`factory-chat`'s `write:repository` and `write:issue` limited to it
+(`project-<name>`, row `chat_token`, the project agent's wakes). A row
+without one of these tokens, a project registered before its bot,
+registers again on its next reconcile, which mints the missing token
+alone. An existing token is
 kept unless `factoryd register-project --name <name> --rotate`, which
 revokes and mints them all again. The reconcile decides from the row read
 under its lock, so a reconcile queued behind a registering one mints
@@ -1610,7 +1649,7 @@ ready"), which nothing clears; for a factory project:
 - Forgejo, with the projects token: the webhook to factoryd (every issue and
   pull request event and pushes, JSON, the intake secret; the row keeps the secret's
   sha256, so a re-seeded secret reaches the hook), `factory-agent`,
-  `factory-merge`, `factory-gate` and the policy's approvers as write collaborators (Forgejo
+  `factory-merge`, `factory-gate`, `factory-chat` and the policy's approvers as write collaborators (Forgejo
   keeps only writers in a whitelist); the seed: when the repository has no
   `main` and the project file names a `template`, the files of
   `templates/<template>/` of the configuration version in force, rendered

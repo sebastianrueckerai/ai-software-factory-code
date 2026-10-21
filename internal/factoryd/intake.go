@@ -60,6 +60,11 @@ type Intake struct {
 	// Timeline records the events of the cards intake creates and moves;
 	// nil records none.
 	Timeline *Timeline
+	// Filings name the member an issue ChatUser posted was filed for: the
+	// console's card_filed row. nil: such an issue is no card.
+	Filings interface {
+		FiledFor(ctx context.Context, repository string, issue int64) (string, bool, error)
+	}
 	// CloseMerged ends a merged card closed on closer's Close in the
 	// console (CloseCard): the runner's CloseMerged, its workflow having
 	// ended at the merge.
@@ -890,6 +895,20 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 
 	poster := issue.Poster.UserName
+	if poster == ChatUser {
+		// the project agent files for the member whose turn it was, who
+		// authors the card; the console's row names them
+		var ok bool
+		if in.Filings != nil {
+			if poster, ok, err = in.Filings.FiledFor(ctx, repo, issue.Index); err != nil {
+				return fmt.Errorf("the filing of #%d: %w", issue.Index, err)
+			}
+		}
+		if !ok {
+			log.Printf("%s: issue #%d on %s: %s posted it and the console recorded no filing of it (yet): no card", via, issue.Index, repo, ChatUser)
+			return nil
+		}
+	}
 	writer, err := in.trusted(ctx, repo, poster)
 	if err != nil {
 		return err
@@ -1598,7 +1617,8 @@ func (in *Intake) recordComment(ctx context.Context, t Task, onPR bool, number i
 // planAnswer is whether c is the console's comment of its author's answer
 // to a question of any revision of plan task t, newest first
 // (PlanAnswerComment): a healed comment may come after the next revision.
-// The console stored the answer before it commented and signalled the
+// A wake's answer is the woken member's and its comment ChatUser's. The
+// console stored the answer before it commented and signalled the
 // workflow itself: the comment is recorded as signalled, no change
 // request.
 func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool, error) {
@@ -1615,7 +1635,8 @@ func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool,
 		if err != nil {
 			return false, err
 		}
-		if idx <= len(qs) && qs[idx-1].Answer != "" && qs[idx-1].AnsweredBy == c.Author && c.Body == PlanAnswerComment(idx, qs[idx-1].Answer) {
+		if idx <= len(qs) && qs[idx-1].Answer != "" && (qs[idx-1].AnsweredBy == c.Author || c.Author == ChatUser) &&
+			c.Body == PlanAnswerComment(idx, qs[idx-1].Answer) {
 			return true, nil
 		}
 	}

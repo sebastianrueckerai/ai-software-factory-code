@@ -28,9 +28,10 @@ type fakeSessions struct {
 	now func() time.Time
 	// rows are the table's rows by id hash.
 	rows map[string]factoryd.ConsoleSession
-	// saved, deleted, touched and purged count the calls; tokens counts
-	// the token updates.
+	// saved, reads, deleted, touched and purged count the calls; tokens
+	// counts the token updates.
 	saved   int
+	reads   int
 	deleted []string
 	touched int
 	tokens  int
@@ -58,6 +59,7 @@ func (f *fakeSessions) SaveConsoleSession(_ context.Context, sess factoryd.Conso
 func (f *fakeSessions) ConsoleSessionByHash(_ context.Context, hash string) (factoryd.ConsoleSession, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.reads++
 	if f.fail > 0 {
 		f.fail--
 		return factoryd.ConsoleSession{}, false, errors.New("the database is down")
@@ -506,17 +508,4 @@ func TestNoRowHoldsTheRawCookieID(t *testing.T) {
 			}
 		}
 	}
-}
-
-func (f *fakeSessions) ConsoleSessionsForUser(_ context.Context, login string) ([]factoryd.ConsoleSession, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []factoryd.ConsoleSession
-	for _, row := range f.rows {
-		if row.Login == login && !f.now().After(row.ExpiresAt) {
-			out = append(out, row)
-		}
-	}
-	slices.SortFunc(out, func(a, b factoryd.ConsoleSession) int { return b.CreatedAt.Compare(a.CreatedAt) })
-	return out, nil
 }

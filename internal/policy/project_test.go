@@ -229,6 +229,10 @@ func TestProjectConfigValidate(t *testing.T) {
 	if err := withEgress.Validate("demo-app"); err != nil {
 		t.Fatalf("demo-app with egress: %v", err)
 	}
+	withChat := ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone, Tokens: &SeedTokens{Read: SecretConfig, Chat: SecretChat}}
+	if err := withChat.Validate("x"); err != nil {
+		t.Fatalf("seed with tokens.chat forgejo-chat: %v", err)
+	}
 	for name, tc := range map[string]struct {
 		file   string
 		change func(*ProjectConfig)
@@ -278,6 +282,9 @@ func TestProjectConfigValidate(t *testing.T) {
 		"seed gate names the merge token": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeAuto, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: SecretMerge}}
 		}, `tokens.gate "forgejo-merge": want forgejo-gate`},
+		"seed chat names the gate token": {"x", func(p *ProjectConfig) {
+			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone, Tokens: &SeedTokens{Read: SecretConfig, Chat: SecretGate}}
+		}, `tokens.chat "forgejo-gate": want forgejo-chat`},
 		"seed merge names the gate token": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeAuto, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: SecretGate}}
 		}, `tokens.merge "forgejo-gate": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},

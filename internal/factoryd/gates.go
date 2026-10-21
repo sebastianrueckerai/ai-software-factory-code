@@ -339,6 +339,18 @@ const MergeUser = "factory-merge"
 // steer a task (ruling R61).
 const GateUser = "factory-gate"
 
+// ChatUser is the project agent's own Forgejo user in every turn no member
+// started, and the approver of every approval the agent decides: a write
+// collaborator on the project's repository, on none of main's whitelists,
+// so the trust gate hears it as a writer, it can neither push to main nor
+// merge, and no Forgejo review of its counts. The merge gate's review
+// carries an approval the agent decided, on the merge rule auto only.
+// A leaked chat token can push any branch but main carrying a workflow
+// that Forgejo runs with the repository's Actions secrets, and can post
+// commit statuses that the checks trust. factory-merge, factory-gate and
+// every human writer hold the same two powers.
+const ChatUser = "factory-chat"
+
 // AutoApprover stands for the approver of a merge the project's merge rule
 // auto decided (ruling 149): no human approved it.
 const AutoApprover = "merge rule auto"
@@ -1468,8 +1480,10 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
 			": its project file names none, or its registration has not run"), nil
 	}
-	if approver == AutoApprover {
-		// the gate read the rule before its stages ran: the rule now decides
+	// the merge gate's decision and an approval the project agent decided
+	// are the factory's own: factory-gate's review carries either, and only
+	// on the merge rule auto, which now decides, not the rule they read
+	if approver == AutoApprover || approver == ChatUser {
 		if p.MergeRule != policy.MergeAuto {
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the project's merge rule is "+cmp.Or(p.MergeRule, policy.MergeHuman)+" now: a human approves"), nil
 		}
@@ -1477,11 +1491,14 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no gate token for "+t.Repository+
 				": its project file names none, or its registration has not run"), nil
 		}
-		body := "factoryd: the merge gate passed " + commit + " on the project's merge rule auto"
-		if len(met) > 0 {
-			body += ":\n\n- " + strings.Join(met, "\n- ")
-		} else {
-			body += "."
+		body := "factoryd: the project agent approved " + commit + " on the project's merge rule auto"
+		if approver == AutoApprover {
+			body = "factoryd: the merge gate passed " + commit + " on the project's merge rule auto"
+			if len(met) > 0 {
+				body += ":\n\n- " + strings.Join(met, "\n- ")
+			} else {
+				body += "."
+			}
 		}
 		err := r.forgejo.ApprovePullRequest(ctx, access.Gate, repo.Owner, repo.Name, pr, commit, body)
 		if forgejoTerminal(err) {
@@ -1564,11 +1581,19 @@ func (r *Runner) writeMergeCommit(ctx context.Context, taskID, commit string) {
 	}
 }
 
+// refuseMerge tells the pull request and the timeline why the merge after
+// approver's approval was refused, with what fits, and puts the card back
+// in the approval gate. A refused auto merge goes to a human, whose merge
+// request the workflow opens next. Any other approval decided its request,
+// so the console has none left to approve: what fits is a merge by hand
+// in Forgejo by a human on main's merge whitelist, or the card's close.
 func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
 	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
-	r.comment(ctx, t, repo, pr, fmt.Sprintf(
-		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: a human on main's approvals whitelist approves this head (the console's approve), or merges it here.",
-		commit, approver, res.Refusal))
+	next := "The task keeps waiting: its approval request is decided, so the console has none to approve. A human on main's merge whitelist merges this head here in Forgejo, or closes the card."
+	if approver == AutoApprover {
+		next = "The card goes to a human: an approver approves it in the console, or merges it here."
+	}
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval signal was refused: %s\n\n%s", commit, approver, res.Refusal, next))
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
@@ -1620,11 +1645,13 @@ func (r *Runner) comment(ctx context.Context, t Task, repo Repo, pr int64, body 
 // findings it covered (roadmap 192).
 const consoleApproved = "approved in the console"
 
-// ApproveMerge is the console's approve, after it submitted the human's
-// APPROVED review on the pull request through the human's own token: it
-// decides the request as approver's and signals the task's workflow,
-// which merges as factory-merge. Only a pending merge request of the
-// task, for that pull request, is approved.
+// ApproveMerge is the console's approve, after it submitted the member's
+// APPROVED review on the pull request through their own token, or with no
+// review when the project agent decided (approver ChatUser, whose approval
+// the merge gate's review carries at the merge): it decides the request as
+// approver's and signals the task's workflow, which merges as
+// factory-merge. Only a pending merge request of the task, for that pull
+// request, is approved.
 func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, approver string) error {
 	q, err := pendingMerge(ctx, store, taskID, pr)
 	if err != nil {

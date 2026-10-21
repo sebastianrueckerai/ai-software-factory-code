@@ -126,6 +126,7 @@ func newForgejo() *factoryd.Forgejo {
 			policy.SecretMerge:       mustSecret("FORGEJO_MERGE_TOKEN"),
 			policy.SecretConfig:      mustSecret("FORGEJO_CONFIG_TOKEN"),
 			policy.SecretGate:        mustSecret("FORGEJO_GATE_TOKEN"),
+			policy.SecretChat:        mustSecret("FORGEJO_CHAT_TOKEN"),
 		},
 	}
 }

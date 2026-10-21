@@ -114,7 +114,7 @@ func TestAcceptPlanOpenQuestions(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
 		Lane: policy.LanePlan, Process: "maintenance", Objective: "Uptime", Repository: "sf/code", IssueNumber: 20}})
-	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string) error {
+	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string, string) error {
 		return factoryd.ErrOpenQuestions{Issue: 20, Revision: 1, Open: 1}
 	}
 	refused := "plan #20 revision 1 has 1 unanswered questions; answer them first"

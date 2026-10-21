@@ -951,6 +951,8 @@ type rig struct {
 	synced      []string // "project by user" per GitHubSync
 	syncErr     error
 	syncGate    chan struct{} // GitHubSync waits on it, when set
+	// chatToken is every project's chat token, the wake's identity
+	chatToken string
 }
 
 var monthly = 8.99
@@ -987,7 +989,8 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
-		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
+		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}},
+		chatToken:   "chat-token"}
 	r.tasks.events = r.events
 	r.chat = &fakeChat{tasks: r.tasks}
 	r.sessions = newFakeSessions()
@@ -1000,6 +1003,7 @@ func newRig(t *testing.T) *rig {
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,
+		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate
@@ -1035,14 +1039,18 @@ func newRig(t *testing.T) *rig {
 			}
 			return slices.Contains(r.repoWriters[repository], user), nil
 		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
+		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
 			newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0)
 			if newest.Revision != revision || newest.SHA256 != sha {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
-			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, by))
+			call := fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, author)
+			if decider != author {
+				call += " decided by " + decider
+			}
+			fg.calls = append(fg.calls, call)
 			return nil
 		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {

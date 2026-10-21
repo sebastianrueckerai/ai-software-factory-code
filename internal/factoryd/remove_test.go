@@ -193,6 +193,7 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 		"project demo-app: tokens of factory-projects: deleted 1",
 		"project demo-app: tokens of factory-merge: deleted 1",
 		"project demo-app: tokens of factory-gate: deleted 1",
+		"project demo-app: tokens of factory-chat: deleted 1",
 		"project demo-app: litellm keys: deleted 2",
 		"project demo-app: row: deleted",
 		"project demo-app: project_mirrors rows: deleted 1",
@@ -217,7 +218,7 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 		t.Fatalf("forgejo state: repo %v org %v ci %v mirrors %v packages %v forks %v fork %v",
 			rig.fj.repo, rig.fj.orgGone, rig.fj.ciUserGone, rig.fj.mirrors, rig.fj.packages, rig.fj.forks, rig.fj.fork)
 	}
-	for _, un := range [3]string{"factory-projects", "factory-merge", "factory-gate"} {
+	for _, un := range [4]string{"factory-projects", "factory-merge", "factory-gate", "factory-chat"} {
 		for id, tok := range rig.fj.tokens {
 			if tok[0] == un {
 				t.Errorf("token %d of %s (%s) lives", id, un, tok[1])
@@ -418,6 +419,7 @@ func TestRemoveDryRun(t *testing.T) {
 		"project demo-app: tokens of factory-projects: would delete git-demo-app",
 		"project demo-app: tokens of factory-merge: would delete project-demo-app",
 		"project demo-app: tokens of factory-gate: would delete project-demo-app",
+		"project demo-app: tokens of factory-chat: would delete project-demo-app",
 		"project demo-app: litellm keys: would delete the keys of 2 tasks",
 		"project demo-app: row: would delete",
 		"project demo-app: project_mirrors rows: would delete",

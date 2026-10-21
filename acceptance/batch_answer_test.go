@@ -1223,8 +1223,8 @@ func newBatchRig(t *testing.T) *batchRig {
 		MayMove: func(_ context.Context, repository, user, _ string) (bool, error) {
 			return repository == "sf/code" && user == "sebastian", nil
 		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
-			return factoryd.AcceptPlan(ctx, store, wf, taskID, revision, sha, by)
+		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
+			return factoryd.AcceptPlan(ctx, store, wf, taskID, revision, sha, decider, author)
 		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, answer, by)

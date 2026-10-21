@@ -953,7 +953,9 @@ func TestChatAcceptsTheNewestRevision(t *testing.T) {
 	r.fg.calls = nil
 	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan"}`)}, {say("Accepted.")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
-	if !slices.Contains(r.fg.calls, "SIGNAL plan_accepted t-plan 5 5d00d00 by sebastian") {
+	// unconfirmed, the agent decided: the plan's request is factory-chat's,
+	// its cards the member's
+	if !slices.Contains(r.fg.calls, "SIGNAL plan_accepted t-plan 5 5d00d00 by sebastian decided by factory-chat") {
 		t.Errorf("unconfirmed: calls %v", r.fg.calls)
 	}
 }
@@ -965,7 +967,7 @@ func TestAcceptPlanNoDeployOwner(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
 		Lane: policy.LanePlan, Process: "maintenance", Objective: "Uptime\n\nDeploy: one Deployment.", Repository: "sf/code", IssueNumber: 21}})
-	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string) error { return factoryd.ErrNoDeployOwner }
+	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string, string) error { return factoryd.ErrNoDeployOwner }
 	refused := "the spec has a Deploy line and no card owns deploy/: add a card whose directories include deploy/ and whose brief names " +
 		"the manifests' changes (the Secret, the environment, the volume, the service). The planner revises the plan; no change request is needed. " +
 		"The next revision replaces this one: read the plan again before you accept."

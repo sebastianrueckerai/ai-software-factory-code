@@ -65,9 +65,11 @@ type Forgejo struct {
 	// repository (ruling 109: main's merge whitelist holds it, its push
 	// whitelist does not); forgejo-gate, factory-gate's write:repository on
 	// the code repository (ruling R59: main's approvals whitelist holds it,
-	// its merge and push whitelists do not); forgejo-config,
-	// factory-config's read:repository on the infra repository (ruling
-	// 183).
+	// its merge and push whitelists do not); forgejo-chat, factory-chat's
+	// write:repository and write:issue on the code and the infra
+	// repository (a writer on neither's whitelists: the project agent's
+	// turns no member started); forgejo-config, factory-config's
+	// read:repository on the infra repository (ruling 183).
 	Seeded map[string]string
 	// token, when set, is the one call authenticates with instead of the
 	// bot's login (As).
@@ -94,20 +96,25 @@ type ProjectAccess struct {
 	// Gate approves, as the merge gate, a pull request the merge rule auto
 	// merges.
 	Gate string
+	// Chat is the project agent's own identity, factory-chat, in every
+	// turn no member started: it reads, comments, files and closes as a
+	// writer on no whitelist.
+	Chat string
 }
 
 // Access is the one mapping from a project to factoryd's tokens: a
 // factory project's are registration's (ruling 164: its own factory-merge
-// token reads and merges, its factory-gate token approves, factory-projects
-// owns its Actions), a seed project's are the seeded secrets its file
-// names, never factory-projects'.
+// token reads and merges, its factory-gate token approves, its
+// factory-chat token acts for the project agent, factory-projects owns its
+// Actions), a seed project's are the seeded secrets its file names, never
+// factory-projects'.
 // An empty field is a token the project has none of.
 func (f *Forgejo) Access(p Project) ProjectAccess {
 	if p.Objects == policy.ObjectsFactory {
-		return ProjectAccess{Read: p.MergeToken, Actions: f.ProjectsToken, Merge: p.MergeToken, Gate: p.GateToken}
+		return ProjectAccess{Read: p.MergeToken, Actions: f.ProjectsToken, Merge: p.MergeToken, Gate: p.GateToken, Chat: p.ChatToken}
 	}
 	return ProjectAccess{Read: f.Seeded[p.Tokens.Read], Actions: f.Seeded[p.Tokens.Actions], Merge: f.Seeded[p.Tokens.Merge],
-		Gate: f.Seeded[p.Tokens.Gate]}
+		Gate: f.Seeded[p.Tokens.Gate], Chat: f.Seeded[p.Tokens.Chat]}
 }
 
 // Writers are the users the trust gate lets steer a task on p: a factory

@@ -343,10 +343,11 @@ func TestChatRerunsAFactoryPullRequestsChecks(t *testing.T) {
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run #5's checks again"}})
 	// the card's read of the head's current checks and of the pull's head
 	// (#1013, the moved branch) lands between: the tool describes the
-	// card before it acts
+	// card before it acts. The tool runs unconfirmed, so the agent decided
+	// the re-run: factory-chat's, the inbox's answer the member's
 	equal(t, "the calls", r.fg.calls, []string{"SIGNAL rerun_checks t-m #9 by sebastian",
 		"GET /api/v1/repos/sf/code/commits/abc123/status Bearer access-1",
-		"GET /api/v1/repos/sf/code/pulls/9 Bearer access-1", "SIGNAL rerun_checks t-m #9 by sebastian"})
+		"GET /api/v1/repos/sf/code/pulls/9 Bearer access-1", "SIGNAL rerun_checks t-m #9 by factory-chat"})
 }
 
 // A chat turn's board read carries a red-checks merge request's healed

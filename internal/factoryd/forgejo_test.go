@@ -1110,12 +1110,13 @@ func TestAccess(t *testing.T) {
 		p    Project
 		want ProjectAccess
 	}{
-		"factory": {Project{Objects: "factory", MergeToken: "own-merge", GateToken: "own-gate"},
-			ProjectAccess{Read: "own-merge", Actions: "projects-tok", Merge: "own-merge", Gate: "own-gate"}},
-		"code":  {seedProject("sf/code"), ProjectAccess{Read: "registrar-tok", Actions: "registrar-tok", Merge: "merge-tok", Gate: "gate-tok"}},
-		"infra": {Project{Objects: "seed", Tokens: policy.SeedTokens{Read: policy.SecretConfig}}, ProjectAccess{Read: "config-tok"}},
-		"names what is none": {Project{Objects: "seed", Tokens: policy.SeedTokens{Read: "forgejo-projects", Actions: "projects-tok", Merge: "ProjectsToken", Gate: "GateToken"}},
-			ProjectAccess{}},
+		"factory": {Project{Objects: "factory", MergeToken: "own-merge", GateToken: "own-gate", ChatToken: "own-chat"},
+			ProjectAccess{Read: "own-merge", Actions: "projects-tok", Merge: "own-merge", Gate: "own-gate", Chat: "own-chat"}},
+		"code": {seedProject("sf/code"), ProjectAccess{Read: "registrar-tok", Actions: "registrar-tok", Merge: "merge-tok", Gate: "gate-tok", Chat: "chat-tok"}},
+		"infra": {Project{Objects: "seed", Tokens: policy.SeedTokens{Read: policy.SecretConfig, Chat: policy.SecretChat}},
+			ProjectAccess{Read: "config-tok", Chat: "chat-tok"}},
+		"names what is none": {Project{Objects: "seed", Tokens: policy.SeedTokens{Read: "forgejo-projects", Actions: "projects-tok", Merge: "ProjectsToken", Gate: "GateToken",
+			Chat: "ChatToken"}}, ProjectAccess{}},
 	} {
 		if got := f.Access(tc.p); got != tc.want {
 			t.Errorf("%s: Access = %+v, want %+v", name, got, tc.want)

@@ -327,14 +327,30 @@ func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision 
 	c.showBoard(w, r, http.StatusOK, note, nil)
 }
 
-// review submits a pull request review on q's pull request as a's member.
+// review submits a pull request review on q's pull request: as a's
+// member when they decided it, under the project's chat identity
+// (wakeSession) when the agent did, in a wake or in the member's own turn,
+// so the agent's decision is never the member's review.
 func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalRequest, event, body, commit string) error {
 	repo, err := factoryd.SplitRepo(q.Project)
 	if err != nil {
 		return err
 	}
+	s := a.s
+	if a.approver() == factoryd.ChatUser {
+		p, ok, err := c.projectAt(ctx, q.Project)
+		switch {
+		case err != nil:
+			return fmt.Errorf("the projects: %w", err)
+		case !ok:
+			return fmt.Errorf("there is no project %s", q.Project)
+		}
+		if s, err = c.wakeSession(p, a.s.user); err != nil {
+			return err
+		}
+	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), q.PRNumber)
-	return c.as(ctx, a.s, http.MethodPost, path, map[string]string{"event": event, "body": body, "commit_id": commit}, http.StatusOK, nil)
+	return c.as(ctx, s, http.MethodPost, path, map[string]string{"event": event, "body": body, "commit_id": commit}, http.StatusOK, nil)
 }
 
 // headChecksGreen reads whether commit sha's checks are green in project

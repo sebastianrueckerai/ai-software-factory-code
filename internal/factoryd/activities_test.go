@@ -1791,6 +1791,23 @@ func TestAnswersFromKeepsAnEscalationsCommentsInOrder(t *testing.T) {
 	}
 }
 
+// The project agent's answer reads to the agent as the project agent's,
+// a person's by their login, and the heading calls neither human.
+func TestAnswersFromNamesTheProjectAgent(t *testing.T) {
+	answers, _, _ := answersFrom([]IntakeEvent{
+		{Kind: IntakeEscalation, CommentID: 100, Body: "The agent asks: Which file?\nWhy: open"},
+		{Kind: "issue_comment", Author: ChatUser, Body: "the cache file", CommentID: 101, Trusted: true},
+		{Kind: "issue_comment", Author: "sebastian", Body: "the config too", CommentID: 102, Trusted: true},
+	})
+	want := []string{`the project agent factory-chat, to "Which file?": the cache file`, `sebastian, to "Which file?": the config too`}
+	if !slices.Equal(answers, want) {
+		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+	if strings.Contains(strings.ToLower(answersHeading), "human") || !strings.Contains(answersHeading, "the project agent factory-chat") {
+		t.Fatalf("heading = %q, want it to name the project agent and call no answerer human", answersHeading)
+	}
+}
+
 // A withdrawn escalation's answers end at its withdrawal's comment: 101
 // answers 100, 104 after the withdrawal 103 nothing; the withdrawal of
 // an earlier question leaves a later one's answers as they are.

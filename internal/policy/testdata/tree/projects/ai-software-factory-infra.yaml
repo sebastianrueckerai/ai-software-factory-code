@@ -3,4 +3,4 @@ repository: sf/ai-software-factory-infra
 merge_rule: human
 objects: seed
 agents: none
-tokens: {read: forgejo-config}
+tokens: {read: forgejo-config, chat: forgejo-chat}

@@ -148,7 +148,7 @@ func (c *Console) docRefused(w http.ResponseWriter, r *http.Request, err error) 
 // doc_written event. project is the repository of the project the save
 // belongs to, which that event names.
 func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docPath string, save docSave) (*docSaved, error) {
-	repo, err := c.docRepoOf(docRepo, docPath)
+	repo, err := c.docWriteRepoOf(docRepo, docPath)
 	if err != nil {
 		return nil, err
 	}

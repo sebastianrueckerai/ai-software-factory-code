@@ -25,9 +25,13 @@ import (
 // docExternal matches an http or https link target.
 var docExternal = regexp.MustCompile(`^https?://`)
 
-// docMissingTitle titles a link that is no document of the roots, the
+// docMissingTitle titles a link that leaves the repository, the
 // engine's "not in this prototype" as the console says it.
 const docMissingTitle = "no document at that path"
+
+// docPathOK is the document doors' path check: a file named from the
+// repository's root, with no . or .. segments and no empty one.
+func docPathOK(p string) bool { return p != "" && path.Clean("/"+p) == "/"+p }
 
 // docResolve is target as a path against the directory of from, the
 // engine's resolve: "" stays on the same file, "/" starts at the
@@ -102,7 +106,7 @@ func (l *docLinks) anchor(w util.BufWriter, source []byte, n ast.Node, entering 
 		_, _ = w.WriteString(`" target="_blank" rel="noopener">`)
 	default:
 		resolved, frag := docResolve(l.doc, target)
-		if !docRootOK(resolved) {
+		if !docPathOK(resolved) {
 			_, _ = w.WriteString(`<a class="doc-link doc-missing" title="` + docMissingTitle + `">`)
 			return ast.WalkContinue, nil
 		}

@@ -196,7 +196,8 @@ var (
 	nParam      = fallback(20, map[string]any{"type": "integer", "description": "how many", "minimum": 1, "maximum": 100})
 	textParam   = str("the text")
 	sessionN    = stepParam("the session's number")
-	docPath     = str("the file's path under docs/")
+	docPath     = str("the file's path in the document repository")
+	docWrite    = str("the file's path under docs/")
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
@@ -1379,13 +1380,13 @@ var tools = []chatTool{
 			"to":    stepParam("the last line to read"),
 			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
 		required: []string{"path"},
-		about:    "A document of the project's document repository with its base_sha256 and line count.",
+		about:    "Any file of the project's document repository with its base_sha256 and line count.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
 			return s, nil, err
 		}},
 	{name: "write_doc", title: "Write a document", write: true,
-		params: map[string]any{"path": docPath,
+		params: map[string]any{"path": docWrite,
 			"old":         str("the passage to replace, as read"),
 			"new":         str("the passage that replaces old, empty removes it"),
 			"content":     str("a new file's content"),
@@ -1705,9 +1706,6 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 		return "", refuse(http.StatusNotFound, "There is no project "+a.repository+".")
 	}
 	in := toolInput{TaskID: id, EUR: eur, Text: text}
-	if _, err := c.accessToken(ctx, a.s); err != nil {
-		return "", refuse(http.StatusConflict, "the member's login has lapsed: the answer cannot be posted; record your analysis with attach_analysis")
-	}
 	v, ok := c.inForce(ctx)
 	if !ok {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")

@@ -337,7 +337,10 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 // with the lane's label (backlog, plan or agent, or human for the human
 // lane) and priority when given, its body ending with the line "Size:
 // <size>" when given; the webhook or the heal pass makes it a task. It
-// answers the repository and the issue's number.
+// answers the repository and the issue's number. In a wake the chat bot
+// posts the issue, and the card_filed row that names the member is
+// written before the answer: an unrecorded filing closes its issue and
+// refuses.
 func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason string) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
@@ -433,7 +436,25 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return repo, 0, &forgejoRefusal{"file the issue", err}
 	}
 	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, lane, a.via)
-	c.record(ctx, a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
+	e := c.eventOf(a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
+	if !a.s.fixed {
+		c.event(context.WithoutCancel(ctx), e)
+		return repo, issue.Number, nil
+	}
+	// the chat bot posted the issue: the intake takes the card's author from
+	// this row (factoryd.Intake.Filings), so without it the issue is no card
+	if _, err := c.cfg.Events.Record(context.WithoutCancel(ctx), e); err != nil {
+		log.Printf("console: %s's filing of %s#%d not recorded, the issue is closed: %v", a.s.user, repo, issue.Number, err)
+		filed := factoryd.Task{Repository: repo.String(), IssueNumber: issue.Number}
+		if err := c.comment(ctx, a, filed, "factoryd could not record this filing, so it is no card: the project agent closed it.", nil); err != nil {
+			log.Printf("console: comment the unrecorded filing %s#%d: %v", repo, issue.Number, err)
+		}
+		if err := c.editIssue(ctx, a, filed, map[string]string{"state": "closed"}, nil); err != nil {
+			log.Printf("console: close the unrecorded filing %s#%d: %v", repo, issue.Number, err)
+		}
+		return repo, 0, refuse(http.StatusInternalServerError, fmt.Sprintf(
+			"The factory could not record the filing of %s#%d, so it is no card; the issue is closed. File the card again.", repo, issue.Number))
+	}
 	return repo, issue.Number, nil
 }
 
@@ -710,7 +731,7 @@ func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision
 			}
 		}
 	}
-	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.s.user); {
+	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.approver(), a.s.user); {
 	case errors.As(err, &stale):
 		return "", stale
 	case errors.As(err, &open):
@@ -887,7 +908,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	for _, q := range pending {
 		if q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan {
-			err = c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, "denied", a.s.user, "changes requested: "+text)
+			err = c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, "denied", a.approver(), "changes requested: "+text)
 		}
 	}
 	if err != nil {
@@ -909,7 +930,7 @@ func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (s
 	if err != nil {
 		return "", err
 	}
-	if err := c.cfg.RejectPlan(ctx, t.ID, a.s.user, note); err != nil {
+	if err := c.cfg.RejectPlan(ctx, t.ID, a.approver(), note); err != nil {
 		log.Printf("console: %s rejects plan %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusConflict, "The plan could not be rejected; see the factoryd log.")
 	}
@@ -1766,11 +1787,23 @@ func (c *Console) pendingRequest(ctx context.Context, a actor, id int64) (factor
 	return all[i], nil
 }
 
-// decide records the member's decision on q; a request the factory
-// decided meanwhile (a new attempt superseded it) is logged, not an
-// error: Forgejo already carries the member's action.
+// approver is who decided a's action on an approval request, a plan or a
+// factory pull request: factoryd.ChatUser when the agent decided it (in a
+// wake, or unconfirmed in a member's turn), the factory's own decision,
+// else the member. Its approval rows, plan decisions and signal authors
+// carry it.
+func (a actor) approver() string {
+	if a.decider == "agent" {
+		return factoryd.ChatUser
+	}
+	return a.s.user
+}
+
+// decide records a's decision on q under a.approver(); a request the
+// factory decided meanwhile (a new attempt superseded it) is logged, not
+// an error: Forgejo already carries the member's action.
 func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalRequest, status, note string) error {
-	err := c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, status, a.s.user, note)
+	err := c.cfg.Approvals.DecideApproval(ctx, q.ID, q.Kind, status, a.approver(), note)
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound) && q.Kind == factoryd.ApprovalMerge:
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", q.ID, a.s.user, status)
@@ -1795,9 +1828,13 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // task (one commission of that spec; the project's envelope is its file's,
 // ruling 183); a merge request gets the member's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
-// which merges as factory-merge. A red-checks merge request merges only
-// once the same head's checks turned green again (#1013: a re-run); still
-// red, its approval refuses naming what fits the card.
+// which merges as factory-merge. An approval the agent decided is the
+// factory's own, decided as factoryd.ChatUser (a.approver), whoever is
+// online: no review is posted and no human criterion is met, and the merge
+// posts the merge gate's approval on the merge rule auto and refuses on
+// any other. A red-checks merge request merges only once the same head's
+// checks turned green again (#1013: a re-run); still red, its approval
+// refuses naming what fits the card.
 func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -1814,7 +1851,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
 			return "", err
 		}
-		n, err := c.cfg.GrantCriteria(ctx, q.TaskID, a.s.user, q.ID)
+		n, err := c.cfg.GrantCriteria(ctx, q.TaskID, a.approver(), q.ID)
 		if err != nil {
 			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
 			return "", refuse(http.StatusInternalServerError, "the grant could not be recorded; see the factoryd log")
@@ -1860,14 +1897,20 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan moved to revision %d, the card ran against revision %d, so it cannot merge: deny the merge (deny_merge) and let the planner re-file the plan.", rev.Revision, t.PlanRevision))
 			}
 		}
-		if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
-			return "", &forgejoRefusal{"submit the approving review", err}
+		agent := a.approver() == factoryd.ChatUser
+		unsignalled := "the task's workflow could not be signalled; approve again"
+		if !agent {
+			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
+				return "", &forgejoRefusal{"submit the approving review", err}
+			}
+			unsignalled = "your approving review is on the pull request, but " + unsignalled
 		}
-		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.s.user); err != nil {
+		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
-			return "", refuse(http.StatusBadGateway, "your approving review is on the pull request, but the task's workflow could not be signalled; approve again")
+			return "", refuse(http.StatusBadGateway, unsignalled)
 		}
-		if c.cfg.RecordHumanCriteria != nil {
+		// a human-verification criterion waits for a person
+		if c.cfg.RecordHumanCriteria != nil && !agent {
 			if n, err := c.cfg.RecordHumanCriteria(ctx, q.TaskID, a.s.user); err != nil {
 				log.Printf("console: %s approved PR #%d of %s, the human criteria failed to record: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			} else if n > 0 {
@@ -1883,9 +1926,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 
 // doDeny denies approval request id with the member's reason, a
 // writer of its project. A resource request is denied (the agent is told
-// the reason). A merge request gets a REQUEST_CHANGES review as the
-// member, which sends the task back to its agent (action
-// request_changes), or is rejected: the reason commented and the pull
+// the reason). A merge request gets a REQUEST_CHANGES review (review: the
+// member's, or the chat identity's when the agent decided), which sends
+// the task back to its agent (action request_changes), or is rejected:
+// the reason commented and the pull
 // request closed as the member, which fails the task (action reject). A
 // factory pull request's has no agent to send it back to: either action
 // closes the card and its pull request with the reason (roadmap 264).
@@ -1920,7 +1964,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		return "", refuse(http.StatusInternalServerError, "cannot read the merge request")
 	}
 	if spec.Factory {
-		if err := c.cfg.CloseFactoryPR(ctx, q.TaskID, q.PRNumber, a.s.user, note); err != nil {
+		if err := c.cfg.CloseFactoryPR(ctx, q.TaskID, q.PRNumber, a.approver(), note); err != nil {
 			log.Printf("console: %s closed PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, "the task's workflow could not be signalled; close it again")
 		}
@@ -2011,7 +2055,7 @@ func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error
 	case !spec.RedChecks:
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Pull request #%d's checks are green: approve it to merge (approve_merge) or close it (deny_merge).", q.PRNumber))
 	}
-	if err := c.cfg.RerunChecks(ctx, q.TaskID, q.PRNumber, a.s.user); err != nil {
+	if err := c.cfg.RerunChecks(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
 		log.Printf("console: %s re-ran the checks of PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 		return "", refuse(http.StatusBadGateway, "the task's workflow could not be signalled; run the checks again once more")
 	}

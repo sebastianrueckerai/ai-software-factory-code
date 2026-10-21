@@ -291,6 +291,17 @@ func (s *fakeStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return t, ok, nil
 }
 
+// FiledFor reads the console's card_filed row of the issue among the
+// events, as PGStore.FiledFor does.
+func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) (string, bool, error) {
+	for _, e := range s.events {
+		if e.Kind == EventCardFiled && e.Repository == repository && e.IssueNumber == issue {
+			return e.Actor, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
@@ -593,14 +604,16 @@ func (s *fakeStore) EnterLane(ctx context.Context, id, lane, class, sha string) 
 
 // testSeeded are the seeded tokens a test's Forgejo holds.
 var testSeeded = map[string]string{policy.SecretCIRegistrar: "registrar-tok", policy.SecretMerge: "merge-tok", policy.SecretConfig: "config-tok",
-	policy.SecretGate: "gate-tok"}
+	policy.SecretGate: "gate-tok", policy.SecretChat: "chat-tok"}
 
 // seedProject is repository as the code repository's project: seed, agents
 // coder, the registrar token reading and running its Actions, the merge
-// token merging, the gate token approving the merge gate's merges.
+// token merging, the gate token approving the merge gate's merges, the
+// chat token the project agent's own turns.
 func seedProject(repository string) Project {
 	return Project{Name: strings.ReplaceAll(repository, "/", "-"), Repository: repository, MergeRule: "human", Objects: "seed", Agents: "coder",
-		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge, Gate: policy.SecretGate},
+		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge, Gate: policy.SecretGate,
+			Chat: policy.SecretChat},
 		Process: "maintenance", Lanes: maintenanceLanes}
 }
 

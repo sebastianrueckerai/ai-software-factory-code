@@ -278,7 +278,7 @@ func main() {
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: webhookSecret, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Projects: store, Metrics: metrics,
-		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged, ProjectsUser: projectsUser(),
+		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged, ProjectsUser: projectsUser(), Filings: store,
 	}
 	// the factory's own project deploys into factoryd's namespace: its CI
 	// runs and its rolls are watched, its writers reach the console's
@@ -534,8 +534,8 @@ func main() {
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, by string) error {
-			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, by)
+		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
+			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, decider, author)
 		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
@@ -575,6 +575,7 @@ func main() {
 		ConfigDir:  configDir,
 		InfraRepo:  configRepo,
 		InfraToken: forgejo.Seeded[policy.SecretConfig],
+		ChatToken:  func(p factoryd.Project) string { return forgejo.Access(p).Chat },
 		DocsToken:  optionalSecret("FORGEJO_DOCS_TOKEN"),
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())
