@@ -429,8 +429,8 @@ func factoryPRQuestion(title, repository string, pr int64, url string) HumanQues
 	return HumanQuestion{
 		Ask: askOf(fmt.Sprintf("%s: merge pull request #%d on %s", title, pr, repository), "?"),
 		Why: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a person merges it.",
-		Info: "The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land. " +
-			"Then close this card: the merge does not close it.",
+		Info: "The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land: " +
+			"either ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
 	}
 }

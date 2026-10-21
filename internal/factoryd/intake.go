@@ -1191,7 +1191,7 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	}
 	switch {
 	case t.Kind == "human":
-		return in.finishHumanTask(ctx, t, closer)
+		return in.finishHumanTask(ctx, t, "done", "", closer)
 	case t.Status == "backlog":
 		return in.closeBacklogCard(ctx, t)
 	case t.Status == "failed":
@@ -1258,10 +1258,12 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 	return fresh, in.signalEvent(ctx, taskID, e, number)
 }
 
-// finishHumanTask: a human-lane task has no workflow; its closed issue is
-// its end. A SigNoz alert's gets its verdict from the close (ruling 180):
-// noise when the issue carries LabelNoise, else real.
-func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) error {
+// finishHumanTask ends human-lane task t, which has no workflow, as final
+// for why ("" for none): its closed issue ends it done, its pull request's
+// merge or close too (endPRCard). A SigNoz alert's gets its verdict from
+// the close (ruling 180): noise when the issue carries LabelNoise, else
+// real.
+func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, closer string) error {
 	if t.Status != "waiting-human" {
 		return nil
 	}
@@ -1282,17 +1284,48 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, closer string) er
 			return err
 		}
 	}
-	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, final); err != nil {
 		return err
 	}
-	countOutcome(ctx, in.Metrics, in.Store, t, "done")
-	mirrorTaskState(ctx, in.Forgejo, t, "done")
-	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "done", "")
+	countOutcome(ctx, in.Metrics, in.Store, t, final)
+	mirrorTaskState(ctx, in.Forgejo, t, final)
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, final, why)
 	return nil
+}
+
+// endPRCard ends human card t with its pull request pr (ruling R63): the
+// merge, or the close without one, is by's answer to the card's ask, and
+// the card ends done on a merge, closed otherwise. factoryd then closes
+// the card's issue as its own close.
+func (in *Intake) endPRCard(ctx context.Context, t Task, pr int64, merged bool, by string) error {
+	if t.Status != "waiting-human" {
+		return nil
+	}
+	final, why := "closed", fmt.Sprintf("pull request #%d closed without a merge by %s", pr, by)
+	if merged {
+		final, why = "done", fmt.Sprintf("pull request #%d merged by %s", pr, by)
+	}
+	in.Timeline.RecordRow(ctx, t.ID, EventQuestionAnswered, by, ViaWebhook, map[string]any{"answer": why})
+	if err := in.finishHumanTask(ctx, t, final, why, by); err != nil {
+		return err
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
+		return err
+	}
+	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why+"; this card ends with it."); err != nil {
+		return err
+	}
+	return in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
 }
 
 // handlePullRequest signals a closed factory pull request to its task's
 // workflow: merged, or closed without a merge (the reviewer rejected it).
+// A human card linked to the pull request has no workflow: the pull
+// request ends it (endPRCard).
 func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -1308,8 +1341,13 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 		return err
 	}
 	t, ok, err := in.agentTask(ctx, taskID)
-	if err != nil || !ok {
+	switch {
+	case err != nil:
 		return err
+	case t.Kind == "human":
+		return in.endPRCard(ctx, t, p.PullRequest.Index, p.PullRequest.Merged, p.Sender.UserName)
+	case !ok:
+		return nil
 	}
 	kind := "pull_request_closed"
 	if p.PullRequest.Merged {
@@ -1692,7 +1730,9 @@ const healAuthor = "factoryd heal pass"
 // decisionResignalAfter is signalled again on every pass (the claim may
 // have outlived a factoryd that died before the signal). A closed issue
 // is credited to its last closer per the timeline and gated like a
-// webhook's sender. A trusted event recorded but not signalled (factoryd
+// webhook's sender. A human card linked to a pull request ends with the
+// pull request's merge or close (endPRCard), credited to the merger, else
+// to the heal pass. A trusted event recorded but not signalled (factoryd
 // died between the two) is signalled now. Reviews carry no id
 // in their webhook payload and are not re-read.
 func (in *Intake) Resync(ctx context.Context, t Task) error {
@@ -1703,6 +1743,15 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 	if t.Kind == "human" || t.Status == "backlog" {
 		if t.IssueNumber == 0 {
 			return nil
+		}
+		if t.Kind == "human" && t.PRNumber != 0 {
+			pr, err := in.Forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+			if err != nil {
+				return fmt.Errorf("pull request state: %w", err)
+			}
+			if pr.State == "closed" {
+				return in.endPRCard(ctx, t, t.PRNumber, pr.Merged, cmp.Or(pr.MergedBy, healAuthor))
+			}
 		}
 		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
 		if err != nil || closer == "" {

@@ -97,6 +97,10 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			requests = append(requests, "comment "+r.URL.Path+": "+payload.Body)
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/issues/") && strings.Count(r.URL.Path, "/") == 7:
+			requests = append(requests, "close "+r.URL.Path)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"state":"closed"}`)
 		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/ai-software-factory-code/issues/") && strings.Count(r.URL.Path, "/") == 7:
 			io.WriteString(w, `{"state":"open"}`)
 		case r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues" && r.Method == http.MethodGet:
@@ -1366,6 +1370,127 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	// card's lead time reads like a queue merge's
 	if got := store.tasks["t1"].MergeCommit; got != "m-5" {
 		t.Fatalf("merge commit = %q, want m-5 from the merged webhook", got)
+	}
+}
+
+// A human card linked to a pull request, a factory pull request's on a
+// project without agents (ruling R62), ends with its pull request (ruling
+// R63). A merge is its answer: the card ends done, naming the merge and
+// the merger. A close without a merge ends it closed. Either way the
+// person's answer row settles the ask, one task_ended names why, and
+// factoryd closes the card's issue as its own close. A redelivery changes
+// nothing, and no workflow is signalled.
+func TestAPullRequestEndsItsHumanCard(t *testing.T) {
+	for _, tc := range []struct {
+		merged        bool
+		final, reason string
+	}{
+		{true, "done", "pull request #5 merged by sebastian"},
+		{false, "closed", "pull request #5 closed without a merge by sebastian"},
+	} {
+		in, store, requests := newTestIntake(t)
+		rows := &fakeEventRecorder{}
+		in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
+		store.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Kind: "human", Status: "waiting-human",
+			Source: SourceSchemaCopy, PRNumber: 5, IssueNumber: 9}
+		body := prClosedBodyFrom("factory/schema-0123456789ab", "factory-agent/ai-software-factory-code", tc.merged)
+		for range 2 {
+			if rr := postWebhook(in, "pull_request", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+				t.Fatalf("merged %v: status = %d, body = %s", tc.merged, rr.Code, rr.Body)
+			}
+		}
+		if got := store.tasks["t-pr"].Status; got != tc.final {
+			t.Fatalf("merged %v: status %q, want %q", tc.merged, got, tc.final)
+		}
+		var ended, answered []Event
+		for _, e := range rows.rows {
+			switch e.Kind {
+			case EventTaskEnded:
+				ended = append(ended, e)
+			case EventQuestionAnswered:
+				answered = append(answered, e)
+			}
+		}
+		if len(ended) != 1 || ended[0].Detail["state"] != tc.final || ended[0].Detail["reason"] != tc.reason {
+			t.Fatalf("merged %v: task_ended %+v, want one %s naming %q", tc.merged, ended, tc.final, tc.reason)
+		}
+		if len(answered) != 1 || answered[0].Actor != "sebastian" || answered[0].Via != ViaWebhook || answered[0].Detail["answer"] != tc.reason {
+			t.Fatalf("merged %v: question_answered %+v, want sebastian's one", tc.merged, answered)
+		}
+		if !botCloseRecorded(store.intakeEvents, store.tasks["t-pr"]) || !slices.Contains(*requests, "close /api/v1/repos/sf/ai-software-factory-code/issues/9") ||
+			!slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/9/comments: factoryd: "+tc.reason+"; this card ends with it.") {
+			t.Fatalf("merged %v: requests %q, events %+v; want factoryd's recorded close of #9 with its comment", tc.merged, *requests, store.intakeEvents)
+		}
+		if got := workflowsOf(in).signals; len(got) != 0 {
+			t.Fatalf("merged %v: signals %q, want none: a human card has no workflow", tc.merged, got)
+		}
+	}
+}
+
+// The heal pass ends a pull request's human card whose closing webhook
+// was lost, as the webhook does: a merge read from Forgejo, credited to
+// its merger; a pull request closed without a merge, whose closer Forgejo
+// does not name, credited to the heal pass. A card whose pull request is
+// open stays waiting.
+func TestResyncEndsAPullRequestsHumanCard(t *testing.T) {
+	for _, tc := range []struct {
+		pr            string
+		final, reason string
+	}{
+		{`{"number":5,"state":"closed","merged":true,"merged_by":{"login":"sebastian"}}`, "done", "pull request #5 merged by sebastian"},
+		{`{"number":5,"state":"closed","merged":false}`, "closed", "pull request #5 closed without a merge by factoryd heal pass"},
+		{`{"number":5,"state":"open","merged":false}`, "waiting-human", ""},
+	} {
+		var closes []string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/pulls/5":
+				io.WriteString(w, tc.pr)
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/9/timeline":
+				io.WriteString(w, `[]`)
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/9":
+				io.WriteString(w, `{"number":9,"state":"open"}`)
+			case r.Method == http.MethodPatch && r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/9":
+				closes = append(closes, r.URL.Path)
+				w.WriteHeader(http.StatusCreated)
+				io.WriteString(w, `{}`)
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/sf/ai-software-factory-code/issues/9/comments":
+				w.WriteHeader(http.StatusCreated)
+				io.WriteString(w, `{"id":1}`)
+			case strings.HasSuffix(r.URL.Path, "/labels"):
+				io.WriteString(w, `[]`)
+			default:
+				t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+				w.WriteHeader(http.StatusTeapot)
+			}
+		}))
+		store, rows := newFakeStore(), &fakeEventRecorder{}
+		in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}, Workflows: &fakeWorkflows{},
+			BotUser: "factory-agent", Secret: webhookSecret, Policy: testPolicy, Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}}
+		card := Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Kind: "human", Status: "waiting-human", Source: SourceSchemaCopy, PRNumber: 5, IssueNumber: 9}
+		store.tasks[card.ID] = card
+		if err := in.Resync(context.Background(), card); err != nil {
+			t.Fatalf("%s: %v", tc.final, err)
+		}
+		srv.Close()
+		var ended []Event
+		for _, e := range rows.rows {
+			if e.Kind == EventTaskEnded {
+				ended = append(ended, e)
+			}
+		}
+		if got := store.tasks["t-pr"].Status; got != tc.final {
+			t.Fatalf("status %q, want %q", got, tc.final)
+		}
+		if tc.reason == "" {
+			if len(ended) != 0 || len(closes) != 0 {
+				t.Fatalf("an open pull request: task_ended %+v, closes %v; want none", ended, closes)
+			}
+			continue
+		}
+		if len(ended) != 1 || ended[0].Detail["reason"] != tc.reason || len(closes) != 1 {
+			t.Fatalf("%s: task_ended %+v, closes %v; want one naming %q and the issue closed", tc.final, ended, closes, tc.reason)
+		}
 	}
 }
 
