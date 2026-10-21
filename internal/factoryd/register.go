@@ -91,6 +91,9 @@ type Registrar struct {
 	Tasks interface {
 		CreateTask(ctx context.Context, t Task) error
 		TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error)
+		// a project without agents gets a human card (FileFactoryPRTask)
+		InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+		TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	}
 	// Cards is the store's task side, which the template pass files its
 	// cards through (roadmap 187); nil files none.

@@ -1417,7 +1417,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	} else {
 		b.WriteString("\nNo card's change rides this head; the chain alone is the work.\n")
 	}
-	b.WriteString("\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
+	b.WriteString("\nRead the run's log or the red status, find the cause, fix it on this card's branch from main's head, and push: the fix rides the chain again, and a green chain ends every wait.\n\nfiled by factoryd")
 	body := b.String()
 	t, ref, err := FileAgentTask(ctx, p.Store, p.Forgejo, p.Workflows, p.Timeline, proj, title, body, nil, Task{
 		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: p.Policy().Document.Budget.ClampBudget(0),

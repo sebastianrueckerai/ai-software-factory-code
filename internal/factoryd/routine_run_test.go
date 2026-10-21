@@ -160,11 +160,12 @@ func onlyTask(t *testing.T, store *fakeStore) Task {
 // The weekly bump at its due: a human card on the code repository,
 // labelled routine, the brief's text as its body with the run's
 // provenance, waiting on a person, its card_created recorded. The run
-// stays open with its card, its routine_ran event names the card, and the
-// inbox of the project's approvers hears of it once through that event,
-// with the routine, the run and the schedule as the decider line. A human
-// card pokes under tell quiet too. Hand-derived: the first issue is #71,
-// the fixture's approver sebastian.
+// stays open with its card and its routine_ran event names the card,
+// which pokes no one: the inbox of the project's approvers hears of it
+// once through the card's question_asked row, with the routine, the run
+// and the schedule as the decider line. A human card pokes under tell
+// quiet too. Hand-derived: the first issue is #71, the fixture's
+// approver sebastian.
 func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, _ := routineRunner(t, routineTree(t))

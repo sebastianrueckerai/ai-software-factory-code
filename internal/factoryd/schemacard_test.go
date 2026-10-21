@@ -60,6 +60,16 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprint(w, c)
+		case p == cardUpPath+"/issues" && q.Get("state") == "open":
+			if q.Get("page") != "1" {
+				fmt.Fprint(w, `[]`)
+				return
+			}
+			out := []map[string]any{}
+			for i, is := range s.issues {
+				out = append(out, map[string]any{"number": i + 1, "title": is.title, "user": map[string]string{"login": "factory-agent"}})
+			}
+			json.NewEncoder(w).Encode(out)
 		case p == cardUpPath+"/pulls" && q.Get("state") == "open":
 			// GetPages reads on until a page comes back empty
 			if q.Get("page") != "1" {
@@ -277,6 +287,58 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	}
 	if got := labels[1]; !slices.Contains(got, "state/queued") {
 		t.Fatalf("issue labels %v, want the state mirrored", got)
+	}
+}
+
+// A schema pull request on a project without agents, the infra project,
+// gets a human card (ruling R62): no workflow runs there to carry it, so
+// the card asks a person to merge it in Forgejo. The card links the pull
+// request, labelled human, its question names the pull request with its
+// link, and its one question_asked row is the needs-you poke; the second
+// pass finds the card and files none.
+func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, wf := cardRig(t)
+	store.projects = []Project{noAgents(cardUpstream)}
+	rows := &fakeEventRecorder{}
+	c.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
+	for range 2 {
+		if err := c.SyncOnce(ctx, 1, 0); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cards := schemaCards(store)
+	if len(cards) != 1 || store.createCalls != 1 {
+		t.Fatalf("cards %+v, CreateTask %d times; want one card", cards, store.createCalls)
+	}
+	card := cards[0]
+	if card.Kind != "human" || card.Status != "waiting-human" || card.PRNumber != 1 || card.IssueNumber != 1 ||
+		card.Repository != cardUpstream || card.SHA != "0123456789ab" || card.Author != "factory-agent" || len(wf.started) != 0 {
+		t.Fatalf("card %+v, started %v; want a human card on pull request #1 with no workflow", card, wf.started)
+	}
+	const ask = "Schema copies for 0123456789ab: merge pull request #1 on sf/ai-software-factory-infra?"
+	q := askedQuestion(t, store, card.ID)
+	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
+		!strings.HasPrefix(q.Info, "The pull request: https://git.example/sf/ai-software-factory-infra/pulls/1\n\n") ||
+		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
+		t.Fatalf("question %+v, objective %q; want the merge ask, the pull request's link and the close", q, card.Objective)
+	}
+	issues, labels, _, prs := fj.snapshot()
+	if len(prs) != 1 || len(issues) != 1 || issues[0].title != ask || !slices.Equal(labels[1], []string{"human", "state/waiting-human"}) {
+		t.Fatalf("pull requests %v, issues %+v, labels %v; want one pull request and its human card", prs, issues, labels)
+	}
+	var asked []Event
+	for _, e := range rows.rows {
+		if e.Kind == EventQuestionAsked {
+			asked = append(asked, e)
+		}
+	}
+	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["source"] != SourceSchemaCopy {
+		t.Fatalf("question_asked rows %+v, want the card's one", asked)
+	}
+	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 needs you: "+ask) ||
+		deliveryLevel(m) != LevelNeedsYou {
+		t.Fatalf("the poke = %+v, %v; want the card's needs-you", m, ok)
 	}
 }
 

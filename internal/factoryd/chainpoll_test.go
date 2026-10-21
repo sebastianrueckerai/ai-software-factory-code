@@ -1367,6 +1367,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 		"required context factory/roll: failure",
 		"/" + demoRepo + "/actions/runs/21",
 		"#77",
+		"find the cause, fix it on this card's branch from main's head, and push",
 	} {
 		if !strings.Contains(card.Objective, want) {
 			t.Fatalf("objective misses %q:\n%s", want, card.Objective)
@@ -2089,6 +2090,26 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, fmt.Sprintf("#%d needs you: %s", card.IssueNumber, ask)) ||
 		deliveryLevel(m) != LevelNeedsYou {
 		t.Fatalf("the poke = %+v, %v; want the card's needs-you at the messengers' level", m, ok)
+	}
+}
+
+// The human repair card names the cards whose change the red head
+// carries: merged, they wait on the chain, and this card is their repair.
+func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
+	p, store, f := redRig(t, noAgents(demoRepo), "failure")
+	f.carries = map[string]map[string][]map[string]any{
+		demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
+	}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cards := repairCards(store)[demoRepo]
+	if len(cards) != 1 || cards[0].Kind != "human" {
+		t.Fatalf("repair cards %+v, want one human card", cards)
+	}
+	if q := askedQuestion(t, store, cards[0].ID); !strings.Contains(q.Info, "The head carries #77: merged, they wait for a green chain to cover them; this card is their repair.") {
+		t.Fatalf("info %q, want the carried card #77 named", q.Info)
 	}
 }
 

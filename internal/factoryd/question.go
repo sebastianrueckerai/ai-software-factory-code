@@ -422,6 +422,19 @@ func repairQuestion(repository, sha string, findings []string, runURL string, ca
 	}
 }
 
+// factoryPRQuestion is the human card of pull request pr, titled title,
+// which factoryd opened on repository, a project without agents: no card's
+// gates carry it, so a person merges it in Forgejo or closes it there.
+func factoryPRQuestion(title, repository string, pr int64, url string) HumanQuestion {
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("%s: merge pull request #%d on %s", title, pr, repository), "?"),
+		Why: "factoryd opened the pull request, and the project runs no agents: no card's gates check it, so a person merges it.",
+		Info: "The pull request: " + url + "\n\nRead its change and merge it in Forgejo, or close it there if it should not land. " +
+			"Then close this card: the merge does not close it.",
+		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
+	}
+}
+
 // askOf is an ask of head on one line and the fixed question tail: the
 // head is cut so the whole fits MaxAsk, the tail kept whole.
 func askOf(head, tail string) string {

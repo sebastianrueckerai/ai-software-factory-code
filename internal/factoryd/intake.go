@@ -1131,13 +1131,25 @@ func FileAgentTask(ctx context.Context, store interface {
 // starts at once and moves running before its verify reaches in-review.
 // It runs no session, and its budget is its model gates': budget's task
 // default, at most p's card maximum and the task maximum (CardBudget).
+// On a project without agents no workflow runs: the card is a human card
+// through fileHumanTask, linked to the pull request, whose question asks
+// a person to merge it in Forgejo (ruling R62).
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}
-	t.PRNumber, t.BudgetEUR = prNumber, policy.CardBudget(budget, p.Budget, "", false, 0)
+	t.PRNumber = prNumber
+	if p.Agents == policy.AgentsNone {
+		t.Kind, t.RiskClass, t.Author = "human", "standard", cmp.Or(t.Author, forgejo.BotUser)
+		url := fmt.Sprintf("%s/%s/pulls/%d", forgejo.PublicURL, p.Repository, prNumber)
+		t, number, err := fileHumanTask(ctx, store, forgejo, tl, p.Repo(), factoryPRQuestion(title, p.Repository, prNumber, url), labels, t, "")
+		return t, IssueRef{Number: number}, err
+	}
+	t.BudgetEUR = policy.CardBudget(budget, p.Budget, "", false, 0)
 	return FileAgentTask(ctx, store, forgejo, workflows, tl, p, title, body, labels, t)
 }
 

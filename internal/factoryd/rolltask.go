@@ -339,6 +339,8 @@ type RollerStore interface {
 	// the backstop of the cheap merge turn (mainfix.go)
 	Task(ctx context.Context, id string) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// a revert on a project without agents is a human card (FileFactoryPRTask)
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	SetTaskPR(ctx context.Context, id string, number int64) error
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
 	PauseQueue(ctx context.Context, p QueuePause) error
