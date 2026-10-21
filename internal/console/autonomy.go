@@ -327,7 +327,7 @@ const docMax = 512 << 10
 // docShown bounds the current content a stale compare-and-swap returns.
 const docShown = 20 << 10
 
-// docRootOK is the path allow-list, factoryd's own DocRootOK: the door
+// docRootOK is the write door's allow-list, factoryd's own DocRootOK: the door
 // and the webhook's rows share it.
 func docRootOK(path string) bool { return factoryd.DocRootOK(path) }
 
@@ -379,22 +379,31 @@ func roadmapFindings(content string) []string {
 // docFinds bounds the lines a find answers.
 const docFinds = 12
 
-// docRepoOf checks a document tool's repository, token and path, and
-// answers the repository.
+// docRepoOf checks a document door's repository, token and path, and
+// answers the repository: a read opens any file of the repository.
 func (c *Console) docRepoOf(docRepo, path string) (factoryd.Repo, error) {
 	switch {
 	case docRepo == "":
 		return factoryd.Repo{}, refuse(http.StatusConflict, "the project names no document repository (chat.doc_repo); there are no documents")
 	case c.cfg.DocsToken == "":
 		return factoryd.Repo{}, refuse(http.StatusConflict, "no docs writer token is seated (FORGEJO_DOCS_TOKEN); the documents cannot be reached")
-	case !docRootOK(path):
-		return factoryd.Repo{}, refuse(http.StatusBadRequest, path+" is outside the document roots: docs/roadmap.md, docs/plans/, docs/board/ or docs/<name>.md")
+	case !docPathOK(path):
+		return factoryd.Repo{}, refuse(http.StatusBadRequest, path+" is no file path: name a path from the repository's root, with no . or .. segments")
 	}
 	repo, err := factoryd.SplitRepo(docRepo)
 	if err != nil {
 		return factoryd.Repo{}, refuse(http.StatusConflict, "the document repository is no owner/name")
 	}
 	return repo, nil
+}
+
+// docWriteRepoOf is docRepoOf for the write doors, which keep to the
+// document roots.
+func (c *Console) docWriteRepoOf(docRepo, path string) (factoryd.Repo, error) {
+	if !docRootOK(path) {
+		return factoryd.Repo{}, refuse(http.StatusBadRequest, path+" is outside the document roots: docs/roadmap.md, docs/plans/, docs/board/ or docs/<name>.md")
+	}
+	return c.docRepoOf(docRepo, path)
 }
 
 // docAPI is repo's API path.
@@ -543,7 +552,7 @@ type docEdit struct{ Old, New, Content, Base string }
 // project is the repository of the project the write belongs to, which
 // the door's one doc_written event names.
 func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, path string, edit docEdit) (string, error) {
-	repo, err := c.docRepoOf(docRepo, path)
+	repo, err := c.docWriteRepoOf(docRepo, path)
 	if err != nil {
 		return "", err
 	}

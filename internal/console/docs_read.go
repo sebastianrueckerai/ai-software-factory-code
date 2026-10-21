@@ -3,8 +3,8 @@ package console
 // The document read (roadmap 277, the 2026-10-15 plan, item 1): the
 // drawer's document mode reads one document of the project's document
 // repository through the same door the chat's read_doc takes — the
-// repository from the project's chat block, the path allow-list, the
-// docs writer token. Whoever sees the project's board reads it, as its
+// repository from the project's chat block, the path check, the docs
+// writer token. Whoever sees the project's board reads it, as its
 // event stream's rule does: the project's writers, the factory's
 // writers, Forgejo's readers of its repository.
 
