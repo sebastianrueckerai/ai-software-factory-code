@@ -205,12 +205,12 @@ const (
 type ChatConversation struct {
 	// Login is the thread's owner, the member whose conversation number
 	// it is; every listing fills it, the project's threads included.
-	Login    string    `json:"login,omitempty"`
-	Number   int64     `json:"number"`
-	Title    string    `json:"title"`
-	State    string    `json:"state"`
-	Inbox    bool      `json:"inbox,omitempty"`
-	Current  bool      `json:"current,omitempty"`
+	Login   string `json:"login,omitempty"`
+	Number  int64  `json:"number"`
+	Title   string `json:"title"`
+	State   string `json:"state"`
+	Inbox   bool   `json:"inbox,omitempty"`
+	Current bool   `json:"current,omitempty"`
 	// TaskID is the card the thread is bound to (the card door): a card
 	// thread's title is "#"+it, never the naming call's.
 	TaskID   string    `json:"task_id,omitempty"`
