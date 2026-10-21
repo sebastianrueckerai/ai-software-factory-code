@@ -1390,7 +1390,7 @@ var tools = []chatTool{
 			"old":         str("the passage to replace, as read"),
 			"new":         str("the passage that replaces old, empty removes it"),
 			"content":     str("a new file's content"),
-			"base_sha256": str("read_doc's base_sha256")},
+			"base_sha256": str("read_doc's base_sha256, optional")},
 		required: []string{"path"},
 		about:    "Commit an edit of one passage, or a new file, to the project's document repository.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -1615,7 +1615,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
-  write_doc commits straight to master: an edit of one passage against read_doc's base_sha256, or a new file.
+  write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's member, answered by a press or their next message, and ends the turn.
   escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.

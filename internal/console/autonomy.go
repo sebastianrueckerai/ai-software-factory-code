@@ -547,8 +547,9 @@ type docEdit struct{ Old, New, Content, Base string }
 // repository, straight to master, as the docs writer (the 2026-10-13
 // plan's one door, roadmap 239's additions): the allow-list, the size cap,
 // the roadmap's structure check, the repository's one commit at a time,
-// and the content-hash compare-and-swap, whose stale refusal names the
-// file's current hash and whether the edit's passage is still there.
+// and the passage as the edit's anchor: it must be in the file once. A
+// stale base_sha256 is named in the answer while the passage is there
+// once, and refused with the file's current text when it is not.
 // project is the repository of the project the write belongs to, which
 // the door's one doc_written event names.
 func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, path string, edit docEdit) (string, error) {
@@ -571,12 +572,11 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 	}
 	next := edit.Content
 	hash := factoryd.ContentHash(current)
+	changed := present && edit.Base != "" && edit.Base != hash
 	switch {
 	case present && edit.Content != "":
 		return "", refuse(http.StatusConflict, fmt.Sprintf("%s exists: edit a passage of it with old and new, base_sha256 %s", path, hash))
-	case present && edit.Base != hash && strings.Count(current, edit.Old) == 1:
-		return "", refuse(http.StatusConflict, fmt.Sprintf("%s changed since it was read: its base_sha256 is now %s, and the passage old is still there once, so the same edit with that base_sha256 applies", path, hash))
-	case present && edit.Base != hash:
+	case changed && strings.Count(current, edit.Old) != 1:
 		return "", refuse(http.StatusConflict, docCurrent(path, current, "it changed since it was read and the passage old is no longer there once"))
 	case present && strings.Count(current, edit.Old) == 0:
 		return "", refuse(http.StatusUnprocessableEntity, "the passage old is not in "+path+": read_doc it with find and copy the passage exactly")
@@ -616,8 +616,12 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 	}
 	c.docWritten(ctx, a, project, path, factoryd.ContentHash(next), committed.Commit.SHA)
 	log.Printf("console: %s wrote %s on %s via %s", a.s.user, path, docRepo, a.via)
-	return fmt.Sprintf("Committed %s to %s@master: %s, now base_sha256 %s.", cmp.Or(committed.Commit.SHA, "the change"), docRepo, path,
-		factoryd.ContentHash(next)), nil
+	note := ""
+	if changed {
+		note = " The file had changed since it was read, and the passage old was still there once."
+	}
+	return fmt.Sprintf("Committed %s to %s@master: %s, now base_sha256 %s.%s", cmp.Or(committed.Commit.SHA, "the change"), docRepo, path,
+		factoryd.ContentHash(next), note), nil
 }
 
 // docCurrent is the refusal a stale compare-and-swap answers when the
