@@ -98,6 +98,15 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	for _, d := range diffs {
+		if !d.Missing && !policy.Covers(copies[d.Path], d.Want) {
+			// a newer build's roll is still out and its copies are ahead: this
+			// pass must not undo them, and it closes nothing either, for the
+			// newer build's pass sorts every pull request once it runs
+			log.Printf("schema copies: %s on main holds what factoryd %s lacks, a newer build wrote it; this pass writes nothing", d.Path, c.Build)
+			return nil
+		}
+	}
 	open, err := c.Forgejo.OpenPullRequests(ctx, repo.Owner, repo.Name)
 	if err != nil {
 		return err

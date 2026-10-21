@@ -350,6 +350,58 @@ func DiffSchemas(copies map[string][]byte) ([]SchemaDifference, error) {
 	return out, nil
 }
 
+// Covers reports whether the schema this binary generates holds everything
+// copy holds: every key path and every member of an array, while a value at
+// a shared path may differ, so a build may still reword or renumber its own
+// schema. A copy that holds more belongs to a newer build, whose work an
+// older one must not undo (the deploy-skew pull request, 2026-10-21).
+func Covers(copy, want []byte) bool {
+	var got, gen any
+	if json.Unmarshal(copy, &got) != nil {
+		return true
+	}
+	if json.Unmarshal(want, &gen) != nil {
+		return false
+	}
+	return covers(got, gen)
+}
+
+// covers is Covers on decoded documents.
+func covers(got, want any) bool {
+	switch g := got.(type) {
+	case map[string]any:
+		w, ok := want.(map[string]any)
+		if !ok {
+			return false
+		}
+		for k, v := range g {
+			if wv, ok := w[k]; !ok || !covers(v, wv) {
+				return false
+			}
+		}
+		return true
+	case []any:
+		w, ok := want.([]any)
+		if !ok {
+			return false
+		}
+		for _, e := range g {
+			if m, ok := e.(map[string]any); ok {
+				if !slices.ContainsFunc(w, func(f any) bool { x, ok := f.(map[string]any); return ok && covers(m, x) }) {
+					return false
+				}
+				continue
+			}
+			if !slices.Contains(w, e) {
+				return false
+			}
+		}
+		return true
+	default:
+		return true
+	}
+}
+
 // SchemaContentHash is the first 12 hex of the sha256 over the schemas'
 // names and contents: the build id the schema pull request carries, since
 // the binary is not stamped with its commit.

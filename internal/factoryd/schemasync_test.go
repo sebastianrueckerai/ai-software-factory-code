@@ -317,3 +317,35 @@ func TestSchemaCopierWrongCredential(t *testing.T) {
 		t.Fatalf("pull requests %+v, want none", prs)
 	}
 }
+
+// a copy holding a key path this binary's schema lacks, as an older
+// factoryd sees of a newer build's copies while the newer roll is still
+// out: the pass opens nothing, closes nothing, not even an older build's
+// pull request, and writes nothing at all
+func TestSchemaCopierRefusesTheNewerBuildsCopy(t *testing.T) {
+	fj, c := schemaRig(t, func(main map[string]string) {
+		schemas, err := policy.Schemas()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(schemas["policy.schema.json"], &m); err != nil {
+			t.Fatal(err)
+		}
+		m["zzSkew"] = true
+		b, err := json.MarshalIndent(m, "", "  ")
+		if err != nil {
+			t.Fatal(err)
+		}
+		main["factory/schema/policy.schema.json"] = string(b) + "\n"
+	})
+	fj.branches = map[string]map[string]string{"main": maps.Clone(fj.main), "factory/schema-aaaaaaaaaaaa": maps.Clone(fj.main)}
+	fj.prs = []*schemaPR{{number: 1, head: "factory/schema-aaaaaaaaaaaa", headRepo: "factory-agent/ai-software-factory-infra", title: "Schema copies for aaaaaaaaaaaa", poster: "bot", state: "open"}}
+	if err := c.SyncOnce(context.Background(), 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	prs, comments, writes := fj.state()
+	if len(prs) != 1 || prs[0].state != "open" || len(comments) != 0 || len(writes) != 0 {
+		t.Fatalf("pull requests %+v, comments %q, writes %q; want the one open, none, none", prs, comments, writes)
+	}
+}
