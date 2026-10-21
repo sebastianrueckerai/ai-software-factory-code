@@ -38,7 +38,7 @@ func EscalateToHuman(ctx context.Context, store interface {
 	if err != nil {
 		return Task{}, err
 	}
-	if err := recordAsk(ctx, store, tl, t, q, by, asker, via); err != nil {
+	if err := recordAsk(ctx, store, tl, t, q, by, asker, via, ""); err != nil {
 		return Task{}, err
 	}
 	return t, nil
@@ -73,10 +73,11 @@ func questionBody(q HumanQuestion, footer string) string {
 
 // recordAsk is the ask's durable anchor: the intake row the board and
 // drawer read, and the question_asked row the inbox's poke carries. by is
-// who asks, asker the source the wake reads.
+// who asks, asker the source the wake reads, decider the poke's decider
+// line ("" for none).
 func recordAsk(ctx context.Context, store interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, tl *Timeline, t Task, q HumanQuestion, by, asker, via string) error {
+}, tl *Timeline, t Task, q HumanQuestion, by, asker, via, decider string) error {
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd",
 		Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
 		return fmt.Errorf("task %s: record the ask: %w", t.ID, err)
@@ -94,6 +95,9 @@ func recordAsk(ctx context.Context, store interface {
 	}
 	if len(q.Choices) > 0 {
 		asked["choices"] = q.Labels()
+	}
+	if decider != "" {
+		asked["decider_line"] = decider
 	}
 	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, via, asked)
 	return nil

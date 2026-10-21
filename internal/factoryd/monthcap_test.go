@@ -178,12 +178,12 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 		book := &failingTasks{fakeStore: store}
 		if adopt {
 			book.failNext = 1
-			if _, _, err := fileHumanTask(ctx, book, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-0", Kind: "human", Source: SourceMonthCap}); err == nil {
+			if _, _, err := fileHumanTask(ctx, book, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-0", Kind: "human", Source: SourceMonthCap}, ""); err == nil {
 				t.Fatal("a failed task row raised nothing")
 			}
 		}
 		tl := &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
-		task, number, err := fileHumanTask(ctx, book, alarm.Forgejo, tl, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap})
+		task, number, err := fileHumanTask(ctx, book, alarm.Forgejo, tl, alarm.Repo, q, nil, Task{ID: "t-1", Kind: "human", Source: SourceMonthCap}, "")
 		if err != nil {
 			t.Fatal(err)
 		}

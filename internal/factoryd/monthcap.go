@@ -232,7 +232,7 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 	limit := v.Document.Budget.MonthEUR
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s/%s#L%d", a.Forgejo.PublicURL, a.Repo, v.Commit, a.Dir, policy.FilePolicy, line)
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: v.Commit, Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, monthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t)
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, monthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t, "")
 	if err != nil {
 		return err
 	}
@@ -245,12 +245,13 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 // task row holds is there: an issue filed by a check whose task row then
 // failed is taken on, not filed again. An issue a task holds is that
 // card's, such as an earlier routine run's still open. number is the
-// issue's. Either way the card records card_created and its ask on tl.
+// issue's. Either way the card records card_created and its ask on tl,
+// decider its poke's decider line ("" for none).
 func fileHumanTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task) (Task, int64, error) {
+}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task, decider string) (Task, int64, error) {
 	title := askTitle(q)
 	body := questionBody(q, "factoryd asks ("+t.Source+"). Answer on the card in the console or in the chat's inbox, or close this issue once decided.")
 	t.Objective = title + "\n\n" + body
@@ -286,7 +287,7 @@ func fileHumanTask(ctx context.Context, store interface {
 		}
 	}
 	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number})
-	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd); err != nil {
+	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd, decider); err != nil {
 		return Task{}, 0, err
 	}
 	return t, number, nil

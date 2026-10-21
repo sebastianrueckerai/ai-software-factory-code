@@ -100,11 +100,12 @@ func (r *Runner) RoutineRun(ctx context.Context, in RoutineRunInput) (RoutineRun
 	switch files {
 	case policy.FilesHuman:
 		t, issue, err := fileHumanTask(ctx, r.store, r.forgejo, r.timeline, p.Repo(), routineQuestion(rt, brief, provenance, p.Agents != policy.AgentsNone), []string{"routine"}, Task{ID: NewTaskID(), Kind: "human",
-			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser})
+			RiskClass: "standard", Source: SourceRoutine, Author: r.forgejo.BotUser}, routineDecider(in.Routine, run.Run, rt.Words()))
 		if err != nil {
 			return RoutineRunResult{}, err
 		}
-		// the card's question_asked row pokes the inbox, tell quiet or not
+		// the card's question_asked row pokes the inbox under the routine's
+		// decider line, tell quiet or not
 		return filed(t.ID, issue, "")
 	case policy.FilesAgent:
 		// the skill is the objective's first line until the prompt pack

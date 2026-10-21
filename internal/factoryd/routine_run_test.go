@@ -220,9 +220,14 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if pokes := routinePokes(t, r, store); len(pokes) != 0 {
 		t.Fatalf("routine pokes %+v, want none: the card's question_asked row pokes", pokes)
 	}
-	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Weekly bump of the pinned outside inputs" ||
+	asked := recordedEvents(r, EventQuestionAsked)
+	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Weekly bump of the pinned outside inputs" ||
 		asked[0].Detail["why"] != "the routine weekly-bump fired and files to a person" || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"Have the factory do it", "Done"}) {
 		t.Fatalf("question_asked %+v, want the card's one", asked)
+	}
+	// the poke names the routine (docs/routines.md rule 5)
+	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || m.Decider != "routine weekly-bump · run 1 · every Monday 06:00" {
+		t.Fatalf("the card's poke %+v, %v; want its decider line", m, ok)
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")

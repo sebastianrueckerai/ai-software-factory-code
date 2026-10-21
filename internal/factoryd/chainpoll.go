@@ -1393,7 +1393,7 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	}
 	if proj.Agents == policy.AgentsNone {
 		t, number, err := fileHumanTask(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), repairQuestion(repository, run.CommitSHA, findings, runURL, issues), nil,
-			Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: run.CommitSHA, Source: SourceChainRepair, Author: p.Forgejo.BotUser})
+			Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: run.CommitSHA, Source: SourceChainRepair, Author: p.Forgejo.BotUser}, "")
 		if err != nil {
 			log.Printf("chain poller: %s: file the repair card: %v", repository, err)
 			return
