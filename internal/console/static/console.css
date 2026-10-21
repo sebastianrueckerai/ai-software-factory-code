@@ -1192,7 +1192,14 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 #chat-form.theirs .arch-note .linkbtn { display: none; }
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }
-#level-btn i { width: 8px; height: 8px; border-radius: 1px; background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
+#level-btn i { width: 8px; height: 8px; border-radius: 1px; background: var(--lamp); box-shadow: var(--lamp-glow); }
+/* the lamp follows the level (C32): manual all but unlit, assisted dim, autonomous lit, full auto white-hot in a wide halo */
+#level-btn, .lvlpop [data-lvl] { --lamp: color-mix(in srgb, var(--accent) 70%, var(--bg-raised)); --lamp-glow: 0 0 4px color-mix(in srgb, var(--accent) 45%, transparent); }
+#level-btn[data-level="manual"], .lvlpop [data-lvl="manual"] { --lamp: color-mix(in srgb, var(--accent) 15%, var(--bg-raised)); --lamp-glow: none; }
+#level-btn[data-level="assisted"], .lvlpop [data-lvl="assisted"] { --lamp: color-mix(in srgb, var(--accent) 38%, var(--bg-raised)); --lamp-glow: none; }
+#level-btn[data-level="full auto"], .lvlpop [data-lvl="full auto"] { --lamp: color-mix(in srgb, var(--accent) 40%, #fff); --lamp-glow: 0 0 3px var(--accent), 0 0 9px var(--accent), 0 0 18px color-mix(in srgb, var(--accent) 60%, transparent); }
+[data-theme=light] :is(#level-btn[data-level="manual"], .lvlpop [data-lvl="manual"]) { --lamp-glow: inset 0 0 0 1px var(--line-strong); }
+[data-theme=light] :is(#level-btn[data-level="full auto"], .lvlpop [data-lvl="full auto"]) { --lamp: #00b8e0; --lamp-glow: 0 0 3px #00b8e0, 0 0 9px #00b8e0, 0 0 16px color-mix(in srgb, #00b8e0 55%, transparent); }
 #level-btn:hover, #level-btn[aria-expanded="true"] { color: var(--text); border-color: var(--text-faint); }
 #level-btn:disabled { cursor: default; }
 .lvlpop { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; width: 330px; padding: 6px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 12px 32px rgba(0, 0, 0, .4); }
@@ -1200,16 +1207,12 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .lvlpop .lp-head { display: flex; justify-content: space-between; margin: 0; padding: 4px 8px 6px; color: var(--text-faint); font: 11px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .lvlpop [data-lvl] { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 1px 8px; width: 100%; height: auto; margin: 0; padding: 7px 8px; border: 0; border-radius: 2px; background: none; color: var(--text); font-family: var(--font-ui); text-align: left; white-space: normal; cursor: pointer; }
 .lvlpop [data-lvl] i { grid-row: 1 / 3; margin-top: 5px; width: 9px; height: 9px; border: 1px solid var(--line-strong); border-radius: 1px; }
-.lvlpop [data-lvl][aria-checked="true"] i { border-color: var(--accent); background: var(--accent); box-shadow: 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
+.lvlpop [data-lvl][aria-checked="true"] i { border-color: var(--lamp); background: var(--lamp); box-shadow: var(--lamp-glow); }
 .lvlpop [data-lvl] b { font-size: 12.5px; font-weight: 600; }
 .lvlpop [data-lvl] .ck { color: var(--accent); font: 12px var(--font-mono); }
 .lvlpop [data-lvl] .lw { grid-column: 2 / 4; color: var(--text-muted); font-size: 11.5px; line-height: 1.4; }
 .lvlpop [data-lvl]:hover, .lvlpop [data-lvl]:focus-visible { background: var(--bg-hover); }
 .lvlpop [data-lvl][aria-checked="true"] { background: color-mix(in srgb, var(--accent) 9%, transparent); }
-.lvl-confirm { padding: 6px 8px 4px; }
-.lvl-confirm h2 { margin: 0 0 6px; font-size: 13px; font-weight: 600; }
-.lvl-confirm p { margin: 0 0 10px; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
-.lvl-confirm .acts { display: flex; gap: 8px; }
 .answer { display: flex; flex: none; flex-wrap: wrap; align-items: center; gap: 6px; padding: 8px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--need) 5%, var(--bg-raised)); }
 .answer[hidden] { display: none; }
 .answer button { height: auto; min-height: 28px; margin: 0; white-space: normal; }

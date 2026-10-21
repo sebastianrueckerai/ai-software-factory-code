@@ -71,6 +71,8 @@ func TestLab(t *testing.T) {
 	docsFake, docs := docsOver(t, forgejo.URL, labDocs)
 	docsToken, _ := factoryd.NewReadToken()
 	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
+	// the configuration tree, so the level control's write lands (C32)
+	withInfra(t, r).files = map[string]string{"factory/projects/" + labCodeProject.Name + ".yaml": "repository: sf/code\nmerge_rule: human\n"}
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
 	r.gateway = &chatGateway{t: t, lenient: true}
 	model := httptest.NewServer(r.gateway)
@@ -330,6 +332,8 @@ type labScene struct {
 	// metrics is the figures the project's metrics page answers (round
 	// 13, C30); zero: every figure absent
 	metrics factoryd.MetricsReport
+	// costs is the costs page's ledger; nil gets labCosts of spend
+	costs *policy.Costs
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
@@ -673,7 +677,11 @@ func (r *rig) seedScene(s labScene) string {
 			Mode: factoryd.ModePullRequests, Since: now.AddDate(0, 0, -9)}
 	}
 	r.mirrors.mu.Unlock()
-	r.ledger.costs = labCosts(now, s.spend, s.tasks)
+	if s.costs != nil {
+		r.ledger.costs = *s.costs
+	} else {
+		r.ledger.costs = labCosts(now, s.spend, s.tasks)
+	}
 	r.figures.SetMetrics(s.metrics)
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
@@ -1557,7 +1565,7 @@ func labMetricsReport(now time.Time) factoryd.MetricsReport {
 		Interventions:      move(1.4, 1.7, [7]float64{1.9, 1.8, 1.7, 1.6, 1.5, 1.5, 1.4}),
 		Escalations:        flat(5),
 		EscalatedShare:     move(0.16, 0.19, [7]float64{0.23, 0.22, 0.21, 0.20, 0.19, 0.18, 0.16}),
-		EscalationsHandled: factoryd.EscalationsHandled{Human: 1, AI: 3, Prev: [2]float64{2, 2}, Weeks: [7]float64{2, 1, 2, 1, 1, 2, 1}},
+		EscalationsHandled: factoryd.EscalationsHandled{Human: 1, AI: 3, Unjudged: 1, Prev: [3]float64{2, 2, 2}, Weeks: [7]float64{2, 1, 2, 1, 1, 2, 1}},
 		ToolSpend:          move(0.42, 0.37, [7]float64{0.28, 0.31, 0.35, 0.33, 0.36, 0.37, 0.42}),
 		ToolMix: []factoryd.MixShare{
 			{Alias: "web_scrape", Share: 61},

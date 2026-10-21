@@ -39,15 +39,16 @@ type RevertedRefiled struct {
 }
 
 // EscalationsHandled splits the window's escalations by who judged them:
-// a human, or an AI (the project agent deciding for the member at the
-// autonomous level, or a member the policy lists in ai_members); the rest
-// closed unjudged when their card ended. Prev is [human, ai], Weeks counts
-// the human's per bucket.
+// a human, an AI (the project agent deciding for the member at the
+// autonomous level, or a member the policy lists in ai_members), or no
+// one, closed unjudged when their card ended. Prev is [human, ai,
+// unjudged], Weeks counts the human's per bucket.
 type EscalationsHandled struct {
-	Human float64    `json:"human"`
-	AI    float64    `json:"ai"`
-	Prev  [2]float64 `json:"prev"`
-	Weeks [7]float64 `json:"weeks"`
+	Human    float64    `json:"human"`
+	AI       float64    `json:"ai"`
+	Unjudged float64    `json:"unjudged"`
+	Prev     [3]float64 `json:"prev"`
+	Weeks    [7]float64 `json:"weeks"`
 }
 
 // MixShare is one class's, deployment's or tool's share of the window's
@@ -526,12 +527,12 @@ func metricEscalationsHandled(ctx context.Context, db *sql.DB, repo string, w me
 		WHERE a.kind = 'escalation' AND t.repository = $1 AND a.raised_at >= $2 AND a.raised_at < $3`
 	const byAI = `a.resolved_by = ANY($4::text[])`
 	const byHuman = `a.resolved_by IS NOT NULL AND a.resolved_by <> '` + FactoryDecider + `' AND NOT (` + byAI + `)`
-	const counts = `count(*) FILTER (WHERE ` + byHuman + `), count(*) FILTER (WHERE ` + byAI + `)`
+	const counts = `count(*) FILTER (WHERE ` + byHuman + `), count(*) FILTER (WHERE ` + byAI + `), count(*) FILTER (WHERE a.resolved_by = '` + FactoryDecider + `')`
 	var e EscalationsHandled
-	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.From, w.To, ai).Scan(&e.Human, &e.AI); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.From, w.To, ai).Scan(&e.Human, &e.AI, &e.Unjudged); err != nil {
 		return e, err
 	}
-	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.PrevFrom, w.PrevTo, ai).Scan(&e.Prev[0], &e.Prev[1]); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT `+counts+pair, repo, w.PrevFrom, w.PrevTo, ai).Scan(&e.Prev[0], &e.Prev[1], &e.Prev[2]); err != nil {
 		return e, err
 	}
 	var err error

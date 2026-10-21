@@ -12,18 +12,18 @@ import (
 // merge_rule.
 
 var wantManual = []string{"new_card", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
-	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card",
+	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}
 
 var wantAssisted = []string{"answer", "tell_card", "steer", "request_changes", "reject_plan",
-	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "set_dependency", "split_card",
+	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "fund", "set_dependency", "split_card",
 	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_skip"}
 
 var wantAutonomous = []string{"approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource",
 	"github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
 
-var wantFullAuto = []string{"invite", "alert_verdict", "promote_resource", "release_resource",
-	"github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
+var wantFullAuto = []string{"invite", "promote_resource", "release_resource",
+	"github_export", "github_sync", "set_autonomy", "routine_write", "routine_delete"}
 
 func TestConfirmFor(t *testing.T) {
 	base := DefaultChat.Confirm
@@ -48,13 +48,13 @@ func TestConfirmForCustomBase(t *testing.T) {
 	// so a custom list confirms a routine's write too; assisted takes the
 	// starts and filings off a custom list and keeps the always-confirm set
 	manual := []string{"close", "approve_merge", "deny_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync",
-		"write_doc", "set_autonomy", "routine_write", "routine_delete"}
+		"write_doc", "set_autonomy", "routine_write", "routine_delete", "fund"}
 	if got := ConfirmFor(AutonomyManual, MergeHuman, []string{"close"}); !slices.Equal(got, manual) {
 		t.Errorf("ConfirmFor(manual, [close]) = %v, want %v", got, manual)
 	}
 	got := ConfirmFor(AutonomyAssisted, MergeHuman, []string{"deny_merge", "new_card"})
 	want := []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy",
-		"routine_write", "routine_delete"}
+		"routine_write", "routine_delete", "fund"}
 	if !slices.Equal(got, want) {
 		t.Errorf("ConfirmFor(assisted, [deny_merge new_card]) = %v, want %v", got, want)
 	}
@@ -79,7 +79,7 @@ func TestChatOfAutonomy(t *testing.T) {
 func TestChatOfManualKeepsConfirm(t *testing.T) {
 	d := Document{}
 	p := ProjectConfig{Chat: &ChatConfig{Confirm: []string{"close"}}}
-	if got := d.ChatOf(p).Confirm; got[0] != "close" || !slices.Contains(got, "routine_write") || len(got) != 1+len(AlwaysConfirm) {
+	if got := d.ChatOf(p).Confirm; got[0] != "close" || !slices.Contains(got, "routine_write") || len(got) != 2+len(AlwaysConfirm) {
 		t.Errorf("ChatOf(manual, confirm [close]) = %v, want close and the always-confirm set", got)
 	}
 }
@@ -149,5 +149,63 @@ func TestChatOfMergesDocRepoAndParallelTurns(t *testing.T) {
 	}
 	if err := (&ChatConfig{ParallelTurns: -1}).validate(); err == nil {
 		t.Error("parallel_turns -1 validated")
+	}
+}
+
+func TestFullAutoConfirmsNoAlertVerdictOrDoc(t *testing.T) {
+	got := ConfirmFor(AutonomyAutonomous, MergeAuto, DefaultChat.Confirm)
+	for _, tool := range []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"} {
+		if slices.Contains(got, tool) {
+			t.Errorf("full auto confirms %s: %v", tool, got)
+		}
+	}
+	human := ConfirmFor(AutonomyAutonomous, MergeHuman, DefaultChat.Confirm)
+	for _, tool := range []string{"approve_merge", "deny_merge", "alert_verdict", "write_doc"} {
+		if !slices.Contains(human, tool) {
+			t.Errorf("autonomous at merge rule human drops %s: %v", tool, human)
+		}
+	}
+}
+
+func TestFundIsConfirmedBelowAutonomous(t *testing.T) {
+	for _, tt := range []struct {
+		level, merge string
+		want         bool
+	}{
+		{AutonomyManual, MergeHuman, true},
+		{AutonomyAssisted, MergeHuman, true},
+		{AutonomyAutonomous, MergeHuman, false},
+		{AutonomyAutonomous, MergeAuto, false},
+	} {
+		if got := slices.Contains(ConfirmFor(tt.level, tt.merge, DefaultChat.Confirm), "fund"); got != tt.want {
+			t.Errorf("fund confirmed at %s/%s = %v, want %v", tt.level, tt.merge, got, tt.want)
+		}
+	}
+	if !slices.Contains(ChatTools, "fund") {
+		t.Error("fund is no chat tool")
+	}
+}
+
+func TestConfirmForKeepsFundWhereMoneyAsks(t *testing.T) {
+	for _, tt := range []struct {
+		level, merge string
+		want         bool
+	}{
+		{AutonomyManual, MergeHuman, true},
+		{AutonomyAssisted, MergeHuman, true},
+		{AutonomyAutonomous, MergeHuman, false},
+		{AutonomyAutonomous, MergeAuto, false},
+	} {
+		if got := slices.Contains(ConfirmFor(tt.level, tt.merge, []string{}), "fund"); got != tt.want {
+			t.Errorf("an empty confirm list at %s/%s holds fund = %v, want %v", tt.level, tt.merge, got, tt.want)
+		}
+	}
+}
+
+func TestMoneyMeaningNamesWhatStillAsks(t *testing.T) {
+	for state, want := range map[string]string{AutonomyAssisted: "money beyond a card's budget", AutonomyAutonomous: "money beyond the pool", AutonomyFullAuto: "money beyond the pool"} {
+		if !strings.Contains(AutonomyMeaning[state], want) {
+			t.Errorf("%s: %q lacks %q", state, AutonomyMeaning[state], want)
+		}
 	}
 }

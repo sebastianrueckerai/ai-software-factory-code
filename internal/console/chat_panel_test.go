@@ -152,14 +152,14 @@ console.log(JSON.stringify({
   unread: String(chatView.unreadOf(threads, "sebastian")),
   inboxHead: chatView.headHTML(threads[0], "sebastian", now),
   head: chatView.headHTML(threads[1], "sebastian", now),
-  headActs: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4}, "sebastian", now),
+  headActs: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4, unswept: 4}, "sebastian", now),
+  headCleared: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4}, "sebastian", now),
   pendingRow: JSON.stringify([chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes", "No"]}]) && 1,
     chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"]}, {id: 2, role: "user", content: "Yes"}]) && 1,
     chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([]),
     chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"], settled: true, reason: "answered by sebastian · 09:14"}])]),
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
   levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
-  levelConfirm: chatView.levelConfirmHTML({name: "full auto", words: "nothing waits"}),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
   poke: chatView.factoryHTML({id: 7, role: "assistant", kind: "poke", content: "Started the login card.", at: "2026-10-11T09:12:00Z",
@@ -242,15 +242,15 @@ console.log(JSON.stringify({
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
 			`<span class="tacts"><button type="button" data-clear title="Hide the old rows from view; the record keeps them">Clear old</button>` +
 			`<button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
+		{"headCleared", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
+			`<span class="tacts"><button type="button" data-clear disabled title="Hide the old rows from view; the record keeps them">Clear old</button>` +
+			`<button type="button" data-archive>Archive</button><button type="button" class="danger" data-delete>Delete…</button></span>`},
 		{"pendingRow", `[1,1,null,null,null]`},
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
-		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>a change confirms</span></p>` +
+		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>one click sets it</span></p>` +
 			`<button type="button" role="menuitemradio" aria-checked="false" data-lvl="manual"><i aria-hidden="true"></i><b>manual</b><span class="ck" aria-hidden="true"></span><span class="lw">every action confirms</span></button>` +
 			`<button type="button" role="menuitemradio" aria-checked="true" data-lvl="assisted"><i aria-hidden="true"></i><b>assisted</b><span class="ck" aria-hidden="true">✓</span><span class="lw">a &lt;b&gt;</span></button>`},
-		{"levelConfirm", `<div class="lvl-confirm" role="dialog" aria-labelledby="lvl-title"><h2 id="lvl-title">Set the project's autonomy to full auto?</h2>` +
-			`<p>This writes a policy change and lands in the audit like every decision. From then on: nothing waits.</p>` +
-			`<div class="acts"><button type="button" class="need-btn" data-set="full auto">Set</button><button type="button" data-keep>Keep</button></div></div>`},
 		{"deleteOne", `<div id="thread-dialog" class="overlay" role="dialog" aria-modal="true" aria-labelledby="dlg-title"><div class="overlay-box">` +
 			`<h2 id="dlg-title">Delete “a &lt;b&gt;”?</h2><p>Its 1 message goes for good: a hard delete, no archive. One event will name you, the thread and the count. ` +
 			`What the chat did stays in the events, the audit and git, so no decision and no merged card goes with it.</p>` +

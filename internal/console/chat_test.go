@@ -440,6 +440,9 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 		out[i].Messages++
 		out[i].SeenUpto = f.seen[fmt.Sprint(k, " ", m.Conversation)]
 		out[i].ClearedUpto = f.cleared[fmt.Sprint(k, " ", m.Conversation)]
+		if m.ID > out[i].ClearedUpto {
+			out[i].Unswept++
+		}
 		turnEnd := m.Role == "assistant" && !m.Queued &&
 			(len(m.ToolCalls) == 0 || slices.ContainsFunc(m.ToolCalls, func(c factoryd.ChatToolCall) bool { return c.Proposal != "" }))
 		if turnEnd && m.ID > f.seen[fmt.Sprint(k, " ", m.Conversation)] {
@@ -1119,7 +1122,7 @@ func TestChatTextReply(t *testing.T) {
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	equal(t, "GET", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{200,
 		`{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
-			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},` +
+			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
 }
@@ -1190,7 +1193,7 @@ func TestChatToolSentences(t *testing.T) {
 	}
 	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "move_card",
 		"answer", "tell_card", "retry", "start_plan", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge", "invite",
-		"github_export", "github_sync", "close", "edit", "grant_session", "set_dependency", "split_card", "write_doc", "set_autonomy",
+		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
 	equal(t, "the defaulted parameters", []any{required["new_card"], required["deny_merge"], required["set_summary"], required["set_accent"],
 		required["session_step"], required["answer"]},
@@ -1204,8 +1207,8 @@ func TestChatToolSentences(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	for _, f := range offered(r, g) {
 		about := f["description"].(string)
-		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)); always != strings.Contains(about, "(needs OK)") {
-			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and nothing else", f["name"], about)
+		if always := slices.Contains(policy.AlwaysConfirm, f["name"].(string)) || f["name"] == "fund"; always != strings.Contains(about, "(needs OK)") {
+			t.Errorf("%s: %q: an empty confirm list marks the always-confirm set and fund, nothing else", f["name"], about)
 		}
 	}
 }
@@ -1529,9 +1532,9 @@ func TestSystemTool(t *testing.T) {
 		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.\n",
 		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
 		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+
-			"  assisted: the agent starts and files ready work by itself; direction, money and merges still ask\n"+
-			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money still ask\n"+
-			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money\n",
+			"  assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask\n"+
+			"  autonomous: the chat's remaining confirms go off; merges follow the merge rule; direction and money beyond the pool still ask\n"+
+			"  full auto: autonomous with the merge rule on auto: nothing waits for a person but direction and money beyond the pool\n",
 		"\nProcess maintenance:\n  lane backlog\n  lane ready, moved by writers\n  merge rule: human\n  approvers: sebastian\n"+
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n"+
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n"+
@@ -3133,17 +3136,17 @@ func TestChatNewConversation(t *testing.T) {
 		return strings.TrimSpace(rec.Body.String())
 	}
 	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"login":"sebastian","number":2,"title":"world","state":"active","current":true,`+
-		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},"messages":[`+
+		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
 		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
 	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
-		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0},"messages":[`+
+		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
 		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
-			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0},`+
-			`{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0}]`)
+			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},`+
+			`{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2}]`)
 	if rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation=0", nil), ck); rec.Code != http.StatusBadRequest {
 		t.Fatalf("GET conversation 0 = %d, want 400", rec.Code)
 	}

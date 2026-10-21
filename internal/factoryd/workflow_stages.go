@@ -1017,16 +1017,16 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return v
 	}
 	whyHuman := card
-	if len(card) == 0 {
-		auto, unmet := AutoMerge(g, review)
+	if len(card) == 0 || mechanicalSource(t.source) && g.Policy.MergeRule == policy.MergeAuto {
+		auto, unmet := AutoMerge(g, review, t.source)
 		if !auto {
-			whyHuman = unmet
+			whyHuman = slices.Concat(card, unmet)
 		} else {
 			v, done, failed := t.autoMerge(commit, g, review)
 			if done {
 				return v
 			}
-			whyHuman = []string{failed}
+			whyHuman = slices.Concat(card, []string{failed})
 		}
 	}
 	if t.rolling && t.rollGap == versionRollGap {

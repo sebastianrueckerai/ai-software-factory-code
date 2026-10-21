@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -237,7 +238,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if err != nil {
 		return err
 	}
-	if err := w.Start.StartWake(ctx, name, logins[0], conv, "wake_ask", w.askText(ctx, pending)); err != nil {
+	if err := w.Start.StartWake(ctx, name, logins[0], conv, "wake_ask", w.askText(ctx, pending, v.ApproversOf(p.Repository), logins[0])); err != nil {
 		log.Printf("wake %s: %v", name, err)
 		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 	}
@@ -354,15 +355,20 @@ func (w *Waker) askBudget(ctx context.Context, repository string, task Task, now
 }
 
 // askText is the wake's text: every ask of the batch with its card ref,
-// then what the turn does with them.
-func (w *Waker) askText(ctx context.Context, asks []pendingAsk) string {
+// then what the turn does with them; fund is named where the woken login
+// holds the tool, an approver.
+func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []string, login string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Wake: %d asks wait for a human.", len(asks))
 	for _, a := range asks {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
 		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), askSentence(a.e))
 	}
-	b.WriteString("\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
+	b.WriteString("\n\nRead each card. Settle what your permissions allow.")
+	if slices.Contains(approvers, login) {
+		b.WriteString(" A card waiting on its budget takes fund from your pool.")
+	}
+	b.WriteString(" For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
 	return b.String()
 }
 

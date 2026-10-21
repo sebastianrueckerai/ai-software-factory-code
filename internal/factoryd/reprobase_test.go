@@ -207,7 +207,7 @@ func TestGuardClassCardReproducesInTest(t *testing.T) {
 	// the auto merge accepts the in-test pair as the proven fix
 	yes := true
 	ok, unmet := AutoMerge(GateResults{Policy: PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto},
-		ChecksPassed: true, Reproduction: res}, Review{Verdict: "approve", Summary: "a narrow guard", StrictImprovement: &yes})
+		ChecksPassed: true, Reproduction: res}, Review{Verdict: "approve", Summary: "a narrow guard", StrictImprovement: &yes}, "api")
 	if !ok {
 		t.Fatalf("auto merge unmet: %v", unmet)
 	}

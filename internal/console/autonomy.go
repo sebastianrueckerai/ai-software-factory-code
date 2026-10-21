@@ -67,6 +67,7 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlog
 	if line := autonomyRefusal(state, backlogCap); line != "" {
 		return refuse(http.StatusBadRequest, line)
 	}
+	start := time.Now()
 	from, repo := policy.AutonomyManual, ""
 	if v, ok := c.inForce(ctx); ok {
 		if p, ok := v.Projects[name]; ok {
@@ -83,7 +84,7 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlog
 	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventAutonomyChanged,
 		Actor: a.s.user, Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail})
-	log.Printf("console: %s set %s to %s via %s (%s#%d)", a.s.user, name, state, a.via, c.cfg.InfraRepo, pr)
+	log.Printf("console: %s set %s to %s via %s (%s#%d) in %.1fs", a.s.user, name, state, a.via, c.cfg.InfraRepo, pr, time.Since(start).Seconds())
 	return nil
 }
 
@@ -163,6 +164,11 @@ func (c *Console) commitProjectFile(ctx context.Context, a actor, name, message 
 	}
 	if err := c.mergeInfra(ctx, a.s, pull.Number); err != nil {
 		return 0, &forgejoRefusal{fmt.Sprintf("merge the pull request #%d", pull.Number), err}
+	}
+	if c.cfg.PolicyReload != nil {
+		if err := c.cfg.PolicyReload(ctx); err != nil {
+			log.Printf("console: the policy after %s#%d: %v", c.cfg.InfraRepo, pull.Number, err)
+		}
 	}
 	return pull.Number, nil
 }

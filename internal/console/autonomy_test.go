@@ -119,6 +119,8 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	r := newRig(t)
 	infra := withInfra(t, r)
 	infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n"}
+	reloads := 0
+	r.c.cfg.PolicyReload = func(context.Context) error { reloads++; return nil }
 	var checked []string
 	r.c.cfg.CheckChange = func(_ context.Context, changes map[string][]byte) ([]string, error) {
 		for path, file := range changes {
@@ -151,6 +153,7 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	if len(infra.merges) != 1 || infra.merges[0].auth != "Bearer access-1" {
 		t.Fatalf("merges = %+v", infra.merges)
 	}
+	equal(t, "the policy loads after the merge", reloads, 1)
 	rows := r.events.all()[before:]
 	if len(rows) != 1 {
 		t.Fatalf("%d events, want 1: %+v", len(rows), rows)
@@ -168,6 +171,7 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	if len(infra.contents) != 1 {
 		t.Fatalf("a refused file committed: %+v", infra.contents)
 	}
+	equal(t, "a refused file loads nothing", reloads, 1)
 }
 
 // A level the project file already holds changes nothing: the POST

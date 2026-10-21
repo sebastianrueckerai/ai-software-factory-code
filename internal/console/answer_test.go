@@ -555,15 +555,18 @@ func TestChatClearsOldRows(t *testing.T) {
 	}
 	answer := read()
 	answer = read() // the seen marker passes the plain row, it settles too
-	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{3, 0})
+	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{3, 0, 3})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}); code != http.StatusNoContent {
 		t.Fatalf("POST clear = %d: %s", code, body)
 	}
 	answer = read()
-	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared)}, []int{1, 2})
+	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{1, 2, 0})
 	if answer.Messages[0].TaskID != "t-w" || answer.Messages[0].Settled {
 		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
 	}
+	say(factoryd.ChatMessage{Role: "assistant", Content: "#16 merged.", Conversation: inbox})
+	answer = read()
+	equal(t, "a row after the sweep is the next sweep's", []int{len(answer.Messages), int(answer.Thread.Unswept)}, []int{2, 1})
 }
 
 // Clear old past the compaction fold: the sweep's read answers no

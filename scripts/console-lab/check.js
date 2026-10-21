@@ -20,7 +20,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 // contrastEl are the C14 parts' text, measured on the rendered page in
 // both themes (design/rounds/02-multi-chat/check.js)
 const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, .msg.settled .fold, " +
-  ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .lvl-confirm p, .msg.sum .said, " +
+  ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .msg.sum .said, " +
   ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
   ".doc-path, .doc-facts, .doc-refused, .doc-dot, .doc-base, .doc-note, .doc-confirm-q, .doc-new-l, .doc-discard, #doc-new, " +
   ".doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a, .doc-pins-l, .doc-pin, .doc-pin-add, #doc-forgejo";
@@ -1293,27 +1293,27 @@ async function text(page) {
       }
     }
     if (sc === "assisted") {
-      // the level control under Send (C14): the four states with their words; another one
-      // turns the menu into the confirm in place, Keep keeps the level, Escape closes the menu
+      // the level control under Send (C14, C32): the four states with their words, no
+      // confirm; a pick closes the menu and sets the control at once with no pending look,
+      // the write lands behind it, the lamp's blue follows the level, Escape closes the menu
       const btn = p.page.locator("#level-btn"), pop = p.page.locator(".lvlpop");
+      const lamp = () => btn.locator("i").evaluate((e) => getComputedStyle(e).backgroundColor);
       if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: the control does not show assisted");
+      const lampBefore = await lamp();
       await btn.click();
       if ((await pop.locator("[data-lvl]").count()) !== 4 || (await pop.locator(".lw").count()) !== 4) fails.push("level: the menu does not list the four states with their words");
       if ((await pop.locator('[aria-checked="true"]').getAttribute("data-lvl")) !== "assisted") fails.push("level: the menu does not check the current state");
-      await pop.locator('[data-lvl="autonomous"]').click();
-      const conf = await pop.innerText();
-      for (const w of ["autonomy to autonomous?", "policy change", "audit", "Set", "Keep"]) if (!conf.includes(w)) fails.push('level: the confirm lacks "' + w + '"');
-      await pop.getByRole("button", { name: "Keep" }).click();
-      if (await pop.isVisible()) fails.push("level: Keep does not close the menu");
-      if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: Keep changed the level");
-      await btn.click();
+      if (await pop.locator("[data-set], [data-keep]").count()) fails.push("level: the menu still carries a confirm");
       await p.page.keyboard.press("Escape");
       if (await pop.isVisible()) fails.push("level: Escape does not close the menu");
       await btn.click();
-      await pop.locator('[data-lvl="autonomous"]').click();
-      await p.page.keyboard.press("Escape");
-      if (await pop.isVisible()) fails.push("level: Escape does not close the confirm");
-      if ((await btn.getAttribute("data-level")) !== "assisted") fails.push("level: Escape on the confirm changed the level");
+      await pop.locator('[data-lvl="full auto"]').click();
+      if (await pop.isVisible()) fails.push("level: a pick leaves the menu open");
+      if ((await btn.getAttribute("data-level")) !== "full auto") fails.push("level: a pick does not set the control at once");
+      if (await btn.isDisabled()) fails.push("level: the control greys while the write runs");
+      await p.page.waitForTimeout(700);
+      if ((await btn.getAttribute("data-level")) !== "full auto") fails.push("level: the write did not land, the control reads " + (await btn.getAttribute("data-level")));
+      if ((await lamp()) === lampBefore) fails.push("level: the lamp's blue does not follow the level");
       // the agent's own start carries its decider line in the inbox (C14)
       await p.page.locator("#thread-rows .trow.inbox").click();
       await p.page.waitForTimeout(600);
@@ -1391,7 +1391,8 @@ async function text(page) {
       await p.page.keyboard.press("Escape");
       // Clear old (the sweep): a shrunk log holds the member's scroll over
       // a background refresh, the sweep takes the settled rows from view,
-      // the open ask stays with its buttons, and the cleared line counts
+      // the open ask stays with its buttons, the cleared line counts, and
+      // the button greys until a new row lands
       const logEl = p.page.locator("#chat-log");
       await logEl.evaluate((e) => { e.style.height = "220px"; });
       await logEl.evaluate((e) => { e.scrollTop = 0; });
@@ -1401,10 +1402,12 @@ async function text(page) {
       const clearBtn = p.page.locator(".thead [data-clear]");
       if (!(await clearBtn.count())) fails.push("poke: the head carries no Clear old");
       else {
+        if (await clearBtn.isDisabled()) fails.push("poke: Clear old is greyed with rows to sweep");
         const openAsk = p.page.locator("#chat-log .msg.esc:not(.settled)");
         if (!(await openAsk.count())) fails.push("poke: no open ask to keep over the sweep");
         await clearBtn.click();
         await p.page.waitForTimeout(700);
+        if (!(await clearBtn.isDisabled())) fails.push("poke: Clear old stays lit with nothing left to sweep");
         if (!(await openAsk.count())) fails.push("poke: the sweep took the open ask");
         else if (!(await p.page.locator("#chat-answer").getByRole("button", { name: "Postgres" }).count()))
           fails.push("poke: the open ask lost its answer row over the sweep");

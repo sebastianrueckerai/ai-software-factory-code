@@ -189,6 +189,7 @@ var accessTable = map[string]accessRule{
 	"close":            rCard,
 	"edit":             rCard,
 	"grant_session":    rCard,
+	"fund":             {need: approver, scope: scCard, what: "fund a card"},
 	"set_dependency":   rCard,
 	"split_card":       {need: approver, scope: scCard, what: "split a card"},
 	"unmove_card":      rCard,

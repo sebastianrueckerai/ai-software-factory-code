@@ -278,6 +278,36 @@ type fakeTasks struct {
 	deps     map[string][]string // the tasks a task depends on
 	carries  map[string][]string // the cards a roll task carries
 	read     func(s *fakeTasks, id string)
+	// fundedEUR is the month's chat funding FundCard's pool counts, events
+	// the ledger its card_funded row goes to
+	fundedEUR float64
+	events    *fakeEvents
+}
+
+// FundCard raises task id's budget and records e, both or neither, as the
+// store's one transaction does.
+func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+	if bounds != nil {
+		if factoryd.Cents(s.fundedEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
+			return 0, 0, &factoryd.PoolSpentError{Funded: s.fundedEUR}
+		}
+		for _, k := range s.tasks {
+			if k.ID == id && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
+				return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
+			}
+		}
+		e.Detail["decider"] = "agent"
+	}
+	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
+	if err != nil {
+		return 0, 0, err
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	if _, err := s.events.Record(ctx, e); err != nil {
+		s.RaiseTaskBudget(ctx, id, -eur)
+		return 0, 0, err
+	}
+	return from, to, nil
 }
 
 // Dependencies are the tasks task id depends on, those not done first.
@@ -958,6 +988,7 @@ func newRig(t *testing.T) *rig {
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
 		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}}
+	r.tasks.events = r.events
 	r.chat = &fakeChat{tasks: r.tasks}
 	r.sessions = newFakeSessions()
 	c, err := New(Config{

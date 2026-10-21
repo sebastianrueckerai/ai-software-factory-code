@@ -1031,6 +1031,14 @@ func factoryPRSources(source string) bool {
 	return source == SourceGitHubSync || source == SourceSchemaCopy || source == SourceTemplateUpdate || source == SourceRevert
 }
 
+// mechanicalSource: factoryd wrote the whole change (a roll, a revert, a
+// template update, a schema copy), so the merge gate ignores class and
+// review. A GitHub sync brings code committed on GitHub and is no such
+// source.
+func mechanicalSource(source string) bool {
+	return source == SourceRoll || source == SourceRevert || source == SourceSchemaCopy || source == SourceTemplateUpdate
+}
+
 // FileTask files task t the way the API, the alert intake, the roller
 // and the configuration loader do (task 42): the issue on repo first, as
 // the bot, labelled labels and its state, then the task row linked to it.

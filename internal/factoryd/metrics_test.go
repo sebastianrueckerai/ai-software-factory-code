@@ -336,12 +336,13 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 		('escalation', 'gate', 'c3', '2026-10-07T13:00Z', NULL),   -- judged by the controller, an AI member
 		('escalation', 'gate', 'c1', '2026-10-01T12:00Z', NULL),   -- judged by sebastian
 		('escalation', 'gate', 'c6', '2026-10-06T10:00Z', NULL),   -- judged by the project agent
+		('escalation', 'gate', 'c2', '2026-10-02T12:00Z', NULL),   -- closed unjudged with its card
 		('escalation', 'gate', 'c5', '2026-09-21T10:00Z', NULL),   -- closed unjudged with its card
 		('escalation', 'gate', 'o1', '2026-10-02T18:30Z', NULL)`)
 	must(`UPDATE alerts SET resolved_by = 'controller', verdict = 'real' WHERE kind = 'escalation' AND task_id = 'c3'`)
 	must(`UPDATE alerts SET resolved_by = 'sebastian', verdict = 'noise' WHERE kind = 'escalation' AND task_id = 'c1'`)
 	must(`UPDATE alerts SET resolved_by = 'agent', verdict = 'real' WHERE kind = 'escalation' AND task_id = 'c6'`)
-	must(`UPDATE alerts SET resolved_by = 'factoryd', verdict = 'unjudged' WHERE kind = 'escalation' AND task_id = 'c5'`)
+	must(`UPDATE alerts SET resolved_by = 'factoryd', verdict = 'unjudged' WHERE kind = 'escalation' AND task_id IN ('c5', 'c2')`)
 	if _, _, err := policy.Record(ctx, s.db, "metrics-test", policy.Tree{Document: policy.Document{AIMembers: []string{"controller"}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -482,18 +483,19 @@ func TestMetricsFigures(t *testing.T) {
 	// card's: none); prev none over 1; b5 holds 3 over c1 and c2
 	fig(t, "interventions", r.Interventions, Figure{Value: 1, Prev: 0, Has: true, PrevHas: true,
 		Weeks: [7]float64{0, 0, 0, 0, 0, 1.5, 0.5}})
-	// escalations: c1's, c6's and c3's in the window (b5, b6, b6), c5's
-	// in prev (b4); o1's is sf/other's
-	fig(t, "escalations", r.Escalations, Figure{Value: 3, Prev: 1, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 0, 1, 1, 2}})
-	// escalated share: of the window's done cards c1 c2 c3 c6, three
-	// escalated -> 3/4; prev c5 1/1; weeks by the cards' finish: b3 c5,
-	// b5 c1 of c1 c2, b6 c3 and c6
-	fig(t, "escalated share", r.EscalatedShare, Figure{Value: 0.75, Prev: 1, Has: true, PrevHas: true,
-		Weeks: [7]float64{0, 0, 0, 1, 0, 0.5, 1}})
+	// escalations: c1's, c2's, c6's and c3's in the window (b5, b5, b6,
+	// b6), c5's in prev (b4); o1's is sf/other's
+	fig(t, "escalations", r.Escalations, Figure{Value: 4, Prev: 1, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 0, 1, 2, 2}})
+	// escalated share: every one of the window's done cards c1 c2 c3 c6
+	// escalated -> 4/4; prev c5 1/1; weeks by the cards' finish: b3 c5,
+	// b5 c1 and c2, b6 c3 and c6
+	fig(t, "escalated share", r.EscalatedShare, Figure{Value: 1, Prev: 1, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 1, 0, 1, 1}})
 	// handled: sebastian judged c1's (human), the controller c3's and the
-	// agent c6's (AI); prev c5's closed unjudged; the human's per bucket
-	if r.EscalationsHandled != (EscalationsHandled{Human: 1, AI: 2, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) {
+	// agent c6's (AI), c2's closed unjudged; prev c5's closed unjudged;
+	// the human's per bucket
+	if r.EscalationsHandled != (EscalationsHandled{Human: 1, AI: 2, Unjudged: 1, Prev: [3]float64{0, 0, 1}, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) {
 		t.Fatalf("escalations handled = %+v", r.EscalationsHandled)
 	}
 	// human blocked: (5 h + 24 h) / (76 + 49 + 54 + 12) h; prev 22/50 h

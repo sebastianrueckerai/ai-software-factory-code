@@ -16,7 +16,8 @@ import (
 // Briefs (ruling 116): every needs-you card opens with a Brief, one to
 // three sentences of what to decide, why a human and what approve and
 // deny do, and a Detail, the same facts in plain language, written by one
-// small model call through the model gateway. The writer is a pass over
+// supervisor model call through the model gateway, bounded by the policy's
+// supervisor_timeout like every other. The writer is a pass over
 // the approval requests a moment after they file — whichever process
 // filed them (factoryd a merge or a plan, the gateway's commissioning a
 // resource) — so filing never blocks on the writer: a failed or timed-out
@@ -25,10 +26,6 @@ import (
 
 // briefBatch bounds the rows one pass takes.
 const briefBatch = 20
-
-// briefTimeout bounds the one model call a card's brief takes; a card
-// must not wait long for its writer.
-const briefTimeout = 30 * time.Second
 
 // briefChars and detailChars bound what a card shows of the writer's
 // answer, marked when cut.
@@ -121,7 +118,7 @@ func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t Task, alias 
 	if err != nil {
 		return "", "", err
 	}
-	content, _, err := b.Model.Chat(ctx, t.ID, alias, policy.PurposeSupervisor, briefTimeout, briefPrompt(a.Kind, acts), facts)
+	content, _, err := b.Model.Chat(ctx, t.ID, alias, policy.PurposeSupervisor, b.Current().Document.Limits.SupervisorTimeout, briefPrompt(a.Kind, acts), facts)
 	if err != nil {
 		return "", "", err
 	}

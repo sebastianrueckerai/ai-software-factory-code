@@ -559,3 +559,28 @@ func TestDeadBudgetWatchedCardAsksForMoney(t *testing.T) {
 		t.Fatalf("no budget mark for %s", clock.Format("2006-01"))
 	}
 }
+
+// fund is named in the wake only where the woken login is offered it: an
+// approver of an autonomous project.
+func TestWakeAskTextNamesFundOnlyForAnApprover(t *testing.T) {
+	for _, tc := range []struct {
+		approvers []string
+		autonomy  string
+		want      bool
+	}{
+		{nil, policy.AutonomyAutonomous, false},
+		{[]string{"sebastian"}, policy.AutonomyAutonomous, true},
+		{[]string{"morgan"}, policy.AutonomyAutonomous, false},
+	} {
+		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+			"wake-proj": {Repository: "sf/wake", Autonomy: tc.autonomy, Notify: []string{"sebastian"}, Approvers: tc.approvers}})
+		wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
+		if err := w.Pass(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		calls := starter.recorded()
+		if len(calls) != 1 || strings.Contains(calls[0].text, "takes fund from your pool.") != tc.want {
+			t.Errorf("approvers %v at %s: wake %+v, want fund named %v", tc.approvers, tc.autonomy, calls, tc.want)
+		}
+	}
+}

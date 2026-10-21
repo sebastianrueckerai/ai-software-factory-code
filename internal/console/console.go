@@ -119,6 +119,11 @@ type Tasks interface {
 	// transaction and answers the budget before and after the raise;
 	// ErrNotFound when there is no such task.
 	RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error)
+	// FundCard raises task id's budget by eur and writes e, the raise's
+	// card_funded row, with its budgets added, in one transaction; non-nil
+	// bounds mark the agent's own raise, checked under a lock on e's
+	// repository (*factoryd.PoolSpentError, *factoryd.CardCapError).
+	FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -253,6 +258,10 @@ type Config struct {
 	// refusal's lines, none when it passes; err when the tree could not
 	// be read.
 	CheckChange func(ctx context.Context, changes map[string][]byte) (refused []string, err error)
+	// PolicyReload loads the policy at infra's head now, after a project
+	// file's merge, so the change is in force when the write answers
+	// instead of at the loader's next pass; nil skips it.
+	PolicyReload func(ctx context.Context) error
 	// MainExists reports whether a project's repository has main.
 	MainExists func(ctx context.Context, repo factoryd.Repo) (bool, error)
 	// ReconcileError is Registrar.ReconcileError: why the project's last

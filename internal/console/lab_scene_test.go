@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -61,6 +62,7 @@ type labSceneJSON struct {
 	Runs          map[string][]factoryd.RoutineRun
 	RoutinesAt    time.Time
 	Metrics       factoryd.MetricsReport
+	Costs         *policy.Costs
 	Replies       []labReply
 }
 
@@ -70,7 +72,7 @@ func (j labSceneJSON) scene() labScene {
 		objects: j.Objects, events: j.Events, chat: j.Chat, proposals: j.Proposals, usedProposals: j.UsedProposals,
 		spend: j.Spend, chatSpend: j.ChatSpend, github: j.GitHub, alerts: j.Alerts, drawer: j.Drawer, autonomy: j.Autonomy,
 		seen: j.Seen, working: j.Working, inbox: j.Inbox, open: j.Open, archived: j.Archived, routines: j.Routines,
-		runs: j.Runs, routinesAt: j.RoutinesAt, metrics: j.Metrics, replies: j.Replies}
+		runs: j.Runs, routinesAt: j.RoutinesAt, metrics: j.Metrics, costs: j.Costs, replies: j.Replies}
 }
 
 // check refuses a scene the console never holds: a status, gate or lane
@@ -136,6 +138,21 @@ func (j labSceneJSON) check(now time.Time) error {
 		errs = append(errs, known("alert task", a.TaskID))
 	}
 	errs = append(errs, known("Drawer", j.Drawer))
+	if c := j.Costs; c != nil {
+		day := func(what, v string) error {
+			if _, err := time.Parse(policy.DateLayout, v); err != nil {
+				return fmt.Errorf("costs %s %q is no date in YYYY-MM-DD form", what, v)
+			}
+			return nil
+		}
+		errs = append(errs, day("from", c.From), day("to", c.To))
+		for _, d := range c.Days {
+			errs = append(errs, day("day", d.Day))
+		}
+		for _, tc := range c.Tasks {
+			errs = append(errs, known("costs task", tc.TaskID))
+		}
+	}
 	for _, err := range errs {
 		if err != nil {
 			return err
@@ -354,6 +371,45 @@ func TestLabSceneWakesEmptyBoard(t *testing.T) {
 			slices.Contains(got, "event: event") && json.Unmarshal([]byte(strings.TrimPrefix(got[len(got)-1], "data: ")), &e) == nil &&
 				e.TaskID == "" && e.Kind != factoryd.EventSessionSaid && e.Kind != factoryd.EventDocWritten {
 			return
+		}
+	}
+}
+
+func TestLabSceneCosts(t *testing.T) {
+	now := time.Now()
+	body := `{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""},
+		"Costs":{"from":"2026-10-01","to":"2026-10-02","days":[{"day":"2026-10-01","by_kind":{"model":1.5},"total":1.5},{"day":"2026-10-02","by_kind":{"model":2},"total":2}],
+		"tasks":[{"task_id":"t-1","eur":3.5,"lines":[{"kind":"model","ref":"big","eur":3.5}]}]}}`
+	var j labSceneJSON
+	if err := json.Unmarshal([]byte(body), &j); err != nil {
+		t.Fatal(err)
+	}
+	if err := j.check(now); err != nil {
+		t.Fatal(err)
+	}
+	r := newRig(t)
+	r.seedScene(j.scene())
+	if !reflect.DeepEqual(r.ledger.costs, *j.Costs) {
+		t.Fatalf("costs %+v, want the scene's %+v", r.ledger.costs, *j.Costs)
+	}
+
+	r.seedScene(labScene{spend: 40})
+	if got := len(r.ledger.costs.Days); got != 14 {
+		t.Fatalf("scene without costs: %d days, want 14", got)
+	}
+
+	for _, tc := range []struct{ name, costs, want string }{
+		{"day", `{"from":"2026-10-01","to":"2026-10-02","days":[{"day":"1 Oct"}]}`, `"1 Oct"`},
+		{"from", `{"from":"yesterday","to":"2026-10-02"}`, `"yesterday"`},
+		{"to", `{"from":"2026-10-01","to":"2026-13-02"}`, `"2026-13-02"`},
+		{"task", `{"from":"2026-10-01","to":"2026-10-02","tasks":[{"task_id":"t-9"}]}`, `"t-9"`},
+	} {
+		var j labSceneJSON
+		if err := json.Unmarshal([]byte(`{"Costs":`+tc.costs+`}`), &j); err != nil {
+			t.Fatal(tc.name, err)
+		}
+		if err := j.check(now); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: err %v, want %s in it", tc.name, err, tc.want)
 		}
 	}
 }
