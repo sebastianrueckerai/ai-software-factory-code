@@ -329,10 +329,10 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-	// ConfirmFactoryClose marks the factory_closed row id as finished: its
-	// comment posted and its issue closed. A confirmed or missing row, or
-	// one of another kind, is left as it is.
-	ConfirmFactoryClose(ctx context.Context, id int64) error
+	// ConfirmFactoryClose marks the task's factory_closed row for issue as
+	// finished: its comment posted and its issue closed. A confirmed or
+	// missing row is left as it is.
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// UnconfirmedFactoryCloses lists up to limit factory_closed rows not
 	// yet confirmed and created more than olderThan ago, oldest first.
 	UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error)
@@ -953,9 +953,10 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 	return id, err
 }
 
-func (s *PGStore) ConfirmFactoryClose(ctx context.Context, id int64) error {
+func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {
 	_, err := s.db.ExecContext(ctx,
-		`UPDATE intake_events SET confirmed_at = now() WHERE id = $1 AND kind = $2 AND confirmed_at IS NULL`, id, IntakeFactoryClosed)
+		`UPDATE intake_events SET confirmed_at = now() WHERE task_id = $1 AND kind = $2 AND comment_id = $3 AND confirmed_at IS NULL`,
+		taskID, IntakeFactoryClosed, issue)
 	return err
 }
 

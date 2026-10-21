@@ -155,8 +155,8 @@ type acceptanceStore struct {
 	tasks  map[string]factoryd.Task
 	alerts []factoryd.Alert
 	events []factoryd.IntakeEvent
-	// confirmedCloses are the factory_closed rows ConfirmFactoryClose marked.
-	confirmedCloses map[int64]bool
+	// confirmedCloses are the factory_closed rows ConfirmFactoryClose marked, by task and issue.
+	confirmedCloses map[[2]any]bool
 	sessions        []factoryd.Session
 	queue           []string // the merge queue, oldest first
 	finals          [][2]string
@@ -391,13 +391,13 @@ func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.Intake
 	return e.ID, nil
 }
 
-func (s *acceptanceStore) ConfirmFactoryClose(_ context.Context, id int64) error {
+func (s *acceptanceStore) ConfirmFactoryClose(_ context.Context, taskID string, issue int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.confirmedCloses == nil {
-		s.confirmedCloses = map[int64]bool{}
+		s.confirmedCloses = map[[2]any]bool{}
 	}
-	s.confirmedCloses[id] = true
+	s.confirmedCloses[[2]any{taskID, issue}] = true
 	return nil
 }
 
@@ -406,7 +406,7 @@ func (s *acceptanceStore) UnconfirmedFactoryCloses(_ context.Context, olderThan 
 	defer s.mu.Unlock()
 	var out []factoryd.IntakeEvent
 	for _, e := range s.events {
-		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[e.ID] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
 			out = append(out, e)
 		}
 	}

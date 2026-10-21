@@ -48,7 +48,7 @@ type fakeStore struct {
 	finished        map[string]time.Time
 	settled         map[string]bool
 	intakeEvents    []IntakeEvent
-	confirmedCloses map[int64]bool
+	confirmedCloses map[[2]any]bool
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
 	failIntakeEvent error
 	events          []Event // newest last, as NewestTaskEvents reads them
@@ -355,18 +355,18 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	return e.ID, nil
 }
 
-func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, id int64) error {
+func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {
 	if s.confirmedCloses == nil {
-		s.confirmedCloses = map[int64]bool{}
+		s.confirmedCloses = map[[2]any]bool{}
 	}
-	s.confirmedCloses[id] = true
+	s.confirmedCloses[[2]any{taskID, issue}] = true
 	return nil
 }
 
 func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	var out []IntakeEvent
 	for _, e := range s.intakeEvents {
-		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[e.ID] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
 			out = append(out, e)
 		}
 	}
@@ -2404,16 +2404,19 @@ func TestFactoryCloseConfirmation(t *testing.T) {
 	if got, err := s.UnconfirmedFactoryCloses(ctx, 0, 1); err != nil || len(got) != 1 || got[0].ID != ids[0] {
 		t.Fatalf("limit 1: %+v, %v", got, err)
 	}
-	if err := s.ConfirmFactoryClose(ctx, ids[0]); err != nil {
+	if err := s.ConfirmFactoryClose(ctx, "t-fc", 9); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.ConfirmFactoryClose(ctx, ids[0]); err != nil {
+	if err := s.ConfirmFactoryClose(ctx, "t-fc", 9); err != nil {
 		t.Fatalf("second confirm: %v", err)
 	}
-	if err := s.ConfirmFactoryClose(ctx, ids[2]); err != nil {
+	if err := s.ConfirmFactoryClose(ctx, "t-fc", 11); err != nil {
 		t.Fatalf("confirm of a comment row: %v", err)
 	}
-	if err := s.ConfirmFactoryClose(ctx, 999999); err != nil {
+	if err := s.ConfirmFactoryClose(ctx, "t-other", 10); err != nil {
+		t.Fatalf("confirm of another task's issue: %v", err)
+	}
+	if err := s.ConfirmFactoryClose(ctx, "t-fc", 99); err != nil {
 		t.Fatalf("confirm of a missing row: %v", err)
 	}
 	got, err = s.UnconfirmedFactoryCloses(ctx, 0, 10)
