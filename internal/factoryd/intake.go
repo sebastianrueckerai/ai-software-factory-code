@@ -795,7 +795,8 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 // HealFactoryCloses finishes the closes factoryd recorded and did not
 // confirm (closeIssueAsFactory failed between the record and the close):
 // each unconfirmed record older than two minutes, 50 a pass. A record
-// whose task is gone, or whose issue is closed already, is confirmed
+// whose task is gone or has no splittable repository, or whose issue is
+// closed already, is confirmed
 // without a write. A refusal from Forgejo (forgejoTerminal) settles the
 // record, which no retry changes; any other error joins and the record
 // waits for the next pass.
@@ -824,7 +825,8 @@ func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
 	t.IssueNumber = row.CommentID
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
-		return err
+		log.Printf("heal pass: task %s: issue #%d closes nowhere, the close is settled: %v", t.ID, row.CommentID, err)
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
 	}
 	closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, row.CommentID)
 	if err == nil && !closed {

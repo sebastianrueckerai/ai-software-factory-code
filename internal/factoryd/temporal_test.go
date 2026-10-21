@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"log"
@@ -373,6 +374,7 @@ func TestHealFactoryCloses(t *testing.T) {
 		failCall  string
 		failState int
 		noTask    bool
+		repo      string // the task's repository, linkshort/linkshort when empty
 		want      want
 		wantErr   bool
 	}{
@@ -390,6 +392,12 @@ func TestHealFactoryCloses(t *testing.T) {
 			want: want{calls: []string{"GET issues/5", "GET issues/5/comments", "PATCH issues/5"}, comments: []string{body}, state: "open", confirmed: true}},
 		{name: "a close that fails", age: 3 * time.Minute, state: "open", comments: []string{body}, failCall: "PATCH issues/5", wantErr: true,
 			want: want{calls: []string{"GET issues/5", "GET issues/5/comments", "PATCH issues/5"}, comments: []string{body}, state: "open"}},
+		{name: "a repository that does not split", age: 3 * time.Minute, state: "open", repo: "not-a-repo",
+			want: want{state: "open", confirmed: true}},
+		{name: "a deleted issue", age: 3 * time.Minute, state: "open", failCall: "GET issues/5", failState: http.StatusNotFound,
+			want: want{calls: []string{"GET issues/5"}, state: "open", confirmed: true}},
+		{name: "an issue read that fails", age: 3 * time.Minute, state: "open", failCall: "GET issues/5", wantErr: true,
+			want: want{calls: []string{"GET issues/5"}, state: "open"}},
 		{name: "a task that is gone", age: 3 * time.Minute, state: "open", noTask: true,
 			want: want{state: "open", confirmed: true}},
 	}
@@ -397,7 +405,7 @@ func TestHealFactoryCloses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
 			if !tc.noTask {
-				store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Repository: "linkshort/linkshort", IssueNumber: 5})
+				store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Repository: cmp.Or(tc.repo, "linkshort/linkshort"), IssueNumber: 5})
 			}
 			store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, Body: body, CreatedAt: time.Now().Add(-tc.age)})
 			if tc.confirmed {
@@ -411,6 +419,9 @@ func TestHealFactoryCloses(t *testing.T) {
 			err := in.HealFactoryCloses(ctx)
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("error = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "#5") {
+				t.Fatalf("error %q does not name issue #5", err)
 			}
 			var comments []string
 			for _, c := range fj.comments {
@@ -428,8 +439,12 @@ func TestHealFactoryCloses(t *testing.T) {
 func TestHealPassFinishesAFactoryClose(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
-	store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "done", Repository: "linkshort/linkshort", IssueNumber: 5})
-	store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, CreatedAt: time.Now().Add(-3 * time.Minute)})
+	if err := store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "done", Repository: "linkshort/linkshort", IssueNumber: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, CreatedAt: time.Now().Add(-3 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
 	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}}
 	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	HealPass(ctx, store, &fakeWorkflows{}, in, nil)
