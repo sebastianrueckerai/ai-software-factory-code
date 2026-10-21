@@ -226,7 +226,6 @@ func TestLabSceneChatReplies(t *testing.T) {
 	g.script("nord-booking", []labReply{
 		{{Say: "A waitlist, "}, {Say: "noted."}},
 		{{Call: [][2]string{{"board", `{}`}}}, {Call: [][2]string{{"new_card", `{"title":"Waitlist"}`}}}},
-		{},
 	})
 	ck, s := r.loggedIn(t)
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"add a waitlist"}})
