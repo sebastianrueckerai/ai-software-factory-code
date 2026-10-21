@@ -393,14 +393,14 @@ func fileChanges(ctx context.Context, f *Forgejo, repo Repo, ref string, files m
 // Forgejo also does for a deleted branch, and only then says why in a
 // comment by the bot (factory-projects' token has no issue scope): no
 // comment is posted twice. It closes the card's issue first when one
-// exists, as factoryd's recorded close (roadmap 187): the close ends the
-// card as an approver's would.
+// exists, as factoryd's recorded close with why as its comment (roadmap
+// 187): the close ends the card as an approver's would.
 func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Repo, number int64, why string) (Change, error) {
 	fork := f.Fork(repo)
 	if task, ok, err := r.cardByPR(ctx, repo, number); err != nil {
 		return "", err
 	} else if ok {
-		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, task, ""); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, task, fmt.Sprintf("factoryd: closing pull request #%d: %s; this card ends with it.", number, why)); err != nil {
 			return "", fmt.Errorf("close card %s: %w", task.ID, err)
 		}
 	}

@@ -1327,10 +1327,10 @@ func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why stri
 }
 
 // endPRCard ends human card t, its pull request merged or closed, as final
-// for why, settle settling its ask. factoryd closes the card's issue as its
-// own close first, with its comment posted where it is missing: a comment
-// or a close that fails leaves the card waiting, and a redelivery or the
-// heal pass ends it again.
+// for why, settle settling its ask. factoryd closes the card's issue first
+// (closeIssueAsFactory: the recorded close's comment posted where it is
+// missing): a close that fails leaves the card waiting, and a redelivery
+// or the heal pass ends it again.
 func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, settle *Event) error {
 	if t.Status != "waiting-human" {
 		return nil
