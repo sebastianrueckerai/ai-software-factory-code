@@ -800,14 +800,6 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 		if t.Source != SourceConfig || t.Repository != a.Repo.String() {
 			continue
 		}
-		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
-		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
-			return err
-		}
-		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
-			return err
-		}
-		countOutcome(ctx, a.Metrics, a.Store, t, "done")
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
 		if err != nil {
 			return err
@@ -817,6 +809,14 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 				return err
 			}
 		}
+		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
+		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
+			return err
+		}
+		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+			return err
+		}
+		countOutcome(ctx, a.Metrics, a.Store, t, "done")
 		log.Printf("config: commit %s closed issue #%d of rejected commit %s, task %s done", v.Commit, t.IssueNumber, t.SHA, t.ID)
 	}
 	return nil

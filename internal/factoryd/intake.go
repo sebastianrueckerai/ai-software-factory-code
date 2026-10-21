@@ -796,10 +796,9 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 // confirm (closeIssueAsFactory failed between the record and the close):
 // each unconfirmed record older than two minutes, 50 a pass. A record
 // whose task is gone or has no splittable repository, or whose issue is
-// closed already, is confirmed
-// without a write. A refusal from Forgejo (forgejoTerminal) settles the
-// record, which no retry changes; any other error joins and the record
-// waits for the next pass.
+// closed already, is confirmed without a write. A refusal from Forgejo
+// (forgejoTerminal) settles the record, which no retry changes; any other
+// error joins and the record waits for the next pass.
 func (in *Intake) HealFactoryCloses(ctx context.Context) error {
 	rows, err := in.Store.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 50)
 	if err != nil {
