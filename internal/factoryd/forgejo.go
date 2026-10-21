@@ -1456,8 +1456,6 @@ type IssueComment struct {
 	} `json:"user"`
 }
 
-// ListIssueComments lists every comment on issue or pull request number,
-// oldest first. Forgejo does not page this list: one request holds all.
 // CommentOnce posts body on issue number unless a comment of exactly that
 // body is there: a step retried after a failed post posts it then, and
 // never twice.
@@ -1473,6 +1471,8 @@ func (f *Forgejo) CommentOnce(ctx context.Context, owner, repo string, number in
 	return err
 }
 
+// ListIssueComments lists every comment on issue or pull request number,
+// oldest first. Forgejo does not page this list: one request holds all.
 func (f *Forgejo) ListIssueComments(ctx context.Context, owner, repo string, number int64) ([]IssueComment, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/comments", owner, repo, number), nil, http.StatusOK)
 	if err != nil {
