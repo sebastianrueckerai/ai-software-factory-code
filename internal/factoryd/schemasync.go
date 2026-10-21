@@ -240,6 +240,10 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 			if t.Source != SourceSchemaCopy || t.Repository != repo || t.PRNumber != number {
 				continue
 			}
+			if t.Kind == "human" && c.Cards == nil {
+				log.Printf("schema copies: no card ender wired: the card %s of pull request #%d stays", t.ID, number)
+				continue
+			}
 			if t.Kind == "human" {
 				if err := c.Cards.WithdrawPRCard(ctx, t, number, why); err != nil {
 					log.Printf("schema copies: end the card %s of pull request #%d: %v", t.ID, number, err)

@@ -1235,20 +1235,19 @@ func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, car
 		log.Printf("chain poller: %s: %v", repository, err)
 		return
 	}
-	first, err := recordFactoryClose(ctx, p.Store, card)
-	if err != nil {
+	if _, err := recordFactoryClose(ctx, p.Store, card); err != nil {
 		log.Printf("chain poller: %s: record the close of #%d: %v", repository, card.IssueNumber, err)
 		return
 	}
-	if first {
-		what := "this stall"
-		if card.Source == SourceChainRepair {
-			what = "the red this card was filed for"
-		}
-		msg := "factoryd: " + why + "; " + what + " no longer stands. Closing this issue."
-		if _, err := p.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, card.IssueNumber, msg); err != nil {
-			log.Printf("chain poller: %s: comment on #%d: %v", repository, card.IssueNumber, err)
-		}
+	what := "this stall"
+	if card.Source == SourceChainRepair {
+		what = "the red this card was filed for"
+	}
+	// a comment the last tick failed to post is posted now, never twice
+	msg := "factoryd: " + why + "; " + what + " no longer stands. Closing this issue."
+	if err := p.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, msg); err != nil {
+		log.Printf("chain poller: %s: comment on #%d: %v", repository, card.IssueNumber, err)
+		return
 	}
 	if err := p.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, card.IssueNumber); err != nil {
 		log.Printf("chain poller: %s: close #%d: %v", repository, card.IssueNumber, err)

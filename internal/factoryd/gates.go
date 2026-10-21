@@ -642,15 +642,9 @@ func (r *Runner) commentOnce(ctx context.Context, t Task, repo Repo, pr int64, b
 	if r.forgejo == nil {
 		return
 	}
-	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, pr)
-	if err != nil {
-		log.Printf("task %s: comments of #%d: %v", t.ID, pr, err)
-		return
+	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, pr, body); err != nil {
+		log.Printf("task %s: comment once on #%d: %v", t.ID, pr, err)
 	}
-	if slices.ContainsFunc(have, func(c IssueComment) bool { return c.Body == body }) {
-		return
-	}
-	r.comment(ctx, t, repo, pr, body)
 }
 
 // notReproducedPrefix opens the line of the agent's last message that

@@ -1325,7 +1325,8 @@ func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why stri
 
 // endPRCard ends human card t, its pull request merged or closed, as final
 // for why, settle settling its ask. factoryd closes the card's issue as its
-// own close first: a close that fails leaves the card waiting, and the
+// own close first, with its comment posted where it is missing: a comment
+// or a close that fails leaves the card waiting, and a redelivery or the
 // heal pass ends it again.
 func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, settle *Event) error {
 	if t.Status != "waiting-human" {
@@ -1335,19 +1336,40 @@ func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, sett
 	if err != nil {
 		return err
 	}
-	first, err := recordFactoryClose(ctx, in.Store, t)
-	if err != nil {
+	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
 		return err
 	}
-	if first {
-		if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why+"; this card ends with it."); err != nil {
-			return err
-		}
+	if err := in.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why+"; this card ends with it."); err != nil {
+		return err
 	}
 	if err := in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
 		return err
 	}
 	return in.finishHumanTask(ctx, t, final, why, settle.Actor, settle)
+}
+
+// resyncPRCard ends human card t if its pull request on repo is closed:
+// a merge credited to its merger, a close to its closer as their answer,
+// read from the pull request's timeline (a pull request is an issue), the
+// bot's close withdrawn as factoryd's own. done: the pull request was
+// closed and the card's end ran. A read that fails is the caller's to log:
+// the card's issue is read next.
+func (in *Intake) resyncPRCard(ctx context.Context, t Task, repo Repo) (done bool, err error) {
+	pr, err := in.Forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+	if err != nil || pr.State != "closed" {
+		return false, err
+	}
+	if pr.Merged {
+		return true, in.prDecided(ctx, t, t.PRNumber, true, cmp.Or(pr.MergedBy, healAuthor), ViaFactoryd)
+	}
+	closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.PRNumber)
+	switch {
+	case err != nil:
+		return false, err
+	case closer == in.BotUser:
+		return true, in.WithdrawPRCard(ctx, t, t.PRNumber, "the heal pass found it closed by factoryd")
+	}
+	return true, in.prDecided(ctx, t, t.PRNumber, false, closer, ViaFactoryd)
 }
 
 // handlePullRequest signals a closed factory pull request to its task's
@@ -1773,12 +1795,10 @@ func (in *Intake) Resync(ctx context.Context, t Task) error {
 			return nil
 		}
 		if t.Kind == "human" && t.PRNumber != 0 {
-			// an unread pull request leaves the card to its issue's read
-			switch pr, err := in.Forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber); {
-			case err != nil:
-				log.Printf("heal pass: task %s: read pull request #%d: %v", t.ID, t.PRNumber, err)
-			case pr.State == "closed":
-				return in.prDecided(ctx, t, t.PRNumber, pr.Merged, cmp.Or(pr.MergedBy, healAuthor), ViaFactoryd)
+			if done, err := in.resyncPRCard(ctx, t, repo); err != nil {
+				log.Printf("heal pass: task %s: pull request #%d: %v", t.ID, t.PRNumber, err)
+			} else if done {
+				return nil
 			}
 		}
 		closer, err := in.Forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)

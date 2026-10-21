@@ -64,6 +64,15 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprint(w, c)
+		case strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/comments"):
+			prefix := strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/comments") + ": "
+			out := []map[string]any{}
+			for i, c := range s.comments {
+				if body, ok := strings.CutPrefix(c, prefix); ok {
+					out = append(out, map[string]any{"id": i + 1, "body": body})
+				}
+			}
+			json.NewEncoder(w).Encode(out)
 		case strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/labels"):
 			var number int64
 			fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/labels"), "%d", &number)
@@ -424,6 +433,28 @@ func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
 	defer fj.mu.Unlock()
 	if !slices.Equal(fj.closedIssues, []int64{1}) || !slices.Contains(fj.comments, "1: factoryd: "+reason+"; this card ends with it.") {
 		t.Fatalf("closed issues %v, comments %q; want the card's #1 closed with its comment", fj.closedIssues, fj.comments)
+	}
+}
+
+// A copier with a store but no Cards closes its pull request and leaves
+// the human card as it is, logged: it panics in no goroutine.
+func TestSchemaCopierWithoutCardsLeavesTheHumanCard(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, _ := cardRig(t)
+	store.projects = []Project{noAgents(cardUpstream)}
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	card := schemaCards(store)[0]
+	schemas, _ := policy.Schemas()
+	fj.mu.Lock()
+	fj.main["factory/schema/policy.schema.json"] = string(schemas["policy.schema.json"])
+	fj.mu.Unlock()
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.tasks[card.ID].Status; got != "waiting-human" {
+		t.Fatalf("status %q, want the card left waiting", got)
 	}
 }
 

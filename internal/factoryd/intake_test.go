@@ -1377,18 +1377,20 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 // prCardRig is an intake on human card t-pr of a factory pull request on
 // a project without agents (ruling R62): linked to pull request #5, its
 // issue #9 on the code repository. Its Forgejo answers the pull request
-// with pr ("" fails the read), the issue's state with closedBy ("" open),
-// fails the issue's close closeFails times first, and counts the closes
-// and comments.
+// with pr ("" fails the read), the issue's state with closedBy and the
+// pull request's as an issue with prClosedBy ("" open), fails the issue's
+// close closeFails times and a comment's post commentFails times first,
+// and counts the closes and the comments posted.
 type prCardRig struct {
-	t                *testing.T
-	in               *Intake
-	store            *fakeStore
-	rows             *fakeEventRecorder
-	mu               sync.Mutex
-	pr, closedBy     string
-	closeFails       int
-	closes, comments int
+	t                        *testing.T
+	in                       *Intake
+	store                    *fakeStore
+	rows                     *fakeEventRecorder
+	mu                       sync.Mutex
+	pr, closedBy, prClosedBy string
+	closeFails, commentFails int
+	closes, comments         int
+	posted                   []string
 }
 
 func newPRCardRig(t *testing.T, pr string) *prCardRig {
@@ -1411,6 +1413,16 @@ func newPRCardRig(t *testing.T, pr string) *prCardRig {
 			fmt.Fprintf(w, `{"number":9,"state":%q}`, map[bool]string{true: "open", false: "closed"}[g.closedBy == ""])
 		case r.Method == http.MethodGet && p == issue+"/timeline":
 			servePage(w, r, 50, fmt.Sprintf(`{"type":"close","user":{"login":%q}}`, g.closedBy))
+		case r.Method == http.MethodGet && p == "/api/v1/repos/sf/ai-software-factory-code/issues/5":
+			fmt.Fprintf(w, `{"number":5,"state":%q}`, map[bool]string{true: "open", false: "closed"}[g.prClosedBy == ""])
+		case r.Method == http.MethodGet && p == "/api/v1/repos/sf/ai-software-factory-code/issues/5/timeline":
+			servePage(w, r, 50, fmt.Sprintf(`{"type":"close","user":{"login":%q}}`, g.prClosedBy))
+		case r.Method == http.MethodGet && p == issue+"/comments":
+			out := []map[string]any{}
+			for i, b := range g.posted {
+				out = append(out, map[string]any{"id": i + 1, "body": b, "user": map[string]string{"login": "factory-agent"}})
+			}
+			json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodPatch && p == issue:
 			if g.closeFails > 0 {
 				g.closeFails--
@@ -1421,7 +1433,15 @@ func newPRCardRig(t *testing.T, pr string) *prCardRig {
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
 		case r.Method == http.MethodPost && p == issue+"/comments":
+			if g.commentFails > 0 {
+				g.commentFails--
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			var c struct{ Body string }
+			json.NewDecoder(r.Body).Decode(&c)
 			g.comments++
+			g.posted = append(g.posted, c.Body)
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
 		case strings.HasSuffix(p, "/labels"):
@@ -1535,12 +1555,32 @@ func TestAFailedIssueCloseOfAPullRequestsCardHeals(t *testing.T) {
 	g.ended("done", "pull request #5 merged by sebastian", EventQuestionAnswered, "sebastian", ViaFactoryd)
 }
 
+// The card's explanatory comment is posted when it is missing, not only
+// by the call that recorded factoryd's close: a post Forgejo fails is
+// posted on the redelivery, once, and the card ends.
+func TestAFailedCommentOfAPullRequestsCardIsPostedAgain(t *testing.T) {
+	g := newPRCardRig(t, "")
+	g.commentFails = 1
+	body := prClosedBodyFrom("factory/schema-0123456789ab", "factory-agent/ai-software-factory-code", true)
+	g.post("pull_request", body, http.StatusInternalServerError)
+	if got := g.store.tasks["t-pr"].Status; got != "waiting-human" || g.comments != 0 || g.closes != 0 {
+		t.Fatalf("after the failed comment: status %q, comments %d, closes %d; want the card waiting, #9 open", got, g.comments, g.closes)
+	}
+	g.post("pull_request", body, http.StatusOK)
+	g.ended("done", "pull request #5 merged by sebastian", EventQuestionAnswered, "sebastian", ViaWebhook)
+	if !slices.Equal(g.posted, []string{"factoryd: pull request #5 merged by sebastian; this card ends with it."}) {
+		t.Fatalf("comments %q, want the one", g.posted)
+	}
+}
+
 // The heal pass ends a pull request's human card whose closing webhook
 // was lost, as the webhook does but via factoryd: a merge credited to its
-// merger, a close without a merge, whose closer Forgejo does not name, to
-// the heal pass. A card whose pull request is open stays waiting. A pull
-// request Forgejo cannot read falls through to the issue: a writer's
-// close of the card's issue ends it done.
+// merger, a close without a merge to its closer, read from the pull
+// request's timeline (a pull request is an issue). The bot's close is
+// factoryd's own: the ask is withdrawn, as the copier's own close does. A
+// card whose pull request is open stays waiting. A pull request Forgejo
+// cannot read falls through to the issue: a writer's close of the card's
+// issue ends it done.
 func TestResyncEndsAPullRequestsHumanCard(t *testing.T) {
 	ctx := context.Background()
 	g := newPRCardRig(t, `{"number":5,"state":"closed","merged":true,"merged_by":{"login":"sebastian"}}`)
@@ -1550,10 +1590,18 @@ func TestResyncEndsAPullRequestsHumanCard(t *testing.T) {
 	g.ended("done", "pull request #5 merged by sebastian", EventQuestionAnswered, "sebastian", ViaFactoryd)
 
 	g = newPRCardRig(t, `{"number":5,"state":"closed","merged":false}`)
+	g.prClosedBy = "sebastian"
 	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {
 		t.Fatal(err)
 	}
-	g.ended("closed", "pull request #5 closed without a merge by factoryd heal pass", EventQuestionAnswered, healAuthor, ViaFactoryd)
+	g.ended("closed", "pull request #5 closed without a merge by sebastian", EventQuestionAnswered, "sebastian", ViaFactoryd)
+
+	g = newPRCardRig(t, `{"number":5,"state":"closed","merged":false}`)
+	g.prClosedBy = "factory-agent"
+	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {
+		t.Fatal(err)
+	}
+	g.ended("closed", "factoryd closed pull request #5: the heal pass found it closed by factoryd", EventQuestionWithdrawn, FactoryDecider, ViaFactoryd)
 
 	g = newPRCardRig(t, `{"number":5,"state":"open","merged":false}`)
 	if err := g.in.Resync(ctx, g.store.tasks["t-pr"]); err != nil {

@@ -457,6 +457,15 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
 			f.reruns = append(f.reruns, repo+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/rerun"))
 			w.WriteHeader(cmp.Or(f.rerun, http.StatusNoContent))
+		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
+			prefix := repo + "#" + strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments") + " "
+			out := []map[string]any{}
+			for i, c := range f.comments {
+				if body, ok := strings.CutPrefix(c, prefix); ok {
+					out = append(out, map[string]any{"id": i + 1, "body": body})
+				}
+			}
+			reply(out)
 		case r.Method == "POST" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
