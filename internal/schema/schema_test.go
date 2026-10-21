@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -266,6 +267,50 @@ func TestEventsAnswerOnceMigration(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail)
 		VALUES ('sf/r', 't-a', 'question_answered', 'carol', 'webhook', '{"comment": 7}')`); err == nil {
 		t.Fatal("a third row of comment 7 was stored; the unique index is missing")
+	}
+}
+
+// The factory-close migration counts every factory_closed row recorded
+// before it as confirmed, at its own creation time; a row of another kind
+// stays unconfirmed.
+func TestFactoryCloseConfirmedMigration(t *testing.T) {
+	dsn := schematest.DSN(t, "closeconfirmed")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE intake_events DROP COLUMN confirmed_at`,
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur) VALUES ('t-fc', 'running', 'o', 'sf/r', 'agent', 1)`,
+		`INSERT INTO intake_events (id, task_id, kind, author, body, comment_id, created_at) VALUES
+		 (1, 't-fc', 'factory_closed', 'factoryd', 'c', 9, '2026-10-01T10:00:00Z'),
+		 (2, 't-fc', 'issue_comment', 'sebastian', 'c', 11, '2026-10-01T11:00:00Z')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261021090000_factory_close_confirmed.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the old rows: %v", err)
+	}
+	var closed, other sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT confirmed_at FROM intake_events WHERE id = 1`).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT confirmed_at FROM intake_events WHERE id = 2`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC); !closed.Valid || !closed.Time.Equal(want) {
+		t.Fatalf("factory_closed confirmed_at = %v, want %v", closed, want)
+	}
+	if other.Valid {
+		t.Fatalf("issue_comment confirmed_at = %v, want NULL", other)
 	}
 }
 
