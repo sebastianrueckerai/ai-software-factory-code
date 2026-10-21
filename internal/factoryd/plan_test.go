@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -435,7 +436,9 @@ type planForgejo struct {
 	failLabel int // the nth labels PUT answers 500
 	labelPuts int
 	branches  map[string]string // the bot's fork: branch → head
-	failCall  string            // the call answered 500 once
+	failCall  string            // the call answered failStatus once
+	// failStatus is failCall's answer, 500 when 0
+	failStatus int
 }
 
 type planIssue struct {
@@ -464,7 +467,7 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 		if call == f.failCall {
 			f.failCall = ""
 			f.calls = append(f.calls, call)
-			http.Error(w, "forgejo down", http.StatusInternalServerError)
+			http.Error(w, "forgejo down", cmp.Or(f.failStatus, http.StatusInternalServerError))
 			return
 		}
 		switch {

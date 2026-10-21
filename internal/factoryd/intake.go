@@ -38,6 +38,9 @@ type Intake struct {
 	Workflows     Workflows
 	BotUser       string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret        string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
+	// ProjectsUser is factory-projects, which closes a template update's
+	// pull request as factoryd's own close: no person's reject.
+	ProjectsUser string
 	// Policy is the configuration in force: a new task's budget, each
 	// project's approvers, who may move a card into a lane moved by the
 	// approvers.
@@ -1402,7 +1405,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	switch {
 	case fresh && p.PullRequest.Merged:
 		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index)
-	case fresh:
+	case fresh && p.Sender.UserName != in.ProjectsUser:
 		in.intervened(ctx, t, InterventionReject)
 	}
 	return err

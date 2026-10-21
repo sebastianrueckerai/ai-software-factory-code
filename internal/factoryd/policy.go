@@ -717,6 +717,7 @@ type ConfigBook interface {
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// BackfillProcess sets process on repository's open cards that have a
 	// lane and no process yet.

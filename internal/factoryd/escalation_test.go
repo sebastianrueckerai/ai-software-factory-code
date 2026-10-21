@@ -604,7 +604,8 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 // closeIssueAsFactory records the close with its comment, posts the
 // comment, closes the issue and confirms the record. A step that fails
 // returns its error and leaves the record unconfirmed; a second call
-// finishes the close, the comment on the issue once.
+// finishes the close, the recorded comment on the issue once. A comment
+// Forgejo refuses is left out, and the close goes on.
 func TestCloseIssueAsFactory(t *testing.T) {
 	ctx := context.Background()
 	card := Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}
@@ -674,17 +675,34 @@ func TestCloseIssueAsFactory(t *testing.T) {
 		t.Fatalf("intake events %+v, want %+v", got, intent(""))
 	}
 
-	// (d) the comment fails, then a second call posts it once and closes
+	// (d) the comment fails (a 500), then a second call whose comment
+	// changed posts the recorded one once and closes
 	store, fj, f = rig("POST issues/5/comments")
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
 		t.Fatal("a failed comment returned no error")
 	}
 	check("comment failed", store, fj, nil, "open", false, "POST issues/5/comments")
 	fj.calls = nil
-	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+	if err := closeIssueAsFactory(ctx, store, f, card, "factoryd: closing this issue for another reason."); err != nil {
 		t.Fatal(err)
 	}
 	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5")
+
+	// (e) Forgejo refuses the comment: the issue closes without it
+	store, fj, f = rig("POST issues/5/comments")
+	fj.failStatus = http.StatusUnprocessableEntity
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+		t.Fatalf("a refused comment: %v, want the close", err)
+	}
+	check("comment refused", store, fj, nil, "closed", true, "POST issues/5/comments", "PATCH issues/5")
+
+	// (f) a record from before the comment was kept has none to post
+	store, fj, f = rig("")
+	store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5})
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+		t.Fatal(err)
+	}
+	check("record without a comment", store, fj, nil, "closed", true, "PATCH issues/5")
 
 	// the record fails: nothing is posted or closed
 	store, fj, f = rig("")

@@ -7,6 +7,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -263,6 +264,37 @@ func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
 		"kind=approve,lane=none,process=none": 1, "kind=request_changes,lane=none,process=none": 1, "kind=reject,lane=none,process=none": 1,
 	})
+}
+
+// factory-projects' close of a factory pull request (closeTemplateUpdate)
+// is factoryd's own: its card's workflow hears it, but it counts no
+// reject. A person's close of another counts one.
+func TestIntakeCountsNoRejectByTheProjectsAccount(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	m, reader := testMetrics(t)
+	in.Metrics, in.ProjectsUser = m, "factory-projects"
+	for id, pr := range map[string]int64{"t-tu1": 21, "t-tu2": 22} {
+		store.tasks[id] = Task{ID: id, Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", Source: SourceTemplateUpdate, PRNumber: pr}
+	}
+	for _, c := range []struct {
+		pr     int
+		sender string
+	}{{21, "factory-projects"}, {22, "sebastian"}} {
+		b, _ := json.Marshal(map[string]any{
+			"action": "closed",
+			"pull_request": map[string]any{"number": c.pr, "merged": false,
+				"head": map[string]any{"ref": "factory/template-update", "sha": "h1", "repo": map[string]any{"full_name": "factory-projects/ai-software-factory-code"}}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"sender":     map[string]string{"login": c.sender},
+		})
+		if rr := postWebhook(in, "pull_request", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("%s closed #%d: status %d", c.sender, c.pr, rr.Code)
+		}
+	}
+	if got, want := workflowsOf(in).signals, []string{"t-tu1 pr_closed factory-projects #21: ", "t-tu2 pr_closed sebastian #22: "}; !slices.Equal(got, want) {
+		t.Fatalf("signals %q, want %q", got, want)
+	}
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=reject,lane=none,process=none": 1})
 }
 
 // The four task metrics carry the task row's process and lane, none where

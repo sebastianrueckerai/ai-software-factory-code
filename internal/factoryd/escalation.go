@@ -125,11 +125,14 @@ func botCloseRecorded(events []IntakeEvent, t Task) bool {
 // closeIssueAsFactory closes t's issue as the bot, the one way factoryd
 // closes a card's issue: it records the close as its own with comment
 // (IntakeFactoryClosed), posts comment unless it is "", closes the issue
-// and confirms the record. A step that fails returns, its record left
-// unconfirmed for the next call or the heal; a call that finds the record
-// posts comment only where the issue lacks it (CommentOnce).
+// and confirms the record. A step that fails returns, the record left
+// unconfirmed for the next call or the heal; only a comment Forgejo
+// refuses (forgejoTerminal) is logged, and the close goes on. A call that
+// finds the record posts the recorded comment, not its own, where the
+// issue lacks it (CommentOnce): one close, one comment.
 func closeIssueAsFactory(ctx context.Context, store interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
+	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(context.Context, string, int64) error
 }, forgejo *Forgejo, t Task, comment string) error {
 	repo, err := SplitRepo(t.Repository)
@@ -140,6 +143,16 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	if err != nil {
 		return err
 	}
+	if id == 0 {
+		events, err := store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			return err
+		}
+		comment = ""
+		if i := slices.IndexFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber }); i >= 0 {
+			comment = events[i].Body
+		}
+	}
 	switch {
 	case comment == "":
 	case id > 0:
@@ -147,7 +160,9 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	default:
 		err = forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
 	}
-	if err != nil {
+	if forgejoTerminal(err) {
+		log.Printf("task %s: issue #%d closes without its comment, which Forgejo refused: %v", t.ID, t.IssueNumber, err)
+	} else if err != nil {
 		return err
 	}
 	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
