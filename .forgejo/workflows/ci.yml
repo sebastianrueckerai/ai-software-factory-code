@@ -22,6 +22,13 @@ env:
   SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json
   RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance
   BUILDKIT: git.aisoftwarefactory.world/upstream/docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
+# One main run at a time: a newer push waits out the running one instead of
+# cancelling it (Forgejo's default), so no half-tested run is wasted; the
+# roller still judges the newest green build.
+concurrency:
+  group: ci-main
+  cancel-in-progress: false
+
 jobs:
   upstream:
     # Every outside image of upstream-images.txt, and every other build
