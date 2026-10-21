@@ -121,10 +121,10 @@ type pendingAsk struct {
 }
 
 // passProject wakes one project: a due timer fires on its own thread,
-// then the new events wake the watched cards and the asks. A batch nothing new wakes
-// from only moves the cursor. The turn mark, the cooldown and a dead
-// chat budget each hold a wake and the cursor back, so their cause stays
-// and a later pass takes it.
+// then the new events wake the watched cards and the asks. A batch
+// nothing new wakes from only moves the cursor. The turn mark, the
+// cooldown and a dead chat budget each hold a wake and the cursor back,
+// so their cause stays and a later pass takes it.
 func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
 	if err := w.fireTimer(ctx, v, name, p, now); err != nil {
 		return err

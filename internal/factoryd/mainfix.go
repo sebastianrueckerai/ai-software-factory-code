@@ -135,7 +135,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	card := "fix-forward card"
 	if lost != nil {
 		card = "re-run card"
-		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(short, failed, lost), "factoryd", Task{
+		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost), "factoryd", Task{
 			SHA: run.CommitSHA, Source: SourceRerun,
 		})
 	} else {

@@ -75,8 +75,9 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // merge approves on Approve, or runs a factory pull request's red checks
 // again on Re-run the checks, and a pending plan accepts on Accept, each
 // under the role its board button and chat tool need, a waiting
-// question takes the choice as the member's answer, a choice card (the
-// stall card, the failed roll card) acts on it, another human-lane
+// question takes the choice as the member's answer (its park, close or
+// fund acting as the board's button does), a choice card (the stall
+// card, the failed roll card) acts on it, another human-lane
 // escalation closes with it. A card settled since
 // its escalation row m asked, by an answer, the question's withdrawal or
 // the wait guard, says so: the first answer wins.
@@ -136,10 +137,10 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 		return c.doAnswer(ctx, a, id, choice)
 	}
 	note, err := c.doAnswer(ctx, a, id, choice)
-	if err != nil {
-		return "", err
+	if answered := fmt.Sprintf("Answered #%d.", t.IssueNumber); err != nil || note != answered {
+		return note, err
 	}
-	return strings.TrimSuffix(note, ".") + fmt.Sprintf(" with “%s”; the card goes on.", choice), nil
+	return fmt.Sprintf("Answered #%d with “%s”; the card goes on.", t.IssueNumber, choice), nil
 }
 
 // askMember is the ask tool: the question kept in this thread as an ask

@@ -207,7 +207,7 @@ func TestHumanCardQuestions(t *testing.T) {
 		"roll refused": {rollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"roll abc1234 refused: gateway, worker not signed with the factory's key. Fix the signing, then close.",
 			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
-		"rerun": {rerunQuestion("abc1234", "ci / test", []string{"ci / test: lost"}),
+		"rerun": {rerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}),
 			"main is red at abc1234: re-run ci / test, its runner was lost.",
 			[]QuestionChoice{{AnswerClose, "Re-ran it, close"}}},
 		"config": {configRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
@@ -238,6 +238,11 @@ func TestHumanCardQuestions(t *testing.T) {
 			}
 		})
 	}
+	const lostWhy = "Main CI's push run 1208 of abc1234def5678 failed, but none of its steps did: each failed job lost its runner while it ran " +
+		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card."
+	if why := rerunQuestion(1208, "abc1234def5678", "ci / test", nil).Why; why != lostWhy {
+		t.Errorf("rerun why = %q, want %q", why, lostWhy)
+	}
 }
 
 // A variable part of 300 bytes cuts the head, never the question tail,
@@ -248,7 +253,7 @@ func TestAsksFitTheTitle(t *testing.T) {
 	for name, tt := range map[string]struct{ ask, tail string }{
 		"alert":        {alertQuestion(alert, "shop", "prod", "w", "b").Ask, ": handle it, or wait for it to clear?"},
 		"roll refused": {rollRefusedQuestion("abc1234", []string{long}, []string{"l"}, "u").Ask, " not signed with the factory's key. Fix the signing, then close."},
-		"rerun":        {rerunQuestion("abc1234", long, []string{"l"}).Ask, ", its runner was lost."},
+		"rerun":        {rerunQuestion(1208, "abc1234", long, []string{"l"}).Ask, ", its runner was lost."},
 		"config":       {configRejectedQuestion(long, "c9c9c9c9c9", "l", "s", "r").Ask, " rejected: fix the files and push."},
 		"routine":      {routineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p", true).Ask, ""},
 		"issue":        {issueQuestion(long, "b", "p", true).Ask, ""},

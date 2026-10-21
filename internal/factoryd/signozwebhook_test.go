@@ -32,6 +32,7 @@ type alertForgejo struct {
 	comments []string           // "#n body"
 	closed   []int64            // issues closed
 	people   map[int64][]string // comments by a person other than the bot, by issue
+	reads    int                // issue comment and label reads
 	failNext int                // issue creations to answer 500
 	// failComments is how many comment posts still answer 500: Forgejo's
 	// blip on the one call a delivery makes
@@ -68,6 +69,7 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"number":%d,"html_url":"https://git.example/%s/%s/issues/%d"}`, len(fj.issues), parts[4], parts[5], len(fj.issues))
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
+			fj.reads++
 			out := []map[string]any{}
 			for range fj.comments {
 				out = append(out, map[string]any{"body": "bot", "user": map[string]string{"login": "factory-agent"}})
@@ -77,6 +79,7 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			}
 			json.NewEncoder(w).Encode(out) // #nosec G104 -- test stub
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/labels", &n):
+			fj.reads++
 			out := []map[string]string{}
 			for _, l := range fj.labels[n] {
 				out = append(out, map[string]string{"name": l})
@@ -1588,26 +1591,41 @@ func TestAClearedAlertClosesItsUntouchedHumanCard(t *testing.T) {
 	}
 }
 
+// A touched card stays, its row marked touched: the next pass reads
+// nothing of it. reads counts the touch's Forgejo reads on the first pass:
+// a store row needs none, a comment the comments, the noise label both.
 func TestAClearedAlertKeepsATouchedCard(t *testing.T) {
-	for name, touch := range map[string]func(*alertRig, Task){
-		"a member's comment": func(r *alertRig, task Task) { r.fj.people[task.IssueNumber] = []string{"on it"} },
-		"an intake row": func(r *alertRig, task Task) {
+	for name, tt := range map[string]struct {
+		touch func(*alertRig, Task)
+		reads int
+	}{
+		"a member's comment": {func(r *alertRig, task Task) { r.fj.people[task.IssueNumber] = []string{"on it"} }, 1},
+		"an intake row": {func(r *alertRig, task Task) {
 			r.store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: task.ID, Kind: "issue_comment", Author: "sebastian", CommentID: 5})
-		},
-		"the noise label": func(r *alertRig, task Task) { r.fj.labels[task.IssueNumber] = []string{"human", LabelNoise} },
-		"a park": func(r *alertRig, task Task) {
+		}, 0},
+		"the noise label": {func(r *alertRig, task Task) { r.fj.labels[task.IssueNumber] = []string{"human", LabelNoise} }, 2},
+		"a park": {func(r *alertRig, task Task) {
 			r.store.Record(context.Background(), Event{TaskID: task.ID, Kind: EventQuestionAnswered})
-		},
+		}, 0},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, task := clearedRig(t)
 			r.store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: task.ID, Kind: "issue_comment", Author: "factory-agent", CommentID: 4})
-			touch(r, task)
-			if err := r.in.CloseCleared(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if row := r.store.alertRows()[0]; row.Verdict != "" || r.store.tasks[task.ID].Status != "waiting-human" || len(r.fj.comments) != 1 || len(r.fj.closed) != 0 {
-				t.Fatalf("row %+v, task %s, comments %q, closed %v: nothing should change", row, r.store.tasks[task.ID].Status, r.fj.comments, r.fj.closed)
+			tt.touch(r, task)
+			reads := r.fj.reads
+			for pass := 1; pass <= 2; pass++ {
+				if err := r.in.CloseCleared(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				row := r.store.alertRows()[0]
+				if row.Verdict != "" || row.Detail["touched"] != true || r.store.tasks[task.ID].Status != "waiting-human" || len(r.fj.comments) != 1 || len(r.fj.closed) != 0 {
+					t.Fatalf("pass %d: row %+v, task %s, comments %q, closed %v: want the row marked touched and nothing else changed",
+						pass, row, r.store.tasks[task.ID].Status, r.fj.comments, r.fj.closed)
+				}
+				if got := r.fj.reads - reads; got != tt.reads {
+					t.Fatalf("pass %d read the issue %d times, want %d", pass, got, tt.reads)
+				}
+				reads, tt.reads = r.fj.reads, 0
 			}
 		})
 	}

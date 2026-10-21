@@ -1859,6 +1859,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	k.Ask = bt.Escalation != ""
 	if v.humanLane(t) {
 		k.Question = bt.Question
+		if bt.Question != nil {
+			k.Title = cmp.Or(t.HumanSummary, bt.Question.Ask)
+		}
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
@@ -2008,6 +2011,8 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q
 		}
+		// a human card's title is its ask
+		titled := k.Kind == "human" && k.Question != nil
 		if e, ok := newest[k.ID]; ok {
 			k.Activity = activityLine(e)
 			// the stage began at its status row, when that row is the newest event
@@ -2020,9 +2025,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			}
 			// a shaped question's face carries its ask alone — its why
 			// belongs to the drawer, never the board
-			if k.Question != nil && strings.HasPrefix(k.Status, "waiting") {
+			switch {
+			case titled:
+			case k.Question != nil && strings.HasPrefix(k.Status, "waiting"):
 				k.Activity, k.WaitingForActivity = askline(k.Question.Ask), true
-			} else if k.Reason != "" && strings.HasPrefix(k.Status, "waiting") {
+			case k.Reason != "" && strings.HasPrefix(k.Status, "waiting"):
 				k.Activity = reason()
 				k.WaitingForActivity = true
 			}
@@ -2032,9 +2039,11 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 		if k.Stale {
 			k.StaleText = "no event yet, " + minutes(time.Since(lastAt(k.CreatedAt))) + " on the card"
 		}
-		if k.Question != nil {
+		switch {
+		case titled:
+		case k.Question != nil:
 			k.Activity = askline(k.Question.Ask)
-		} else if k.Reason != "" {
+		case k.Reason != "":
 			k.Activity = reason()
 		}
 	}

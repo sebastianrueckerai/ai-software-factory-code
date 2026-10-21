@@ -1219,28 +1219,46 @@ func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factor
 }
 
 // A human card shows the question a chat escalation files it from
-// (values are the labels in the "say:" namespace): the ask and one button per choice on its face,
-// the five parts in the drawer, and the card's own Close beside them.
+// (values are the labels in the "say:" namespace): the whole ask as its
+// title and nowhere else on its face, one button per choice, the why,
+// info and recommendation in the drawer under the ask as its head, and
+// the card's own Close beside them. An agent card keeps its ask line
+// under its own title.
 func TestAHumanCardShowsItsQuestion(t *testing.T) {
 	r := newRig(t)
-	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51,
-		factoryd.QuestionChoice{Value: "say:Postgres", Label: "Postgres"}, factoryd.QuestionChoice{Value: "say:SQLite", Label: "SQLite"})}
+	const ask = "Which store keeps the snapshots of the nightly export once the shared Postgres runs out of disk?"
+	hq := humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "say:Postgres", Label: "Postgres"}, factoryd.QuestionChoice{Value: "say:SQLite", Label: "SQLite"})
+	hq.Objective, hq.Question.Ask = ask+"\n\nWhy: Two stores fit.", ask
+	r.tasks.tasks = []factoryd.BoardTask{hq, agentEndsAsk()}
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	equal(t, "the human card's title", titleOf(t, body, "t-hq"), ask)
 	esc := escalationOf(t, body, "t-hq")
-	for _, want := range []string{`<p class="ask">Which store keeps the snapshots?</p>`, `name="value" value="say:Postgres"`, `aria-label="SQLite, posted on the issue as you"`} {
+	for _, want := range []string{`name="value" value="say:Postgres"`, `aria-label="SQLite, posted on the issue as you"`} {
 		if !strings.Contains(esc, want) {
 			t.Errorf("the human card lacks %q:\n%s", want, esc)
 		}
 	}
+	if strings.Contains(esc, `<p class="ask">`) || strings.Count(esc, ask) != 2 { // the title's attribute and its text
+		t.Errorf("the human card repeats its ask below the title:\n%s", esc)
+	}
 	if face := faceOf(t, body, "t-hq"); !strings.Contains(face, `action="/tasks/t-hq/close"`) {
 		t.Errorf("the face lost the card's Close:\n%s", face)
 	}
+	if agent := escalationOf(t, body, "t-a"); !strings.Contains(agent, `<p class="ask">Use a replica?</p>`) {
+		t.Errorf("the agent card lost its ask line:\n%s", agent)
+	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-hq/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{"Two stores fit.", "Postgres is shared, SQLite is local.", "Recommendation (the agent&#39;s): Postgres"} {
+	for _, want := range []string{ask, "Two stores fit.", "Postgres is shared, SQLite is local.", "Recommendation (the agent&#39;s): Postgres"} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
 		}
+	}
+	if strings.Contains(drawer, `<p class="ask">`) {
+		t.Errorf("the drawer repeats the ask below its head:\n%s", drawer)
+	}
+	if agent := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-a/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(agent, `<p class="ask">Use a replica?</p>`) {
+		t.Errorf("the agent card's drawer lost its ask line:\n%s", agent)
 	}
 }
 

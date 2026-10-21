@@ -85,8 +85,8 @@
 
 {{define "escalation-actions"}}
 {{if .Card.Question}}{{with .Card.Question}}
-<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
-{{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}
+{{if ne $.Card.Kind "human"}}<p class="ask">{{if $.Suffix}}{{.Ask}}{{else}}{{askline .Ask}}{{end}}</p>
+{{end}}{{if $.Suffix}}<div class="why">{{markup .Why}}</div>{{end}}
 <div class="choices" role="group" aria-label="Answer with one click">
 {{range .Choices}}{{if and (eq .Value "close") (ne $.Card.Kind "human")}}
 <form method="post" action="/tasks/{{$.Card.ID}}/close" hx-post="/tasks/{{$.Card.ID}}/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="{{if eq $.Card.Kind "human"}}off{{else}}closed{{end}}">

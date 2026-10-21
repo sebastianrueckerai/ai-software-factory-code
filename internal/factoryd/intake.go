@@ -982,7 +982,7 @@ func (in *Intake) writeUp(ctx context.Context, p Project, t Task, defaultBranch 
 
 // humanLaneWithoutAgents moves queued agent task t to the human lane when
 // its project no longer lets agents work (agents none): nothing restarts
-// it. moved reports whether it did.
+// it, and its issue's title is the ask. moved reports whether it did.
 func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved bool, err error) {
 	p, ok, err := in.Store.ProjectByRepository(ctx, t.Repository)
 	if err != nil || !ok || p.Agents != policy.AgentsNone {
@@ -994,7 +994,8 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
 	t.Kind = "human"
 	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
-	return true, nil
+	title, body, _ := strings.Cut(t.Objective, "\n\n")
+	return true, recordAsk(ctx, in.Store, in.Timeline, t, issueQuestion(title, body, cmp.Or(t.Author, in.BotUser), false), "factoryd", t.Source, ViaFactoryd)
 }
 
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {

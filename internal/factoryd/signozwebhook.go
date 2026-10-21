@@ -508,8 +508,9 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 // person touched: the row's verdict is unjudged, the task closed before
 // its issue, so the issue-closed webhook finds it final and judges
 // nothing. A card an agent works, a row still firing or judged, a card
-// that left waiting-human, and a card a person commented on, answered or
-// parked are left as they are.
+// that left waiting-human, and a card a person commented on, labelled
+// noise, answered or parked are left as they are. A touch is marked on
+// the row, so a touched card is never read again.
 func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -520,7 +521,7 @@ func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 	var errs []error
 	for _, row := range rows {
 		at, _ := row.Detail["resolved_at"].(string)
-		if _, firing := firingSince(row); row.Verdict != "" || at == "" || firing {
+		if _, firing := firingSince(row); row.Verdict != "" || at == "" || firing || row.Detail["touched"] == true {
 			continue
 		}
 		if err := in.closeCleared(ctx, row, at); err != nil {
@@ -557,8 +558,11 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	if err != nil {
 		return err
 	}
-	if touched, err := in.touched(ctx, t, repo); err != nil || touched {
+	switch touched, err := in.touched(ctx, t, repo); {
+	case err != nil:
 		return err
+	case touched:
+		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
 	if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		if errors.Is(err, ErrNotFound) {

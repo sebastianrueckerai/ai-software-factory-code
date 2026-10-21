@@ -177,7 +177,7 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n\n```\nmain is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n```\n\nWhy: Main CI's push run failed, but none of its steps did") ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n\n```\nmain is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n```\n\nWhy: Main CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+job+":\n\n```\n\u2699\ufe0f [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
 		!strings.Contains(f.issues[0], "Re-run each job from its page.") {
 		t.Fatalf("issues %q, want the one re-run card", f.issues)

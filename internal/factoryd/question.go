@@ -169,6 +169,9 @@ func plainQuestion(reason string, choices []string) *HumanQuestion {
 	}
 	if agent && len(choices) > 0 {
 		q.Choices = nil
+		// the factory's choice of a label wins: its value acts, park keeps
+		// the card and close ends it, where the agent's "say:" one would
+		// post the label as an answer
 		seen := map[string]bool{"Leave it waiting": true, "End the card": true}
 		for _, c := range choices {
 			c = strings.TrimSpace(c)
@@ -437,13 +440,14 @@ func rollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 	}
 }
 
-// rerunQuestion is the card of a red main whose failed jobs lost their
-// runner: lost holds the jobs' records.
-func rerunQuestion(short, failed string, lost []string) HumanQuestion {
+// rerunQuestion is the card of a red main whose push run index of commit
+// sha failed only in jobs that lost their runner: failed names the jobs,
+// lost holds their records.
+func rerunQuestion(index int64, sha, failed string, lost []string) HumanQuestion {
 	return HumanQuestion{
-		Ask: askOf(fmt.Sprintf("main is red at %s: re-run %s", short, failed), ", its runner was lost."),
-		Why: "Main CI's push run failed, but none of its steps did: each failed job lost its runner while it ran " +
-			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card.",
+		Ask: askOf(fmt.Sprintf("main is red at %s: re-run %s", sha[:min(7, len(sha))], failed), ", its runner was lost."),
+		Why: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
+			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card.", index, sha),
 		Info: strings.Join(lost, "\n\n") + "\n\n" +
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
 			"result ends the pause, and factoryd closes this issue.",

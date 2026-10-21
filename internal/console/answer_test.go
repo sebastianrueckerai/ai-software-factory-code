@@ -87,6 +87,44 @@ func TestChatAnswerRow(t *testing.T) {
 	})
 }
 
+// agentEndsAsk is an agent card waiting on its agent's question, the
+// factory's park and close behind the agent's own choice.
+func agentEndsAsk() factoryd.BoardTask {
+	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "Add the replica."},
+		Escalation: factoryd.AgentAsks + "Use a replica?",
+		Question: &factoryd.HumanQuestion{Ask: "Use a replica?", Why: "The reads grow.", Info: "An answer starts the attempt again.",
+			Choices: []factoryd.QuestionChoice{{Value: "say:Yes", Label: "Yes"}, {Value: factoryd.AnswerPark, Label: "Leave it waiting"}, {Value: factoryd.AnswerClose, Label: "End the card"}}}}
+}
+
+// "End the card" pressed in the inbox closes the agent card: its label is
+// the close's note, the close the only row, and no answer resumes the
+// card's workflow.
+func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, agentEndsAsk())
+	signals := 0
+	r.c.cfg.AnswerWhole = func(context.Context, string, int64, string) error { signals++; return nil }
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#15 needs you: Use a replica?", Choices: []string{"Yes", "Leave it waiting", "End the card"}, TaskID: "t-a", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	before := r.events.count()
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"End the card"}})
+	if code != http.StatusNoContent {
+		t.Fatalf("the press = %d %q", code, body)
+	}
+	equal(t, "the issue", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`})
+	equal(t, "the note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"), []string{"End the card"})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": "End the card"}})
+	equal(t, "answer signals", signals, 0)
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	equal(t, "the factory's row", rows[len(rows)-1].Content, "Closed #15; factoryd ends the card.")
+}
+
 // The escalate tool files the question and its five parts through the
 // factory's escalation and names the card; a question without its why or
 // its info refuses, as do choices outside the rule.
