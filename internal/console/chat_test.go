@@ -418,6 +418,16 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 	if in, ok := f.inboxes[k]; ok {
 		out = append(out, in)
 	}
+	for id, b := range f.cards {
+		if b.login != login {
+			continue
+		}
+		if task, ok := strings.CutPrefix(id, repository+" "); ok {
+			made := f.stamp()
+			out = append(out, factoryd.ChatConversation{Number: b.n, Title: "#" + task, State: factoryd.ThreadActive, TaskID: task,
+				FirstAt: made, LastAt: made})
+		}
+	}
 	for _, m := range f.msgs[k] {
 		i := slices.IndexFunc(out, func(c factoryd.ChatConversation) bool { return c.Number == m.Conversation })
 		if i < 0 {
@@ -498,6 +508,22 @@ func (f *fakeChat) RenameConversation(_ context.Context, repository, login strin
 		f.titles = map[string]string{}
 	}
 	f.titles[fmt.Sprint(repository, " ", login, " ", n)] = title
+	return true, nil
+}
+
+// ModelTitle names the thread as the store does: a thread a rename or an
+// earlier naming titled already keeps its title.
+func (f *fakeChat) ModelTitle(_ context.Context, repository, login string, n int64, title, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := fmt.Sprint(repository, " ", login, " ", n)
+	if !slices.ContainsFunc(f.msgs[repository+" "+login], func(m factoryd.ChatMessage) bool { return m.Conversation == n }) || f.titles[k] != "" {
+		return false, nil
+	}
+	if f.titles == nil {
+		f.titles = map[string]string{}
+	}
+	f.titles[k] = title
 	return true, nil
 }
 
@@ -730,6 +756,12 @@ type chatGateway struct {
 	// answers they get in order, "summary n" when none is scripted
 	compacts  []map[string]any
 	summaries []string
+	// titleCalls are the naming calls' requests and titleNames the
+	// answers they get in order, none when none is scripted, which leaves
+	// today's head standing; a naming call consumes no reply and hears of
+	// no arrived, so the turns' script and counts stand
+	titleCalls []map[string]any
+	titleNames []string
 }
 
 // refuseContext scripts an operator call the provider refuses for a
@@ -737,6 +769,10 @@ type chatGateway struct {
 const refuseContext = "REFUSE_CONTEXT"
 
 func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeTitle {
+		g.serveTitle(w, r)
+		return
+	}
 	if g.arrived != nil {
 		g.arrived <- struct{}{}
 	}
@@ -811,6 +847,41 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for _, line := range append(reply, "[DONE]") {
 		fmt.Fprintf(w, "data: %s\n\n", line)
 	}
+}
+
+// serveTitle answers a naming call (roadmap 304): the cheap alias on the
+// chat's task, its answer the next scripted title.
+func (g *chatGateway) serveTitle(w http.ResponseWriter, r *http.Request) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		g.t.Errorf("naming call body: %v", err)
+	}
+	if task := r.Header.Get(gateway.HeaderFactoryTask); !strings.HasPrefix(task, "t-chat-") ||
+		r.Header.Get(gateway.HeaderFactoryThread) == "" || body["model"] != policy.Small ||
+		body["stream"] != true || body["max_tokens"] != float64(200) {
+		g.t.Errorf("naming call: task %q, thread %q, body %v: want the cheap alias on a chat task with the thread named",
+			r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryThread), body)
+	}
+	msgs, _ := body["messages"].([]any)
+	if len(msgs) != 2 || msgs[0].(map[string]any)["role"] != "system" || msgs[1].(map[string]any)["role"] != "user" {
+		g.t.Errorf("naming call messages %v: want the system prompt and the first message", msgs)
+	}
+	g.titleCalls = append(g.titleCalls, body)
+	title := ""
+	if len(g.titleNames) > 0 {
+		title, g.titleNames = g.titleNames[0], g.titleNames[1:]
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(title))
+}
+
+// titles are the naming calls' requests so far.
+func (g *chatGateway) titles() []map[string]any {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return slices.Clone(g.titleCalls)
 }
 
 // script sets the project the gateway serves and the replies it answers

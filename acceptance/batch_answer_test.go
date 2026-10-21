@@ -852,6 +852,10 @@ func (f *accBatchChat) RenameConversation(context.Context, string, string, int64
 	return true, nil
 }
 
+func (f *accBatchChat) ModelTitle(context.Context, string, string, int64, string, string) (bool, error) {
+	return true, nil
+}
+
 func (f *accBatchChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
 func (f *accBatchChat) MarkCleared(context.Context, string, string, int64) error { return nil }

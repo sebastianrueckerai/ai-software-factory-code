@@ -212,3 +212,32 @@ func TestOperatorVisionRefusalAndDefaultAsk(t *testing.T) {
 		t.Fatalf("err = %v, refusal %v", err, refusal)
 	}
 }
+
+// One naming call goes to the gateway on the chat task's account with
+// purpose title, the cheap alias, no tools, and the naming prompt beside
+// the thread's first message; the answer's text is the title as it came,
+// the console cleans it.
+func TestOperatorTitles(t *testing.T) {
+	g := &operatorGateway{chunks: []string{
+		`{"choices":[{"delta":{"content":"The "}}]}`,
+		`{"choices":[{"delta":{"content":"cache plans."}}]}`,
+		`[DONE]`,
+	}}
+	m := g.start(t)
+	title, err := m.Title(t.Context(), "t-chat-sf-code-2026-10", "sf/code:sebastian:1", "Can you find the cache bug?")
+	if err != nil || title != "The cache plans." {
+		t.Fatalf("title = %q, err = %v", title, err)
+	}
+	if g.headers.Get("Authorization") != "Bearer gw-token" || g.headers.Get(gateway.HeaderFactoryTask) != "t-chat-sf-code-2026-10" ||
+		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeTitle || g.headers.Get(gateway.HeaderFactoryThread) != "sf/code:sebastian:1" {
+		t.Fatalf("headers = %v", g.headers)
+	}
+	b, _ := json.Marshal(g.request)
+	want := `{"max_tokens":200,"messages":[{"content":"You name a chat thread from its first message. ` +
+		`Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. ` +
+		`Answer in the message's language.","role":"system"},` +
+		`{"content":"Can you find the cache bug?","role":"user"}],"model":"small","stream":true}`
+	if string(b) != want {
+		t.Fatalf("request = %s\nwant      %s", b, want)
+	}
+}

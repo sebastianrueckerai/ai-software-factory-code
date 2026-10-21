@@ -144,6 +144,10 @@ type Chat interface {
 	Conversation(ctx context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error)
 	OpenConversation(ctx context.Context, repository, login string, n int64) error
 	RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error)
+	// ModelTitle is the naming call's write (roadmap 304): the title
+	// lands while the thread's is still derived, the head its first
+	// message wrote, so a member's rename and the fixed titles win
+	ModelTitle(ctx context.Context, repository, login string, n int64, title, derived string) (bool, error)
 	MarkSeen(ctx context.Context, repository, login string, n int64) error
 	// Clear old sweeps the thread's old rows from the member's view: the
 	// marker rides the seen marker's table, the record keeps the rows

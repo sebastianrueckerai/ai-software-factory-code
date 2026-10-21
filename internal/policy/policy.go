@@ -854,10 +854,13 @@ const (
 	// PurposeVision is a chat turn's look at an image the member pasted:
 	// the only purpose an image part may ride.
 	PurposeVision = "vision"
+	// PurposeTitle is a chat thread's naming call (roadmap 304): one
+	// cheap call that writes the thread's title from its first message.
+	PurposeTitle = "title"
 )
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle}
 
 // The two model classes every text call names (Sebastian, 2026-10-20).
 // A class is a LiteLLM alias routed to its z.ai model, the Alibaba model
@@ -1200,14 +1203,14 @@ const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// project agent's (operator) is the chat block's and the compaction's is
-// Small, for a chat task only.
+// project agent's (operator) is the chat block's; the compaction's and
+// the thread naming's are Small, for a chat task only.
 func (d Document) FactoryModel(classes []string, purpose string) string {
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeVision {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeVision || purpose == PurposeTitle {
 		switch {
 		case !slices.Contains(classes, ClassChat):
 			return ""
-		case purpose == PurposeCompact:
+		case purpose == PurposeCompact, purpose == PurposeTitle:
 			return Small
 		case purpose == PurposeVision:
 			return d.ChatOf(ProjectConfig{}).VisionModel

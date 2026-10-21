@@ -205,12 +205,15 @@ const (
 type ChatConversation struct {
 	// Login is the thread's owner, the member whose conversation number
 	// it is; every listing fills it, the project's threads included.
-	Login    string    `json:"login,omitempty"`
-	Number   int64     `json:"number"`
-	Title    string    `json:"title"`
-	State    string    `json:"state"`
-	Inbox    bool      `json:"inbox,omitempty"`
-	Current  bool      `json:"current,omitempty"`
+	Login   string `json:"login,omitempty"`
+	Number  int64  `json:"number"`
+	Title   string `json:"title"`
+	State   string `json:"state"`
+	Inbox   bool   `json:"inbox,omitempty"`
+	Current bool   `json:"current,omitempty"`
+	// TaskID is the card the thread is bound to (the card door): a card
+	// thread's title is "#"+it, never the naming call's.
+	TaskID   string    `json:"task_id,omitempty"`
 	FirstAt  time.Time `json:"first_at,omitzero"`
 	LastAt   time.Time `json:"last_at,omitzero"`
 	Messages int64     `json:"messages"`
@@ -249,7 +252,7 @@ type ChatConversation struct {
 // row.
 const unreadTurn = `m.role = 'assistant' AND NOT m.queued AND (m.tool_calls IS NULL OR m.tool_calls @? '$[*].proposal')`
 
-const conversationSelect = `SELECT c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
+const conversationSelect = `SELECT c.login, c.conversation, c.title, c.state, c.inbox, c.current, coalesce(c.task_id, ''), c.summary, c.summary_upto, coalesce(c.summary_at, 'epoch'), c.compact_count,
 	coalesce(min(m.at), c.created_at), coalesce(max(m.at), c.created_at), count(m.id),
 	count(m.id) FILTER (WHERE m.id > coalesce(seen.last_seen_message_id, 0) AND ` + unreadTurn + `),
 	coalesce(seen.last_seen_message_id, 0), coalesce(seen.cleared_message_id, 0),
@@ -262,13 +265,13 @@ const conversationSelect = `SELECT c.login, c.conversation, c.title, c.state, c.
 // conversationGroup is every conversation query's grouping and order: the
 // inbox first, then the threads by their last message, newest first, the
 // archived last, each member's threads their own.
-const conversationGroup = ` GROUP BY c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
+const conversationGroup = ` GROUP BY c.login, c.conversation, c.title, c.state, c.inbox, c.current, c.task_id, c.summary, c.summary_upto, c.summary_at, c.compact_count, c.created_at, seen.last_seen_message_id, seen.cleared_message_id
 	ORDER BY c.inbox DESC, c.state = 'archived', coalesce(max(m.at), c.created_at) DESC, c.login DESC, c.conversation DESC`
 
 func scanConversation(scan func(...any) error) (ChatConversation, error) {
 	var c ChatConversation
 	var at time.Time
-	err := scan(&c.Login, &c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto, &c.Unswept)
+	err := scan(&c.Login, &c.Number, &c.Title, &c.State, &c.Inbox, &c.Current, &c.TaskID, &c.Summary, &c.SummaryUpto, &at, &c.Compactions, &c.FirstAt, &c.LastAt, &c.Messages, &c.Unread, &c.SeenUpto, &c.ClearedUpto, &c.Unswept)
 	if at.After(time.Unix(0, 0)) {
 		c.SummaryAt = at
 	}
@@ -346,6 +349,16 @@ func (s *PGStore) OpenConversation(ctx context.Context, repository, login string
 // RenameConversation sets thread n's title; false for no such thread.
 func (s *PGStore) RenameConversation(ctx context.Context, repository, login string, n int64, title string) (bool, error) {
 	return s.changeThread(ctx, `title = $4`, `true`, repository, login, n, title)
+}
+
+// ModelTitle writes the naming call's title to thread n while its title
+// is still derived, the head the thread's first message wrote (roadmap
+// 304): a member's rename in between, a card thread's "#task" or the
+// inbox's title no longer match, so they win, and the model names a
+// thread once. The inbox never takes a model's title. False when the
+// title was someone's already.
+func (s *PGStore) ModelTitle(ctx context.Context, repository, login string, n int64, title, derived string) (bool, error) {
+	return s.changeThread(ctx, `title = $4`, `title = $5 AND NOT inbox`, repository, login, n, title, derived)
 }
 
 // ArchiveConversation archives thread n, or restores it; the inbox stays.
@@ -635,9 +648,12 @@ func (s *PGStore) EnsureCardThread(ctx context.Context, repository, login, taskI
 	return 0, fmt.Errorf("the thread of card %s on %s lost every race to be made", taskID, repository)
 }
 
-// threadTitle is a thread's title from its first message: its words on
-// one line, at most 80 characters.
-func threadTitle(content string) string {
+// ThreadTitle is a thread's title as it stands until the naming call
+// lands (roadmap 304): the first message's words on one line, at most 80
+// characters. insertChatMessage writes it for the thread's first row and
+// the console's naming call hands it back, so the store can tell the
+// model's write apart from a member's rename.
+func ThreadTitle(content string) string {
 	return textutil.Truncate(strings.Join(strings.Fields(content), " "), 80)
 }
 
@@ -837,7 +853,7 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 	}
 	title := ""
 	if m.Role == "user" || m.Kind != "" {
-		title = threadTitle(m.Content)
+		title = ThreadTitle(m.Content)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, current, last_turn_at)
 		VALUES ($1, $2, $3, $4, NOT EXISTS (SELECT 1 FROM chat_conversations WHERE repository = $1 AND login = $2 AND current), now())
