@@ -2,8 +2,11 @@ package factoryd
 
 import (
 	"context"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -70,7 +73,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
-			q := ShapedQuestion(tt.reason, tt.facts)
+			q := ShapedQuestion(tt.reason, tt.facts, nil)
 			if q == nil {
 				t.Fatalf("ShapedQuestion(%q) = nil, want a shaped question", tt.reason)
 			}
@@ -120,21 +123,21 @@ func TestShapedQuestionShapesTheUntemplatedTail(t *testing.T) {
 		providerRefused + "session 3's first call",
 		"The card was moved out of the merge queue: is its place gone?",
 	} {
-		q := ShapedQuestion(reason, QuestionFacts{})
+		q := ShapedQuestion(reason, QuestionFacts{}, nil)
 		if q == nil {
 			t.Fatalf("ShapedQuestion(%q) = nil, want the plain question", reason)
 		}
 		if q.Ask != "This card stopped and needs your decision: how should it go on?" {
 			t.Errorf("ShapedQuestion(%q).Ask = %q, want the plain headline", reason, q.Ask)
 		}
-		if q.Why != escalationQuestion(reason) {
+		if q.Why != escalationQuestion(reason) || q.Recommendation != "" {
 			t.Errorf("ShapedQuestion(%q).Why = %q, want the reason's first line %q", reason, q.Why, escalationQuestion(reason))
 		}
 		if q.Info != plainInfo || len(q.Choices) != 3 {
 			t.Errorf("ShapedQuestion(%q) = %+v, want the plain info and three choices", reason, q)
 		}
 	}
-	if q := ShapedQuestion(AgentAsks+"Which file?\nWhy: open", QuestionFacts{}); q.Ask != "Which file?" {
+	if q := ShapedQuestion(AgentAsks+"Which file?\nWhy: open", QuestionFacts{}, nil); q.Ask != "Which file?" {
 		t.Errorf("an agent's ask keeps its question as the headline, got %q", q.Ask)
 	}
 }
@@ -183,5 +186,113 @@ func TestQuestionFactsReportTheRaisedCapAndShare(t *testing.T) {
 	}
 	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
 		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
+	}
+}
+
+// Each human-card template asks one line under MaxAsk, fills its why and
+// info, and offers exactly its answers in order.
+func TestHumanCardQuestions(t *testing.T) {
+	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "disk full", "service": "db"}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
+	for name, tt := range map[string]struct {
+		q       HumanQuestion
+		ask     string
+		choices []QuestionChoice
+	}{
+		"alert": {alertQuestion(alert, "shop", "prod", "the project runs no agents", "body"),
+			"SigNoz fires the alert disk full on service db in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
+			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
+		"flux alert": {alertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
+			"Flux fires the alert stuck in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
+			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
+		"roll refused": {rollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
+			"roll abc1234 refused: gateway, worker not signed with the factory's key. Fix the signing, then close.",
+			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
+		"rerun": {rerunQuestion(1208, "abc1234def5678", "ci / test", []string{"ci / test: lost"}),
+			"main is red at abc1234: re-run ci / test, its runner was lost.",
+			[]QuestionChoice{{AnswerClose, "Re-ran it, close"}}},
+		"config": {configRejectedQuestion("factory", "c9c9c9c9c9", "https://git/tree", "Version 1 stays current.", "bad key"),
+			"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.",
+			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
+		"month cap": {monthCapCardQuestion(50, "2026-09", 49.98, "https://git/policy#L7", "refused"),
+			"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?",
+			[]QuestionChoice{{AnswerPark, "Let it stand"}, {AnswerClose, "Decided, close"}}},
+		"routine": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", true),
+			"Bump the pins", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
+		"issue": {issueQuestion("Two\nlines  here", "text", "sebastian", true),
+			"Two lines here", []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}},
+		"routine without agents": {routineQuestion(policy.Routine{Name: "bump", Title: "Bump the pins"}, "brief", "prov", false),
+			"Bump the pins", []QuestionChoice{{AnswerClose, "Done"}}},
+		"issue without agents": {issueQuestion("Two\nlines  here", "text", "sebastian", false),
+			"Two lines here", []QuestionChoice{{AnswerClose, "Done"}}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := tt.q
+			if q.Ask != tt.ask || len(q.Ask) > MaxAsk || strings.Contains(q.Ask, "\n") {
+				t.Errorf("ask = %q, want %q on one line under %d bytes", q.Ask, tt.ask, MaxAsk)
+			}
+			if q.Why == "" || q.Info == "" {
+				t.Errorf("why %q, info %q: want both filled", q.Why, q.Info)
+			}
+			if !reflect.DeepEqual(q.Choices, tt.choices) {
+				t.Errorf("choices = %+v, want %+v", q.Choices, tt.choices)
+			}
+		})
+	}
+	const lostWhy = "Main CI's push run 1208 of abc1234def5678 failed, but none of its steps did: each failed job lost its runner while it ran " +
+		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card."
+	if why := rerunQuestion(1208, "abc1234def5678", "ci / test", nil).Why; why != lostWhy {
+		t.Errorf("rerun why = %q, want %q", why, lostWhy)
+	}
+}
+
+// A variable part of 300 bytes cuts the head, never the question tail,
+// and every ask is one line within the title's bound.
+func TestAsksFitTheTitle(t *testing.T) {
+	long := strings.Repeat("x", 300)
+	alert := SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": long}, StartsAt: time.Date(2026, 10, 1, 8, 0, 0, 0, time.UTC)}
+	for name, tt := range map[string]struct{ ask, tail string }{
+		"alert":        {alertQuestion(alert, "shop", "prod", "w", "b").Ask, ": handle it, or wait for it to clear?"},
+		"roll refused": {rollRefusedQuestion("abc1234", []string{long}, []string{"l"}, "u").Ask, " not signed with the factory's key. Fix the signing, then close."},
+		"rerun":        {rerunQuestion(1208, "abc1234", long, []string{"l"}).Ask, ", its runner was lost."},
+		"config":       {configRejectedQuestion(long, "c9c9c9c9c9", "l", "s", "r").Ask, " rejected: fix the files and push."},
+		"routine":      {routineQuestion(policy.Routine{Name: "n", Title: long[:150] + "\n" + long[:150]}, "b", "p", true).Ask, ""},
+		"issue":        {issueQuestion(long, "b", "p", true).Ask, ""},
+		"repair":       {repairQuestion("sf/demo-app", "9d9d9d9d9d", []string{long}, "u", nil).Ask, ". Fix it from main's head and push."},
+	} {
+		if len(tt.ask) > MaxAsk || strings.Contains(tt.ask, "\n") || !strings.HasSuffix(tt.ask, tt.tail) || !strings.Contains(tt.ask, "…") {
+			t.Errorf("%s: ask %q (%d bytes), want one line within %d, cut with the tail %q", name, tt.ask, len(tt.ask), MaxAsk, tt.tail)
+		}
+	}
+}
+
+func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
+	q := plainQuestion(AgentAsks+"Ship A or B?\nWhy: both pass.\nRecommendation: A, it is smaller.", []string{"A", "B", "End the card"})
+	if q.Ask != "Ship A or B?" || q.Why != "both pass." || q.Recommendation != "A, it is smaller." || q.Source != "the agent's" {
+		t.Errorf("parts = %+v", q)
+	}
+	if want := []string{"A", "B", "Leave it waiting", "End the card"}; !slices.Equal(q.Labels(), want) {
+		t.Errorf("labels = %q, want %q", q.Labels(), want)
+	}
+	if q.Choices[0].Value != "say:A" || q.Choices[1].Value != "say:B" || q.Choices[2].Value != AnswerPark || q.Choices[3].Value != AnswerClose {
+		t.Errorf("values = %+v", q.Choices)
+	}
+	if q := plainQuestion(AgentAsks+"Which?", []string{"A", " ", ""}); !slices.Equal(q.Labels(), []string{"A", "Leave it waiting", "End the card"}) {
+		t.Errorf("empty choices offer buttons: %q", q.Labels())
+	}
+	if q := plainQuestion(AgentAsks+"Which?", []string{"park"}); q.Choices[0].Value != "say:park" {
+		t.Errorf("an agent's park label must not carry the park value: %+v", q.Choices)
+	}
+}
+
+func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
+	for _, tt := range []struct{ reason, source string }{
+		{gateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor's"},
+		{"check-in: the work is done.\nRecommendation: go on.", "the check-in's"},
+		{"supervisor escalated: stuck\nRecommendation: close it.", "the factory's"},
+	} {
+		q := plainQuestion(tt.reason, nil)
+		if q.Recommendation == "" || q.Source != tt.source || !slices.Equal(q.Labels(), (&HumanQuestion{Choices: continueChoices()}).Labels()) {
+			t.Errorf("%q: %+v, want source %q", tt.reason, q, tt.source)
+		}
 	}
 }

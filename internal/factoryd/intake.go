@@ -22,7 +22,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Intake is the Forgejo webhook endpoint: every issue becomes a card of
@@ -207,7 +206,6 @@ type webhookIssue struct {
 	Poster    webhookUser    `json:"user"`
 	Labels    []webhookLabel `json:"labels"`
 	CreatedAt time.Time      `json:"created_at"`
-	HTMLURL   string         `json:"html_url"`
 }
 
 type issuesPayload struct {
@@ -906,6 +904,11 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	} else if task.Lane != "" && task.Lane != policy.LaneBacklog {
 		in.keepLaneLabel(ctx, via, repo, issue.Index, names, task.Lane)
 	}
+	if task.Kind == "human" {
+		if err := recordAsk(ctx, in.Store, in.Timeline, task, issueQuestion(issue.Title, issue.Body, poster, p.Agents != policy.AgentsNone), "factoryd", "webhook", ViaFactoryd); err != nil {
+			return err
+		}
+	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, cmp.Or(task.Lane, LaneHuman), task.ID)
 	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index})
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
@@ -1006,7 +1009,7 @@ func (in *Intake) writeUp(ctx context.Context, p Project, t Task, defaultBranch 
 
 // humanLaneWithoutAgents moves queued agent task t to the human lane when
 // its project no longer lets agents work (agents none): nothing restarts
-// it. moved reports whether it did.
+// it, and its issue's title is the ask. moved reports whether it did.
 func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved bool, err error) {
 	p, ok, err := in.Store.ProjectByRepository(ctx, t.Repository)
 	if err != nil || !ok || p.Agents != policy.AgentsNone {
@@ -1018,7 +1021,11 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
 	t.Kind = "human"
 	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
-	return true, nil
+	poster := cmp.Or(t.Author, in.BotUser)
+	title, body, _ := strings.Cut(t.Objective, "\n\n")
+	q := issueQuestion(title, body, poster, false)
+	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
+	return true, recordAsk(ctx, in.Store, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd)
 }
 
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {
@@ -1088,14 +1095,10 @@ func FileTask(ctx context.Context, store interface {
 // FileAgentTask files agent task t on project p's repository through
 // FileTask, entering its process by fileEntry, and starts it where it
 // entered a starting lane (a failed start is logged and healed by the next
-// HealPass). A project whose agents are none, or a t its caller made
-// human, gets a human card instead (fileHumanCard): it waits on a person
-// from the start, as an issue filed there does. tl records the card's
-// events.
-func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
-	if p.Agents == policy.AgentsNone || t.Kind == "human" {
-		return fileHumanCard(ctx, store, forgejo, tl, p.Repo(), title, body, labels, t, "")
-	}
+// HealPass). tl records the card's events.
+func FileAgentTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, p Project, title, body string, labels []string, t Task) (Task, IssueRef, error) {
 	t, labels, err := fileEntry(p, t, labels)
 	if err != nil {
 		return Task{}, IssueRef{}, err
@@ -1114,69 +1117,6 @@ func FileAgentTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, 
 	return t, ref, nil
 }
 
-// fileHumanCard files t on repo as factoryd's human card, labelled labels
-// and human (an agent label dropped: no agent takes it): through FileTask,
-// unless the bot's open issue of the same title that no task row holds is
-// there — an issue a filing whose task row then failed left behind is
-// taken on, not filed again. An issue a task holds is that card's, such as
-// an earlier routine run's still open. The card records card_created and
-// its needs-you row (recordNeedsYou), decider the poke's decider line.
-func fileHumanCard(ctx context.Context, store humanCardStore, forgejo *Forgejo, tl *Timeline, repo Repo, title, body string, labels []string, t Task, decider string) (Task, IssueRef, error) {
-	t.Kind = "human"
-	labels = append(slices.DeleteFunc(slices.Clone(labels), func(n string) bool { return n == LabelAgent }), "human")
-	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
-	if err != nil {
-		return Task{}, IssueRef{}, err
-	}
-	var ref IssueRef
-	for _, is := range open {
-		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
-			continue
-		}
-		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
-			return Task{}, IssueRef{}, err
-		} else if !held {
-			ref = IssueRef{Number: is.Index, URL: is.HTMLURL}
-		}
-	}
-	if ref.Number == 0 {
-		if t, ref, err = FileTask(ctx, store, forgejo, repo, title, body, labels, t); err != nil {
-			return Task{}, IssueRef{}, err
-		}
-	} else {
-		t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), ref.Number
-		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, ref.Number, append(labels, "state/waiting-human")); err != nil {
-			return Task{}, IssueRef{}, err
-		}
-		if err := store.CreateTask(ctx, t); err != nil {
-			return Task{}, IssueRef{}, err
-		}
-	}
-	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": ref.Number})
-	recordNeedsYou(ctx, tl, t, title, decider)
-	return t, ref, nil
-}
-
-// humanCardStore is what filing a card needs of the store: its row, and
-// the task of an issue a human card would take on.
-type humanCardStore interface {
-	CreateTask(ctx context.Context, t Task) error
-	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-}
-
-// recordNeedsYou records factoryd's human card t's needs-you row, the one
-// an escalation records: the Poker carries it to the inbox and the
-// messengers as "#N needs you: <title>" under decider, its decider line
-// ("" for none), and the waker wakes the project agent on it at
-// autonomous, a month cap's excepted (wakesNobody).
-func recordNeedsYou(ctx context.Context, tl *Timeline, t Task, title, decider string) {
-	detail := map[string]any{"question": textutil.Truncate(title, 300), "source": t.Source, "by": cmp.Or(t.Author, FactoryDecider)}
-	if decider != "" {
-		detail["decider_line"] = decider
-	}
-	tl.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, detail)
-}
-
 // FileFactoryPRTask files a card for pull request prNumber, which factoryd
 // opened outside any card's workflow (a GitHub sync, a schema copy, a
 // template update, a revert) through FileAgentTask, its row inserted with
@@ -1187,7 +1127,9 @@ func recordNeedsYou(ctx context.Context, tl *Timeline, t Task, title, decider st
 // starts at once and moves running before its verify reaches in-review.
 // It runs no session, and its budget is its model gates': budget's task
 // default, at most p's card maximum and the task maximum (CardBudget).
-func FileFactoryPRTask(ctx context.Context, store humanCardStore, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
+func FileFactoryPRTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+}, forgejo *Forgejo, workflows Workflows, tl *Timeline, budget policy.Budget, p Project, title, body string, labels []string, t Task, prNumber int64) (Task, IssueRef, error) {
 	if prNumber == 0 {
 		return Task{}, IssueRef{}, fmt.Errorf("a %s card needs its pull request", t.Source)
 	}

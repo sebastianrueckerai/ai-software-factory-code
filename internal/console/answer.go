@@ -75,8 +75,9 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // merge approves on Approve, or runs a factory pull request's red checks
 // again on Re-run the checks, and a pending plan accepts on Accept, each
 // under the role its board button and chat tool need, a waiting
-// question takes the choice as the member's answer, a choice card (the
-// stall card, the failed roll card) acts on it, another human-lane
+// question takes the choice as the member's answer (its park, close or
+// fund acting as the board's button does), a choice card (the stall
+// card, the failed roll card) acts on it, another human-lane
 // escalation closes with it. A card settled since
 // its escalation row m asked, by an answer, the question's withdrawal or
 // the wait guard, says so: the first answer wins.
@@ -132,16 +133,14 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	switch {
 	case t.Status != "waiting-human":
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
-	case choiceCard(t):
-		return c.doAnswer(ctx, a, id, choice)
 	case t.Kind == "human":
-		return c.doClose(ctx, a, id, "Answered in the chat: "+choice)
+		return c.doAnswer(ctx, a, id, choice)
 	}
 	note, err := c.doAnswer(ctx, a, id, choice)
-	if err != nil {
-		return "", err
+	if answered := fmt.Sprintf("Answered #%d.", t.IssueNumber); err != nil || note != answered {
+		return note, err
 	}
-	return strings.TrimSuffix(note, ".") + fmt.Sprintf(" with “%s”; the card goes on.", choice), nil
+	return fmt.Sprintf("Answered #%d with “%s”; the card goes on.", t.IssueNumber, choice), nil
 }
 
 // askMember is the ask tool: the question kept in this thread as an ask
@@ -166,8 +165,9 @@ func (t *turn) askMember(question string, choices []string) (string, error) {
 
 // escalate is the escalate tool: the question and its five parts (the
 // question format) filed as a human-lane card in Needs you, which the
-// inbox's poke carries to the project's members. The writer's own ask is
-// never forced to a template, but it must carry its why and its info.
+// inbox's poke carries to the project's members. The ask is the card's
+// title, so it is one short sentence. Each choice sits in the "say:" value
+// namespace, so no label the agent writes equals a factory control value.
 func (t *turn) escalate(ask, why, info, recommendation string, choices []string) (string, error) {
 	ask, why, info = strings.TrimSpace(ask), strings.TrimSpace(why), strings.TrimSpace(info)
 	recommendation = strings.TrimSpace(recommendation)
@@ -177,21 +177,23 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	switch {
 	case t.c.cfg.Escalate == nil:
 		return "", refuse(http.StatusConflict, "this factory files no escalation from the chat")
-	case ask == "" || len(ask) > 2000:
-		return "", refuse(http.StatusBadRequest, "ask: the question of 1 to 2000 characters")
+	case ask == "" || len(ask) > factoryd.MaxAsk || strings.ContainsAny(ask, "\r\n"):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("ask: one sentence of 1 to %d bytes, without a line break; this one has %d", factoryd.MaxAsk, len(ask)))
 	case why == "" || len(why) > 2000:
 		return "", refuse(http.StatusBadRequest, "why: why the card cannot go on without a person, 1 to 2000 characters")
 	case info == "" || len(info) > 2000:
 		return "", refuse(http.StatusBadRequest, "info: what a person should know to answer well, 1 to 2000 characters")
-	case len(recommendation) > 2000:
-		return "", refuse(http.StatusBadRequest, "recommendation: 0 to 2000 characters, empty to offer none")
-	case len(choices) == 1 || len(choices) > factoryd.MaxChoices ||
+	case recommendation == "" || len(recommendation) > 2000:
+		return "", refuse(http.StatusBadRequest, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters")
+	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
 		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters, or none", factoryd.MaxChoices, factoryd.MaxChoice))
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
+	case len(slices.Compact(slices.Sorted(slices.Values(choices)))) != len(choices):
+		return "", refuse(http.StatusBadRequest, "choices: each answer once")
 	}
-	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation}
+	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the agent's"}
 	for _, c := range choices {
-		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: c, Label: c})
+		q.Choices = append(q.Choices, factoryd.QuestionChoice{Value: "say:" + c, Label: c})
 	}
 	n, err := t.c.cfg.Escalate(t.r.Context(), t.p.Repository, q, t.a.s.user)
 	if err != nil {

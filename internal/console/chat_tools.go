@@ -1469,13 +1469,13 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "escalate", title: "Escalate to the members", write: true,
-		params: map[string]any{"ask": str("the question, with its state and its numbers"),
+		params: map[string]any{"ask": str("the title: one sentence, 200 bytes at most, with numbers"),
 			"why":            str("why the card cannot go on without a person's answer"),
 			"info":           str("the facts a reader needs, with what would change your mind"),
 			"recommendation": str("the answer you would pick and where you read it"),
-			"choices": map[string]any{"type": "array", "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "answers the members may press"}},
-		required: []string{"ask", "why", "info"},
+			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+				"description": "answers the members may press, each once"}},
+		required: []string{"ask", "why", "info", "recommendation", "choices"},
 		about:    "Ask the members for a decision, its why and its info with it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)

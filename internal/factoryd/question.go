@@ -8,6 +8,9 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The question's shape (the question-format concept): every question a
@@ -30,6 +33,7 @@ const (
 	AnswerFund        = "fund"
 	AnswerClose       = "close"
 	AnswerKeepWaiting = "keep_waiting"
+	AnswerGo          = "go"
 )
 
 // HumanQuestion is the five-part question a card asks. Source names what
@@ -73,6 +77,11 @@ func (q *HumanQuestion) ChoiceLabel(value string) string {
 	return ""
 }
 
+// Offers reports whether the question has a choice valued value.
+func (q *HumanQuestion) Offers(value string) bool {
+	return q.ChoiceLabel(value) != ""
+}
+
 // Labels returns the choice labels, the words a click posts as the
 // answer.
 func (q *HumanQuestion) Labels() []string {
@@ -97,7 +106,7 @@ type QuestionFacts struct {
 // template for the deterministic stops, and from the reason itself for
 // every other ask (plainQuestion), so no question reaches a card without
 // its five parts.
-func ShapedQuestion(reason string, f QuestionFacts) *HumanQuestion {
+func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	switch {
 	case strings.HasPrefix(reason, checkinSpendAsk+"check-in call cap reached"),
 		reason == "check-in call cap reached":
@@ -116,26 +125,64 @@ func ShapedQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	case strings.HasPrefix(reason, "The card was quiet for "):
 		return quietQuestion(reason)
 	}
-	return plainQuestion(reason)
+	return plainQuestion(reason, choices)
 }
 
 // plainQuestion is the question an ask no template covers gets, so no
 // card puts words alone to a person: an agent's ask keeps its question
-// as the headline, every other stop gets one that names the decision;
-// the reason's first line is the summary, and the answers a stopped
-// card always takes are the choices.
-func plainQuestion(reason string) *HumanQuestion {
+// as the headline, every other stop gets one that names the decision.
+// The reason's Why: line is the why (else its first line) and its
+// Recommendation: line the recommendation, sourced by the reason's
+// prefix. An agent's own choices lead the answers, as "say:" values so
+// none can pass for a factory control; park and close follow.
+func plainQuestion(reason string, choices []string) *HumanQuestion {
 	first := escalationQuestion(reason)
-	ask := "This card stopped and needs your decision: how should it go on?"
-	if strings.HasPrefix(reason, AgentAsks) {
-		ask = first
-	}
-	return &HumanQuestion{
-		Ask:     ask,
+	q := &HumanQuestion{
+		Ask:     "This card stopped and needs your decision: how should it go on?",
 		Why:     first,
 		Info:    plainInfo,
 		Choices: continueChoices(),
 	}
+	agent := strings.HasPrefix(reason, AgentAsks)
+	if agent {
+		q.Ask = first
+	}
+	for line := range strings.Lines(reason) {
+		line = strings.TrimSpace(line)
+		if v, ok := strings.CutPrefix(line, "Why: "); ok {
+			q.Why = v
+		} else if v, ok := strings.CutPrefix(line, "Recommendation: "); ok {
+			q.Recommendation = v
+		}
+	}
+	if q.Recommendation != "" {
+		switch {
+		case agent:
+			q.Source = "the agent's"
+		case strings.HasPrefix(reason, gateStopped):
+			q.Source = "the gate supervisor's"
+		case strings.HasPrefix(reason, "check-in: "):
+			q.Source = "the check-in's"
+		default:
+			q.Source = "the factory's"
+		}
+	}
+	if agent && len(choices) > 0 {
+		q.Choices = nil
+		// the factory's choice of a label wins: its value acts, park keeps
+		// the card and close ends it, where the agent's "say:" one would
+		// post the label as an answer
+		seen := map[string]bool{"Leave it waiting": true, "End the card": true}
+		for _, c := range choices {
+			c = strings.TrimSpace(c)
+			if c != "" && !seen[c] {
+				seen[c] = true
+				q.Choices = append(q.Choices, QuestionChoice{"say:" + c, c})
+			}
+		}
+		q.Choices = append(q.Choices, QuestionChoice{AnswerPark, "Leave it waiting"}, QuestionChoice{AnswerClose, "End the card"})
+	}
+	return q
 }
 
 // plainInfo is what an answer does at a stop no template covers.
@@ -350,6 +397,147 @@ func stallQuestion(repository, sha string, since time.Time, pending []string, ca
 			{AnswerCheckAgain, "Check again"},
 			{AnswerDismiss, "Dismiss"},
 		},
+	}
+}
+
+// repairQuestion is the human repair card of repository's red head at
+// sha, on a project without agents: findings name each red run and red
+// required context, runURL is the failing run's page ("" without one),
+// cards the issues of the cards whose change the head carried.
+func repairQuestion(repository, sha string, findings []string, runURL string, cards []int64) HumanQuestion {
+	short := sha[:min(7, len(sha))]
+	carried := "No card's change rides this head; the chain alone is the work."
+	if len(cards) > 0 {
+		carried = "The head carries " + issueRefs(cards) + ": merged, they wait for a green chain to cover them; this card is their repair."
+	}
+	if runURL != "" {
+		carried = "The run: " + runURL + "\n\n" + carried
+	}
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0]), ". Fix it from main's head and push."),
+		Why: fmt.Sprintf("The chain of %s is red at %s: %s. The project runs no agents, so a person repairs it.", repository, sha, strings.Join(findings, "; ")),
+		Info: carried + "\n\nRead the run's log or the red status, find the cause, fix it from main's head, and push: the fix rides the chain again, and a green chain ends every wait. " +
+			"A green head closes this card by itself, and so does a head that moves on. Closing it yourself dismisses the red at " + short + ": no new card asks until the head changes.",
+		Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
+	}
+}
+
+// askOf is an ask of head on one line and the fixed question tail: the
+// head is cut so the whole fits MaxAsk, the tail kept whole.
+func askOf(head, tail string) string {
+	head = strings.Join(strings.Fields(head), " ")
+	if len(head)+len(tail) <= MaxAsk {
+		return head + tail
+	}
+	return textutil.Truncate(head, max(MaxAsk-len(tail)-len("…"), 0)) + tail
+}
+
+// alertQuestion is the human card of alert a on project in namespace ns:
+// why says why no agent takes it, body is the alert's write-up.
+func alertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
+	name, on, source := alertParts(a)
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("%s fires the alert %s%s in %s of %s since %s",
+			source, name, on, ns, project, stamp(a.StartsAt)), ": handle it, or wait for it to clear?"),
+		Why:  why,
+		Info: body,
+		Choices: []QuestionChoice{
+			{AnswerPark, "Wait for it to clear"},
+			{AnswerClose, "Handled, close"},
+		},
+	}
+}
+
+// rollRefusedQuestion is the card of a green main CI run whose images the
+// roller will not roll: lines name each unsigned image and why.
+func rollRefusedQuestion(short string, names, lines []string, runURL string) HumanQuestion {
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("roll %s refused: %s", short, strings.Join(names, ", ")), " not signed with the factory's key. Fix the signing, then close."),
+		Why: "Main CI's run is green, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.",
+		Info: "The run: " + runURL + "\n\n- " + strings.Join(lines, "\n- ") + "\n\n" +
+			"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
+			"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +
+			"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one.",
+		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
+	}
+}
+
+// rerunQuestion is the card of a red main whose push run index of commit
+// sha failed only in jobs that lost their runner: failed names the jobs,
+// lost holds their records.
+func rerunQuestion(index int64, sha, failed string, lost []string) HumanQuestion {
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("main is red at %s: re-run %s", sha[:min(7, len(sha))], failed), ", its runner was lost."),
+		Why: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
+			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card.", index, sha),
+		Info: strings.Join(lost, "\n\n") + "\n\n" +
+			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
+			"result ends the pause, and factoryd closes this issue.",
+		Choices: []QuestionChoice{{AnswerClose, "Re-ran it, close"}},
+	}
+}
+
+// configRejectedQuestion is the card of a configuration tree dir factoryd
+// refused at commit short: stays says which version holds, link is the
+// tree, reasons the loader's refusal.
+func configRejectedQuestion(dir, short, link, stays, reasons string) HumanQuestion {
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("config: %s/ at %s", dir, short), " rejected: fix the files and push."),
+		Why: stays,
+		Info: "Reasons (`factoryd config check " + dir + "` shows the same):\n\n" + fenced(reasons) + "\n\n" +
+			"Fix the files and push; the next valid commit on main becomes current within 30 s and closes this issue. The tree: " + link,
+		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
+	}
+}
+
+// monthCapCardQuestion is the board card of the month cap reached at eur
+// of limit in month; refusal is the gateway's first refusal, if any.
+func monthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
+	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
+		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, " +
+		"like any setting: " + link + "\n\nClose this issue once decided."
+	if refusal != "" {
+		info += "\n\nThe first refusal:\n\n" + fenced(refusal)
+	}
+	return HumanQuestion{
+		Ask:  fmt.Sprintf("The month cap of %.2f EUR is reached (%s): raise it, or let the factory stand until the month ends?", limit, month),
+		Why:  fmt.Sprintf("The factory's variable spend this month (UTC, over the cost ledger: model calls, paid tools, commissioned servers) is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`).", eur, limit),
+		Info: info,
+		Choices: []QuestionChoice{
+			{AnswerPark, "Let it stand"},
+			{AnswerClose, "Decided, close"},
+		},
+	}
+}
+
+// routineQuestion is the card a routine that files to a person puts: its
+// title the ask, its brief and provenance the info.
+func routineQuestion(rt policy.Routine, brief, provenance string, agents bool) HumanQuestion {
+	return HumanQuestion{
+		Ask:     askOf(rt.Title, ""),
+		Why:     "the routine " + rt.Name + " fired and files to a person",
+		Info:    brief + "\n\n" + provenance,
+		Choices: doneChoices(agents),
+	}
+}
+
+// doneChoices are the answers of a card a person does: the factory's
+// hand-over only where the project runs agents, then Done.
+func doneChoices(agents bool) []QuestionChoice {
+	if agents {
+		return []QuestionChoice{{AnswerGo, "Have the factory do it"}, {AnswerClose, "Done"}}
+	}
+	return []QuestionChoice{{AnswerClose, "Done"}}
+}
+
+// issueQuestion is the card of an issue a person filed into the human
+// lane: the issue's title is the ask.
+func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
+	return HumanQuestion{
+		Ask:     askOf(title, ""),
+		Why:     "filed by " + poster + " into the human lane",
+		Info:    body,
+		Choices: doneChoices(agents),
 	}
 }
 

@@ -70,6 +70,8 @@ type RunnerConfig struct {
 	CIQueue *CIQueue
 	// Metrics receives the timeline's gate durations; nil = the no-op meter.
 	Metrics *telemetry.Metrics
+	// Timeline records the cards' events; nil builds the store's own.
+	Timeline *Timeline
 	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
 	// workers send their telemetry (ruling 158); "" = none.
 	OTLPEndpoint string
@@ -337,10 +339,12 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		// within one
 		cfg.ChecksPoll = HeartbeatEvery
 	}
+	if cfg.Timeline == nil {
+		cfg.Timeline = &Timeline{Objects: objects, Metrics: cfg.Metrics, Events: store, Store: store}
+	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: &Timeline{Objects: objects, Metrics: cfg.Metrics,
-			Events: store, Store: store}, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
+		objects: objects, timeline: cfg.Timeline, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}
 	return runner, nil
 }

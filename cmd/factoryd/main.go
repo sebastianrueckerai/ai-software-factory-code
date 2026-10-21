@@ -103,7 +103,8 @@ func main() {
 		AccessKey: mustSecret("S3_ACCESS_KEY_ID"),
 		SecretKey: mustSecret("S3_SECRET_ACCESS_KEY"),
 	}
-	configAlarm := newConfigAlarm(store, forgejo, configRepo, metrics, objects)
+	timeline := &factoryd.Timeline{Objects: objects, Metrics: metrics, Events: store, Store: store}
+	configAlarm := &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Metrics: metrics, Timeline: timeline}
 	// a ladder model outside the coder class would be refused mid-task
 	configSource := &factoryd.ForgejoConfig{Forgejo: forgejo, Token: forgejo.Seeded[policy.SecretConfig], Repo: configRepo, Branch: "main", Dir: configDir}
 	policyLoader := &factoryd.PolicyLoader{
@@ -180,6 +181,7 @@ func main() {
 		Leases:       cloudres.AgentStore(store.CloudResources()),
 		CIQueue:      ciQueue,
 		Metrics:      metrics,
+		Timeline:     timeline,
 		OTLPEndpoint: os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"),
 		// the worker's egress probe passes when these do not answer, so no
 		// session start needs them up
@@ -324,7 +326,7 @@ func main() {
 		// records of its own Deployments
 		Rolls:     store,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Flux:      kube, SigNoz: signoz}
+		Flux:      kube, SigNoz: signoz, Metrics: metrics}
 	registrar.FluxAlerts = alertIntake.FluxPass
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
 	if err := taskWorker.Start(); err != nil {
@@ -343,6 +345,9 @@ func main() {
 			// first model call or a promotion's check reads the row
 			if err := alertIntake.SweepSigNoz(ctx, time.Now()); err != nil {
 				log.Printf("signoz sweep: %v", err)
+			}
+			if err := alertIntake.CloseCleared(ctx); err != nil {
+				log.Printf("cleared alerts: %v", err)
 			}
 			// a rollout not settled at its window's cap raises its own alert
 			if err := alertIntake.RolloutPass(ctx, time.Now()); err != nil {
@@ -618,19 +623,7 @@ func main() {
 	// the wake: an ask the project agent did not file wakes one turn of
 	// its own on the venue member's inbox
 	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler,
-		Forgejo: forgejo, Timeline: runner.Timeline(),
-		Pulse: func(ctx context.Context, repository string) (bool, bool, error) {
-			projects, err := store.Projects(ctx)
-			if err != nil {
-				return false, false, err
-			}
-			for _, p := range projects {
-				if p.Repository == repository {
-					return consoleHandler.PulseState(ctx, p)
-				}
-			}
-			return false, false, fmt.Errorf("no project %s", repository)
-		}}).Loop(ctx, 5*time.Second)
+		Forgejo: forgejo, Timeline: runner.Timeline()}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
 	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken)}).Loop(ctx, 5*time.Second)
@@ -768,7 +761,6 @@ func consoleWriters(store interface {
 // interface.
 type taskCreator interface {
 	CreateTask(ctx context.Context, t factoryd.Task) error
-	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error)
 	ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error)
 }
 
@@ -1017,14 +1009,6 @@ func workerOptions(scrub *redact.Scrubber, extra ...interceptor.WorkerIntercepto
 		MaxHeartbeatThrottleInterval: factoryd.HeartbeatEvery,
 		Interceptors:                 append([]interceptor.WorkerInterceptor{&factoryd.TerminalForgejoErrors{Scrub: scrub}}, extra...),
 	}
-}
-
-// newConfigAlarm raises a refused commit of the tree in configDir on repo.
-// It comes before the runner, so its timeline is built as the runner's:
-// a commit refused at boot records its card's events too.
-func newConfigAlarm(store *factoryd.PGStore, forgejo *factoryd.Forgejo, repo factoryd.Repo, metrics *telemetry.Metrics, objects factoryd.ObjectStore) *factoryd.ConfigAlarm {
-	return &factoryd.ConfigAlarm{Store: store, Forgejo: forgejo, Repo: repo, Dir: configDir, Metrics: metrics,
-		Timeline: &factoryd.Timeline{Objects: objects, Metrics: metrics, Events: store, Store: store}}
 }
 
 // newChainPoller records every run-mode repository's chain (roadmap 297)

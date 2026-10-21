@@ -257,7 +257,7 @@ func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
 		return needRefusal, nil
 	}
 	r.tasks.fundedEUR = 3
-	r.tasks.tasks[0].Question = factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{})
+	r.tasks.tasks[0].Question = factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{}, nil)
 	ck, s := r.loggedIn(t)
 	inbox, _ := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,

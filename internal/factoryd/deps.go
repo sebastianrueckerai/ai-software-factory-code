@@ -470,7 +470,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 		return 0, cmp.Or(err, fmt.Errorf("the go of %s: no project %s in the store", taskID, name))
 	}
 	if p.Agents == policy.AgentsNone {
-		return 0, ErrNoGo(fmt.Sprintf("Card #%d's project works with no agents: a person does its work and closes its issue.", t.IssueNumber))
+		return 0, ErrNoGo(fmt.Sprintf("project %s runs no agents: the factory cannot do this card; do it yourself and press Done", name))
 	}
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
 	if filed {

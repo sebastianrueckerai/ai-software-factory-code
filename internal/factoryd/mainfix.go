@@ -132,20 +132,11 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	}
 	short := run.CommitSHA[:min(7, len(run.CommitSHA))]
 	var t Task
-	var ref IssueRef
 	card := "fix-forward card"
 	if lost != nil {
 		card = "re-run card"
-		title := fmt.Sprintf("main is red at %s: re-run %s (runner lost)", short, failed)
-		body := fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
-			"(the runner killed or shut down, or its docker daemon restarted), as the job's record below says. No change to the code "+
-			"fixes that, so no agent works on this card.\n\n%s\n\n"+
-			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green "+
-			"result ends the pause, and factoryd closes this issue.\n\nfiled by factoryd",
-			run.Index, run.CommitSHA, strings.Join(lost, "\n\n"))
-		t, ref, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
-			ID: NewTaskID(), Kind: "human", RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceRerun,
-			Author: r.Forgejo.BotUser,
+		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost), "factoryd", Task{
+			SHA: run.CommitSHA, Source: SourceRerun,
 		})
 	} else {
 		title := fmt.Sprintf("main is red at %s: %s", short, failed)
@@ -154,7 +145,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 			"fix it on this card's branch from main's head, and push: this card merges ahead of the queue, and main's next green run "+
 			"ends the pause. A fix that does not land within %s has factoryd file the revert of %s.",
 			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short)
-		t, ref, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
+		t, _, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
 			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
 		})
 	}
@@ -164,7 +155,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	if err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), FixTask: t.ID}); err != nil {
 		return err
 	}
-	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, ref.Number)
+	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)
 	return nil
 }
 

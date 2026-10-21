@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -30,9 +29,11 @@ type alertForgejo struct {
 	issues   []string // "title\n\nbody"
 	repos    []string // each issue's repository
 	labels   map[int64][]string
-	comments []string // "#n body"
-	closed   []int64  // issues closed
-	failNext int      // issue creations to answer 500
+	comments []string           // "#n body"
+	closed   []int64            // issues closed
+	people   map[int64][]string // comments by a person other than the bot, by issue
+	reads    int                // issue comment and label reads
+	failNext int                // issue creations to answer 500
 	// failComments is how many comment posts still answer 500: Forgejo's
 	// blip on the one call a delivery makes
 	failComments int
@@ -40,7 +41,7 @@ type alertForgejo struct {
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 	t.Helper()
-	fj := &alertForgejo{labels: map[int64][]string{}}
+	fj := &alertForgejo{labels: map[int64][]string{}, people: map[int64][]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fj.mu.Lock()
 		defer fj.mu.Unlock()
@@ -60,8 +61,6 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/branches/main":
 			io.WriteString(w, `{"commit":{"id":"sha-demo-main"}}`)
-		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
-			io.WriteString(w, `[]`) // no issue a failed filing left behind
 		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues":
 			var in struct{ Title, Body string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -69,6 +68,23 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.repos = append(fj.repos, parts[4]+"/"+parts[5])
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"number":%d,"html_url":"https://git.example/%s/%s/issues/%d"}`, len(fj.issues), parts[4], parts[5], len(fj.issues))
+		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
+			fj.reads++
+			out := []map[string]any{}
+			for range fj.comments {
+				out = append(out, map[string]any{"body": "bot", "user": map[string]string{"login": "factory-agent"}})
+			}
+			for _, body := range fj.people[n] {
+				out = append(out, map[string]any{"body": body, "user": map[string]string{"login": "sebastian"}})
+			}
+			json.NewEncoder(w).Encode(out) // #nosec G104 -- test stub
+		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/labels", &n):
+			fj.reads++
+			out := []map[string]string{}
+			for _, l := range fj.labels[n] {
+				out = append(out, map[string]string{"name": l})
+			}
+			json.NewEncoder(w).Encode(out) // #nosec G104 -- test stub
 		case r.Method == http.MethodPut && fmtScan(r.URL.Path, repo+"/issues/%d/labels", &n):
 			var in struct{ Labels []string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -85,6 +101,10 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodPatch && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
+			fj.closed = append(fj.closed, n)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			http.Error(w, "unexpected", http.StatusTeapot)
@@ -653,8 +673,6 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 // human-lane issue and task, and starts nothing.
 func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	r := newAlertRig(t)
-	rows := &fakeEventRecorder{}
-	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: r.store, Events: rows}
 	demo := r.in.Projects.(*memProjects).m["demo-app"]
 	demo.Agents = "none"
 	r.in.Projects.(*memProjects).m["demo-app"] = demo
@@ -665,17 +683,9 @@ func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	for _, task = range r.store.tasks {
 	}
 	if len(r.store.tasks) != 1 || task.Kind != "human" || task.Status != "waiting-human" || len(r.flows.started) != 0 ||
-		!slices.Equal(r.fj.labels[1], []string{"bug", "human", "state/waiting-human"}) {
+		!slices.Equal(r.fj.labels[1], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("task %+v, started %v, labels %v", task, r.flows.started, r.fj.labels[1])
 	}
-	// the card's card_created, then the person is told: the card's
-	// needs-you row, which the Poker carries
-	title, _, _ := strings.Cut(task.Objective, "\n\n")
-	if len(rows.rows) != 2 || rows.rows[0].Kind != EventCardCreated || rows.rows[0].TaskID != task.ID ||
-		!reflect.DeepEqual(rows.rows[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(1)}) {
-		t.Fatalf("event rows %+v, want the card's card_created and its needs-you row", rows.rows)
-	}
-	needsYouPoke(t, rows.rows, task, title)
 }
 
 // Ruling 180: the factory's own namespaces route like a project's. An
@@ -711,11 +721,11 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 	if gwTitle != "alert: 5xx rate above 5 % on factory-gateway in factory" ||
 		!strings.HasPrefix(gwBody, "factoryd: SigNoz fires the alert 5xx rate above 5 % on service factory-gateway in namespace factory of project ai-software-factory-code.\n\n"+
 			"Firing since 2026-09-28T20:01:29Z. SigNoz: hxxps://signoz[.]example/alerts/overview?ruleId=r-1\n\n") ||
-		chTitle != "alert: ClickHouse disk above 80 % on clickhouse in platform" ||
-		!strings.HasPrefix(chBody, "factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
+		chTitle != "SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in platform of ai-software-factory-infra since 2026-09-28T20:01:29Z: handle it, or wait for it to clear?" ||
+		!strings.Contains(chBody, "\n\nWhy: the project runs no agents\n\nInfo: factoryd: SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in namespace platform of project ai-software-factory-infra.") {
 		t.Fatalf("issues\n%s\n---\n%s", r.fj.issues[0], r.fj.issues[1])
 	}
-	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"bug", "human", "state/waiting-human"}) {
+	if !slices.Equal(r.fj.labels[1], []string{"bug", "state/queued"}) || !slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("labels %v", r.fj.labels)
 	}
 	byRepo := map[string]Task{}
@@ -1122,7 +1132,7 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	for _, a := range r.store.alertRows() {
 		rows[a.Fingerprint] = a
 	}
-	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "alert: ClickHouse disk above 80 % on clickhouse in platform\n\n") ||
+	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "SigNoz fires the alert ClickHouse disk above 80 % on service clickhouse in platform of ai-software-factory-infra since ") ||
 		len(r.flows.started) != 0 || len(r.store.tasks) != 1 {
 		t.Fatalf("the push's first minutes: issues %q, started %v, %d tasks; want ClickHouse's alone, from before the push, no agent card",
 			r.fj.issues, r.flows.started, len(r.store.tasks))
@@ -1164,11 +1174,11 @@ func TestAlertInsidePlatformRolloutWaitsForItsWindow(t *testing.T) {
 	if err := r.in.SweepSigNoz(ctx, at("2026-10-15T11:07:46Z")); err != nil {
 		t.Fatal(err)
 	}
-	want := "alert: Forgejo 5xx rate above 5 % on forgejo in forgejo\n\n" +
-		"factoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
+	ask := "SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in forgejo of ai-software-factory-infra since 2026-10-15T10:48:00Z: handle it, or wait for it to clear?"
+	want := "Info: factoryd: the alert fired while HelmRelease forgejo/forgejo rolled out and still fires 10m0s after the rollouts settled.\n\n" +
 		"factoryd: SigNoz fires the alert Forgejo 5xx rate above 5 % on service forgejo in namespace forgejo of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T10:48:00Z."
-	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], want) || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
+	if len(r.fj.issues) != 2 || !strings.HasPrefix(r.fj.issues[1], ask+"\n\n") || !strings.Contains(r.fj.issues[1], want) || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
 		len(r.store.tasks) != 2 || len(r.flows.started) != 0 {
 		t.Fatalf("the last window closed: issues %q on %v, %d tasks, started %v; want Forgejo's filed second on the infra repository:\n%s",
 			r.fj.issues, r.fj.repos, len(r.store.tasks), r.flows.started, want)
@@ -1221,17 +1231,21 @@ func TestRolloutNotSettledAtTheCapReleasesItsAlertsAndRaisesItsOwn(t *testing.T)
 			t.Fatal(err)
 		}
 	}
-	want := "alert: HelmRelease signoz not settled in platform\n\n" +
-		"factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
+	ask := "Flux fires the alert HelmRelease signoz not settled in platform of ai-software-factory-infra since 2026-10-15T12:30:00Z: handle it, or wait for it to clear?"
+	want := ask + "\n\n```\n" + ask + "\n```\n\n" +
+		"Why: the project runs no agents\n\n" +
+		"Info: factoryd: Flux fires the alert HelmRelease signoz not settled in namespace platform of project ai-software-factory-infra.\n\n" +
 		"Firing since 2026-10-15T12:30:00Z.\n\n" +
 		"Value and annotations:\n\n```\nvalue=Running 'upgrade' action with timeout of 5m0s\n" +
 		"action=find why Flux has not settled HelmRelease platform/signoz 30m0s after applying it, from its status and events; " +
 		"its window holds no alert any more. A cause outside the repository is a question for a human.\n" +
 		"applied=2026-10-15T12:00:00Z\n```\n\n" +
 		"Labels:\n\n```\nalertname=HelmRelease signoz not settled\nkind=HelmRelease\nname=signoz\nnamespace=platform\n```\n\n" +
-		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz"
+		"filed by factoryd from Flux alert rollout/HelmRelease/platform/signoz\n\n" +
+		"Choices:\n- Wait for it to clear\n- Handled, close\n\n" +
+		"factoryd asks (factoryd). Answer on the card in the console or in the chat's inbox, or close this issue once decided.\n\nfiled by factoryd"
 	if len(r.fj.issues) != 2 || r.fj.issues[1] != want || r.fj.repos[1] != "sf/ai-software-factory-infra" ||
-		!slices.Equal(r.fj.labels[2], []string{"bug", "human", "state/waiting-human"}) {
+		!slices.Equal(r.fj.labels[2], []string{"human", "bug", "state/waiting-human"}) {
 		t.Fatalf("the stuck rollout's alert: issues %q on %v, labels %v; want one human card on the infra repository:\n%s",
 			r.fj.issues, r.fj.repos, r.fj.labels[2], want)
 	}
@@ -1523,5 +1537,164 @@ func TestFluxAlertKeepsItsStartAcrossARestart(t *testing.T) {
 	if want := []string{"#1 factoryd: resolved at 2026-10-15T09:21:00Z",
 		"#1 factoryd: the alert fired again at 2026-10-15T09:30:00Z.\n\n```\nvalue=Secret/demo-staging/db dry-run failed: secrets \"db\" not found\n```"}; !slices.Equal(r.fj.comments, want) || len(r.fj.issues) != 1 {
 		t.Fatalf("failing again past the grace: comments %q, %d issues; want %q, 1", r.fj.comments, len(r.fj.issues), want)
+	}
+}
+
+// clearedRig is the alert rig with one cleared alert on a project without
+// agents: a human card waiting, its row carrying resolved_at.
+func clearedRig(t *testing.T) (*alertRig, Task) {
+	t.Helper()
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	row := r.store.alertRows()[0]
+	return r, r.store.tasks[row.TaskID]
+}
+
+func TestAClearedAlertClosesItsUntouchedHumanCard(t *testing.T) {
+	r, task := clearedRig(t)
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	row := r.store.alertRows()[0]
+	if row.Verdict != VerdictUnjudged || row.ResolvedBy != "factoryd" || row.Detail["closed"] != "cleared" {
+		t.Fatalf("row %+v, want unjudged by factoryd, closed cleared", row)
+	}
+	if got := r.store.tasks[task.ID].Status; got != "closed" {
+		t.Fatalf("task %s, want closed", got)
+	}
+	want := []string{"#1 factoryd: resolved at " + resolvedAt,
+		"#1 factoryd: the alert cleared at " + resolvedAt + "; nobody touched the card, so it closes."}
+	if !slices.Equal(r.fj.comments, want) || !slices.Equal(r.fj.closed, []int64{1}) {
+		t.Fatalf("comments %q, closed %v, want %q and [1]", r.fj.comments, r.fj.closed, want)
+	}
+	if !slices.ContainsFunc(r.store.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == task.ID && e.Kind == IntakeFactoryClosed && e.CommentID == 1
+	}) {
+		t.Fatalf("intake events %+v: the bot's close of issue 1 is not recorded", r.store.intakeEvents)
+	}
+	var ends []Event
+	for _, e := range r.store.events {
+		if e.Kind == EventTaskEnded {
+			ends = append(ends, e)
+		}
+	}
+	if len(ends) != 1 || ends[0].Detail["state"] != "closed" || ends[0].Detail["reason"] != "the alert cleared at "+resolvedAt {
+		t.Fatalf("task_ended %+v", ends)
+	}
+	if err := r.in.CloseCleared(context.Background()); err != nil || len(r.fj.closed) != 1 {
+		t.Fatalf("second pass: %v, closed %v", err, r.fj.closed)
+	}
+}
+
+// A touched card stays, its row marked touched: the next pass reads
+// nothing of it. reads counts the touch's Forgejo reads on the first pass:
+// a store row needs none, a comment the comments, the noise label both.
+func TestAClearedAlertKeepsATouchedCard(t *testing.T) {
+	for name, tt := range map[string]struct {
+		touch func(*alertRig, Task)
+		reads int
+	}{
+		"a member's comment": {func(r *alertRig, task Task) { r.fj.people[task.IssueNumber] = []string{"on it"} }, 1},
+		"an intake row": {func(r *alertRig, task Task) {
+			r.store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: task.ID, Kind: "issue_comment", Author: "sebastian", CommentID: 5})
+		}, 0},
+		"the noise label": {func(r *alertRig, task Task) { r.fj.labels[task.IssueNumber] = []string{"human", LabelNoise} }, 2},
+		"a park": {func(r *alertRig, task Task) {
+			r.store.Record(context.Background(), Event{TaskID: task.ID, Kind: EventQuestionAnswered})
+		}, 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, task := clearedRig(t)
+			r.store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: task.ID, Kind: "issue_comment", Author: "factory-agent", CommentID: 4})
+			tt.touch(r, task)
+			reads := r.fj.reads
+			for pass := 1; pass <= 2; pass++ {
+				if err := r.in.CloseCleared(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+				row := r.store.alertRows()[0]
+				if row.Verdict != "" || row.Detail["touched"] != true || r.store.tasks[task.ID].Status != "waiting-human" || len(r.fj.comments) != 1 || len(r.fj.closed) != 0 {
+					t.Fatalf("pass %d: row %+v, task %s, comments %q, closed %v: want the row marked touched and nothing else changed",
+						pass, row, r.store.tasks[task.ID].Status, r.fj.comments, r.fj.closed)
+				}
+				if got := r.fj.reads - reads; got != tt.reads {
+					t.Fatalf("pass %d read the issue %d times, want %d", pass, got, tt.reads)
+				}
+				reads, tt.reads = r.fj.reads, 0
+			}
+		})
+	}
+}
+
+func TestAClearedAlertLeavesAnAgentCard(t *testing.T) {
+	r := newAlertRig(t)
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	r.post(t, "signoz", "hook-pw", sigAlert("resolved", "fp1", "demo-staging", firedAt, resolvedAt))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	if task.Kind == "human" {
+		t.Fatalf("task %+v should be an agent card", task)
+	}
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.store.alertRows()[0]; row.Verdict != "" || r.store.tasks[task.ID].Status != task.Status || len(r.fj.closed) != 0 {
+		t.Fatalf("row %+v, task %s, closed %v: nothing should change", row, r.store.tasks[task.ID].Status, r.fj.closed)
+	}
+}
+
+func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
+	r, task := clearedRig(t)
+	task.Status = "done"
+	r.store.tasks[task.ID] = task
+	before := len(r.store.events)
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.store.alertRows()[0]; row.Verdict != "" || r.store.tasks[task.ID].Status != "done" ||
+		len(r.fj.comments) != 1 || len(r.fj.closed) != 0 || len(r.store.events) != before {
+		t.Fatalf("row %+v, task %s, comments %q, closed %v, %d new events: nothing should change",
+			row, r.store.tasks[task.ID].Status, r.fj.comments, r.fj.closed, len(r.store.events)-before)
+	}
+}
+
+func TestAClearedAlertLeavesARowWithoutResolvedAt(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
+	task := r.store.tasks[r.store.alertRows()[0].TaskID]
+	assertCardKept(t, r, task)
+}
+
+func TestAClearedAlertLeavesAFiredAgainCard(t *testing.T) {
+	r, task := clearedRig(t)
+	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", "2026-09-28T21:00:00Z", neverEnds))
+	assertCardKept(t, r, task)
+}
+
+func assertCardKept(t *testing.T, r *alertRig, task Task) {
+	t.Helper()
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if row := r.store.alertRows()[0]; row.Verdict != "" || r.store.tasks[task.ID].Status != "waiting-human" || len(r.fj.closed) != 0 {
+		t.Fatalf("row %+v, task %s, closed %v: the card should keep waiting", row, r.store.tasks[task.ID].Status, r.fj.closed)
+	}
+}
+
+func TestAClearedAlertSkipsARowWhoseTaskIsMissing(t *testing.T) {
+	r, task := clearedRig(t)
+	delete(r.store.tasks, task.ID)
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatalf("CloseCleared = %v, want nil", err)
+	}
+	if row := r.store.alertRows()[0]; row.Verdict != "" || len(r.fj.closed) != 0 {
+		t.Fatalf("row %+v, closed %v: nothing should change", row, r.fj.closed)
 	}
 }

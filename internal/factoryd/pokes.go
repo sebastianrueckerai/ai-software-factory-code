@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Pokes (roadmap 239): factoryd's own turns in the inbox thread of each
@@ -41,8 +42,7 @@ var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprov
 	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged}
 
-// budgetSources are the escalation sources of a card stopped by money; a
-// human card asking about money needs its person all the same.
+// budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
 
 // agentVerbs are the agent's own actions a poke tells, by event kind.
@@ -248,8 +248,11 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		m.Kind = MessageEscalation
 		m.Content = ref + " needs you: " + str("question")
 		m.Decider = str("decider_line")
-		if slices.Contains(budgetSources, str("source")) && t.Kind != "human" {
+		if slices.Contains(budgetSources, str("source")) {
 			m.Content = ref + " is stopped by its budget: " + str("question")
+		}
+		if why := str("why"); why != "" {
+			m.Content += "\nWhy: " + textutil.Truncate(why, 300)
 		}
 		if cs, ok := e.Detail["choices"].([]any); ok {
 			for _, c := range cs {

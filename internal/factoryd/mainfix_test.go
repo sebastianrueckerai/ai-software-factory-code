@@ -164,8 +164,6 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 	}
 	roller, store, wf := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
-	rows := &fakeEventRecorder{}
-	roller.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
 	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
 	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
@@ -179,11 +177,7 @@ func TestRollerFilesARerunCardWhenMainLostItsRunner(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	// the person is told, and the project agent wakes at autonomous
-	if wakesNobody(needsYouPoke(t, rows.rows, store.tasks[pause.FixTask], "main is red at c2c2c2c: re-run ci / test (push) (runner lost)")) {
-		t.Fatal("the re-run card's row wakes nobody")
-	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push) (runner lost)\n\nMain CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n\n```\nmain is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n```\n\nWhy: Main CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+job+":\n\n```\n\u2699\ufe0f [runner]: context canceled\\nGet \"https://127.0.0.1:2376/v1.51/containers/6e2dfaae97bc") ||
 		!strings.Contains(f.issues[0], "Re-run each job from its page.") {
 		t.Fatalf("issues %q, want the one re-run card", f.issues)
@@ -274,7 +268,7 @@ func TestRollerFilesARerunCardWhenARunnerWasKilledOrItsDockerRestarted(t *testin
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
 	// 07:13:45 less the last tick's 07:02:43.4584859 is 11m1.54s
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push) (runner lost)\n\n") ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push), its runner was lost.\n\n") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+test+": Forgejo failed it at 2026-10-15T07:13:45Z, 11m2s after its log's last line, its runner silent since:\n\n```\ntick 38\n```") ||
 		!strings.Contains(f.issues[0], "ci / image (push), https://git.example"+image+":\n\n```\n\u2699\ufe0f [runner]: failed to inspect exec: Cannot connect to the Docker daemon at tcp://127.0.0.1:2376.") {
 		t.Fatalf("issues %q, want the one re-run card naming both records", f.issues)
@@ -314,7 +308,7 @@ func TestRollerFilesARerunCardWhenAJobLeftNoLog(t *testing.T) {
 	if !ok || pause.RunID != 58 || pause.FixTask == "" {
 		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
-	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push) (runner lost)\n\n") ||
+	if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), ci / image (push), its runner was lost.\n\n") ||
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+test+": its log is empty, its runner lost before the job's first line.") ||
 		!strings.Contains(f.issues[0], "ci / image (push), https://git.example"+image+": factoryd cannot read its log (forgejo job log "+image+": status 500); a runner lost before the job's first line leaves none.") {
 		t.Fatalf("issues %q, want the one re-run card naming both jobs", f.issues)

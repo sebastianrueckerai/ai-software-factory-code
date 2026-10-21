@@ -1051,13 +1051,19 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 			return 0, err
 		}
 	}
+	// a clicked choice is posted as the member's comment: agent text,
+	// sanitised like the reason
+	choices = slices.Clone(choices)
+	for i, c := range choices {
+		choices[i] = r.untrusted(t, c)
+	}
 	question := escalationQuestion(reason)
 	var shaped *HumanQuestion
 	if reason != healedReason && !strings.HasPrefix(reason, screeningAsks) {
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
-		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason))
+		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		question = shaped.Ask
 	}
 	if reason == healedReason {
@@ -1068,12 +1074,6 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		}
 		_, again, _ := answersFrom(events)
 		question = cmp.Or(again, question)
-	}
-	// a clicked choice is posted as the member's comment: agent text,
-	// sanitised like the reason
-	choices = slices.Clone(choices)
-	for i, c := range choices {
-		choices[i] = r.untrusted(t, c)
 	}
 	// the durable anchor Reconcile rebuilds the answers from; a retry
 	// with the same comment records nothing twice. It is written before
@@ -1098,9 +1098,16 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason)}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
+		if shaped.Recommendation != "" {
+			asked["recommendation"] = shaped.Recommendation
+		}
+		asked["choices"] = shaped.Labels()
 	}
 	if len(choices) > 0 {
-		step["choices"], asked["choices"] = choices, choices
+		step["choices"] = choices
+		if shaped == nil {
+			asked["choices"] = choices
+		}
 	}
 	r.record(ctx, taskID, "escalated", step)
 	r.timeline.RecordRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)

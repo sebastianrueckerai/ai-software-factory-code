@@ -1350,12 +1350,12 @@ func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind stri
 
 // fileRepair files the repair card of repository's red head: one per
 // repository while one holds it (repairHeld; a second red tick joins the
-// open card's work), an agent card in the project's lane ready — a human card where
-// the project has no agents (FileAgentTask) — whose objective carries the
-// findings, the failing run's link and the issue numbers of the cards the
-// head carried. The factory's own repository files none: mainfix owns a
-// red push run there and the roll task a red roll, each with its own
-// card.
+// open card's work), an agent card in the project's lane ready whose
+// objective carries the findings, the failing run's link and the issue
+// numbers of the cards the head carried; where the project has no agents,
+// a human card asking the same (repairQuestion). The factory's own
+// repository files none: mainfix owns a red push run there and the roll
+// task a red roll, each with its own card.
 func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run ActionRun, findings []string) {
 	if p.Own.Name != "" && repository == p.Own.String() {
 		return
@@ -1387,6 +1387,20 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 		log.Printf("chain poller: %s: read the carried cards: %v", repository, err)
 		return
 	}
+	runURL := ""
+	if run.Index > 0 {
+		runURL = fmt.Sprintf("%s/%s/actions/runs/%d", p.Forgejo.PublicURL, repository, run.Index)
+	}
+	if proj.Agents == policy.AgentsNone {
+		t, number, err := fileHumanTask(ctx, p.Store, p.Forgejo, p.Timeline, proj.Repo(), repairQuestion(repository, run.CommitSHA, findings, runURL, issues), nil,
+			Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: run.CommitSHA, Source: SourceChainRepair, Author: p.Forgejo.BotUser})
+		if err != nil {
+			log.Printf("chain poller: %s: file the repair card: %v", repository, err)
+			return
+		}
+		log.Printf("chain poller: %s: head %s red: human repair card %s, issue #%d", repository, run.CommitSHA, t.ID, number)
+		return
+	}
 	short := run.CommitSHA[:min(7, len(run.CommitSHA))]
 	title := fmt.Sprintf("chain of %s at %s: %s", repository, short, findings[0])
 	var b strings.Builder
@@ -1394,8 +1408,8 @@ func (p *ChainPoller) fileRepair(ctx context.Context, repository string, run Act
 	for _, f := range findings {
 		fmt.Fprintf(&b, "- %s\n", f)
 	}
-	if run.Index > 0 {
-		fmt.Fprintf(&b, "\nThe run: %s/%s/actions/runs/%d.\n", p.Forgejo.PublicURL, repository, run.Index)
+	if runURL != "" {
+		fmt.Fprintf(&b, "\nThe run: %s.\n", runURL)
 	}
 	if len(issues) > 0 {
 		fmt.Fprintf(&b, "\nThe cards whose change this head carried: %s. They stay merged until a green chain covers them; this card is their repair.\n",

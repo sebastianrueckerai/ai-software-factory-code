@@ -94,8 +94,6 @@ func (f *stubForgejo) server(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{"commit":{"id":"c-branch"}}`)
 		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, fork+"/branches/"):
 			w.WriteHeader(http.StatusNoContent)
-		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
-			io.WriteString(w, `[]`) // no issue a failed filing left behind
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/pulls":
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, repo+"/pulls/"):
@@ -196,7 +194,7 @@ func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []st
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok || !slices.Contains(from, t.Status) {
-		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
+		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, factoryd.ErrNotFound, from, to)
 	}
 	t.Status = to
 	if factoryd.Final(to) {
@@ -398,6 +396,17 @@ func (s *acceptanceStore) ReleaseHandover(_ context.Context, taskID string) erro
 		return e.TaskID == taskID && e.Kind == factoryd.IntakeHandover
 	})
 	return nil
+}
+
+func (s *acceptanceStore) TouchedByPerson(_ context.Context, taskID string, bots ...string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, e := range s.events {
+		if e.TaskID == taskID && e.Author != factoryd.FactoryDecider && !slices.Contains(bots, e.Author) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *acceptanceStore) IntakeEvents(_ context.Context, taskID string) ([]factoryd.IntakeEvent, error) {

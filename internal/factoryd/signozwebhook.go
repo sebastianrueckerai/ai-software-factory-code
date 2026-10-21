@@ -20,6 +20,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // SourceAlert is the source of a task filed from a SigNoz alert.
@@ -141,13 +142,8 @@ func (r Rollout) holds(at time.Time, ns string) bool {
 // AlertBook is what the alert intake keeps: the task rows it files and one
 // alerts row per issue, found again by the alert's fingerprint.
 type AlertBook interface {
-	CreateTask(ctx context.Context, t Task) error
-	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
-	Task(ctx context.Context, id string) (Task, bool, error)
-	InsertAlert(ctx context.Context, a Alert) (int64, error)
-	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+	Store
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
-	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
 }
 
@@ -196,6 +192,8 @@ type AlertIntake struct {
 	Flux FluxReader
 	// SigNoz lists the alerts SigNoz holds firing, for SweepSigNoz.
 	SigNoz AlertSource
+	// Metrics counts the cards CloseCleared ends; nil counts none.
+	Metrics *telemetry.Metrics
 
 	// one notification at a time: two deliveries of a new fingerprint
 	// file one issue
@@ -506,6 +504,91 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 	return errors.Join(errs...)
 }
 
+// CloseCleared closes each human card of a cleared SigNoz alert that no
+// person touched: the row's verdict is unjudged, the task closed before
+// its issue, so the issue-closed webhook finds it final and judges
+// nothing. A card an agent works, a row still firing or judged, a card
+// that left waiting-human, and a card a person commented on, labelled
+// noise, answered or parked are left as they are. A touch is marked on
+// the row, so a touched card is never read again.
+func (in *AlertIntake) CloseCleared(ctx context.Context) error {
+	in.mu.Lock()
+	defer in.mu.Unlock()
+	rows, err := in.Store.NewestAlertRows(ctx, AlertSigNoz, "")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, row := range rows {
+		at, _ := row.Detail["resolved_at"].(string)
+		if _, firing := firingSince(row); row.Verdict != "" || at == "" || firing || row.Detail["touched"] == true {
+			continue
+		}
+		if err := in.closeCleared(ctx, row, at); err != nil {
+			errs = append(errs, fmt.Errorf("alert %s: %w", strconv.Quote(row.Fingerprint), err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// touched reports whether a person acted on human card t: an intake row, an
+// answer or park, a comment on its issue by anyone but the bot, or the
+// noise label, a verdict that waits on the person's close.
+func (in *AlertIntake) touched(ctx context.Context, t Task, repo Repo) (bool, error) {
+	if touched, err := in.Store.TouchedByPerson(ctx, t.ID, in.Forgejo.BotUser); err != nil || touched {
+		return touched, err
+	}
+	comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(comments, func(c IssueComment) bool { return c.Author != in.Forgejo.BotUser }) {
+		return true, nil
+	}
+	labels, err := in.Forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	return slices.Contains(labels, LabelNoise), err
+}
+
+func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) error {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil || !ok || t.Kind != "human" || t.Status != "waiting-human" {
+		return err
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	switch touched, err := in.touched(ctx, t, repo); {
+	case err != nil:
+		return err
+	case touched:
+		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
+	}
+	if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "closed"); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
+	mirrorTaskState(ctx, in.Forgejo, t, "closed")
+	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "the alert cleared at "+at)
+	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
+		return err
+	}
+	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
+		"factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes."); err != nil {
+		return err
+	}
+	return in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
+}
+
 // RolloutPass raises an alert, through take as a SigNoz alert would, on
 // each Flux object whose rollout has not settled rolloutCap after Flux
 // applied it: its window no longer holds any alert, so a stuck rollout
@@ -700,17 +783,24 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		Author: in.Forgejo.BotUser}
 	// A capacity alert goes to a human card even on a project with agents:
 	// a coding agent can only raise a limit, the decision needs evidence.
-	if a.Labels["capacity"] != "" {
-		t.Kind = "human"
+	if p.Agents == policy.AgentsNone || a.Labels["capacity"] != "" {
+		why := "the project runs no agents"
+		if p.Agents != policy.AgentsNone {
+			why = "a capacity alert needs a person's evidence: a coding agent can only raise a limit"
+		}
+		q := alertQuestion(a, p.Name, ns, why, body)
+		q.Ask = sanitize.Outbound(q.Ask, in.hostsFor(p))
+		t, err = EscalateToHuman(ctx, in.Store, in.Forgejo, in.Timeline, repo, q, "factoryd", t, "bug")
+	} else {
+		t, _, err = FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
 	}
-	t, ref, err := FileAgentTask(ctx, in.Store, in.Forgejo, in.Workflows, in.Timeline, p, title, body, []string{"bug"}, t)
 	if err != nil {
 		return err
 	}
-	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": ref.Number, "repro_base": t.ReproBase}); err != nil {
-		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, ref.Number, err)
+	if err := in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"issue": t.IssueNumber, "repro_base": t.ReproBase}); err != nil {
+		log.Printf("signoz webhook: alert row %d: record issue #%d: %v", row.ID, t.IssueNumber, err)
 	}
-	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, ref.Number, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
+	log.Printf("signoz webhook: alert %s in %s: issue #%d on %s, task %s", strconv.Quote(a.Labels["alertname"]), ns, t.IssueNumber, repo, t.ID) // #nosec G706 -- quoted, ns is a checked DNS label
 	return nil
 }
 
@@ -794,18 +884,27 @@ func alertService(labels map[string]string) string {
 	return oneLine(cmp.Or(labels["service"], labels["service.name"], labels["k8s.deployment.name"], labels["deployment"]))
 }
 
+// alertParts is what alert a is called: its name, " on service <s>" (empty
+// without a service) and its source, SigNoz or Flux.
+func alertParts(a SigNozAlert) (name, on, source string) {
+	name, source = oneLine(a.Labels["alertname"]), "SigNoz"
+	if fromFlux(a.Fingerprint) {
+		source = "Flux"
+	}
+	if s := alertService(a.Labels); s != "" {
+		on = " on service " + s
+	}
+	return name, on, source
+}
+
 // alertIssue is the bug issue of alert a: title "alert: <name> on
 // <service> in <ns>" (no "on" without a service) and a body with the
 // firing time, the SigNoz link, the value and annotations and the labels,
 // the values one line each inside fences. The text goes to Forgejo, so it
 // is sanitised Outbound: hosts is the links left unmangled.
 func alertIssue(a SigNozAlert, project, ns string, hosts []string) (title, body string) {
-	name, on, source := oneLine(a.Labels["alertname"]), "", "SigNoz"
-	if fromFlux(a.Fingerprint) {
-		source = "Flux"
-	}
+	name, on, source := alertParts(a)
 	if s := alertService(a.Labels); s != "" {
-		on = " on service " + s
 		title = "alert: " + name + " on " + s + " in " + ns
 	} else {
 		title = "alert: " + name + " in " + ns

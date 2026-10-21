@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -134,6 +135,7 @@ type MonthSpend struct {
 type MonthBook interface {
 	CreateTask(ctx context.Context, t Task) error
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
@@ -152,8 +154,7 @@ type MonthAlarm struct {
 	Dir     string
 	Config  *ForgejoConfig
 	Current func() policy.Version
-	// Timeline records the card's card_created and needs-you row; nil
-	// records none.
+	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
 }
 
@@ -229,22 +230,64 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 		return fmt.Errorf("%s at %s has no month_eur line", policy.FilePolicy, v.Commit)
 	}
 	limit := v.Document.Budget.MonthEUR
-	refusal := ""
-	if m.Refusal != "" {
-		refusal = "\n\nThe first refusal:\n\n" + fenced(m.Refusal)
-	}
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s/%s#L%d", a.Forgejo.PublicURL, a.Repo, v.Commit, a.Dir, policy.FilePolicy, line)
-	title := fmt.Sprintf("budget: the month cap of %.2f EUR is reached (%s)", limit, m.Month)
-	body := fmt.Sprintf("The factory's variable spend this month (UTC, over the cost ledger: model calls, paid tools, commissioned servers) "+
-		"is %.2f EUR of the cap of %.2f EUR (`budget.month_eur`, %s).\n\n"+
-		"The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; "+
-		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, "+
-		"like any setting. Close this issue once decided.%s\n\nfiled by factoryd", m.EUR, limit, link, refusal)
-	t := Task{ID: NewTaskID(), RiskClass: "standard", Objective: title + "\n\n" + body, SHA: v.Commit,
-		Source: SourceMonthCap, Author: a.Forgejo.BotUser}
-	t, ref, err := fileHumanCard(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, title, body, nil, t, "")
+	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: v.Commit, Source: SourceMonthCap, Author: a.Forgejo.BotUser}
+	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, monthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t)
 	if err != nil {
 		return err
 	}
-	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": ref.Number})
+	return a.Store.SetAlertTask(ctx, id, t.ID, map[string]any{"issue": number})
+}
+
+// fileHumanTask files human task t on repo from question q through
+// FileTask, the ask its title, labelled
+// human and labels, unless the bot's open issue of the same title that no
+// task row holds is there: an issue filed by a check whose task row then
+// failed is taken on, not filed again. An issue a task holds is that
+// card's, such as an earlier routine run's still open. number is the
+// issue's. Either way the card records card_created and its ask on tl.
+func fileHumanTask(ctx context.Context, store interface {
+	CreateTask(ctx context.Context, t Task) error
+	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
+}, forgejo *Forgejo, tl *Timeline, repo Repo, q HumanQuestion, labels []string, t Task) (Task, int64, error) {
+	title := askTitle(q)
+	body := questionBody(q, "factoryd asks ("+t.Source+"). Answer on the card in the console or in the chat's inbox, or close this issue once decided.")
+	t.Objective = title + "\n\n" + body
+	open, err := forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
+	if err != nil {
+		return Task{}, 0, err
+	}
+	var number int64
+	for _, is := range open {
+		if is.Title != title || is.Poster.UserName != forgejo.BotUser {
+			continue
+		}
+		if _, held, err := store.TaskByIssue(ctx, repo.String(), is.Index); err != nil {
+			return Task{}, 0, err
+		} else if !held {
+			number = is.Index
+		}
+	}
+	labels = append([]string{"human"}, labels...)
+	if number == 0 {
+		var ref IssueRef
+		if t, ref, err = FileTask(ctx, store, forgejo, repo, title, body, labels, t); err != nil {
+			return Task{}, 0, err
+		}
+		number = ref.Number
+	} else {
+		t.Status, t.Repository, t.IssueNumber = "waiting-human", repo.String(), number
+		if err := forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, number, append(labels, "state/waiting-human")); err != nil {
+			return Task{}, 0, err
+		}
+		if err := store.CreateTask(ctx, t); err != nil {
+			return Task{}, 0, err
+		}
+	}
+	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number})
+	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd); err != nil {
+		return Task{}, 0, err
+	}
+	return t, number, nil
 }

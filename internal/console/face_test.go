@@ -890,95 +890,6 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 	}
 }
 
-// A human card that waits on a person without an ask (roadmap 1131)
-// offers its writer two real actions: Have the factory do it, which files
-// the card's work as the factory's own card and closes it, and Close with
-// note, which ends it on a note posted on the issue; the plain Close
-// yields, so the one close carries a note. The backlog card carries the
-// pair too. A card with an ask keeps its answer forms and offers no go:
-// its wait is on an answer, not on the factory.
-func TestWaitingHumanCardWithoutAnAskOffersTheFactoryOrAClose(t *testing.T) {
-	r, ev := newRigWithEvents(t)
-	r.tasks.tasks = []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-wait", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 31, Objective: "Bump the weekly numbers."}},
-		{Task: factoryd.Task{ID: "t-back", Kind: "human", Status: "backlog", Repository: "sf/code", IssueNumber: 32, Objective: "Audit the recent merges."}},
-		{Task: factoryd.Task{ID: "t-ask", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 33, Objective: "Pick the store."},
-			Escalation: "The card asks: which store keeps the snapshots?"},
-		{Task: factoryd.Task{ID: "t-agent", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 34, Objective: "the feed"}},
-	}
-	ck, s := r.loggedIn(t)
-	numbers := map[string]int{"t-wait": 31, "t-back": 32, "t-ask": 33}
-	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
-		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
-		filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">`
-		if strings.Contains(page, "view=wide") {
-			filter += `<input type="hidden" name="view" value="wide">`
-		}
-		pair := func(id string) string {
-			n := fmt.Sprintf("#%d", numbers[id])
-			return `<form method="post" action="/tasks/` + id + `/go" hx-post="/tasks/` + id + `/go" hx-target="#board" hx-swap="outerHTML" class="inline" data-to="off">` + filter +
-				`<button type="submit" aria-label="Have the factory do ` + n + `">Have the factory do it</button></form>` +
-				`<form method="post" action="/tasks/` + id + `/close" hx-post="/tasks/` + id + `/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off">` + filter +
-				`<textarea name="note" rows="1" maxlength="4000" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close ` + n + ` with a note">Close with note</button></form>`
-		}
-		for _, id := range []string{"t-wait", "t-back"} {
-			face := faceOf(t, body, id)
-			if !strings.Contains(face, pair(id)) {
-				t.Errorf("%s: the face of %s lacks the factory and the close with note:\n%s", page, id, face)
-			}
-			if strings.Contains(face, `>Close</button>`) {
-				t.Errorf("%s: the face of %s still offers the plain close:\n%s", page, id, face)
-			}
-		}
-		for _, id := range []string{"t-ask", "t-agent"} {
-			if face := faceOf(t, body, id); strings.Contains(face, `/tasks/`+id+`/go"`) {
-				t.Errorf("%s: the face of %s offers the factory:\n%s", page, id, face)
-			}
-		}
-		// a human card never renders an escalation article on the board; an
-		// ask-less agent card that waits (a card like 1131) renders one with
-		// no reason and no answer box
-		if esc := escalationOf(t, body, "t-agent"); strings.Contains(esc, `name="answer"`) || strings.Contains(esc, `<p class="reason">`) {
-			t.Errorf("%s: the ask-less agent card still answers:\n%s", page, esc)
-		}
-	}
-
-	// the drawer's Open section holds the pair, in the drawer's roomier
-	// shape; the asking card's drawer keeps its answer form and no go
-	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-wait/drawer?tab=overview", nil), ck).Body.String()
-	open := `<div class="open-need"><h3>Open</h3>` + "\n" +
-		`<div class="acts"><form method="post" action="/tasks/t-wait/go" hx-post="/tasks/t-wait/go" hx-target="#board" hx-swap="outerHTML" class="inline" data-to="off"><input type="hidden" name="csrf" value="` + s.csrf + `"><button type="submit" aria-label="Have the factory do #31">Have the factory do it</button></form>` +
-		`<form method="post" action="/tasks/t-wait/close" hx-post="/tasks/t-wait/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off"><input type="hidden" name="csrf" value="` + s.csrf + `"><label for="note-t-wait-d">note, posted on the issue as you</label><textarea id="note-t-wait-d" name="note" rows="3" maxlength="4000" required></textarea><button type="submit" class="deny" aria-label="Close #31 with a note">Close with note</button></form></div>`
-	if !strings.Contains(drawer, open) {
-		t.Errorf("the drawer of t-wait lacks the pair in its Open section:\n%s", drawer)
-	}
-	if strings.Contains(drawer, `name="answer"`) {
-		t.Errorf("the ask-less card's drawer offers an answer:\n%s", drawer)
-	}
-	askDrawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-ask/drawer?tab=overview", nil), ck).Body.String()
-	if !strings.Contains(askDrawer, `<label for="answer-t-ask-d">Your answer, posted on the issue as you</label>`) {
-		t.Errorf("the asking card's drawer lost its answer form:\n%s", askDrawer)
-	}
-	if strings.Contains(askDrawer, `/tasks/t-ask/go"`) {
-		t.Errorf("the asking card's drawer offers the factory:\n%s", askDrawer)
-	}
-
-	// the note reaches the issue as the member's comment, and the card
-	// closes on it
-	before := ev.count()
-	rec := r.do(post("/tasks/t-wait/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"Not this week."}}), ck)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
-		t.Fatalf("the close with note = %d to %q, want 303 to the board", rec.Code, rec.Header().Get("Location"))
-	}
-	if got := r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"]; got != "Not this week." {
-		t.Errorf("the note = %q, want it on the issue", got)
-	}
-	if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/31 {"state":"closed"}`}) {
-		t.Errorf("the issue stays open: %v", r.fg.patched)
-	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
-}
-
 // A card that asks closes like every ask-less card since roadmap 1131:
 // on a note, without a browser confirm. The plain ask ends on a note
 // posted on the issue; a shaped question's End-the-card choice closes
@@ -1297,4 +1208,124 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}
 	}
+}
+
+func humanAsk(id string, issue int64, choices ...factoryd.QuestionChoice) factoryd.BoardTask {
+	return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: issue,
+		Objective: "Which store?"},
+		Escalation: "Which store keeps the snapshots?",
+		Question: &factoryd.HumanQuestion{Ask: "Which store keeps the snapshots?", Why: "Two stores fit.", Info: "Postgres is shared, SQLite is local.",
+			Recommendation: "Postgres", Source: "the agent's", Choices: choices}}
+}
+
+// A human card shows the question a chat escalation files it from
+// (values are the labels in the "say:" namespace): the whole ask as its
+// title and nowhere else on its face, one button per choice, the why,
+// info and recommendation in the drawer under the ask as its head, and
+// the card's own Close beside them. An agent card keeps its ask line
+// under its own title.
+func TestAHumanCardShowsItsQuestion(t *testing.T) {
+	r := newRig(t)
+	const ask = "Which store keeps the snapshots of the nightly export once the shared Postgres runs out of disk?"
+	hq := humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "say:Postgres", Label: "Postgres"}, factoryd.QuestionChoice{Value: "say:SQLite", Label: "SQLite"})
+	hq.Objective, hq.Question.Ask = ask+"\n\nWhy: Two stores fit.", ask
+	r.tasks.tasks = []factoryd.BoardTask{hq, agentEndsAsk()}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	equal(t, "the human card's title", titleOf(t, body, "t-hq"), ask)
+	esc := escalationOf(t, body, "t-hq")
+	for _, want := range []string{`name="value" value="say:Postgres"`, `aria-label="SQLite, posted on the issue as you"`} {
+		if !strings.Contains(esc, want) {
+			t.Errorf("the human card lacks %q:\n%s", want, esc)
+		}
+	}
+	if strings.Contains(esc, `<p class="ask">`) || strings.Count(esc, ask) != 2 { // the title's attribute and its text
+		t.Errorf("the human card repeats its ask below the title:\n%s", esc)
+	}
+	if face := faceOf(t, body, "t-hq"); !strings.Contains(face, `action="/tasks/t-hq/close"`) {
+		t.Errorf("the face lost the card's Close:\n%s", face)
+	}
+	if agent := escalationOf(t, body, "t-a"); !strings.Contains(agent, `<p class="ask">Use a replica?</p>`) {
+		t.Errorf("the agent card lost its ask line:\n%s", agent)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-hq/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{ask, "Two stores fit.", "Postgres is shared, SQLite is local.", "Recommendation (the agent&#39;s): Postgres"} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
+		}
+	}
+	if strings.Contains(drawer, `<p class="ask">`) {
+		t.Errorf("the drawer repeats the ask below its head:\n%s", drawer)
+	}
+	if agent := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-a/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(agent, `<p class="ask">Use a replica?</p>`) {
+		t.Errorf("the agent card's drawer lost its ask line:\n%s", agent)
+	}
+}
+
+// A human card's go and close choices take it off the board and post to
+// the answer route, close in the deny style; park keeps it.
+func TestAHumanCardChoicesLeaveTheBoardOrStay(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
+		factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})}
+	ck, _ := r.loggedIn(t)
+	esc := escalationOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-hq")
+	if strings.Count(esc, `class="inline" data-to="off">`) != 2 || strings.Contains(esc, `action="/tasks/t-hq/close"`) {
+		t.Errorf("want go and close to leave the board through the answer route and park to stay:\n%s", esc)
+	}
+	if !strings.Contains(esc, `<button type="submit" class="deny" aria-label="Done, posted on the issue as you">Done</button>`) {
+		t.Errorf("the Done choice lost its deny style:\n%s", esc)
+	}
+}
+
+func TestAQuestionWithoutACloseKeepsTheClose(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hp", 52, factoryd.QuestionChoice{Value: "park", Label: "Wait for it"})}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-hp"); !strings.Contains(face, `action="/tasks/t-hp/close"`) {
+		t.Errorf("the face lost the card's Close:\n%s", face)
+	}
+}
+
+// What an ask-less card still offers: an agent card's escalation shows no
+// reason and no answer box; a question-less human card that asks, an old
+// row, keeps its answer form; one that asks nothing offers no answer and
+// its plain Close; a close with a note posts it and records the close.
+func TestAskLessAndQuestionLessCardsKeepTheirForms(t *testing.T) {
+	r, ev := newRigWithEvents(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-wait", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 31, Objective: "Bump the weekly numbers."}},
+		{Task: factoryd.Task{ID: "t-ask", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 33, Objective: "Pick the store."},
+			Escalation: "The card asks: which store keeps the snapshots?"},
+		{Task: factoryd.Task{ID: "t-agent", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 34, Objective: "the feed"}},
+	}
+	ck, s := r.loggedIn(t)
+	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()
+		if esc := escalationOf(t, body, "t-agent"); strings.Contains(esc, `name="answer"`) || strings.Contains(esc, `<p class="reason">`) {
+			t.Errorf("%s: the ask-less agent card still answers:\n%s", page, esc)
+		}
+		if face := faceOf(t, body, "t-wait"); !strings.Contains(face, `>Close</button>`) {
+			t.Errorf("%s: the question-less card lost its plain Close:\n%s", page, face)
+		}
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-wait/drawer?tab=overview", nil), ck).Body.String()
+	if strings.Contains(drawer, `name="answer"`) {
+		t.Errorf("the ask-less card's drawer offers an answer:\n%s", drawer)
+	}
+	askDrawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-ask/drawer?tab=overview", nil), ck).Body.String()
+	if !strings.Contains(askDrawer, `<label for="answer-t-ask-d">Your answer, posted on the issue as you</label>`) {
+		t.Errorf("the old asking card's drawer lost its answer form:\n%s", askDrawer)
+	}
+
+	before := ev.count()
+	rec := r.do(post("/tasks/t-wait/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"Not this week."}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("the close with note = %d, want 303", rec.Code)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"]; got != "Not this week." {
+		t.Errorf("the note = %q, want it on the issue", got)
+	}
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
 }

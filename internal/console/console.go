@@ -470,7 +470,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
 		{"POST /tasks/{id}/plan/reject", http.HandlerFunc(c.rejectPlan), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
-		{"POST /tasks/{id}/go", http.HandlerFunc(c.goCard), nil},
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},

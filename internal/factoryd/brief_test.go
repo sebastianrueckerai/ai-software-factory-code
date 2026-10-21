@@ -115,7 +115,7 @@ func briefTask() Task {
 func briefVersion(url string) policy.Version {
 	return policy.Version{Tree: policy.Tree{Document: policy.Document{Classes: map[string]policy.Class{
 		policy.ClassCoder: {SupervisorModel: "supervisor"},
-	}}}}
+	}, Limits: policy.Limits{SupervisorTimeout: 6 * time.Minute}}}}
 }
 
 func mergeSpec(t *testing.T) json.RawMessage {
@@ -148,6 +148,35 @@ func TestBriefWriterPass(t *testing.T) {
 	}
 	if len(store.failed) != 0 || len(store.events) != 0 {
 		t.Fatalf("a good call marked or recorded a failure: %v %v", store.failed, store.events)
+	}
+}
+
+// The brief's call is a supervisor call and waits as long as the
+// policy's supervisor_timeout lets one: a model slower than the bound
+// fails the row, one inside it files the brief.
+func TestBriefWriterTakesThePolicysTimeout(t *testing.T) {
+	answer := `{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte(answer))
+	}))
+	defer gw.Close()
+	for _, tt := range []struct {
+		bound time.Duration
+		filed bool
+	}{{50 * time.Millisecond, false}, {5 * time.Second, true}} {
+		store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
+			rows:  []ApprovalRequest{{ID: 7, Kind: ApprovalMerge, TaskID: "t1", Project: "o/r", PRNumber: 12, Spec: mergeSpec(t)}},
+			brief: map[int64][2]string{}, failed: map[int64]string{}}
+		v := briefVersion(gw.URL)
+		v.Document.Limits.SupervisorTimeout = tt.bound
+		w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return v }}
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if _, filed := store.brief[7]; filed != tt.filed || (store.failed[7] != "") == tt.filed {
+			t.Fatalf("bound %s: filed %v, failure %q; want filed %v", tt.bound, filed, store.failed[7], tt.filed)
+		}
 	}
 }
 

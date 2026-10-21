@@ -109,21 +109,13 @@ type fakePoke struct {
 	m          ChatMessage
 }
 
-// routinePokes are the pokes the Poker writes for the events of a poke
-// kind r recorded, as Poker.Pass does: their detail read back as the
-// events table gives it, to the project's notify list, else its
-// approvers.
+// routinePokes are the pokes the Poker writes for the routine_ran events
+// r recorded, as Poker.Pass does: their detail read back as the events
+// table gives it, to the project's notify list, else its approvers.
 func routinePokes(t *testing.T, r *Runner, store *fakeStore) []fakePoke {
 	t.Helper()
-	rec := r.timeline.Events.(*fakeEventRecorder)
-	rec.mu.Lock()
-	rows := slices.Clone(rec.rows)
-	rec.mu.Unlock()
 	var out []fakePoke
-	for _, e := range rows {
-		if !slices.Contains(pokeKinds, e.Kind) {
-			continue
-		}
+	for _, e := range recordedEvents(r, EventRoutineRan) {
 		b, err := json.Marshal(e.Detail)
 		if err != nil {
 			t.Fatal(err)
@@ -192,7 +184,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if want := (RoutineRunResult{Outcome: "filed", TaskID: card.ID, Issue: 71}); res != want {
 		t.Fatalf("result %+v, want %+v", res, want)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "human", "state/waiting-human"}) {
+	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
 	if created := recordedEvents(r, EventCardCreated); len(created) != 1 || created[0].TaskID != card.ID ||
@@ -203,14 +195,14 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		ran[0].IssueNumber != 71 || ran[0].Actor != FactoryDecider || ran[0].Via != ViaFactoryd ||
 		!reflect.DeepEqual(ran[0].Detail, map[string]any{"project": codeProject, "routine": "weekly-bump", "run": 1, "outcome": "filed",
 			"schedule": "every Monday 06:00"}) {
-		t.Errorf("routine_ran %+v, want the run filed and no poke of its own: the card's needs-you row pokes", ran)
+		t.Errorf("routine_ran %+v", ran)
 	}
 	title, body, _ := strings.Cut(issues.issues[0], "\n\n")
 	if title != "Weekly bump of the pinned outside inputs" || card.Objective != title+"\n\n"+body {
 		t.Errorf("title %q, objective %q", title, card.Objective)
 	}
-	if !strings.HasPrefix(body, "The factory pins every outside input of its builds and its cluster") ||
-		!strings.HasSuffix(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1") {
+	if !strings.Contains(body, "\n\nWhy: the routine weekly-bump fired and files to a person\n\nInfo: The factory pins every outside input of its builds and its cluster") ||
+		!strings.Contains(body, "since a pod whose copy is missing does not start.\n\nfiled by the factory · routine weekly-bump · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
 		t.Errorf("body:\n%s", body)
 	}
 	for _, want := range []string{"upstream-images.txt", "DEBIAN_SNAPSHOT", "POSTGRESQL_VERSION", "LIBPQ_VERSION", "POSTGRESQL_COMMON_VERSION",
@@ -225,13 +217,12 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		runs[0].Issue != 71 || !runs[0].Ended.IsZero() {
 		t.Fatalf("runs %+v, want run 1 filed and open", runs)
 	}
-	want := fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessageEscalation,
-		Content: "#71 needs you: Weekly bump of the pinned outside inputs", TaskID: card.ID, Decider: "routine weekly-bump · run 1 · every Monday 06:00", BirthKind: EventQuestionAsked}}
-	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
-		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
+	if pokes := routinePokes(t, r, store); len(pokes) != 0 {
+		t.Fatalf("routine pokes %+v, want none: the card's question_asked row pokes", pokes)
 	}
-	if deliveryLevel(want.m) != LevelNeedsYou {
-		t.Fatal("the routine card's poke stays in the inbox, want it at the messengers' needs-you level")
+	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Weekly bump of the pinned outside inputs" ||
+		asked[0].Detail["why"] != "the routine weekly-bump fired and files to a person" || !reflect.DeepEqual(asked[0].Detail["choices"], []string{"Have the factory do it", "Done"}) {
+		t.Fatalf("question_asked %+v, want the card's one", asked)
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -240,8 +231,8 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
-	if pokes := routinePokes(t, r, store); len(pokes) != 1 || pokes[0].m.Content != "#71 needs you: Weekly bump of the pinned outside inputs" {
-		t.Fatalf("pokes under tell quiet %+v, want the human card's one", pokes)
+	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 {
+		t.Fatalf("question_asked under tell quiet %+v, want the human card's one", asked)
 	}
 }
 
@@ -445,7 +436,7 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 	}{
 		{"hold", policy.WhileOpenHold, policy.TellInbox, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
 		{"hold quietly", policy.WhileOpenHold, policy.TellQuiet, RoutineRunResult{Outcome: "held", Note: "held: #781 is still open"}, ""},
-		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, "#71 needs you: Weekly bump of the pinned outside inputs"},
+		{"file", policy.WhileOpenFile, policy.TellQuiet, RoutineRunResult{Outcome: "filed", Issue: 71}, ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
@@ -478,8 +469,8 @@ func TestRoutineRunHeldWhileOpen(t *testing.T) {
 			}
 			var pokes []fakePoke
 			if tt.poke != "" {
-				pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessageEscalation,
-					Content: tt.poke, TaskID: res.TaskID, Decider: "routine weekly-bump · run 2 · every Monday 06:00", BirthKind: EventQuestionAsked}}}
+				pokes = []fakePoke{{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessagePoke,
+					Content: tt.poke, TaskID: res.TaskID, Decider: "routine weekly-bump · run 2 · every Monday 06:00", BirthKind: EventRoutineRan}}}
 			}
 			if got := routinePokes(t, r, store); !reflect.DeepEqual(got, pokes) {
 				t.Fatalf("pokes %+v,\nwant %+v", got, pokes)
@@ -673,19 +664,17 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 	if card.Kind != "human" || card.Status != "waiting-human" || card.Source != SourceRoutine || card.RiskClass != "standard" || card.IssueNumber != 71 || card.Author != "factory-agent" {
 		t.Fatalf("the flipped audit's card %+v", card)
 	}
-	if got := issues.labels[71]; !slices.Equal(got, []string{"routine", "human", "state/waiting-human"}) {
+	if got := issues.labels[71]; !slices.Equal(got, []string{"human", "routine", "state/waiting-human"}) {
 		t.Errorf("labels = %v", got)
 	}
-	if body := issues.issues[0]; !strings.HasSuffix(body, "Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1") {
+	if body := issues.issues[0]; !strings.Contains(body, "Why: the routine audit fired and files to a person\n\nInfo: Hunt bugs in the code changed since the last audit.\n\nfiled by the factory · routine audit · run 1\n\nChoices:\n- Have the factory do it\n- Done\n\nfactoryd asks (routine). ") {
 		t.Errorf("the issue:\n%s", body)
 	}
 	if len(wf.started) != 0 {
 		t.Errorf("a human card started %v", wf.started)
 	}
-	want = fakePoke{repository: "sf/ai-software-factory-code", logins: []string{"sebastian"}, m: ChatMessage{Role: "assistant", Kind: MessageEscalation,
-		Content: "#71 needs you: Audit: bug hunt and architecture review", TaskID: card.ID, Decider: "routine audit · run 1 · every 20 merges", BirthKind: EventQuestionAsked}}
-	if pokes := routinePokes(t, r, store); !reflect.DeepEqual(pokes, []fakePoke{want}) {
-		t.Fatalf("pokes %+v,\nwant %+v", pokes, want)
+	if asked := recordedEvents(r, EventQuestionAsked); len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["ask"] != "Audit: bug hunt and architecture review" {
+		t.Fatalf("question_asked %+v, want the flipped audit's one", asked)
 	}
 
 	// the undo clears the override: the config's side files again
@@ -835,8 +824,8 @@ func TestRoutineRunTwiceIsOnce(t *testing.T) {
 	if first.Outcome != "filed" || second != first {
 		t.Fatalf("first %+v, second %+v", first, second)
 	}
-	if pokes := routinePokes(t, r, store); len(issues.issues) != 1 || len(store.tasks) != 1 || len(store.routineRuns[codeProject+"/weekly-bump"]) != 1 || len(pokes) != 1 {
-		t.Fatalf("issues %d, tasks %d, runs %d, pokes %d: want one each", len(issues.issues), len(store.tasks), len(store.routineRuns[codeProject+"/weekly-bump"]), len(pokes))
+	if pokes := routinePokes(t, r, store); len(issues.issues) != 1 || len(store.tasks) != 1 || len(store.routineRuns[codeProject+"/weekly-bump"]) != 1 || len(pokes) != 0 || len(recordedEvents(r, EventQuestionAsked)) != 1 {
+		t.Fatalf("issues %d, tasks %d, runs %d, pokes %d: want one each and the card's one question", len(issues.issues), len(store.tasks), len(store.routineRuns[codeProject+"/weekly-bump"]), len(pokes))
 	}
 }
 
@@ -971,22 +960,23 @@ func TestRoutineRunFailedKeepsTheSkip(t *testing.T) {
 	}
 }
 
-// Go refuses a card whose project works with no agents: no agent would
-// take the hand-over, so nothing is filed and no claim is spent.
-func TestGoRefusesAProjectWithoutAgents(t *testing.T) {
+// A project that runs no agents has no process to file the work into:
+// Go refuses with the state and files nothing.
+func TestGoRefusedOnAProjectWithoutAgents(t *testing.T) {
 	ctx := context.Background()
-	r, store, issues, wf := routineRunner(t, routineTree(t))
-	store.projects[0].Agents, store.projects[0].Process, store.projects[0].Lanes = policy.AgentsNone, "", nil
-	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "backlog", Repository: "sf/ai-software-factory-code",
+	r, store, issues, _ := routineRunner(t, routineTree(t))
+	store.projects[0].Agents = policy.AgentsNone
+	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
 		IssueNumber: 6, Source: "webhook", RiskClass: "standard", Objective: "Tidy the docs"}); err != nil {
 		t.Fatal(err)
 	}
+	_, err := r.Go(ctx, "t-back", "sebastian")
 	var no ErrNoGo
-	if _, err := r.Go(ctx, "t-back", "sebastian"); !errors.As(err, &no) ||
-		err.Error() != "Card #6's project works with no agents: a person does its work and closes its issue." {
-		t.Fatalf("the go = %v, want the refusal", err)
+	want := "project " + codeProject + " runs no agents: the factory cannot do this card; do it yourself and press Done"
+	if !errors.As(err, &no) || err.Error() != want {
+		t.Fatalf("the go = %v, want the refusal %q", err, want)
 	}
-	if len(store.tasks) != 1 || len(issues.issues) != 0 || len(wf.started) != 0 || len(store.intakeEvents) != 0 {
-		t.Fatalf("the refused go acted: %d tasks, %d issues, %v started, %+v events", len(store.tasks), len(issues.issues), wf.started, store.intakeEvents)
+	if len(store.tasks) != 1 || len(issues.issues) != 0 {
+		t.Errorf("%d tasks and issues %q, want nothing filed", len(store.tasks), issues.issues)
 	}
 }

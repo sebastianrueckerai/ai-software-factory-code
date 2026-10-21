@@ -371,6 +371,15 @@ func (s *fakeStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEv
 	return out, nil
 }
 
+func (s *fakeStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
+	for _, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Author != FactoryDecider && !slices.Contains(bots, e.Author) {
+			return true, nil
+		}
+	}
+	return slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == taskID && e.Kind == EventQuestionAnswered }), nil
+}
+
 func (s *fakeStore) SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error) {
 	for i := range s.intakeEvents {
 		if s.intakeEvents[i].ID == id {
@@ -401,7 +410,7 @@ func (s *fakeStore) UnaddressedChangeRequests(ctx context.Context, taskID string
 func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	t, ok := s.tasks[id]
 	if !ok || !slices.Contains(from, t.Status) {
-		return fmt.Errorf("task %s: not found (not in %v, cannot move to %s)", id, from, to)
+		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
 	}
 	t.Status = to
 	if Final(to) || to == "merged" {
@@ -2243,6 +2252,41 @@ func TestPGStoreHoldouts(t *testing.T) {
 	}
 	if lines, err := s.PastReverts(ctx, "sf/r"); err != nil || !slices.Equal(lines, []string{"second revert line", "first revert line"}) {
 		t.Fatalf("past reverts = %q, %v; want the last three's first lines, newest first, blanks skipped", lines, err)
+	}
+}
+
+func TestTouchedByPerson(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"t-bot", "t-member", "t-park", "t-none"} {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "waiting-human", Objective: "o", Repository: "sf/r", Kind: "human", IssueNumber: int64(10 + i)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, e := range []IntakeEvent{
+		{TaskID: "t-bot", Kind: "issue_comment", Author: "factory-bot", CommentID: 1},
+		{TaskID: "t-bot", Kind: IntakeEscalation, Author: FactoryDecider, CommentID: 2},
+		{TaskID: "t-member", Kind: "issue_comment", Author: "factory-bot", CommentID: 3},
+		{TaskID: "t-member", Kind: "issue_comment", Author: "sebastian", CommentID: 4},
+	} {
+		if _, err := s.InsertIntakeEvent(ctx, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-park", Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaConsole}); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{"t-bot": false, "t-member": true, "t-park": true, "t-none": false} {
+		if got, err := s.TouchedByPerson(ctx, id, "factory-bot"); err != nil || got != want {
+			t.Errorf("TouchedByPerson(%s) = (%v, %v), want %v", id, got, err, want)
+		}
 	}
 }
 

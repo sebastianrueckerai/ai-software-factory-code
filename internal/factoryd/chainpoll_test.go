@@ -2038,9 +2038,9 @@ func redRig(t *testing.T, proj Project, state string) (*ChainPoller, *fakeStore,
 // A red head of a project without agents (the infra project, spec 6.7)
 // files its repair card in the human lane, labelled human, starting no
 // workflow: one per repository while it stands, ChainCard finds it, and
-// a second red tick files none. The worker is told: the card records the
-// needs-you row an escalation records, which the Poker words as the
-// inbox's needs-you poke and sends at the messengers' needs-you level.
+// a second red tick files none. The card asks its question: the ask names
+// the red head, the info the run's link and the carried cards, and its
+// one question_asked row is the needs-you poke at the messengers' level.
 func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
@@ -2069,8 +2069,26 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	if started := p.Workflows.(*fakeWorkflows).started; len(started) != 0 {
 		t.Fatalf("started %v, want no workflow for a human card", started)
 	}
-	if wakesNobody(needsYouPoke(t, rows.rows, card, "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure")) {
-		t.Fatal("the repair card's row wakes nobody, want the project agent woken at autonomous")
+	ask := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
+	q := askedQuestion(t, store, card.ID)
+	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
+		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/21\n\nNo card's change rides this head") ||
+		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
+		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
+		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
+	}
+	var asked []Event
+	for _, e := range rows.rows {
+		if e.Kind == EventQuestionAsked {
+			asked = append(asked, e)
+		}
+	}
+	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != ask || asked[0].Detail["source"] != SourceChainRepair {
+		t.Fatalf("question_asked rows %+v, want the card's one", asked)
+	}
+	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, fmt.Sprintf("#%d needs you: %s", card.IssueNumber, ask)) ||
+		deliveryLevel(m) != LevelNeedsYou {
+		t.Fatalf("the poke = %+v, %v; want the card's needs-you at the messengers' level", m, ok)
 	}
 }
 
@@ -2164,7 +2182,7 @@ func TestARepairCardSettlesWhenTheHeadMovesOn(t *testing.T) {
 func TestARepairCardTakesOnTheIssueAFailedFilingLeft(t *testing.T) {
 	ctx := context.Background()
 	p, store, f := redRig(t, noAgents(demoRepo), "failure")
-	title := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure"
+	title := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
 	f.open = map[string][]map[string]any{demoRepo: {
 		{"number": 7, "title": title, "user": map[string]any{"login": "someone"}},
 		{"number": 8, "title": title, "user": map[string]any{"login": "factory-agent"}},

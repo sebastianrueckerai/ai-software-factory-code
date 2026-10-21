@@ -686,9 +686,7 @@ func TestConfigAlarm(t *testing.T) {
 	forgejo, fj := infraForgejo(t, nil)
 	store := newFakeStore()
 	m, reader := testMetrics(t)
-	rows := &fakeEventRecorder{}
-	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m,
-		Timeline: &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}}
+	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory", Metrics: m}
 	ctx := context.Background()
 	reason := errors.New("processes/maintenance.yaml: stages.policy: on_findings \"maybe\", want one of [agent human fail]")
 	current := policy.Version{ID: 12, Commit: "c8c8c8c8c8c8"}
@@ -704,7 +702,7 @@ func TestConfigAlarm(t *testing.T) {
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
-	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected\n\n", "commit c9c9c9c9c9c9c9c9 (https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory)",
+	for _, want := range []string{"config: factory/ at c9c9c9c9c9 rejected: fix the files and push.\n\n", "https://git.example/sf/ai-software-factory-infra/src/commit/c9c9c9c9c9c9c9c9/factory",
 		"Version 12 (commit c8c8c8c8c8c8) stays current.", "on_findings \"maybe\""} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
@@ -718,11 +716,6 @@ func TestConfigAlarm(t *testing.T) {
 	}
 	var task Task
 	for _, task = range store.tasks {
-	}
-	// the person is told once, the retried filing's raise included, and
-	// the project agent wakes at autonomous
-	if wakesNobody(needsYouPoke(t, rows.rows, task, "config: factory/ at c9c9c9c9c9 rejected")) {
-		t.Fatal("the rejected config's row wakes nobody")
 	}
 	if task.Kind != "human" || task.Status != "waiting-human" || task.Repository != "sf/ai-software-factory-infra" || task.IssueNumber != 41 ||
 		task.Source != SourceConfig || task.SHA != "c9c9c9c9c9c9c9c9" || len(task.RequiredCapabilities) != 0 {

@@ -51,14 +51,12 @@ type WakeStore interface {
 // (the concept's wake): an ask the agent did not file becomes one turn on
 // the venue member's inbox thread that names every ask of the batch. Its
 // cursor and marks are rows, so a restart or a repeat changes nothing,
-// and no wake follows an event the agent itself caused.
+// and no wake follows an event the agent itself caused. Wakes fire on
+// asks, watched cards and timers, never on the clock alone.
 type Waker struct {
 	Store   WakeStore
 	Current func() policy.Version
 	Start   WakeStarter
-	// Pulse reads the board's pulse for the heartbeat wake (the timers
-	// concept); nil means none.
-	Pulse func(ctx context.Context, repository string) (workOpen, waitingHuman bool, err error)
 	// Forgejo and Timeline file the month-cap card when the chat task's
 	// budget is dead.
 	Forgejo  *Forgejo
@@ -84,7 +82,7 @@ const (
 var ErrChatWakeCap = errors.New("this project's watches and timers are full")
 
 // wakeKinds are the events the Waker reads: the asks, and the card and
-// task moves the watches and the heartbeat judge.
+// task moves the watches judge.
 var wakeKinds = []string{EventQuestionAsked, EventCardMoved, EventTaskStatus, EventTaskEnded}
 
 // Loop passes every interval until ctx ends.
@@ -117,14 +115,6 @@ func (w *Waker) Pass(ctx context.Context) error {
 	return nil
 }
 
-// wakesNobody: event e wakes no project agent. The agent's own doing
-// wakes nobody, and neither does a month cap's ask: the cap refuses the
-// agent's own calls.
-func wakesNobody(e Event) bool {
-	source, _ := e.Detail["source"].(string)
-	return e.Via == ViaChat || e.Kind == EventQuestionAsked && source == SourceMonthCap
-}
-
 // pendingAsk is one unhandled ask of a batch, with its mark key.
 type pendingAsk struct {
 	e   Event
@@ -132,16 +122,12 @@ type pendingAsk struct {
 }
 
 // passProject wakes one project: a due timer fires on its own thread,
-// the heartbeat wakes the inbox when nothing else moved, then the new
-// events wake the watched cards and the asks. A batch nothing new wakes
-// from only moves the cursor. The turn mark, the cooldown and a dead
-// chat budget each hold a wake and the cursor back, so their cause stays
-// and a later pass takes it.
+// then the new events wake the watched cards and the asks. A batch
+// nothing new wakes from only moves the cursor. The turn mark, the
+// cooldown and a dead chat budget each hold a wake and the cursor back,
+// so their cause stays and a later pass takes it.
 func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
 	if err := w.fireTimer(ctx, v, name, p, now); err != nil {
-		return err
-	}
-	if err := w.heartbeat(ctx, v, name, p, now); err != nil {
 		return err
 	}
 	after, err := w.Store.WakeCursor(ctx, p.Repository)
@@ -167,8 +153,11 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 				return err
 			}
 		}
-		if wakesNobody(e) {
-			continue
+		if e.Via == ViaChat {
+			continue // the agent's own doing wakes nobody
+		}
+		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && source == SourceMonthCap {
+			continue // the month cap refuses the agent's own calls: its ask wakes nobody
 		}
 		if e.Kind == EventQuestionAsked && p.Autonomy == policy.AutonomyAutonomous {
 			sum := sha256.Sum256([]byte(askSentence(e)))
@@ -306,69 +295,6 @@ func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p 
 	return w.Store.WakeMark(ctx, p.Repository, "turn", now)
 }
 
-// heartbeat wakes the project agent's inbox thread when nothing else
-// woke it: every hour while work sits open, every day otherwise, on
-// projects at assisted and above. A pulse that says a card waits on a
-// human holds it — the needs-you card already has the member's eye — and
-// so do a held turn and a missing member. A dead chat budget holds it
-// too; the pass files the month-cap card.
-func (w *Waker) heartbeat(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
-	if w.Pulse == nil || p.Autonomy == policy.AutonomyManual {
-		return nil
-	}
-	// the gates that need no pulse run before it: a held turn, and both
-	// cadence marks fresh, so whichever cadence the pulse would pick is
-	// already marked
-	if held, err := w.held(ctx, p.Repository, now); err != nil {
-		return err
-	} else if held {
-		return nil
-	}
-	if open, err := w.markedWithin(ctx, p.Repository, "hb:open", time.Hour, now); err != nil {
-		return err
-	} else if idle, err := w.markedWithin(ctx, p.Repository, "hb:idle", 24*time.Hour, now); err != nil {
-		return err
-	} else if open && idle {
-		return nil
-	}
-	workOpen, waitingHuman, err := w.Pulse(ctx, p.Repository)
-	if err != nil || waitingHuman {
-		return err
-	}
-	key, within := "hb:idle", 24*time.Hour
-	if workOpen {
-		key, within = "hb:open", time.Hour
-	}
-	if marked, err := w.markedWithin(ctx, p.Repository, key, within, now); err != nil {
-		return err
-	} else if marked {
-		return nil
-	}
-	if task, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
-		return err
-	} else if !live {
-		return w.askBudget(ctx, p.Repository, task, now)
-	}
-	logins := pokeTo(v.Tree, p.Repository)
-	if len(logins) == 0 {
-		return nil
-	}
-	conv, err := w.Store.EnsureInbox(ctx, p.Repository, logins[0])
-	if err != nil {
-		return err
-	}
-	if err := w.Start.StartWake(ctx, name, logins[0], conv, "wake_heartbeat", heartbeatText(name, workOpen)); err != nil {
-		log.Printf("wake %s: %v", name, err)
-		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
-	}
-	for _, k := range []string{key, "turn"} {
-		if err := w.Store.WakeMark(ctx, p.Repository, k, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 // held says a turn or the cooldown holds repository's wakes back.
 func (w *Waker) held(ctx context.Context, repository string, now time.Time) (bool, error) {
 	for _, gap := range []struct {
@@ -399,15 +325,6 @@ func (w *Waker) chatTask(ctx context.Context, v policy.Version, name string, p p
 // it.
 func timerText(t ChatTimer) string {
 	return "Timer: " + t.Note + ". Run the check it stood for, then set a new timer if the thing still needs watching."
-}
-
-// heartbeatText is the heartbeat's wake: the cadence it woke on, then
-// the turn's charge, which the agent's own read of the board carries.
-func heartbeatText(name string, workOpen bool) string {
-	if workOpen {
-		return "The hourly heartbeat on " + name + ": work sits open and no event woke you. Read the board and keep it moving."
-	}
-	return "The daily heartbeat on " + name + ": the board is idle. Look for what to start or improve, then act."
 }
 
 // cardText is the watched card's wake: the card, then the turn's charge.

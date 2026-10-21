@@ -3390,7 +3390,7 @@ func TestWrongState(t *testing.T) {
 		want string
 	}{
 		{factoryd.Task{Kind: "human", Status: "waiting-human", IssueNumber: 1}, capFacts{},
-			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: a human does its work and closes its issue."},
+			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer); close ends it."},
 		{factoryd.Task{Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan, IssueNumber: 2}, capFacts{plan: true},
 			"Card #2 waits on a human: an answer, an approval or a decision, not a running session: accept_plan, request_changes or reject_plan decide the plan."},
 		{factoryd.Task{Status: "waiting-poster", IssueNumber: 3}, capFacts{},

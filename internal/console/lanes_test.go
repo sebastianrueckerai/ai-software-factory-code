@@ -845,30 +845,25 @@ func TestRetryLabelsTheReplacement(t *testing.T) {
 	}
 }
 
-// Item 1131: the go of a card that waits on a person hands its work to
-// the factory (factoryd's Go), notes the new issue on the card's issue
-// and closes it; an agent card, a card that asks a question and a card
-// already closed refuse with their sentence and file nothing.
+// Item 1131: the go choice of a card that waits on a person hands its
+// work to the factory (factoryd's Go), notes the new issue on the card's
+// issue and closes it; a card whose question does not offer it, and a card
+// already closed, refuse and file nothing.
 func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	r := newRig(t)
-	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-wait", Kind: "human", Status: "waiting-human",
-		Objective: "Bump the weekly numbers.", Repository: "sf/code", IssueNumber: 15, Source: factoryd.SourceRoutine}}
-	asking := waiting
-	asking.ID, asking.IssueNumber, asking.Escalation = "t-ask", 16, "Which numbers, the issues or the pull requests?"
-	r.tasks.tasks = append(planTasks(), waiting, asking)
+	waiting := humanAsk("t-wait", 15, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
+	waiting.Objective, waiting.Source = "Bump the weekly numbers.", factoryd.SourceRoutine
+	nogo := humanAsk("t-nogo", 17, factoryd.QuestionChoice{Value: "close", Label: "Done"})
+	r.tasks.tasks = append(planTasks(), waiting, nogo)
 	ck, s := r.loggedIn(t)
 	hand := func(id, csrf string) *httptest.ResponseRecorder {
-		req := post("/tasks/"+id+"/go", url.Values{"csrf": {csrf}})
+		req := post("/tasks/"+id+"/answer", url.Values{"csrf": {csrf}, "value": {"go"}})
 		req.Header.Set("HX-Request", "true")
 		return r.do(req, ck)
 	}
-	if rec := hand("t-run", s.csrf); rec.Code != http.StatusConflict ||
-		strings.TrimSpace(rec.Body.String()) != "Card #11 is an agent card: the factory runs it." || len(r.handed) != 0 {
-		t.Fatalf("the agent card goes: %d %q, handed %v", rec.Code, rec.Body, r.handed)
-	}
-	if rec := hand("t-ask", s.csrf); rec.Code != http.StatusConflict ||
-		strings.TrimSpace(rec.Body.String()) != "Card #16 waits on your answer, not on the factory." || len(r.handed) != 0 {
-		t.Fatalf("the asking card goes: %d %q, handed %v", rec.Code, rec.Body, r.handed)
+	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusBadRequest ||
+		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done." || len(r.handed) != 0 {
+		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The factory runs it as #16; card #15 closes.") {
@@ -886,8 +881,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	// factoryd ended the card on the close, so a second go refuses
 	i := slices.IndexFunc(r.tasks.tasks, func(b factoryd.BoardTask) bool { return b.ID == "t-wait" })
 	r.tasks.tasks[i].Status = "closed"
-	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict ||
-		strings.TrimSpace(rec.Body.String()) != "Card #15 does not wait on you: it is closed." || len(r.handed) != 1 {
+	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusConflict || len(r.handed) != 1 {
 		t.Errorf("the second go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	r.tasks.tasks[i].Status = "waiting-human"

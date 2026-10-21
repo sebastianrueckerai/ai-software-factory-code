@@ -26,7 +26,8 @@ import (
 func TestChatAnswerRow(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code",
-		IssueNumber: 14, Objective: "needs you: which store?"}})
+		IssueNumber: 14, Objective: "needs you: which store?"},
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}})
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
@@ -67,7 +68,7 @@ func TestChatAnswerRow(t *testing.T) {
 
 	e14 := escalation("t-h", "#14 needs you: which store?", "Postgres", "SQLite")
 	answer(e14, "Postgres")
-	equal(t, "the human card's note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/14/comments"), []string{"Answered in the chat: Postgres"})
+	equal(t, "the human card's note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/14/comments"), []string{"Postgres"})
 
 	e11 := escalation("t-r", "#11 needs you: rebase?", "Yes", "No")
 	answer(e11, "Yes")
@@ -84,6 +85,44 @@ func TestChatAnswerRow(t *testing.T) {
 		"user : Yes",
 		"assistant poke: #11 waits no more: it was answered or moved on elsewhere.",
 	})
+}
+
+// agentEndsAsk is an agent card waiting on its agent's question, the
+// factory's park and close behind the agent's own choice.
+func agentEndsAsk() factoryd.BoardTask {
+	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 15, Objective: "Add the replica."},
+		Escalation: factoryd.AgentAsks + "Use a replica?",
+		Question: &factoryd.HumanQuestion{Ask: "Use a replica?", Why: "The reads grow.", Info: "An answer starts the attempt again.",
+			Choices: []factoryd.QuestionChoice{{Value: "say:Yes", Label: "Yes"}, {Value: factoryd.AnswerPark, Label: "Leave it waiting"}, {Value: factoryd.AnswerClose, Label: "End the card"}}}}
+}
+
+// "End the card" pressed in the inbox closes the agent card: nothing is
+// posted on its issue, the close is the only row, and no answer resumes
+// the card's workflow.
+func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, agentEndsAsk())
+	signals := 0
+	r.c.cfg.AnswerWhole = func(context.Context, string, int64, string) error { signals++; return nil }
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
+		Content: "#15 needs you: Use a replica?", Choices: []string{"Yes", "Leave it waiting", "End the card"}, TaskID: "t-a", Conversation: inbox}); err != nil {
+		t.Fatal(err)
+	}
+	before := r.events.count()
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"End the card"}})
+	if code != http.StatusNoContent {
+		t.Fatalf("the press = %d %q", code, body)
+	}
+	equal(t, "the issue", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`})
+	equal(t, "the comments", r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"), []string(nil))
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": ""}})
+	equal(t, "answer signals", signals, 0)
+	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	equal(t, "the factory's row", rows[len(rows)-1].Content, "Closed #15; factoryd ends the card.")
 }
 
 // The escalate tool files the question and its five parts through the
@@ -103,31 +142,39 @@ func TestChatEscalate(t *testing.T) {
 		filed = append(filed, q)
 		return 42, nil
 	}
-	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", "", []string{" Postgres ", "SQLite"})
+	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", []string{" Postgres ", "SQLite"})
 	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's members with its choices.", error(nil)})
 	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
-		Ask:     "Which store?",
-		Why:     "Postgres runs out of connections at the measured peak.",
-		Info:    "The counts and the plan section both say so.",
-		Choices: []factoryd.QuestionChoice{{Value: "Postgres", Label: "Postgres"}, {Value: "SQLite", Label: "SQLite"}},
+		Ask:            "Which store?",
+		Why:            "Postgres runs out of connections at the measured peak.",
+		Info:           "The counts and the plan section both say so.",
+		Recommendation: "Postgres, plan section 3",
+		Source:         "the agent's",
+		Choices:        []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}},
 	}}})
+	two := []string{"a", "b"}
 	for _, in := range []struct {
-		ask, why, info, recommendation string
-		choices                        []string
+		name, ask, why, info, recommendation string
+		choices                              []string
+		want                                 string
 	}{
-		{"", "why", "info", "", nil},
-		{"Which?", "", "info", "", nil},
-		{"Which?", "why", "", "", nil},
+		{"no ask", "", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 0"},
+		{"two lines", "One.\nTwo.", "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 9"},
+		{"201 bytes", strings.Repeat("x", 201), "why", "info", "rec", two, "ask: one sentence of 1 to 200 bytes, without a line break; this one has 201"},
+		{"no why", "Which?", "", "info", "rec", two, "why: why the card cannot go on without a person, 1 to 2000 characters"},
+		{"no info", "Which?", "why", "", "rec", two, "info: what a person should know to answer well, 1 to 2000 characters"},
+		{"no recommendation", "Which?", "why", "info", "", two, "recommendation: the answer you would pick and where you read it, 1 to 2000 characters"},
+		{"no choices", "Which?", "why", "info", "rec", nil, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"one choice", "Which?", "why", "info", "rec", []string{"one"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"six choices", "Which?", "why", "info", "rec", []string{"a", "b", "c", "d", "e", "f"}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"empty choice", "Which?", "why", "info", "rec", []string{"a", ""}, "choices: 2 to 5 answers of 1 to 60 characters"},
+		{"twice", "Which?", "why", "info", "rec", []string{"a", " a"}, "choices: each answer once"},
 	} {
-		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || !strings.HasPrefix(err.Error(), "why:") && !strings.HasPrefix(err.Error(), "ask:") && !strings.HasPrefix(err.Error(), "info:") {
-			t.Errorf("escalate %+q = %v", in, err)
+		if _, err := trn.escalate(in.ask, in.why, in.info, in.recommendation, in.choices); err == nil || err.Error() != in.want {
+			t.Errorf("%s: escalate = %v, want %q", in.name, err, in.want)
 		}
 	}
-	for _, choices := range [][]string{{"one"}, {"a", "b", "c", "d", "e", "f"}, {"a", ""}} {
-		if _, err := trn.escalate("Which?", "why", "info", "", choices); err == nil || err.Error() != "choices: 2 to 5 answers of 1 to 60 characters, or none" {
-			t.Errorf("choices %q = %v", choices, err)
-		}
-	}
+	equal(t, "refusals file nothing", len(filed), 1)
 }
 
 // An answer that approves a merge or accepts a plan needs an approver, as

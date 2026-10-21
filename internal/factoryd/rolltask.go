@@ -322,7 +322,6 @@ func rollTarget(name string) (RollTarget, bool) {
 // it files.
 type RollerStore interface {
 	CreateTask(ctx context.Context, t Task) error
-	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	RollTaskPRs(ctx context.Context, repository string) ([]int64, error)
 	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
 	SetAgentSummary(ctx context.Context, id, summary string) error
@@ -516,7 +515,7 @@ const rollAttemptBound = 3
 // rollAskMarker names the roll ladder's question in the card it files,
 // so StandingQuestion recognises it while it waits. rollRetryLabel is
 // the retry choice's label: the comment a press posts (the console's
-// doChoiceAnswer), and what consumeRetry answers.
+// doHumanAnswer), and what consumeRetry answers.
 const (
 	rollAskMarker  = "rolls failed since the last one merged"
 	rollRetryLabel = "Retry the roll"
@@ -926,26 +925,20 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 	for _, name := range rollNames(unsigned) {
 		lines = append(lines, name+": "+unsigned[name])
 	}
-	title := fmt.Sprintf("roll %s refused: %s not signed with the factory's key", run.CommitSHA[:7], strings.Join(rollNames(unsigned), ", "))
-	body := fmt.Sprintf("Main CI's push run %d of %s (%s/%s/actions/runs/%d) is green, and factoryd rolls none of its images: an image it "+
-		"rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not:\n\n- %s\n\n"+
-		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; "+
-		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. "+
-		"Find which, fix it, and close this issue. The next green push run of main is judged again; an empty commit on main starts one."+
-		"\n\nfiled by factoryd",
-		run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index, strings.Join(lines, "\n- "))
+	names := rollNames(unsigned)
+	q := rollRefusedQuestion(run.CommitSHA[:7], names, lines, fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index))
+	title := askTitle(q)
 	req.State, req.TaskID, req.Summary = RollRefused, NewTaskID(), title
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
 		return err
 	}
-	_, ref, err := fileHumanCard(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, title, body, nil, Task{
-		ID: req.TaskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: run.CommitSHA,
-		Source: SourceRollRefused, Author: r.Forgejo.BotUser,
-	}, "")
+	t, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, r.Repo, q, "factoryd", Task{
+		ID: req.TaskID, SHA: run.CommitSHA, Source: SourceRollRefused,
+	})
 	if err != nil {
 		return errors.Join(err, r.Store.DeleteRollRequest(ctx, req.SHA))
 	}
-	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, ref.Number, title)
+	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, t.IssueNumber, title)
 	r.rollStatus(ctx, req.SHA, "failure", "roll refused: "+strings.Join(rollNames(unsigned), ", ")+" not signed")
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -351,6 +352,14 @@ func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	// state/queued, since no runner will ever claim a human-lane task.
 	if labels := issueLabels(t, in.Forgejo, 9); !slices.Contains(labels, "state/waiting-human") {
 		t.Fatalf("labels = %v, want state/waiting-human", labels)
+	}
+	if len(store.intakeEvents) != 1 {
+		t.Fatalf("intake events = %+v, want the ask's one", store.intakeEvents)
+	}
+	if e, q := store.intakeEvents[0], store.intakeEvents[0].Question; e.TaskID != task.ID || e.Kind != IntakeEscalation || q == nil ||
+		q.Ask != "Needs a decision" || q.Why != "filed by sebastian into the human lane" || q.Info != "please look" ||
+		!slices.Equal(q.Labels(), []string{"Have the factory do it", "Done"}) {
+		t.Fatalf("intake event = %+v, want the issue asked as a question", e)
 	}
 }
 
@@ -2017,14 +2026,18 @@ func TestIntakeBotCloseCountsOnlyWhenFactorydRecordedIt(t *testing.T) {
 
 // Review m3: a project switched to agents none restarts none of its queued
 // agent tasks, not on a redelivery and not in the heal pass: they move to
-// the human lane.
+// the human lane, asking their issue's title as the question.
 func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 	none := seedProject("sf/ai-software-factory-code")
 	none.Agents = "none"
+	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent; the project runs no agents now", Info: "objective body",
+		Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}
 	for _, via := range []string{"redelivery", "heal pass"} {
 		in, store, _ := newTestIntake(t)
+		in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: store, Store: store}
 		store.projects = []Project{none}
-		store.tasks["t-q"] = Task{ID: "t-q", Repository: "sf/ai-software-factory-code", Status: "queued", Kind: "agent", IssueNumber: 7}
+		store.tasks["t-q"] = Task{ID: "t-q", Repository: "sf/ai-software-factory-code", Status: "queued", Kind: "agent", IssueNumber: 7,
+			Objective: "Add the runner\n\nobjective body", Author: "sebastian", Source: "webhook"}
 		if via == "redelivery" {
 			body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add the runner", "objective body")
 			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
@@ -2036,6 +2049,27 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 		}
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)
+		}
+		var asks []IntakeEvent
+		for _, e := range store.intakeEvents {
+			if e.TaskID == "t-q" && e.Kind == IntakeEscalation {
+				asks = append(asks, e)
+			}
+		}
+		if len(asks) != 1 || asks[0].Body != "Add the runner" || asks[0].Question == nil || !reflect.DeepEqual(*asks[0].Question, want) ||
+			!slices.Equal(asks[0].Choices, []string{"Done"}) {
+			t.Fatalf("%s: intake asks %+v, want the issue's title asked", via, asks)
+		}
+		var asked []Event
+		for _, e := range store.events {
+			if e.TaskID == "t-q" && e.Kind == EventQuestionAsked {
+				asked = append(asked, e)
+			}
+		}
+		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Add the runner" ||
+			asked[0].Detail["why"] != "filed by sebastian for an agent; the project runs no agents now" || asked[0].Detail["source"] != "webhook" ||
+			fmt.Sprint(asked[0].Detail["choices"]) != "[Done]" {
+			t.Fatalf("%s: question_asked rows %+v", via, asked)
 		}
 	}
 }

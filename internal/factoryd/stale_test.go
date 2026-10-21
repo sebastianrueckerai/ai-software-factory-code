@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -136,12 +137,21 @@ func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
 		}
 		rig.recorder.mu.Lock()
 		var question string
+		var asked map[string]any
 		for _, e := range rig.recorder.rows {
 			if e.TaskID == id && e.Kind == EventQuestionAsked && e.Via == ViaFactoryd {
 				question, _ = e.Detail["question"].(string)
+				asked = e.Detail
 			}
 		}
 		rig.recorder.mu.Unlock()
+		wantRec := map[string]string{
+			"t-run":  "answer on the issue to start a new attempt with your comment as guidance, or close the issue to end the card",
+			"t-wait": "the issue's author answers on the issue, or close it to end the wait",
+		}[id]
+		if !reflect.DeepEqual(asked["choices"], []string{"Keep waiting", "End the card"}) || asked["recommendation"] != wantRec {
+			t.Fatalf("%s: the question_asked row = %v, want the quiet template's choices and the action as recommendation %q", id, asked, wantRec)
+		}
 		if question != want {
 			t.Fatalf("%s: the question_asked row's question = %q, want %q", id, question, want)
 		}
