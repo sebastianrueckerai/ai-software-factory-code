@@ -799,7 +799,7 @@ func TestImportCopiesAside(t *testing.T) {
 	t.Cleanup(release)
 	rig.fj.migrateGate = gate
 	rig.store.m["other"] = Project{Name: "other", Repository: "other/other", Objects: policy.ObjectsFactory, File: true,
-		PullToken: "pull", GitToken: "git", MergeToken: "merge"}
+		PullToken: "pull", GitToken: "git", MergeToken: "merge", GateToken: "gate"}
 	ctx := context.Background()
 	reconcile := func(name string) {
 		t.Helper()

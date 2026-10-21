@@ -66,7 +66,7 @@ func TestParseTreeAccepts(t *testing.T) {
 		*infra.Tokens != (SeedTokens{Read: SecretConfig}) {
 		t.Fatalf("infra = %+v", infra)
 	}
-	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge}) || !code.Audit {
+	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: SecretGate}) || !code.Audit {
 		t.Fatalf("code = %+v", code)
 	}
 	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "big" || tree.Document.Bound("GateAudit") != 20*time.Minute {
@@ -136,7 +136,7 @@ func TestParseTreeRejects(t *testing.T) {
 		"seed without tokens":         {edit("projects/ai-software-factory-infra.yaml", "tokens: {read: forgejo-config}\n", ""), "project ai-software-factory-infra: objects seed: tokens.read names the secret"},
 		"seed coder without merge":    {edit("projects/ai-software-factory-code.yaml", ", merge: forgejo-merge", ""), "project ai-software-factory-code: objects seed with agents coder: tokens.actions and tokens.merge"},
 		"seed names the projects token": {edit("projects/ai-software-factory-infra.yaml", "read: forgejo-config", "read: forgejo-projects"),
-			`project ai-software-factory-infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
+			`project ai-software-factory-infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config forgejo-gate]`},
 		"seed with environments": {edit("projects/ai-software-factory-infra.yaml", "agents: none\n", "agents: none\nnamespaces: [x]\nenvironments: [{namespace: x, path: deploy}]\n"),
 			"project ai-software-factory-infra: objects seed: environments, quota and secrets are registration's"},
 		"factory with tokens":          {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\ntokens: {read: forgejo-config}\n"), "project demo-app: objects factory: tokens are registration's"},

@@ -673,7 +673,7 @@ const (
 	// model review, a pull request AutoMerge admits (the project's rule
 	// auto, class outcome auto, the reproduction ran and passed, the
 	// review approves, a strict improvement where not reproduced) is
-	// merged as factory-merge with AutoMergeNote's comment and no card;
+	// approved as factory-gate and merged as factory-merge with no card;
 	// every other one, and an auto merge Forgejo refuses or that fails,
 	// gets the card with why no auto merge.
 	versionAutoMerge workflow.Version = 1
@@ -2380,11 +2380,11 @@ func (t *taskRun) gate(commit string) verdict {
 	}
 	var whyHuman []string
 	if t.v13 >= versionAutoMerge {
-		auto, unmet := AutoMerge(g, review, t.source)
+		auto, met, unmet := AutoMerge(g, review, t.source)
 		if !auto {
 			whyHuman = unmet
 		} else {
-			v, done, failed := t.autoMerge(commit, g, review)
+			v, done, failed := t.autoMerge(commit, g, review, met)
 			if done {
 				return v
 			}
@@ -2410,14 +2410,15 @@ func (t *taskRun) gate(commit string) verdict {
 }
 
 // autoMerge merges on the project's merge rule auto (versionAutoMerge):
-// the note on the pull request, then the merge as factory-merge. done
-// with the task's verdict, or why it did not go through: the card then.
-func (t *taskRun) autoMerge(commit string, g GateResults, rv Review) (v verdict, done bool, failed string) {
+// the note on the timeline, then the gate's approval naming met and the
+// merge as factory-merge. done with the task's verdict, or why it did not
+// go through: the card then.
+func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []string) (v verdict, done bool, failed string) {
 	if err := workflow.ExecuteActivity(t.short, ActivityAutoMergeNote, t.taskID, t.pr.Number, commit, g, rv).Get(t.ctx, nil); err != nil {
 		return verdict{}, false, "the auto merge's note failed: " + errMessage(err)
 	}
 	var res MergeResult
-	v, decided, err := t.gateActivity(false, mergeOptions(), &res, ActivityMerge, t.mergeArgs(commit, AutoApprover)...)
+	v, decided, err := t.gateActivity(false, mergeOptions(), &res, ActivityMerge, t.mergeArgs(commit, AutoApprover, met)...)
 	switch {
 	case decided:
 		return v, true, ""
@@ -2530,7 +2531,7 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 			}
 		}
 		var res MergeResult
-		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.mergeArgs(commit, approver)...)
+		v, decided, err := t.gateActivity(false, opts, &res, ActivityMerge, t.mergeArgs(commit, approver, nil)...)
 		if gap {
 			if err := workflow.ExecuteActivity(t.short, ActivityClearRollHold, t.taskID, res.Merged).Get(t.ctx, nil); err != nil {
 				workflow.GetLogger(t.ctx).Warn("clear roll hold", "task", t.taskID, "error", err)
@@ -2623,14 +2624,11 @@ func rollWaitOptions() workflow.ActivityOptions {
 	}
 }
 
-// mergeArgs are Merge's arguments: the checked head joins them under
-// versionCheapTurn.
-func (t *taskRun) mergeArgs(commit, approver string) []any {
-	args := []any{t.taskID, t.pr.Number, commit, approver}
-	if t.cheapTurn >= versionCheapTurn {
-		args = append(args, t.checkedHead)
-	}
-	return args
+// mergeArgs are Merge's arguments: the checked head, set only under
+// versionCheapTurn, and met, the conditions the merge gate found on the
+// merge rule auto.
+func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
+	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met}
 }
 
 // maxMergeRetries bounds the retries of one approval's merge: with

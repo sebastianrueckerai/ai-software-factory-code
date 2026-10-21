@@ -270,6 +270,9 @@ func TestProjectConfigValidate(t *testing.T) {
 		"seed unknown merge": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: "root"}}
 		}, `tokens.merge "root"`},
+		"seed unknown gate": {"x", func(p *ProjectConfig) {
+			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeAuto, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: "root"}}
+		}, `tokens.gate "root"`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := demo()

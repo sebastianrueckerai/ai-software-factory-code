@@ -63,8 +63,11 @@ type Forgejo struct {
 	// runner API demands; main's whitelists exclude it, rulings 78, 101,
 	// 101a); forgejo-merge, factory-merge's write:repository on the code
 	// repository (ruling 109: main's merge whitelist holds it, its push
-	// whitelist does not); forgejo-config, factory-config's read:repository
-	// on the infra repository (ruling 183).
+	// whitelist does not); forgejo-gate, factory-gate's write:repository on
+	// the code repository (ruling R59: main's approvals whitelist holds it,
+	// its merge and push whitelists do not); forgejo-config,
+	// factory-config's read:repository on the infra repository (ruling
+	// 183).
 	Seeded map[string]string
 	// token, when set, is the one call authenticates with instead of the
 	// bot's login (As).
@@ -88,18 +91,23 @@ type ProjectAccess struct {
 	Actions string
 	// Merge merges an approved pull request.
 	Merge string
+	// Gate approves, as the merge gate, a pull request the merge rule auto
+	// merges.
+	Gate string
 }
 
 // Access is the one mapping from a project to factoryd's tokens: a
 // factory project's are registration's (ruling 164: its own factory-merge
-// token reads and merges, factory-projects owns its Actions), a seed
-// project's are the seeded secrets its file names, never factory-projects'.
+// token reads and merges, its factory-gate token approves, factory-projects
+// owns its Actions), a seed project's are the seeded secrets its file
+// names, never factory-projects'.
 // An empty field is a token the project has none of.
 func (f *Forgejo) Access(p Project) ProjectAccess {
 	if p.Objects == policy.ObjectsFactory {
-		return ProjectAccess{Read: p.MergeToken, Actions: f.ProjectsToken, Merge: p.MergeToken}
+		return ProjectAccess{Read: p.MergeToken, Actions: f.ProjectsToken, Merge: p.MergeToken, Gate: p.GateToken}
 	}
-	return ProjectAccess{Read: f.Seeded[p.Tokens.Read], Actions: f.Seeded[p.Tokens.Actions], Merge: f.Seeded[p.Tokens.Merge]}
+	return ProjectAccess{Read: f.Seeded[p.Tokens.Read], Actions: f.Seeded[p.Tokens.Actions], Merge: f.Seeded[p.Tokens.Merge],
+		Gate: f.Seeded[p.Tokens.Gate]}
 }
 
 // Writers are the users the trust gate lets steer a task on p: a factory
@@ -1641,6 +1649,17 @@ func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo strin
 	if err != nil && !errors.Is(err, ErrRefused) && strings.Contains(err.Error(), ": status 409: ") {
 		return fmt.Errorf("%w: %v", ErrRefused, err)
 	}
+	return err
+}
+
+// ApprovePullRequest submits an APPROVED review of pull request number at
+// head, body its text, as token's user.
+func (f *Forgejo) ApprovePullRequest(ctx context.Context, token, owner, repo string, number int64, head, body string) error {
+	payload, err := json.Marshal(map[string]string{"event": "APPROVED", "commit_id": head, "body": body})
+	if err != nil {
+		return err
+	}
+	_, err = f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/reviews", owner, repo, number), payload, http.StatusOK)
 	return err
 }
 

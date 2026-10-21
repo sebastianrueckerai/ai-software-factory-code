@@ -96,7 +96,7 @@ func newRemovalRig(t *testing.T) *removalRig {
 	srv := litellm.server(t)
 	rem := &Remover{Forgejo: rig.reg.Forgejo, Kube: rig.kube, Store: rig.store, OpenBao: rig.kv,
 		LiteLLM:   &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()},
-		MergeUser: "factory-merge", ProjectsUser: "factory-projects"}
+		MergeUser: "factory-merge", GateUser: "factory-gate", ProjectsUser: "factory-projects"}
 	return &removalRig{registerRig: *rig, litellm: litellm, rem: rem}
 }
 
@@ -192,6 +192,7 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 		"project demo-app: user ci-demo-app: deleted",
 		"project demo-app: tokens of factory-projects: deleted 1",
 		"project demo-app: tokens of factory-merge: deleted 1",
+		"project demo-app: tokens of factory-gate: deleted 1",
 		"project demo-app: litellm keys: deleted 2",
 		"project demo-app: row: deleted",
 		"project demo-app: project_mirrors rows: deleted 1",
@@ -216,7 +217,7 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 		t.Fatalf("forgejo state: repo %v org %v ci %v mirrors %v packages %v forks %v fork %v",
 			rig.fj.repo, rig.fj.orgGone, rig.fj.ciUserGone, rig.fj.mirrors, rig.fj.packages, rig.fj.forks, rig.fj.fork)
 	}
-	for _, un := range [2]string{"factory-projects", "factory-merge"} {
+	for _, un := range [3]string{"factory-projects", "factory-merge", "factory-gate"} {
 		for id, tok := range rig.fj.tokens {
 			if tok[0] == un {
 				t.Errorf("token %d of %s (%s) lives", id, un, tok[1])
@@ -416,6 +417,7 @@ func TestRemoveDryRun(t *testing.T) {
 		"project demo-app: user ci-demo-app: would delete",
 		"project demo-app: tokens of factory-projects: would delete git-demo-app",
 		"project demo-app: tokens of factory-merge: would delete project-demo-app",
+		"project demo-app: tokens of factory-gate: would delete project-demo-app",
 		"project demo-app: litellm keys: would delete the keys of 2 tasks",
 		"project demo-app: row: would delete",
 		"project demo-app: project_mirrors rows: would delete",

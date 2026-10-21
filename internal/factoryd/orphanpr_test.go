@@ -678,12 +678,12 @@ func TestMechanicalPRMergesAtFullAutoDespiteAFinding(t *testing.T) {
 func TestAGitHubSyncAtFullAutoWithoutProofAsksAHuman(t *testing.T) {
 	g, rv := fullAutoGates("")
 	g.Reproduction = ReproResult{}
-	ok, unmet := AutoMerge(g, rv, SourceGitHubSync)
+	ok, _, unmet := AutoMerge(g, rv, SourceGitHubSync)
 	if ok || !slices.Equal(unmet, []string{"no reproduction command and no fault the agent recorded"}) {
 		t.Fatalf("ok %v, unmet %q", ok, unmet)
 	}
 	rv = Review{}
-	if ok, unmet = AutoMerge(g, rv, SourceGitHubSync); ok || len(unmet) != 2 {
+	if ok, _, unmet := AutoMerge(g, rv, SourceGitHubSync); ok || len(unmet) != 2 {
 		t.Fatalf("ok %v, unmet %q, want the proof and the review", ok, unmet)
 	}
 }

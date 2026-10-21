@@ -444,9 +444,12 @@ activities, each with a timeline step and a comment on the pull request:
    fix is proven one of two ways (ruling 167): the reproduction failed at
    the base and passes at the head, or the agent recorded the fault it
    fixed (`not_reproduced`), with or without a reproduction command.
-   Then `AutoMergeNote` comments the three conditions and the review's
-   summary on the pull request and `Merge` merges as factory-merge with no
-   card (main of an `auto` project requires no approval). Anything else,
+   Then `AutoMergeNote` records the auto merge on the timeline, and
+   `Merge` first approves the head as the merge gate's user `factory-gate`
+   (ruling R59: an APPROVED review whose body lists every condition
+   `AutoMerge` found met, with the project's gate token), then merges as
+   factory-merge with no card. A missing gate token or a refused approval
+   is a refusal like Forgejo's. Anything else,
    or an auto merge Forgejo refuses or that fails, goes on to:
 6. `RequestApproval` opens an `approval_requests` row (kind `merge`,
    status `pending`, the task, project, pull request, and in `spec` the
@@ -469,8 +472,12 @@ project's own `projects.merge_token`, which also reads the project's
 writers for the trust gate) with `head_commit_id` the gated head, and the
 task finishes done. main's protection lets factory-merge merge but not
 push, and only after an approval by a user on the approvals whitelist, so
-Forgejo itself refuses the merge without the human (405; a moved head or
-a conflict is 409). A refusal is commented and the wait goes on. Merge
+Forgejo itself refuses the merge without the human or, on the merge rule
+`auto`, the merge gate's `factory-gate` (`FORGEJO_GATE_TOKEN`, secret
+`factory/forgejo-gate`; a registered project's `projects.gate_token`),
+which may approve but neither merge nor push (405; a moved head or a
+conflict is 409). The intake ignores factory-gate's reviews as it does
+the bot's: they are factoryd's own, no member's decision. A refusal is commented and the wait goes on. Merge
 refuses by itself a pull request whose base is not `main`, and a gated
 head whose combined commit status is not green (`merge_red_head`, the
 card reads `the checks are red on <head>: the merge waits for a green
@@ -1526,14 +1533,17 @@ cases:
 
 Which of factoryd's tokens reaches a project for what is one mapping,
 `Forgejo.Access`: a factory project's `merge_token` reads its writers and
-merges, the projects token lists its Actions jobs and registers its runners;
-a seed project's file names seeded secrets (`tokens.read`, `.actions`,
-`.merge`; the values `forgejo-ci-registrar`, `forgejo-merge`,
-`forgejo-config`), which factoryd holds as `FORGEJO_CI_REGISTRAR_TOKEN`,
-`FORGEJO_MERGE_TOKEN` and `FORGEJO_CONFIG_TOKEN`. `forgejo-projects` is no
-allowed value: a seed project never gets the projects token (ruling 164).
-The code repository names `forgejo-ci-registrar` (read, Actions) and
-`forgejo-merge`; the infra repository `forgejo-config` (read: the trust gate
+merges, its `gate_token` approves the merge gate's merges, the projects
+token lists its Actions jobs and registers its runners; a seed project's
+file names seeded secrets (`tokens.read`, `.actions`, `.merge`, `.gate`;
+the values `forgejo-ci-registrar`, `forgejo-merge`, `forgejo-config`,
+`forgejo-gate`), which factoryd holds as `FORGEJO_CI_REGISTRAR_TOKEN`,
+`FORGEJO_MERGE_TOKEN`, `FORGEJO_CONFIG_TOKEN` and `FORGEJO_GATE_TOKEN`.
+`forgejo-projects` is no allowed value: a seed project never gets the
+projects token (ruling 164). A seed project without `tokens.gate` merges
+nothing on the merge rule `auto`: the merge is refused, naming the
+missing gate token. The code repository names `forgejo-ci-registrar`
+(read, Actions), `forgejo-merge` and `forgejo-gate`; the infra repository `forgejo-config` (read: the trust gate
 and the heal pass's close of a human-lane task; the org-read token adds the
 teams). The factory's own project is the one whose file lists factoryd's
 namespace: its CI runs and rolls are watched (with its Actions token), its
@@ -1571,9 +1581,12 @@ team, and the tokens, each minted with `?sudo=`: `ci-<name>`'s
 `REGISTRY_USER`/`REGISTRY_PASSWORD` (the project pushes its own packages and
 no one else's), `ci-<name>`'s `read:package` (`pull`, row `pull_token`, the
 namespaces' image pull secret), `factory-projects`' `read:repository` limited
-to the repository (`git-<name>`, row `git_token`, Flux's source) and
+to the repository (`git-<name>`, row `git_token`, Flux's source),
 `factory-merge`'s `write:repository` limited to it (`project-<name>`, row
-`merge_token`, the Merge activity's on this project). An existing token is
+`merge_token`, the Merge activity's on this project) and `factory-gate`'s
+(`project-<name>`, row `gate_token`, the merge gate's approval). A row
+without its gate token, a project registered before the gate, registers
+again on its next reconcile, which mints that token alone. An existing token is
 kept unless `factoryd register-project --name <name> --rotate`, which
 revokes and mints them all again. The reconcile decides from the row read
 under its lock, so a reconcile queued behind a registering one mints
@@ -1592,7 +1605,7 @@ ready"), which nothing clears; for a factory project:
 - Forgejo, with the projects token: the webhook to factoryd (every issue and
   pull request event and pushes, JSON, the intake secret; the row keeps the secret's
   sha256, so a re-seeded secret reaches the hook), `factory-agent`,
-  `factory-merge` and the policy's approvers as write collaborators (Forgejo
+  `factory-merge`, `factory-gate` and the policy's approvers as write collaborators (Forgejo
   keeps only writers in a whitelist); the seed: when the repository has no
   `main` and the project file names a `template`, the files of
   `templates/<template>/` of the configuration version in force, rendered
@@ -1603,7 +1616,7 @@ ready"), which nothing clears; for a factory project:
   `main` is never seeded, and without a template the line waits for the
   first push; `main`'s protection: the code
   repository's (push whitelist the approvers and `factory-merge`, merge
-  whitelist the same, approvals whitelist the approvers, apply to admins,
+  whitelist the same, approvals whitelist the approvers and `factory-gate`, apply to admins,
   stale approvals dismissed, rejected reviews block), `required_approvals` 0
   on `auto` (1 on `human`), no deploy key and no protected file pattern, so
   humans change workflows on main like any file (ruling 166); the branch

@@ -83,7 +83,7 @@ func TestAutoMerge(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			g, rv := with(tc.f)
-			ok, unmet := AutoMerge(g, rv, "api")
+			ok, _, unmet := AutoMerge(g, rv, "api")
 			if ok != tc.ok || (tc.ok && len(unmet) != 0) || (!tc.ok && (len(unmet) != 1 || !strings.Contains(unmet[0], tc.unmet))) {
 				t.Fatalf("AutoMerge = %v %q, want %v with one unmet condition containing %q", ok, unmet, tc.ok, tc.unmet)
 			}
@@ -92,7 +92,7 @@ func TestAutoMerge(t *testing.T) {
 	g, rv := with(func(g *GateResults, rv *Review) {
 		g.Policy.MergeRule, g.Reproduction, rv.Verdict = policy.MergeHuman, ReproResult{}, "concerns"
 	})
-	if ok, unmet := AutoMerge(g, rv, "api"); ok || len(unmet) != 3 {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || len(unmet) != 3 {
 		t.Fatalf("three unmet = %v %q, want all three named", ok, unmet)
 	}
 }
@@ -123,6 +123,13 @@ func TestWorkflowAutoMergesWithoutACard(t *testing.T) {
 	if g.finals[0][1] != "pull request merged by factory-merge on the merge rule auto" {
 		t.Fatalf("reason = %q", g.finals[0][1])
 	}
+	// the merge carries what the gate found met, the gate's approval's body
+	want := []string{"the project's merge rule is auto", "the checks ran green", "risk class normal, whose outcome is auto (policy version 7)",
+		"the reproduction failed at the base (exit 2) and passes at the head: ` make repro `",
+		"the model review approves and finds the change a strict improvement with no drawback: does what the brief asks"}
+	if len(g.mergeMet) != 1 || !slices.Equal(g.mergeMet[0], want) {
+		t.Fatalf("merge met %q, want %q", g.mergeMet, want)
+	}
 }
 
 // Anything short of auto is the card as today, which says why.
@@ -135,8 +142,8 @@ func TestWorkflowAutoUnmetGoesToTheCard(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	if len(g.approvals) != 1 || !slices.Equal(g.approvals[0].WhyHuman, []string{"no reproduction command and no fault the agent recorded"}) ||
-		len(g.autoNotes) != 0 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) {
-		t.Fatalf("approvals %+v, notes %q, merges %q", g.approvals, g.autoNotes, g.merges)
+		len(g.autoNotes) != 0 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || len(g.mergeMet) != 1 || g.mergeMet[0] != nil {
+		t.Fatalf("approvals %+v, notes %q, merges %q, met %q: a human's merge carries no gate conditions", g.approvals, g.autoNotes, g.merges, g.mergeMet)
 	}
 }
 
@@ -701,8 +708,9 @@ func TestModelReviewAsksForStrictImprovementAndNamesTheStanding(t *testing.T) {
 }
 
 // The card shows the agent's recommendation (its last message) and why
-// no auto merge; the auto merge's note names the three conditions and the
-// review's summary; its merge message names the rule.
+// no auto merge; the auto merge's note is the timeline's, the gate's
+// approval tells the pull request the conditions it found met; its merge
+// message names the rule.
 func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 	task := gateTask
@@ -725,20 +733,28 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 	if want := "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"; pending[0].Reason != want {
 		t.Fatalf("reason = %q, want %q", pending[0].Reason, want)
 	}
+	yes := true
 	g := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: "auto", PolicyVersion: 7},
-		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0, BaseExit: 1}}
-	if _, err := execActivity(t, r, ActivityAutoMergeNote, "t1", int64(9), "c1", g, Review{Verdict: "approve", Summary: "narrow fix"}); err != nil {
+		Reproduction: ReproResult{Ran: true, Command: "make repro", Exit: 0, BaseExit: 1}, ChecksPassed: true}
+	rv := Review{Verdict: "approve", Summary: "narrow fix", StrictImprovement: &yes}
+	if _, err := execActivity(t, r, ActivityAutoMergeNote, "t1", int64(9), "c1", g, rv); err != nil {
 		t.Fatal(err)
 	}
-	note := fj.comments[len(fj.comments)-1]
-	for _, want := range []string{"merge rule auto, without an approval card", "risk class **normal**, whose outcome is auto", "the reproduction failed at the base (exit 1) and passes at the head", "make repro", "model review approves: narrow fix"} {
-		if !strings.Contains(note, want) {
-			t.Fatalf("note lacks %q: %s", want, note)
-		}
+	if len(fj.comments) != 0 {
+		t.Fatalf("comments %q: the gate's approval tells the pull request, no comment beside it", fj.comments)
 	}
-	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", AutoApprover, "")
-	if res := getInto[MergeResult](t, val, err); !res.Merged || !strings.Contains(fj.merges[0]["MergeMessageField"].(string), "on the project's merge rule auto") {
-		t.Fatalf("merge %+v %v", res, fj.merges)
+	ok, met, _ := AutoMerge(g, rv, task.Source)
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", AutoApprover, "", met)
+	if res := getInto[MergeResult](t, val, err); !ok || !res.Merged || !strings.Contains(fj.merges[0]["MergeMessageField"].(string), "on the project's merge rule auto") {
+		t.Fatalf("auto %v, merge %+v %v", ok, res, fj.merges)
+	}
+	body, _ := fj.reviews[0]["body"].(string)
+	for _, want := range []string{"the merge gate passed c1 on the project's merge rule auto", "risk class normal, whose outcome is auto (policy version 7)",
+		"the reproduction failed at the base (exit 1) and passes at the head: ` make repro `",
+		"the model review approves and finds the change a strict improvement with no drawback: narrow fix"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("the gate's approval lacks %q: %s", want, body)
+		}
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"auto_merge"`) {
 		t.Fatal("no auto_merge step")

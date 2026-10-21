@@ -378,6 +378,9 @@ type SeedTokens struct {
 	Actions string `yaml:"actions,omitempty" json:"actions,omitempty"`
 	// Merge merges an approved pull request; agents coder only.
 	Merge string `yaml:"merge,omitempty" json:"merge,omitempty"`
+	// Gate approves, as the merge gate, a pull request the gate merges on
+	// the merge rule auto; absent: such a merge is refused.
+	Gate string `yaml:"gate,omitempty" json:"gate,omitempty"`
 }
 
 // The seeded secrets a seed project may name: Kubernetes secret names, no
@@ -386,10 +389,11 @@ const (
 	SecretCIRegistrar = "forgejo-ci-registrar" // #nosec G101 -- a secret's name
 	SecretMerge       = "forgejo-merge"        // #nosec G101 -- a secret's name
 	SecretConfig      = "forgejo-config"       // #nosec G101 -- a secret's name
+	SecretGate        = "forgejo-gate"         // #nosec G101 -- a secret's name
 )
 
 // SeedSecrets are the tokens values.
-var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig}
+var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig, SecretGate}
 
 // Environment is one Flux Kustomization: path of the repository applied
 // into namespace (ruling 157), and the public hostname, if any (ruling 155).
@@ -604,7 +608,7 @@ func (p ProjectConfig) Validate(name string) error {
 			bad("objects seed with agents coder: tokens.actions and tokens.merge name the secrets its CI and its merges use")
 		}
 		if p.Tokens != nil {
-			for _, t := range []struct{ key, v string }{{"read", p.Tokens.Read}, {"actions", p.Tokens.Actions}, {"merge", p.Tokens.Merge}} {
+			for _, t := range []struct{ key, v string }{{"read", p.Tokens.Read}, {"actions", p.Tokens.Actions}, {"merge", p.Tokens.Merge}, {"gate", p.Tokens.Gate}} {
 				if t.v != "" && !slices.Contains(SeedSecrets, t.v) {
 					bad("tokens.%s %q: want one of %v", t.key, t.v, SeedSecrets)
 				}

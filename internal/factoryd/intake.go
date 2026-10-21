@@ -1683,7 +1683,8 @@ func (in *Intake) handleReview(ctx context.Context, body []byte, eventType, deli
 	if err := json.Unmarshal(body, &p); err != nil {
 		return fmt.Errorf("decode %s: %w", eventType, err)
 	}
-	if p.Sender.UserName == in.BotUser {
+	// the merge gate's approval is factoryd's own, never a member's
+	if p.Sender.UserName == in.BotUser || p.Sender.UserName == GateUser {
 		return nil
 	}
 	taskID, ok, err := in.taskOfHead(ctx, p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref, p.PullRequest.Index)

@@ -61,6 +61,7 @@ var enums = map[string][]string{
 	"SeedTokens.Read":         SeedSecrets,
 	"SeedTokens.Actions":      SeedSecrets,
 	"SeedTokens.Merge":        SeedSecrets,
+	"SeedTokens.Gate":         SeedSecrets,
 	"Stage.Name":              StageNames,
 	"Stage.OnFindings":        FindingsRules,
 	"Stage.When":              StagePredicates,

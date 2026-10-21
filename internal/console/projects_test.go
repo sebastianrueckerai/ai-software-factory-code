@@ -49,7 +49,7 @@ func projectRows() []factoryd.Project {
 			Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes,
 			Namespaces:   []string{"demo-staging", "demo-prod"},
 			Environments: []factoryd.Environment{{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"}},
-			Quota:        policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}, ReadTokenHash: "h", GitToken: "secret-git-token", MergeToken: "secret-merge-token"},
+			Quota:        policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}, ReadTokenHash: "h", GitToken: "secret-git-token", MergeToken: "secret-merge-token", GateToken: "secret-gate-token"},
 		{Name: "gone", PullToken: "secret-pull-token"},
 	}
 }
@@ -99,7 +99,7 @@ func TestSettingsPage(t *testing.T) {
 		}
 	}
 	blanked := strings.ReplaceAll(demo, `<form method="post" action="/projects/demo-app/export"`, "")
-	for _, leak := range []string{"secret-git-token", "secret-merge-token", "secret-pull-token", ">h<", `<form method="post" action="/projects`} {
+	for _, leak := range []string{"secret-git-token", "secret-merge-token", "secret-gate-token", "secret-pull-token", ">h<", `<form method="post" action="/projects`} {
 		if strings.Contains(blanked, leak) {
 			t.Errorf("/settings?project=demo-app shows %q", leak)
 		}

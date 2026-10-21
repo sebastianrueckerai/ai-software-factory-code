@@ -648,6 +648,25 @@ func TestIntakeReviewRecordsEvent(t *testing.T) {
 	}
 }
 
+// The merge gate's approval (factory-gate, ruling R59) is the factory's
+// own, as the bot's reviews are: a writer on the repository, it is still
+// no member's decision, so no intake event records it and nothing counts
+// or signals it.
+func TestIntakeIgnoresTheGatesApproval(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	m, reader := testMetrics(t)
+	in.Metrics = m
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 5}
+	body := reviewBody("factory/t1", GateUser, "pull_request_review_approved", "factoryd: the merge gate passed c1 on the project's merge rule auto")
+	if rr := postWebhook(in, "pull_request_review_approved", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if len(store.intakeEvents) != 0 || len(workflowsOf(in).signals) != 0 {
+		t.Fatalf("events %+v, signals %v: want the gate's approval ignored", store.intakeEvents, workflowsOf(in).signals)
+	}
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{})
+}
+
 func TestIntakeReviewOnUnknownTaskIgnored(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	body := reviewBody("factory/nope", "sebastian", "pull_request_review_rejected", "changes needed")
@@ -923,8 +942,8 @@ func isWriterRead(path string) bool {
 }
 
 // serveWriters answers RepoWriters' reads for a code repository whose
-// Owners team holds sebastian and whose bot is a write collaborator, each
-// read on its token.
+// Owners team holds sebastian and whose bot and merge gate user are write
+// collaborators, each read on its token.
 func serveWriters(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	want := "token registrar-tok"
 	if strings.HasPrefix(r.URL.Path, "/api/v1/orgs/") || strings.HasPrefix(r.URL.Path, "/api/v1/teams/") {
@@ -939,9 +958,9 @@ func serveWriters(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/v1/teams/1/members":
 		servePage(w, r, 50, `{"login":"sebastian"}`)
 	case strings.HasSuffix(r.URL.Path, "/collaborators"):
-		servePage(w, r, 50, `{"login":"factory-agent"}`)
+		servePage(w, r, 50, `{"login":"factory-agent"}`, `{"login":"factory-gate"}`)
 	case strings.HasSuffix(r.URL.Path, "/assignees"):
-		io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"}]`)
+		io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"},{"login":"factory-gate"}]`)
 	default:
 		http.NotFound(w, r)
 	}

@@ -48,6 +48,10 @@ type gateForgejo struct {
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
 	diffDelay   time.Duration
 	comments    []string
+	reviews     []map[string]any // POST /pulls/9/reviews bodies
+	reviewAuth  []string         // and each one's Authorization header
+	reviewFail  int              // the review post answers this status; 0 = 200
+	calls       []string         // "review" and "merge", in order
 	// raw serves GET raw of other repositories (the document repo's
 	// design decisions): "owner/name/raw/<path>" to its content.
 	raw map[string]string
@@ -64,9 +68,22 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && p == "/pulls/9.diff":
 			time.Sleep(f.diffDelay)
 			io.WriteString(w, f.diff)
+		case r.Method == "POST" && p == "/pulls/9/reviews":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			f.calls = append(f.calls, "review")
+			f.reviews = append(f.reviews, body)
+			f.reviewAuth = append(f.reviewAuth, r.Header.Get("Authorization"))
+			if f.reviewFail != 0 {
+				w.WriteHeader(f.reviewFail)
+				io.WriteString(w, `{"message":"user does not have permission to review"}`)
+				return
+			}
+			io.WriteString(w, `{"id":61,"state":"APPROVED"}`)
 		case r.Method == "POST" && p == "/pulls/9/merge":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
+			f.calls = append(f.calls, "merge")
 			f.merges = append(f.merges, body)
 			f.mergeAuth = append(f.mergeAuth, r.Header.Get("Authorization"))
 			status := f.mergeStatus[min(len(f.merges), len(f.mergeStatus))-1]
@@ -933,6 +950,64 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 		t.Fatal("no merged step")
 	}
 	startedWithin(t, objects, "merged", from)
+	// a human's approval is the human's review: the gate posts none
+	if len(fj.reviews) != 0 {
+		t.Fatalf("reviews = %v, want none on a human's approval", fj.reviews)
+	}
+}
+
+// On the merge rule auto the merge gate approves the head it checked as
+// factory-gate, with the gate's own token and the conditions it found met
+// in the review's body, before factory-merge merges it (ruling R59):
+// main's protection counts that approval, never factory-merge's own.
+func TestAutoMergeApprovesAsTheGateFirst(t *testing.T) {
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	met := []string{"the project's merge rule is auto", "the checks ran green", "mechanical source roll: factoryd wrote the change, no agent"}
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "m1", AutoApprover, "c1", met)
+	if res := getInto[MergeResult](t, val, err); !res.Merged {
+		t.Fatalf("result = %+v", res)
+	}
+	if !slices.Equal(fj.calls, []string{"review", "merge"}) || !slices.Equal(fj.reviewAuth, []string{"token gate-tok"}) {
+		t.Fatalf("calls %v, review auth %q: want one review with the gate token, then the merge", fj.calls, fj.reviewAuth)
+	}
+	want := "factoryd: the merge gate passed m1 on the project's merge rule auto:\n\n" +
+		"- the project's merge rule is auto\n- the checks ran green\n- mechanical source roll: factoryd wrote the change, no agent"
+	if rv := fj.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "m1" || rv["body"] != want {
+		t.Fatalf("review = %v, want APPROVED on m1 with body %q", rv, want)
+	}
+}
+
+// The gate's approval that cannot be posted refuses the merge before any
+// merge call, naming why, as a refusal does: no gate token for the
+// project, or Forgejo refusing the review.
+func TestAutoMergeRefusedWithoutTheGatesApproval(t *testing.T) {
+	noGate := seedProject("sf/repo")
+	noGate.Tokens.Gate = ""
+	for name, tc := range map[string]struct {
+		project    Project
+		reviewFail int
+		reviews    int
+		refusal    string
+	}{
+		"no gate token":   {noGate, 0, 0, "factoryd holds no gate token for sf/repo: its project file names none, or its registration has not run"},
+		"review refused":  {seedProject("sf/repo"), http.StatusForbidden, 1, "the merge gate's approval as factory-gate failed: forgejo POST /api/v1/repos/sf/repo/pulls/9/reviews"},
+		"review rejected": {seedProject("sf/repo"), http.StatusUnprocessableEntity, 1, "status 422"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}, reviewFail: tc.reviewFail}
+			r, store, objects := newGateRunner(t, gateTask, fj)
+			store.projects = []Project{tc.project}
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", AutoApprover, "", []string{"the checks ran green"})
+			res := getInto[MergeResult](t, val, err)
+			if res.Merged || len(fj.merges) != 0 || len(fj.reviews) != tc.reviews || !strings.Contains(res.Refusal, tc.refusal) {
+				t.Fatalf("result %+v, merges %d, reviews %d; want refused naming %q before any merge", res, len(fj.merges), len(fj.reviews), tc.refusal)
+			}
+			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.refusal) || !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
+				t.Fatalf("comments %q: want the refusal told on the pull request and the timeline", fj.comments)
+			}
+		})
+	}
 }
 
 // A factory project's merge goes out with its own factory-merge token
@@ -1486,10 +1561,10 @@ func TestMergeFailureOnTheLastAttempt(t *testing.T) {
 	task := gateTask
 	since := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	task.Gate, task.GateSince = GateMerge, &since
-	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", false); err == nil {
+	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", nil, false); err == nil {
 		t.Fatal("a transient failure before the last attempt was not an error")
 	}
-	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", true)
+	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", nil, true)
 	if err != nil || res.Merged || !strings.Contains(res.Failed, "502") {
 		t.Fatalf("last attempt = %+v, %v", res, err)
 	}
@@ -1940,7 +2015,7 @@ func highClass(g *GateResults) {
 func TestARollMergesOnItsOwnAtFullAuto(t *testing.T) {
 	g, _ := fullAutoGates(SourceRoll)
 	g.Policy.Class, g.Policy.Outcome, g.Policy.Changed = policy.ClassHigh, policy.OutcomeRequiresApproval, 2
-	if ok, unmet := AutoMerge(g, Review{}, SourceRoll); !ok {
+	if ok, _, unmet := AutoMerge(g, Review{}, SourceRoll); !ok {
 		t.Fatalf("unmet = %q", unmet)
 	}
 }
@@ -1948,7 +2023,7 @@ func TestARollMergesOnItsOwnAtFullAuto(t *testing.T) {
 func TestARollWithANonDigestChangeAsksAHuman(t *testing.T) {
 	g, _ := fullAutoGates(SourceRoll)
 	g.Policy.OutsideK8s = []string{"internal/x.go"}
-	ok, unmet := AutoMerge(g, Review{}, SourceRoll)
+	ok, _, unmet := AutoMerge(g, Review{}, SourceRoll)
 	if ok || !slices.Equal(unmet, []string{"the roll changes paths outside k8s/: internal/x.go"}) {
 		t.Fatalf("ok %v, unmet %q", ok, unmet)
 	}
@@ -1959,11 +2034,11 @@ func TestARevertMergesOnChecksAtFullAuto(t *testing.T) {
 		g, _ := fullAutoGates(source)
 		highClass(&g)
 		g.Policy.OutsideK8s = []string{"a.go"}
-		if ok, unmet := AutoMerge(g, Review{}, source); !ok {
+		if ok, _, unmet := AutoMerge(g, Review{}, source); !ok {
 			t.Fatalf("%s: unmet = %q", source, unmet)
 		}
 		g.ChecksPassed, g.Policy.MergeRule = false, policy.MergeHuman
-		if ok, unmet := AutoMerge(g, Review{}, source); ok || len(unmet) != 2 {
+		if ok, _, unmet := AutoMerge(g, Review{}, source); ok || len(unmet) != 2 {
 			t.Fatalf("%s: ok %v, unmet %q, want the rule and the checks", source, ok, unmet)
 		}
 	}
@@ -1973,7 +2048,7 @@ func TestAHighClassChangeMergesWithTheAuditAtFullAuto(t *testing.T) {
 	g, rv := fullAutoGates("api")
 	highClass(&g)
 	g.Audit = &AuditResult{Verdict: AuditClear}
-	if ok, unmet := AutoMerge(g, rv, "api"); !ok {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); !ok {
 		t.Fatalf("unmet = %q", unmet)
 	}
 }
@@ -1984,7 +2059,7 @@ func TestAHighClassChangeWithAuditFindingsAsksAHuman(t *testing.T) {
 	want := []string{"risk class high: the audit must pass for a merge without a human"}
 	for _, a := range []*AuditResult{nil, {Verdict: AuditFindings}} {
 		g.Audit = a
-		if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+		if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
 			t.Fatalf("audit %+v: ok %v, unmet %q", a, ok, unmet)
 		}
 	}
@@ -1995,7 +2070,7 @@ func TestAHighClassChangeBelowFullAutoAsksAHuman(t *testing.T) {
 	highClass(&g)
 	g.Audit, g.Policy.MergeRule = &AuditResult{Verdict: AuditClear}, policy.MergeHuman
 	want := []string{"the project's merge rule is human", "risk class high: the audit must pass for a merge without a human"}
-	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
 		t.Fatalf("ok %v, unmet %q", ok, unmet)
 	}
 }
@@ -2006,7 +2081,7 @@ func TestAForbiddenChangeAlwaysAsksAHuman(t *testing.T) {
 	for class, outcome := range map[string]string{"forbidden": policy.OutcomeForbidden, "migration": policy.OutcomeRequiresApproval} {
 		g.Policy.Class, g.Policy.Outcome = class, outcome
 		want := []string{"risk class " + class + " is " + outcome}
-		if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+		if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
 			t.Fatalf("%s: ok %v, unmet %q", class, ok, unmet)
 		}
 	}
@@ -2018,11 +2093,11 @@ func TestUnreproducedWithUnmetCriteriaNamesThem(t *testing.T) {
 	g, rv := fullAutoGates("api")
 	g.Reproduction = ReproResult{Ran: true, Exit: 0, BaseExit: 0}
 	base := "not reproduced at base: the reproduction exited 0 before the fix, and the agent recorded no fault it fixed"
-	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, []string{base}) {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, []string{base}) {
 		t.Fatalf("without criteria: ok %v, unmet %q", ok, unmet)
 	}
 	rv.Criteria = []CriterionVerdict{{Criterion: "a", Verdict: "met"}, {Criterion: "b", Verdict: "unmet"}}
-	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, []string{base + ", and the review's criteria are not all met"}) {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, []string{base + ", and the review's criteria are not all met"}) {
 		t.Fatalf("with an unmet criterion: ok %v, unmet %q", ok, unmet)
 	}
 }
@@ -2031,12 +2106,55 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 	g, rv := fullAutoGates("api")
 	g.Reproduction = ReproResult{}
 	rv.Criteria = []CriterionVerdict{{Criterion: "a", Verdict: "met"}, {Criterion: "b", Verdict: "waived"}}
-	if ok, unmet := AutoMerge(g, rv, "api"); !ok {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); !ok {
 		t.Fatalf("unmet = %q", unmet)
 	}
 	rv.Criteria[1].Verdict = "unmet"
 	want := []string{"no reproduction command and no fault the agent recorded, and the review's criteria are not all met"}
-	if ok, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
 		t.Fatalf("ok %v, unmet %q", ok, unmet)
+	}
+}
+
+// A pull request the gate admits names every condition it found met, the
+// body of the gate's approval (ruling R59): who wrote it, and for an
+// agent's change the class, the audit, the proof and the review.
+func TestAutoMergeNamesWhatItFoundMet(t *testing.T) {
+	yes := true
+	approve := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}
+	normal := PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}
+	high := PolicyGate{Class: policy.ClassHigh, Outcome: policy.OutcomeRequiresApproval, MergeRule: policy.MergeAuto, PolicyVersion: 7}
+	const rule, checks, review = "the project's merge rule is auto", "the checks ran green",
+		"the model review approves and finds the change a strict improvement with no drawback: does what the brief asks"
+	for name, tc := range map[string]struct {
+		g      GateResults
+		rv     Review
+		source string
+		met    []string
+	}{
+		"roll": {GateResults{Policy: high, ChecksPassed: true}, Review{}, SourceRoll,
+			[]string{rule, checks, "mechanical source roll: factoryd wrote the change, no agent", "the roll changes only paths under k8s/"}},
+		"revert": {GateResults{Policy: PolicyGate{MergeRule: policy.MergeAuto, OutsideK8s: []string{"a.go"}}, ChecksPassed: true}, Review{}, SourceRevert,
+			[]string{rule, checks, "mechanical source revert: factoryd wrote the change, no agent"}},
+		"normal, reproduced": {GateResults{Policy: normal, ChecksPassed: true, Reproduction: ReproResult{Ran: true, Command: "make repro", BaseExit: 2}}, approve, "api",
+			[]string{rule, checks, "risk class normal, whose outcome is auto (policy version 7)",
+				"the reproduction failed at the base (exit 2) and passes at the head: ` make repro `", review}},
+		"normal, in the test": {GateResults{Policy: normal, ChecksPassed: true, Reproduction: ReproResult{Ran: true, Command: "go test -run `TestX`", InTest: true}}, approve, "api",
+			[]string{rule, checks, "risk class normal, whose outcome is auto (policy version 7)",
+				"the reproduction constructs the pre-fix state within the test itself and passes at the head: `` go test -run `TestX` ``", review}},
+		"high, audit clear, fault recorded": {GateResults{Policy: high, ChecksPassed: true, Audit: &AuditResult{Verdict: AuditClear},
+			Reproduction: ReproResult{NotReproduced: "the cache key ignored the locale"}}, approve, "api",
+			[]string{rule, checks, "risk class high, which merges without a human on a passed security audit (policy version 7)", "the security audit passed",
+				"the agent recorded the fault it fixed: the cache key ignored the locale", review}},
+		"criteria": {GateResults{Policy: normal, ChecksPassed: true}, Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes,
+			Criteria: []CriterionVerdict{{Criterion: "a", Verdict: "met"}, {Criterion: "b", Verdict: "waived"}}}, "api",
+			[]string{rule, checks, "risk class normal, whose outcome is auto (policy version 7)", "the review's criteria are all met or waived", review}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ok, met, unmet := AutoMerge(tc.g, tc.rv, tc.source)
+			if !ok || !slices.Equal(met, tc.met) {
+				t.Fatalf("ok %v, unmet %q, met %q; want met %q", ok, unmet, met, tc.met)
+			}
+		})
 	}
 }

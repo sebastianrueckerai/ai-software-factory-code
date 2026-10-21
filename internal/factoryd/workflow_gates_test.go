@@ -23,8 +23,9 @@ type gateHarness struct {
 	*workflowHarness
 	steps        []string
 	approvals    []ApprovalInput
-	merges       []string // "pr commit approver"
-	checkedHeads []string // Merge's checkedHead per call
+	merges       []string   // "pr commit approver"
+	checkedHeads []string   // Merge's checkedHead per call
+	mergeMet     [][]string // Merge's met conditions per call
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
 	policyCalls  int
@@ -175,11 +176,12 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return nil
 		})
 	m := 0
-	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
-		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
+	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.checkedHeads = append(g.checkedHeads, checkedHead)
+			g.mergeMet = append(g.mergeMet, met)
 			m++
 			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
 				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))

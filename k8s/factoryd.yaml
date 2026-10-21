@@ -538,6 +538,10 @@ spec:
         # factory-merge: merge whitelist of main only; the workflow's Merge
         - name: FORGEJO_MERGE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
+        # factory-gate: approvals whitelist of main only; the merge gate's
+        # approval before a merge on the merge rule auto (ruling R59)
+        - name: FORGEJO_GATE_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-gate, key: token}}
         # factory-projects: owns every project organisation (ruling 164)
         # and keeps its repository's hooks, collaborators, protection,
         # deploy key, Actions secrets and runners; write:repository only

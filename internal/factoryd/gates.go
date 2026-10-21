@@ -162,19 +162,29 @@ type Review struct {
 // drawback, and proof: the reproduction failed at the base and passes at
 // the head, or the agent recorded the fault it fixed, or the review's
 // criteria are all met or waived (rulings 149, 167, 169). unmet names every
-// condition that sends the pull request to a human's card.
-func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string) {
-	if g.Policy.MergeRule != policy.MergeAuto {
+// condition that sends the pull request to a human's card; met every one
+// that holds, which the gate's approval names (ruling R59).
+func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []string) {
+	if g.Policy.MergeRule == policy.MergeAuto {
+		met = append(met, "the project's merge rule is auto")
+	} else {
 		unmet = append(unmet, "the project's merge rule is "+cmp.Or(g.Policy.MergeRule, policy.MergeHuman))
 	}
-	if !g.ChecksPassed {
+	if g.ChecksPassed {
+		met = append(met, "the checks ran green")
+	} else {
 		unmet = append(unmet, "the checks did not run green")
 	}
 	if mechanicalSource(source) {
-		if source == SourceRoll && len(g.Policy.OutsideK8s) > 0 {
+		met = append(met, "mechanical source "+source+": factoryd wrote the change, no agent")
+		switch {
+		case source != SourceRoll:
+		case len(g.Policy.OutsideK8s) > 0:
 			unmet = append(unmet, "the roll changes paths outside k8s/: "+strings.Join(g.Policy.OutsideK8s, ", "))
+		default:
+			met = append(met, "the roll changes only paths under k8s/")
 		}
-		return len(unmet) == 0, unmet
+		return len(unmet) == 0, met, unmet
 	}
 	switch {
 	case g.Policy.large():
@@ -182,32 +192,50 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, unmet []string
 	case g.Policy.Class == policy.ClassHigh && g.Policy.Outcome == policy.OutcomeRequiresApproval:
 		if g.Policy.MergeRule != policy.MergeAuto || g.Audit == nil || g.Audit.Verdict != AuditClear {
 			unmet = append(unmet, "risk class high: the audit must pass for a merge without a human")
+		} else {
+			met = append(met, fmt.Sprintf("risk class high, which merges without a human on a passed security audit (policy version %d)", g.Policy.PolicyVersion))
 		}
 	case g.Policy.Outcome != policy.OutcomeAuto:
 		unmet = append(unmet, fmt.Sprintf("risk class %s is %s", g.Policy.Class, g.Policy.Outcome))
+	default:
+		met = append(met, fmt.Sprintf("risk class %s, whose outcome is auto (policy version %d)", g.Policy.Class, g.Policy.PolicyVersion))
+	}
+	if g.Audit != nil && g.Audit.Verdict == AuditClear {
+		met = append(met, "the security audit passed")
 	}
 	rp := g.Reproduction
 	switch {
 	case rp.Ran && rp.Exit != 0:
 		unmet = append(unmet, fmt.Sprintf("the reproduction exited %d at the head", rp.Exit))
-	case rp.Reproduced() || rp.NotReproduced != "" || criteriaProve(rv.Criteria):
+	case rp.Reproduced() && rp.InTest:
+		met = append(met, "the reproduction constructs the pre-fix state within the test itself and passes at the head: "+inlineCode(rp.Command))
+	case rp.Reproduced():
+		met = append(met, fmt.Sprintf("the reproduction failed at the base (exit %d) and passes at the head: %s", rp.BaseExit, inlineCode(rp.Command)))
+	case rp.NotReproduced != "":
+		met = append(met, "the agent recorded the fault it fixed: "+rp.NotReproduced)
+	case criteriaProve(rv.Criteria):
+		met = append(met, "the review's criteria are all met or waived")
 	case rp.Ran:
 		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)+unmetCriteria(rv.Criteria))
 	default:
 		unmet = append(unmet, "no reproduction command and no fault the agent recorded"+unmetCriteria(rv.Criteria))
 	}
 	// ruling 169: on both routes the review must find no drawback
-	if rv.Verdict != "" && (rv.StrictImprovement == nil || !*rv.StrictImprovement) {
+	strict := rv.StrictImprovement != nil && *rv.StrictImprovement
+	if rv.Verdict != "" && !strict {
 		unmet = append(unmet, "the model review did not find the change a strict improvement with no drawback: "+rv.Summary)
 	}
 	switch rv.Verdict {
 	case "approve":
+		if strict {
+			met = append(met, "the model review approves and finds the change a strict improvement with no drawback: "+rv.Summary)
+		}
 	case "":
 		unmet = append(unmet, "no model review verdict: "+rv.Note)
 	default:
 		unmet = append(unmet, "the model review's verdict is "+rv.Verdict)
 	}
-	return len(unmet) == 0, unmet
+	return len(unmet) == 0, met, unmet
 }
 
 // unmetCriteria is the tail of an unmet line when the review's criteria
@@ -285,28 +313,13 @@ type MergeResult struct {
 	RedHead bool
 }
 
-// AutoMergeNote tells on the pull request that factory-merge merges it
-// without an approval card (ruling 149): the three conditions that hold
-// and the model review's summary.
+// AutoMergeNote records on the timeline that factory-merge merges the
+// pull request without an approval card (ruling 149); the pull request
+// learns it from the gate's approval, which Merge posts with the
+// conditions that hold.
 func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
-	t, repo, err := r.task(ctx, taskID)
+	t, _, err := r.task(ctx, taskID)
 	if err != nil {
-		return err
-	}
-	proof := fmt.Sprintf("the reproduction failed at the base (exit %d) and passes at the head:\n\n%s", g.Reproduction.BaseExit, fenced(g.Reproduction.Command))
-	switch {
-	case g.Reproduction.InTest:
-		proof = "the reproduction constructs the pre-fix state within the test itself and passes at the head, the base the head:\n\n" +
-			fenced(g.Reproduction.Command)
-	case !g.Reproduction.Reproduced():
-		proof = "the agent fixed a fault it did not reproduce, and the model review finds the change a strict improvement with no drawback:\n\n" +
-			fenced(g.Reproduction.NotReproduced)
-	}
-	msg := fmt.Sprintf("factoryd: merging %s on the project's merge rule auto, without an approval card. The three conditions hold:\n\n"+
-		"1. risk class **%s**, whose outcome is auto (policy version %d);\n"+
-		"2. %s\n\n3. the model review approves: %s",
-		commit, g.Policy.Class, g.Policy.PolicyVersion, proof, rv.Summary)
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, r.untrusted(t, msg)); err != nil {
 		return err
 	}
 	r.record(ctx, t.ID, "auto_merge", map[string]any{"pr": pr, "commit": commit, "class": g.Policy.Class, "merge_rule": g.Policy.MergeRule,
@@ -317,6 +330,11 @@ func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, com
 // MergeUser is the dedicated Forgejo user the Merge activity merges as
 // (ruling 109).
 const MergeUser = "factory-merge"
+
+// GateUser is the dedicated Forgejo user the merge gate approves as before
+// a merge on the merge rule auto (ruling R59): on main's approvals
+// whitelist, never on its merge or push whitelist.
+const GateUser = "factory-gate"
 
 // AutoApprover stands for the approver of a merge the project's merge rule
 // auto decided (ruling 149): no human approved it.
@@ -754,6 +772,12 @@ func longestBackticks(s string) int {
 func fenced(s string) string {
 	f := strings.Repeat("`", max(3, longestBackticks(s)+1))
 	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
+}
+
+// inlineCode is s as Markdown inline code, whatever backticks it holds.
+func inlineCode(s string) string {
+	f := strings.Repeat("`", longestBackticks(s)+1)
+	return f + " " + s + " " + f
 }
 
 // reproPodSpec is the worker pod in repro mode: no gateway token, no push
@@ -1318,9 +1342,12 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 }
 
 // Merge merges the approved pull request as factory-merge, at the head the
-// gates passed, into main only. Forgejo refuses it unless a human on main's
-// approvals whitelist approved that head; a refusal is commented and
-// returned, not an error: the workflow keeps waiting. A pull request found
+// gates passed, into main only. Forgejo refuses it unless a user on main's
+// approvals whitelist approved that head: a human, or on the merge rule
+// auto the merge gate, which approves it as factory-gate first, naming
+// met, the conditions it found (ruling R59); a refusal, the gate's
+// approval's included, is commented and returned, not an error: the
+// workflow keeps waiting. A pull request found
 // merged (a retry after a merge whose answer was lost, or a human's merge)
 // is a merge, credited to whoever merged it; the event pull_request_merged
 // is Merge's for factory-merge's merges and intake's for a human's. Any
@@ -1331,18 +1358,18 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 // checkedHead, when set, is the head the checks ran on, whose green holds
 // for commit (the cheap turn: main was merged in and touched no file of
 // the pull request). A run from before versionCheapTurn passes none.
-func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
+func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, lastAttempt(ctx))
+	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, met, lastAttempt(ctx))
 }
 
 // mergeAttempt is one Merge attempt; last reports a transient failure
 // instead of returning it.
-func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, last bool) (MergeResult, error) {
-	res, err := r.merge(ctx, t, repo, pr, commit, approver, checkedHead)
+func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string, last bool) (MergeResult, error) {
+	res, err := r.merge(ctx, t, repo, pr, commit, approver, checkedHead, met)
 	if err != nil && !isTerminal(err) && !forgejoTerminal(err) && last {
 		res = MergeResult{Failed: textutil.Truncate(err.Error(), 500)}
 		r.reportMergeFailure(ctx, t, repo, pr, commit, approver, res.Failed)
@@ -1415,7 +1442,7 @@ func (r *Runner) staleRevision(ctx context.Context, t Task) (newest, started int
 	return rev.Revision, t.PlanRevision, rev.Revision > t.PlanRevision, nil
 }
 
-func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string) (MergeResult, error) {
+func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return MergeResult{}, err
@@ -1444,10 +1471,25 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if err != nil {
 		return MergeResult{}, err
 	}
-	token := r.forgejo.Access(p).Merge
+	access := r.forgejo.Access(p)
+	token := access.Merge
 	if !ok || token == "" {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
 			": its project file names none, or its registration has not run"), nil
+	}
+	if approver == AutoApprover {
+		if access.Gate == "" {
+			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no gate token for "+t.Repository+
+				": its project file names none, or its registration has not run"), nil
+		}
+		body := "factoryd: the merge gate passed " + commit + " on the project's merge rule auto:\n\n- " + strings.Join(met, "\n- ")
+		err := r.forgejo.ApprovePullRequest(ctx, access.Gate, repo.Owner, repo.Name, pr, commit, r.untrusted(t, body))
+		if forgejoTerminal(err) {
+			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the merge gate's approval as "+GateUser+" failed: "+err.Error()), nil
+		}
+		if err != nil {
+			return MergeResult{}, err
+		}
 	}
 	msg := fmt.Sprintf("factoryd task %s (issue #%d): approved by %s, merged by %s", t.ID, t.IssueNumber, approver, MergeUser)
 	if approver == AutoApprover {

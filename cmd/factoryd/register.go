@@ -125,6 +125,7 @@ func newForgejo() *factoryd.Forgejo {
 			policy.SecretCIRegistrar: mustSecret("FORGEJO_CI_REGISTRAR_TOKEN"),
 			policy.SecretMerge:       mustSecret("FORGEJO_MERGE_TOKEN"),
 			policy.SecretConfig:      mustSecret("FORGEJO_CONFIG_TOKEN"),
+			policy.SecretGate:        mustSecret("FORGEJO_GATE_TOKEN"),
 		},
 	}
 }
@@ -139,7 +140,7 @@ func newRegistrar(store *factoryd.PGStore, forgejo *factoryd.Forgejo, kube facto
 		WebhookSecret:    webhookSecret,
 		FactoryNamespace: env("FACTORY_NAMESPACE", "factory"), PullSecret: env("PULL_SECRET", "forgejo-registry"),
 		GitURL: env("FORGEJO_PUBLIC_URL", "https://git.aisoftwarefactory.world"), RegistryHost: env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
-		MergeUser: env("FORGEJO_MERGE_USER", "factory-merge"),
+		MergeUser: env("FORGEJO_MERGE_USER", "factory-merge"), GateUser: env("FORGEJO_GATE_USER", "factory-gate"),
 		HostKey: func(ctx context.Context) (string, error) {
 			return factoryd.ScanHostKey(ctx, env("FORGEJO_SSH_ADDR", "forgejo-ssh.forgejo.svc.cluster.local:22"), 10*time.Second)
 		},

@@ -70,8 +70,9 @@ type Registrar struct {
 	// GitURL is the Forgejo base Flux clones from; RegistryHost the image
 	// registry's host.
 	GitURL, RegistryHost string
-	// MergeUser is factory-merge; ProjectsUser is factory-projects.
-	MergeUser, ProjectsUser string
+	// MergeUser is factory-merge; GateUser is factory-gate; ProjectsUser
+	// is factory-projects.
+	MergeUser, GateUser, ProjectsUser string
 	// HostKey scans Forgejo's SSH host key from inside the cluster (ruling
 	// 165); nil: no FACTORY_SSH_HOST_KEY.
 	HostKey func(ctx context.Context) (string, error)
@@ -423,9 +424,9 @@ func (r *Registrar) reconcile(ctx context.Context, p Project, rotate bool) error
 	}
 	// the caller's copy may predate a registration queued ahead on the lock
 	if row, ok, err := r.Store.Project(ctx, p.Name); !run.fail("row", err) && ok {
-		run.p.PullToken, run.p.GitToken, run.p.MergeToken = row.PullToken, row.GitToken, row.MergeToken
+		run.p.PullToken, run.p.GitToken, run.p.MergeToken, run.p.GateToken = row.PullToken, row.GitToken, row.MergeToken, row.GateToken
 	}
-	if rotate || run.p.PullToken == "" || run.p.GitToken == "" || run.p.MergeToken == "" {
+	if rotate || run.p.PullToken == "" || run.p.GitToken == "" || run.p.MergeToken == "" || run.p.GateToken == "" {
 		run.register(ctx, rotate)
 	}
 	secrets, ok := run.forgejo(ctx)
@@ -536,6 +537,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 		{"webhook", func() (Change, error) { return run.webhook(ctx) }},
 		{"collaborator " + f.BotUser, func() (Change, error) { return run.collaborator(ctx, f.BotUser) }},
 		{"collaborator " + run.r.MergeUser, func() (Change, error) { return run.collaborator(ctx, run.r.MergeUser) }},
+		{"collaborator " + run.r.GateUser, func() (Change, error) { return run.collaborator(ctx, run.r.GateUser) }},
 	}
 	for _, a := range run.approvers() {
 		steps = append(steps, struct {
@@ -551,7 +553,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 		{"collaborators", func() (Change, error) { return run.pruneCollaborators(ctx) }},
 		{"seed", func() (Change, error) { return run.seedFromTemplate(ctx) }},
 		{"protection main", func() (Change, error) {
-			return run.protection(ctx, "main", Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser))
+			return run.protection(ctx, "main", Protection(run.p.MergeRule, run.approvers(), run.r.MergeUser, run.r.GateUser))
 		}},
 		// Forgejo refuses to create a branch its protection covers, even from
 		// the API; roll.sh starts a missing deploy with the deploy key
@@ -747,13 +749,13 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 }
 
 // pruneCollaborators removes every direct collaborator who administers
-// the repository (permission admin or owner) but the bot, the merge user
-// and the approvers: factoryd owns who administers a factory project's
-// repository (ruling 203), and a member, a collaborator with write, stays
-// (ruling 254).
+// the repository (permission admin or owner) but the bot, the merge user,
+// the gate user and the approvers: factoryd owns who administers a
+// factory project's repository (ruling 203), and a member, a collaborator
+// with write, stays (ruling 254).
 func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error) {
 	f, repo := run.r.Forgejo, run.p.Repo()
-	keep := append([]string{f.BotUser, run.r.MergeUser}, run.approvers()...)
+	keep := append([]string{f.BotUser, run.r.MergeUser, run.r.GateUser}, run.approvers()...)
 	users, err := f.ProjectCollaborators(ctx, repo)
 	if err != nil {
 		return "", err
@@ -785,9 +787,11 @@ func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error)
 // (infra README, "The merge bot"). factory-merge and the approvers may push;
 // the deploy key may not, since the rolled state lives on DeployBranch
 // (ruling 166). A project on auto needs no approval, so factory-merge can
-// merge a clean pull request (ruling 149). Forgejo keeps only users with
-// write in a whitelist, so the approvers are write collaborators.
-func Protection(mergeRule string, approvers []string, mergeUser string) BranchProtection {
+// merge a clean pull request (ruling 149); the merge gate's gateUser
+// approves beside the approvers and neither pushes nor merges (ruling
+// R59). Forgejo keeps only users with write in a whitelist, so the
+// approvers and gateUser are write collaborators.
+func Protection(mergeRule string, approvers []string, mergeUser, gateUser string) BranchProtection {
 	required := 1
 	if mergeRule == policy.MergeAuto {
 		required = 0
@@ -795,7 +799,7 @@ func Protection(mergeRule string, approvers []string, mergeUser string) BranchPr
 	return BranchProtection{
 		EnablePush: true, EnablePushWhitelist: true, PushWhitelistUsernames: append(slices.Clone(approvers), mergeUser),
 		EnableMergeWhitelist: true, MergeWhitelistUsernames: append(slices.Clone(approvers), mergeUser),
-		EnableApprovalsWhitelist: true, ApprovalsWhitelistUsernames: slices.Clone(approvers),
+		EnableApprovalsWhitelist: true, ApprovalsWhitelistUsernames: append(slices.Clone(approvers), gateUser),
 		RequiredApprovals: required, ApplyToAdmins: true, BlockOnRejectedReviews: true, DismissStaleApprovals: true,
 	}
 }
@@ -1285,8 +1289,9 @@ func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Pro
 // factory-projects, the repository, the CI user in the organisation's ci
 // team (package write), and the tokens: ci-<name>'s write:package into the
 // registry Actions secrets and its read:package for the pull secret,
-// factory-projects' read:repository and factory-merge's write:repository
-// limited to the repository. A token p already has is kept unless rotate.
+// factory-projects' read:repository, and factory-merge's and
+// factory-gate's write:repository limited to the repository. A token p
+// already has is kept unless rotate.
 func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 	a, err := r.adminAuth(ctx)
 	if err != nil {
@@ -1317,9 +1322,12 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 		return err
 	}
 	// a repository-limited token needs its user to see the repository
-	if p.MergeToken == "" || rotate {
-		if err := f.AdminAddCollaborator(ctx, a, repo, r.MergeUser, "write"); err != nil {
-			return fmt.Errorf("collaborator %s: %w", r.MergeUser, err)
+	for _, u := range []struct{ name, token string }{{r.MergeUser, p.MergeToken}, {r.GateUser, p.GateToken}} {
+		if u.token != "" && !rotate {
+			continue
+		}
+		if err := f.AdminAddCollaborator(ctx, a, repo, u.name, "write"); err != nil {
+			return fmt.Errorf("collaborator %s: %w", u.name, err)
 		}
 	}
 	var t ProjectTokens
@@ -1339,6 +1347,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 		mint(&p.PullToken, &t.PullToken, ci, "pull", []string{"read:package"}, nil),
 		mint(&p.GitToken, &t.GitToken, r.ProjectsUser, "git-"+p.Name, []string{"read:repository"}, []Repo{repo}),
 		mint(&p.MergeToken, &t.MergeToken, r.MergeUser, "project-"+p.Name, []string{"write:repository"}, []Repo{repo}),
+		mint(&p.GateToken, &t.GateToken, r.GateUser, "project-"+p.Name, []string{"write:repository"}, []Repo{repo}),
 	); err != nil {
 		return err
 	}
@@ -1364,7 +1373,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 	if err := r.Store.SetProjectTokens(ctx, p.Name, t); err != nil {
 		return err
 	}
-	for have, minted := range map[*string]string{&p.PullToken: t.PullToken, &p.GitToken: t.GitToken, &p.MergeToken: t.MergeToken} {
+	for have, minted := range map[*string]string{&p.PullToken: t.PullToken, &p.GitToken: t.GitToken, &p.MergeToken: t.MergeToken, &p.GateToken: t.GateToken} {
 		if minted != "" {
 			*have = minted
 		}

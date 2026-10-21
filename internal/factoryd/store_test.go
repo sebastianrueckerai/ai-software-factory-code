@@ -559,14 +559,15 @@ func (s *fakeStore) EnterLane(ctx context.Context, id, lane, class, sha string) 
 }
 
 // testSeeded are the seeded tokens a test's Forgejo holds.
-var testSeeded = map[string]string{policy.SecretCIRegistrar: "registrar-tok", policy.SecretMerge: "merge-tok", policy.SecretConfig: "config-tok"}
+var testSeeded = map[string]string{policy.SecretCIRegistrar: "registrar-tok", policy.SecretMerge: "merge-tok", policy.SecretConfig: "config-tok",
+	policy.SecretGate: "gate-tok"}
 
 // seedProject is repository as the code repository's project: seed, agents
 // coder, the registrar token reading and running its Actions, the merge
-// token merging.
+// token merging, the gate token approving the merge gate's merges.
 func seedProject(repository string) Project {
 	return Project{Name: strings.ReplaceAll(repository, "/", "-"), Repository: repository, MergeRule: "human", Objects: "seed", Agents: "coder",
-		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge},
+		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge, Gate: policy.SecretGate},
 		Process: "maintenance", Lanes: maintenanceLanes}
 }
 

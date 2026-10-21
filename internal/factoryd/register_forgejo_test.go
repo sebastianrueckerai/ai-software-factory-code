@@ -12,11 +12,12 @@ import (
 
 // TestRegisterOnForgejo runs Register against a real Forgejo 15 (a
 // disposable one: FORGEJO_TEST_URL, its site admin FORGEJO_TEST_ADMIN and
-// FORGEJO_TEST_ADMIN_PASSWORD, users factory-projects, factory-merge and
-// factory-agent (password FORGEJO_TEST_BOT_PASSWORD), and factory-projects'
-// write:repository token FORGEJO_TEST_PROJECTS_TOKEN), with a fake
-// cluster: every Forgejo call registration makes, on the real API, before
-// and after main's first commit, then once more changing nothing.
+// FORGEJO_TEST_ADMIN_PASSWORD, users factory-projects, factory-merge,
+// factory-gate and factory-agent (password FORGEJO_TEST_BOT_PASSWORD), and
+// factory-projects' write:repository token FORGEJO_TEST_PROJECTS_TOKEN),
+// with a fake cluster: every Forgejo call registration makes, on the real
+// API, before and after main's first commit, then once more changing
+// nothing.
 func TestRegisterOnForgejo(t *testing.T) {
 	base := os.Getenv("FORGEJO_TEST_URL")
 	if base == "" {
@@ -32,7 +33,7 @@ func TestRegisterOnForgejo(t *testing.T) {
 		Policy:     func() policy.Tree { return policy.Tree{Document: policy.Document{Approvers: []string{adminUser}}} },
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: base, RegistryHost: "git.example",
-		MergeUser: "factory-merge", ProjectsUser: "factory-projects",
+		MergeUser: "factory-merge", GateUser: "factory-gate", ProjectsUser: "factory-projects",
 		HostKey: func(context.Context) (string, error) { return "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ", nil }}
 	logs := captureLog(t)
 	ctx := context.Background()
