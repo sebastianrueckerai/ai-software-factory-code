@@ -2153,13 +2153,13 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 }
 
 // A SigNoz alert's verdict comes with its task's end (Task 70): real on a
-// merge, noise when a human closed the issue without one, none otherwise;
-// another task's alert and a judged one stay as they are.
+// merge, noise when a human closed the issue without one, unjudged
+// otherwise; another task's alert and a judged one stay as they are.
 func TestFinishJudgesTheTasksSigNozAlert(t *testing.T) {
 	for _, c := range []struct{ final, reason, want string }{
 		{"done", "pull request merged by factory-merge on the merge rule auto", VerdictReal},
 		{"failed", "issue closed without merge", VerdictNoise},
-		{"failed", "3 attempts exhausted; last: checks failed", ""},
+		{"failed", "3 attempts exhausted; last: checks failed", VerdictUnjudged},
 	} {
 		fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
 		task := prTask
@@ -2176,7 +2176,7 @@ func TestFinishJudgesTheTasksSigNozAlert(t *testing.T) {
 		if rows[0].Verdict != c.want || rows[1].Verdict != "" || rows[2].Verdict != VerdictUnjudged {
 			t.Fatalf("%s %q: verdicts %q %q %q, want %q on the task's SigNoz alert and unjudged on its escalation", c.final, c.reason, rows[0].Verdict, rows[1].Verdict, rows[2].Verdict, c.want)
 		}
-		if c.want != "" && rows[0].ResolvedBy != "factoryd" {
+		if rows[0].ResolvedBy != "factoryd" {
 			t.Fatalf("resolved by %q", rows[0].ResolvedBy)
 		}
 	}
@@ -2203,6 +2203,28 @@ func TestFinishJudgesAnAlertClosedAsRealReal(t *testing.T) {
 		if a := store.alertRows()[0]; a.Verdict != c.want || a.ResolvedBy != "factoryd" {
 			t.Fatalf("labels %v: verdict %q by %q, want %q by factoryd", c.labels, a.Verdict, a.ResolvedBy, c.want)
 		}
+	}
+}
+
+// An alert card that ends failed without a verdict leaves its alert
+// unjudged; a verdict a person gave earlier stands.
+func TestAFailedAlertCardLeavesItsAlertUnjudged(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
+	task := prTask
+	task.Status, task.Source = "in-review", SourceAlert
+	r, store, _ := newActivityRunner(t, task, fj)
+	ctx := context.Background()
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t1", Fingerprint: "fp1"})
+	store.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "5xx", TaskID: "t1", Fingerprint: "fp2", Verdict: VerdictReal, ResolvedBy: "sebastian"})
+	if _, err := execActivity(t, r, ActivityFinish, "t1", "failed", "3 attempts exhausted; last: checks failed"); err != nil {
+		t.Fatal(err)
+	}
+	rows := store.alertRows()
+	if a := rows[0]; a.Verdict != VerdictUnjudged || a.ResolvedBy != "factoryd" || a.ResolvedAt == nil {
+		t.Fatalf("open alert = %q by %q at %v, want unjudged by factoryd, resolved", a.Verdict, a.ResolvedBy, a.ResolvedAt)
+	}
+	if a := rows[1]; a.Verdict != VerdictReal || a.ResolvedBy != "sebastian" {
+		t.Fatalf("judged alert = %q by %q, want real by sebastian", a.Verdict, a.ResolvedBy)
 	}
 }
 

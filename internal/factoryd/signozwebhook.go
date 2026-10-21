@@ -928,7 +928,7 @@ const (
 
 // alertVerdict is the verdict a SigNoz alert's task gives it when it ends
 // final for reason: real on a merge, noise on its issue closed without one,
-// none while the merge state is unknown.
+// unjudged on every other end, the unknown merge state included.
 func alertVerdict(final, reason string) string {
 	switch {
 	case final == "done":
@@ -936,7 +936,7 @@ func alertVerdict(final, reason string) string {
 	case strings.HasPrefix(reason, ReasonIssueClosed) && !strings.HasPrefix(reason, ReasonIssueClosed+ReasonMergeUnknown):
 		return VerdictNoise
 	}
-	return ""
+	return VerdictUnjudged
 }
 
 // namespaceLabels are the labels an alert's namespace arrives under, the

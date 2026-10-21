@@ -630,10 +630,10 @@ func TestAlertVerdict(t *testing.T) {
 		{"done", "pull request merged", VerdictReal},
 		{"failed", "issue closed without merge", VerdictNoise},
 		{"failed", "issue closed while no pull request of this workflow was open", VerdictNoise},
-		{"failed", "issue closed; merge state unknown: boom", ""},
-		{"failed", "attempts exhausted", ""},
-		{"failed", "pull request closed without merge", ""},
-		{"closed", "not reproducible, no answer in 14 days", ""},
+		{"failed", "issue closed; merge state unknown: boom", VerdictUnjudged},
+		{"failed", "attempts exhausted", VerdictUnjudged},
+		{"failed", "pull request closed without merge", VerdictUnjudged},
+		{"closed", "not reproducible, no answer in 14 days", VerdictUnjudged},
 	} {
 		if got := alertVerdict(c.final, c.reason); got != c.want {
 			t.Errorf("alertVerdict(%q, %q) = %q, want %q", c.final, c.reason, got, c.want)

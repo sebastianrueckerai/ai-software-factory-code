@@ -2229,19 +2229,18 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.leaveQueue(ctx, taskID, "the task ended "+state); err != nil {
 		return err
 	}
-	if v := alertVerdict(final, reason); v != "" {
-		if v == VerdictNoise && t.Source == SourceAlert && repoErr == nil {
-			labels, err := r.forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
-			if err := cleanup(taskID, "read its issue's labels", err); err != nil {
-				return err
-			}
-			if slices.Contains(labels, LabelReal) {
-				v = VerdictReal
-			}
-		}
-		if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
+	v := alertVerdict(final, reason)
+	if v == VerdictNoise && t.Source == SourceAlert && repoErr == nil {
+		labels, err := r.forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+		if err := cleanup(taskID, "read its issue's labels", err); err != nil {
 			return err
 		}
+		if slices.Contains(labels, LabelReal) {
+			v = VerdictReal
+		}
+	}
+	if err := r.store.JudgeTaskAlerts(ctx, taskID, AlertSigNoz, v, FactoryDecider); err != nil {
+		return err
 	}
 	for _, kind := range []string{AlertEscalation, AlertInfoRequest} {
 		if err := r.store.JudgeTaskAlerts(ctx, taskID, kind, VerdictUnjudged, FactoryDecider); err != nil {
