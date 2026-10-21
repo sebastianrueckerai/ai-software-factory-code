@@ -125,8 +125,8 @@ func TestWorkflowAutoMergesWithoutACard(t *testing.T) {
 	}
 	// the merge carries what the gate found met, the gate's approval's body
 	want := []string{"the project's merge rule is auto", "the checks ran green", "risk class normal, whose outcome is auto (policy version 7)",
-		"the reproduction failed at the base (exit 2) and passes at the head: ` make repro `",
-		"the model review approves and finds the change a strict improvement with no drawback: does what the brief asks"}
+		"the reproduction failed at the base (exit 2) and passes at the head",
+		"the model review approves and finds the change a strict improvement with no drawback"}
 	if len(g.mergeMet) != 1 || !slices.Equal(g.mergeMet[0], want) {
 		t.Fatalf("merge met %q, want %q", g.mergeMet, want)
 	}
@@ -716,6 +716,7 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 	task := gateTask
 	task.AgentSummary = "Fixed the slug check; merge it."
 	r, store, objects := newGateRunner(t, task, fj)
+	store.projects = []Project{autoProject("sf/repo")}
 	in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "c1", Gates: GateResults{Policy: PolicyGate{Class: "normal"}},
 		Review: Review{Verdict: "concerns", Summary: "s"}, WhyHuman: []string{"the model review's verdict is concerns"}}
 	if _, err := execActivity(t, r, ActivityRequestApproval, "t1", in); err != nil {
@@ -750,8 +751,8 @@ func TestCardRecommendationAndAutoMergeNote(t *testing.T) {
 	}
 	body, _ := fj.reviews[0]["body"].(string)
 	for _, want := range []string{"the merge gate passed c1 on the project's merge rule auto", "risk class normal, whose outcome is auto (policy version 7)",
-		"the reproduction failed at the base (exit 1) and passes at the head: ` make repro `",
-		"the model review approves and finds the change a strict improvement with no drawback: narrow fix"} {
+		"the reproduction failed at the base (exit 1) and passes at the head",
+		"the model review approves and finds the change a strict improvement with no drawback"} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("the gate's approval lacks %q: %s", want, body)
 		}

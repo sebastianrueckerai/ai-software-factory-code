@@ -392,8 +392,9 @@ const (
 	SecretGate        = "forgejo-gate"         // #nosec G101 -- a secret's name
 )
 
-// SeedSecrets are the tokens values.
-var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig, SecretGate}
+// SeedSecrets are the values of tokens' read, actions and merge; gate
+// takes SecretGate alone.
+var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig}
 
 // Environment is one Flux Kustomization: path of the repository applied
 // into namespace (ruling 157), and the public hostname, if any (ruling 155).
@@ -608,10 +609,13 @@ func (p ProjectConfig) Validate(name string) error {
 			bad("objects seed with agents coder: tokens.actions and tokens.merge name the secrets its CI and its merges use")
 		}
 		if p.Tokens != nil {
-			for _, t := range []struct{ key, v string }{{"read", p.Tokens.Read}, {"actions", p.Tokens.Actions}, {"merge", p.Tokens.Merge}, {"gate", p.Tokens.Gate}} {
+			for _, t := range []struct{ key, v string }{{"read", p.Tokens.Read}, {"actions", p.Tokens.Actions}, {"merge", p.Tokens.Merge}} {
 				if t.v != "" && !slices.Contains(SeedSecrets, t.v) {
 					bad("tokens.%s %q: want one of %v", t.key, t.v, SeedSecrets)
 				}
+			}
+			if g := p.Tokens.Gate; g != "" && g != SecretGate {
+				bad("tokens.gate %q: want %s", g, SecretGate)
 			}
 		}
 	}

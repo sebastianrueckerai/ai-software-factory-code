@@ -71,10 +71,14 @@ type Intake struct {
 const trustTTL = time.Minute
 
 // trusted reports whether user may steer a task through comments and
-// reviews: code write on the repository of a project (Forgejo.Writers). A
-// comment by anyone else is recorded, never signalled, unless it is the
-// issue author's answer to an information request.
+// reviews: code write on the repository of a project (Forgejo.Writers),
+// factory-gate never (ruling R61: its token exists to approve the merge
+// gate's merges). A comment by anyone else is recorded, never signalled,
+// unless it is the issue author's answer to an information request.
 func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
+	if user == GateUser {
+		return false, nil
+	}
 	key := repository + "\x00" + user
 	in.trustMu.Lock()
 	until, ok := in.trust[key]

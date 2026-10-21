@@ -272,7 +272,15 @@ func TestProjectConfigValidate(t *testing.T) {
 		}, `tokens.merge "root"`},
 		"seed unknown gate": {"x", func(p *ProjectConfig) {
 			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeAuto, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: "root"}}
-		}, `tokens.gate "root"`},
+		}, `tokens.gate "root": want forgejo-gate`},
+		// each token key takes its own secrets: the gate's approves, the
+		// merge token merges, and neither stands in for the other
+		"seed gate names the merge token": {"x", func(p *ProjectConfig) {
+			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeAuto, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: SecretMerge}}
+		}, `tokens.gate "forgejo-merge": want forgejo-gate`},
+		"seed merge names the gate token": {"x", func(p *ProjectConfig) {
+			*p = ProjectConfig{Repository: "sf/x", MergeRule: MergeAuto, Objects: ObjectsSeed, Agents: AgentsCoder, Tokens: &SeedTokens{Read: SecretConfig, Actions: SecretCIRegistrar, Merge: SecretGate}}
+		}, `tokens.merge "forgejo-gate": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := demo()

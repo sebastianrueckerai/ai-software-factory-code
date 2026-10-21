@@ -832,7 +832,7 @@ func newRegisterRig(t *testing.T) *registerRig {
 		Policy:     approversTree("sebastian"),
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: "https://git.aisoftwarefactory.world",
-		RegistryHost: "git.aisoftwarefactory.world", MergeUser: "factory-merge", GateUser: "factory-gate", ProjectsUser: "factory-projects"}
+		RegistryHost: "git.aisoftwarefactory.world", ProjectsUser: "factory-projects"}
 	return &registerRig{kv: kv, fj: fj, kube: kube, store: store, reg: reg, logs: captureLog(t)}
 }
 

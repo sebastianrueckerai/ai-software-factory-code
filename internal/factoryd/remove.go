@@ -70,9 +70,9 @@ type Remover struct {
 	OpenBao SecretReader
 	// LiteLLM deletes the project's tasks' keys; nil deletes none.
 	LiteLLM LiteLLMKeyDeleter
-	// MergeUser is factory-merge; GateUser is factory-gate; ProjectsUser is
-	// factory-projects, the owner of every project organisation.
-	MergeUser, GateUser, ProjectsUser string
+	// ProjectsUser is factory-projects, the owner of every project
+	// organisation.
+	ProjectsUser string
 }
 
 // removalRun is one remove-project run: its steps' lines, in order, and
@@ -253,7 +253,7 @@ func (run *removalRun) forgejo(ctx context.Context, a AdminAuth, repo Repo, dry 
 	f := rem.Forgejo
 	ci := "ci-" + name
 	forks := []Repo{{Owner: f.BotUser, Name: name}, {Owner: rem.ProjectsUser, Name: name}}
-	tokens := []struct{ user, token string }{{rem.ProjectsUser, "git-" + name}, {rem.MergeUser, "project-" + name}, {rem.GateUser, "project-" + name}}
+	tokens := []struct{ user, token string }{{rem.ProjectsUser, "git-" + name}, {MergeUser, "project-" + name}, {GateUser, "project-" + name}}
 	if dry {
 		run.line("packages", Change("would delete "+name+"'s packages"))
 		run.line("repository "+repo.String(), Change("would delete"))

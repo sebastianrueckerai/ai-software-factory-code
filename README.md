@@ -447,9 +447,12 @@ activities, each with a timeline step and a comment on the pull request:
    Then `AutoMergeNote` records the auto merge on the timeline, and
    `Merge` first approves the head as the merge gate's user `factory-gate`
    (ruling R59: an APPROVED review whose body lists every condition
-   `AutoMerge` found met, with the project's gate token), then merges as
-   factory-merge with no card. A missing gate token or a refused approval
-   is a refusal like Forgejo's. Anything else,
+   `AutoMerge` found met, in factoryd's words alone, never a command, note
+   or summary an issue, an agent or a model wrote (ruling R61), with the
+   project's gate token), then merges as factory-merge with no card. A
+   project whose merge rule is no longer `auto` when Merge runs, a missing
+   gate token or a refused approval is a refusal like Forgejo's, and the
+   first two post no review. Anything else,
    or an auto merge Forgejo refuses or that fails, goes on to:
 6. `RequestApproval` opens an `approval_requests` row (kind `merge`,
    status `pending`, the task, project, pull request, and in `spec` the
@@ -477,7 +480,9 @@ Forgejo itself refuses the merge without the human or, on the merge rule
 `factory/forgejo-gate`; a registered project's `projects.gate_token`),
 which may approve but neither merge nor push (405; a moved head or a
 conflict is 409). The intake ignores factory-gate's reviews as it does
-the bot's: they are factoryd's own, no member's decision. A refusal is commented and the wait goes on. Merge
+the bot's: they are factoryd's own, no member's decision. The trust gate
+never trusts factory-gate, a writer on the repository, so its comments
+steer no task (ruling R61). A refusal is commented and the wait goes on. Merge
 refuses by itself a pull request whose base is not `main`, and a gated
 head whose combined commit status is not green (`merge_red_head`, the
 card reads `the checks are red on <head>: the merge waits for a green
@@ -1535,9 +1540,9 @@ Which of factoryd's tokens reaches a project for what is one mapping,
 `Forgejo.Access`: a factory project's `merge_token` reads its writers and
 merges, its `gate_token` approves the merge gate's merges, the projects
 token lists its Actions jobs and registers its runners; a seed project's
-file names seeded secrets (`tokens.read`, `.actions`, `.merge`, `.gate`;
-the values `forgejo-ci-registrar`, `forgejo-merge`, `forgejo-config`,
-`forgejo-gate`), which factoryd holds as `FORGEJO_CI_REGISTRAR_TOKEN`,
+file names seeded secrets (`tokens.read`, `.actions`, `.merge`, each one
+of `forgejo-ci-registrar`, `forgejo-merge`, `forgejo-config`, and
+`.gate`, only `forgejo-gate`), which factoryd holds as `FORGEJO_CI_REGISTRAR_TOKEN`,
 `FORGEJO_MERGE_TOKEN`, `FORGEJO_CONFIG_TOKEN` and `FORGEJO_GATE_TOKEN`.
 `forgejo-projects` is no allowed value: a seed project never gets the
 projects token (ruling 164). A seed project without `tokens.gate` merges

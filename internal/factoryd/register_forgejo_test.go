@@ -33,8 +33,8 @@ func TestRegisterOnForgejo(t *testing.T) {
 		Policy:     func() policy.Tree { return policy.Tree{Document: policy.Document{Approvers: []string{adminUser}}} },
 		WebhookURL: "http://factoryd.factory.svc.cluster.local:8080/webhooks/forgejo", WebhookSecret: "hook-secret",
 		FactoryNamespace: "factory", PullSecret: "forgejo-registry", GitURL: base, RegistryHost: "git.example",
-		MergeUser: "factory-merge", GateUser: "factory-gate", ProjectsUser: "factory-projects",
-		HostKey: func(context.Context) (string, error) { return "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ", nil }}
+		ProjectsUser: "factory-projects",
+		HostKey:      func(context.Context) (string, error) { return "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ", nil }}
 	logs := captureLog(t)
 	ctx := context.Background()
 	p := demoProject()

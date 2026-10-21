@@ -71,8 +71,6 @@ func removeProjectMain(args []string) {
 		OpenBao: &openbao.Client{BaseURL: env("OPENBAO_URL", "http://openbao.platform.svc.cluster.local:8200"), AuthRole: "factoryd",
 			TokenFile: openbao.TokenPath, HTTP: &http.Client{Timeout: 15 * time.Second}},
 		LiteLLM:      &factoryd.LiteLLMAdmin{BaseURL: env("LITELLM_URL", "http://litellm.platform.svc:4000"), MasterKey: mustSecret("LITELLM_MASTER_KEY")},
-		MergeUser:    env("FORGEJO_MERGE_USER", "factory-merge"),
-		GateUser:     env("FORGEJO_GATE_USER", "factory-gate"),
 		ProjectsUser: projectsUser()}
 	if err := removeProject(ctx, args, os.Stdout, rem); err != nil {
 		log.Fatalf("remove-project: %v", err)

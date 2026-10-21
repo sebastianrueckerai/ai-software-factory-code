@@ -95,8 +95,8 @@ func newRemovalRig(t *testing.T) *removalRig {
 	}}
 	srv := litellm.server(t)
 	rem := &Remover{Forgejo: rig.reg.Forgejo, Kube: rig.kube, Store: rig.store, OpenBao: rig.kv,
-		LiteLLM:   &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()},
-		MergeUser: "factory-merge", GateUser: "factory-gate", ProjectsUser: "factory-projects"}
+		LiteLLM:      &LiteLLMAdmin{BaseURL: srv.URL, MasterKey: "sk-master", HTTP: srv.Client()},
+		ProjectsUser: "factory-projects"}
 	return &removalRig{registerRig: *rig, litellm: litellm, rem: rem}
 }
 

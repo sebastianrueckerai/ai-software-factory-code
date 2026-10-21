@@ -163,7 +163,9 @@ type Review struct {
 // the head, or the agent recorded the fault it fixed, or the review's
 // criteria are all met or waived (rulings 149, 167, 169). unmet names every
 // condition that sends the pull request to a human's card; met every one
-// that holds, which the gate's approval names (ruling R59).
+// that holds, which the gate's approval names (ruling R59) in factoryd's
+// words alone: no command, note or summary an issue, an agent or a model
+// wrote (ruling R61).
 func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []string) {
 	if g.Policy.MergeRule == policy.MergeAuto {
 		met = append(met, "the project's merge rule is auto")
@@ -208,11 +210,11 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	case rp.Ran && rp.Exit != 0:
 		unmet = append(unmet, fmt.Sprintf("the reproduction exited %d at the head", rp.Exit))
 	case rp.Reproduced() && rp.InTest:
-		met = append(met, "the reproduction constructs the pre-fix state within the test itself and passes at the head: "+inlineCode(rp.Command))
+		met = append(met, "the reproduction constructs the pre-fix state within the test itself and passes at the head")
 	case rp.Reproduced():
-		met = append(met, fmt.Sprintf("the reproduction failed at the base (exit %d) and passes at the head: %s", rp.BaseExit, inlineCode(rp.Command)))
+		met = append(met, fmt.Sprintf("the reproduction failed at the base (exit %d) and passes at the head", rp.BaseExit))
 	case rp.NotReproduced != "":
-		met = append(met, "the agent recorded the fault it fixed: "+rp.NotReproduced)
+		met = append(met, "the agent recorded the fault it fixed")
 	case criteriaProve(rv.Criteria):
 		met = append(met, "the review's criteria are all met or waived")
 	case rp.Ran:
@@ -228,7 +230,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	switch rv.Verdict {
 	case "approve":
 		if strict {
-			met = append(met, "the model review approves and finds the change a strict improvement with no drawback: "+rv.Summary)
+			met = append(met, "the model review approves and finds the change a strict improvement with no drawback")
 		}
 	case "":
 		unmet = append(unmet, "no model review verdict: "+rv.Note)
@@ -333,7 +335,8 @@ const MergeUser = "factory-merge"
 
 // GateUser is the dedicated Forgejo user the merge gate approves as before
 // a merge on the merge rule auto (ruling R59): on main's approvals
-// whitelist, never on its merge or push whitelist.
+// whitelist, never on its merge or push whitelist, and never trusted to
+// steer a task (ruling R61).
 const GateUser = "factory-gate"
 
 // AutoApprover stands for the approver of a merge the project's merge rule
@@ -772,12 +775,6 @@ func longestBackticks(s string) int {
 func fenced(s string) string {
 	f := strings.Repeat("`", max(3, longestBackticks(s)+1))
 	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
-}
-
-// inlineCode is s as Markdown inline code, whatever backticks it holds.
-func inlineCode(s string) string {
-	f := strings.Repeat("`", longestBackticks(s)+1)
-	return f + " " + s + " " + f
 }
 
 // reproPodSpec is the worker pod in repro mode: no gateway token, no push
@@ -1478,12 +1475,21 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			": its project file names none, or its registration has not run"), nil
 	}
 	if approver == AutoApprover {
+		// the gate read the rule before its stages ran: the rule now decides
+		if p.MergeRule != policy.MergeAuto {
+			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the project's merge rule is "+cmp.Or(p.MergeRule, policy.MergeHuman)+" now: a human approves"), nil
+		}
 		if access.Gate == "" {
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no gate token for "+t.Repository+
 				": its project file names none, or its registration has not run"), nil
 		}
-		body := "factoryd: the merge gate passed " + commit + " on the project's merge rule auto:\n\n- " + strings.Join(met, "\n- ")
-		err := r.forgejo.ApprovePullRequest(ctx, access.Gate, repo.Owner, repo.Name, pr, commit, r.untrusted(t, body))
+		body := "factoryd: the merge gate passed " + commit + " on the project's merge rule auto"
+		if len(met) > 0 {
+			body += ":\n\n- " + strings.Join(met, "\n- ")
+		} else {
+			body += "."
+		}
+		err := r.forgejo.ApprovePullRequest(ctx, access.Gate, repo.Owner, repo.Name, pr, commit, body)
 		if forgejoTerminal(err) {
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the merge gate's approval as "+GateUser+" failed: "+err.Error()), nil
 		}

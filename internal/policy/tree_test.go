@@ -136,7 +136,7 @@ func TestParseTreeRejects(t *testing.T) {
 		"seed without tokens":         {edit("projects/ai-software-factory-infra.yaml", "tokens: {read: forgejo-config}\n", ""), "project ai-software-factory-infra: objects seed: tokens.read names the secret"},
 		"seed coder without merge":    {edit("projects/ai-software-factory-code.yaml", ", merge: forgejo-merge", ""), "project ai-software-factory-code: objects seed with agents coder: tokens.actions and tokens.merge"},
 		"seed names the projects token": {edit("projects/ai-software-factory-infra.yaml", "read: forgejo-config", "read: forgejo-projects"),
-			`project ai-software-factory-infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config forgejo-gate]`},
+			`project ai-software-factory-infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
 		"seed with environments": {edit("projects/ai-software-factory-infra.yaml", "agents: none\n", "agents: none\nnamespaces: [x]\nenvironments: [{namespace: x, path: deploy}]\n"),
 			"project ai-software-factory-infra: objects seed: environments, quota and secrets are registration's"},
 		"factory with tokens":          {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\ntokens: {read: forgejo-config}\n"), "project demo-app: objects factory: tokens are registration's"},
@@ -453,6 +453,13 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	}
 	if got := project.Properties["objects"].Enum; !reflect.DeepEqual(got, []any{"factory", "seed"}) {
 		t.Errorf("objects enum = %v", got)
+	}
+	tokens := project.Properties["tokens"]
+	if got := tokens.Properties["gate"].Enum; !reflect.DeepEqual(got, []any{"forgejo-gate"}) {
+		t.Errorf("tokens.gate enum = %v, want the gate's secret alone", got)
+	}
+	if got := tokens.Properties["merge"].Enum; !reflect.DeepEqual(got, []any{"forgejo-ci-registrar", "forgejo-merge", "forgejo-config"}) {
+		t.Errorf("tokens.merge enum = %v", got)
 	}
 	if a := project.Properties["approvers"]; a == nil || a.Items == nil || a.Items.Type != "string" || !strings.Contains(a.Description, "the policy's approvers") {
 		t.Errorf("project approvers = %+v, want a list of user names that falls back to the policy's", a)
