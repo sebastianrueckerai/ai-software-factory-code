@@ -1185,14 +1185,8 @@ func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
 	if closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil || closed {
 		return err
 	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+notReproducedClose+
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, "factoryd: "+notReproducedClose+
 		". Closing this issue; a new issue with more detail starts a new task."); err != nil {
-		return err
-	}
-	if _, err := recordFactoryClose(ctx, r.store, t); err != nil {
-		return err
-	}
-	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
 		return err
 	}
 	r.record(ctx, taskID, "closed_not_reproduced", map[string]any{"issue": t.IssueNumber})
@@ -2314,7 +2308,7 @@ func cleanup(taskID, step string, err error) error {
 }
 
 // closeTaskIssue closes a closed task's issue while it is still open, as
-// factoryd's recorded close, then leaves msg as the reason, as
+// factoryd's recorded close with msg as the reason, as
 // closeTaskPullRequest does on the pull request: the card a change request
 // closed (versionFactoryPRActions) reads closed on its issue as on the
 // board. An issue a human closed, the usual way to a closed task, is left.
@@ -2323,16 +2317,7 @@ func (r *Runner) closeTaskIssue(ctx context.Context, repo Repo, t Task, msg stri
 	if err != nil || closed {
 		return err
 	}
-	if _, err := recordFactoryClose(ctx, r.store, t); err != nil {
-		return err
-	}
-	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
-		return err
-	}
-	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, msg); err != nil {
-		log.Printf("task %s: comment the close's reason on issue #%d: %v", t.ID, t.IssueNumber, err)
-	}
-	return nil
+	return closeIssueAsFactory(ctx, r.store, r.forgejo, t, msg)
 }
 
 // closeTaskPullRequest closes the task's pull request while it is still

@@ -356,6 +356,11 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 }
 
 func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {
+	if !slices.ContainsFunc(s.intakeEvents, func(e IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == IntakeFactoryClosed && e.CommentID == issue
+	}) {
+		return nil
+	}
 	if s.confirmedCloses == nil {
 		s.confirmedCloses = map[[2]any]bool{}
 	}

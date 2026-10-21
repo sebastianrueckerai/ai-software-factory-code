@@ -1332,17 +1332,7 @@ func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, sett
 	if t.Status != "waiting-human" {
 		return nil
 	}
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		return err
-	}
-	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
-		return err
-	}
-	if err := in.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why+"; this card ends with it."); err != nil {
-		return err
-	}
-	if err := in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: "+why+"; this card ends with it."); err != nil {
 		return err
 	}
 	return in.finishHumanTask(ctx, t, final, why, settle.Actor, settle)

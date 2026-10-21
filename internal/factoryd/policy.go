@@ -717,6 +717,7 @@ type ConfigBook interface {
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// BackfillProcess sets process on repository's open cards that have a
 	// lane and no process yet.
 	BackfillProcess(ctx context.Context, repository, process string) error
@@ -799,13 +800,7 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 			continue
 		}
 		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
-		if _, err := a.Forgejo.CreateIssueComment(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber, msg); err != nil {
-			return err
-		}
-		if _, err := recordFactoryClose(ctx, a.Store, t); err != nil {
-			return err
-		}
-		if err := a.Forgejo.CloseIssue(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber); err != nil {
+		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
 			return err
 		}
 		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {

@@ -383,6 +383,13 @@ func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issu
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if slices.ContainsFunc(s.events, func(have factoryd.IntakeEvent) bool {
+		return (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
+			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) ||
+			(e.Kind == factoryd.IntakeHandover && have.TaskID == e.TaskID && have.Kind == factoryd.IntakeHandover)
+	}) {
+		return 0, nil
+	}
 	e.ID = int64(len(s.events) + 1)
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
@@ -394,6 +401,11 @@ func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.Intake
 func (s *acceptanceStore) ConfirmFactoryClose(_ context.Context, taskID string, issue int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !slices.ContainsFunc(s.events, func(e factoryd.IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == factoryd.IntakeFactoryClosed && e.CommentID == issue
+	}) {
+		return nil
+	}
 	if s.confirmedCloses == nil {
 		s.confirmedCloses = map[[2]any]bool{}
 	}

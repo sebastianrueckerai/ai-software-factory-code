@@ -579,14 +579,7 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
 	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "the alert cleared at "+at)
-	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
-		return err
-	}
-	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
-		"factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes."); err != nil {
-		return err
-	}
-	return in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	return closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes.")
 }
 
 // RolloutPass raises an alert, through take as a SigNoz alert would, on

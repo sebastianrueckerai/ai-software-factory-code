@@ -153,7 +153,7 @@ func (r *Registrar) openTemplateUpdate(ctx context.Context, p Project, want map[
 		return "", err
 	}
 	if replaced != nil {
-		if err := r.closeReplaced(ctx, p, *replaced, fmt.Sprintf("factoryd: Pull request #%d replaces #%d; its card is #%d.", ref.Number, last.Number, issue.Number)); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *replaced, fmt.Sprintf("factoryd: Pull request #%d replaces #%d; its card is #%d.", ref.Number, last.Number, issue.Number)); err != nil {
 			return "", err
 		}
 	}
@@ -239,27 +239,14 @@ func (r *Registrar) cardDue(ctx context.Context, repo Repo, number int64) (faile
 const refusedToAgents = " is forbidden to agents: "
 
 // fileDueCard files the card pull request number is due (cardDue). The
-// failed card it replaces closes (closeReplaced).
+// failed card it replaces closes as factoryd's recorded close, its comment
+// naming the card filed again.
 func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, failed *Task, want map[string][]byte) error {
 	_, ref, err := r.fileTemplateCard(ctx, p, number, strings.Join(slices.Sorted(maps.Keys(want)), ", "))
 	if err != nil || failed == nil {
 		return err
 	}
-	return r.closeReplaced(ctx, p, *failed, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number))
-}
-
-// closeReplaced closes failed card's issue as factoryd's recorded close,
-// as a retried plan card's: why, naming the card that replaces it, is
-// its comment.
-func (r *Registrar) closeReplaced(ctx context.Context, p Project, failed Task, why string) error {
-	repo := p.Repo()
-	if _, err := r.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, failed.IssueNumber, why); err != nil {
-		return err
-	}
-	if _, err := recordFactoryClose(ctx, r.Cards, failed); err != nil {
-		return err
-	}
-	return r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, failed.IssueNumber)
+	return closeIssueAsFactory(ctx, r.Cards, r.Forgejo, *failed, fmt.Sprintf("factoryd: Filed again as #%d.", ref.Number))
 }
 
 // leftBranch keeps the branch a closed pull request left when a person
@@ -406,13 +393,14 @@ func fileChanges(ctx context.Context, f *Forgejo, repo Repo, ref string, files m
 // Forgejo also does for a deleted branch, and only then says why in a
 // comment by the bot (factory-projects' token has no issue scope): no
 // comment is posted twice. It closes the card's issue first when one
-// exists (roadmap 187): the close ends the card as an approver's would.
+// exists, as factoryd's recorded close (roadmap 187): the close ends the
+// card as an approver's would.
 func (r *Registrar) closeTemplateUpdate(ctx context.Context, f *Forgejo, repo Repo, number int64, why string) (Change, error) {
 	fork := f.Fork(repo)
 	if task, ok, err := r.cardByPR(ctx, repo, number); err != nil {
 		return "", err
 	} else if ok {
-		if err := r.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, task.IssueNumber); err != nil {
+		if err := closeIssueAsFactory(ctx, r.Cards, r.Forgejo, task, ""); err != nil {
 			return "", fmt.Errorf("close card %s: %w", task.ID, err)
 		}
 	}

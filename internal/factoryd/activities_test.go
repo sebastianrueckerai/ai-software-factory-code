@@ -1720,7 +1720,7 @@ func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
 	}{{"sebastian", false, true}, {"factory-agent", false, false}, {"factory-agent", true, true}} {
 		r, store, _ := newActivityRunner(t, prTask, &prForgejo{issueOff: true, closer: tc.closer})
 		if tc.recorded {
-			recordFactoryClose(context.Background(), store, prTask)
+			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: prTask.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: prTask.IssueNumber})
 		}
 		var got RunState
 		val, err := execActivity(t, r, ActivityReconcile, "t1")

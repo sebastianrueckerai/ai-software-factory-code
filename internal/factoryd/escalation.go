@@ -122,13 +122,38 @@ func botCloseRecorded(events []IntakeEvent, t Task) bool {
 	return slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber })
 }
 
-// recordFactoryClose writes t's IntakeFactoryClosed; an existing one is
-// kept. first: this call wrote it.
-func recordFactoryClose(ctx context.Context, store interface {
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-}, t Task) (first bool, err error) {
-	id, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: t.IssueNumber})
-	return id > 0, err
+// closeIssueAsFactory closes t's issue as the bot, the one way factoryd
+// closes a card's issue: it records the close as its own with comment
+// (IntakeFactoryClosed), posts comment unless it is "", closes the issue
+// and confirms the record. A step that fails returns, its record left
+// unconfirmed for the next call or the heal; a call that finds the record
+// posts comment only where the issue lacks it (CommentOnce).
+func closeIssueAsFactory(ctx context.Context, store interface {
+	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
+	ConfirmFactoryClose(context.Context, string, int64) error
+}, forgejo *Forgejo, t Task, comment string) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	id, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: t.IssueNumber, Body: comment})
+	if err != nil {
+		return err
+	}
+	switch {
+	case comment == "":
+	case id > 0:
+		_, err = forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
+	default:
+		err = forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, comment)
+	}
+	if err != nil {
+		return err
+	}
+	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+		return err
+	}
+	return store.ConfirmFactoryClose(ctx, t.ID, t.IssueNumber)
 }
 
 // maxEscalationText bounds the question, the reason and an information

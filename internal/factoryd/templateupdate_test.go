@@ -711,6 +711,30 @@ func TestTemplateUpdateCloseClosesCard(t *testing.T) {
 	}
 }
 
+// The close of a template update's card is factoryd's recorded close,
+// without a comment of its own, and confirmed: the bot's close of the
+// issue ends the card (issueClosed).
+func TestTemplateUpdateCloseRecordsItsIntent(t *testing.T) {
+	_, reg, store, tasks, _ := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	p := store.m["demo-app"]
+	if _, err := reg.openTemplateUpdate(ctx, p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.closeTemplateUpdate(ctx, reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken), p.Repo(), 1, "main's files equal the template's"); err != nil {
+		t.Fatal(err)
+	}
+	var card Task
+	for _, row := range tasks.tasks {
+		card = row
+	}
+	i := slices.IndexFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed })
+	if i < 0 || tasks.intakeEvents[i].TaskID != card.ID || tasks.intakeEvents[i].CommentID != 1 || tasks.intakeEvents[i].Body != "" ||
+		!tasks.confirmedCloses[[2]any{card.ID, int64(1)}] {
+		t.Fatalf("intake events %+v, confirmed %v; want card %s's close of #1 recorded without a comment and confirmed", tasks.intakeEvents, tasks.confirmedCloses, card.ID)
+	}
+}
+
 // the rendered files of templateRig's template
 const (
 	renderedCI    = "image: git.aisoftwarefactory.world/demo-app/demo-app\nsmoke: demo-app-smoke\n"

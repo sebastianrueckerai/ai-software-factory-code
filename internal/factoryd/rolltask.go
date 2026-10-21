@@ -339,6 +339,7 @@ type RollerStore interface {
 	// the backstop of the cheap merge turn (mainfix.go)
 	Task(ctx context.Context, id string) (Task, bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// a revert on a project without agents is a human card (FileFactoryPRTask)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	SetTaskPR(ctx context.Context, id string, number int64) error
@@ -608,15 +609,9 @@ func (r *Roller) consumeRetry(ctx context.Context) error {
 			return err
 		}
 	}
-	msg := "factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue."
-	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
-		return err
-	}
-	if _, err := recordFactoryClose(ctx, r.Store, t); err != nil {
-		return err
-	}
 	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again", len(reqs))
-	return r.Forgejo.CloseIssue(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber)
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t,
+		"factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue.")
 }
 
 // judge decides one run of main whose image jobs are green: a skip, a roll

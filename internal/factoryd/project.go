@@ -208,6 +208,7 @@ type FactoryPRCardStore interface {
 	// pull request reached the gates.
 	ReachedReview(ctx context.Context, id string) (bool, error)
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// a project without agents gets a human card (FileFactoryPRTask)
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 }

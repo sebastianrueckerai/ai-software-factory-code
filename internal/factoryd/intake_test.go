@@ -1186,8 +1186,8 @@ func TestIntakeResyncTrustsTheIssueCloser(t *testing.T) {
 		human := Task{ID: "t-human", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "human", IssueNumber: 30}
 		store.tasks["t1"], store.tasks["t-human"] = agent, human
 		// factoryd's own closes of both issues (m8)
-		recordFactoryClose(context.Background(), store, agent)
-		recordFactoryClose(context.Background(), store, human)
+		store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: agent.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: agent.IssueNumber})
+		store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: human.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: human.IssueNumber})
 		for _, task := range []Task{agent, human} {
 			if err := in.Resync(context.Background(), task); err != nil {
 				t.Fatalf("%s: Resync %s: %v", closer, task.ID, err)
@@ -1745,7 +1745,7 @@ func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 	for closer, want := range map[string]int{"mallory": 0, "reader": 0, "sebastian": 1, "factory-agent": 1} {
 		in, store, _ := newTestIntake(t)
 		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "agent", IssueNumber: 4}
-		recordFactoryClose(context.Background(), store, store.tasks["t1"])
+		store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
 		body, _ := json.Marshal(map[string]any{
 			"action":     "closed",
 			"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "mallory"}},
@@ -1783,7 +1783,7 @@ func TestClosingAFailedCardDeletesItsBranch(t *testing.T) {
 		in, store, requests := newTestIntake(t)
 		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: tc.status, Kind: "agent", IssueNumber: 4}
 		if tc.recorded {
-			recordFactoryClose(context.Background(), store, store.tasks["t1"])
+			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
 		}
 		body, _ := json.Marshal(map[string]any{
 			"action":     "closed",
