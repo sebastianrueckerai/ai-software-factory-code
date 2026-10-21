@@ -337,7 +337,10 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 // with the lane's label (backlog, plan or agent, or human for the human
 // lane) and priority when given, its body ending with the line "Size:
 // <size>" when given; the webhook or the heal pass makes it a task. It
-// answers the repository and the issue's number.
+// answers the repository and the issue's number. In a wake the chat bot
+// posts the issue, and the card_filed row that names the member is
+// written before the answer: an unrecorded filing closes its issue and
+// refuses.
 func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason string) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
@@ -433,7 +436,25 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return repo, 0, &forgejoRefusal{"file the issue", err}
 	}
 	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, lane, a.via)
-	c.record(ctx, a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
+	e := c.eventOf(a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
+	if !a.s.fixed {
+		c.event(context.WithoutCancel(ctx), e)
+		return repo, issue.Number, nil
+	}
+	// the chat bot posted the issue: the intake takes the card's author from
+	// this row (factoryd.Intake.Filings), so without it the issue is no card
+	if _, err := c.cfg.Events.Record(context.WithoutCancel(ctx), e); err != nil {
+		log.Printf("console: %s's filing of %s#%d not recorded, the issue is closed: %v", a.s.user, repo, issue.Number, err)
+		filed := factoryd.Task{Repository: repo.String(), IssueNumber: issue.Number}
+		if err := c.comment(ctx, a, filed, "factoryd could not record this filing, so it is no card: the project agent closed it.", nil); err != nil {
+			log.Printf("console: comment the unrecorded filing %s#%d: %v", repo, issue.Number, err)
+		}
+		if err := c.editIssue(ctx, a, filed, map[string]string{"state": "closed"}, nil); err != nil {
+			log.Printf("console: close the unrecorded filing %s#%d: %v", repo, issue.Number, err)
+		}
+		return repo, 0, refuse(http.StatusInternalServerError, fmt.Sprintf(
+			"The factory could not record the filing of %s#%d, so it is no card; the issue is closed. File the card again.", repo, issue.Number))
+	}
 	return repo, issue.Number, nil
 }
 
@@ -1876,7 +1897,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan moved to revision %d, the card ran against revision %d, so it cannot merge: deny the merge (deny_merge) and let the planner re-file the plan.", rev.Revision, t.PlanRevision))
 			}
 		}
-		agent := a.decider == "agent"
+		agent := a.approver() == factoryd.ChatUser
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
@@ -1905,9 +1926,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 
 // doDeny denies approval request id with the member's reason, a
 // writer of its project. A resource request is denied (the agent is told
-// the reason). A merge request gets a REQUEST_CHANGES review as the
-// member, which sends the task back to its agent (action
-// request_changes), or is rejected: the reason commented and the pull
+// the reason). A merge request gets a REQUEST_CHANGES review (review: the
+// member's, or the chat identity's when the agent decided), which sends
+// the task back to its agent (action request_changes), or is rejected:
+// the reason commented and the pull
 // request closed as the member, which fails the task (action reject). A
 // factory pull request's has no agent to send it back to: either action
 // closes the card and its pull request with the reason (roadmap 264).

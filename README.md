@@ -491,10 +491,11 @@ which may approve but neither merge nor push (405; a moved head or a
 conflict is 409). The intake ignores factory-gate's reviews as it does
 the bot's: they are factoryd's own, no member's decision. The trust gate
 never trusts factory-gate, a writer on the repository, so its comments
-steer no task (ruling R61). A refusal is commented and the wait goes on:
-the approval decided its request, so the comment names what fits, a merge
-by hand in Forgejo by a human on main's merge whitelist or the card's
-close. Merge
+steer no task (ruling R61). A refusal is commented with what fits and the
+wait goes on: a refused auto merge goes to a human, whom the next merge
+request asks (approve it in the console, or merge it in Forgejo); any
+other approval decided its request, so what fits is a merge by hand in
+Forgejo by a human on main's merge whitelist, or the card's close. Merge
 refuses by itself a pull request whose base is not `main`, and a gated
 head whose combined commit status is not green (`merge_red_head`, the
 card reads `the checks are red on <head>: the merge waits for a green
@@ -1493,9 +1494,16 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   and events stay the woken member's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no
-  card) and the cards of a plan it accepts. Its comments, and so its
-  answers to escalations, are `factory-chat`'s: the agent reads such an
-  answer as the project agent's, never a human's. A project without a chat
+  card) and the cards of a plan it accepts. A filing whose `card_filed`
+  row cannot be written is closed with a comment and refused, naming the
+  issue. Its comments, and so its answers to escalations, are
+  `factory-chat`'s: the agent reads such an answer as the project agent's,
+  never a human's. The intake judges a label move by its Forgejo actor, so
+  a wake moves as `factory-chat`, a writer; lanes only approvers may move
+  are not for the agent's own moves. A review the agent decides, in a
+  wake or in a member's turn, goes out as `factory-chat` too: an approval
+  posts none, a change request is `factory-chat`'s, which the intake
+  trusts and signals and which blocks no later merge. A project without a chat
   token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
   running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation

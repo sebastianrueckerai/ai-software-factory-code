@@ -317,27 +317,84 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 
 // A card a wake files is the woken member's: the issue goes out as the
 // chat bot, and the console's card_filed row, which the intake reads for
-// the card's author (factoryd.Intake.Filings), names the member.
+// the card's author (factoryd.Intake.Filings), names the member. When the
+// row cannot be written the issue would be no card: the console comments
+// why, closes it and refuses naming it.
 func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
-	r := newRig(t)
-	s, err := r.c.wakeSession(factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
-	if _, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.", "backlog", "", "", "", ""); err != nil || n != 41 {
-		t.Fatalf("file = #%d, %v", n, err)
-	}
-	if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues Bearer chat-token") {
-		t.Fatalf("calls %q: want the issue filed with the chat token", r.fg.calls)
-	}
-	var filed []factoryd.Event
-	for _, e := range r.events.all() {
-		if e.Kind == factoryd.EventCardFiled {
-			filed = append(filed, e)
+	file := func(t *testing.T, r *rig) (int64, error) {
+		t.Helper()
+		s, err := r.c.wakeSession(factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, "sebastian")
+		if err != nil {
+			t.Fatal(err)
 		}
+		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
+		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.", "backlog", "", "", "", "")
+		return n, err
 	}
-	if len(filed) != 1 || filed[0].Actor != "sebastian" || filed[0].IssueNumber != 41 || filed[0].Repository != "sf/code" {
-		t.Fatalf("card_filed rows = %+v, want one of sebastian for sf/code#41", filed)
+	t.Run("recorded", func(t *testing.T) {
+		r := newRig(t)
+		if n, err := file(t, r); err != nil || n != 41 {
+			t.Fatalf("file = #%d, %v", n, err)
+		}
+		if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues Bearer chat-token") {
+			t.Fatalf("calls %q: want the issue filed with the chat token", r.fg.calls)
+		}
+		var filed []factoryd.Event
+		for _, e := range r.events.all() {
+			if e.Kind == factoryd.EventCardFiled {
+				filed = append(filed, e)
+			}
+		}
+		if len(filed) != 1 || filed[0].Actor != "sebastian" || filed[0].IssueNumber != 41 || filed[0].Repository != "sf/code" {
+			t.Fatalf("card_filed rows = %+v, want one of sebastian for sf/code#41", filed)
+		}
+		if len(r.fg.patched) != 0 {
+			t.Fatalf("patched %q: want the recorded filing left open", r.fg.patched)
+		}
+	})
+	t.Run("not recorded", func(t *testing.T) {
+		r := newRig(t)
+		r.events.fail = errors.New("the database is down")
+		n, err := file(t, r)
+		var no *refusal
+		if !errors.As(err, &no) || no.msg != "The factory could not record the filing of sf/code#41, so it is no card; the issue is closed. File the card again." || n != 0 {
+			t.Fatalf("file = #%d, %v", n, err)
+		}
+		if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/41/comments"); !slices.Equal(got, []string{"factoryd could not record this filing, so it is no card: the project agent closed it."}) {
+			t.Fatalf("comments on #41 = %q", got)
+		}
+		if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/41 {"state":"closed"}`}) ||
+			!slices.Contains(r.fg.calls, "PATCH /api/v1/repos/sf/code/issues/41 Bearer chat-token") {
+			t.Fatalf("patched %q, calls %q: want #41 closed as the chat bot", r.fg.patched, r.fg.calls)
+		}
+	})
+}
+
+// A change request the agent decided goes out under the chat identity,
+// whoever is online: in a member's turn at full auto the review carries
+// the chat token and the request is decided by factory-chat. The member's
+// own change request stays their review.
+func TestTheAgentsChangeRequestIsTheChatBots(t *testing.T) {
+	for _, tc := range []struct {
+		decider, bearer, by string
+	}{{"agent", "Bearer chat-token", "factory-chat"}, {"member", "Bearer access-1", "sebastian"}} {
+		t.Run(tc.decider, func(t *testing.T) {
+			r := newRig(t)
+			_, s := r.loggedIn(t)
+			r.fg.calls = nil
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: tc.decider, level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}
+			if _, err := r.c.doDeny(t.Context(), a, 4, "request_changes", "Split the handler."); err != nil {
+				t.Fatalf("deny: %v", err)
+			}
+			if !slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews " + tc.bearer}) {
+				t.Fatalf("calls %q: want the change request with %s", r.fg.calls, tc.bearer)
+			}
+			if rv := r.fg.reviews[0]; rv["event"] != "REQUEST_CHANGES" || rv["body"] != "Split the handler." || rv["commit_id"] != "abc123" {
+				t.Fatalf("review = %v", rv)
+			}
+			if q := r.approvals.get(4); q.Status != "denied" || q.DecidedBy != tc.by {
+				t.Fatalf("request 4 %s by %s, want denied by %s", q.Status, q.DecidedBy, tc.by)
+			}
+		})
 	}
 }

@@ -926,7 +926,9 @@ func TestPlanCommentMarker(t *testing.T) {
 // signalRecorder records signals with their payload; err fails them.
 type signalRecorder struct {
 	signals []string
-	err     error
+	// sent are the signals as sent, beside their lines
+	sent []TaskSignal
+	err  error
 }
 
 func (w *signalRecorder) Start(context.Context, string) error                    { return nil }
@@ -936,12 +938,14 @@ func (w *signalRecorder) Signal(_ context.Context, taskID, name string, sig Task
 		return w.err
 	}
 	w.signals = append(w.signals, fmt.Sprintf("%s %s %s %d %s %s", taskID, name, sig.Author, sig.Revision, sig.SHA256, sig.Body))
+	w.sent = append(w.sent, sig)
 	return nil
 }
 
 // The project agent's acceptance is the factory's decision on the member's
 // behalf: the plan's request is decided by factory-chat, and the signal
-// names the member, whose cards CreateChildren files.
+// names the member, whose cards CreateChildren files with the author the
+// signal carries, as the plan's workflow passes it.
 func TestTheAgentsAcceptanceFilesTheMembersCards(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _ := newPlanRunner(t, testPlan())
@@ -957,8 +961,8 @@ func TestTheAgentsAcceptanceFilesTheMembersCards(t *testing.T) {
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != ChatUser {
 		t.Fatalf("approval = %+v, want it decided by factory-chat", a)
 	}
-	res := createChildren(t, r)
-	if len(res.Issues) != 4 {
+	val, err := execActivity(t, r, ActivityCreateChildren, "t-plan", 1, wf.sent[0].Author, int64(7))
+	if res := getInto[ChildrenResult](t, val, err); len(res.Issues) != 4 {
 		t.Fatalf("result = %+v", res)
 	}
 	for key, c := range cardsByKey(t, store) {

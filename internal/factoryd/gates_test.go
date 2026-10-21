@@ -1071,8 +1071,10 @@ func TestAutoMergeRefusedWithoutTheGatesApproval(t *testing.T) {
 			if res.Merged || len(fj.merges) != 0 || len(fj.reviews) != tc.reviews || !strings.Contains(res.Refusal, tc.refusal) {
 				t.Fatalf("result %+v, merges %d, reviews %d; want refused naming %q before any merge", res, len(fj.merges), len(fj.reviews), tc.refusal)
 			}
-			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.refusal) || !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
-				t.Fatalf("comments %q: want the refusal told on the pull request and the timeline", fj.comments)
+			want := "factoryd: the merge of c1 after merge rule auto's approval signal was refused: " + res.Refusal + "\n\n" +
+				"The card goes to a human: an approver approves it in the console, or merges it here."
+			if !slices.Equal(fj.comments, []string{want}) || !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
+				t.Fatalf("comments %q: want %q told on the pull request and the refusal on the timeline", fj.comments, want)
 			}
 		})
 	}

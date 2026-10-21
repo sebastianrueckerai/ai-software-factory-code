@@ -1480,7 +1480,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
 			": its project file names none, or its registration has not run"), nil
 	}
-	// the merge gate's decision and the project agent's approval in a wake
+	// the merge gate's decision and an approval the project agent decided
 	// are the factory's own: factory-gate's review carries either, and only
 	// on the merge rule auto, which now decides, not the rule they read
 	if approver == AutoApprover || approver == ChatUser {
@@ -1582,15 +1582,18 @@ func (r *Runner) writeMergeCommit(ctx context.Context, taskID, commit string) {
 }
 
 // refuseMerge tells the pull request and the timeline why the merge after
-// approver's approval was refused and puts the card back in the approval
-// gate. The approval decided its request, so the console has none left to
-// approve: what fits is a merge by hand in Forgejo by a human on main's
-// merge whitelist, or the card's close.
+// approver's approval was refused, with what fits, and puts the card back
+// in the approval gate. A refused auto merge goes to a human, whose merge
+// request the workflow opens next. Any other approval decided its request,
+// so the console has none left to approve: what fits is a merge by hand
+// in Forgejo by a human on main's merge whitelist, or the card's close.
 func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
 	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
-	r.comment(ctx, t, repo, pr, fmt.Sprintf(
-		"factoryd: the merge of %s after %s's approval signal was refused: %s\n\nThe task keeps waiting: its approval request is decided, so the console has none to approve. A human on main's merge whitelist merges this head here in Forgejo, or closes the card.",
-		commit, approver, res.Refusal))
+	next := "The task keeps waiting: its approval request is decided, so the console has none to approve. A human on main's merge whitelist merges this head here in Forgejo, or closes the card."
+	if approver == AutoApprover {
+		next = "The card goes to a human: an approver approves it in the console, or merges it here."
+	}
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval signal was refused: %s\n\n%s", commit, approver, res.Refusal, next))
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
