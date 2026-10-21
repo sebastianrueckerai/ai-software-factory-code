@@ -13,10 +13,9 @@ import (
 
 // StartWake runs one turn the factory's Waker starts (the concept's
 // wake): the member's turn without their request, on conversation, its
-// user row carrying birth as the birth kind. The turn queues behind one
-// already running on the thread, and StartWake ends when the turn does.
-// Without a live login of the member the turn still runs; its
-// token-needing tools refuse.
+// user row carrying birth as the birth kind, its Forgejo calls the project
+// agent's own (wakeSession). The turn queues behind one already running on
+// the thread, and StartWake ends when the turn does.
 func (c *Console) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
 	if c.cfg.Chat == nil || c.cfg.Operator == nil {
 		return errors.New("the console has no chat")
@@ -27,6 +26,10 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	}
 	if !ok {
 		return fmt.Errorf("there is no project %s", project)
+	}
+	s, err := c.wakeSession(p, login)
+	if err != nil {
+		return err
 	}
 	th, ok, err := c.cfg.Chat.Conversation(ctx, p.Repository, login, conversation)
 	if err != nil {
@@ -40,7 +43,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	}
 	v, _ := c.inForce(ctx)
 	t := &turn{c: c, p: p, conv: conversation, owner: login, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
-		a: actor{s: c.wakeSession(ctx, login), repository: p.Repository, via: factoryd.ViaChat, wake: true, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
+		a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat, wake: true, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
 	if pc, ok := v.Projects[p.Name]; ok {
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
@@ -143,21 +146,20 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 	return answerInChatNote, nil
 }
 
-// wakeSession is the member's newest login the wake runs on, a bare
-// session of just their name when none reads back or opens: the turn
-// runs, its token-needing tools refuse.
-func (c *Console) wakeSession(ctx context.Context, login string) *session {
-	rows, err := c.cfg.Sessions.ConsoleSessionsForUser(ctx, login)
-	if err != nil {
-		log.Printf("console: the sessions of %s: %v", login, err)
-		return &session{user: login}
+// wakeSession is the session a wake on p runs on: the woken member's
+// name, so the turn's rows and events stay theirs, on p's chat token, so
+// every Forgejo call goes out as factoryd.ChatUser whether or not the
+// member is logged in. Without a chat token the wake is refused.
+func (c *Console) wakeSession(p factoryd.Project, login string) (*session, error) {
+	var token string
+	if c.cfg.ChatToken != nil {
+		token = c.cfg.ChatToken(p)
 	}
-	for _, row := range rows {
-		if s, err := c.openSession(row); err == nil {
-			return s
-		}
+	if token == "" {
+		return nil, fmt.Errorf("project %s has no chat token, which a wake acts as %s with: a seed project names it in tokens.chat, "+
+			"a factory project's registration mints it", p.Name, factoryd.ChatUser)
 	}
-	return &session{user: login}
+	return &session{user: login, access: token, fixed: true}, nil
 }
 
 // wakeRequest is the turn's request without a member's browser behind it

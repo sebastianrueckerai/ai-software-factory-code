@@ -381,6 +381,9 @@ type SeedTokens struct {
 	// Gate approves, as the merge gate, a pull request the gate merges on
 	// the merge rule auto; absent: such a merge is refused.
 	Gate string `yaml:"gate,omitempty" json:"gate,omitempty"`
+	// Chat is the project agent's own identity factory-chat in every turn
+	// no member started; absent: such a turn is refused.
+	Chat string `yaml:"chat,omitempty" json:"chat,omitempty"`
 }
 
 // The seeded secrets a seed project may name: Kubernetes secret names, no
@@ -390,10 +393,11 @@ const (
 	SecretMerge       = "forgejo-merge"        // #nosec G101 -- a secret's name
 	SecretConfig      = "forgejo-config"       // #nosec G101 -- a secret's name
 	SecretGate        = "forgejo-gate"         // #nosec G101 -- a secret's name
+	SecretChat        = "forgejo-chat"         // #nosec G101 -- a secret's name
 )
 
 // SeedSecrets are the values of tokens' read, actions and merge; gate
-// takes SecretGate alone.
+// takes SecretGate alone, chat SecretChat alone.
 var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig}
 
 // Environment is one Flux Kustomization: path of the repository applied
@@ -616,6 +620,9 @@ func (p ProjectConfig) Validate(name string) error {
 			}
 			if g := p.Tokens.Gate; g != "" && g != SecretGate {
 				bad("tokens.gate %q: want %s", g, SecretGate)
+			}
+			if c := p.Tokens.Chat; c != "" && c != SecretChat {
+				bad("tokens.chat %q: want %s", c, SecretChat)
 			}
 		}
 	}

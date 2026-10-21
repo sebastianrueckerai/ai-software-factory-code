@@ -246,14 +246,14 @@ func (run *removalRun) cluster(ctx context.Context, dry bool) {
 
 // forgejo is step 4, with the site admin's login: the packages, the
 // repository, both forks, the organisation, the CI user, and the
-// project's tokens on factory-projects, factory-merge and factory-gate.
-// dry names each target without a call.
+// project's tokens on factory-projects, factory-merge, factory-gate and
+// factory-chat. dry names each target without a call.
 func (run *removalRun) forgejo(ctx context.Context, a AdminAuth, repo Repo, dry bool) {
 	rem, name := run.rem, run.name
 	f := rem.Forgejo
 	ci := "ci-" + name
 	forks := []Repo{{Owner: f.BotUser, Name: name}, {Owner: rem.ProjectsUser, Name: name}}
-	tokens := []struct{ user, token string }{{rem.ProjectsUser, "git-" + name}, {MergeUser, "project-" + name}, {GateUser, "project-" + name}}
+	tokens := []struct{ user, token string }{{rem.ProjectsUser, "git-" + name}, {MergeUser, "project-" + name}, {GateUser, "project-" + name}, {ChatUser, "project-" + name}}
 	if dry {
 		run.line("packages", Change("would delete "+name+"'s packages"))
 		run.line("repository "+repo.String(), Change("would delete"))

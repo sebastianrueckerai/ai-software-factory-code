@@ -13,11 +13,11 @@ import (
 // TestRegisterOnForgejo runs Register against a real Forgejo 15 (a
 // disposable one: FORGEJO_TEST_URL, its site admin FORGEJO_TEST_ADMIN and
 // FORGEJO_TEST_ADMIN_PASSWORD, users factory-projects, factory-merge,
-// factory-gate and factory-agent (password FORGEJO_TEST_BOT_PASSWORD), and
-// factory-projects' write:repository token FORGEJO_TEST_PROJECTS_TOKEN),
-// with a fake cluster: every Forgejo call registration makes, on the real
-// API, before and after main's first commit, then once more changing
-// nothing.
+// factory-gate, factory-chat and factory-agent (password
+// FORGEJO_TEST_BOT_PASSWORD), and factory-projects' write:repository
+// token FORGEJO_TEST_PROJECTS_TOKEN), with a fake cluster: every Forgejo
+// call registration makes, on the real API, before and after main's first
+// commit, then once more changing nothing.
 func TestRegisterOnForgejo(t *testing.T) {
 	base := os.Getenv("FORGEJO_TEST_URL")
 	if base == "" {

@@ -3,6 +3,8 @@ package console
 import (
 	"errors"
 	"net/url"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +14,7 @@ import (
 
 // A wake turn runs without a request: the Waker's call alone writes the
 // user row with its birth kind and answers as the model. The member never
-// logged in here, so the turn runs on a bare session.
+// logged in here; the turn needs no login of theirs.
 func TestStartWakeRunsATurnWithoutHTTP(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	g.replies = [][]string{{say("I looked.")}}
@@ -121,5 +123,73 @@ func TestStartWakeRefusalNamesAVenueThatIsGone(t *testing.T) {
 		if !errors.Is(err, factoryd.ErrWakeVenueGone) {
 			t.Fatalf("%s venue: StartWake returned %v, want ErrWakeVenueGone", name, err)
 		}
+	}
+}
+
+// A wake is the project agent's own turn: every Forgejo call of it goes
+// out as factory-chat with the project's chat token. The woken member's
+// login, whose tokens here expire within the refresh margin, is neither
+// read nor refreshed.
+func TestAWakeActsAsTheChatBot(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.fg.expiresIn = 30
+	r.loggedIn(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.fg.mu.Lock()
+	calls, grants := len(r.fg.calls), len(r.fg.grants)
+	r.fg.mu.Unlock()
+	r.sessions.mu.Lock()
+	reads, updates := r.sessions.reads, r.sessions.tokens
+	r.sessions.mu.Unlock()
+	g.replies = [][]string{{call(1, "comment", `{"task_id":"t-m","text":"Looks right."}`)}, {say("Commented on #5.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Wake: 1 ask waits."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	r.fg.mu.Lock()
+	wake, granted := slices.Clone(r.fg.calls[calls:]), len(r.fg.grants)-grants
+	r.fg.mu.Unlock()
+	if !slices.Contains(wake, "POST /api/v1/repos/sf/code/issues/5/comments Bearer chat-token") {
+		t.Fatalf("the wake's Forgejo calls = %q, want the comment posted with the chat token", wake)
+	}
+	for _, c := range wake {
+		if !strings.HasSuffix(c, " Bearer chat-token") {
+			t.Errorf("the wake called %q, not as the chat bot", c)
+		}
+	}
+	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/5/comments"); !slices.Equal(got, []string{"Looks right."}) {
+		t.Errorf("comments on #5 = %q", got)
+	}
+	r.sessions.mu.Lock()
+	defer r.sessions.mu.Unlock()
+	if granted != 0 || r.sessions.reads != reads || r.sessions.tokens != updates {
+		t.Errorf("the wake made %d token grants, %d session reads and %d token updates; want none", granted, r.sessions.reads-reads, r.sessions.tokens-updates)
+	}
+}
+
+// A project without a chat token has no identity a wake can act as: the
+// wake is refused before the model is called or anything is stored, and
+// the refusal names tokens.chat.
+func TestAWakeOnAProjectWithoutAChatTokenIsRefused(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.chatToken = ""
+	r.loggedIn(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{call(1, "comment", `{"task_id":"t-m","text":"Looks right."}`)}, {say("Commented on #5.")}}
+	err = r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Wake: 1 ask waits.")
+	if err == nil || !strings.Contains(err.Error(), "ai-software-factory-code") || !strings.Contains(err.Error(), "tokens.chat") {
+		t.Fatalf("StartWake = %v, want a refusal naming the project and tokens.chat", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 || len(g.calls()) != 0 || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/5/comments")) != 0 {
+		t.Fatalf("the refused wake stored %+v, made %d model calls and commented", rows, len(g.calls()))
 	}
 }

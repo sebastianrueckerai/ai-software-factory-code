@@ -1705,9 +1705,6 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 		return "", refuse(http.StatusNotFound, "There is no project "+a.repository+".")
 	}
 	in := toolInput{TaskID: id, EUR: eur, Text: text}
-	if _, err := c.accessToken(ctx, a.s); err != nil {
-		return "", refuse(http.StatusConflict, "the member's login has lapsed: the answer cannot be posted; record your analysis with attach_analysis")
-	}
 	v, ok := c.inForce(ctx)
 	if !ok {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")

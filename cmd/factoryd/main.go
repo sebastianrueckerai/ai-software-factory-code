@@ -575,6 +575,7 @@ func main() {
 		ConfigDir:  configDir,
 		InfraRepo:  configRepo,
 		InfraToken: forgejo.Seeded[policy.SecretConfig],
+		ChatToken:  func(p factoryd.Project) string { return forgejo.Access(p).Chat },
 		DocsToken:  optionalSecret("FORGEJO_DOCS_TOKEN"),
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())

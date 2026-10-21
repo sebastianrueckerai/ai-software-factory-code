@@ -90,7 +90,7 @@ type seedCommit struct {
 }
 
 func newForgejoState() *forgejoState {
-	return &forgejoState{users: map[string]bool{"factory-projects": true, "factory-merge": true, "factory-gate": true, "factory-agent": true, "sebastian": true},
+	return &forgejoState{users: map[string]bool{"factory-projects": true, "factory-merge": true, "factory-gate": true, "factory-chat": true, "factory-agent": true, "sebastian": true},
 		collabs: map[string]string{}, protection: map[string]map[string]any{}, branches: map[string]string{}, secrets: map[string]string{}, tokens: map[int64][2]string{}, projectsAdmin: true,
 		files: map[string]bool{}}
 }
@@ -718,7 +718,7 @@ func (s *memProjects) SetProjectTokens(_ context.Context, name string, t Project
 	defer s.mu.Unlock()
 	p := s.m[name]
 	for _, f := range []struct{ from, to *string }{{&t.ReadTokenHash, &p.ReadTokenHash}, {&t.HookSecretHash, &p.HookSecretHash}, {&t.HostKeyHash, &p.HostKeyHash}, {&t.StagingHash, &p.StagingHash},
-		{&t.PullToken, &p.PullToken}, {&t.GitToken, &p.GitToken}, {&t.MergeToken, &p.MergeToken}, {&t.GateToken, &p.GateToken}} {
+		{&t.PullToken, &p.PullToken}, {&t.GitToken, &p.GitToken}, {&t.MergeToken, &p.MergeToken}, {&t.GateToken, &p.GateToken}, {&t.ChatToken, &p.ChatToken}} {
 		if *f.from != "" {
 			*f.to = *f.from
 		}
@@ -851,9 +851,10 @@ func TestRegisterIsIdempotent(t *testing.T) {
 	for _, want := range []string{
 		"row: created", "organisation demo-app: created", "repository demo-app/demo-app: created", "user ci-demo-app: created",
 		"team ci: created", "token pull of ci-demo-app: minted", "token git-demo-app of factory-projects: minted",
-		"token project-demo-app of factory-merge: minted", "token project-demo-app of factory-gate: minted", "token registry of ci-demo-app: minted",
+		"token project-demo-app of factory-merge: minted", "token project-demo-app of factory-gate: minted",
+		"token project-demo-app of factory-chat: minted", "token registry of ci-demo-app: minted",
 		"webhook: created", "collaborator factory-agent: created", "collaborator factory-merge: no change", "collaborator factory-gate: no change",
-		"collaborator sebastian: created",
+		"collaborator factory-chat: no change", "collaborator sebastian: created",
 		"protection main: created", "branch deploy: waiting: main has no commit yet", "protection deploy: waiting: main has no commit yet",
 		"fork factory-agent/demo-app: ready", "deploy key: created", "actions secret FACTORY_READ_TOKEN: created", "actions secret REGISTRY_USER: no change",
 		"actions secrets STAGING_URL, STAGING_SECRETS: created",
@@ -866,13 +867,14 @@ func TestRegisterIsIdempotent(t *testing.T) {
 		}
 	}
 	if p.PullToken != "ci-demo-app-pull" || p.GitToken != "factory-projects-git-demo-app" || p.MergeToken != "factory-merge-project-demo-app" ||
-		p.GateToken != "factory-gate-project-demo-app" {
-		t.Fatalf("tokens = %q %q %q %q", p.PullToken, p.GitToken, p.MergeToken, p.GateToken)
+		p.GateToken != "factory-gate-project-demo-app" || p.ChatToken != "factory-chat-project-demo-app" {
+		t.Fatalf("tokens = %q %q %q %q %q", p.PullToken, p.GitToken, p.MergeToken, p.GateToken, p.ChatToken)
 	}
 	want := []string{"ci-demo-app pull [read:package] <nil>",
 		"factory-projects git-demo-app [read:repository] [map[name:demo-app owner:demo-app]]",
 		"factory-merge project-demo-app [write:repository] [map[name:demo-app owner:demo-app]]",
 		"factory-gate project-demo-app [write:repository] [map[name:demo-app owner:demo-app]]",
+		"factory-chat project-demo-app [write:repository write:issue] [map[name:demo-app owner:demo-app]]",
 		"ci-demo-app registry [write:package] <nil>"}
 	if !reflect.DeepEqual(rig.fj.minted, want) {
 		t.Fatalf("minted %q", rig.fj.minted)
@@ -929,7 +931,8 @@ func TestRegistrationObjects(t *testing.T) {
 		switch {
 		case strings.Contains(w, "/admin/") || strings.Contains(w, "/tokens") || strings.Contains(w, "/teams") ||
 			strings.HasPrefix(w, "POST /api/v1/orgs/demo-app/repos") || w == "PUT /api/v1/repos/demo-app/demo-app/collaborators/factory-merge by basic sebastian" ||
-			w == "PUT /api/v1/repos/demo-app/demo-app/collaborators/factory-gate by basic sebastian":
+			w == "PUT /api/v1/repos/demo-app/demo-app/collaborators/factory-gate by basic sebastian" ||
+			w == "PUT /api/v1/repos/demo-app/demo-app/collaborators/factory-chat by basic sebastian":
 			if !strings.HasSuffix(w, "by basic sebastian") {
 				t.Errorf("%s: want the admin", w)
 			}
@@ -966,7 +969,8 @@ func TestRegistrationObjects(t *testing.T) {
 		len(hook["events"].([]any)) != len(ProjectHookEvents) {
 		t.Errorf("hook = %v", hook)
 	}
-	if fj.collabs["factory-agent"] != "write" || fj.collabs["factory-merge"] != "write" || fj.collabs["factory-gate"] != "write" || fj.collabs["sebastian"] != "write" {
+	if fj.collabs["factory-agent"] != "write" || fj.collabs["factory-merge"] != "write" || fj.collabs["factory-gate"] != "write" || fj.collabs["factory-chat"] != "write" ||
+		fj.collabs["sebastian"] != "write" {
 		t.Errorf("collaborators = %v", fj.collabs)
 	}
 	// auto: no required approval; pushes to main by factory-merge and the
@@ -1121,7 +1125,7 @@ func TestReconcileRegistersUnregisteredProject(t *testing.T) {
 	logs := rig.logs.String()
 	order := []string{"organisation demo-app: created", "repository demo-app/demo-app: created", "user ci-demo-app: created", "team ci: created",
 		"token pull of ci-demo-app: minted", "token git-demo-app of factory-projects: minted", "token project-demo-app of factory-merge: minted",
-		"token project-demo-app of factory-gate: minted", "seed: created 5eed from template ts-go", "demo-staging secret forgejo-registry: created", "flux gitrepository: created"}
+		"token project-demo-app of factory-gate: minted", "token project-demo-app of factory-chat: minted", "seed: created 5eed from template ts-go", "demo-staging secret forgejo-registry: created", "flux gitrepository: created"}
 	at := -1
 	for _, want := range order {
 		i := strings.Index(logs, "project demo-app: "+want)
@@ -1134,7 +1138,7 @@ func TestReconcileRegistersUnregisteredProject(t *testing.T) {
 	if row.PullToken != "ci-demo-app-pull" || row.GitToken != "factory-projects-git-demo-app" || row.MergeToken != "factory-merge-project-demo-app" {
 		t.Fatalf("row tokens %q %q %q", row.PullToken, row.GitToken, row.MergeToken)
 	}
-	if len(rig.fj.minted) != 5 || rig.kv.reads != 1 {
+	if len(rig.fj.minted) != 6 || rig.kv.reads != 1 {
 		t.Fatalf("minted %v, kv reads %d", rig.fj.minted, rig.kv.reads)
 	}
 }
@@ -1154,8 +1158,8 @@ func TestQueuedReconcileDoesNotMintAgain(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if len(rig.fj.minted) != 5 || len(rig.fj.tokens) != 5 || rig.kv.reads != 1 {
-		t.Fatalf("minted %v, %d tokens live, kv reads %d; want 5, 5, 1", rig.fj.minted, len(rig.fj.tokens), rig.kv.reads)
+	if len(rig.fj.minted) != 6 || len(rig.fj.tokens) != 6 || rig.kv.reads != 1 {
+		t.Fatalf("minted %v, %d tokens live, kv reads %d; want 6, 6, 1", rig.fj.minted, len(rig.fj.tokens), rig.kv.reads)
 	}
 }
 
@@ -1317,6 +1321,60 @@ func TestReconcileGivesARegisteredProjectTheGate(t *testing.T) {
 	}
 }
 
+// A project registered before the project agent had its own user gets it
+// on its next reconcile: the row lacks the chat token, so the admin makes
+// factory-chat a write collaborator and mints its token alone, write on
+// the repository and its issues; main's protection names it on no
+// whitelist. A second reconcile changes nothing.
+func TestReconcileGivesARegisteredProjectTheChatBot(t *testing.T) {
+	rig := newRegisterRig(t)
+	ctx := context.Background()
+	rig.fj.branches["main"] = "c0ffee"
+	p, err := rig.reg.Register(ctx, "demo-app", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := rig.store.m[p.Name]
+	before.ChatToken = ""
+	rig.store.m[p.Name] = before
+	delete(rig.fj.collabs, "factory-chat")
+	rig.fj.minted = nil
+	rig.logs.Reset()
+	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
+		t.Fatalf("%v\n%s", err, rig.logs)
+	}
+	for _, want := range []string{"token project-demo-app of factory-chat: minted", "collaborator factory-chat: no change", "protection main: no change"} {
+		if !strings.Contains(rig.logs.String(), "project demo-app: "+want) {
+			t.Errorf("log lacks %q:\n%s", want, rig.logs)
+		}
+	}
+	after := rig.store.m[p.Name]
+	if !slices.Equal(rig.fj.minted, []string{"factory-chat project-demo-app [write:repository write:issue] [map[name:demo-app owner:demo-app]]"}) ||
+		after.ChatToken != "factory-chat-project-demo-app" || after.GateToken != before.GateToken || after.MergeToken != before.MergeToken ||
+		after.GitToken != before.GitToken || after.PullToken != before.PullToken {
+		t.Fatalf("minted %q, row tokens %q %q %q %q %q: want the chat's alone", rig.fj.minted, after.PullToken, after.GitToken, after.MergeToken, after.GateToken, after.ChatToken)
+	}
+	main := rig.fj.protection["main"]
+	if rig.fj.collabs["factory-chat"] != "write" || !reflect.DeepEqual(main["approvals_whitelist_username"], []any{"sebastian", "factory-gate"}) ||
+		!reflect.DeepEqual(main["merge_whitelist_usernames"], []any{"sebastian", "factory-merge"}) ||
+		!reflect.DeepEqual(main["push_whitelist_usernames"], []any{"sebastian", "factory-merge"}) {
+		t.Fatalf("collaborators %v, protection main %v: want factory-chat a writer on no whitelist", rig.fj.collabs, main)
+	}
+	writes := len(rig.fj.writes)
+	rig.logs.Reset()
+	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(strings.TrimSpace(rig.logs.String()), "\n") {
+		if !strings.HasSuffix(line, ": no change") && !strings.HasSuffix(line, ": ready") {
+			t.Errorf("second reconcile: %s", line)
+		}
+	}
+	if len(rig.fj.writes) != writes {
+		t.Fatalf("second reconcile wrote %v", rig.fj.writes[writes:])
+	}
+}
+
 // approversTree is a configuration whose policy names approvers and whose
 // project files name none.
 func approversTree(approvers ...string) func() policy.Tree {
@@ -1368,12 +1426,12 @@ func TestReconcileRemovesOnlyAdminsItDoesNotKeep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rig.fj.collabs = map[string]string{"factory-agent": "admin", "factory-merge": "admin", "factory-gate": "admin", "bob": "write", "mallory": "admin", "dave": "write"}
+	rig.fj.collabs = map[string]string{"factory-agent": "admin", "factory-merge": "admin", "factory-gate": "admin", "factory-chat": "admin", "bob": "write", "mallory": "admin", "dave": "write"}
 	rig.logs.Reset()
 	if err := rig.reg.Reconcile(ctx, rig.store.m[p.Name]); err != nil {
 		t.Fatal(err)
 	}
-	if want := map[string]string{"factory-agent": "admin", "factory-merge": "admin", "factory-gate": "admin", "bob": "write", "dave": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
+	if want := map[string]string{"factory-agent": "admin", "factory-merge": "admin", "factory-gate": "admin", "factory-chat": "admin", "bob": "write", "dave": "write"}; !reflect.DeepEqual(rig.fj.collabs, want) {
 		t.Fatalf("collaborators = %v, want %v", rig.fj.collabs, want)
 	}
 	if !strings.Contains(rig.logs.String(), "project demo-app: collaborators: removed mallory\n") {
@@ -1691,12 +1749,16 @@ func TestRegisterRotates(t *testing.T) {
 	if _, err := rig.reg.Register(ctx, "demo-app", false); err != nil {
 		t.Fatal(err)
 	}
-	n := len(rig.fj.minted)
+	n, writes := len(rig.fj.minted), len(rig.fj.writes)
 	if _, err := rig.reg.Register(ctx, "demo-app", true); err != nil {
 		t.Fatal(err)
 	}
-	if len(rig.fj.minted)-n != 5 || len(rig.fj.tokens) != 5 {
+	if len(rig.fj.minted)-n != 6 || len(rig.fj.tokens) != 6 {
 		t.Fatalf("rotate minted %d, %d tokens live (old ones must be revoked)", len(rig.fj.minted)-n, len(rig.fj.tokens))
+	}
+	if !slices.Contains(rig.fj.minted[n:], "factory-chat project-demo-app [write:repository write:issue] [map[name:demo-app owner:demo-app]]") ||
+		!slices.Contains(rig.fj.writes[writes:], "PUT /api/v1/repos/demo-app/demo-app/collaborators/factory-chat by basic sebastian") {
+		t.Fatalf("rotate minted %q and wrote %q: want factory-chat's token minted again and its collaboration set again", rig.fj.minted[n:], rig.fj.writes[writes:])
 	}
 }
 

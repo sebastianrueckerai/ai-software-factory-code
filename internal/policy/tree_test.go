@@ -63,10 +63,10 @@ func TestParseTreeAccepts(t *testing.T) {
 		t.Fatalf("demo-app = %+v", demo)
 	}
 	if infra := tree.Projects["ai-software-factory-infra"]; infra.Objects != ObjectsSeed || infra.Agents != AgentsNone || infra.Quota != nil ||
-		*infra.Tokens != (SeedTokens{Read: SecretConfig}) {
+		*infra.Tokens != (SeedTokens{Read: SecretConfig, Chat: SecretChat}) {
 		t.Fatalf("infra = %+v", infra)
 	}
-	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: SecretGate}) || !code.Audit {
+	if code := tree.Projects["ai-software-factory-code"]; *code.Tokens != (SeedTokens{Read: SecretCIRegistrar, Actions: SecretCIRegistrar, Merge: SecretMerge, Gate: SecretGate, Chat: SecretChat}) || !code.Audit {
 		t.Fatalf("code = %+v", code)
 	}
 	if demo.Audit || tree.Document.FactoryModel([]string{ClassCoder}, PurposeAudit) != "big" || tree.Document.Bound("GateAudit") != 20*time.Minute {
@@ -133,7 +133,7 @@ func TestParseTreeRejects(t *testing.T) {
 		"nested project":              {func(f map[string][]byte) { f["projects/x/y.yaml"] = f["projects/ai-software-factory-infra.yaml"] }, `unknown file "projects/x/y.yaml"`},
 		"bad project name":            {func(f map[string][]byte) { f["projects/Infra_2.yaml"] = f["projects/ai-software-factory-infra.yaml"] }, "project Infra_2: the file name"},
 		"no policy":                   {func(f map[string][]byte) { delete(f, "policy.yaml") }, "policy.yaml is missing"},
-		"seed without tokens":         {edit("projects/ai-software-factory-infra.yaml", "tokens: {read: forgejo-config}\n", ""), "project ai-software-factory-infra: objects seed: tokens.read names the secret"},
+		"seed without tokens":         {edit("projects/ai-software-factory-infra.yaml", "tokens: {read: forgejo-config, chat: forgejo-chat}\n", ""), "project ai-software-factory-infra: objects seed: tokens.read names the secret"},
 		"seed coder without merge":    {edit("projects/ai-software-factory-code.yaml", ", merge: forgejo-merge", ""), "project ai-software-factory-code: objects seed with agents coder: tokens.actions and tokens.merge"},
 		"seed names the projects token": {edit("projects/ai-software-factory-infra.yaml", "read: forgejo-config", "read: forgejo-projects"),
 			`project ai-software-factory-infra: tokens.read "forgejo-projects": want one of [forgejo-ci-registrar forgejo-merge forgejo-config]`},
@@ -457,6 +457,9 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 	tokens := project.Properties["tokens"]
 	if got := tokens.Properties["gate"].Enum; !reflect.DeepEqual(got, []any{"forgejo-gate"}) {
 		t.Errorf("tokens.gate enum = %v, want the gate's secret alone", got)
+	}
+	if got := tokens.Properties["chat"].Enum; !reflect.DeepEqual(got, []any{"forgejo-chat"}) {
+		t.Errorf("tokens.chat enum = %v, want the chat's secret alone", got)
 	}
 	if got := tokens.Properties["merge"].Enum; !reflect.DeepEqual(got, []any{"forgejo-ci-registrar", "forgejo-merge", "forgejo-config"}) {
 		t.Errorf("tokens.merge enum = %v", got)

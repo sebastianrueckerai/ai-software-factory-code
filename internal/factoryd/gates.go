@@ -339,6 +339,12 @@ const MergeUser = "factory-merge"
 // steer a task (ruling R61).
 const GateUser = "factory-gate"
 
+// ChatUser is the project agent's own Forgejo user in every turn no member
+// started: a write collaborator on the project's repository, on none of
+// main's whitelists, so the trust gate hears it as a writer, it can
+// neither push to main nor merge, and no approval of its counts.
+const ChatUser = "factory-chat"
+
 // AutoApprover stands for the approver of a merge the project's merge rule
 // auto decided (ruling 149): no human approved it.
 const AutoApprover = "merge rule auto"

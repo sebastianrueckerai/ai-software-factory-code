@@ -3,9 +3,11 @@ package console
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -125,22 +127,50 @@ func TestFundPastTaskMaxRefuses(t *testing.T) {
 	}
 }
 
-// A wake with no live member session cannot post the answer: the fund
-// refuses before the budget or the pool moves.
-func TestFundAtAWakeWithoutALiveSessionRefusesAndChangesNothing(t *testing.T) {
+// A wake's raise needs no member's login: the agent raises within the
+// pool as factory-chat, one card_funded row records it under the woken
+// member's name with the agent as the decider, and the answer goes to the
+// card with the project's chat token.
+func TestFundAtAWakeRaisesAndAnswersAsTheChatBot(t *testing.T) {
 	r := fundRig(t)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	s := &session{user: "sebastian"}
-	tool, _ := r.c.chatTool("fund")
-	_, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
-		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-e", EUR: 1, Text: "go"})
-	var no *refusal
-	if !errors.As(err, &no) || !strings.Contains(no.msg, "login has lapsed") || !strings.Contains(no.msg, "attach_analysis") {
-		t.Fatalf("fund = %v, want the lapsed login refused", err)
+	var whole []string
+	r.c.cfg.AnswerWhole = func(_ context.Context, taskID string, comment int64, by string) error {
+		whole = append(whole, fmt.Sprintf("%s %d by %s", taskID, comment, by))
+		return nil
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || len(r.events.rows) != 0 {
-		t.Errorf("budget %v and %d rows after the refusal, want 2 and none", task.BudgetEUR, len(r.events.rows))
+	p := factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}
+	s, err := r.c.wakeSession(p, "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	tool, _ := r.c.chatTool("fund")
+	note, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
+		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent", level: policy.AutonomyAutonomous}, p: p},
+		toolInput{TaskID: "t-e", EUR: 1, Text: "go"})
+	if err != nil || note != "Raised #13's budget by 1.00 EUR to 3.00 and posted your note as the answer; the card resumes." {
+		t.Fatalf("fund = %q, %v", note, err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 3 {
+		t.Errorf("budget_eur = %v, want 3", task.BudgetEUR)
+	}
+	var funded []factoryd.Event
+	for _, e := range r.events.all() {
+		if e.Kind == factoryd.EventCardFunded {
+			funded = append(funded, e)
+		}
+	}
+	if len(funded) != 1 || funded[0].Actor != "sebastian" || funded[0].Detail["decider"] != "agent" || funded[0].Detail["amount_eur"] != 1.0 {
+		t.Errorf("card_funded rows = %+v, want one of sebastian's, decided by the agent, of 1 EUR", funded)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if !slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/issues/13/comments Bearer chat-token"}) ||
+		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "go" {
+		t.Errorf("Forgejo calls %q, comments %q: want the note posted on #13 with the chat token", r.fg.calls, r.fg.comments)
+	}
+	if !slices.Equal(whole, []string{"t-e 1 by sebastian"}) {
+		t.Errorf("AnswerWhole = %q, want the answer signalled by the woken member", whole)
 	}
 }
 

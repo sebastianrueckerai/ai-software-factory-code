@@ -243,6 +243,10 @@ type Config struct {
 	// (factoryd's forgejo-config token).
 	InfraRepo  factoryd.Repo
 	InfraToken string
+	// ChatToken is p's chat token (factoryd.ChatUser's, Forgejo.Access's
+	// Chat): every Forgejo call of a wake goes out with it; "" or nil
+	// refuses the wake.
+	ChatToken func(p factoryd.Project) string
 	// DocsToken is the docs writer's Forgejo token, which write_doc
 	// commits documents with (FORGEJO_DOCS_TOKEN); empty: no chat writes
 	// documents.
@@ -381,6 +385,9 @@ type session struct {
 	access  string
 	refresh string
 	expiry  time.Time
+	// fixed: access is a bot's token, the project's chat token of a wake,
+	// never refreshed, stored or ended.
+	fixed bool
 	// seen is when last_seen was moved last; it moves at most once a
 	// minute.
 	seen time.Time

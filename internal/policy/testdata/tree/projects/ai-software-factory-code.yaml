@@ -6,7 +6,7 @@ agents: coder
 process: maintenance
 audit: true
 namespaces: [factory]
-tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge, gate: forgejo-gate}
+tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge, gate: forgejo-gate, chat: forgejo-chat}
 routines:
   - name: weekly-bump
     title: Weekly bump of the pinned outside inputs

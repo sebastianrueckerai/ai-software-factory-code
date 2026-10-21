@@ -542,6 +542,10 @@ spec:
         # approval before a merge on the merge rule auto (ruling R59)
         - name: FORGEJO_GATE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-gate, key: token}}
+        # factory-chat: write collaborator on no whitelist; the project
+        # agent's own identity in every turn no member started (the wake)
+        - name: FORGEJO_CHAT_TOKEN
+          valueFrom: {secretKeyRef: {name: forgejo-chat, key: token}}
         # factory-projects: owns every project organisation (ruling 164)
         # and keeps its repository's hooks, collaborators, protection,
         # deploy key, Actions secrets and runners; write:repository only

@@ -200,9 +200,6 @@ type Sessions interface {
 	// ConsoleSessionByHash reads the row of the hash; false when there is
 	// none or it expired, an expired row deleted.
 	ConsoleSessionByHash(ctx context.Context, hash string) (factoryd.ConsoleSession, bool, error)
-	// ConsoleSessionsForUser reads the login's live rows newest first:
-	// the wake turn's source of the member's tokens.
-	ConsoleSessionsForUser(ctx context.Context, login string) ([]factoryd.ConsoleSession, error)
 	// DeleteConsoleSession removes the row of the hash (a logout).
 	DeleteConsoleSession(ctx context.Context, hash string) error
 	// TouchConsoleSession moves the row's last_seen to the store's now

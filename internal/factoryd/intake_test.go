@@ -706,6 +706,27 @@ func TestIntakeNeverTrustsTheGateUser(t *testing.T) {
 	}
 }
 
+// factory-chat, the project agent's identity in a wake, is a writer on no
+// whitelist: the trust gate hears its comment as a member's, so the
+// agent's answer to a card waiting on a human resumes it.
+func TestIntakeTrustsTheChatBotAsAWriter(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-w"] = Task{ID: "t-w", Repository: "sf/ai-software-factory-code", Status: "waiting-human", Kind: "agent", IssueNumber: 22}
+	body, _ := json.Marshal(map[string]any{
+		"action":     "created",
+		"issue":      map[string]any{"number": 22},
+		"comment":    map[string]any{"id": 65, "user": map[string]string{"login": ChatUser}, "body": "Use the replica; the budget is raised."},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+	})
+	if rr := postWebhook(in, "issue_comment", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	want := []string{"t-w human_comment factory-chat #0 c65: Use the replica; the budget is raised."}
+	if ev := store.intakeEvents; len(ev) != 1 || !ev[0].Trusted || !slices.Equal(workflowsOf(in).signals, want) {
+		t.Fatalf("events %+v, signals %q: want factory-chat's comment trusted and signalled as %q", ev, workflowsOf(in).signals, want)
+	}
+}
+
 func TestIntakeReviewOnUnknownTaskIgnored(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	body := reviewBody("factory/nope", "sebastian", "pull_request_review_rejected", "changes needed")
@@ -981,8 +1002,8 @@ func isWriterRead(path string) bool {
 }
 
 // serveWriters answers RepoWriters' reads for a code repository whose
-// Owners team holds sebastian and whose bot and merge gate user are write
-// collaborators, each read on its token.
+// Owners team holds sebastian and whose bot, merge gate user and chat user
+// are write collaborators, each read on its token.
 func serveWriters(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	want := "token registrar-tok"
 	if strings.HasPrefix(r.URL.Path, "/api/v1/orgs/") || strings.HasPrefix(r.URL.Path, "/api/v1/teams/") {
@@ -997,9 +1018,9 @@ func serveWriters(t *testing.T, w http.ResponseWriter, r *http.Request) {
 	case r.URL.Path == "/api/v1/teams/1/members":
 		servePage(w, r, 50, `{"login":"sebastian"}`)
 	case strings.HasSuffix(r.URL.Path, "/collaborators"):
-		servePage(w, r, 50, `{"login":"factory-agent"}`, `{"login":"factory-gate"}`)
+		servePage(w, r, 50, `{"login":"factory-agent"}`, `{"login":"factory-gate"}`, `{"login":"factory-chat"}`)
 	case strings.HasSuffix(r.URL.Path, "/assignees"):
-		io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"},{"login":"factory-gate"}]`)
+		io.WriteString(w, `[{"login":"sebastian"},{"login":"factory-agent"},{"login":"factory-gate"},{"login":"factory-chat"}]`)
 	default:
 		http.NotFound(w, r)
 	}
