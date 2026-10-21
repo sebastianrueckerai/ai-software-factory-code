@@ -145,6 +145,7 @@ type AlertBook interface {
 	Store
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
+	CloseClearedCard(ctx context.Context, alertID int64, taskID string) error
 }
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
@@ -564,13 +565,7 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
-	if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "closed"); err != nil {
+	if err := in.Store.CloseClearedCard(ctx, row.ID, t.ID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}

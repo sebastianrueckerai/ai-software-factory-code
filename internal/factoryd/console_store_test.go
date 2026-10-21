@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
@@ -700,5 +701,88 @@ func TestPGStoreJudgeEscalations(t *testing.T) {
 	want := []string{`t1 day_cap 702 "real" by "factoryd"`, `t1 supervisor 650 "" by ""`, `t1 supervisor 701 "noise" by "factoryd"`, `t2 supervisor 701 "" by ""`}
 	if !slices.Equal(got, want) {
 		t.Fatalf("alerts = %q, want %q", got, want)
+	}
+}
+
+// CloseClearedCard writes the alert's verdict and the card's end together
+// or not at all.
+func TestCloseClearedCardIsOneStep(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, alerts, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	state := func(id string, alert int64) (status string, verdict string) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx, `SELECT t.status, coalesce(a.verdict, '') FROM tasks t, alerts a WHERE t.id = $1 AND a.id = $2`, id, alert).Scan(&status, &verdict); err != nil {
+			t.Fatal(err)
+		}
+		return status, verdict
+	}
+	issue := int64(0)
+	add := func(id, status string) int64 {
+		t.Helper()
+		issue++
+		if err := s.CreateTask(ctx, Task{ID: id, Kind: "human", Status: status, Repository: "sf/r", IssueNumber: issue}); err != nil {
+			t.Fatal(err)
+		}
+		a, err := s.InsertAlert(ctx, Alert{Kind: AlertSigNoz, Source: "signoz", Fingerprint: id, TaskID: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+
+	finished := add("t-done", "done")
+	if err := s.CloseClearedCard(ctx, finished, "t-done"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a finished card: err = %v, want ErrNotFound", err)
+	}
+	if status, verdict := state("t-done", finished); status != "done" || verdict != "" {
+		t.Fatalf("a finished card: task %s, verdict %q; want done and no verdict", status, verdict)
+	}
+
+	judged := add("t-judged", "waiting-human")
+	if err := s.ResolveAlert(ctx, judged, AlertSigNoz, VerdictReal, "sebastian", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CloseClearedCard(ctx, judged, "t-judged"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a judged alert: err = %v, want ErrNotFound", err)
+	}
+	if status, verdict := state("t-judged", judged); status != "waiting-human" || verdict != VerdictReal {
+		t.Fatalf("a judged alert: task %s, verdict %q; want waiting-human and real", status, verdict)
+	}
+
+	fresh := add("t-fresh", "waiting-human")
+	if err := s.CloseClearedCard(ctx, fresh, "t-fresh"); err != nil {
+		t.Fatal(err)
+	}
+	if status, verdict := state("t-fresh", fresh); status != "closed" || verdict != VerdictUnjudged {
+		t.Fatalf("a fresh pair: task %s, verdict %q; want closed and unjudged", status, verdict)
+	}
+	var by, closed string
+	var finishedAt sql.NullTime
+	if err := s.db.QueryRowContext(ctx, `SELECT a.resolved_by, a.detail->>'closed', t.finished_at FROM alerts a, tasks t WHERE a.id = $1 AND t.id = 't-fresh'`, fresh).
+		Scan(&by, &closed, &finishedAt); err != nil {
+		t.Fatal(err)
+	}
+	if by != "factoryd" || closed != "cleared" || !finishedAt.Valid {
+		t.Fatalf("resolved_by %q, detail closed %q, finished_at %v; want factoryd, cleared, set", by, closed, finishedAt)
+	}
+	evs, err := s.TaskEvents(ctx, "t-fresh", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evs) != 1 || evs[0].Kind != EventTaskStatus || evs[0].Detail["status"] != "closed" {
+		t.Fatalf("events %+v, want one task_status to closed", evs)
+	}
+	for _, id := range []string{"t-done", "t-judged"} {
+		if evs, _ := s.TaskEvents(ctx, id, 10); len(evs) != 0 {
+			t.Fatalf("%s recorded %+v after a rolled-back close", id, evs)
+		}
 	}
 }

@@ -1205,6 +1205,17 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, b
 	return fmt.Errorf("open gate_bound alert: %w", ErrNotFound)
 }
 
+func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+	t, ok := s.tasks[taskID]
+	if !ok || t.Status != "waiting-human" {
+		return fmt.Errorf("task %s: %w", taskID, ErrNotFound)
+	}
+	if err := s.ResolveAlert(ctx, alertID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
+		return err
+	}
+	return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "closed")
+}
+
 func (s *fakeStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()

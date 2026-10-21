@@ -737,6 +737,19 @@ func (s *acceptanceStore) MergeAlertDetail(_ context.Context, id int64, detail m
 	return nil
 }
 
+func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+	s.mu.Lock()
+	t, ok := s.tasks[taskID]
+	s.mu.Unlock()
+	if !ok || t.Status != "waiting-human" {
+		return fmt.Errorf("task %s: %w", taskID, factoryd.ErrNotFound)
+	}
+	if err := s.ResolveAlert(ctx, alertID, factoryd.AlertSigNoz, factoryd.VerdictUnjudged, factoryd.FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
+		return err
+	}
+	return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "closed")
+}
+
 func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdict, by string, detail map[string]any) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
