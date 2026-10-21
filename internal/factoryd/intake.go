@@ -792,6 +792,57 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// HealFactoryCloses finishes the closes factoryd recorded and did not
+// confirm (closeIssueAsFactory failed between the record and the close):
+// each unconfirmed record older than two minutes, 50 a pass. A record
+// whose task is gone, or whose issue is closed already, is confirmed
+// without a write. A refusal from Forgejo (forgejoTerminal) settles the
+// record, which no retry changes; any other error joins and the record
+// waits for the next pass.
+func (in *Intake) HealFactoryCloses(ctx context.Context) error {
+	rows, err := in.Store.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 50)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, row := range rows {
+		if err := in.healFactoryClose(ctx, row); err != nil {
+			errs = append(errs, fmt.Errorf("close of #%d of task %s: %w", row.CommentID, row.TaskID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return in.Store.ConfirmFactoryClose(ctx, row.TaskID, row.CommentID)
+	}
+	t.IssueNumber = row.CommentID
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, row.CommentID)
+	if err == nil && !closed {
+		err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
+	}
+	if forgejoTerminal(err) {
+		log.Printf("heal pass: task %s: Forgejo refuses to close issue #%d, the close is settled: %v", t.ID, row.CommentID, err)
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+	}
+	if err != nil {
+		return err
+	}
+	if closed {
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+	}
+	return nil
+}
+
 // outsiderLabels are the labels intake reads off an outside account's new
 // issue: Forgejo 15 applies whatever labels its new-issue form posts, from
 // anyone, so the writers' lane and priority labels (agent, plan, human,
