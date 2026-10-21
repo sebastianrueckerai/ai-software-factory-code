@@ -30,6 +30,10 @@ type cardForgejo struct {
 	issues   []issueBody
 	labels   map[int64][]string
 	writes   []string
+	// closedIssues and comments are the issues closed and the comments
+	// posted, "number: body"
+	closedIssues []int64
+	comments     []string
 }
 
 const (
@@ -60,6 +64,14 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprint(w, c)
+		case strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/labels"):
+			var number int64
+			fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/labels"), "%d", &number)
+			out := []map[string]string{}
+			for _, name := range s.labels[number] {
+				out = append(out, map[string]string{"name": name})
+			}
+			json.NewEncoder(w).Encode(out)
 		case p == cardUpPath+"/issues" && q.Get("state") == "open":
 			if q.Get("page") != "1" {
 				fmt.Fprint(w, `[]`)
@@ -170,10 +182,27 @@ func (s *cardForgejo) write(t *testing.T, w http.ResponseWriter, r *http.Request
 	case r.Method == http.MethodPut && strings.HasSuffix(p, "/labels"):
 		var number int64
 		fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/labels"), "%d", &number)
+		s.labels[number] = nil
 		for _, name := range body["labels"].([]any) {
 			s.labels[number] = append(s.labels[number], name.(string))
 		}
 		io.WriteString(w, `[]`)
+	case r.Method == http.MethodPatch && strings.HasPrefix(p, cardUpPath+"/pulls/"):
+		var number int64
+		fmt.Sscanf(strings.TrimPrefix(p, cardUpPath+"/pulls/"), "%d", &number)
+		s.prs = slices.DeleteFunc(s.prs, func(n int64) bool { return n == number })
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{}`)
+	case r.Method == http.MethodPost && strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/comments"):
+		s.comments = append(s.comments, strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/comments")+": "+body["body"].(string))
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{"id":1}`)
+	case r.Method == http.MethodPatch && strings.HasPrefix(p, cardUpPath+"/issues/"):
+		var number int64
+		fmt.Sscanf(strings.TrimPrefix(p, cardUpPath+"/issues/"), "%d", &number)
+		s.closedIssues = append(s.closedIssues, number)
+		w.WriteHeader(http.StatusCreated)
+		io.WriteString(w, `{}`)
 	default:
 		t.Errorf("unexpected %s %s", r.Method, p)
 		w.WriteHeader(http.StatusTeapot)
@@ -339,6 +368,62 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 needs you: "+ask) ||
 		deliveryLevel(m) != LevelNeedsYou {
 		t.Fatalf("the poke = %+v, %v; want the card's needs-you", m, ok)
+	}
+}
+
+// The copier's own close of a schema pull request ends its human card
+// (ruling R63), whichever build filed it: no workflow sees the bot's close,
+// so the copier ends the card through the intake. The ask is withdrawn by
+// factoryd, the card ends closed naming the close, and its issue closes
+// with a comment.
+func TestSchemaCopierWithdrawsTheHumanCardOfAPullRequestItCloses(t *testing.T) {
+	ctx := context.Background()
+	fj, c, store, wf := cardRig(t)
+	store.projects = []Project{noAgents(cardUpstream)}
+	rows := &fakeEventRecorder{}
+	c.Timeline = &Timeline{Objects: &fakeObjectStore{}, Store: store, Events: rows}
+	c.Cards = &Intake{Store: store, Forgejo: c.Forgejo, Workflows: wf, BotUser: "factory-agent", Timeline: c.Timeline}
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	card := schemaCards(store)[0]
+	card.SHA = "00000000aaaa" // an older build's card of the same pull request
+	store.tasks[card.ID] = card
+	schemas, _ := policy.Schemas()
+	fj.mu.Lock()
+	fj.main["factory/schema/policy.schema.json"] = string(schemas["policy.schema.json"])
+	fj.mu.Unlock()
+	if err := c.SyncOnce(ctx, 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	const reason = "factoryd closed pull request #1: the copies on main equal the schemas of factoryd 0123456789ab"
+	if got := store.tasks[card.ID]; got.Status != "closed" {
+		t.Fatalf("card %+v, want closed", got)
+	}
+	var ended, withdrawn []Event
+	for _, e := range rows.rows {
+		switch e.Kind {
+		case EventTaskEnded:
+			ended = append(ended, e)
+		case EventQuestionWithdrawn:
+			withdrawn = append(withdrawn, e)
+		case EventQuestionAnswered:
+			t.Fatalf("question_answered %+v: the copier's close answers nothing", e)
+		}
+	}
+	if len(ended) != 1 || ended[0].Detail["state"] != "closed" || ended[0].Detail["reason"] != reason {
+		t.Fatalf("task_ended %+v, want one closed naming %q", ended, reason)
+	}
+	if len(withdrawn) != 1 || withdrawn[0].Actor != FactoryDecider || withdrawn[0].Via != ViaFactoryd || withdrawn[0].Detail["reason"] != reason {
+		t.Fatalf("question_withdrawn %+v, want factoryd's one", withdrawn)
+	}
+	if m, ok := pokeOf(withdrawn[0], store.tasks[card.ID]); !ok || m.Content != "#1 needs you no more: its question is withdrawn because "+reason+"." {
+		t.Fatalf("the poke %+v, %v", m, ok)
+	}
+	fj.mu.Lock()
+	defer fj.mu.Unlock()
+	if !slices.Equal(fj.closedIssues, []int64{1}) || !slices.Contains(fj.comments, "1: factoryd: "+reason+"; this card ends with it.") {
+		t.Fatalf("closed issues %v, comments %q; want the card's #1 closed with its comment", fj.closedIssues, fj.comments)
 	}
 }
 

@@ -43,6 +43,12 @@ type SchemaCopier struct {
 	Workflows Workflows
 	// Timeline records the card's events; nil records none.
 	Timeline *Timeline
+	// Cards ends the human card of a pull request the copier closed, which
+	// no workflow sees (Intake.WithdrawPRCard); factoryd wires it with the
+	// store.
+	Cards interface {
+		WithdrawPRCard(ctx context.Context, t Task, pr int64, why string) error
+	}
 	// Budget is the policy's budget block in force, which sizes the card.
 	Budget func() policy.Budget
 }
@@ -125,7 +131,7 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 			return fmt.Errorf("comment on #%d: %w", pr.Number, err)
 		}
 		log.Printf("schema copies: closed pull request #%d: %s", pr.Number, why)
-		c.forgetBuildCard(ctx, repo.String(), pr.Number)
+		c.forgetBuildCard(ctx, repo.String(), pr.Number, why)
 	}
 	// the pull request becomes a card of its own (roadmap 187), so the
 	// chat, the board and the merge rule cover it; the pass files one per
@@ -216,9 +222,11 @@ func (c *SchemaCopier) buildCards(ctx context.Context, repo string) ([]Task, err
 }
 
 // forgetBuildCard gives up this build's still-open card of the schema pull
-// request number factoryd just closed: nothing is left for its gates to
-// verify, so the chat holds no dead approval card.
-func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number int64) {
+// request number factoryd just closed for why: nothing is left for its
+// gates to verify, so the chat holds no dead approval card. A human card of
+// the pull request, whichever build filed it, ends through Cards: no
+// workflow sees the bot's close.
+func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number int64, why string) {
 	if c.Store == nil {
 		return
 	}
@@ -229,7 +237,16 @@ func (c *SchemaCopier) forgetBuildCard(ctx context.Context, repo string, number 
 			return
 		}
 		for _, t := range tasks {
-			if t.Source != SourceSchemaCopy || t.Repository != repo || t.SHA != c.Build || t.PRNumber != number {
+			if t.Source != SourceSchemaCopy || t.Repository != repo || t.PRNumber != number {
+				continue
+			}
+			if t.Kind == "human" {
+				if err := c.Cards.WithdrawPRCard(ctx, t, number, why); err != nil {
+					log.Printf("schema copies: end the card %s of pull request #%d: %v", t.ID, number, err)
+				}
+				continue
+			}
+			if t.SHA != c.Build {
 				continue
 			}
 			if err := c.Store.TransitionTask(ctx, t.ID, []string{status}, "closed"); err != nil {
