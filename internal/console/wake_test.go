@@ -1,6 +1,7 @@
 package console
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // A wake turn runs without a request: the Waker's call alone writes the
@@ -192,4 +194,64 @@ func TestAWakeOnAProjectWithoutAChatTokenIsRefused(t *testing.T) {
 	if len(rows) != 0 || len(g.calls()) != 0 || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/5/comments")) != 0 {
 		t.Fatalf("the refused wake stored %+v, made %d model calls and commented", rows, len(g.calls()))
 	}
+}
+
+// A wake's approval is the factory's own: the merge request's approval
+// goes to the workflow as factory-chat's and no review is posted, as
+// factory-chat's would count for nothing; the merge gate's review carries
+// it at the merge. A red-checks request reads only the head's checks, with
+// the chat token. A resource request is decided as factory-chat. The
+// events stay the woken member's, decided by the agent.
+func TestAWakesApprovalIsTheFactorysOwn(t *testing.T) {
+	approve := func(t *testing.T, r *rig, id int64) string {
+		t.Helper()
+		s, err := r.c.wakeSession(factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, "sebastian")
+		if err != nil {
+			t.Fatal(err)
+		}
+		note, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent",
+			level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}, id)
+		if err != nil {
+			t.Fatalf("approve %d: %v", id, err)
+		}
+		return note
+	}
+	approved := func(t *testing.T, r *rig) factoryd.Event {
+		t.Helper()
+		rows := r.events.all()
+		if len(rows) != 1 || rows[0].Kind != factoryd.EventMergeApproved || rows[0].Actor != "sebastian" || rows[0].Detail["decider"] != "agent" {
+			t.Fatalf("events = %+v, want one merge_approved of sebastian decided by the agent", rows)
+		}
+		return rows[0]
+	}
+	t.Run("merge", func(t *testing.T) {
+		r := newRig(t)
+		if note := approve(t, r, 4); note != "Approved pull request #9; factoryd merges it." {
+			t.Fatalf("note = %q", note)
+		}
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 {
+			t.Fatalf("calls %q, reviews %v: want the approval signalled as factory-chat's and no review", r.fg.calls, r.fg.reviews)
+		}
+		approved(t, r)
+	})
+	t.Run("merge with red checks", func(t *testing.T) {
+		r := newRig(t)
+		r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"standard","head_sha":"abc123","red_checks":true}`)
+		r.fg.statuses = map[string]string{"abc123": `{"state":"success","statuses":[{"context":"ci / test","status":"success"}]}`}
+		approve(t, r, 4)
+		if !slices.Equal(r.fg.calls, []string{"GET /api/v1/repos/sf/code/commits/abc123/status Bearer chat-token", "SIGNAL approved t-m #9 by factory-chat"}) ||
+			len(r.fg.reviews) != 0 {
+			t.Fatalf("calls %q, reviews %v: want the head's checks read with the chat token, the approval signalled, no review", r.fg.calls, r.fg.reviews)
+		}
+	})
+	t.Run("resource", func(t *testing.T) {
+		r := newRig(t)
+		if note := approve(t, r, 3); note != "Approved the resource for its task." {
+			t.Fatalf("note = %q", note)
+		}
+		if q := r.approvals.get(3); q.Status != "approved" || q.DecidedBy != "factory-chat" || len(r.fg.calls) != 0 {
+			t.Fatalf("request 3 %s by %s, calls %q: want it approved by factory-chat with no Forgejo call", q.Status, q.DecidedBy, r.fg.calls)
+		}
+		approved(t, r)
+	})
 }

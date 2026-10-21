@@ -468,7 +468,14 @@ request, `pr_merged`, `pr_closed` or `issue_closed`. The console approves
 by submitting the human's APPROVED review through the human's own OAuth
 token, then calling `factoryd.ApproveMerge` (a pending merge request of
 that task and pull request is required), which signals `approved` with
-signal-with-start like the webhook path. `Merge` then merges as the
+signal-with-start like the webhook path. The project agent's approval in
+a wake is the factory's own: the console posts no review (factory-chat's
+would count for nothing) and decides every approval request as
+`factory-chat`. `Merge` then treats approver `factory-chat` as the merge
+gate's own decision: on the merge rule `auto` it approves the head as
+`factory-gate` with `factoryd: the project agent approved <head> on the
+project's merge rule auto`, then merges; on any other rule, or without a
+gate token, it refuses as above. `Merge` then merges as the
 dedicated user `factory-merge` (`FORGEJO_MERGE_TOKEN`, secret
 `factory/forgejo-merge`, on the factory's own repositories; a registered
 project's own `projects.merge_token`, which also reads the project's

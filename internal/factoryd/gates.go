@@ -1474,8 +1474,10 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no merge token for "+t.Repository+
 			": its project file names none, or its registration has not run"), nil
 	}
-	if approver == AutoApprover {
-		// the gate read the rule before its stages ran: the rule now decides
+	// the merge gate's decision and the project agent's approval in a wake
+	// are the factory's own: factory-gate's review carries either, and only
+	// on the merge rule auto, which now decides, not the rule they read
+	if approver == AutoApprover || approver == ChatUser {
 		if p.MergeRule != policy.MergeAuto {
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "the project's merge rule is "+cmp.Or(p.MergeRule, policy.MergeHuman)+" now: a human approves"), nil
 		}
@@ -1483,11 +1485,14 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 			return r.refuseMerge(ctx, t, repo, pr, commit, approver, "factoryd holds no gate token for "+t.Repository+
 				": its project file names none, or its registration has not run"), nil
 		}
-		body := "factoryd: the merge gate passed " + commit + " on the project's merge rule auto"
-		if len(met) > 0 {
-			body += ":\n\n- " + strings.Join(met, "\n- ")
-		} else {
-			body += "."
+		body := "factoryd: the project agent approved " + commit + " on the project's merge rule auto"
+		if approver == AutoApprover {
+			body = "factoryd: the merge gate passed " + commit + " on the project's merge rule auto"
+			if len(met) > 0 {
+				body += ":\n\n- " + strings.Join(met, "\n- ")
+			} else {
+				body += "."
+			}
 		}
 		err := r.forgejo.ApprovePullRequest(ctx, access.Gate, repo.Owner, repo.Name, pr, commit, body)
 		if forgejoTerminal(err) {

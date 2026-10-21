@@ -1078,6 +1078,65 @@ func TestAutoMergeRefusedWithoutTheGatesApproval(t *testing.T) {
 	}
 }
 
+// The project agent's approval in a wake is the factory's own on the merge
+// rule auto: factory-gate approves the head with the gate token and
+// factoryd's own sentence, never the agent's words, then factory-merge
+// merges naming factory-chat as the approver.
+func TestAWakesApprovalMergesWithTheGatesReview(t *testing.T) {
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+	task := gateTask
+	task.Author = "alice"
+	r, store, _ := newGateRunner(t, task, fj)
+	store.projects = []Project{autoProject("sf/repo")}
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", ChatUser, "")
+	if res := getInto[MergeResult](t, val, err); !res.Merged {
+		t.Fatalf("result = %+v", res)
+	}
+	if !slices.Equal(fj.calls, []string{"review", "merge"}) || !slices.Equal(fj.reviewAuth, []string{"token gate-tok"}) {
+		t.Fatalf("calls %v, review auth %q: want one review with the gate token, then the merge", fj.calls, fj.reviewAuth)
+	}
+	if rv := fj.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "c1" || rv["body"] != "factoryd: the project agent approved c1 on the project's merge rule auto" {
+		t.Fatalf("review = %v", rv)
+	}
+	if fj.merges[0]["head_commit_id"] != "c1" || fj.merges[0]["MergeMessageField"] != "factoryd task t1 (issue #4): approved by factory-chat, merged by factory-merge\n\n"+
+		"Factory-Role: merge\nFactory-Task: t1\nRequested-by: alice\nApproved-by: factory-chat\n" {
+		t.Fatalf("merge = %v", fj.merges[0])
+	}
+	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != ChatUser {
+		t.Fatalf("approval = %+v", a)
+	}
+}
+
+// Off the merge rule auto, or without the gate token, nothing carries the
+// project agent's approval: the merge is refused, naming why, before any
+// review or merge call.
+func TestAWakesApprovalIsRefusedWithoutTheGate(t *testing.T) {
+	noGate := autoProject("sf/repo")
+	noGate.Tokens.Gate = ""
+	for name, tc := range map[string]struct {
+		project Project
+		refusal string
+	}{
+		"merge rule human": {seedProject("sf/repo"), "the project's merge rule is human now: a human approves"},
+		"no gate token":    {noGate, "factoryd holds no gate token for sf/repo: its project file names none, or its registration has not run"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+			r, store, objects := newGateRunner(t, gateTask, fj)
+			store.projects = []Project{tc.project}
+			val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", ChatUser, "")
+			res := getInto[MergeResult](t, val, err)
+			if res.Merged || len(fj.merges) != 0 || len(fj.reviews) != 0 || res.Refusal != tc.refusal {
+				t.Fatalf("result %+v, merges %d, reviews %d; want refused with %q before any review or merge", res, len(fj.merges), len(fj.reviews), tc.refusal)
+			}
+			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.refusal) || !strings.Contains(timeline(t, objects), `"step":"merge_refused"`) {
+				t.Fatalf("comments %q: want the refusal told on the pull request and the timeline", fj.comments)
+			}
+		})
+	}
+}
+
 // A factory project's merge goes out with its own factory-merge token
 // (ruling 164), a seed project's with the seeded token its file names; a
 // project without one, and a repository no file names, is refused before
