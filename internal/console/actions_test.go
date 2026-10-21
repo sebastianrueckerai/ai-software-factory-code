@@ -361,19 +361,19 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 }
 
 // The board's answer route takes an agent card's close value as its
-// Close: the issue closes on the label, and no answer is recorded.
+// Close: the issue closes with nothing posted on it, and no answer is
+// recorded.
 func TestAgentCardCloseValueEndsTheCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{agentEndsAsk()}
 	ck, s := r.loggedIn(t)
 	before := ev.count()
 	rec := r.do(post("/tasks/t-a/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}}), ck)
-	if rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) ||
-		!slices.Equal(r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"), []string{"End the card"}) {
-		t.Errorf("close = %d, patched %v, comments %q; want the issue closed on the label", rec.Code, r.fg.patched,
-			r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"))
+	comments := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments")
+	if rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) || len(comments) != 0 {
+		t.Errorf("close = %d, patched %v, comments %q; want the issue closed and nothing posted", rec.Code, r.fg.patched, comments)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": "End the card"}})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": ""}})
 }
 
 // A chat escalation's choices are their own labels as values: one that

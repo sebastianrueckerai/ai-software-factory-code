@@ -932,7 +932,8 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // text nor value arrived. park and keep waiting record the answer and
 // leave the card waiting on its person: no comment is posted, because a
 // posted comment would start the attempt the person declined to start.
-// close ends the card (doClose), its label the note.
+// close ends the card (doClose) and posts no note, because a posted note
+// would answer the question if the close failed.
 // fund raises the card's budget by the shortfall its question names while
 // the card holds a budget refusal; past a raised cap it posts like any
 // answer, the label retrying the card. A worded answer on a running
@@ -984,7 +985,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		log.Printf("console: %s answered the escalation of %s via %s: %s, the card stays waiting", a.s.user, t.ID, a.via, value)
 		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
 	case factoryd.AnswerClose:
-		return c.doClose(ctx, a, id, text)
+		return c.doClose(ctx, a, id, "")
 	}
 	// the member's own words, matching none of the question's choices, are
 	// not an answer: they go to the member's chat, where the agent reads

@@ -2011,7 +2011,7 @@ func TestIntakeBotCloseCountsOnlyWhenFactorydRecordedIt(t *testing.T) {
 func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 	none := seedProject("sf/ai-software-factory-code")
 	none.Agents = "none"
-	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian into the human lane", Info: "objective body",
+	want := HumanQuestion{Ask: "Add the runner", Why: "filed by sebastian for an agent; the project runs no agents now", Info: "objective body",
 		Choices: []QuestionChoice{{Value: AnswerClose, Label: "Done"}}}
 	for _, via := range []string{"redelivery", "heal pass"} {
 		in, store, _ := newTestIntake(t)
@@ -2048,7 +2048,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		}
 		if len(asked) != 1 || asked[0].Via != ViaFactoryd || asked[0].Detail["ask"] != "Add the runner" ||
-			asked[0].Detail["why"] != "filed by sebastian into the human lane" || asked[0].Detail["source"] != "webhook" ||
+			asked[0].Detail["why"] != "filed by sebastian for an agent; the project runs no agents now" || asked[0].Detail["source"] != "webhook" ||
 			fmt.Sprint(asked[0].Detail["choices"]) != "[Done]" {
 			t.Fatalf("%s: question_asked rows %+v", via, asked)
 		}

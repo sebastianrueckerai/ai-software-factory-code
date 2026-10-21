@@ -96,9 +96,9 @@ func agentEndsAsk() factoryd.BoardTask {
 			Choices: []factoryd.QuestionChoice{{Value: "say:Yes", Label: "Yes"}, {Value: factoryd.AnswerPark, Label: "Leave it waiting"}, {Value: factoryd.AnswerClose, Label: "End the card"}}}}
 }
 
-// "End the card" pressed in the inbox closes the agent card: its label is
-// the close's note, the close the only row, and no answer resumes the
-// card's workflow.
+// "End the card" pressed in the inbox closes the agent card: nothing is
+// posted on its issue, the close is the only row, and no answer resumes
+// the card's workflow.
 func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, agentEndsAsk())
@@ -118,8 +118,8 @@ func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
 		t.Fatalf("the press = %d %q", code, body)
 	}
 	equal(t, "the issue", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`})
-	equal(t, "the note", r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"), []string{"End the card"})
-	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": "End the card"}})
+	equal(t, "the comments", r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"), []string(nil))
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": ""}})
 	equal(t, "answer signals", signals, 0)
 	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
 	equal(t, "the factory's row", rows[len(rows)-1].Content, "Closed #15; factoryd ends the card.")

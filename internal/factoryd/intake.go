@@ -994,8 +994,11 @@ func (in *Intake) humanLaneWithoutAgents(ctx context.Context, t Task) (moved boo
 	log.Printf("intake: task %s: project %s is on agents none: queued task moved to the human lane", t.ID, p.Name)
 	t.Kind = "human"
 	mirrorTaskState(ctx, in.Forgejo, t, "waiting-human")
+	poster := cmp.Or(t.Author, in.BotUser)
 	title, body, _ := strings.Cut(t.Objective, "\n\n")
-	return true, recordAsk(ctx, in.Store, in.Timeline, t, issueQuestion(title, body, cmp.Or(t.Author, in.BotUser), false), "factoryd", t.Source, ViaFactoryd)
+	q := issueQuestion(title, body, poster, false)
+	q.Why = "filed by " + poster + " for an agent; the project runs no agents now"
+	return true, recordAsk(ctx, in.Store, in.Timeline, t, q, "factoryd", t.Source, ViaFactoryd)
 }
 
 func (in *Intake) baseSHA(ctx context.Context, repo, defaultBranch string) (string, error) {
