@@ -224,6 +224,17 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 				out[i] = map[string]string{"name": name}
 			}
 			json.NewEncoder(w).Encode(out)
+		case r.Method == http.MethodGet && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments"):
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d", &n)
+			out := []map[string]any{}
+			for _, c := range s.comments {
+				if rest, ok := strings.CutPrefix(c, fmt.Sprintf("#%d by ", n)); ok {
+					by, text, _ := strings.Cut(rest, ": ")
+					out = append(out, map[string]any{"body": text, "user": map[string]string{"login": strings.TrimPrefix(by, "basic ")}})
+				}
+			}
+			json.NewEncoder(w).Encode(out)
 		case r.Method == http.MethodPost && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/comments"):
 			var n int64
 			fmt.Sscanf(strings.TrimPrefix(p, up+"/issues/"), "%d", &n)
@@ -700,14 +711,59 @@ func TestTemplateUpdateCloseClosesCard(t *testing.T) {
 	if !slices.Equal(fj.closedIssues, []int64{1}) || fj.issues[0].state != "closed" {
 		t.Fatalf("closed issues %v, issues %+v", fj.closedIssues, fj.issues)
 	}
-	if fj.prs[0].state != "closed" || len(fj.comments) != 1 {
-		t.Fatalf("pull request %+v, comments %v", fj.prs[0], fj.comments)
+	comments := []string{"#1 by basic factory-agent: factoryd: closing pull request #1: main's files equal the template's; this card ends with it.",
+		"#1 by basic factory-agent: factoryd: closing this pull request: main's files equal the template's."}
+	if fj.prs[0].state != "closed" || !slices.Equal(fj.comments, comments) {
+		t.Fatalf("pull request %+v, comments %q; want %q", fj.prs[0], fj.comments, comments)
 	}
 	want := []string{"PATCH /api/v1/repos/demo-app/demo-app/issues/1 by basic factory-agent",
 		"DELETE /api/v1/repos/factory-projects/demo-app/branches/factory/template-update by token projects-tok",
 		"PATCH /api/v1/repos/demo-app/demo-app/pulls/1 by token projects-tok"}
 	if got := fj.writes[len(fj.writes)-4 : len(fj.writes)-1]; !slices.Equal(got, want) {
 		t.Fatalf("writes %q\nwant %q: the card closes before the branch and the pull request", got, want)
+	}
+}
+
+// The close of a template update's card is factoryd's recorded close,
+// its comment saying why, and confirmed: the bot's close of the issue ends
+// the card (issueClosed). On a project without agents the card is human,
+// and factory-projects' close of the pull request ends it (endPRCard)
+// with no second comment on its issue.
+func TestTemplateUpdateCloseRecordsItsIntent(t *testing.T) {
+	fj, reg, store, tasks, wf := templateCardRig(t, stage15Main(), true)
+	ctx := context.Background()
+	p := store.m["demo-app"]
+	if _, err := reg.openTemplateUpdate(ctx, p, templateWant(t, p, reg), templateUpdateBody(p.Template, map[string]string{".forgejo/workflows/ci.yml": "differs"})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.closeTemplateUpdate(ctx, reg.Forgejo.As(reg.ProjectsUser, reg.Forgejo.ProjectsToken), p.Repo(), 1, "main's files equal the template's"); err != nil {
+		t.Fatal(err)
+	}
+	var card Task
+	for _, row := range tasks.tasks {
+		card = row
+	}
+	const comment = "factoryd: closing pull request #1: main's files equal the template's; this card ends with it."
+	i := slices.IndexFunc(tasks.intakeEvents, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed })
+	if i < 0 || tasks.intakeEvents[i].TaskID != card.ID || tasks.intakeEvents[i].CommentID != 1 || tasks.intakeEvents[i].Body != comment ||
+		!tasks.confirmedCloses[[2]any{card.ID, int64(1)}] {
+		t.Fatalf("intake events %+v, confirmed %v; want card %s's close of #1 recorded with %q and confirmed", tasks.intakeEvents, tasks.confirmedCloses, card.ID, comment)
+	}
+	onIssue := func() []string {
+		return slices.DeleteFunc(slices.Clone(fj.comments), func(c string) bool { return !strings.Contains(c, "this card ends") })
+	}
+	if want := []string{"#1 by basic factory-agent: " + comment}; !slices.Equal(onIssue(), want) {
+		t.Fatalf("the issue's comments %q, want %q", onIssue(), want)
+	}
+
+	card.Kind, card.Status = "human", "waiting-human"
+	tasks.tasks[card.ID] = card
+	in := &Intake{Store: tasks, Forgejo: reg.Forgejo, Workflows: wf, BotUser: "factory-agent", Timeline: reg.Timeline}
+	if err := in.prDecided(ctx, card, 1, false, "factory-projects", ViaWebhook); err != nil {
+		t.Fatal(err)
+	}
+	if got := tasks.tasks[card.ID].Status; got != "closed" || !slices.Equal(onIssue(), []string{"#1 by basic factory-agent: " + comment}) {
+		t.Fatalf("human card %s, the issue's comments %q; want closed and the one comment", got, onIssue())
 	}
 }
 

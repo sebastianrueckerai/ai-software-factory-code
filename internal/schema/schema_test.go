@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"fmt"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 	"io/fs"
 	"log"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -266,6 +269,105 @@ func TestEventsAnswerOnceMigration(t *testing.T) {
 	if _, err := db.ExecContext(ctx, `INSERT INTO events (repository, task_id, kind, actor, via, detail)
 		VALUES ('sf/r', 't-a', 'question_answered', 'carol', 'webhook', '{"comment": 7}')`); err == nil {
 		t.Fatal("a third row of comment 7 was stored; the unique index is missing")
+	}
+}
+
+// The factory-close migration counts every factory_closed row recorded
+// before it as confirmed, at its own creation time; a row of another kind
+// stays unconfirmed.
+func TestFactoryCloseConfirmedMigration(t *testing.T) {
+	dsn := schematest.DSN(t, "closeconfirmed")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`ALTER TABLE intake_events DROP COLUMN confirmed_at`,
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur) VALUES ('t-fc', 'running', 'o', 'sf/r', 'agent', 1)`,
+		`INSERT INTO intake_events (id, task_id, kind, author, body, comment_id, created_at) VALUES
+		 (1, 't-fc', 'factory_closed', 'factoryd', 'c', 9, '2026-10-01T10:00:00Z'),
+		 (2, 't-fc', 'issue_comment', 'sebastian', 'c', 11, '2026-10-01T11:00:00Z')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261021090000_factory_close_confirmed.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the old rows: %v", err)
+	}
+	var closed, other sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT confirmed_at FROM intake_events WHERE id = 1`).Scan(&closed); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT confirmed_at FROM intake_events WHERE id = 2`).Scan(&other); err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Date(2026, 10, 1, 10, 0, 0, 0, time.UTC); !closed.Valid || !closed.Time.Equal(want) {
+		t.Fatalf("factory_closed confirmed_at = %v, want %v", closed, want)
+	}
+	if other.Valid {
+		t.Fatalf("issue_comment confirmed_at = %v, want NULL", other)
+	}
+}
+
+// The alert-unjudged migration judges the SigNoz alerts left open by a task
+// that ended: a null-verdict alert row on a done, failed or closed task
+// reads unjudged by factoryd. A task still waiting, a verdict a person gave
+// and a row of another kind stay as they are.
+func TestAlertUnjudgedOnEndMigration(t *testing.T) {
+	dsn := schematest.DSN(t, "alertunjudged")
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate an empty database: %v", err)
+	}
+	for _, stmt := range []string{
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur, finished_at) VALUES
+		 ('t-failed', 'failed', 'o', 'sf/r', 'agent', 1, now()),
+		 ('t-done', 'done', 'o', 'sf/r', 'agent', 1, now()),
+		 ('t-closed', 'closed', 'o', 'sf/r', 'agent', 1, now())`,
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur) VALUES ('t-wait', 'waiting-human', 'o', 'sf/r', 'agent', 1)`,
+		`INSERT INTO alerts (id, kind, source, task_id) VALUES
+		 (1, 'alert', 's', 't-failed'), (2, 'alert', 's', 't-done'), (3, 'alert', 's', 't-closed'),
+		 (4, 'alert', 's', 't-wait'), (6, 'escalation', 's', 't-failed')`,
+		`INSERT INTO alerts (id, kind, source, task_id, verdict, resolved_by, resolved_at) VALUES (5, 'alert', 's', 't-failed', 'real', 'sebastian', '2026-10-01T10:00:00Z')`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261021090100_alert_unjudged_on_end.sql'`,
+	} {
+		if _, err := db.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	if err := Migrate(ctx, db); err != nil {
+		t.Fatalf("migrate over the open alerts: %v", err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT id, COALESCE(verdict, ''), COALESCE(resolved_by, ''), resolved_at IS NOT NULL FROM alerts ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var id int
+		var verdict, by string
+		var resolved bool
+		if err := rows.Scan(&id, &verdict, &by, &resolved); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, fmt.Sprintf("%d %s %s %t", id, verdict, by, resolved))
+	}
+	want := []string{"1 unjudged factoryd true", "2 unjudged factoryd true", "3 unjudged factoryd true", "4   false", "5 real sebastian true", "6   false"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("alerts = %q, want %q", got, want)
 	}
 }
 

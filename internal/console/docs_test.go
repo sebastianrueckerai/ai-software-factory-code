@@ -256,44 +256,42 @@ func TestReadDocRangesAndPatterns(t *testing.T) {
 	}
 }
 
-// Two writes read at one hash: the first lands, the second's stale hash
-// refuses with the current one while its passage is still there, and its
-// resend lands, so both edits are in the file; a stale write whose
-// passage is gone gets the current content.
+// Two writes read at one hash: the first lands, the second lands too
+// while its passage is still there once, its answer naming the change,
+// so both edits are in the file; an edit without a hash lands; a stale
+// write whose passage is gone gets the current content.
 func TestDocsConcurrentWritesBothLand(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	f := withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
 	ctx, a := t.Context(), actor{s: &session{user: "sebastian"}, via: factoryd.ViaChat}
 	base := factoryd.ContentHash(docsPlan)
 	edits := []docEdit{{Old: "Postgres", New: "Postgres 17", Base: base}, {Old: "one week", New: "two weeks", Base: base}}
-	errs := make([]error, 2)
+	answers, errs := make([]string, 2), make([]error, 2)
 	var wg sync.WaitGroup
 	for i, e := range edits {
-		wg.Go(func() { _, errs[i] = r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", e) })
+		wg.Go(func() { answers[i], errs[i] = r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", e) })
 	}
 	wg.Wait()
-	landed := 0
-	for i, err := range errs {
-		if err == nil {
-			landed++
-			continue
-		}
-		after := strings.Replace(docsPlan, edits[1-i].Old, edits[1-i].New, 1)
-		want := "docs/plans/cache.md changed since it was read: its base_sha256 is now " + factoryd.ContentHash(after) +
-			", and the passage old is still there once, so the same edit with that base_sha256 applies"
-		equal(t, "the stale refusal", err.Error(), want)
-		edits[i].Base = factoryd.ContentHash(after)
-		if _, err := r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", edits[i]); err != nil {
-			t.Fatalf("the resend: %v", err)
+	equal(t, "both land", errs, []error{nil, nil})
+	both := "# The cache plan\n\nThe store: Postgres 17.\nThe window: two weeks.\n"
+	equal(t, "the file", f.files["docs/plans/cache.md"], both)
+	const changed = " The file had changed since it was read, and the passage old was still there once."
+	named := 0
+	for _, s := range answers {
+		if strings.HasSuffix(s, changed) {
+			named++
+			equal(t, "the second's answer", strings.Contains(s, "now base_sha256 "+factoryd.ContentHash(both)+"."+changed), true)
 		}
 	}
-	equal(t, "the first round's landings", landed, 1)
-	equal(t, "the file", f.files["docs/plans/cache.md"], "# The cache plan\n\nThe store: Postgres 17.\nThe window: two weeks.\n")
+	equal(t, "one answer names the change", named, 1)
 
-	_, err := r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", docEdit{Old: "one week", New: "three weeks", Base: base})
-	now := f.files["docs/plans/cache.md"]
+	got, err := r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", docEdit{Old: "two weeks", New: "three weeks"})
+	three := strings.Replace(both, "two weeks", "three weeks", 1)
+	equal(t, "an edit without a hash", []any{strings.HasSuffix(got, "now base_sha256 "+factoryd.ContentHash(three)+"."), err, f.files["docs/plans/cache.md"]}, []any{true, error(nil), three})
+
+	_, err = r.c.doWriteDoc(ctx, a, "sf/docs", "sf/code", "docs/plans/cache.md", docEdit{Old: "one week", New: "four weeks", Base: base})
 	if err == nil || err.Error() != "docs/plans/cache.md: it changed since it was read and the passage old is no longer there once. Its base_sha256 is now "+
-		factoryd.ContentHash(now)+"; its current content:\n\n"+now {
+		factoryd.ContentHash(three)+"; its current content:\n\n"+three {
 		t.Fatalf("a stale write whose passage is gone = %v", err)
 	}
 }

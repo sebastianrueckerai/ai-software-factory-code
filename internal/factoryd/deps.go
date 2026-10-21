@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
-	"slices"
 	"strings"
 	"time"
 
@@ -402,20 +401,7 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 		return 0, stopped("copying the branch", err)
 	}
 	signalDependents(ctx, r.store, r.cfg.Workflows, t.ID)
-	note := fmt.Sprintf("factoryd: Retried as #%d.", t.IssueNumber)
-	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, old.IssueNumber)
-	if err != nil {
-		return 0, stopped("reading the failed card's comments", err)
-	}
-	if !slices.ContainsFunc(have, func(c IssueComment) bool { return c.Author == r.forgejo.BotUser && c.Body == note }) {
-		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, old.IssueNumber, note); err != nil {
-			return 0, stopped("commenting on the failed card's issue", err)
-		}
-	}
-	if _, err := recordFactoryClose(ctx, r.store, old); err != nil {
-		return 0, stopped("recording the close", err)
-	}
-	if err := r.forgejo.CloseIssue(ctx, repo.Owner, repo.Name, old.IssueNumber); err != nil {
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, old, fmt.Sprintf("factoryd: Retried as #%d.", t.IssueNumber)); err != nil {
 		return 0, stopped("closing the failed card's issue", err)
 	}
 	r.record(ctx, old.ID, "retried", map[string]any{"by": by, "as": t.ID, "issue": t.IssueNumber})

@@ -151,15 +151,17 @@ func (o *stubObjects) Delete(_ context.Context, key string) error {
 // the card's workflow: the same Store interface the shipped PGStore
 // answers, so every activity runs its real code.
 type acceptanceStore struct {
-	mu        sync.Mutex
-	tasks     map[string]factoryd.Task
-	alerts    []factoryd.Alert
-	events    []factoryd.IntakeEvent
-	sessions  []factoryd.Session
-	queue     []string // the merge queue, oldest first
-	finals    [][2]string
-	deps      map[string][]string
-	approvals []factoryd.ApprovalRequest
+	mu     sync.Mutex
+	tasks  map[string]factoryd.Task
+	alerts []factoryd.Alert
+	events []factoryd.IntakeEvent
+	// confirmedCloses are the factory_closed rows ConfirmFactoryClose marked, by task and issue.
+	confirmedCloses map[[2]any]bool
+	sessions        []factoryd.Session
+	queue           []string // the merge queue, oldest first
+	finals          [][2]string
+	deps            map[string][]string
+	approvals       []factoryd.ApprovalRequest
 }
 
 func newAcceptanceStore() *acceptanceStore {
@@ -381,12 +383,46 @@ func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issu
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if slices.ContainsFunc(s.events, func(have factoryd.IntakeEvent) bool {
+		return (e.DeliveryID != "" && have.DeliveryID == e.DeliveryID) ||
+			(e.CommentID != 0 && have.TaskID == e.TaskID && have.Kind == e.Kind && have.CommentID == e.CommentID) ||
+			(e.Kind == factoryd.IntakeHandover && have.TaskID == e.TaskID && have.Kind == factoryd.IntakeHandover)
+	}) {
+		return 0, nil
+	}
 	e.ID = int64(len(s.events) + 1)
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = time.Now()
 	}
 	s.events = append(s.events, e)
 	return e.ID, nil
+}
+
+func (s *acceptanceStore) ConfirmFactoryClose(_ context.Context, taskID string, issue int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !slices.ContainsFunc(s.events, func(e factoryd.IntakeEvent) bool {
+		return e.TaskID == taskID && e.Kind == factoryd.IntakeFactoryClosed && e.CommentID == issue
+	}) {
+		return nil
+	}
+	if s.confirmedCloses == nil {
+		s.confirmedCloses = map[[2]any]bool{}
+	}
+	s.confirmedCloses[[2]any{taskID, issue}] = true
+	return nil
+}
+
+func (s *acceptanceStore) UnconfirmedFactoryCloses(_ context.Context, olderThan time.Duration, limit int) ([]factoryd.IntakeEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.IntakeEvent
+	for _, e := range s.events {
+		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[[2]any{e.TaskID, e.CommentID}] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (s *acceptanceStore) ReleaseHandover(_ context.Context, taskID string) error {
@@ -699,6 +735,22 @@ func (s *acceptanceStore) MergeAlertDetail(_ context.Context, id int64, detail m
 		}
 	}
 	return nil
+}
+
+func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+	s.mu.Lock()
+	t, ok := s.tasks[taskID]
+	open := slices.ContainsFunc(s.alerts, func(a factoryd.Alert) bool {
+		return a.ID == alertID && a.Kind == factoryd.AlertSigNoz && a.Verdict == ""
+	})
+	s.mu.Unlock()
+	if !ok || t.Status != "waiting-human" || !open {
+		return fmt.Errorf("task %s or alert %d: %w", taskID, alertID, factoryd.ErrNotFound)
+	}
+	if err := s.ResolveAlert(ctx, alertID, factoryd.AlertSigNoz, factoryd.VerdictUnjudged, factoryd.FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
+		return err
+	}
+	return s.TransitionTask(ctx, taskID, []string{"waiting-human"}, "closed")
 }
 
 func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdict, by string, detail map[string]any) error {

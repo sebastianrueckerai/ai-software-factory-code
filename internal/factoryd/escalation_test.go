@@ -600,3 +600,115 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 		t.Fatalf("escalation source = %q, want project_cap", got)
 	}
 }
+
+// closeIssueAsFactory records the close with its comment, posts the
+// comment, closes the issue and confirms the record. A step that fails
+// returns its error and leaves the record unconfirmed; a second call
+// finishes the close, the recorded comment on the issue once. A comment
+// Forgejo refuses is left out, and the close goes on.
+func TestCloseIssueAsFactory(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}
+	const comment = "factoryd: closing this issue."
+	rig := func(failCall string) (*fakeStore, *planForgejo, *Forgejo) {
+		fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}, failCall: failCall}
+		return newFakeStore(), fj, &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	}
+	check := func(name string, store *fakeStore, fj *planForgejo, comments []string, state string, confirmed bool, calls ...string) {
+		t.Helper()
+		var on5 []string
+		for _, c := range fj.comments {
+			if c.issue == 5 {
+				on5 = append(on5, c.body)
+			}
+		}
+		if !slices.Equal(on5, comments) || fj.issues[5].state != state || !slices.Equal(fj.calls, calls) {
+			t.Fatalf("%s: comments %q, #5 %q, calls %q; want %q, %q, %q", name, on5, fj.issues[5].state, fj.calls, comments, state, calls)
+		}
+		if got := store.confirmedCloses[[2]any{"t-a", int64(5)}]; got != confirmed {
+			t.Fatalf("%s: confirmed %v, want %v", name, got, confirmed)
+		}
+	}
+	intent := func(body string) []IntakeEvent {
+		return []IntakeEvent{{ID: 1, TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, Body: body}}
+	}
+	recorded := func(store *fakeStore) []IntakeEvent {
+		out := slices.Clone(store.intakeEvents)
+		for i := range out {
+			out[i].CreatedAt = time.Time{}
+		}
+		return out
+	}
+
+	// (a) a fresh close
+	store, fj, f := rig("")
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+		t.Fatal(err)
+	}
+	check("fresh", store, fj, []string{comment}, "closed", true, "POST issues/5/comments", "PATCH issues/5")
+	if got := recorded(store); !reflect.DeepEqual(got, intent(comment)) {
+		t.Fatalf("intake events %+v, want %+v", got, intent(comment))
+	}
+
+	// (b) the close fails, then a second call closes without a second comment
+	store, fj, f = rig("PATCH issues/5")
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
+		t.Fatal("a failed close returned no error")
+	}
+	check("close failed", store, fj, []string{comment}, "open", false, "POST issues/5/comments", "PATCH issues/5")
+	fj.calls = nil
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+		t.Fatal(err)
+	}
+	check("close retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "PATCH issues/5")
+	if got := recorded(store); !reflect.DeepEqual(got, intent(comment)) {
+		t.Fatalf("intake events %+v, want one intent %+v", got, intent(comment))
+	}
+
+	// (c) no comment
+	store, fj, f = rig("")
+	if err := closeIssueAsFactory(ctx, store, f, card, ""); err != nil {
+		t.Fatal(err)
+	}
+	check("no comment", store, fj, nil, "closed", true, "PATCH issues/5")
+	if got := recorded(store); !reflect.DeepEqual(got, intent("")) {
+		t.Fatalf("intake events %+v, want %+v", got, intent(""))
+	}
+
+	// (d) the comment fails (a 500), then a second call whose comment
+	// changed posts the recorded one once and closes
+	store, fj, f = rig("POST issues/5/comments")
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
+		t.Fatal("a failed comment returned no error")
+	}
+	check("comment failed", store, fj, nil, "open", false, "POST issues/5/comments")
+	fj.calls = nil
+	if err := closeIssueAsFactory(ctx, store, f, card, "factoryd: closing this issue for another reason."); err != nil {
+		t.Fatal(err)
+	}
+	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5")
+
+	// (e) Forgejo refuses the comment: the issue closes without it
+	store, fj, f = rig("POST issues/5/comments")
+	fj.failStatus = http.StatusUnprocessableEntity
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+		t.Fatalf("a refused comment: %v, want the close", err)
+	}
+	check("comment refused", store, fj, nil, "closed", true, "POST issues/5/comments", "PATCH issues/5")
+
+	// (f) a record from before the comment was kept has none to post
+	store, fj, f = rig("")
+	store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5})
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
+		t.Fatal(err)
+	}
+	check("record without a comment", store, fj, nil, "closed", true, "PATCH issues/5")
+
+	// the record fails: nothing is posted or closed
+	store, fj, f = rig("")
+	store.failIntakeEvent = errors.New("db down")
+	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
+		t.Fatal("a failed record returned no error")
+	}
+	check("record failed", store, fj, nil, "open", false)
+}

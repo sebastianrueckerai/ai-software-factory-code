@@ -37,6 +37,8 @@ type alertForgejo struct {
 	// failComments is how many comment posts still answer 500: Forgejo's
 	// blip on the one call a delivery makes
 	failComments int
+	// failClose is how many issue closes still answer 500
+	failClose int
 }
 
 func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
@@ -71,8 +73,10 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/comments", &n):
 			fj.reads++
 			out := []map[string]any{}
-			for range fj.comments {
-				out = append(out, map[string]any{"body": "bot", "user": map[string]string{"login": "factory-agent"}})
+			for _, c := range fj.comments {
+				if body, ok := strings.CutPrefix(c, fmt.Sprintf("#%d ", n)); ok {
+					out = append(out, map[string]any{"body": body, "user": map[string]string{"login": "factory-agent"}})
+				}
 			}
 			for _, body := range fj.people[n] {
 				out = append(out, map[string]any{"body": body, "user": map[string]string{"login": "sebastian"}})
@@ -101,7 +105,18 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
+			state := "open"
+			if slices.Contains(fj.closed, n) {
+				state = "closed"
+			}
+			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == http.MethodPatch && fmtScan(r.URL.Path, repo+"/issues/%d", &n):
+			if fj.failClose > 0 {
+				fj.failClose--
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
 			fj.closed = append(fj.closed, n)
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
@@ -615,10 +630,10 @@ func TestAlertVerdict(t *testing.T) {
 		{"done", "pull request merged", VerdictReal},
 		{"failed", "issue closed without merge", VerdictNoise},
 		{"failed", "issue closed while no pull request of this workflow was open", VerdictNoise},
-		{"failed", "issue closed; merge state unknown: boom", ""},
-		{"failed", "attempts exhausted", ""},
-		{"failed", "pull request closed without merge", ""},
-		{"closed", "not reproducible, no answer in 14 days", ""},
+		{"failed", "issue closed; merge state unknown: boom", VerdictUnjudged},
+		{"failed", "attempts exhausted", VerdictUnjudged},
+		{"failed", "pull request closed without merge", VerdictUnjudged},
+		{"closed", "not reproducible, no answer in 14 days", VerdictUnjudged},
 	} {
 		if got := alertVerdict(c.final, c.reason); got != c.want {
 			t.Errorf("alertVerdict(%q, %q) = %q, want %q", c.final, c.reason, got, c.want)
@@ -1644,6 +1659,57 @@ func TestAClearedAlertLeavesAnAgentCard(t *testing.T) {
 	}
 	if row := r.store.alertRows()[0]; row.Verdict != "" || r.store.tasks[task.ID].Status != task.Status || len(r.fj.closed) != 0 {
 		t.Fatalf("row %+v, task %s, closed %v: nothing should change", row, r.store.tasks[task.ID].Status, r.fj.closed)
+	}
+}
+
+// The close of the issue fails after the card closed and its row was
+// judged: the intent row stays unconfirmed, and the heal, past two
+// minutes, closes the issue without a second comment.
+func TestAClearedAlertWhoseCloseFailsIsHealed(t *testing.T) {
+	ctx := context.Background()
+	r, task := clearedRig(t)
+	r.fj.failClose = 1
+	if err := r.in.CloseCleared(ctx); err == nil {
+		t.Fatal("CloseCleared = nil, want the failed close")
+	}
+	row := r.store.alertRows()[0]
+	if row.Verdict != VerdictUnjudged || r.store.tasks[task.ID].Status != "closed" || len(r.fj.closed) != 0 ||
+		r.store.confirmedCloses[[2]any{task.ID, task.IssueNumber}] {
+		t.Fatalf("row %+v, task %s, closed %v, intake %+v: want judged, closed card, open issue, an unconfirmed row",
+			row, r.store.tasks[task.ID].Status, r.fj.closed, r.store.intakeEvents)
+	}
+	intake := &Intake{Store: r.store, Forgejo: r.in.Forgejo}
+	if err := intake.HealFactoryCloses(ctx); err != nil || len(r.fj.closed) != 0 {
+		t.Fatalf("heal of a young row: %v, closed %v; want nothing", err, r.fj.closed)
+	}
+	i := slices.IndexFunc(r.store.intakeEvents, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed })
+	if i < 0 {
+		t.Fatalf("intake events %+v: the close is not recorded", r.store.intakeEvents)
+	}
+	r.store.intakeEvents[i].CreatedAt = time.Now().Add(-3 * time.Minute)
+	if err := intake.HealFactoryCloses(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"#1 factoryd: resolved at " + resolvedAt,
+		"#1 factoryd: the alert cleared at " + resolvedAt + "; nobody touched the card, so it closes."}
+	if !slices.Equal(r.fj.closed, []int64{1}) || !slices.Equal(r.fj.comments, want) || !r.store.confirmedCloses[[2]any{task.ID, task.IssueNumber}] {
+		t.Fatalf("closed %v, comments %q, confirmed %v; want [1], %q, confirmed", r.fj.closed, r.fj.comments, r.store.confirmedCloses, want)
+	}
+}
+
+// A judged alert leaves its card waiting: the fake, as the PG store, changes
+// neither half.
+func TestAClearedAlertAlreadyJudgedKeepsItsCard(t *testing.T) {
+	r, task := clearedRig(t)
+	row := r.store.alertRows()[0]
+	if err := r.store.ResolveAlert(context.Background(), row.ID, AlertSigNoz, VerdictReal, "sebastian", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.CloseClearedCard(context.Background(), row.ID, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if got := r.store.tasks[task.ID].Status; got != "waiting-human" {
+		t.Fatalf("task %s, want waiting-human", got)
 	}
 }
 

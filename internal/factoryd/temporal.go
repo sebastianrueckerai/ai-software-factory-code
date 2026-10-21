@@ -140,7 +140,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // human) it also re-reads the pull request, issue and comments through
 // in.Resync, so a webhook lost while factoryd was down still reaches the
 // workflow, and takes in the agent and human issues no webhook turned
-// into a task (in.ResyncIssues). It wakes every merge queue's head still
+// into a task (in.ResyncIssues), and finishes the factory closes it did
+// not confirm (in.HealFactoryCloses). It wakes every merge queue's head still
 // waiting for its turn, so a lost queue_turn costs at most a pass. A
 // project's chat task runs no workflow: the pass leaves it be, and
 // neither restarts a merged card, whose workflow ended at its merge: the
@@ -153,6 +154,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	}
 	if err := in.ResyncIssues(ctx); err != nil {
 		log.Printf("heal pass: issues: %v", err)
+	}
+	if err := in.HealFactoryCloses(ctx); err != nil {
+		log.Printf("heal pass: factory closes: %v", err)
 	}
 	// pulls are the projects with queued cards of a lane: their oldest
 	// queued cards start below, under the work bound, once per project

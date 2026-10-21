@@ -170,13 +170,7 @@ func (r *Roller) closeRerun(ctx context.Context, pause QueuePause, run ActionRun
 	}
 	msg := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d): the merge queue's pause has ended. Closing this issue.",
 		run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
-	if _, err := r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber, msg); err != nil {
-		return err
-	}
-	if _, err := recordFactoryClose(ctx, r.Store, t); err != nil {
-		return err
-	}
-	return r.Forgejo.CloseIssue(ctx, r.Repo.Owner, r.Repo.Name, t.IssueNumber)
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, msg)
 }
 
 // lostRunners answers, for each of run's failed statuses, the job's link

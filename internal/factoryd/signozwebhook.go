@@ -145,6 +145,7 @@ type AlertBook interface {
 	Store
 	MergeAlertDetail(ctx context.Context, id int64, detail map[string]any) error
 	NewestAlertRows(ctx context.Context, kind, namespace string) ([]Alert, error)
+	CloseClearedCard(ctx context.Context, alertID int64, taskID string) error
 }
 
 // AlertIntake serves POST /webhooks/signoz, SigNoz's webhook channel
@@ -564,13 +565,7 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	case touched:
 		return in.Store.MergeAlertDetail(ctx, row.ID, map[string]any{"touched": true})
 	}
-	if err := in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
-		if errors.Is(err, ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-	if err := in.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "closed"); err != nil {
+	if err := in.Store.CloseClearedCard(ctx, row.ID, t.ID); err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
 		}
@@ -579,14 +574,7 @@ func (in *AlertIntake) closeCleared(ctx context.Context, row Alert, at string) e
 	countOutcome(ctx, in.Metrics, in.Store, t, "closed")
 	mirrorTaskState(ctx, in.Forgejo, t, "closed")
 	taskEnded(ctx, in.Timeline, in.Store, in.Forgejo, in.Workflows, t, "closed", "the alert cleared at "+at)
-	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
-		return err
-	}
-	if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
-		"factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes."); err != nil {
-		return err
-	}
-	return in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	return closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: the alert cleared at "+at+"; nobody touched the card, so it closes.")
 }
 
 // RolloutPass raises an alert, through take as a SigNoz alert would, on
@@ -940,7 +928,7 @@ const (
 
 // alertVerdict is the verdict a SigNoz alert's task gives it when it ends
 // final for reason: real on a merge, noise on its issue closed without one,
-// none while the merge state is unknown.
+// unjudged on every other end, the unknown merge state included.
 func alertVerdict(final, reason string) string {
 	switch {
 	case final == "done":
@@ -948,7 +936,7 @@ func alertVerdict(final, reason string) string {
 	case strings.HasPrefix(reason, ReasonIssueClosed) && !strings.HasPrefix(reason, ReasonIssueClosed+ReasonMergeUnknown):
 		return VerdictNoise
 	}
-	return ""
+	return VerdictUnjudged
 }
 
 // namespaceLabels are the labels an alert's namespace arrives under, the

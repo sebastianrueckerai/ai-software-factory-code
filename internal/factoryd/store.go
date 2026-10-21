@@ -329,6 +329,13 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// ConfirmFactoryClose marks the task's factory_closed row for issue as
+	// finished: its comment posted and its issue closed. A confirmed or
+	// missing row is left as it is.
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
+	// UnconfirmedFactoryCloses lists up to limit factory_closed rows not
+	// yet confirmed and created more than olderThan ago, oldest first.
+	UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error)
 	// ReleaseHandover deletes the card's hand-over claim, the failed
 	// filing's, so a retry can claim it again.
 	ReleaseHandover(ctx context.Context, taskID string) error
@@ -946,6 +953,21 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 	return id, err
 }
 
+func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE intake_events SET confirmed_at = now() WHERE task_id = $1 AND kind = $2 AND comment_id = $3 AND confirmed_at IS NULL`,
+		taskID, IntakeFactoryClosed, issue)
+	return err
+}
+
+func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+intakeColumns+`
+		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND created_at < now() - $2 * interval '1 second'
+		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit)
+	return scanIntakeEvents(rows, err)
+}
+
 // ReleaseHandover deletes the card's hand-over claim, the failed filing's,
 // so a retry can claim it again.
 func (s *PGStore) ReleaseHandover(ctx context.Context, taskID string) error {
@@ -1316,13 +1338,18 @@ func (s *PGStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
 
-func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
-	changed, err := s.changeStatus(ctx,
-		`status = $2,
+// transitionSet and transitionWhere are TransitionTask's update: $1 the
+// task, $2 the status it moves to, $3 the statuses it may move from.
+const (
+	transitionSet = `status = $2,
 		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE finished_at END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
-		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`,
-		`id = $1 AND status = ANY($3)`, id, to, from)
+		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`
+	transitionWhere = `id = $1 AND status = ANY($3)`
+)
+
+func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
+	changed, err := s.changeStatus(ctx, transitionSet, transitionWhere, id, to, from)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
@@ -1375,26 +1402,40 @@ func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string)
 // such an update, and one that left status and gate as they were, records
 // nothing. A failed record is logged: it never fails the change.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
+	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
+	if e != nil {
+		s.recordStatus(ctx, *e)
+	}
+	return changed, err
+}
+
+// changeStatusOn is changeStatus's update on q, a transaction or the pool.
+// It answers the event to record, nil when the update changed neither
+// status nor gate, and whether where matched a row.
+func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args ...any) (*Event, bool, error) {
 	e := Event{Kind: EventTaskStatus, Actor: FactoryDecider, Via: ViaFactoryd}
 	var status, gate, wasStatus, wasGate string
-	err := s.db.QueryRowContext(ctx, `UPDATE tasks SET `+set+`
+	err := q.QueryRowContext(ctx, `UPDATE tasks SET `+set+`
 		FROM (SELECT status AS was_status, gate AS was_gate FROM tasks WHERE id = $1 FOR UPDATE) was
 		WHERE `+where+` RETURNING id, repository, issue_number, status, gate, was_status, was_gate`, args...).
 		Scan(&e.TaskID, &e.Repository, &e.IssueNumber, &status, &gate, &wasStatus, &wasGate)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return false, err
+		return nil, false, err
 	}
 	if status == wasStatus && gate == wasGate {
-		return true, nil
+		return nil, true, nil
 	}
 	e.Detail = map[string]any{"status": status, "gate": gate}
+	return &e, true, nil
+}
+
+func (s *PGStore) recordStatus(ctx context.Context, e Event) {
 	if _, err := s.Record(ctx, e); err != nil {
 		log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
 	}
-	return true, nil
 }
 
 func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {

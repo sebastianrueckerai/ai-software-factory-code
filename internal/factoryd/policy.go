@@ -717,6 +717,8 @@ type ConfigBook interface {
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	// BackfillProcess sets process on repository's open cards that have a
 	// lane and no process yet.
 	BackfillProcess(ctx context.Context, repository, process string) error
@@ -798,20 +800,6 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 		if t.Source != SourceConfig || t.Repository != a.Repo.String() {
 			continue
 		}
-		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
-		if _, err := a.Forgejo.CreateIssueComment(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber, msg); err != nil {
-			return err
-		}
-		if _, err := recordFactoryClose(ctx, a.Store, t); err != nil {
-			return err
-		}
-		if err := a.Forgejo.CloseIssue(ctx, a.Repo.Owner, a.Repo.Name, t.IssueNumber); err != nil {
-			return err
-		}
-		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
-			return err
-		}
-		countOutcome(ctx, a.Metrics, a.Store, t, "done")
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertConfigRejected, t.SHA)
 		if err != nil {
 			return err
@@ -821,6 +809,14 @@ func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
 				return err
 			}
 		}
+		msg := fmt.Sprintf("factoryd loaded commit %s (version %d); this rejection is resolved.", v.Commit, v.ID)
+		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
+			return err
+		}
+		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+			return err
+		}
+		countOutcome(ctx, a.Metrics, a.Store, t, "done")
 		log.Printf("config: commit %s closed issue #%d of rejected commit %s, task %s done", v.Commit, t.IssueNumber, t.SHA, t.ID)
 	}
 	return nil

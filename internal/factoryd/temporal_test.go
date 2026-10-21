@@ -2,11 +2,14 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"errors"
 	"log"
 	"net"
+	"net/http"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -346,5 +349,106 @@ func TestEscalateStaleFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) 
 	}
 	if want := []string{"InsertIntakeEvent"}; !slices.Equal(s.calls, want) {
 		t.Fatalf("calls = %q, want %q: the transition and the alert never ran", s.calls, want)
+	}
+}
+
+// The heal finishes a close factoryd recorded and did not confirm: the
+// recorded comment posted where the issue lacks it, the issue closed, the
+// record confirmed. It leaves a confirmed record, a young one and a task's
+// issue a person closed alone, and settles a close Forgejo refuses.
+func TestHealFactoryCloses(t *testing.T) {
+	ctx := context.Background()
+	const body = "factoryd: closing this issue."
+	type want struct {
+		calls     []string
+		comments  []string
+		state     string
+		confirmed bool
+	}
+	cases := []struct {
+		name      string
+		age       time.Duration
+		confirmed bool
+		state     string
+		comments  []string
+		failCall  string
+		failState int
+		noTask    bool
+		repo      string // the task's repository, linkshort/linkshort when empty
+		want      want
+		wantErr   bool
+	}{
+		{name: "a confirmed close of a reopened issue", age: 3 * time.Minute, confirmed: true, state: "open",
+			want: want{state: "open", confirmed: true}},
+		{name: "the comment exists", age: 3 * time.Minute, state: "open", comments: []string{body},
+			want: want{calls: []string{"GET issues/5", "GET issues/5/comments", "PATCH issues/5"}, comments: []string{body}, state: "closed", confirmed: true}},
+		{name: "the comment is missing", age: 3 * time.Minute, state: "open",
+			want: want{calls: []string{"GET issues/5", "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5"}, comments: []string{body}, state: "closed", confirmed: true}},
+		{name: "a person closed the issue", age: 3 * time.Minute, state: "closed",
+			want: want{calls: []string{"GET issues/5"}, state: "closed", confirmed: true}},
+		{name: "a young record", age: 30 * time.Second, state: "open",
+			want: want{state: "open"}},
+		{name: "a refused close", age: 3 * time.Minute, state: "open", comments: []string{body}, failCall: "PATCH issues/5", failState: http.StatusUnprocessableEntity,
+			want: want{calls: []string{"GET issues/5", "GET issues/5/comments", "PATCH issues/5"}, comments: []string{body}, state: "open", confirmed: true}},
+		{name: "a close that fails", age: 3 * time.Minute, state: "open", comments: []string{body}, failCall: "PATCH issues/5", wantErr: true,
+			want: want{calls: []string{"GET issues/5", "GET issues/5/comments", "PATCH issues/5"}, comments: []string{body}, state: "open"}},
+		{name: "a repository that does not split", age: 3 * time.Minute, state: "open", repo: "not-a-repo",
+			want: want{state: "open", confirmed: true}},
+		{name: "a deleted issue", age: 3 * time.Minute, state: "open", failCall: "GET issues/5", failState: http.StatusNotFound,
+			want: want{calls: []string{"GET issues/5"}, state: "open", confirmed: true}},
+		{name: "an issue read that fails", age: 3 * time.Minute, state: "open", failCall: "GET issues/5", wantErr: true,
+			want: want{calls: []string{"GET issues/5"}, state: "open"}},
+		{name: "a task that is gone", age: 3 * time.Minute, state: "open", noTask: true,
+			want: want{state: "open", confirmed: true}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newFakeStore()
+			if !tc.noTask {
+				store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Repository: cmp.Or(tc.repo, "linkshort/linkshort"), IssueNumber: 5})
+			}
+			store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, Body: body, CreatedAt: time.Now().Add(-tc.age)})
+			if tc.confirmed {
+				store.ConfirmFactoryClose(ctx, "t-a", 5)
+			}
+			fj := &planForgejo{issues: map[int64]*planIssue{5: {state: tc.state}}, failCall: tc.failCall, failStatus: tc.failState}
+			for _, c := range tc.comments {
+				fj.comments = append(fj.comments, &stubComment{id: 1, issue: 5, body: c, author: "factory-agent"})
+			}
+			in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+			err := in.HealFactoryCloses(ctx)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("error = %v, want error %v", err, tc.wantErr)
+			}
+			if tc.wantErr && !strings.Contains(err.Error(), "#5") {
+				t.Fatalf("error %q does not name issue #5", err)
+			}
+			var comments []string
+			for _, c := range fj.comments {
+				comments = append(comments, c.body)
+			}
+			got := want{fj.calls, comments, fj.issues[5].state, store.confirmedCloses[[2]any{"t-a", int64(5)}]}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// HealPass finishes an unconfirmed factory close.
+func TestHealPassFinishesAFactoryClose(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	if err := store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "done", Repository: "linkshort/linkshort", IssueNumber: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, CreatedAt: time.Now().Add(-3 * time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}}
+	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	HealPass(ctx, store, &fakeWorkflows{}, in, nil)
+	if fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] {
+		t.Fatalf("#5 is %q, confirmed %v; want closed and confirmed", fj.issues[5].state, store.confirmedCloses)
 	}
 }

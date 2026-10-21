@@ -351,6 +351,7 @@ type ChainStore interface {
 	ChainLadder(ctx context.Context, repository, sha string) (ChainLadder, error)
 	MarkChainRerun(ctx context.Context, repository, sha string) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
 	ChainHeldIssues(ctx context.Context, repository string) ([]int64, error)
@@ -1230,26 +1231,11 @@ func (p *ChainPoller) settleChainCards(ctx context.Context, repository, sha, ver
 // closeChainCard closes chain card card of repository as factoryd, why
 // its comment's reason.
 func (p *ChainPoller) closeChainCard(ctx context.Context, repository string, card Task, why string) {
-	repo, err := SplitRepo(repository)
-	if err != nil {
-		log.Printf("chain poller: %s: %v", repository, err)
-		return
-	}
-	if _, err := recordFactoryClose(ctx, p.Store, card); err != nil {
-		log.Printf("chain poller: %s: record the close of #%d: %v", repository, card.IssueNumber, err)
-		return
-	}
 	what := "this stall"
 	if card.Source == SourceChainRepair {
 		what = "the red this card was filed for"
 	}
-	// a comment the last tick failed to post is posted now, never twice
-	msg := "factoryd: " + why + "; " + what + " no longer stands. Closing this issue."
-	if err := p.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, msg); err != nil {
-		log.Printf("chain poller: %s: comment on #%d: %v", repository, card.IssueNumber, err)
-		return
-	}
-	if err := p.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, card.IssueNumber); err != nil {
+	if err := closeIssueAsFactory(ctx, p.Store, p.Forgejo, card, "factoryd: "+why+"; "+what+" no longer stands. Closing this issue."); err != nil {
 		log.Printf("chain poller: %s: close #%d: %v", repository, card.IssueNumber, err)
 	}
 }

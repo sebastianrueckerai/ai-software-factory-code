@@ -568,6 +568,10 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 			json.NewEncoder(w).Encode(append([]map[string]any{}, open...)) // #nosec G104 -- test stub
 			return
 		}
+		if r.Method == http.MethodGet && fmtScan(path, "issues/%d/comments", new(int64)) {
+			io.WriteString(w, `[]`)
+			return
+		}
 		if r.Method == http.MethodGet {
 			if r.Header.Get("Authorization") != "token cfg-tok" {
 				t.Errorf("GET %s without the config token", r.URL.Path)
@@ -614,6 +618,9 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodPatch && fmtScan(path, "issues/%d", &n) && fj.failClose > 0:
+			fj.failClose--
+			http.Error(w, "down", http.StatusInternalServerError)
 		case r.Method == http.MethodPatch && fmtScan(path, "issues/%d", &n):
 			fj.closed = append(fj.closed, n)
 			w.WriteHeader(http.StatusCreated)
@@ -746,6 +753,39 @@ func TestConfigAlarm(t *testing.T) {
 	// nothing open: a second resolve does nothing
 	if err := alarm.Resolve(ctx, policy.Version{ID: 14, Commit: "cbcb"}); err != nil || len(fj.closed) != 1 {
 		t.Fatalf("second resolve = %v, closed %v", err, fj.closed)
+	}
+}
+
+// A close that fails leaves the card waiting, and its alert is judged real
+// already: the heal pass may close the issue before the next load, which
+// would then never list the card again.
+func TestConfigAlarmJudgesTheAlertBeforeTheClose(t *testing.T) {
+	forgejo, fj := infraForgejo(t, nil)
+	store := newFakeStore()
+	alarm := &ConfigAlarm{Store: store, Forgejo: forgejo, Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Dir: "factory"}
+	ctx := context.Background()
+	if err := alarm.Raise(ctx, "d1d1d1d1d1d1", errors.New("bad"), policy.Version{ID: 5, Commit: "d0d0"}, true); err != nil {
+		t.Fatal(err)
+	}
+	fj.failClose = 1
+	if err := alarm.Resolve(ctx, policy.Version{ID: 6, Commit: "d2d2"}); err == nil {
+		t.Fatal("a failed close resolved")
+	}
+	for _, task := range store.tasks {
+		if task.Status != "waiting-human" {
+			t.Fatalf("task after the failed close = %q, want waiting-human", task.Status)
+		}
+	}
+	a, _, _ := store.AlertByFingerprint(ctx, AlertConfigRejected, "d1d1d1d1d1d1")
+	if a.Verdict != VerdictReal || a.Detail["fixed_by"] != "d2d2" {
+		t.Fatalf("alert after the failed close = %+v, want real, fixed_by d2d2", a)
+	}
+	if err := alarm.Resolve(ctx, policy.Version{ID: 7, Commit: "d3d3"}); err != nil {
+		t.Fatal(err)
+	}
+	a, _, _ = store.AlertByFingerprint(ctx, AlertConfigRejected, "d1d1d1d1d1d1")
+	if a.Detail["fixed_by"] != "d2d2" || !slices.Equal(fj.closed, []int64{41}) {
+		t.Fatalf("after the retry: alert %+v, closed %v, want the first judgment kept and #41 closed", a, fj.closed)
 	}
 }
 

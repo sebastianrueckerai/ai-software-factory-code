@@ -207,8 +207,8 @@ func TestAlertPreCheckClosesTransientBurst(t *testing.T) {
 	if final := rig.store.statusOf(task.ID); final != "failed" {
 		t.Fatalf("the task row is %q, want failed", final)
 	}
-	if got := rig.store.alertRowByFingerprint("fp-burst"); got.Verdict != "" {
-		t.Fatalf("the alert row's verdict %q, want open: a pre-check close judged nothing, no model spent", got.Verdict)
+	if got := rig.store.alertRowByFingerprint("fp-burst"); got.Verdict != factoryd.VerdictUnjudged {
+		t.Fatalf("the alert row's verdict %q, want unjudged: a pre-check close judged nothing, no model spent", got.Verdict)
 	}
 }
 

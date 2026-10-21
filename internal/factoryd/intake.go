@@ -38,6 +38,9 @@ type Intake struct {
 	Workflows     Workflows
 	BotUser       string // factory-agent: its own issues/comments never spawn tasks or events
 	Secret        string // HMAC-SHA256 webhook secret, shared with Forgejo's webhook config
+	// ProjectsUser is factory-projects, which closes a template update's
+	// pull request as factoryd's own close: no person's reject.
+	ProjectsUser string
 	// Policy is the configuration in force: a new task's budget, each
 	// project's approvers, who may move a card into a lane moved by the
 	// approvers.
@@ -794,6 +797,58 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// HealFactoryCloses finishes the closes factoryd recorded and did not
+// confirm (closeIssueAsFactory failed between the record and the close):
+// each unconfirmed record older than two minutes, 50 a pass. A record
+// whose task is gone or has no splittable repository, or whose issue is
+// closed already, is confirmed without a write. A refusal from Forgejo
+// (forgejoTerminal) settles the record, which no retry changes; any other
+// error joins and the record waits for the next pass.
+func (in *Intake) HealFactoryCloses(ctx context.Context) error {
+	rows, err := in.Store.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 50)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, row := range rows {
+		if err := in.healFactoryClose(ctx, row); err != nil {
+			errs = append(errs, fmt.Errorf("close of #%d of task %s: %w", row.CommentID, row.TaskID, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (in *Intake) healFactoryClose(ctx context.Context, row IntakeEvent) error {
+	t, ok, err := in.Store.Task(ctx, row.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return in.Store.ConfirmFactoryClose(ctx, row.TaskID, row.CommentID)
+	}
+	t.IssueNumber = row.CommentID
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		log.Printf("heal pass: task %s: issue #%d closes nowhere, the close is settled: %v", t.ID, row.CommentID, err)
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+	}
+	closed, err := in.Forgejo.IssueClosed(ctx, repo.Owner, repo.Name, row.CommentID)
+	if err == nil && !closed {
+		err = closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, row.Body)
+	}
+	if forgejoTerminal(err) {
+		log.Printf("heal pass: task %s: Forgejo refuses to close issue #%d, the close is settled: %v", t.ID, row.CommentID, err)
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+	}
+	if err != nil {
+		return err
+	}
+	if closed {
+		return in.Store.ConfirmFactoryClose(ctx, t.ID, row.CommentID)
+	}
+	return nil
+}
+
 // outsiderLabels are the labels intake reads off an outside account's new
 // issue: Forgejo 15 applies whatever labels its new-issue form posts, from
 // anyone, so the writers' lane and priority labels (agent, plan, human,
@@ -1343,25 +1398,15 @@ func (in *Intake) WithdrawPRCard(ctx context.Context, t Task, pr int64, why stri
 }
 
 // endPRCard ends human card t, its pull request merged or closed, as final
-// for why, settle settling its ask. factoryd closes the card's issue as its
-// own close first, with its comment posted where it is missing: a comment
-// or a close that fails leaves the card waiting, and a redelivery or the
-// heal pass ends it again.
+// for why, settle settling its ask. factoryd closes the card's issue first
+// (closeIssueAsFactory: the recorded close's comment posted where it is
+// missing): a close that fails leaves the card waiting, and a redelivery
+// or the heal pass ends it again.
 func (in *Intake) endPRCard(ctx context.Context, t Task, final, why string, settle *Event) error {
 	if t.Status != "waiting-human" {
 		return nil
 	}
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		return err
-	}
-	if _, err := recordFactoryClose(ctx, in.Store, t); err != nil {
-		return err
-	}
-	if err := in.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: "+why+"; this card ends with it."); err != nil {
-		return err
-	}
-	if err := in.Forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+	if err := closeIssueAsFactory(ctx, in.Store, in.Forgejo, t, "factoryd: "+why+"; this card ends with it."); err != nil {
 		return err
 	}
 	return in.finishHumanTask(ctx, t, final, why, settle.Actor, settle)
@@ -1431,7 +1476,7 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	switch {
 	case fresh && p.PullRequest.Merged:
 		in.humanMerged(ctx, taskID, p.Sender.UserName, p.PullRequest.Index)
-	case fresh:
+	case fresh && p.Sender.UserName != in.ProjectsUser:
 		in.intervened(ctx, t, InterventionReject)
 	}
 	return err

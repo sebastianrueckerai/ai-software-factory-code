@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -270,10 +271,46 @@ func (s *PGStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, by 
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now(), detail = detail || $4::jsonb
-		 WHERE id = $1 AND kind = $5 AND verdict IS NULL`, id, verdict, by, b, kind)
+	res, err := s.db.ExecContext(ctx, resolveAlertSQL, id, verdict, by, b, kind)
 	return oneRow(res, err, "open "+kind+" alert")
+}
+
+const resolveAlertSQL = `UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now(), detail = detail || $4::jsonb
+	WHERE id = $1 AND kind = $5 AND verdict IS NULL`
+
+// CloseClearedCard judges alert alertID unjudged by factoryd, closed as
+// cleared, and moves task taskID from waiting-human to closed, both or
+// neither: a row either update misses rolls both back with ErrNotFound.
+// The task's status event is recorded after the commit, as changeStatus
+// does, so a failed record never undoes the close.
+func (s *PGStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
+	b, err := json.Marshal(map[string]any{"closed": "cleared"})
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	res, err := tx.ExecContext(ctx, resolveAlertSQL, alertID, VerdictUnjudged, FactoryDecider, b, AlertSigNoz)
+	if err := oneRow(res, err, "open "+AlertSigNoz+" alert"); err != nil {
+		return err
+	}
+	e, changed, err := changeStatusOn(ctx, tx, transitionSet, transitionWhere, taskID, "closed", []string{"waiting-human"})
+	if err == nil && !changed {
+		err = fmt.Errorf("task %s: %w (not in waiting-human, cannot move to closed)", taskID, ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if e != nil {
+		s.recordStatus(ctx, *e)
+	}
+	return nil
 }
 
 // SetAlertTask links alert id to the task filed for it, detail merged in.
