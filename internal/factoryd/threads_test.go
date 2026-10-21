@@ -332,3 +332,68 @@ func TestPGStoreThreadSummaryAndTokens(t *testing.T) {
 		t.Errorf("ThreadTotals = %d, %v, %v, want 9000 tokens and €0.031", tokens, eur, err)
 	}
 }
+
+// The naming call's write (roadmap 304): the title lands while the
+// thread's is still the head its first message wrote — a member's rename
+// in between wins, the model names a thread once, and the fixed titles of
+// the inbox and a card thread never take a model's.
+func TestPGStoreModelTitle(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_model_title"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	repo, login, first := "sf/code", "sebastian", "Kannst du den Cache-Bug in main finden?"
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: first}); err != nil {
+		t.Fatal(err)
+	}
+	derived := ThreadTitle(first)
+	th, ok, err := s.Conversation(ctx, repo, login, 1)
+	if err != nil || !ok || th.Title != derived || th.TaskID != "" {
+		t.Fatalf("thread 1 = %+v, %v, %v, want the first message's head %q", th, ok, err, derived)
+	}
+	if ok, err := s.ModelTitle(ctx, repo, login, 1, "Cache-Bug in main", derived); err != nil || !ok {
+		t.Fatalf("ModelTitle = %t, %v, want it to land", ok, err)
+	}
+	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.Title != "Cache-Bug in main" {
+		t.Fatalf("thread 1's title = %q, want the model's", th.Title)
+	}
+	// once is once: the head no longer matches, a second call writes not
+	if ok, err := s.ModelTitle(ctx, repo, login, 1, "Another name", derived); err != nil || ok {
+		t.Fatalf("the second ModelTitle = %t, %v, want refused", ok, err)
+	}
+	// a member's rename wins the same way
+	if ok, err := s.RenameConversation(ctx, repo, login, 1, "Mine"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := s.ModelTitle(ctx, repo, login, 1, "Another name", derived); err != nil || ok {
+		t.Fatalf("ModelTitle over a rename = %t, %v, want refused", ok, err)
+	}
+	if th, _, _ := s.Conversation(ctx, repo, login, 1); th.Title != "Mine" {
+		t.Fatalf("thread 1's title = %q, want the member's", th.Title)
+	}
+	// the card thread's "#task" and the inbox's title do not match a head
+	if n, err := s.EnsureCardThread(ctx, repo, login, "t-card"); err != nil || n != 2 {
+		t.Fatalf("EnsureCardThread = %d, %v, want thread 2", n, err)
+	}
+	if ok, err := s.ModelTitle(ctx, repo, login, 2, "A card thread's name", ThreadTitle("What is stuck on this card?")); err != nil || ok {
+		t.Fatalf("ModelTitle on the card thread = %t, %v, want refused", ok, err)
+	}
+	if th, _, _ := s.Conversation(ctx, repo, login, 2); th.Title != "#t-card" || th.TaskID != "t-card" {
+		t.Fatalf("the card thread = %+v, want its #task title kept", th)
+	}
+	n, err := s.EnsureInbox(ctx, repo, login)
+	if err != nil || n != 3 {
+		t.Fatalf("EnsureInbox = %d, %v, want thread 3", n, err)
+	}
+	if ok, err := s.ModelTitle(ctx, repo, login, n, "The inbox's name", InboxTitle); err != nil || ok {
+		t.Fatalf("ModelTitle on the inbox = %t, %v, want refused even on a matching head", ok, err)
+	}
+	if th, _, _ := s.Conversation(ctx, repo, login, n); th.Title != InboxTitle {
+		t.Fatalf("the inbox's title = %q, want %q", th.Title, InboxTitle)
+	}
+}

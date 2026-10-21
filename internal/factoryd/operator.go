@@ -105,6 +105,25 @@ func (m *OperatorModel) Vision(ctx context.Context, taskID, alias, thread, ask s
 	return answer.Content, err
 }
 
+// titleTokens bounds a thread naming call's answer (roadmap 304): a
+// title is a few words.
+const titleTokens = 200
+
+// titlePrompt is the naming call's system prompt (roadmap 304): the
+// answer must work as a thread title in the switcher.
+const titlePrompt = "You name a chat thread from its first message. " +
+	"Answer with the title alone: a name, not a sentence, a few words, at most 60 characters, no surrounding quotes. " +
+	"Answer in the message's language."
+
+// Title is one naming call of chat thread thread on chat task taskID's
+// account (roadmap 304): the cheap alias reads the thread's first
+// message's head, its answer is the title before the console cleans it.
+func (m *OperatorModel) Title(ctx context.Context, taskID, thread, first string) (string, error) {
+	answer, err := m.stream(ctx, policy.PurposeTitle, titleTokens, taskID, policy.Small, thread,
+		[]OperatorMessage{{Role: "system", Content: titlePrompt}, {Role: "user", Content: first}}, nil, func(string) {})
+	return answer.Content, err
+}
+
 // stream is Stream for purpose with an answer of at most maxTokens; no
 // tools sends none, no thread names none.
 func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {

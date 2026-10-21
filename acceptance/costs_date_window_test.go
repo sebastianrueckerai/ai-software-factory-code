@@ -30,6 +30,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	gwpack "github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -698,6 +699,10 @@ func (f *acceptChat) RenameConversation(context.Context, string, string, int64, 
 	return true, nil
 }
 
+func (f *acceptChat) ModelTitle(context.Context, string, string, int64, string, string) (bool, error) {
+	return true, nil
+}
+
 func (f *acceptChat) MarkSeen(context.Context, string, string, int64) error { return nil }
 
 func (f *acceptChat) MarkCleared(context.Context, string, string, int64) error { return nil }
@@ -964,6 +969,13 @@ type gateway struct {
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// a naming call (roadmap 304) answers nothing and consumes no reply:
+	// today's head stands
+	if r.Header.Get(gwpack.HeaderFactoryPurpose) == policy.PurposeTitle {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(""))
+		return
+	}
 	var body map[string]any
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		g.t.Errorf("model call body: %v", err)

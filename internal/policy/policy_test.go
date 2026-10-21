@@ -692,6 +692,8 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{ClassChat}, PurposeOperator, Big},
 		{[]string{"coder"}, PurposeCompact, ""},
 		{[]string{ClassChat}, PurposeCompact, Small},
+		{[]string{"coder"}, PurposeTitle, ""},
+		{[]string{ClassChat}, PurposeTitle, Small},
 	} {
 		if got := d.FactoryModel(tc.classes, tc.purpose); got != tc.want {
 			t.Errorf("FactoryModel(%v, %s) = %q, want %q", tc.classes, tc.purpose, got, tc.want)

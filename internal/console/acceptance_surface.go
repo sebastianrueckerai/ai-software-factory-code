@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -449,6 +450,13 @@ func (a *AcceptanceRig) serveGateway(w http.ResponseWriter, r *http.Request) {
 	defer a.mu.Unlock()
 	if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" {
 		http.Error(w, "not the operator's call", http.StatusInternalServerError)
+		return
+	}
+	// a naming call (roadmap 304) answers nothing and consumes no reply:
+	// today's head stands
+	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeTitle {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", operatorChunk(map[string]any{"content": ""}))
 		return
 	}
 	if len(a.replies) == 0 {
@@ -1060,6 +1068,10 @@ func (a *AcceptanceRig) Conversation(_ context.Context, _, _ string, n int64) (f
 func (a *AcceptanceRig) OpenConversation(context.Context, string, string, int64) error { return nil }
 
 func (a *AcceptanceRig) RenameConversation(context.Context, string, string, int64, string) (bool, error) {
+	return true, nil
+}
+
+func (a *AcceptanceRig) ModelTitle(context.Context, string, string, int64, string, string) (bool, error) {
 	return true, nil
 }
 

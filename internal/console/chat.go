@@ -534,7 +534,8 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		notice = "I removed a GitHub token from your message; it was not stored or sent. " + c.exportForm(t.p.Name)
 	}
 	ctx := r.Context()
-	if _, err := t.thread(r, true); err != nil {
+	th, err := t.thread(r, true)
+	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
@@ -585,6 +586,12 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cannot store the message", http.StatusInternalServerError)
 			return
 		}
+	}
+	// the thread's first message names the thread once the message and
+	// its attachments are in (roadmap 304): never in the inbox, whose
+	// title stays, nor a card thread's, whose "#task" stays
+	if th.Messages == 0 && !th.Inbox && th.TaskID == "" {
+		go c.nameThread(context.WithoutCancel(ctx), t.p.Repository, t.owner, t.conv, task.ID, text)
 	}
 	t.detach()
 	t.open(w)
