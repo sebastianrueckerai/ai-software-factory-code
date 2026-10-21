@@ -546,6 +546,12 @@ func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling st
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
 }
+func (s *accBatchStore) ConfirmFactoryClose(ctx context.Context, id int64) error {
+	panic("unused")
+}
+func (s *accBatchStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]factoryd.IntakeEvent, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ReleaseHandover(ctx context.Context, taskID string) error {
 	panic("unused")
 }

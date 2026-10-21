@@ -151,15 +151,17 @@ func (o *stubObjects) Delete(_ context.Context, key string) error {
 // the card's workflow: the same Store interface the shipped PGStore
 // answers, so every activity runs its real code.
 type acceptanceStore struct {
-	mu        sync.Mutex
-	tasks     map[string]factoryd.Task
-	alerts    []factoryd.Alert
-	events    []factoryd.IntakeEvent
-	sessions  []factoryd.Session
-	queue     []string // the merge queue, oldest first
-	finals    [][2]string
-	deps      map[string][]string
-	approvals []factoryd.ApprovalRequest
+	mu     sync.Mutex
+	tasks  map[string]factoryd.Task
+	alerts []factoryd.Alert
+	events []factoryd.IntakeEvent
+	// confirmedCloses are the factory_closed rows ConfirmFactoryClose marked.
+	confirmedCloses map[int64]bool
+	sessions        []factoryd.Session
+	queue           []string // the merge queue, oldest first
+	finals          [][2]string
+	deps            map[string][]string
+	approvals       []factoryd.ApprovalRequest
 }
 
 func newAcceptanceStore() *acceptanceStore {
@@ -387,6 +389,28 @@ func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.Intake
 	}
 	s.events = append(s.events, e)
 	return e.ID, nil
+}
+
+func (s *acceptanceStore) ConfirmFactoryClose(_ context.Context, id int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.confirmedCloses == nil {
+		s.confirmedCloses = map[int64]bool{}
+	}
+	s.confirmedCloses[id] = true
+	return nil
+}
+
+func (s *acceptanceStore) UnconfirmedFactoryCloses(_ context.Context, olderThan time.Duration, limit int) ([]factoryd.IntakeEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.IntakeEvent
+	for _, e := range s.events {
+		if e.Kind == factoryd.IntakeFactoryClosed && !s.confirmedCloses[e.ID] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (s *acceptanceStore) ReleaseHandover(_ context.Context, taskID string) error {

@@ -42,12 +42,13 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
-	tasks        map[string]Task
-	sessions     map[string]Session
-	started      map[string]bool
-	finished     map[string]time.Time
-	settled      map[string]bool
-	intakeEvents []IntakeEvent
+	tasks           map[string]Task
+	sessions        map[string]Session
+	started         map[string]bool
+	finished        map[string]time.Time
+	settled         map[string]bool
+	intakeEvents    []IntakeEvent
+	confirmedCloses map[int64]bool
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
 	failIntakeEvent error
 	events          []Event // newest last, as NewestTaskEvents reads them
@@ -352,6 +353,24 @@ func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64
 	}
 	s.intakeEvents = append(s.intakeEvents, e)
 	return e.ID, nil
+}
+
+func (s *fakeStore) ConfirmFactoryClose(ctx context.Context, id int64) error {
+	if s.confirmedCloses == nil {
+		s.confirmedCloses = map[int64]bool{}
+	}
+	s.confirmedCloses[id] = true
+	return nil
+}
+
+func (s *fakeStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
+	var out []IntakeEvent
+	for _, e := range s.intakeEvents {
+		if e.Kind == IntakeFactoryClosed && !s.confirmedCloses[e.ID] && time.Since(e.CreatedAt) > olderThan && len(out) < limit {
+			out = append(out, e)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) ReleaseHandover(ctx context.Context, taskID string) error {
@@ -2338,6 +2357,72 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 	answers, _, _ := answersFrom(events)
 	if want := []string{`sebastian (2026-10-15), to "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs": gateway restarted`}; !slices.Equal(answers, want) {
 		t.Fatalf("answers = %q, want %q", answers, want)
+	}
+}
+
+// A factory_closed row keeps its comment and waits for its confirmation:
+// listed once older than the bound, oldest first, until confirmed; a
+// confirmation is final, and no other kind of row is ever confirmed.
+func TestFactoryCloseConfirmation(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-fc", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9}); err != nil {
+		t.Fatal(err)
+	}
+	var ids []int64
+	for _, e := range []IntakeEvent{
+		{TaskID: "t-fc", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 9, Body: "closing: done"},
+		{TaskID: "t-fc", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 10, Body: "closing: also done"},
+		{TaskID: "t-fc", Kind: "issue_comment", Author: "sebastian", CommentID: 11, Body: "hello"},
+	} {
+		id, err := s.InsertIntakeEvent(ctx, e)
+		if err != nil || id == 0 {
+			t.Fatalf("insert %s: id %d, err %v", e.Kind, id, err)
+		}
+		ids = append(ids, id)
+	}
+	got, err := s.UnconfirmedFactoryCloses(ctx, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != ids[0] || got[1].ID != ids[1] {
+		t.Fatalf("unconfirmed = %+v, want rows %d then %d", got, ids[0], ids[1])
+	}
+	if e := got[0]; e.TaskID != "t-fc" || e.Kind != IntakeFactoryClosed || e.CommentID != 9 || e.Body != "closing: done" || e.CreatedAt.IsZero() {
+		t.Fatalf("unconfirmed[0] = %+v", e)
+	}
+	if got, err := s.UnconfirmedFactoryCloses(ctx, 2*time.Minute, 10); err != nil || len(got) != 0 {
+		t.Fatalf("a row made now, olderThan 2m: %+v, %v", got, err)
+	}
+	if got, err := s.UnconfirmedFactoryCloses(ctx, 0, 1); err != nil || len(got) != 1 || got[0].ID != ids[0] {
+		t.Fatalf("limit 1: %+v, %v", got, err)
+	}
+	if err := s.ConfirmFactoryClose(ctx, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ConfirmFactoryClose(ctx, ids[0]); err != nil {
+		t.Fatalf("second confirm: %v", err)
+	}
+	if err := s.ConfirmFactoryClose(ctx, ids[2]); err != nil {
+		t.Fatalf("confirm of a comment row: %v", err)
+	}
+	if err := s.ConfirmFactoryClose(ctx, 999999); err != nil {
+		t.Fatalf("confirm of a missing row: %v", err)
+	}
+	got, err = s.UnconfirmedFactoryCloses(ctx, 0, 10)
+	if err != nil || len(got) != 1 || got[0].ID != ids[1] {
+		t.Fatalf("after confirming %d: %+v, %v", ids[0], got, err)
+	}
+	var confirmed int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM intake_events WHERE confirmed_at IS NOT NULL`).Scan(&confirmed); err != nil || confirmed != 1 {
+		t.Fatalf("confirmed rows = %d, err %v, want 1", confirmed, err)
 	}
 }
 

@@ -329,6 +329,13 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// ConfirmFactoryClose marks the factory_closed row id as finished: its
+	// comment posted and its issue closed. A confirmed or missing row, or
+	// one of another kind, is left as it is.
+	ConfirmFactoryClose(ctx context.Context, id int64) error
+	// UnconfirmedFactoryCloses lists up to limit factory_closed rows not
+	// yet confirmed and created more than olderThan ago, oldest first.
+	UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error)
 	// ReleaseHandover deletes the card's hand-over claim, the failed
 	// filing's, so a retry can claim it again.
 	ReleaseHandover(ctx context.Context, taskID string) error
@@ -944,6 +951,20 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 		return 0, nil
 	}
 	return id, err
+}
+
+func (s *PGStore) ConfirmFactoryClose(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE intake_events SET confirmed_at = now() WHERE id = $1 AND kind = $2 AND confirmed_at IS NULL`, id, IntakeFactoryClosed)
+	return err
+}
+
+func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
+	rows, err := s.db.QueryContext(ctx,
+		`SELECT `+intakeColumns+`
+		 FROM intake_events WHERE kind = $1 AND confirmed_at IS NULL AND created_at < now() - $2 * interval '1 second'
+		 ORDER BY id LIMIT $3`, IntakeFactoryClosed, olderThan.Seconds(), limit)
+	return scanIntakeEvents(rows, err)
 }
 
 // ReleaseHandover deletes the card's hand-over claim, the failed filing's,
