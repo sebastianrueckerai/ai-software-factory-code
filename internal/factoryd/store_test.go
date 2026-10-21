@@ -1207,8 +1207,11 @@ func (s *fakeStore) ResolveAlert(ctx context.Context, id int64, kind, verdict, b
 
 func (s *fakeStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
 	t, ok := s.tasks[taskID]
-	if !ok || t.Status != "waiting-human" {
-		return fmt.Errorf("task %s: %w", taskID, ErrNotFound)
+	s.alertsMu.Lock()
+	open := slices.ContainsFunc(s.alerts, func(a Alert) bool { return a.ID == alertID && a.Kind == AlertSigNoz && a.Verdict == "" })
+	s.alertsMu.Unlock()
+	if !ok || t.Status != "waiting-human" || !open {
+		return fmt.Errorf("task %s or alert %d: %w", taskID, alertID, ErrNotFound)
 	}
 	if err := s.ResolveAlert(ctx, alertID, AlertSigNoz, VerdictUnjudged, FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err

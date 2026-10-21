@@ -1349,9 +1349,7 @@ const (
 )
 
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
-	changed, err := s.changeStatus(ctx,
-		transitionSet,
-		transitionWhere, id, to, from)
+	changed, err := s.changeStatus(ctx, transitionSet, transitionWhere, id, to, from)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}

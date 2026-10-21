@@ -1697,6 +1697,22 @@ func TestAClearedAlertWhoseCloseFailsIsHealed(t *testing.T) {
 	}
 }
 
+// A judged alert leaves its card waiting: the fake, as the PG store, changes
+// neither half.
+func TestAClearedAlertAlreadyJudgedKeepsItsCard(t *testing.T) {
+	r, task := clearedRig(t)
+	row := r.store.alertRows()[0]
+	if err := r.store.ResolveAlert(context.Background(), row.ID, AlertSigNoz, VerdictReal, "sebastian", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.store.CloseClearedCard(context.Background(), row.ID, task.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want ErrNotFound", err)
+	}
+	if got := r.store.tasks[task.ID].Status; got != "waiting-human" {
+		t.Fatalf("task %s, want waiting-human", got)
+	}
+}
+
 func TestAClearedAlertSkipsAFinalCard(t *testing.T) {
 	r, task := clearedRig(t)
 	task.Status = "done"

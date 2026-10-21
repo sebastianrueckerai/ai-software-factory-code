@@ -740,9 +740,12 @@ func (s *acceptanceStore) MergeAlertDetail(_ context.Context, id int64, detail m
 func (s *acceptanceStore) CloseClearedCard(ctx context.Context, alertID int64, taskID string) error {
 	s.mu.Lock()
 	t, ok := s.tasks[taskID]
+	open := slices.ContainsFunc(s.alerts, func(a factoryd.Alert) bool {
+		return a.ID == alertID && a.Kind == factoryd.AlertSigNoz && a.Verdict == ""
+	})
 	s.mu.Unlock()
-	if !ok || t.Status != "waiting-human" {
-		return fmt.Errorf("task %s: %w", taskID, factoryd.ErrNotFound)
+	if !ok || t.Status != "waiting-human" || !open {
+		return fmt.Errorf("task %s or alert %d: %w", taskID, alertID, factoryd.ErrNotFound)
 	}
 	if err := s.ResolveAlert(ctx, alertID, factoryd.AlertSigNoz, factoryd.VerdictUnjudged, factoryd.FactoryDecider, map[string]any{"closed": "cleared"}); err != nil {
 		return err
