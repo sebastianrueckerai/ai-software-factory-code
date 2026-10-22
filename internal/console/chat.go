@@ -546,7 +546,12 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pos, wait := c.turns.enter(t.key())
-	defer c.turns.leave(t.key())
+	joined := false
+	defer func() {
+		if !joined {
+			c.turns.leave(t.key())
+		}
+	}()
 	if text == chatCompactCommand {
 		t.detach()
 		t.open(w)
@@ -592,6 +597,15 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	// title stays, nor a card thread's, whose "#task" stays
 	if th.Messages == 0 && !th.Inbox && th.TaskID == "" {
 		go c.nameThread(context.WithoutCancel(ctx), t.p.Repository, t.owner, t.conv, task.ID, text)
+	}
+	// a listening turn in flight reads the message at its next model call
+	// and answers it in its own stream
+	if pos > 0 && c.turns.join(t.key(), wait, id) {
+		joined = true
+		t.open(w)
+		t.send("joined", map[string]int64{"id": id})
+		t.send("done", struct{}{})
+		return
 	}
 	t.detach()
 	t.open(w)
@@ -724,11 +738,19 @@ func scrubTokens(text string) (string, bool) {
 // run answers the conversation's newest message: the server's notice
 // first, when there is one, which the model reads from the next turn on,
 // then model calls on chat task id, each ending its tool calls, until an
-// answer calls none or proposes one. Each call first checks the task's
-// budget.
+// answer calls none or proposes one and no message came meanwhile. A
+// message the member sends while it runs joins it and the next call
+// reads it; one still unread when the turn fails lands unanswered. Each
+// call first checks the task's budget.
 func (t *turn) run(id, notice string) {
 	t.task = id
 	ctx := t.r.Context()
+	t.c.turns.listen(t.key())
+	defer func() {
+		for ids := t.c.turns.heard(t.key(), true); len(ids) > 0; ids = t.c.turns.heard(t.key(), true) {
+			t.land(ids)
+		}
+	}()
 	err := t.begin()
 	var msgs []factoryd.OperatorMessage
 	if err == nil {
@@ -810,11 +832,33 @@ func (t *turn) run(id, notice string) {
 		if !t.save(row) {
 			return
 		}
-		if len(answer.ToolCalls) == 0 || proposed || row.Kind == factoryd.MessageAsk {
+		ended := len(answer.ToolCalls) == 0 || proposed || row.Kind == factoryd.MessageAsk
+		if ids := t.c.turns.heard(t.key(), ended); len(ids) > 0 {
+			t.land(ids)
+			t.freshRead = time.Now()
+			t.send("heard", map[string][]int64{"ids": ids})
+			if msgs, err = t.context(); err != nil {
+				log.Printf("console: the chat context of %s: %v", t.p.Name, err)
+				t.fail("The project could not be read.")
+				return
+			}
+			continue
+		}
+		if ended {
 			t.send("done", struct{}{})
 			return
 		}
 		msgs = append(append(msgs, answer), results...)
+	}
+}
+
+// land puts the messages that joined the turn, rows ids, after the rows
+// it stored so far, where the context reads them.
+func (t *turn) land(ids []int64) {
+	for _, id := range ids {
+		if err := t.c.cfg.Chat.StartQueued(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, id); err != nil {
+			log.Printf("console: land the joined message %d of %s on %s: %v", id, t.owner, t.p.Repository, err)
+		}
 	}
 }
 
@@ -1311,7 +1355,7 @@ func (t *turn) since(at time.Time) string {
 // thread's newest row.
 func (t *turn) begin() error {
 	t.freshRead = time.Now()
-	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.a.s.user, t.conv, 1)
+	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.owner, t.conv, 1)
 	if err != nil {
 		return err
 	}

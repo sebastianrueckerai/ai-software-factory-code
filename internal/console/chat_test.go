@@ -749,6 +749,9 @@ type chatGateway struct {
 	// hears of each call before it waits
 	hold    chan struct{}
 	arrived chan struct{}
+	// slow, the lab's, delays each answer, so a member can write while a
+	// turn runs
+	slow time.Duration
 	// lenient makes a lab of the gateway: a call off the script answers 500
 	// "unscripted chat turn" and no check fails the test
 	lenient bool
@@ -779,6 +782,10 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if g.hold != nil {
 		<-g.hold
 	}
+	g.mu.Lock()
+	slow := g.slow
+	g.mu.Unlock()
+	time.Sleep(slow)
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	var body map[string]any

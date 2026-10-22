@@ -18,11 +18,12 @@ import (
 
 // The threads (roadmap 239): a member's many conversations per project,
 // one turn at a time on each. A second message while a turn runs is
-// stored at once as queued and answers queued with its place; when the
-// turn ends the next starts, in the server, so one tab, two tabs and a
-// reload behave alike. Every other writer of a thread's rows, an answer's
-// and factoryd's pokes, takes the same line (Behind, roadmap 263), so no
-// row lands inside a turn. Threads run in parallel, under the project's
+// stored at once as queued; a turn of the agent's that listens takes it
+// at its next model call, else it answers queued with its place and
+// starts its own turn when the turn ends, in the server, so one tab, two
+// tabs and a reload behave alike. Every other writer of a thread's rows,
+// an answer's and factoryd's pokes, takes the same line (Behind, roadmap
+// 263), so no row lands inside a turn. Threads run in parallel, under the project's
 // bound on model turns.
 
 // turnGate serialises the turns of each thread and bounds the model turns
@@ -35,9 +36,13 @@ type turnGate struct {
 }
 
 // threadLine is one thread's turn in flight and the turns waiting behind
-// it, each woken by its channel's close.
+// it, each woken by its channel's close. listening says the turn in
+// flight takes the messages sent while it runs; heard holds their ids
+// until it does.
 type threadLine struct {
-	waiting []chan struct{}
+	waiting   []chan struct{}
+	listening bool
+	heard     []int64
 }
 
 func newTurnGate() *turnGate {
@@ -83,6 +88,49 @@ func (g *turnGate) leave(key string) {
 	next := line.waiting[0]
 	line.waiting = line.waiting[1:]
 	close(next)
+}
+
+// listen opens the thread's turn in flight to the messages sent while it
+// runs.
+func (g *turnGate) listen(key string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if line := g.threads[key]; line != nil {
+		line.listening = true
+	}
+}
+
+// join hands message id to the thread's turn in flight when it listens
+// and the sender, waiting on wait, is first in line: true, and the sender
+// has left the line, so it does not leave.
+func (g *turnGate) join(key string, wait <-chan struct{}, id int64) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	line := g.threads[key]
+	if line == nil || !line.listening || len(line.waiting) == 0 || line.waiting[0] != wait {
+		return false
+	}
+	line.waiting = line.waiting[1:]
+	line.heard = append(line.heard, id)
+	return true
+}
+
+// heard takes the ids joined to the thread's turn in flight since the
+// last take. last with none joined closes the turn to more, so a message
+// sent after it waits for its own turn.
+func (g *turnGate) heard(key string, last bool) []int64 {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	line := g.threads[key]
+	if line == nil {
+		return nil
+	}
+	ids := line.heard
+	line.heard = nil
+	if last && len(ids) == 0 {
+		line.listening = false
+	}
+	return ids
 }
 
 // working reports whether a turn runs or waits on the thread.

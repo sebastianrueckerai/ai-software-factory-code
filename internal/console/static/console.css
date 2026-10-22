@@ -780,6 +780,13 @@ details.tool summary::-webkit-details-marker { display: none; }
 details.tool summary::before { content: ""; width: 0; height: 0; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .12s; flex: none; }
 details.tool[open] summary::before { transform: rotate(90deg); }
 details.tool summary:hover { color: var(--text); }
+details.calls { margin: 8px 0 0; font: 12px/1.5 var(--font-mono); color: var(--text-faint); }
+details.calls > summary { display: flex; align-items: center; gap: 8px; width: max-content; padding: 2px 10px; cursor: pointer; list-style: none; }
+details.calls > summary::-webkit-details-marker { display: none; }
+details.calls > summary::before { content: ""; width: 0; height: 0; border-left: 5px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .12s; flex: none; }
+details.calls[open] > summary::before { transform: rotate(90deg); }
+details.calls > summary:hover { color: var(--text); }
+details.calls > :last-child { margin-bottom: 0; }
 details.tool pre, .proposal pre { margin: 0; padding: 6px 10px 8px 23px; border-top: 1px solid var(--line); background: none; max-height: 16rem; overflow: auto; white-space: pre-wrap; font-size: 12px; }
 .refused { margin: 8px 0; color: var(--text-muted); font: 12px var(--font-mono); }
 .proposal { margin: 10px 0; padding: 11px 14px 12px; border: 1px solid var(--line-strong); border-left: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 5%, var(--bg-raised)); }
@@ -799,8 +806,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .applied .undone { color: var(--text-faint); }
 .expired { color: var(--text-faint); font-style: italic; }
 .chat-error { margin: 8px 0; color: var(--need-text); font: 12px var(--font-mono); }
-.cursor { display: inline-block; width: .55em; height: 1.05em; margin-left: 2px; vertical-align: -2px; background: var(--accent); animation: blink 1s steps(1) infinite; }
-@keyframes blink { 50% { opacity: 0; } }
+.thinking { display: flex; align-items: center; gap: 7px; margin: 6px 0 0; color: var(--accent); font: 12px var(--font-mono); animation: breathe 1.6s ease-in-out infinite; }
+.thinking::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 /* the composer: a prompt line with the cyan mark, Send at its right */
 .chat-form { flex: none; display: block; margin: 0; padding: 10px 14px 12px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
 .prompt { display: flex; align-items: flex-end; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--line-strong); background: var(--bg); transition: border-color .12s, box-shadow .12s; }
@@ -810,11 +817,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .prompt textarea { flex: 1; min-width: 0; max-width: none; padding: 0; border: 0; outline: none; background: none; resize: none; font-size: 14px; line-height: 22px; }
 .prompt textarea:focus-visible { box-shadow: none; }
 .prompt button { margin: 0; }
-.chat-queue { list-style: none; margin: 0; padding: 0 14px 10px; display: flex; flex-direction: column; gap: 4px; }
-.chat-queue li { display: flex; gap: 6px; align-items: center; }
-.chat-queue .queued-text { flex: 1; height: auto; min-height: 26px; padding: 2px 8px; justify-content: flex-start; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-muted); border: 1px dashed var(--btn-line); font-size: 13px; font-weight: 400; }
-.chat-queue textarea { flex: 1; max-width: none; resize: none; }
-.chat-queue .queued-remove { width: 26px; padding: 0; }
 /* the images and documents riding the next message: chips above the
    prompt, and thumbnails or link chips under a sent row */
 .chat-images, .chat-docs { list-style: none; margin: 0 0 6px; padding: 0 2px; display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1135,6 +1137,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .thead .thint.when { flex: none; }
 .thead.inbox .ttl { color: var(--need-text); }
 .chat-queued { margin: 2px 0 0; color: var(--text-faint); font: 11.5px var(--font-mono); }
+.chat-read { margin: 2px 0 0; color: var(--st-done); font: 11.5px var(--font-mono); }
 .msg.poke .av { border-color: var(--need-text); color: var(--need-text); }
 .msg.poke .av::before { background: var(--need); }
 .msg.poke .who .name { color: var(--need-text); }
@@ -1269,7 +1272,6 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .001ms !important; animation-iteration-count: 1 !important; transition-duration: .001ms !important; }
-  .cursor { display: none; }
 }
 
 /* C24: the secondary pages follow one readout grammar — a small-caps

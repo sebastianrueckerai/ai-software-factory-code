@@ -13,7 +13,7 @@ import (
 )
 
 // The project agent's panel beside the board: a writer's project page
-// holds it with the input and the queue under it, the tabs of a narrow
+// holds it with the input, the tabs of a narrow
 // screen under the status line, which spans both, the chat's keys and its
 // script; a reader's (a project they see but do not write) holds
 // it without the input, the history it may not read or the keys; a member
@@ -60,7 +60,6 @@ func TestChatPanel(t *testing.T) {
 <button type="submit">Send</button></div>
 <div class="own"><div class="own-l"><span class="cmds"><button type="button" class="cmd" data-cmd="compact" title="the older turns of this thread become a summary">/compact</button><button type="button" class="cmd" data-cmd="new" title="a new thread">/new</button></span></div></div>
 </form>
-<ol id="chat-queue" class="chat-queue" aria-label="Your messages waiting for the turn to end" title="Each goes out as its own turn once the one before it ends; click one to edit it. They live in this page: a reload drops them." hidden></ol>
 </div><script src="/static/chat.js" defer></script>
 </section>
 <div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>
@@ -95,7 +94,7 @@ func TestChatPanel(t *testing.T) {
 <div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>`; !strings.Contains(body, want) {
 		t.Errorf("the reader's page lacks\n%s", want)
 	}
-	for _, unwanted := range []string{"chat-form", "chat-input", "chat-queue", "data-login", "<kbd>/</kbd>", "switcher", "thread-head"} {
+	for _, unwanted := range []string{"chat-form", "chat-input", "data-login", "<kbd>/</kbd>", "switcher", "thread-head"} {
 		if strings.Contains(body, unwanted) {
 			t.Errorf("the reader's page holds %s", unwanted)
 		}
@@ -120,11 +119,10 @@ func TestChatPanel(t *testing.T) {
 // it and Skip, as the stream's proposal does in the same markup, and a
 // used one is its folded call with the word used. The select of older
 // conversations offers the current one and each other, and is empty when
-// there is no other. The queue: a message sent while no turn streams goes
-// out at once; three sent during the turn wait, one edited, one removed,
-// and each turn's end sends the next of the rest, in order; its markup
-// labels each edit and remove control. Run under node, which the test
-// needs.
+// there is no other. A run of tool calls shows its newest, the earlier
+// ones folded behind one line, a single call stays as it is; a member's
+// row the agent has not read yet says so, and says read once it has. Run
+// under node, which the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -179,24 +177,13 @@ console.log(JSON.stringify({
     choices: ["Postgres", "SQLite"], settled: true, reason: "answered by sebastian · 09:14"}),
   settledPoke: chatView.factoryHTML({id: 11, role: "assistant", kind: "poke", content: "#7 failed.", at: "2026-10-11T09:16:00Z",
     choices: ["Retry", "Leave it"], settled: true, reason: "moved on · 09:16"}),
-  queue: (function () {
-    var started = [], drawn = [], busy = false;
-    var q = chatView.queue(function (it) { started.push(it.text); busy = true; }, function () { return busy; },
-      function (items) { drawn.push(items.map(function (it) { return it.text; }).join("|")); });
-    q.add("first");
-    q.add("second");
-    q.add("third");
-    q.add("fourth");
-    q.edit(0, " second, edited ");
-    q.remove(1);
-    for (var i = 0; i < 3; i++) {
-      busy = false;
-      q.flush();
-    }
-    return JSON.stringify({started: started, drawn: drawn});
-  })(),
-  queueHTML: chatView.queueHTML([{text: "a <b>"}, {text: "c"}]),
-  queueHTMLImages: chatView.queueHTML([{text: "look"}, {text: "see", images: [{}, {}]}]),
+  calls: chatView.historyHTML([{role: "user", content: "look", at: "2026-10-11T09:30:01Z"},
+    {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "c1", name: "board", arguments: "{}", result: "3 cards"},
+      {id: "c2", name: "card", arguments: "{}", result: "Refused: no card 9"}]},
+    {role: "assistant", content: "", at: "2026-10-11T09:30:03Z", tool_calls: [{id: "c3", name: "ci", arguments: "{}", result: "green"}]},
+    {role: "assistant", content: "All green.", at: "2026-10-11T09:30:04Z"}], "sebastian", []),
+  queuedRow: chatView.userHTML("sebastian", "also this", "2026-10-11T09:30:05Z", true),
+  readRow: chatView.readHTML,
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
     chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)])
 }));`
@@ -283,15 +270,15 @@ console.log(JSON.stringify({
 			`<div class="esc-b"><div class="said"><p>Which store?</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>answered by sebastian · 09:14</p></div><p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">answered by sebastian · 09:14</span><span class="ft">Which store?</span></p></div>`},
 		{"settledPoke", `<div class="msg agent poke settled" data-message="11"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:16Z</time></p>` +
 			`<div class="said"><p><a href="#issue-7" class="cardref" data-issue="7">#7</a> failed.</p></div><p class="settled-why"><span class="visually-hidden">Settled: </span>moved on · 09:16</p><p class="fold" role="button" tabindex="0" aria-expanded="false" data-fold><span class="visually-hidden">Settled: </span><span class="fw">moved on · 09:16</span><span class="ft">#7 failed.</span></p></div>`},
-		{"queue", `{"started":["first","second, edited","fourth"],"drawn":["","second","second|third","second|third|fourth","second, edited|third|fourth","second, edited|fourth","fourth","",""]}`},
-		{"queueHTML", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: a &lt;b&gt;">a &lt;b&gt;</button>` +
-			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
-			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2: c">c</button>` +
-			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
-		{"queueHTMLImages", `<li><button type="button" class="queued-text" data-edit="0" aria-label="Edit queued message 1: look">look</button>` +
-			`<button type="button" class="queued-remove" data-remove="0" aria-label="Remove queued message 1">×</button></li>` +
-			`<li><button type="button" class="queued-text" data-edit="1" aria-label="Edit queued message 2: see">see · 2 images</button>` +
-			`<button type="button" class="queued-remove" data-remove="1" aria-label="Remove queued message 2">×</button></li>`},
+		{"calls", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">look</p></div>` +
+			agent + `<details class="calls"><summary>2 earlier calls</summary>` +
+			`<details class="tool"><summary>🔧 board · 3 cards</summary><pre>{}` + "\n\n" + `3 cards</pre></details>` +
+			`<p class="refused"><code>card</code> Refused: no card 9</p></details>` +
+			`<details class="tool"><summary>🔧 ci · green</summary><pre>{}` + "\n\n" + `green</pre></details>` +
+			`<div class="said"><p>All green.</p></div></div>`},
+		{"queuedRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
+			`<p class="said">also this</p><p class="meta chat-queued">not read yet: the agent reads it after its current step</p></div>`},
+		{"readRow", `<p class="meta chat-read">✓ read by the agent</p>`},
 		{"share", `[384,384,720,500.25]`},
 	} {
 		if got[c.name] != c.want {

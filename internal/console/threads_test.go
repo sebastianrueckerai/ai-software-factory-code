@@ -2,6 +2,7 @@ package console
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -25,15 +26,16 @@ func waitUntil(t *testing.T, what string, ok func() bool) {
 	t.Fatalf("waited 5 s for %s", what)
 }
 
-// A second message while a turn runs is stored at once as queued, answers
-// queued with its place, and starts its turn when the first ends: the
-// first turn's answer lands before it, and the second turn reads it
-// (roadmap 239, decision 4).
+// A message sent while a turn that takes none runs, here a /compact, is
+// stored at once as queued, answers queued with its place, and starts its
+// own turn when that one ends, after the turn's rows, reading the project
+// then (roadmap 239, decision 4).
 func TestChatTurnsSerialise(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b", "c")
 	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
-	g.replies = [][]string{{say("first answer")}, {say("second answer")}}
+	g.replies = [][]string{{call(1, "board", `{}`)}, {say("second answer")}}
 	type result struct {
 		code   int
 		events []string
@@ -44,84 +46,108 @@ func TestChatTurnsSerialise(t *testing.T) {
 		into <- result{code, events, err}
 	}
 	first, second := make(chan result, 1), make(chan result, 1)
-	go post("first", first)
+	go post("/compact", first)
 	<-g.arrived
 	go post("second", second)
-	queued := func() int {
+	waitUntil(t, "the second message stored as queued", func() bool {
 		chat.mu.Lock()
 		defer chat.mu.Unlock()
-		n := 0
-		for _, m := range chat.msgs["sf/code sebastian"] {
-			if m.Queued {
-				n++
-			}
-		}
-		return n
-	}
-	waitUntil(t, "the second message stored as queued", func() bool { return queued() == 1 })
+		return slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Queued })
+	})
 	if !r.c.turns.working(threadKey("sf/code", "sebastian", 1)) {
 		t.Fatal("the thread does not show a turn in flight")
 	}
+	released := time.Now()
 	close(g.hold)
 	a, b := <-first, <-second
 	if a.err != nil || b.err != nil {
 		t.Fatal(a.err, b.err)
 	}
-	equal(t, "the first stream", []any{a.code, a.events}, []any{200, []string{`text {"text":"first answer"}`, `done {}`}})
-	equal(t, "the second stream", []any{b.code, b.events},
-		[]any{200, []string{`queued {"position":1}`, `text {"text":"second answer"}`, `done {}`}})
+	equal(t, "the first stream", []any{a.code, compactedRows(t, a.events), a.events[len(a.events)-1]}, []any{200, []int{2}, `done {}`})
+	var kinds []string
+	for _, e := range b.events {
+		kind, _, _ := strings.Cut(e, " ")
+		kinds = append(kinds, kind)
+	}
+	equal(t, "the second stream", []any{b.code, b.events[0], kinds, b.events[len(b.events)-2]},
+		[]any{200, `queued {"position":1}`, []string{"queued", "tool", "text", "done"}, `text {"text":"second answer"}`})
 	msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var order []string
 	for _, m := range msgs {
-		order = append(order, m.Role+" "+m.Kind+":"+m.Content)
+		order = append(order, m.Role+":"+m.Content)
 	}
-	equal(t, "the thread", order, []string{"user :first", "assistant :first answer", "user :second", "assistant :second answer"})
-	equal(t, "the second turn's messages", messages(t, g.calls()[1])[1:], []map[string]any{
-		{"role": "user", "content": "first"}, {"role": "assistant", "content": earlier("first answer")}, {"role": "user", "content": "second"}})
+	equal(t, "the thread", order, []string{"user:a1", "assistant:a2", "user:b1", "assistant:b2", "user:c1", "assistant:c2", "user:second", "assistant:", "assistant:second answer"})
+	equal(t, "the second turn's last message", contents(t, g.calls()[0])[4:], []string{"user second"})
+	if read := msgs[7].ToolCalls[0].ReadAt; read.Before(released) {
+		t.Fatalf("the queued turn's board read is stamped %v, before the turn ahead ended after %v", read, released)
+	}
 	if r.c.turns.working(threadKey("sf/code", "sebastian", 1)) {
 		t.Fatal("the thread still shows a turn in flight after both ended")
 	}
 }
 
-// A queued turn reads the project when it starts, after the turn ahead of
-// it ends, not when its message came: its read is stamped then.
-func TestQueuedTurnReadsWhenItStarts(t *testing.T) {
+// A message sent while the agent's turn runs joins it: stored at once as
+// queued, its own stream says joined and ends, and the turn's next model
+// call, after the tool call in flight, reads it, landed after the rows the
+// turn stored so far. The turn's stream says heard and answers it, and the
+// turn reads the project again when it takes the message.
+func TestChatMessageJoinsTheTurn(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
-	g.replies = [][]string{{say("first answer")}, {call(1, "board", `{}`)}, {say("second answer")}}
-	done := make(chan error, 2)
-	post := func(text string) {
-		_, _, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {text}})
-		done <- err
-	}
-	go post("first")
+	g.replies = [][]string{{call(1, "board", `{}`)}, {call(2, "board", `{}`)}, {say("both read")}}
+	first := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"first"}})
+		if err != nil {
+			t.Error(err)
+		}
+		first <- events
+	}()
 	<-g.arrived
-	go post("second")
-	waitUntil(t, "the second message stored as queued", func() bool {
-		chat.mu.Lock()
-		defer chat.mu.Unlock()
-		return slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Queued })
-	})
+	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"second"}})
+	chat.mu.Lock()
+	i := slices.IndexFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Queued })
+	var id int64
+	if i >= 0 {
+		id = chat.msgs["sf/code sebastian"][i].ID
+	}
+	chat.mu.Unlock()
+	equal(t, "the second stream", []any{i >= 0, code, events}, []any{true, 200, []string{fmt.Sprintf(`joined {"id":%d}`, id), `done {}`}})
 	released := time.Now()
 	close(g.hold)
-	for range 2 {
-		if err := <-done; err != nil {
-			t.Fatal(err)
+	var kinds []string
+	var heard string
+	for _, e := range <-first {
+		kind, data, _ := strings.Cut(e, " ")
+		kinds = append(kinds, kind)
+		if kind == "heard" {
+			heard = data
 		}
 	}
+	equal(t, "the first stream", []any{kinds, heard}, []any{[]string{"tool", "heard", "tool", "text", "done"}, fmt.Sprintf(`{"ids":[%d]}`, id)})
 	msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(msgs) != 5 || len(msgs[3].ToolCalls) != 1 {
-		t.Fatalf("the thread holds %d rows, want the second turn's board read as its fourth: %+v", len(msgs), msgs)
+	var order []string
+	for _, m := range msgs {
+		order = append(order, fmt.Sprintf("%s:%s:%d", m.Role, m.Content, len(m.ToolCalls)))
 	}
+	equal(t, "the thread", order, []string{"user:first:0", "assistant::1", "user:second:0", "assistant::1", "assistant:both read:0"})
+	var roles []string
+	for _, m := range messages(t, g.calls()[1])[1:] {
+		roles = append(roles, m["role"].(string))
+	}
+	equal(t, "the second call's messages", []any{roles, contents(t, g.calls()[1])[3]}, []any{[]string{"user", "assistant", "tool", "user"}, "user second"})
 	if read := msgs[3].ToolCalls[0].ReadAt; read.Before(released) {
-		t.Fatalf("the queued turn's board read is stamped %v, before the turn ahead ended after %v", read, released)
+		t.Fatalf("the board read after the message joined is stamped %v, before it joined after %v", read, released)
+	}
+	if r.c.turns.working(threadKey("sf/code", "sebastian", 1)) {
+		t.Fatal("the thread still shows a turn in flight after it ended")
 	}
 }
 
@@ -154,6 +180,40 @@ func TestTurnGate(t *testing.T) {
 	g.leave(key)
 	if g.working(key) {
 		t.Fatal("the thread works after every turn left")
+	}
+
+	// a message joins a listening turn in flight only from the head of
+	// the line; the turn takes the joined ids once, and its last take
+	// with none closes it to more
+	g.enter(key)
+	_, wa := g.enter(key)
+	if g.join(key, wa, 7) {
+		t.Fatal("a message joined a turn that does not listen")
+	}
+	g.listen(key)
+	_, wb := g.enter(key)
+	if g.join(key, wb, 8) {
+		t.Fatal("a message joined from behind another waiting turn")
+	}
+	if !g.join(key, wa, 7) {
+		t.Fatal("the head of the line did not join the listening turn")
+	}
+	if !g.join(key, wb, 8) {
+		t.Fatal("the next head of the line did not join the listening turn")
+	}
+	equal(t, "the turn's takes", [][]int64{g.heard(key, true), g.heard(key, false)}, [][]int64{{7, 8}, nil})
+	if g.heard(key, true) != nil {
+		t.Fatal("a last take with none joined took ids")
+	}
+	_, wc := g.enter(key)
+	if g.join(key, wc, 9) {
+		t.Fatal("a message joined a turn past its last take")
+	}
+	g.leave(key)
+	<-wc
+	g.leave(key)
+	if g.working(key) {
+		t.Fatal("the thread works after the joined messages and every turn left")
 	}
 
 	r1, r2 := g.slot("o/r", 2), g.slot("o/r", 2)

@@ -73,8 +73,13 @@ var chatView = (function () {
     return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
       "<p class=\"said\">" + esc(text) + "</p>" + (thumbs ? "<div class=\"chat-thumbs\">" + thumbs + "</div>" : "") +
       (chips ? "<div class=\"chat-chips\">" + chips + "</div>" : "") +
-      (queued ? "<p class=\"meta chat-queued\">queued: it goes out when the turn before it ends</p>" : "") + "</div>";
+      (queued ? queuedHTML : "") + "</div>";
   }
+  // queuedHTML marks a member's row the agent has not read yet: the turn in
+  // flight reads it after its current step, else its own turn does;
+  // readHTML replaces it when the turn in flight reads it
+  var queuedHTML = "<p class=\"meta chat-queued\">not read yet: the agent reads it after its current step</p>";
+  var readHTML = "<p class=\"meta chat-read\">✓ read by the agent</p>";
   // sizeHTML is n bytes as the chips show it, the replay line's own format.
   function sizeHTML(n) {
     if (n < 1024) return n + " B";
@@ -126,6 +131,29 @@ var chatView = (function () {
     return "<details class=\"tool\"><summary>🔧 " + esc(name) + (ms == null ? "" : " · " + Number(ms) + " ms") + (first ? " · " + esc(first) : "") +
       "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre></details>";
   }
+  // callsHTML joins a message's parts, a tool call's as {call: html}: each
+  // run of calls shows its newest, the earlier ones folded behind one line
+  function callsHTML(parts) {
+    var out = [], run = [];
+    function flush() {
+      if (run.length > 1) out.push("<details class=\"calls\"><summary>" + earlierCalls(run.length - 1) + "</summary>" + run.slice(0, -1).join("") + "</details>");
+      if (run.length) out.push(run[run.length - 1]);
+      run = [];
+    }
+    parts.forEach(function (p) {
+      if (p.call) {
+        run.push(p.call);
+        return;
+      }
+      flush();
+      out.push(p);
+    });
+    flush();
+    return out.join("");
+  }
+  function earlierCalls(n) { return n + " earlier " + (n === 1 ? "call" : "calls"); }
+  // thinkingHTML ends a message whose turn is in flight
+  var thinkingHTML = "<span class=\"thinking\" aria-hidden=\"true\">thinking</span>";
   function proposalHTML(p) {
     return "<div class=\"proposal\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" +
       "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>" +
@@ -149,7 +177,7 @@ var chatView = (function () {
     function close() {
       if (wake) out.push(wakeHTML(wake));
       wake = null;
-      if (parts) out.push(agentHTML(at, parts.join("")));
+      if (parts) out.push(agentHTML(at, callsHTML(parts)));
       parts = null;
     }
     msgs.forEach(function (m) {
@@ -184,7 +212,7 @@ var chatView = (function () {
             description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
           return;
         }
-        dst.push(toolHTML(c.name, c.arguments, null, c.result));
+        dst.push({call: toolHTML(c.name, c.arguments, null, c.result)});
         if (state) dst.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
       });
     });
@@ -199,7 +227,7 @@ var chatView = (function () {
     var first = String(w.text || "").split("\n")[0];
     return "<div class=\"msg agent wake\"><span class=\"av\" aria-hidden=\"true\"></span>" +
       whoHTML("the factory", w.at) +
-      "<div class=\"wake-b\">" + saidHTML(w.text) + w.parts.join("") + "</div>" +
+      "<div class=\"wake-b\">" + saidHTML(w.text) + callsHTML(w.parts) + "</div>" +
       "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
       "<span class=\"visually-hidden\">Wake: </span><span class=\"fw\">wake</span>" +
       "<span class=\"ft\">" + esc(first) + "</span></p></div>";
@@ -396,43 +424,6 @@ var chatView = (function () {
     });
     return {events: events, rest: rest};
   }
-  // queue keeps the messages the member sends while a turn streams, in
-  // order, each editable and removable until it goes out: whenever busy()
-  // is false (the turn before it ended, no edit open) flush starts the
-  // first as its own turn, and shown(items) draws the rest after every
-  // change. An item is the text and the images and documents riding it.
-  function queue(start, busy, shown) {
-    var items = [];
-    function flush() {
-      if (items.length && !busy()) start(items.shift());
-      shown(items.slice());
-    }
-    return {
-      add: function (text, images, docs) {
-        items.push({text: text, images: images || null, docs: docs || null});
-        flush();
-      },
-      edit: function (i, text) {
-        text = text.trim();
-        if (text) items[i].text = text;
-        else items.splice(i, 1);
-        flush();
-      },
-      remove: function (i) {
-        items.splice(i, 1);
-        flush();
-      },
-      flush: flush
-    };
-  }
-  function queueHTML(items) {
-    return items.map(function (it, i) {
-      var label = it.text + (it.images && it.images.length ? " · " + it.images.length + (it.images.length > 1 ? " images" : " image") : "") +
-        (it.docs && it.docs.length ? " · " + it.docs.length + (it.docs.length > 1 ? " documents" : " document") : "");
-      return "<li><button type=\"button\" class=\"queued-text\" data-edit=\"" + i + "\" aria-label=\"Edit queued message " + (i + 1) + ": " + esc(it.text) + "\">" + esc(label) +
-        "</button><button type=\"button\" class=\"queued-remove\" data-remove=\"" + i + "\" aria-label=\"Remove queued message " + (i + 1) + "\">×</button></li>";
-    }).join("");
-  }
   // clampShare bounds the chat pane's width for the divider drag: the
   // chat keeps 18rem and the board 30rem of availPx.
   function clampShare(chatPx, availPx, remPx) {
@@ -441,14 +432,15 @@ var chatView = (function () {
   }
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
-    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, queue: queue, queueHTML: queueHTML, sizeHTML: sizeHTML, clampShare: clampShare};
+    sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
+    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML};
 })();
 
 (function () {
   var panel = document.getElementById("chat");
   if (!panel) return;
   var log = document.getElementById("chat-log");
-  var form = document.getElementById("chat-form"), input = document.getElementById("chat-input"), queued = document.getElementById("chat-queue");
+  var form = document.getElementById("chat-form"), input = document.getElementById("chat-input");
   var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
   var answerRow = document.getElementById("chat-answer"), pending = null;
   var commandsEl = document.getElementById("chat-commands"), palette = document.getElementById("chat-palette"), pal = {list: null, sel: 0};
@@ -639,13 +631,13 @@ var chatView = (function () {
   function scrollEnd(force) {
     if (force || log.scrollHeight - log.scrollTop - log.clientHeight < 160) log.scrollTop = log.scrollHeight;
   }
-  // add puts html at the end of into, before the streaming cursor, and
+  // add puts html at the end of into, before the thinking mark, and
   // returns the row it put there
   function add(into, html) {
     var t = document.createElement("template");
     t.innerHTML = html;
     var el = t.content.firstElementChild;
-    into.insertBefore(t.content, into.querySelector(":scope > .cursor"));
+    into.insertBefore(t.content, into.querySelector(":scope > .thinking"));
     scrollEnd();
     return el;
   }
@@ -674,16 +666,20 @@ var chatView = (function () {
   }
   // run POSTs body to url as a turn of thread n and renders its stream into
   // into: queued while the turn before it runs, then text pieces, tool
-  // blocks, proposals and applied lines, until done or error. A 404 is
-  // onMissing's when given; a stream that ends without either says the
-  // connection was lost. A thread switched away from keeps its stream: the
-  // turn ends and marks the thread.
-  function run(n, owner, url, body, into, onMissing) {
+  // blocks, proposals and applied lines, until done or error. A message
+  // the turn in flight takes instead (joined) leaves its row sent marked
+  // until that turn's stream says it read it (heard): the row moves below
+  // what the turn did so far, and the turn answers in a message under it.
+  // A 404 is onMissing's when given; a stream that ends without either
+  // says the connection was lost. A thread switched away from keeps its
+  // stream: the turn ends and marks the thread, and a log drawn again
+  // meanwhile is read again.
+  function run(n, owner, url, body, into, onMissing, sent) {
     var k = ref(n, owner);
-    var ended = false, said = null, raw = "", reader = null, cursor = document.createElement("span"), wait = null;
-    cursor.className = "cursor";
-    cursor.setAttribute("aria-hidden", "true");
-    cursor.textContent = "▍";
+    var ended = false, joined = false, stale = false, said = null, raw = "", reader = null, wait = null;
+    var mark = document.createElement("template");
+    mark.innerHTML = chatView.thinkingHTML;
+    var cursor = mark.content.firstElementChild;
     into.appendChild(cursor);
     running[k] = (running[k] || 0) + 1;
     lock();
@@ -698,6 +694,33 @@ var chatView = (function () {
       if (wait && ev.event !== "queued") {
         wait.remove();
         wait = null;
+      }
+      if (ev.event === "joined") {
+        joined = true;
+        into.remove();
+        if (sent) {
+          sent.dataset.joined = d.id;
+          sent.insertAdjacentHTML("beforeend", chatView.queuedHTML);
+        }
+        return;
+      }
+      if (ev.event === "heard") {
+        if (!log.contains(into)) return;
+        d.ids.forEach(function (id) {
+          var row = log.querySelector(".msg.you[data-joined=\"" + id + "\"]");
+          if (!row) {
+            stale = true;
+            return;
+          }
+          delete row.dataset.joined;
+          row.querySelector(".chat-queued").outerHTML = chatView.readHTML;
+          log.appendChild(row);
+        });
+        into = add(log, chatView.agentHTML(new Date(), ""));
+        into.appendChild(cursor);
+        said = null;
+        scrollEnd();
+        return;
       }
       if (ev.event === "compacted") {
         add(into, "<p class=\"meta chat-queued\">compacted: " + chatView.esc(d.messages) + " earlier messages summarised</p>");
@@ -720,7 +743,10 @@ var chatView = (function () {
         return;
       }
       said = null;
-      if (ev.event === "tool") add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result));
+      if (ev.event === "tool") {
+        foldCall(cursor.previousElementSibling);
+        add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result));
+      }
       else if (ev.event === "proposal") add(into, chatView.proposalHTML(d));
       else if (ev.event === "applied") add(into, chatView.appliedHTML(d, into.classList.contains("undoing")));
       else if (ev.event === "view") document.dispatchEvent(new CustomEvent("view", {detail: d}));
@@ -748,28 +774,29 @@ var chatView = (function () {
       cursor.remove();
       running[k]--;
       lock();
-      queueOf(k).flush();
-      return (k === openRef() ? seen(n, owner) : Promise.resolve()).then(listThreads);
+      if (k !== openRef()) return listThreads();
+      if (!joined && (stale || !log.contains(into) || log.querySelector(".msg.you[data-joined]"))) return load(n, owner, true);
+      return seen(n, owner).then(listThreads);
     });
+  }
+  // foldCall puts tool call row last behind its run's earlier-calls line
+  // once a newer call follows it
+  function foldCall(last) {
+    if (!last || !last.matches("details.tool, p.refused")) return;
+    var calls = last.previousElementSibling;
+    if (!calls || !calls.matches("details.calls")) {
+      calls = document.createElement("details");
+      calls.className = "calls";
+      calls.appendChild(document.createElement("summary"));
+      last.before(calls);
+    }
+    calls.appendChild(last);
+    calls.firstElementChild.textContent = chatView.earlierCalls(calls.children.length - 1);
   }
   // seen moves thread n's seen marker to its newest row: the member read it
   function seen(n, owner) {
     return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).catch(function () {});
-  }
-  // each thread's own queue of messages sent while its turn streams
-  var queues = {};
-  function queueOf(k) {
-    if (!queues[k]) {
-      queues[k] = chatView.queue(function (it) { turn(k, it.text, it.images, it.docs); }, function () {
-        return busy(k) || readOnly && k === openRef() || k === openRef() && !!queued.querySelector("textarea");
-      }, function (items) {
-        if (k !== openRef() || queued.querySelector("textarea")) return;
-        queued.innerHTML = chatView.queueHTML(items);
-        queued.hidden = !items.length;
-      });
-    }
-    return queues[k];
   }
   function send() {
     var text = input.value.trim();
@@ -780,7 +807,7 @@ var chatView = (function () {
     pendingDocs = [];
     drawImages();
     drawDocs();
-    queueOf(openRef()).add(text, images, docs);
+    turn(text, images, docs);
   }
   // pageQuery is the view the page stands on (282): the board's query the
   // chat's POST carries, so the agent's view tools work the page the
@@ -789,21 +816,15 @@ var chatView = (function () {
     var b = document.getElementById("board");
     return b && b.dataset.query ? b.dataset.query : "";
   }
-  function turn(k, text, images, docs) {
-    var at = k.indexOf("@"), n = Number(k.slice(0, at)), owner = k.slice(at + 1);
-    var shown = k === openRef(), command = text === "/compact";
-    var sent = null;
-    if (shown) {
-      pending = null;
-      drawAnswer();
-    }
-    var into = document.createElement("div");
-    if (shown) {
-      if (!command) sent = add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images, docs));
-      add(log, chatView.agentHTML(new Date(), ""));
-      scrollEnd(true);
-      into = log.lastElementChild;
-    }
+  // turn sends text, with the images and documents riding it, on the open
+  // thread, at once even while a turn runs there
+  function turn(text, images, docs) {
+    var n = open, owner = openOwner, k = openRef(), command = text === "/compact";
+    pending = null;
+    drawAnswer();
+    var sent = command ? null : add(log, chatView.userHTML(login, chatView.expand(commands, text), new Date(), false, images, docs));
+    var into = add(log, chatView.agentHTML(new Date(), ""));
+    scrollEnd(true);
     var body = new FormData();
     body.append("message", text);
     body.append("conversation", n);
@@ -811,7 +832,7 @@ var chatView = (function () {
     body.append("view", pageQuery());
     (images || []).forEach(function (im) { body.append("images", im.file, im.file.name); });
     (docs || []).forEach(function (d) { body.append("documents", d.file, d.file.name); });
-    run(n, owner, base, body, into).then(function () {
+    run(n, owner, base, body, into, null, sent).then(function () {
       if (command && k === openRef()) return load(n, owner);
       if (sent && ((images || []).length || (docs || []).length)) return refreshRow(k, sent, text);
     }).then(function () {
@@ -837,8 +858,10 @@ var chatView = (function () {
         (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; (/^image\//.test(a.content_type) ? ims : docs).push(a); });
         if (!ims.length && !docs.length) return;
         var t = document.createElement("template");
-        t.innerHTML = chatView.userHTML(login, m.content, m.at, m.queued, ims, docs);
-        row.replaceWith(t.content.firstElementChild);
+        t.innerHTML = chatView.userHTML(login, m.content, m.at, !!row.dataset.joined, ims, docs);
+        var fresh = t.content.firstElementChild;
+        if (row.dataset.joined) fresh.dataset.joined = row.dataset.joined;
+        row.replaceWith(fresh);
         scrollEnd();
       }).catch(function () {});
   }
@@ -1007,44 +1030,6 @@ var chatView = (function () {
     if (row) openCard(row.dataset.card);
   });
   if (!form) return;
-  // the queue under the input: a click on a message edits it in place
-  // (Enter or leaving it keeps the edit, Escape the message as it was),
-  // its × removes it; an open edit is drawn again once it closes
-  queued.addEventListener("click", function (e) {
-    var b = e.target.closest("button");
-    if (!b) return;
-    if (b.hasAttribute("data-remove")) {
-      queueOf(openRef()).remove(Number(b.dataset.remove));
-      input.focus();
-      return;
-    }
-    var area = document.createElement("textarea");
-    area.rows = 2;
-    area.value = b.textContent;
-    area.dataset.edit = b.dataset.edit;
-    area.setAttribute("aria-label", "Queued message " + (Number(b.dataset.edit) + 1));
-    b.replaceWith(area);
-    area.focus();
-  });
-  queued.addEventListener("keydown", function (e) {
-    if (e.target.localName !== "textarea") return;
-    if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      input.focus();
-    } else if (e.key === "Escape") {
-      e.stopPropagation();
-      e.target.dataset.drop = "";
-      input.focus();
-    }
-  });
-  queued.addEventListener("focusout", function (e) {
-    var area = e.target;
-    if (area.localName !== "textarea") return;
-    area.remove();
-    if (area.dataset.drop === undefined) queueOf(openRef()).edit(Number(area.dataset.edit), area.value);
-    else queueOf(openRef()).flush();
-  });
-
   form.addEventListener("submit", function (e) {
     e.preventDefault();
     if (pal.list) command(pal.list[pal.sel].name);
@@ -1131,7 +1116,7 @@ var chatView = (function () {
     if (!b || busy(openRef())) return;
     var card = b.closest(".proposal");
     if (b.hasAttribute("data-choice")) {
-      queueOf(openRef()).add(b.dataset.choice);
+      turn(b.dataset.choice);
     } else if (b.hasAttribute("data-skip")) {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
@@ -1190,13 +1175,12 @@ var chatView = (function () {
         form.classList.toggle("theirs", !!openOwner);
         form.querySelector(".arch-note").hidden = !readOnly;
       }
-      if (busy(openRef())) add(log, chatView.agentHTML(new Date(), "<span class=\"cursor\" aria-hidden=\"true\">▍</span>"));
+      if (busy(openRef())) add(log, chatView.agentHTML(new Date(), chatView.thinkingHTML));
       pending = readOnly ? null : chatView.pendingOf(data.messages);
       drawAnswer();
       drawHead();
       if (keep && !held) log.scrollTop = was;
       else scrollEnd(true);
-      queueOf(openRef()).flush();
       lock();
       return listThreads();
     }).catch(function () {
@@ -1323,7 +1307,7 @@ var chatView = (function () {
       var choice = c.dataset.choice;
       pending = null;
       drawAnswer();
-      queueOf(openRef()).add(choice);
+      turn(choice);
       return;
     }
     var b = e.target.closest("[data-answer]");

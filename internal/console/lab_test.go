@@ -127,6 +127,15 @@ func TestLab(t *testing.T) {
 		docsFake.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// the model's slow answers: each call answers after ?ms, so a turn of
+	// several tool calls runs long enough to write into; ?ms=0 sets it quick
+	mux.HandleFunc("POST /lab/model-slow", func(w http.ResponseWriter, req *http.Request) {
+		ms, _ := strconv.Atoi(req.URL.Query().Get("ms"))
+		r.gateway.mu.Lock()
+		r.gateway.slow = time.Duration(ms) * time.Millisecond
+		r.gateway.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// an outside change of a document (items 5+6): master moves as if
 	// committed by ?by at 14:08 — ?line names the line it changes, from
 	// 1, else the file's last said one; ?text replaces that line, else it
