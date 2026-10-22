@@ -72,8 +72,8 @@ h4 { font-size: 13px; font-weight: 600; margin: 0 0 4px; }
 p { margin: 0 0 8px; }
 
 /* panels: a thin border and the four 7 px corner marks */
-.marks, .column, .chat, .drawer, .overlay-box { position: relative; }
-.marks::after, .column::after, .chat::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--mark); pointer-events: none; --s: 7px;
+.marks, .status, .column, .chat, .drawer, .overlay-box { position: relative; }
+.marks::after, .status::after, .column::after, .chat::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--mark); pointer-events: none; --s: 7px;
   -webkit-mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s));
           mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s)); }
 
@@ -115,6 +115,9 @@ fieldset legend { float: left; margin-right: 6px; color: var(--text-faint); }
 fieldset label { display: inline-flex; align-items: center; gap: 5px; margin: 0 14px 0 0; }
 input[type=radio] { accent-color: var(--st-failed); margin: 0; }
 table { border-collapse: collapse; width: 100%; margin-top: 12px; font: 12px/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
+/* a table wider than the screen scrolls in its own box, never the page */
+.tscroll { overflow-x: auto; margin-top: 12px; }
+.tscroll > table { margin-top: 0; }
 th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; overflow-wrap: break-word; }
 /* an id, a time or a state keeps to one line; a detail (a JSON line) breaks anywhere */
 td a[href^="/tasks/"], td time { white-space: nowrap; }
@@ -597,8 +600,10 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .overlay-box dd { margin: 0; color: var(--text-muted); }
 
 /* the board's header row: Board in small capitals, the view switch and
-   the keys, quiet, 26 px high */
-.board-head { display: flex; align-items: center; gap: 8px; height: 26px; flex: none; margin-bottom: 8px; }
+   the keys, quiet, 26 px high; on a narrow board the find narrows first,
+   then the row wraps */
+.board-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 26px; flex: none; margin-bottom: 8px; }
+.board-head > * { flex: none; }
 .board-head h2 { margin: 0; color: var(--text-muted); font-size: 14px; font-weight: 600; font-variant-caps: all-small-caps; letter-spacing: .08em; }
 .view-toggle, .keys-toggle { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
 .documents { height: 24px; padding: 0 8px; font-size: 12px; color: var(--text-muted); }
@@ -608,8 +613,8 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
    find, which narrows the board as you type; the × shows while it holds
    one and is a link to the board without it; a narrowed column's count
    reads "n of m" and an emptied one says "none match" */
-.find { position: relative; display: inline-flex; align-items: center; margin-right: auto; }
-.find input { width: 232px; height: 24px; padding: 0 22px 0 8px; border: 1px solid var(--btn-line); border-radius: 3px; background: transparent; color: var(--text); font: 11.5px var(--font-mono); transition: border-color .12s, box-shadow .12s; }
+.find { position: relative; display: inline-flex; align-items: center; flex: 1 1 6rem; max-width: 232px; margin-right: auto; }
+.find input { width: 100%; height: 24px; padding: 0 22px 0 8px; border: 1px solid var(--btn-line); border-radius: 3px; background: transparent; color: var(--text); font: 11.5px var(--font-mono); transition: border-color .12s, box-shadow .12s; }
 .find input::placeholder { color: var(--text-faint); }
 .find input:hover { border-color: var(--text-faint); }
 .find input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
@@ -662,16 +667,14 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 /* the status band: one panel with the instrument strip under it and the
    status in detail (the panel) under that */
 .status { margin: 10px 12px 0; background: var(--bg-panel); border: 1px solid var(--line-strong); flex: none; }
-.status::after { content: ""; position: absolute; inset: -1px; border: 1px solid var(--mark); pointer-events: none; --s: 7px;
-  -webkit-mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s));
-          mask: conic-gradient(at var(--s) var(--s), #0000 75%, #000 0) 0 0 / calc(100% - var(--s)) calc(100% - var(--s)); }
 .status:hover .strip { background-color: color-mix(in srgb, var(--text) 3%, transparent); }
 /* the strip: cells split by hairlines, each a mono numeral and a word;
-   it is the summary of the status details: one thin line, click for the panel */
-.strip { display: flex; align-items: stretch; min-height: 36px; border-top: 1px solid var(--line); }
+   it is the summary of the status details: one thin line, click for the panel;
+   cells that do not fit wrap to a row of their own under a hairline */
+.strip { display: flex; flex-wrap: wrap; align-items: stretch; border-top: 1px solid var(--line); }
 summary.strip { cursor: pointer; list-style: none; }
 summary.strip::-webkit-details-marker { display: none; }
-.cell { display: flex; align-items: center; gap: 7px; padding: 0 16px; border-left: 1px solid var(--line); color: var(--text-muted); font-size: 13px; white-space: nowrap; text-decoration: none; font-family: var(--font-ui); }
+.cell { display: flex; align-items: center; gap: 7px; min-height: 35px; padding: 0 16px; border-left: 1px solid var(--line); box-shadow: 0 -1px var(--line); color: var(--text-muted); font-size: 13px; white-space: nowrap; text-decoration: none; font-family: var(--font-ui); }
 .cell:first-child { border-left: 0; }
 .cell .n { color: var(--text); font-size: 15px; font-weight: 500; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 a.cell { transition: background-color .12s; }
@@ -683,7 +686,7 @@ a.cell:hover { background: var(--bg-hover); }
 .cell.state[data-state="idle"] .dot { color: var(--text-faint); }
 @keyframes breathe { 50% { opacity: .35; } }
 .cell.needs.on, .cell.needs.on .n, .cell.warn, .cell.warn .n { color: var(--need-text); }
-.cell.needs.on { background: color-mix(in srgb, var(--need) 10%, transparent); box-shadow: inset 0 -2px 0 var(--need); }
+.cell.needs.on { background: color-mix(in srgb, var(--need) 10%, transparent); box-shadow: inset 0 -2px 0 var(--need), 0 -1px var(--line); }
 a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transparent); }
 .cell.spend { gap: 12px; }
 .cell.spend .of { color: var(--text-muted); font-family: var(--font-mono); font-size: 13px; }
@@ -844,6 +847,8 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .doc-row { display: flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 12px 6px 8px; }
 .doc-row .xs { min-width: 28px; }
 .doc-row .doc-mode { margin-left: 8px; }
+.doc-row-nav { flex-wrap: wrap; }
+#doc-close { margin-left: auto; }
 .doc-gap { flex: 1; }
 .doc-forgejo { color: var(--accent); font-size: 12px; text-decoration: none; white-space: nowrap; }
 .doc-forgejo:hover, .doc-forgejo:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
@@ -992,7 +997,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   [data-theme=light] .switch::before { z-index: -1; background: var(--bg-card); }
   .switch select { width: 100%; max-width: none; height: 44px; border-color: transparent; background-color: transparent; background-position-y: center; }
   .status { margin: 10px 12px 0; }
-  .strip { flex-wrap: wrap; gap: 1px; background: var(--line); }
+  .strip { gap: 1px; background: var(--line); }
   .cell, .cell.gh, .cell.routine { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
   .cell.needs.on { background: color-mix(in srgb, var(--need) 10%, var(--bg-panel)); }
   .cell.spend { flex-basis: 100%; }
@@ -1009,8 +1014,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .chat-form .chat-grow { min-width: 0; }
   .board-head .view-toggle { display: none; }
   .board-head .documents { height: 44px; padding: 0 12px; font-size: 13px; }
-  .board-head { flex-wrap: wrap; height: auto; }
-  .find { flex: 1 1 100%; order: 5; margin: 0; }
+  .find { flex: 1 1 100%; max-width: none; order: 5; margin: 0; }
   .find input { width: 100%; height: 44px; padding-right: 44px; font-size: 14px; }
   .find-x { top: 0; right: 0; width: 44px; height: 44px; font-size: 20px; }
   .column:has(> .col-menu) > h3 { padding-right: 48px; }
@@ -1209,7 +1213,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .lvlpop[hidden] { display: none; }
 .lvlpop .lp-head { display: flex; justify-content: space-between; margin: 0; padding: 4px 8px 6px; color: var(--text-faint); font: 11px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .lvlpop [data-lvl] { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 1px 8px; width: 100%; height: auto; margin: 0; padding: 7px 8px; border: 0; border-radius: 2px; background: none; color: var(--text); font-family: var(--font-ui); text-align: left; white-space: normal; cursor: pointer; }
-/* every row carries its level's own lamp, brighter with each level (C33); the ✓ marks the current one */
+/* a lamp only beside the current level, at that level's strength (C33, C36); the ✓ marks it too */
 .lvlpop [data-lvl] i { grid-row: 1 / 3; margin-top: 5px; width: 9px; height: 9px; border: 1px solid transparent; border-radius: 1px; }
 .lvlpop [data-lvl][aria-checked="true"] i { border-color: var(--lamp); background: var(--lamp); box-shadow: var(--lamp-glow); }
 .lvlpop [data-lvl] b { font-size: 12.5px; font-weight: 600; }

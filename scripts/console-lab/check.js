@@ -6,7 +6,8 @@
 // the routines' ghosts at the foot of their lanes with their control and
 // drawer and their period, the find narrowing the board as you type, a
 // card's press moving the card at once and taking one press, the chat
-// above the board at 390 px, no horizontal scroll at 1440 or 390.
+// above the board at 390 px, no horizontal scroll at 1440, 960 or 390,
+// typing in the chat, nor on the pages of tables at 390.
 // Exit 1 and one line per failure.
 const crypto = require("crypto");
 const fs = require("fs");
@@ -102,6 +103,11 @@ async function open(browser, viewport, folded) {
   page.on("response", (r) => { if (r.url().startsWith(base) && r.status() >= 400) errors.push(r.url() + " " + r.status()); });
   return { ctx, page, errors };
 }
+
+// sideways is how far page scrolls sideways, in px. The browser keeps its
+// scrollbars (the launch drops --hide-scrollbars), so a box 1 px past the
+// edge shows as the scrollbar a desktop browser draws for it.
+const sideways = (page) => page.evaluate(() => Math.max(0, document.documentElement.scrollWidth - document.documentElement.clientWidth));
 
 // findAsYouType types word into the find of the busy board under query
 // without Enter and checks that after the pause the board, and nothing
@@ -354,7 +360,7 @@ async function text(page) {
 }
 
 (async () => {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch({ ignoreDefaultArgs: ["--hide-scrollbars"] });
   const fails = [];
   for (const [sc, words] of Object.entries(mustHave)) {
     const drawer = await seed(sc);
@@ -369,13 +375,13 @@ async function text(page) {
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
     if (sc === "metrics") {
       // the deck's rows fit the desk and the phone, no sideways scroll
-      const sw = await p.page.evaluate(() => document.documentElement.scrollWidth);
-      if (sw > 1440) fails.push("metrics: horizontal page scroll at 1440 (" + sw + ")");
+      const sw = await sideways(p.page);
+      if (sw) fails.push("metrics: horizontal page scroll at 1440 (" + sw + " px)");
       const mp = await open(browser, { width: 390, height: 844 });
       await mp.page.goto(base + metricsPath, { waitUntil: "load" });
       await mp.page.waitForTimeout(400);
-      const psw = await mp.page.evaluate(() => document.documentElement.scrollWidth);
-      if (psw > 390) fails.push("metrics: horizontal scroll at 390 (" + psw + ")");
+      const psw = await sideways(mp.page);
+      if (psw) fails.push("metrics: horizontal scroll at 390 (" + psw + " px)");
       if (mp.errors.length) fails.push("metrics phone: " + mp.errors[0]);
       await mp.ctx.close();
     }
@@ -402,8 +408,20 @@ async function text(page) {
         await p.page.waitForTimeout(200);
         if (!(await themeIs(t))) fails.push("busy: " + why);
       }
-      const sw = await p.page.evaluate(() => document.documentElement.scrollWidth);
-      if (sw > 1440) fails.push("busy: horizontal page scroll at 1440 (" + sw + ")");
+      const sw = await sideways(p.page);
+      if (sw) fails.push("busy: horizontal page scroll at 1440 (" + sw + " px)");
+      await p.page.locator("#chat textarea").first().click();
+      // words that wrap the box, line breaks that grow it (Enter would send), one long word
+      const typed = [() => p.page.keyboard.type("a message that runs long enough to wrap the composer ".repeat(4)),
+        async () => { for (let i = 0; i < 6; i++) await p.page.keyboard.press("Shift+Enter"); },
+        () => p.page.keyboard.type("https://example.com/" + "a".repeat(200))];
+      for (const t of typed) {
+        await t();
+        const tsw = await sideways(p.page);
+        if (tsw) fails.push("busy: horizontal page scroll at 1440 while typing in the chat (" + tsw + " px)");
+      }
+      await p.page.keyboard.press("Control+a");
+      await p.page.keyboard.press("Delete");
       const card = p.page.locator('[data-card="' + drawer + '"]').first();
       if (!(await card.count())) fails.push("busy: no card " + drawer + " on the board");
       else {
@@ -1468,6 +1486,35 @@ async function text(page) {
     if (idle === busy) fails.push("gap: the reopened stream reads no board again (" + String(idle).slice(0, 60) + ")");
     await pp.ctx.close();
   }
+  // a narrow desk at 960: the strip's cells wrap where they do not fit, the
+  // board's head fits its row, the documents' head wraps in its panel
+  for (const sc of ["busy", "fire"]) {
+    await seed(sc);
+    const np = await open(browser, { width: 960, height: 800 });
+    await np.page.goto(base + "/", { waitUntil: "load" });
+    await np.page.waitForTimeout(600);
+    const nsw = await sideways(np.page);
+    if (nsw) fails.push("960: horizontal scroll in " + sc + " (" + nsw + " px)");
+    const head = await np.page.evaluate(() => { const h = document.querySelector(".board-head"); return h.scrollWidth - h.clientWidth; });
+    if (head > 0) fails.push("960: the board's head overflows its row by " + head + " px in " + sc);
+    await np.page.locator("#board .documents").click();
+    await np.page.waitForTimeout(600);
+    const dsw = await sideways(np.page);
+    if (dsw) fails.push("960: horizontal scroll with the documents open in " + sc + " (" + dsw + " px)");
+    await np.ctx.close();
+  }
+  // a table wider than the phone scrolls in its own box, not the page
+  {
+    const card = await seed("busy");
+    for (const u of ["/costs", "/resources", "/policy", "/tasks/" + card + "/timeline"]) {
+      const tp = await open(browser, { width: 390, height: 844 });
+      await tp.page.goto(base + u, { waitUntil: "load" });
+      await tp.page.waitForTimeout(400);
+      const tsw = await sideways(tp.page);
+      if (tsw) fails.push("phone: horizontal scroll at 390 on " + u + " (" + tsw + " px)");
+      await tp.ctx.close();
+    }
+  }
   // the panel on the phone: the rows stack, every target reaches 44 px, no horizontal scroll
   await seed("busy");
   {
@@ -1480,8 +1527,8 @@ async function text(page) {
     const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify td.act a, .notify td.act button, .notify td.act select"))
       .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 16) || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
     if (small.length) fails.push("phone: panel targets under 44 px: " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
-    const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
-    if (psw > 390) fails.push("phone: horizontal scroll at 390 on the panel (" + psw + ")");
+    const psw = await sideways(pp.page);
+    if (psw) fails.push("phone: horizontal scroll at 390 on the panel (" + psw + " px)");
     await pp.ctx.close();
   }
   // the phone: 44 px targets for the C14 controls and the bar's, no horizontal scroll
@@ -1495,8 +1542,8 @@ async function text(page) {
       "header nav a, .menu > summary, .menu .s-out button, .switch select, .theme-switch button"))
       .filter((b) => b.offsetParent).map((b) => [b.className || b.id || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
     if (small.length) fails.push("phone: targets under 44 px in " + sc + ": " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
-    const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
-    if (psw > 390) fails.push("phone: horizontal scroll at 390 in " + sc + " (" + psw + ")");
+    const psw = await sideways(pp.page);
+    if (psw) fails.push("phone: horizontal scroll at 390 in " + sc + " (" + psw + " px)");
     await pp.ctx.close();
   }
   // the phone's fold (C14): folded by default to one summary row, the five threads, the costs
@@ -1544,8 +1591,8 @@ async function text(page) {
       // clipped word in a square box
       const nb = await pp.page.evaluate(() => { const b = document.getElementById("doc-new"); return { t: b.innerText.trim(), w: b.scrollWidth - b.clientWidth, h: b.scrollHeight - b.clientHeight }; });
       if (nb.t !== "New document" || nb.w > 1 || nb.h > 1) fails.push('phone: New document does not show its whole text ("' + nb.t + '", ' + nb.w + "x" + nb.h + "px over)");
-      const psw = await pp.page.evaluate(() => document.documentElement.scrollWidth);
-      if (psw > 390) fails.push("phone: horizontal scroll at 390 with the documents (" + psw + ")");
+      const psw = await sideways(pp.page);
+      if (psw) fails.push("phone: horizontal scroll at 390 with the documents (" + psw + " px)");
       await pp.page.keyboard.press("Escape");
       await pp.page.waitForTimeout(300);
       if (await pp.page.locator("#doc-view").isVisible()) fails.push("phone: Escape does not close the documents");
@@ -1634,8 +1681,8 @@ async function text(page) {
   const ph = await open(browser, { width: 390, height: 844 });
   await ph.page.goto(base + "/", { waitUntil: "load" });
   await ph.page.waitForTimeout(600);
-  const sw = await ph.page.evaluate(() => document.documentElement.scrollWidth);
-  if (sw > 390) fails.push("phone: horizontal scroll at 390 (" + sw + ")");
+  const sw = await sideways(ph.page);
+  if (sw) fails.push("phone: horizontal scroll at 390 (" + sw + " px)");
   const ghostTargets = await ph.page.evaluate(() => Array.from(document.querySelectorAll(".card.ghost > button.open, .card.ghost .acts button, .routines-ctl > summary"))
     .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 20), b.getBoundingClientRect().height]));
   // every shown ghost opens its drawer from its title, and the control is there

@@ -6,7 +6,7 @@
 <h3 id="project-{{.Project}}">{{.Project}}</h3>
 <p class="figs">task block {{eur2 .Envelope.MonthlyEUR}} a month, types {{range $i, $t := .Envelope.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{end}}, {{servers .Envelope.MaxCount}} at once, leases up to {{.Envelope.MaxLeaseHours}} h, volumes up to {{.Envelope.VolumeMaxGB}} GB · this month €{{eur4 .Envelope.Use.MonthEUR}} used or reserved, {{servers .Envelope.Use.OpenServers}} open · standing block {{eur2 .Envelope.Standing.MonthlyEUR}} a month, types {{range $i, $t := .Envelope.Standing.ServerTypes}}{{if $i}}, {{end}}{{$t}}{{else}}none{{end}}, {{servers .Envelope.Standing.MaxCount}} · standing now {{servers .Envelope.StandingUse.Count}}, €{{eur4 .Envelope.StandingUse.MonthlyEUR}} a month</p>
 <p class="meta">{{if .Envelope.File}}The project's file sets it: <a href="{{.Envelope.File}}" target="_blank" rel="noopener">change it in Git</a>.{{else}}No project file names this repository: the policy's envelope_default applies.{{end}}</p>
-{{if .Rows}}<table aria-label="Commissioned resources by task">
+{{if .Rows}}<div class="tscroll"><table aria-label="Commissioned resources by task">
 <thead><tr><th scope="col">Task</th><th scope="col">Resource</th><th scope="col">Type</th><th scope="col">IPv4</th><th scope="col">Lease ends</th><th scope="col" class="num">€/h</th><th scope="col" class="num">Cost so far</th><th scope="col">State</th><th scope="col">Acts</th></tr></thead>
 <tbody>
 {{range .Rows}}<tr{{if not .Open}} class="closed"{{else if eq .Lifetime "standing"}} class="standing"{{end}}>
@@ -22,19 +22,19 @@
 <form method="post" action="/resources/{{.ID}}/release" class="inline"><input type="hidden" name="csrf" value="{{$.CSRF}}"><button type="submit" class="deny" aria-label="Release {{.Size}} {{.Kind}} {{.ID}} of {{.OwnerRef}}">Release</button></form>{{end}}</td>
 </tr>
 {{end}}</tbody>
-</table>{{else}}<p class="none">none open or closed in the last 7 days</p>{{end}}
+</table></div>{{else}}<p class="none">none open or closed in the last 7 days</p>{{end}}
 </section>
 {{end}}
 {{with .Jobs}}<section class="ro" aria-labelledby="jobs">
 <h3 id="jobs">Jobs of the cluster</h3>
 {{if .Failed}}<p>The cluster did not answer.</p>
-{{else}}<table aria-label="The cluster's scheduled jobs by namespace">
+{{else}}<div class="tscroll"><table aria-label="The cluster's scheduled jobs by namespace">
 <thead><tr><th scope="col">Name</th><th scope="col">Kind</th><th scope="col">Namespace</th><th scope="col">Schedule</th><th scope="col">Last run</th><th scope="col">Last ok</th><th scope="col">Suspended</th></tr></thead>
 <tbody>
 {{range .Rows}}<tr><td>{{.Name}}</td><td>{{.Kind}}</td><td>{{.Namespace}}</td><td title="{{.Schedule}}">{{schedule .Schedule}}</td>{{template "age" .LastScheduled}}{{if .RecordsSuccess}}{{template "age" .LastSuccessful}}{{else}}<td>not reported</td>{{end}}<td>{{if .Suspended}}yes{{else}}no{{end}}</td></tr>
 {{else}}<tr><td colspan="7">No jobs.</td></tr>{{end}}
 </tbody>
-</table>
+</table></div>
 {{end}}</section>
 {{end}}
 </div>
