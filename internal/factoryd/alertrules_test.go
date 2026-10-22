@@ -171,3 +171,39 @@ func Test5xxRateRuleRequiresThreeFailures(t *testing.T) {
 		t.Errorf("evaluation.kind = %q, want \"rolling\"", r.Evaluation.Kind)
 	}
 }
+
+// A restart rule counts each container start once (card #1225): SigNoz
+// stored roll #1224's one start of factoryd three times, the copies
+// differing only in their arrival, and count() read three starts in ten
+// minutes. A copy keeps the event's own time; a crash restart in the same
+// pod moves it (Forgejo's crash loop of 2026-10-18: one event, counts 2 to
+// 10, nine times). Both Deployments run one replica, so no two starts share
+// a second.
+func TestRestartRulesCountEachStartOnce(t *testing.T) {
+	for _, f := range []string{"../../k8s/alerts/restarts-factoryd.json", "../../k8s/alerts/restarts-gateway.json"} {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var r struct {
+			Condition struct {
+				CompositeQuery struct {
+					Queries []struct {
+						Spec struct {
+							Aggregations []struct {
+								Expression string `json:"expression"`
+							} `json:"aggregations"`
+						} `json:"spec"`
+					} `json:"queries"`
+				} `json:"compositeQuery"`
+			} `json:"condition"`
+		}
+		if err := json.Unmarshal(data, &r); err != nil {
+			t.Fatalf("%s: %v", f, err)
+		}
+		q := r.Condition.CompositeQuery.Queries
+		if len(q) != 1 || len(q[0].Spec.Aggregations) != 1 || q[0].Spec.Aggregations[0].Expression != "count_distinct(timestamp)" {
+			t.Errorf("%s aggregates %+v, want count_distinct(timestamp): one count per start, not per stored copy", f, q)
+		}
+	}
+}
