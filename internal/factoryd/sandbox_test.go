@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -89,5 +90,26 @@ func TestHarnessCopyReadsWhatTheImageInstalls(t *testing.T) {
 		if !strings.Contains(harnessCopy, read) {
 			t.Errorf("harnessCopy %q does not read %q", harnessCopy, read)
 		}
+	}
+}
+
+// opencode's switches belong to the harness, not to an image: a session's
+// worker sets the ones that keep opencode from phoning home past the
+// egress allowlist, whatever image it runs, and Dockerfile.sandbox sets
+// none of them.
+func TestSessionPodTurnsOpencodesFetchesOff(t *testing.T) {
+	pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, sessionSpec{id: "s-1"})
+	env := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))
+	for _, name := range []string{"OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_LSP_DOWNLOAD"} {
+		if env[name] != "1" {
+			t.Errorf("session worker env %s = %q, want 1", name, env[name])
+		}
+	}
+	b, err := os.ReadFile("../../Dockerfile.sandbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := regexp.MustCompile(`(?m)^\s*(?:ENV\s+)?OPENCODE_[A-Z_]+=.*$`).FindAllString(string(b), -1); len(m) != 0 {
+		t.Errorf("Dockerfile.sandbox sets opencode's env %q: a project image FROM the base would lack it", m)
 	}
 }

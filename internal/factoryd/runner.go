@@ -1825,6 +1825,11 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "TOOLS", "value": string(toolsJSON)},
 		{"name": "AUTHOR", "value": t.Author},
 		{"name": "AUTHOR_STANDING", "value": cmp.Or(s.standing, t.Standing())},
+		// each of these opencode fetches phones home past the egress
+		// allowlist and stalls on the drop, whatever image the pod runs
+		{"name": "OPENCODE_DISABLE_AUTOUPDATE", "value": "1"},
+		{"name": "OPENCODE_DISABLE_MODELS_FETCH", "value": "1"},
+		{"name": "OPENCODE_DISABLE_LSP_DOWNLOAD", "value": "1"},
 	}
 	cloneEnv := []map[string]any{
 		{"name": "MODE", "value": "clone"},
@@ -1884,7 +1889,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	clone := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
 	clone["name"] = "clone"
 	clone["env"] = cloneEnv
-	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}, harnessMount}
+	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}, harnessMount()}
 	spec["initContainers"] = append(spec["initContainers"].([]any), clone)
 	return requestEmptyDirs(pod)
 }
@@ -1901,7 +1906,21 @@ const harnessCopy = "mkdir -p /factory/bin && cp /usr/local/bin/agent-worker /us
 
 // harnessMount is the harness volume in every container but the one that
 // fills it: read-only, as the agent runs as the worker's uid.
-var harnessMount = map[string]any{"name": "harness", "mountPath": "/factory", "readOnly": true}
+func harnessMount() map[string]any {
+	return map[string]any{"name": "harness", "mountPath": "/factory", "readOnly": true}
+}
+
+// sandboxSecurityContext confines each container of a sandbox pod.
+func sandboxSecurityContext() map[string]any {
+	return map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                SandboxUID,
+		"runAsGroup":               SandboxUID,
+		"allowPrivilegeEscalation": false,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"readOnlyRootFilesystem":   true,
+	}
+}
 
 // sandboxPodSpec is a gVisor worker pod in the task namespace running
 // image, its harness copied in first from the factory's image; only an
@@ -1918,7 +1937,7 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 		map[string]any{"name": "workspace", "mountPath": "/workspace"},
 		map[string]any{"name": "home", "mountPath": "/home/worker"},
 		map[string]any{"name": "tmp", "mountPath": "/tmp"},
-		harnessMount,
+		harnessMount(),
 	}
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
@@ -1950,14 +1969,6 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 		map[string]any{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		map[string]any{"name": "EGRESS_CANARY", "value": r.cfg.EgressCanary},
 		map[string]any{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP})
-	securityContext := map[string]any{
-		"runAsNonRoot":             true,
-		"runAsUser":                SandboxUID,
-		"runAsGroup":               SandboxUID,
-		"allowPrivilegeEscalation": false,
-		"capabilities":             map[string]any{"drop": []any{"ALL"}},
-		"readOnlyRootFilesystem":   true,
-	}
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
@@ -1987,7 +1998,7 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 					"limits":   sandboxLimits,
 				},
 				"volumeMounts":             []any{map[string]any{"name": "harness", "mountPath": "/factory"}},
-				"securityContext":          securityContext,
+				"securityContext":          sandboxSecurityContext(),
 				"terminationMessagePolicy": "FallbackToLogsOnError",
 			}},
 			"containers": []any{map[string]any{
@@ -2000,7 +2011,7 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 					"limits":   sandboxLimits,
 				},
 				"volumeMounts":    mounts,
-				"securityContext": securityContext,
+				"securityContext": sandboxSecurityContext(),
 			}},
 			"volumes": volumes,
 		},

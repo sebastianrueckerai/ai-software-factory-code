@@ -108,6 +108,7 @@ ARG POSTGRESQL_COMMON_VERSION=293.pgdg12+1
 # PostgreSQL 17's server for scripts/pg-test.sh from the PGDG archive at the
 # versions named, as in Dockerfile.runner, which says why. The install
 # creates no cluster.
+# ripgrep is installed because opencode otherwise downloads it from GitHub.
 # The install's clocks go with it: ssl-cert (postgresql-common depends on
 # it; scripts/pg-test.sh runs its server without TLS) generates a random
 # snakeoil pair, and ldconfig's aux-cache and the apt, dpkg and
@@ -167,15 +168,10 @@ COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
 # and the worker into the emptyDir the pod mounts over /home/worker.
 COPY --from=opencode-plugin --chown=1000:1000 /opencode-home/.config/opencode /opt/opencode-home/.config/opencode
 USER 1000:1000
-# every one of these phones home past the egress allowlist and stalls on the drop;
-# ripgrep is installed because opencode otherwise downloads it from GitHub.
 # GOTOOLCHAIN=local: go never fetches another toolchain; GOPROXY without the
 # "direct" fallback: only the module proxy is reachable, a fallback would
-# hang on the drop.
-ENV OPENCODE_DISABLE_AUTOUPDATE=1 \
-    OPENCODE_DISABLE_MODELS_FETCH=1 \
-    OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
-    PATH=/usr/local/go/bin:/home/worker/go/bin:$PATH \
+# hang on the drop. opencode's own switches are the session pod's env.
+ENV PATH=/usr/local/go/bin:/home/worker/go/bin:$PATH \
     GOTOOLCHAIN=local \
     GOPROXY=https://proxy.golang.org \
     GOSUMDB=sum.golang.org

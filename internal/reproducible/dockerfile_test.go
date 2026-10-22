@@ -705,3 +705,36 @@ func checkAptRun(t *testing.T, where, run string) {
 		}
 	}
 }
+
+// Project images build FROM the sandbox's base (sf/sandbox-base) and
+// apt-get install from its sources: the base writes the dated snapshot
+// list and PGDG's archive list, and no rm of it touches /etc/apt/ but the
+// base image's own undated debian.sources.
+func TestSandboxBaseKeepsItsAptSources(t *testing.T) {
+	var base *dockerfileStage
+	for _, s := range parseDockerfile(t, filepath.Join("..", "..", "Dockerfile.sandbox")) {
+		if s.name == "base" {
+			base = s
+		}
+	}
+	if base == nil {
+		t.Fatal("Dockerfile.sandbox: no stage base")
+	}
+	runs := strings.Join(base.runs, "\n")
+	for _, list := range []string{"> /etc/apt/sources.list ", "> /etc/apt/sources.list.d/pgdg.list "} {
+		if !strings.Contains(runs, list) {
+			t.Errorf("Dockerfile.sandbox stage base: no step writes %s", strings.TrimPrefix(list, "> "))
+		}
+	}
+	for _, cmd := range regexp.MustCompile(`&&|;|\|\||\n`).Split(runs, -1) {
+		fields := strings.Fields(cmd)
+		if len(fields) == 0 || fields[0] != "rm" {
+			continue
+		}
+		for _, arg := range fields[1:] {
+			if strings.HasPrefix(arg, "/etc/apt") && arg != "/etc/apt/sources.list.d/debian.sources" {
+				t.Errorf("Dockerfile.sandbox stage base removes %s: an image built FROM it could not install from the base's sources", arg)
+			}
+		}
+	}
+}

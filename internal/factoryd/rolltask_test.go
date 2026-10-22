@@ -1533,6 +1533,49 @@ func TestRollerRollsTheSandboxBase(t *testing.T) {
 	}
 }
 
+// A pin the registry does not hold (the sandbox base's seed, the worker's
+// digest under the base's name; or a digest the store collected) is no
+// reason to roll nothing: its target counts as changed, the others are
+// judged as ever, and the new digest still needs the factory's signature.
+func TestRollerRollsAPinTheRegistryDoesNotHold(t *testing.T) {
+	seed := sha256Of(workerOldIdx)
+	onMain := mainPins()
+	onMain["k8s/factoryd.yaml"] = strings.Replace(onMain["k8s/factoryd.yaml"], "sandbox-base@"+sha256Of(baseIdx), "sandbox-base@"+seed, 1)
+	for name, c := range map[string]struct {
+		signed bool
+		state  string
+	}{
+		"signed":   {true, RollOpened},
+		"unsigned": {false, RollRefused},
+	} {
+		f := &rollForgejo{
+			runs:     []map[string]any{pushRun(57, commitC1, "success")},
+			files:    map[string]map[string]string{codeRepo + "@main": onMain},
+			statuses: imageGreen(commitC1),
+			registry: registryOf(map[string]string{
+				"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx,
+				"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+				"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+				"sf/sandbox-base/manifests/c1c1c1c":    baseIdx,
+			}, gwOldIdx, workerOldIdx, runnerIdx),
+		}
+		if _, held := f.registry["sf/sandbox-base/manifests/"+seed]; held {
+			t.Fatal("the registry fixture holds the seed")
+		}
+		if !c.signed {
+			delete(f.registry, "sf/sandbox-base/manifests/sha256-"+strings.TrimPrefix(sha256Of(baseIdx), "sha256:"))
+		}
+		roller, store, _ := newTestRoller(t, f)
+		if err := roller.poll(context.Background()); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(store.rolls) != 1 || store.rolls[0].State != c.state ||
+			!maps.Equal(store.rolls[0].Changes, map[string]string{"sandbox-base": sha256Of(baseIdx)}) {
+			t.Fatalf("%s: roll requests %+v, want one %s rolling the sandbox base alone", name, store.rolls, c.state)
+		}
+	}
+}
+
 // Every agent task's token writes the bot's fork, a roll's branch included:
 // a head that is not the commit RollCommit wrote is refused, for a fold and
 // for a resumed run, so no agent commit rides under a roll's card.

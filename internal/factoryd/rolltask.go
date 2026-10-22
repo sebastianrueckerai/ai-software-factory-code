@@ -714,7 +714,9 @@ func (r *Roller) onlyK8s(ctx context.Context, sha string) (bool, error) {
 // changes compares each target's image published for tag with the one
 // pinned at ref of repo, by the linux/amd64 manifest, and returns the
 // changed targets' new digests and their new references, and for each new
-// digest without a signature by SigningKey, why, by target.
+// digest without a signature by SigningKey, why, by target. A pin the
+// registry does not hold (a seed, a digest the store collected) counts as
+// changed.
 func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (changes, refs, unsigned map[string]string, err error) {
 	files := map[string][]byte{}
 	resolved := map[string]ImageManifest{}
@@ -756,10 +758,10 @@ func (r *Roller) changes(ctx context.Context, repo Repo, ref, tag string) (chang
 			return nil, nil, nil, err
 		}
 		was, err := resolve(path, digest)
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrNotFound) {
 			return nil, nil, nil, err
 		}
-		if now.Platform == was.Platform {
+		if err == nil && now.Platform == was.Platform {
 			continue
 		}
 		changes[t.Name] = now.Digest

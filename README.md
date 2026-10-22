@@ -72,8 +72,16 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   session's key, limited to those aliases. A refusal names its decision in
   the `X-Gateway-Decision` header. It also serves the agent's tools over MCP at
   `/mcp`, see "Tools".
-- `cmd/agent-worker`: pid 1 in the sandbox pod. Its init container
-  (`MODE=clone`), the read token's only holder, clones the base commit
+- `cmd/agent-worker`: pid 1 in the sandbox pod. The pod's first init
+  container, `harness`, copies agent-worker, opencode and the opencode
+  bake out of the factory's image (`WORKER_IMAGE`) into the emptyDir
+  `harness` at `/factory`; every later container runs
+  `/factory/bin/agent-worker` with that volume read-only, whatever image
+  it runs, and the worker puts `/factory/bin` first on `PATH` and copies
+  the bake into its `HOME`. The session pod sets opencode's
+  `OPENCODE_DISABLE_*` switches in the worker's env, not the image. The
+  next init container (`MODE=clone`), the read token's only holder,
+  clones the base commit
   from the repository before the agent starts (a resumed task branch that
   only the fork holds is fetched from there). The worker container starts
   with no Forgejo token, runs `opencode serve` on 127.0.0.1 in its own
@@ -101,7 +109,9 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   `factory/<id>` to the fork `factory-agent/<repo>`.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep,
   the Go toolchain (ruling 99, the same pin as the runner
-  image) and PostgreSQL 17's server for `scripts/pg-test.sh`; its
+  image) and PostgreSQL 17's server for `scripts/pg-test.sh`; its stage
+  `base`, pushed as `sf/sandbox-base`, is the same without the harness,
+  Go and Node, apt's dated sources kept for the images built on it; its
   egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
   and `storage.googleapis.com` (proxy.golang.org redirects zip downloads
@@ -377,8 +387,9 @@ activities, each with a timeline step and a comment on the pull request:
    reported fault): a fresh sandbox namespace, a read
    token on the task's repository only, and one pod of the worker image
    (no agent, no gateway token, no push token, the agents' egress policy).
-   Its init container (`MODE=repro-fetch`), the token's only holder,
-   fetches `refs/pull/<n>/head` into the workspace and checks it is the
+   After the harness copy, its fetch init container (`MODE=repro-fetch`),
+   the token's only holder, fetches `refs/pull/<n>/head` into the
+   workspace and checks it is the
    gated head; the worker container (`MODE=repro`), with no token in its
    environment, probes the sandbox's egress as a session's worker does
    (a sandbox that cannot start is the start escalation, and the answer
@@ -2464,7 +2475,7 @@ port 8090 only.
 
 CI pushes images by digest. A deploy is a commit that rolls the digests
 in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
-`WORKER_IMAGE` and `CI_RUNNER_IMAGE`), and factoryd opens it as a task of
+`WORKER_IMAGE`, `SANDBOX_BASE_IMAGE` and `CI_RUNNER_IMAGE`), and factoryd opens it as a task of
 source `roll` (ruling 178). Every minute it reads the code repository's
 push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
@@ -2478,7 +2489,9 @@ cannot overwrite a tag, read once at boot, so a rotation restarts
 factoryd; the `forgejo-registry` pull secret serves image pulls only) and compares each with the one `k8s/` pins by the
 linux/amd64 image manifest inside the index: main CI's indexes carry a
 provenance attestation with build timestamps, so a rebuild of unchanged
-inputs pushes a new index digest around the same image. No changed image:
+inputs pushes a new index digest around the same image. A pin the
+registry does not hold (a seed, a digest the store collected) counts as
+changed. No changed image:
 a `roll_requests` row `skipped`. Otherwise it files the task: the issue
 `roll <sha7>: <targets>` naming the new references, the commits since the
 last roll (merges and roll commits left out) and the pull requests merged
