@@ -26,6 +26,7 @@ var (
 	sha256RE       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	envKeyRE       = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 	hostLabelRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	fileRE         = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 	safePathRE     = regexp.MustCompile(`^/[A-Za-z0-9._/+-]*$`)
 )
 
@@ -144,7 +145,7 @@ func (s ImageSpec) validate(name string) []string {
 		switch {
 		case u.Strip < 0 || u.Strip > 8:
 			bad("strip %d must be 0 to 8", u.Strip)
-		case u.Strip != 0 && !isArchive(u.URL):
+		case u.Strip != 0 && !u.IsArchive():
 			bad("strip %d needs an archive url (.tar.gz, .tgz or .tar.xz)", u.Strip)
 		}
 	}
@@ -204,6 +205,10 @@ func checkUpstreamURL(raw string) string {
 		return "needs a host"
 	case u.User != nil:
 		return "must not carry user info"
+	case strings.Contains(raw, "%"):
+		return "must not use percent-encoding"
+	case !fileRE.MatchString(path.Base(u.Path)) || path.Base(u.Path) == "." || path.Base(u.Path) == ".." || strings.HasSuffix(u.Path, "/"):
+		return "must end in a file name of letters, digits and ._+-"
 	}
 	return ""
 }
@@ -212,13 +217,17 @@ func cleanAbs(p string) bool {
 	return safePathRE.MatchString(p) && path.Clean(p) == p
 }
 
-func isArchive(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
+// File is the last path segment of the URL, the name the download keeps.
+func (u UpstreamLine) File() string {
+	p, _ := url.Parse(u.URL)
+	return path.Base(p.Path)
+}
+
+// IsArchive reports whether the download unpacks (.tar.gz, .tgz, .tar.xz).
+func (u UpstreamLine) IsArchive() bool {
+	f := u.File()
 	for _, ext := range []string{".tar.gz", ".tgz", ".tar.xz"} {
-		if strings.HasSuffix(u.Path, ext) {
+		if strings.HasSuffix(f, ext) {
 			return true
 		}
 	}

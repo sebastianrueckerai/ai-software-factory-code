@@ -76,8 +76,11 @@ func writeImageContext(dir string, spec policy.ImageSpec, base string) error {
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
-	for name, b := range map[string][]byte{"Dockerfile": dockerfile, "upstream-files.txt": copies, "manifest.json": append(manifest, '\n')} {
-		if err := os.WriteFile(filepath.Join(dir, name), b, 0o644); err != nil { // #nosec G306 -- build context for the builder
+	for _, f := range []struct {
+		name string
+		data []byte
+	}{{"Dockerfile", dockerfile}, {"upstream-files.txt", copies}, {"manifest.json", append(manifest, '\n')}} {
+		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0o644); err != nil { // #nosec G306 -- build context for the builder
 			return err
 		}
 	}

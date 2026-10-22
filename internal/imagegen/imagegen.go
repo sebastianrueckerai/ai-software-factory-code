@@ -8,8 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net/url"
-	"path"
 	"regexp"
 	"slices"
 	"strings"
@@ -34,6 +32,7 @@ type Manifest struct {
 // BuildKey is "k-" and the first 24 hex characters of sha256 over the
 // canonical JSON of spec, a newline, baseDigest, a newline and Version.
 func BuildKey(spec policy.ImageSpec, baseDigest string) string {
+	// No json tags: the key hashes Go field names, so renaming a field changes every key.
 	b, _ := json.Marshal(spec)
 	sum := sha256.Sum256([]byte(string(b) + "\n" + baseDigest + "\n" + Version))
 	return fmt.Sprintf("k-%x", sum[:12])
@@ -41,12 +40,7 @@ func BuildKey(spec policy.ImageSpec, baseDigest string) string {
 
 // StoreURL is where the store holds a copy of an upstream line.
 func StoreURL(u policy.UpstreamLine) string {
-	return storeBase + u.Name + "/" + u.SHA256 + "/" + basename(u)
-}
-
-func basename(u policy.UpstreamLine) string {
-	p, _ := url.Parse(u.URL)
-	return path.Base(p.Path)
+	return storeBase + u.Name + "/" + u.SHA256 + "/" + u.File()
 }
 
 // Render returns the Dockerfile, the store copy list (upstream-files.txt
@@ -74,12 +68,12 @@ func Render(spec policy.ImageSpec, baseRef string) (dockerfile []byte, copies []
 		m.Tools = append(m.Tools, u.Name)
 		in := "/tmp/factory-inputs/" + u.Name
 		fmt.Fprintf(&d, "ADD --checksum=sha256:%s %s %s\n", u.SHA256, StoreURL(u), in)
-		if isArchive(u) {
+		if u.IsArchive() {
 			fmt.Fprintf(&d, "RUN mkdir -p %[1]s && tar -xf %[2]s -C %[1]s --strip-components=%[3]d --no-same-owner && rm %[2]s\n", u.To, in, u.Strip)
 		} else {
 			fmt.Fprintf(&d, "RUN install -D -m 0755 %[1]s %[2]s && rm %[1]s\n", in, u.To)
 		}
-		fmt.Fprintf(&c, "%s %s %s %s %s\n", u.Name, u.SHA256, basename(u), u.URL, u.SHA256)
+		fmt.Fprintf(&c, "%s %s %s %s %s\n", u.Name, u.SHA256, u.File(), u.URL, u.SHA256)
 	}
 	for _, k := range slices.Sorted(maps.Keys(spec.Env)) {
 		fmt.Fprintf(&d, "ENV %s=%s\n", k, quote(spec.Env[k]))
@@ -90,16 +84,6 @@ func Render(spec policy.ImageSpec, baseRef string) (dockerfile []byte, copies []
 	label, _ := json.Marshal(m)
 	fmt.Fprintf(&d, "LABEL world.aisoftwarefactory.manifest=%s\nUSER 1000:1000\n", quote(string(label)))
 	return []byte(d.String()), []byte(c.String()), m, nil
-}
-
-func isArchive(u policy.UpstreamLine) bool {
-	p, _ := url.Parse(u.URL)
-	for _, ext := range []string{".tar.gz", ".tgz", ".tar.xz"} {
-		if strings.HasSuffix(p.Path, ext) {
-			return true
-		}
-	}
-	return false
 }
 
 // quote double-quotes s for a Dockerfile instruction.
