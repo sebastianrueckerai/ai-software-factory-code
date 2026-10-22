@@ -1,0 +1,103 @@
+name: project-image
+# The trusted builder of one project image (sandbox images): factoryd
+# dispatches it with the project's factory/images.yaml and the base it was
+# keyed on. The runner is the one the factory's own image jobs use; the
+# project's file only picks tools and copy-list lines, rendered by factoryd
+# into the Dockerfile this builds.
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: the project
+        required: true
+      image:
+        description: the image of the project's factory/images.yaml
+        required: true
+      file:
+        description: the project's factory/images.yaml, base64
+        required: true
+      base:
+        description: the sandbox base, ref@sha256:...
+        required: true
+      key:
+        description: the build key factoryd expects
+        required: true
+env:
+  CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
+  BUILDKIT: git.aisoftwarefactory.world/upstream/docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
+  FACTORYD_IMAGE: git.aisoftwarefactory.world/sf/factory-gateway:main
+concurrency:
+  group: project-image-${{ inputs.project }}-${{ inputs.image }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # inputs reach the shell only through env, and only double-quoted
+    env:
+      PROJECT: ${{ inputs.project }}
+      IMAGE: ${{ inputs.image }}
+      FILE: ${{ inputs.file }}
+      BASE: ${{ inputs.base }}
+      KEY: ${{ inputs.key }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: registry login
+        run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
+      - name: render the Dockerfile and the copy list
+        # the job's docker is the runner's dind, which cannot see the job's
+        # files: factoryd's static binary is copied out of its image. A key
+        # that differs means the file or the base changed since factoryd
+        # asked: nothing is built from it.
+        run: |
+          set -euo pipefail
+          docker pull -q "$FACTORYD_IMAGE" >/dev/null
+          id=$(docker create "$FACTORYD_IMAGE")
+          docker cp "$id:/usr/local/bin/factoryd" /tmp/factoryd
+          docker rm "$id" >/dev/null
+          printf %s "$FILE" | base64 -d > /tmp/images.yaml
+          got=$(/tmp/factoryd image key -file /tmp/images.yaml -name "$IMAGE" -base "${BASE#*@}")
+          if [ "$got" != "$KEY" ]; then
+            echo "the build key is $got, factoryd asked for $KEY" >&2
+            exit 1
+          fi
+          /tmp/factoryd image render -file /tmp/images.yaml -name "$IMAGE" -base "$BASE" -out /tmp/img
+      - name: copy the image's files into the store
+        # as the upstream job of ci.yml, on the rendered list
+        env:
+          REGISTRY_USER: ${{ secrets.REGISTRY_USER }}
+          REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          runner=$(sed -n '/name: CI_RUNNER_IMAGE/{n;s/.*value: //p}' k8s/factoryd.yaml)
+          cp /tmp/img/upstream-files.txt project-upstream-files.txt
+          tar -c project-upstream-files.txt go.mod go.sum opencode-plugin scripts/upstream-files | docker run -i --rm -e REGISTRY_USER -e REGISTRY_PASSWORD --entrypoint bash "$runner" \
+            -c 'set -euo pipefail; cd "$(mktemp -d)"; tar -x; printf %s "$REGISTRY_PASSWORD" | crane auth login git.aisoftwarefactory.world -u "$REGISTRY_USER" --password-stdin; scripts/upstream-files project-upstream-files.txt'
+      - name: build and push the image
+        run: |
+          set -euo pipefail
+          B=project-image
+          printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
+          # buildx takes no TLS endpoint from the environment, only a context
+          docker context rm -f "$B-tls" >/dev/null 2>&1 || true
+          docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
+          # a cancelled run leaves its buildkitd behind: clear it first
+          docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
+          docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image="$BUILDKIT" --buildkitd-config /tmp/buildkitd.toml "$B-tls"
+          trap 'docker buildx rm "$B"' EXIT
+          cache="$CACHE/sandbox-$PROJECT.$IMAGE:cache"
+          docker buildx build --builder "$B" --build-arg SOURCE_DATE_EPOCH=0 --metadata-file /tmp/image.json \
+            --cache-from "type=registry,ref=$cache,registry.insecure=true" \
+            --cache-to "type=registry,ref=$cache,mode=max,registry.insecure=true,ignore-error=true" \
+            --output "type=image,name=git.aisoftwarefactory.world/sf/sandbox-$PROJECT.$IMAGE:$KEY,push=true,rewrite-timestamp=true" /tmp/img
+      - name: sign the image
+        # by the digest pushed, with the images key, not the factory's own
+        env:
+          IMAGES_COSIGN_PRIVATE_KEY: ${{ secrets.IMAGES_COSIGN_PRIVATE_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.IMAGES_COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          docker build -f Dockerfile.runner --target cosign -o /tmp/cosign .
+          printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}' > /tmp/signing-config.json
+          /tmp/cosign/cosign sign --yes --key env://IMAGES_COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
+            "git.aisoftwarefactory.world/sf/sandbox-$PROJECT.$IMAGE@$(jq -r '."containerimage.digest"' /tmp/image.json)"
