@@ -278,9 +278,9 @@ func (s *fakeStore) SetTaskPlanRevision(ctx context.Context, id string, revision
 	return nil
 }
 
-func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id, objective, image string) error {
+func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id string, card Task) error {
 	if t, ok := s.tasks[id]; ok {
-		t.Objective, t.Image = objective, image
+		t.Objective, t.Image, t.Rung, t.Size = card.Objective, card.Image, card.Rung, card.Size
 		s.tasks[id] = t
 	}
 	return nil

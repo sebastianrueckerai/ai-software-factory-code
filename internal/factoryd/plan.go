@@ -2123,7 +2123,7 @@ func replacesNothing(p Plan, id string) bool {
 
 // restartChildren runs the restart rules a new revision carries (piece
 // 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief and image, a card the new plan drops ends closed
+// takes the new revision's brief, image, rung and size, a card the new plan drops ends closed
 // with its issue unless it merged (Finish leaves a merged card to its
 // chain, which ends it done), a started card keeps its branch (the merge
 // check holds it there) and a final card never reopens.
@@ -2166,7 +2166,7 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Pl
 			spec = specBlock(p)
 		}
 		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec))
-		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, r.untrusted(t, c.Title)+"\n\n"+body, c.Image); err != nil {
+		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
 	}

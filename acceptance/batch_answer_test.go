@@ -701,7 +701,7 @@ func (s *accBatchStore) SetTaskPlanRevision(context.Context, string, int) error 
 	panic("unused")
 }
 
-func (s *accBatchStore) UpdatePlanCardBrief(context.Context, string, string, string) error {
+func (s *accBatchStore) UpdatePlanCardBrief(context.Context, string, factoryd.Task) error {
 	panic("unused")
 }
 

@@ -505,8 +505,9 @@ type Store interface {
 	// against; the guard makes it once.
 	SetTaskPlanRevision(ctx context.Context, id string, revision int) error
 	// UpdatePlanCardBrief replaces a not-yet-started card's stored brief
-	// and image with its card's of the plan's newest revision.
-	UpdatePlanCardBrief(ctx context.Context, id, objective, image string) error
+	// (Objective), image, rung and size with card's, its card's of the
+	// plan's newest revision.
+	UpdatePlanCardBrief(ctx context.Context, id string, card Task) error
 	// AddTaskDeps records that task id waits on each of dependsOn; an
 	// edge recorded before stays as it is.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -833,10 +834,12 @@ func (s *PGStore) SetTaskImage(ctx context.Context, id, digest string, egress []
 	return oneRow(res, err, "task "+id)
 }
 
-// UpdatePlanCardBrief replaces a not-yet-started card's stored brief and
-// image with its card's of the plan's newest revision (roadmap 291).
-func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id, objective, image string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3 WHERE id = $1`, id, objective, image)
+// UpdatePlanCardBrief replaces a not-yet-started card's stored brief,
+// image, rung and size with card's, its card's of the plan's newest
+// revision (roadmap 291).
+func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id string, card Task) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3, rung = $4, size = $5 WHERE id = $1`,
+		id, card.Objective, card.Image, card.Rung, card.Size)
 	return err
 }
 

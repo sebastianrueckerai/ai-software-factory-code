@@ -170,6 +170,37 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	}
 }
 
+// A card that never started takes the new revision's rung and size with
+// its brief, which states them; a started one keeps its own.
+func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := newPlanRunner(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if res := createChildren(t, r); len(res.Refused) != 0 {
+		t.Fatalf("the children: %+v", res)
+	}
+	runPlanTask(store)
+	started := cardsByKey(t, store)["redirects"]
+	started.Status, started.PlanRevision = "running", 1
+	store.tasks[started.ID] = started
+
+	amend := testPlan()
+	for _, i := range []int{1, 2} {
+		amend.Cards[i].Size, amend.Cards[i].Rung, amend.Cards[i].RungReason = "medium", RungFrontier, "the store's schema moves"
+	}
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("the amendment: %+v, %v", res, err)
+	}
+	cards := cardsByKey(t, store)
+	if c := cards["links-api"]; c.Rung != RungFrontier || c.Size != "medium" || !strings.Contains(c.Objective, "Size: medium") {
+		t.Errorf("the never-started card: rung %q, size %q, want frontier and medium", c.Rung, c.Size)
+	}
+	if c := cards["redirects"]; c.Rung != "" || c.Size != "small" {
+		t.Errorf("the started card: rung %q, size %q, want its own", c.Rung, c.Size)
+	}
+}
+
 // planJSON marshals v or fails the test.
 func planJSON(t *testing.T, v any) string {
 	t.Helper()

@@ -828,7 +828,7 @@ func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) erro
 	return nil
 }
 
-func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, string, string) error {
+func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, factoryd.Task) error {
 	return nil
 }
 
