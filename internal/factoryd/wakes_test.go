@@ -418,6 +418,7 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 	}
 	text := calls[0].text
 	for _, want := range []string{
+		"Wake: 1 ask waits for a human.",
 		"#40: Use a replica?",
 		"\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done.",
 	} {

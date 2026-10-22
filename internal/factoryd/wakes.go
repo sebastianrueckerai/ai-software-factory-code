@@ -359,7 +359,11 @@ func (w *Waker) askBudget(ctx context.Context, repository string, task Task, now
 // holds the tool, an approver.
 func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []string, login string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Wake: %d asks wait for a human.", len(asks))
+	if len(asks) == 1 {
+		b.WriteString("Wake: 1 ask waits for a human.")
+	} else {
+		fmt.Fprintf(&b, "Wake: %d asks wait for a human.", len(asks))
+	}
 	for _, a := range asks {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
 		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), askSentence(a.e))
