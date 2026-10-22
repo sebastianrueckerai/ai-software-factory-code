@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
 # The repository's checks as pr.yml runs them; an agent runs `bash check`
-# before it ends.
+# before it ends. `bash check static` stops before the tests: the
+# pre-push hook's gate (.githooks/pre-push). gosec is the runner image's
+# version.
 set -euo pipefail
 cd "$(dirname "$0")"
 
 go vet ./...
 unformatted=$(gofmt -l .)
 if [ -n "$unformatted" ]; then echo "gofmt -w these files:"; echo "$unformatted"; exit 1; fi
-go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -quiet ./...
+go run "github.com/securego/gosec/v2/cmd/gosec@v$(sed -n 's/^ARG GOSEC_VERSION=//p' Dockerfile.runner)" -quiet ./...
+[ "${1:-}" = static ] && exit 0
 make test

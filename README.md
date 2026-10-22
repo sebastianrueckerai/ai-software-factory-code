@@ -2003,7 +2003,12 @@ day's headroom.
 
 `make test` runs `scripts/pg-test.sh go test -race -p 1 ./...`, the line
 `pr.yml` and `ci.yml` run, and `bash check` runs it after vet, gofmt and
-gosec. The store tests run only with `FACTORYD_TEST_DATABASE_URL` and
+gosec (the runner image's `GOSEC_VERSION`). `bash check static` stops
+before the tests. `.githooks/pre-push` runs `bash check static` on the
+commit a push to `main` carries and refuses the push on a finding, so a
+push from a clone with the hook on cannot turn `main` red on vet, gofmt or
+gosec (`git push --no-verify` skips it). Turn it on once per clone:
+`git config core.hooksPath .githooks`. The store tests run only with `FACTORYD_TEST_DATABASE_URL` and
 `GATEWAY_TEST_DATABASE_URL` set to a throwaway Postgres (they wipe it):
 `scripts/pg-test.sh` starts one (PostgreSQL 17's `initdb`, `pg_ctl` and
 `postgres`, on `PATH` or in `/usr/lib/postgresql/17/bin`; the runner and
@@ -2480,7 +2485,12 @@ source `roll` (ruling 178). Every minute it reads the code repository's
 push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
 only, and never one older than a run whose commit a roll carries, which
-would roll `main` back), it skips a commit that changes nothing outside
+would roll `main` back), and only while `main`'s head, the commit of its
+newest push run, has a green `ci / test (push)`: the roll's branch is cut
+from that head, so its pull request's checks judge the head's code, and a
+roll cut while the head's tests run or fail fails for code not its own
+(roll #1219). While the head's tests run or fail, the roll waits and says
+so once in the log. It skips a commit that changes nothing outside
 `k8s/` against its first parent (a roll's own merge, a hand roll: rebuilt images, whatever
 the build cache made of them), and otherwise reads the images main CI tagged with the commit's short sha
 from the registry (in-cluster Forgejo, `/v2`, as user `factory-registry-read`

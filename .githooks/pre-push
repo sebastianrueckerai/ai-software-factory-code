@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# A push to main first passes `bash check static` (vet, gofmt, gosec at
+# main CI's version) on the commit it pushes, not the working tree: a
+# finding stops the push here instead of turning main red. A commit that
+# passed once goes to the next remote unchecked. Turn it on once per
+# clone: git config core.hooksPath .githooks
+set -euo pipefail
+zero=0000000000000000000000000000000000000000
+passed=$(git rev-parse --git-common-dir)/checked
+mkdir -p "$passed"
+while read -r _ sha ref _; do
+  [ "$ref" = refs/heads/main ] && [ "$sha" != "$zero" ] && [ ! -e "$passed/$sha" ] || continue
+  src=$(mktemp -d)
+  git archive "$sha" | tar -x -C "$src"
+  if ! bash "$src/check" static; then
+    rm -rf "$src"
+    echo "pre-push: ${sha:0:8} fails bash check static: main is not pushed" >&2
+    exit 1
+  fi
+  rm -rf "$src"
+  touch "$passed/$sha"
+done

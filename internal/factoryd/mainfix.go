@@ -70,12 +70,7 @@ func (s *PGStore) ClearQueuePause(ctx context.Context, project string) error {
 // older run says nothing of main's head. runs are the poll's, newest
 // first by id.
 func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
-	var newest *ActionRun
-	for i := range runs {
-		if x := &runs[i]; x.PrettyRef == prBase && (newest == nil || x.ID > newest.ID) {
-			newest = x
-		}
-	}
+	newest := newestMain(runs)
 	if newest == nil || (newest.Status != "success" && newest.Status != "failure") {
 		return nil
 	}
@@ -101,6 +96,17 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 		return r.revert(ctx, pause)
 	}
 	return nil
+}
+
+// newestMain is main's newest push run among runs, nil without one.
+func newestMain(runs []ActionRun) *ActionRun {
+	var newest *ActionRun
+	for i := range runs {
+		if x := &runs[i]; x.PrettyRef == prBase && (newest == nil || x.ID > newest.ID) {
+			newest = x
+		}
+	}
+	return newest
 }
 
 // pause pauses the queue on the red run and files the fix-forward card,

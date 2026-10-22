@@ -664,11 +664,12 @@ func pushRun(id int64, sha, status string) map[string]any {
 
 // imageGreen is the shas' combined status as main CI reports it once its
 // three image jobs published their images: the roller's trigger (roadmap
-// 296), whatever the run's own state then is.
+// 296), whatever the run's own state then is. The image jobs need the test
+// job, so its status is green too.
 func imageGreen(shas ...string) map[string][]map[string]string {
 	out := map[string][]map[string]string{}
 	for _, sha := range shas {
-		for _, ctx := range imageContexts {
+		for _, ctx := range append([]string{testContext}, imageContexts...) {
 			out[sha] = append(out[sha], map[string]string{"status": "success", "context": ctx, "target_url": "https://git.example"})
 		}
 	}
@@ -745,14 +746,17 @@ func TestRollerListsACarriedPullRequestWhoseTitleFailsToRead(t *testing.T) {
 // The newest green push run of main whose images changed files one roll
 // task: the issue names the changed images, their new references and the
 // merged pull requests since the last roll (the roll tasks' own left
-// out); an image rebuilt with no input change is no change. A second poll
-// files nothing: each commit once.
+// out); an image rebuilt with no input change is no change. Main's head is
+// a newer commit whose tests passed and whose images still build. A second
+// poll files nothing: each commit once.
 func TestRollerFilesOneRollPerCommit(t *testing.T) {
 	logs := captureLog(t)
+	statuses := imageGreen(commitC1)
+	statuses[commitC2] = []map[string]string{{"status": "success", "context": testContext, "target_url": "https://git.example"}}
 	f := &rollForgejo{
 		runs:     []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success"), pushRun(56, "c0c0c0c0", "success")},
 		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
-		statuses: imageGreen(commitC1),
+		statuses: statuses,
 		registry: registryOf(map[string]string{
 			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
 			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
@@ -845,6 +849,70 @@ func TestRollerRollsARunWhoseImagesAreGreenWhileItRuns(t *testing.T) {
 	}
 	if len(store.rolls) != 1 || len(wf.started) != 1 {
 		t.Fatalf("rolls %+v, starts %v; a run with a pending image job was judged", store.rolls, wf.started)
+	}
+}
+
+// A roll's branch is cut from main's head (RollCommit), and its pull
+// request's checks run main CI's test job again on the head's code (roll
+// #1219: cut on a newer commit whose tests still ran, it failed on that
+// commit's gosec finding). While main's head is a newer commit whose test
+// job runs or failed, the green commit's roll waits, saying so once; it
+// files once the head's tests are green.
+func TestRollerWaitsForMainsHeadToPassItsTests(t *testing.T) {
+	logs := captureLog(t)
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	rolls := func() int {
+		n := 0
+		for _, issue := range f.issues {
+			if strings.HasPrefix(issue, "roll ") {
+				n++
+			}
+		}
+		return n
+	}
+	for range 2 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.rolls) != 0 || rolls() != 0 {
+		t.Fatalf("rolls %+v, issues %q: a roll was cut while main's head ran its tests", store.rolls, f.issues)
+	}
+	if n := strings.Count(logs.String(), "main's head "+commitC2+" has no green ci / test (push) yet: the roll waits"); n != 1 {
+		t.Fatalf("log %q, want the wait said once", logs.String())
+	}
+
+	f.mu.Lock()
+	f.runs[0]["status"] = "failure"
+	f.statuses[commitC2] = []map[string]string{{"status": "failure", "context": "ci / test (push)", "target_url": "https://git.example"}}
+	f.mu.Unlock()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 0 || rolls() != 0 {
+		t.Fatalf("rolls %+v, issues %q: a roll was cut on main's red head", store.rolls, f.issues)
+	}
+
+	f.mu.Lock()
+	f.runs[0]["status"] = "running"
+	f.statuses[commitC2] = []map[string]string{{"status": "success", "context": "ci / test (push)", "target_url": "https://git.example"}}
+	f.mu.Unlock()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 || store.rolls[0].SHA != commitC1 || store.rolls[0].State != RollOpened || rolls() != 1 {
+		t.Fatalf("rolls %+v, issues %q, want commit C1's roll once main's head passed its tests", store.rolls, f.issues)
 	}
 }
 

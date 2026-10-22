@@ -358,7 +358,8 @@ type RollerStore interface {
 // (the registry tags of the commit's short sha) with the ones k8s/ pins,
 // and for a changed image files a task of source roll whose one commit
 // bumps the digests; while a roll task is open, a newer set of images is
-// folded into it, its branch cut from main's head again. A changed image
+// folded into it, its branch cut from main's head again. It cuts a roll
+// only while main's head has a green test job (headTested). A changed image
 // without a signature by SigningKey refuses the commit: a human card says
 // why, and nothing of it rolls. It judges each commit once.
 type Roller struct {
@@ -377,6 +378,8 @@ type Roller struct {
 	// subjects and titles may point there or at the Forgejo host
 	LinkHosts func() []string
 	Poll      time.Duration
+
+	held string // main's head the roll last waited on, said once
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -458,6 +461,16 @@ func (r *Roller) poll(ctx context.Context) error {
 	if len(green) == 0 {
 		return nil
 	}
+	if head, ok, err := r.headTested(ctx, runs, green); err != nil {
+		return err
+	} else if !ok {
+		if head != r.held {
+			log.Printf("roller: main's head %s has no green %s yet: the roll waits", head, testContext)
+			r.held = head
+		}
+		return nil
+	}
+	r.held = ""
 	// newest first: the newest changed images file (or fold) the roll, and
 	// the older runs fall below it
 	slices.SortFunc(green, func(a, b ActionRun) int { return cmp.Compare(b.ID, a.ID) })
@@ -491,6 +504,33 @@ func (r *Roller) imagesGreen(ctx context.Context, sha string) (bool, error) {
 		}
 	}
 	return len(green) == len(imageContexts), nil
+}
+
+// testContext is main CI's test job's commit-status context: the tests,
+// vet, gofmt and gosec that a roll's pull request runs again.
+const testContext = "ci / test (push)"
+
+// headTested answers main's head, the commit of its newest push run among
+// runs, and whether its test job is green. RollCommit cuts a roll's branch
+// from main's head, so the roll's pull request checks the head's code: a
+// roll cut while the head's tests run or fail fails for code not its own.
+// An image job needs the test job, so a head among green, the runs whose
+// images are green, passes unread.
+func (r *Roller) headTested(ctx context.Context, runs, green []ActionRun) (string, bool, error) {
+	head := newestMain(runs)
+	if head == nil {
+		return "", false, nil
+	}
+	if slices.ContainsFunc(green, func(g ActionRun) bool { return g.CommitSHA == head.CommitSHA }) {
+		return head.CommitSHA, true, nil
+	}
+	cs, err := r.Forgejo.CombinedStatus(ctx, r.Repo.Owner, r.Repo.Name, head.CommitSHA)
+	if err != nil {
+		return "", false, err
+	}
+	return head.CommitSHA, slices.ContainsFunc(cs.Statuses, func(s CommitStatus) bool {
+		return s.Context == testContext && s.State == "success"
+	}), nil
 }
 
 // rollStatusContext is the commit-status context the roller reports its
