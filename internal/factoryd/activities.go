@@ -730,7 +730,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 		// freshNamespace deletes a leftover namespace first, and with it any
 		// pod a dead session left running
-		if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
+		if s.cache, s.image, err = r.setupNamespace(ctx, &t, base); err != nil {
 			return SessionResult{}, named("namespace", err)
 		}
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()

@@ -550,7 +550,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	if err != nil {
 		return ReproResult{}, err
 	}
-	if _, err := r.setupNamespace(ctx, t, base); err != nil {
+	if _, _, err := r.setupNamespace(ctx, &t, base); err != nil {
 		return ReproResult{}, err
 	}
 	// a sandbox that cannot start, its pod's or its worker's egress probe,
@@ -792,7 +792,7 @@ func fenced(s string) string {
 // build result (ruling 291): Go and npm build cold in the pod's own
 // emptyDir, with PATH naming no cache directory.
 func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[string]any {
-	pod := r.sandboxPodSpec(t, r.cfg.WorkerImage, "", []map[string]any{
+	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", []map[string]any{
 		{"name": "MODE", "value": "repro"},
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_COMMAND", "value": t.ReproCommand},

@@ -2936,8 +2936,8 @@ func TestRunSessionCheckinAnswerSupersededByAPush(t *testing.T) {
 
 func TestWorkerEgressAdmitsLeasedServersOnSSH(t *testing.T) {
 	r := &Runner{cfg: testRunnerConfig()}
-	plain := r.workerEgressSpec(nil)["egress"].([]any)
-	spec := r.workerEgressSpec([]string{"203.0.113.7", "203.0.113.8"})
+	plain := r.workerEgressSpec(sandboxRegistries, nil)["egress"].([]any)
+	spec := r.workerEgressSpec(sandboxRegistries, []string{"203.0.113.7", "203.0.113.8"})
 	egress := spec["egress"].([]any)
 	if len(egress) != len(plain)+2 {
 		t.Fatalf("egress rules = %d, want %d", len(egress), len(plain)+2)
@@ -2989,7 +2989,7 @@ func TestAdmitLeasesFollowsTheRegistry(t *testing.T) {
 	leases := &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "gone": {"203.0.113.9"}}}
 	cfg := testRunnerConfig()
 	cfg.Leases = leases
-	r := &Runner{cfg: cfg, kube: kube}
+	r := &Runner{cfg: cfg, kube: kube, store: newFakeStore()}
 	ctx := context.Background()
 	rules := func(ns string) string {
 		kube.mu.Lock()
@@ -3054,7 +3054,7 @@ func TestAdmitLeasesSkipsANamespaceWithoutItsBinding(t *testing.T) {
 	}
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{}}
-	r := &Runner{cfg: cfg, kube: forbiddenPolicy{fakeKube: kube, ns: "factory-agents-t1"}}
+	r := &Runner{cfg: cfg, kube: forbiddenPolicy{fakeKube: kube, ns: "factory-agents-t1"}, store: newFakeStore()}
 	if err := r.AdmitLeases(context.Background()); err != nil {
 		t.Fatalf("AdmitLeases = %v, want nil", err)
 	}
@@ -3076,7 +3076,7 @@ func TestAdmitLeasesSkipsTerminatingNamespaces(t *testing.T) {
 	kube.terminating["factory-agents-t1"] = true // DeleteNamespace returned; the GC is running
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "t2": {"203.0.113.8"}}}
-	r := &Runner{cfg: cfg, kube: kube}
+	r := &Runner{cfg: cfg, kube: kube, store: newFakeStore()}
 	if err := r.AdmitLeases(context.Background()); err != nil {
 		t.Fatalf("AdmitLeases = %v, want nil", err)
 	}
@@ -3113,8 +3113,10 @@ func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	kube.sourceData["factory/forgejo-registry"] = map[string]string{".dockerconfigjson": "{}"}
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "t2": {"203.0.113.8"}}}
-	r := &Runner{cfg: cfg, kube: kube, store: newFakeStore()}
-	if _, err := r.setupNamespace(context.Background(), Task{ID: "t1"}, ForgejoToken{}); err != nil {
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1"})
+	r := &Runner{cfg: cfg, kube: kube, store: store}
+	if _, _, err := r.setupNamespace(context.Background(), &Task{ID: "t1"}, ForgejoToken{}); err != nil {
 		t.Fatal(err)
 	}
 	egress := fmt.Sprint(kube.cnps["factory-agents-t1/worker-egress"]["egress"])

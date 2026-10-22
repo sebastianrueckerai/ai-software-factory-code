@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 )
 
 // TaskBrief is the whole task as data, handed to a harness adapter
@@ -58,6 +60,9 @@ type TaskBrief struct {
 	// starts from, pushed before the conversation began; "" when no
 	// check-in ran.
 	Handover string `json:"handover,omitempty"`
+	// Image is what the session's project image holds; nil when it runs
+	// the factory's image.
+	Image *imagegen.Manifest `json:"image,omitempty"`
 }
 
 // Author standings (ruling 152).

@@ -91,7 +91,8 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 	cfg.Leases = &fakeLeases{byID: map[string][]string{}}
 	r := &Runner{cfg: cfg, kube: kube, store: store, forgejo: &Forgejo{BotUser: "factory-agent"}}
 	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
-	cache, err := r.setupNamespace(context.Background(), task, ForgejoToken{})
+	store.CreateTask(context.Background(), task)
+	cache, _, err := r.setupNamespace(context.Background(), &task, ForgejoToken{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -289,7 +290,7 @@ func TestSetupNamespaceRefusesATaskWithoutProject(t *testing.T) {
 	store := newFakeStore()
 	store.projects = []Project{{Name: "linkshort", Repository: "linkshort/linkshort"}}
 	r := &Runner{cfg: testRunnerConfig(), kube: kube, store: store}
-	_, err := r.setupNamespace(context.Background(), Task{ID: "t1", Repository: "someone/else"}, ForgejoToken{})
+	_, _, err := r.setupNamespace(context.Background(), &Task{ID: "t1", Repository: "someone/else"}, ForgejoToken{})
 	if !isTerminal(err) || !strings.Contains(err.Error(), "repository someone/else is no project's") {
 		t.Fatalf("err = %v, want a terminal error naming the repository", err)
 	}

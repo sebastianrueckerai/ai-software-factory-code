@@ -44,7 +44,7 @@ const splitFailed = "The split failed its check twice"
 // card's directories cover (the repository's root covers none), and a
 // card whose size is under the lines of the files only it covers.
 func CheckSplit(text string, files []PRFile, bound int, limits policy.Limits) (Plan, []string) {
-	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits)
+	p, out := readPlan(text, policy.PlanShape{MaxCards: maxSplitCards}, limits, nil)
 	lines := sizeLines(bound)
 	covers := func(c PlanCard, f string) bool {
 		return slices.ContainsFunc(c.Directories, func(d string) bool {

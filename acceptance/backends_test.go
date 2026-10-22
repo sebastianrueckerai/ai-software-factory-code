@@ -630,6 +630,15 @@ func (s *acceptanceStore) SetTaskAlertFingerprint(_ context.Context, id, fingerp
 	return nil
 }
 
+func (s *acceptanceStore) SetTaskImage(_ context.Context, id, digest string, egress []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.ImageDigest, t.ImageEgress = digest, egress
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *acceptanceStore) SetTaskMergeCommit(_ context.Context, id, commit string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -819,7 +828,7 @@ func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) erro
 	return nil
 }
 
-func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, string) error {
+func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, string, string) error {
 	return nil
 }
 

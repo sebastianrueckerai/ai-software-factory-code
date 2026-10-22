@@ -32,6 +32,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
@@ -264,6 +265,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		CardRole:       s.env.cardRole,
 		LeftOut:        s.env.leftOut,
 		Facts:          s.env.facts,
+		Image:          s.env.image,
 	}
 	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
@@ -482,6 +484,9 @@ type workerEnv struct {
 	leftOut []string
 	// facts (FACTS) is factoryd's line for the brief
 	facts string
+	// image (IMAGE_MANIFEST) is what the session's project image holds;
+	// nil on the factory's image
+	image *imagegen.Manifest
 	// pull is the pull request a split reads (PULL), whose head the clone
 	// fetches as branch pull/<pull>
 	pull string
@@ -570,6 +575,11 @@ func loadEnv() (workerEnv, error) {
 			if err := json.Unmarshal([]byte(raw), dst); err != nil {
 				return e, fmt.Errorf("%s: %w", name, err)
 			}
+		}
+	}
+	if raw := str("IMAGE_MANIFEST"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &e.image); err != nil {
+			return e, fmt.Errorf("IMAGE_MANIFEST: %w", err)
 		}
 	}
 	return e, nil

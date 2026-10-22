@@ -169,7 +169,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if err != nil {
 		return reportEnd{}, err
 	}
-	if s.cache, err = r.setupNamespace(ctx, t, base); err != nil {
+	if s.cache, s.image, err = r.setupNamespace(ctx, &t, base); err != nil {
 		return reportEnd{}, err
 	}
 	deadline, startedAt := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()

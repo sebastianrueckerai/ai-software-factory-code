@@ -98,11 +98,11 @@ func TestSizeLinesDerivesFromTheBound(t *testing.T) {
 func TestValidatePlanTakesEveryCardSize(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Size = "large"
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits); len(got) != 0 {
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); len(got) != 0 {
 		t.Fatalf("a large card: ValidatePlan = %q, want no finding", got)
 	}
 	p.Cards[1].Size = "huge"
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits); len(got) != 1 ||
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); len(got) != 1 ||
 		got[0] != "plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints" {
 		t.Fatalf("a size the ladder does not name = %q, want the taxonomy line", got)
 	}
@@ -199,7 +199,7 @@ func TestValidatePlan(t *testing.T) {
 		"empty item text": {change(func(p *Plan) { p.Cards[1].Acceptance[0].Text = "" }), []string{"plan: card links-api: acceptance test 1 is empty"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := ValidatePlan(tc.text, testShape, testLimits); !slices.Equal(got, tc.want) {
+			if got := ValidatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
 				t.Fatalf("ValidatePlan = %q\nwant %q", got, tc.want)
 			}
 		})
@@ -219,13 +219,13 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 		}
 		return p
 	}
-	if got := ValidatePlan(fencePlan(at(11)), testShape, testLimits); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
+	if got := ValidatePlan(fencePlan(at(11)), testShape, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
 		t.Fatalf("ValidatePlan's first finding = %q, want the criteria count", got)
 	}
 	p := at(11)
 	p.Cards = p.Cards[:2] // the foundation and links-api, no integration card
 	p.Spec = nil          // a plan this process gives no integration card carries no spec to confirm
-	if got := ValidatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
+	if got := ValidatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
 		t.Fatalf("ValidatePlan's first finding = %q, want the criteria count", got)
 	}
 }
@@ -243,13 +243,13 @@ func TestValidatePlanOneCard(t *testing.T) {
 		return p
 	}
 	min1 := policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}
-	if got := ValidatePlan(fencePlan(one(RoleIntegration)), min1, testLimits); len(got) != 0 {
+	if got := ValidatePlan(fencePlan(one(RoleIntegration)), min1, testLimits, nil); len(got) != 0 {
 		t.Fatalf("ValidatePlan = %q, want no findings", got)
 	}
-	if got := ValidatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
+	if got := ValidatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits, nil); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
 		t.Fatalf("ValidatePlan = %q, want the two-card floor", got)
 	}
-	if got := ValidatePlan(fencePlan(one(RoleFoundation)), min1, testLimits); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
+	if got := ValidatePlan(fencePlan(one(RoleFoundation)), min1, testLimits, nil); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
 		t.Fatalf("ValidatePlan = %q, want the integration role finding", got)
 	}
 }
@@ -258,11 +258,47 @@ func TestValidatePlanOneCard(t *testing.T) {
 // card when the process allows it, and stays quiet when it does not.
 func TestPlanGuideOneCard(t *testing.T) {
 	want := "A change that fits one card answers one card, its own integration, citing every criterion."
-	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits); strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want no one-card sentence under a two-card minimum", got)
+	}
+}
+
+// A card names one of its project's pinned images or none: any other name
+// is one finding naming the card, the image and the pinned names, and with
+// no pins at hand (a split's check) every name is one.
+func TestPlanCardNamesAPinnedImage(t *testing.T) {
+	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}
+	p := testPlan()
+	p.Cards[1].Image = "browser"
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits, pins); len(got) != 0 {
+		t.Fatalf("a pinned image: %q, want no finding", got)
+	}
+	p.Cards[2].Image = "gpu"
+	want := []string{`plan: card redirects: image "gpu" is not one of this project's pinned images (browser, video)`}
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits, pins); !slices.Equal(got, want) {
+		t.Fatalf("an unknown image: %q, want %q", got, want)
+	}
+	p.Cards[2].Image = ""
+	want = []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}
+	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); !slices.Equal(got, want) {
+		t.Fatalf("no pins: %q, want %q", got, want)
+	}
+}
+
+// The guide shows a card's image in the json shape and, when the project
+// pins images, lists them with their tools.
+func TestPlanGuideListsTheProjectsImages(t *testing.T) {
+	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium", "fonts-liberation"}}}
+	want := "Images: browser (chromium, fonts-liberation), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
+	got := planGuide(testShape, testLimits, pins)
+	if !strings.Contains(got, want) || !strings.Contains(got, `"rung_reason": "one line", "image": "..."}`) {
+		t.Fatalf("planGuide = %q, want the image field and %q", got, want)
+	}
+	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, "Images:") || !strings.Contains(got, `"image": "..."`) {
+		t.Fatalf("planGuide without pins = %q, want the image field and no Images line", got)
 	}
 }
 
@@ -270,7 +306,7 @@ func TestPlanGuideOneCard(t *testing.T) {
 // step budget (ruling 221: the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -279,7 +315,7 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 // and in the field rules. The line figures are ValidatePlan's size
 // findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
-	got := planGuide(testShape, testLimits)
+	got := planGuide(testShape, testLimits, nil)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
 		!strings.Contains(got, "size: small, medium or large; anything bigger is two cards.") {
 		t.Fatalf("planGuide = %q, want the three sizes", got)
@@ -292,7 +328,7 @@ func TestPlanGuideSizes(t *testing.T) {
 // works on (the spec-intake concept, piece 2).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
 	want := "acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -301,7 +337,7 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 // dictates the criteria block's json shape, the kinds' field rules, the
 // citation rule, and the integration card's one item per criterion.
 func TestPlanGuideCriteria(t *testing.T) {
-	got := planGuide(testShape, testLimits)
+	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human"`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
@@ -327,7 +363,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 // confirmation that fixes the criteria, and the planner's one attack on
 // its own draft.
 func TestPlanGuideSpec(t *testing.T) {
-	got := planGuide(testShape, testLimits)
+	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order"`,
 		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
@@ -347,10 +383,10 @@ func TestPlanGuideSpec(t *testing.T) {
 func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 	want := "The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
 		"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise)."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits), want) {
+	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil), want) {
 		t.Fatal("a shape with no foundation card still gets the foundation's contracts sentence")
 	}
 }
@@ -359,7 +395,7 @@ func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 // bash check, so it never asks a card to verify some other way.
 func TestPlanGuideBashCheckLine(t *testing.T) {
 	want := "Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -368,7 +404,7 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 // the planner's guide does not ask for it.
 func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 	for _, shape := range []policy.PlanShape{testShape, {MaxCards: 12}} {
-		if got := planGuide(shape, testLimits); strings.Contains(got, "AGENTS.md") {
+		if got := planGuide(shape, testLimits, nil); strings.Contains(got, "AGENTS.md") {
 			t.Fatalf("planGuide = %q, want no AGENTS.md", got)
 		}
 	}
@@ -379,7 +415,7 @@ func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 // so this sentence is the rule's only carrier.
 func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 	want := "Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list."
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -389,7 +425,7 @@ func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 // The split guide keeps its last-message sentence: RunSplit still reads it.
 func TestPlanGuideFilesThroughTheTool(t *testing.T) {
 	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
-	if got := planGuide(testShape, testLimits); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -635,6 +671,33 @@ func cardsByKey(t *testing.T, store *fakeStore) map[string]Task {
 		out[c.PlanKey] = c
 	}
 	return out
+}
+
+// A card's image reaches its task row when the task's pinned version pins
+// it for the project; an image it does not pin refuses the acceptance.
+func TestChildrenCarryTheirImage(t *testing.T) {
+	p := testPlan()
+	p.Cards[1].Image = "browser"
+	r, store, _, _ := newPlanRunner(t, p)
+	if res := createChildren(t, r); len(res.Issues) != 0 ||
+		!slices.Equal(res.Refused, []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}) {
+		t.Fatalf("no pin: %+v, want the refusal", res)
+	}
+
+	r, store, _, _ = newPlanRunner(t, p)
+	pinned := fixtureVersion(t)
+	name, c, _ := pinned.ProjectOf("linkshort/linkshort")
+	c.Images = map[string]policy.ImagePin{"browser": {Digest: "sha256:" + strings.Repeat("b", 64), Key: keyBrowser, Tools: []string{"chromium"}}}
+	pinned.Projects[name] = c
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	if res := createChildren(t, r); len(res.Issues) != 4 || len(res.Refused) != 0 {
+		t.Fatalf("pinned: %+v, want four cards", res)
+	}
+	for key, want := range map[string]string{"foundation": "", "links-api": "browser", "redirects": "", "integration": ""} {
+		if got := cardsByKey(t, store)[key].Image; got != want {
+			t.Errorf("card %s image %q, want %q", key, got, want)
+		}
+	}
 }
 
 // The cards are filed so that every card's dependencies exist first: the

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"path"
@@ -168,6 +169,9 @@ type PlanCard struct {
 	// cheap or frontier; "" lets intake derive it (roadmap 222, item 5)
 	Rung       string `json:"rung,omitempty"`
 	RungReason string `json:"rung_reason,omitempty"`
+	// Image is the project's pinned image the card runs on; "" for the
+	// project's default
+	Image string `json:"image,omitempty"`
 }
 
 // PlanRevision is one valid plan of a plan task, as stored.
@@ -262,14 +266,15 @@ func deployOwner(spec string, p Plan) (needed bool, owner string) {
 }
 
 // ValidatePlan judges the planner's last message against the process's plan
-// shape and the pinned limits: one line per finding, none for a valid plan.
-func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits) []string {
-	_, findings := readPlan(text, shape, limits)
+// shape, the pinned limits and the project's image pins (nil: none): one
+// line per finding, none for a valid plan.
+func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) []string {
+	_, findings := readPlan(text, shape, limits, pins)
 	return findings
 }
 
 // readPlan is ValidatePlan with the plan it decoded.
-func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, []string) {
+func readPlan(text string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
 	blocks := planBlock.FindAllStringSubmatch(text, -1)
 	if len(blocks) == 0 {
 		return Plan{}, []string{"plan: no fenced json block in the last message"}
@@ -331,6 +336,10 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits) (Plan, 
 	}
 	for _, c := range p.Cards {
 		out = append(out, cardFindings(c, limits)...)
+		if _, ok := pins[c.Image]; c.Image != "" && !ok {
+			add("card %s: image %q is not one of this project's pinned images (%s)", c.Key, c.Image,
+				cmp.Or(strings.Join(slices.Sorted(maps.Keys(pins)), ", "), "none"))
+		}
 	}
 	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
@@ -910,8 +919,9 @@ func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependenc
 // planGuide is the planner's guide: the spec is the issue, the answer a
 // plan filed with the file_plan tool, a card one session of the pinned
 // limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
-// ValidatePlan's findings, not this prose (roadmap 186).
-func planGuide(shape policy.PlanShape, limits policy.Limits) string {
+// ValidatePlan's findings, not this prose (roadmap 186). pins are the
+// project's images a card may name.
+func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) string {
 	g := "You are the planner. " +
 		"The issue's text tells what to build. Read it and the repository: " +
 		"every card follows the repository's conventions. " +
@@ -921,7 +931,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line", "image": "..."}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
@@ -932,6 +942,13 @@ func planGuide(shape policy.PlanShape, limits policy.Limits) string {
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
 		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
+	if len(pins) > 0 {
+		var images []string
+		for _, name := range slices.Sorted(maps.Keys(pins)) {
+			images = append(images, name+" ("+strings.Join(pins[name].Tools, ", ")+")")
+		}
+		g += "Images: " + strings.Join(images, ", ") + "; a card that needs one names it in image, any other card runs the default. "
+	}
 	if shape.Foundation {
 		g += "The foundation card holds the layout, the API contract, the schema and one end-to-end test, which every other card builds on. " +
 			"The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
@@ -1866,6 +1883,12 @@ func (r *Runner) OpenPlanQuestions(ctx context.Context, taskID string, revision 
 	return r.store.OpenPlanQuestions(ctx, taskID, revision)
 }
 
+// projectPins are the image pins of repository's project in v.
+func projectPins(v policy.Version, repository string) map[string]policy.ImagePin {
+	_, p, _ := v.ProjectOf(repository)
+	return p.Images
+}
+
 // planShape is the plan lane's shape of the process task t follows in
 // version v, and the process's name.
 func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
@@ -1919,7 +1942,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits), findings, answers)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(v, t.Repository)), findings, answers)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -1985,7 +2008,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
-	p, found := readPlan("```json\n"+plan+"\n```", shape, v.Document.Limits)
+	p, found := readPlan("```json\n"+plan+"\n```", shape, v.Document.Limits, projectPins(v, t.Repository))
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
@@ -2092,7 +2115,7 @@ func replacesNothing(p Plan, id string) bool {
 
 // restartChildren runs the restart rules a new revision carries (piece
 // 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief, a card the new plan drops ends closed
+// takes the new revision's brief and image, a card the new plan drops ends closed
 // with its issue unless it merged (Finish leaves a merged card to its
 // chain, which ends it done), a started card keeps its branch (the merge
 // check holds it there) and a final card never reopens.
@@ -2135,7 +2158,7 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Pl
 			spec = specBlock(p)
 		}
 		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec))
-		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, r.untrusted(t, c.Title)+"\n\n"+body); err != nil {
+		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, r.untrusted(t, c.Title)+"\n\n"+body, c.Image); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
 	}
@@ -2383,7 +2406,7 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 	if !ok {
 		return ChildrenResult{}, terminalError("task %s has no plan revision %d", taskID, revision)
 	}
-	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits)
+	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits, projectPins(v, t.Repository))
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
@@ -2447,7 +2470,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
-			Rung: c.Rung, Size: c.Size, Author: approver, AuthorWriter: true})
+			Rung: c.Rung, Size: c.Size, Image: c.Image, Author: approver, AuthorWriter: true})
 		if err != nil {
 			return nil, err
 		}

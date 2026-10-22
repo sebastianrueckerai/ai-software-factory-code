@@ -11,9 +11,9 @@ const testCollector = "http://signoz-otel-collector.platform.svc.cluster.local:4
 // allow, SigNoz's collector pods on 4318, and its name in the DNS allowlist.
 func TestWorkerEgressAdmitsTheCollectorOn4318Only(t *testing.T) {
 	cfg := testRunnerConfig()
-	without := (&Runner{cfg: cfg}).workerEgressSpec(nil)["egress"].([]any)
+	without := (&Runner{cfg: cfg}).workerEgressSpec(sandboxRegistries, nil)["egress"].([]any)
 	cfg.OTLPEndpoint = testCollector
-	with := (&Runner{cfg: cfg}).workerEgressSpec(nil)["egress"].([]any)
+	with := (&Runner{cfg: cfg}).workerEgressSpec(sandboxRegistries, nil)["egress"].([]any)
 	if len(with) != len(without)+1 {
 		t.Fatalf("%d egress rules, want %d", len(with), len(without)+1)
 	}

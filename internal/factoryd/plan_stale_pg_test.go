@@ -96,10 +96,10 @@ func TestPGStorePlanStaleness(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t-mid"); got.PlanRevision != 1 {
 		t.Fatalf("the backfill's stamp moved: %d, want it pinned at 1", got.PlanRevision)
 	}
-	if err := s.UpdatePlanCardBrief(ctx, "t-fresh", "Links API\n\nThe amended brief."); err != nil {
+	if err := s.UpdatePlanCardBrief(ctx, "t-fresh", "Links API\n\nThe amended brief.", "browser"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Task(ctx, "t-fresh"); got.Objective != "Links API\n\nThe amended brief." {
-		t.Fatalf("the brief = %q", got.Objective)
+	if got, _, _ := s.Task(ctx, "t-fresh"); got.Objective != "Links API\n\nThe amended brief." || got.Image != "browser" {
+		t.Fatalf("the brief = %q, image %q", got.Objective, got.Image)
 	}
 }

@@ -129,6 +129,12 @@ type Task struct {
 	// MergeCommit is the commit the merge queue's merge made on the base
 	// (roadmap 147), "" until the card merged; the first write stands.
 	MergeCommit string
+	// Image is the project image the card runs on, its plan card's; "" for
+	// the project's default. ImageDigest is the image, ref@sha256:..., its
+	// latest sandbox ran on and ImageEgress the registries that sandbox
+	// reached; "" and none before its first.
+	Image, ImageDigest string
+	ImageEgress        []string
 }
 
 // Accents are the accent colours a human may put on a card, in the order
@@ -449,6 +455,9 @@ type Store interface {
 	// SetTaskMergeCommit records the commit the merge made on the base;
 	// the first write stands.
 	SetTaskMergeCommit(ctx context.Context, id, commit string) error
+	// SetTaskImage records the image task id's sandbox runs on and the
+	// registries it reaches, at each sandbox's start.
+	SetTaskImage(ctx context.Context, id, digest string, egress []string) error
 	// OpenApproval records a pending approval request and returns its id;
 	// a merge or plan request denies the task's earlier pending one of its
 	// kind (a retry, a new head, a new plan revision) as superseded.
@@ -496,8 +505,8 @@ type Store interface {
 	// against; the guard makes it once.
 	SetTaskPlanRevision(ctx context.Context, id string, revision int) error
 	// UpdatePlanCardBrief replaces a not-yet-started card's stored brief
-	// with its card's text of the plan's newest revision.
-	UpdatePlanCardBrief(ctx context.Context, id, objective string) error
+	// and image with its card's of the plan's newest revision.
+	UpdatePlanCardBrief(ctx context.Context, id, objective, image string) error
 	// AddTaskDeps records that task id waits on each of dependsOn; an
 	// edge recorded before stays as it is.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -771,17 +780,17 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, ships_ruling, ships_clauses, finished_at)
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, ships_ruling, ships_clauses, image, finished_at)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
-         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $28, $29::jsonb,
+         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $28, $29::jsonb, $30,
          CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image)
 	return err
 }
 
@@ -815,10 +824,19 @@ func (s *PGStore) SetTaskPlanRevision(ctx context.Context, id string, revision i
 	return err
 }
 
-// UpdatePlanCardBrief replaces a not-yet-started card's stored brief with
-// its card's text of the plan's newest revision (roadmap 291).
-func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id, objective string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2 WHERE id = $1`, id, objective)
+func (s *PGStore) SetTaskImage(ctx context.Context, id, digest string, egress []string) error {
+	b, err := json.Marshal(append([]string{}, egress...))
+	if err != nil {
+		return err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET image_digest = $2, image_egress = $3::jsonb WHERE id = $1`, id, digest, b)
+	return oneRow(res, err, "task "+id)
+}
+
+// UpdatePlanCardBrief replaces a not-yet-started card's stored brief and
+// image with its card's of the plan's newest revision (roadmap 291).
+func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id, objective, image string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3 WHERE id = $1`, id, objective, image)
 	return err
 }
 
@@ -834,22 +852,30 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
-	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, '')`
+	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
+	image, image_digest, image_egress`
 
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
-	var caps, ships []byte
+	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
-		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit); err != nil {
+		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
+		&t.Image, &t.ImageDigest, &egress); err != nil {
 		return Task{}, err
 	}
 	var err error
 	if t.RequiredCapabilities, err = fromJSON(caps); err != nil {
 		return Task{}, fmt.Errorf("required_capabilities: %w", err)
+	}
+	if t.ImageEgress, err = fromJSON(egress); err != nil {
+		return Task{}, fmt.Errorf("image_egress: %w", err)
+	}
+	if len(t.ImageEgress) == 0 {
+		t.ImageEgress = nil // "[]" reads as a sandbox that reaches no registry, or none ran yet
 	}
 	if len(ships) > 0 {
 		if err := json.Unmarshal(ships, &t.ShipsClauses); err != nil {

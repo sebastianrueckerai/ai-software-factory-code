@@ -112,6 +112,26 @@ func TestLoadEnvReadsWhatWasLeftOut(t *testing.T) {
 	}
 }
 
+// IMAGE_MANIFEST, what the session's project image holds, reaches the
+// brief; absent, the session runs the factory's image.
+func TestLoadEnvReadsTheImage(t *testing.T) {
+	setRequiredEnv(t)
+	if e, err := loadEnv(); err != nil || e.image != nil {
+		t.Fatalf("no IMAGE_MANIFEST: %+v, %v; want the factory's image", e.image, err)
+	}
+	setRequiredEnv(t)
+	t.Setenv("IMAGE_MANIFEST", `{"tools":["chromium"],"egress":["cdn.example.org"]}`)
+	e, err := loadEnv()
+	if err != nil || e.image == nil || !slices.Equal(e.image.Tools, []string{"chromium"}) || !slices.Equal(e.image.Egress, []string{"cdn.example.org"}) {
+		t.Fatalf("image = %+v, %v; want chromium reaching cdn.example.org", e.image, err)
+	}
+	setRequiredEnv(t)
+	t.Setenv("IMAGE_MANIFEST", "not json")
+	if _, err := loadEnv(); err == nil || !strings.Contains(err.Error(), "IMAGE_MANIFEST") {
+		t.Fatalf("malformed IMAGE_MANIFEST: %v, want an error naming it", err)
+	}
+}
+
 // The subagents' cheap model reaches opencode from factoryd's CHEAP_MODEL
 // (roadmap 222, item 6). Without it the worker runs opencode with no cheap
 // alias and every subagent falls back to the session's own model.

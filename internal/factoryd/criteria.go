@@ -247,7 +247,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err != nil {
 		return CriteriaResult{}, err
 	}
-	if _, err := r.setupNamespace(ctx, t, base); err != nil {
+	if _, _, err := r.setupNamespace(ctx, &t, base); err != nil {
 		return CriteriaResult{}, err
 	}
 	// a sandbox that cannot start is the start escalation, as a

@@ -31,7 +31,7 @@ func questionPlan() Plan {
 // a card's. The guide gives the field's format and one sentence on it,
 // nothing about when to ask (ruling 263).
 func TestPlanQuestionsFormat(t *testing.T) {
-	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits)
+	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits, nil)
 	rawWith, with, _ := planSHA(p)
 	rawWithout, without, _ := planSHA(testPlan())
 	if len(findings) != 0 || len(p.Questions) != 2 || len(p.Questions[0].Choices) != 3 || len(p.Questions[1].Choices) != 2 || with == without ||
@@ -60,14 +60,14 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"unknown origin":    {change(func(p *Plan) { p.Questions[0].Origin = "attack" }), []string{`plan: question 1: origin "attack", want self_attack or none`}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
 	} {
-		if got := ValidatePlan(tc.text, testShape, testLimits); !slices.Equal(got, tc.want) {
+		if got := ValidatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: ValidatePlan = %q, want %q", name, got, tc.want)
 		}
 	}
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
-	g := planGuide(testShape, testLimits)
-	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
+	g := planGuide(testShape, testLimits, nil)
+	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line", "image": "..."}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the member; their answers come back to you with your last plan, "+
 			"and a plan with open questions cannot be accepted until they are answered.") || strings.Count(g, "question") != 4 {
 		t.Fatalf("planGuide names questions %d times, want 4 (the format's key, the attack sentence's one, the sentence's two):\n%s", strings.Count(g, "question"), g)

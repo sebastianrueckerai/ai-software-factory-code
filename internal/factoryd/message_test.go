@@ -250,7 +250,7 @@ func TestRunSessionUndeliveredNudgeRunsCheckin(t *testing.T) {
 // message port. Cilium denies every other ingress to a pod once a policy
 // selecting it has an ingress section.
 func TestWorkerPolicyAdmitsOnlyFactorydOnTheMessagePort(t *testing.T) {
-	spec := (&Runner{cfg: testRunnerConfig()}).workerEgressSpec(nil)
+	spec := (&Runner{cfg: testRunnerConfig()}).workerEgressSpec(sandboxRegistries, nil)
 	want := []any{map[string]any{
 		"fromEndpoints": []any{map[string]any{"matchLabels": map[string]string{
 			"k8s:io.kubernetes.pod.namespace": "factory",

@@ -653,6 +653,9 @@ func (s *accBatchStore) SetTaskRisk(ctx context.Context, id, class string) error
 func (s *accBatchStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetTaskImage(ctx context.Context, id, digest string, egress []string) error {
+	panic("unused")
+}
 func (s *accBatchStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
 	panic("unused")
 }
@@ -698,7 +701,7 @@ func (s *accBatchStore) SetTaskPlanRevision(context.Context, string, int) error 
 	panic("unused")
 }
 
-func (s *accBatchStore) UpdatePlanCardBrief(context.Context, string, string) error {
+func (s *accBatchStore) UpdatePlanCardBrief(context.Context, string, string, string) error {
 	panic("unused")
 }
 

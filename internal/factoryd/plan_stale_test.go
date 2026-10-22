@@ -138,6 +138,38 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	}
 }
 
+// A card that never started takes the new revision's image with its
+// brief; a started one keeps the image it runs on.
+func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := newPlanRunner(t, testPlan())
+	pinned := fixtureVersion(t)
+	name, c, _ := pinned.ProjectOf("linkshort/linkshort")
+	c.Images = map[string]policy.ImagePin{"browser": {Digest: "sha256:" + strings.Repeat("b", 64), Key: keyBrowser, Tools: []string{"chromium"}}}
+	pinned.Projects[name] = c
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if res := createChildren(t, r); len(res.Refused) != 0 {
+		t.Fatalf("the children: %+v", res)
+	}
+	runPlanTask(store)
+	started := cardsByKey(t, store)["redirects"]
+	started.Status, started.PlanRevision = "running", 1
+	store.tasks[started.ID] = started
+
+	amend := testPlan()
+	amend.Cards[1].Image, amend.Cards[2].Image = "browser", "browser"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("the amendment: %+v, %v", res, err)
+	}
+	cards := cardsByKey(t, store)
+	if got := cards["links-api"].Image; got != "browser" {
+		t.Errorf("the never-started card's image %q, want browser", got)
+	}
+	if got := cards["redirects"].Image; got != "" {
+		t.Errorf("the started card's image %q, want its own", got)
+	}
+}
+
 // planJSON marshals v or fails the test.
 func planJSON(t *testing.T, v any) string {
 	t.Helper()

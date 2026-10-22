@@ -542,7 +542,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		r.refuseDelta(ctx, t, repo, dues, err.Error())
 		return
 	}
-	if _, findings := readPlan("```json\n"+string(b)+"\n```", shape, v.Document.Limits); len(findings) > 0 {
+	if _, findings := readPlan("```json\n"+string(b)+"\n```", shape, v.Document.Limits, projectPins(v, t.Repository)); len(findings) > 0 {
 		r.refuseDelta(ctx, t, repo, dues, "the card broke the plan rules: "+strings.Join(findings, "; "))
 		return
 	}

@@ -278,9 +278,9 @@ func (s *fakeStore) SetTaskPlanRevision(ctx context.Context, id string, revision
 	return nil
 }
 
-func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id, objective string) error {
+func (s *fakeStore) UpdatePlanCardBrief(ctx context.Context, id, objective, image string) error {
 	if t, ok := s.tasks[id]; ok {
-		t.Objective = objective
+		t.Objective, t.Image = objective, image
 		s.tasks[id] = t
 	}
 	return nil
@@ -789,6 +789,16 @@ func (s *fakeStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.AlertFingerprint = fingerprint
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) SetTaskImage(ctx context.Context, id, digest string, egress []string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.ImageDigest, t.ImageEgress = digest, slices.Clone(egress)
 	s.tasks[id] = t
 	return nil
 }
@@ -1811,6 +1821,42 @@ func TestPGStoreShipsRuling(t *testing.T) {
 	}
 	if got, _, _ := s.Task(ctx, "t-band"); !reflect.DeepEqual(got.ShipsClauses, []int{1, 3}) {
 		t.Fatalf("t-band clauses after the refused re-create = %v, want [1 3]", got.ShipsClauses)
+	}
+}
+
+// A plan card's image is filed with its row; the image and the names its
+// latest sandbox ran on and reached are recorded at each start, the
+// factory's image before the first.
+func TestPGStoreTaskImage(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook"}); err != nil {
+		t.Fatal(err)
+	}
+	card, err := s.CreatePlanCard(ctx, Task{ID: "t-card", Status: "backlog", Repository: "sf/r", Kind: "agent", Source: SourcePlan, Parent: "t-plan", PlanKey: "ui", Image: "browser"})
+	if err != nil || card.Image != "browser" || card.ImageDigest != "" || len(card.ImageEgress) != 0 {
+		t.Fatalf("filed card %+v, %v; want image browser, no run yet", card, err)
+	}
+	const ref = "git.aisoftwarefactory.world/sf/sandbox-r.browser@sha256:0b"
+	if err := s.SetTaskImage(ctx, "t-card", ref, []string{"cdn.example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t-card"); got.ImageDigest != ref || !slices.Equal(got.ImageEgress, []string{"cdn.example.org"}) {
+		t.Fatalf("after a start: %q %q", got.ImageDigest, got.ImageEgress)
+	}
+	if err := s.SetTaskImage(ctx, "t-card", "reg/worker@sha256:abc", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t-card"); got.ImageDigest != "reg/worker@sha256:abc" || len(got.ImageEgress) != 0 {
+		t.Fatalf("after a start reaching no registry: %q %q", got.ImageDigest, got.ImageEgress)
 	}
 }
 

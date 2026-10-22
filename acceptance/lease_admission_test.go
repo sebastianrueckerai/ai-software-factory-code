@@ -663,7 +663,7 @@ func newHarness(t *testing.T, reg *registry) *harness {
 	log.SetOutput(logs)
 	log.SetFlags(0)
 	t.Cleanup(func() { log.SetOutput(oldOut); log.SetFlags(oldFlags) })
-	r, err := factoryd.NewRunner(cfg, nil, kube, nil, nil, objects, &factoryd.SupervisorModel{})
+	r, err := factoryd.NewRunner(cfg, newAcceptanceStore(), kube, nil, nil, objects, &factoryd.SupervisorModel{})
 	if err != nil {
 		t.Fatalf("NewRunner: %v", err)
 	}

@@ -25,9 +25,12 @@ import (
 	"sync"
 	"time"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -307,7 +310,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		return nil, fmt.Errorf("runner: %w", err)
 	}
 	canary, _, _ := net.SplitHostPort(cfg.EgressCanary)
-	if slices.ContainsFunc((&Runner{cfg: cfg}).sandboxNames(), func(name string) bool { return strings.EqualFold(name, strings.TrimSuffix(canary, ".")) }) {
+	if slices.ContainsFunc((&Runner{cfg: cfg}).sandboxNames(sandboxRegistries), func(name string) bool { return strings.EqualFold(name, strings.TrimSuffix(canary, ".")) }) {
 		return nil, fmt.Errorf("runner: the egress canary %s is on the sandbox's DNS allowlist, so its probe would fail every session's start", canary)
 	}
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
@@ -426,6 +429,9 @@ type sessionSpec struct {
 	docs Repo
 	// cache is the project's cache claim in the task namespace
 	cache string
+	// image is what the session's project image holds; nil for the
+	// factory's image
+	image *imagegen.Manifest
 	// policy is the task's pinned version's: its limits and detectors
 	policy policy.Document
 	// attempt is the session's attempt number (1 for the first)
@@ -1552,23 +1558,38 @@ func (f *startFailure) escalation(then string) string {
 	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, f.step, act, then, f.text)
 }
 
-// setupNamespace builds the session's sandbox: base is the read token of
-// the pod's clone or fetch init container.
-func (r *Runner) setupNamespace(ctx context.Context, t Task, base ForgejoToken) (string, error) {
+// setupNamespace builds the session's sandbox on t's image (taskImage),
+// which it records on t and its row with the registries the sandbox
+// reaches: base is the read token of the pod's clone or fetch init
+// container. It returns the project's cache claim and what the image
+// holds, nil for the factory's.
+func (r *Runner) setupNamespace(ctx context.Context, t *Task, base ForgejoToken) (string, *imagegen.Manifest, error) {
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	if !ok {
-		return "", terminalError("task %s: repository %s is no project's", t.ID, t.Repository)
+		return "", nil, terminalError("task %s: repository %s is no project's", t.ID, t.Repository)
 	}
+	image, m, err := r.taskImage(ctx, *t)
+	if err != nil {
+		return "", nil, err
+	}
+	egress := sandboxRegistries
+	if m != nil {
+		egress = m.Egress
+	}
+	if err := r.store.SetTaskImage(ctx, t.ID, image, egress); err != nil {
+		return "", nil, fmt.Errorf("record the image: %w", err)
+	}
+	t.ImageDigest, t.ImageEgress = image, egress
 	cache := "cache-agent-" + p.Name
 	ns := r.agentNamespace(t.ID)
 	if err := r.freshNamespace(ctx, ns, map[string]string{
 		"factory.ai/task":                    t.ID,
 		"pod-security.kubernetes.io/enforce": "restricted",
 	}); err != nil {
-		return "", fmt.Errorf("setup namespace: %w", err)
+		return "", nil, fmt.Errorf("setup namespace: %w", err)
 	}
 	core := "/api/v1/namespaces/" + ns
 	steps := []struct {
@@ -1612,7 +1633,7 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base ForgejoToken) 
 			if err != nil {
 				return fmt.Errorf("read leases: %w", err)
 			}
-			return r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(leased[t.ID]))
+			return r.kube.ApplyCiliumNetworkPolicy(ctx, ns, workerEgress, r.workerEgressSpec(egress, leased[t.ID]))
 		}},
 		{"git token secret", func() error {
 			return r.kube.CreateSecret(ctx, ns, "task-git", "", map[string]string{"REPO_TOKEN": base.Secret})
@@ -1626,10 +1647,48 @@ func (r *Runner) setupNamespace(ctx context.Context, t Task, base ForgejoToken) 
 	}
 	for _, step := range steps {
 		if err := retryForbidden(ctx, step.do); err != nil && !errors.Is(err, ErrAlreadyExists) {
-			return "", fmt.Errorf("setup %s: %w", step.name, err)
+			return "", nil, fmt.Errorf("setup %s: %w", step.name, err)
 		}
 	}
-	return cache, nil
+	return cache, m, nil
+}
+
+// ErrImageNotPinned refuses a card whose image is declared and not built
+// and pinned yet.
+type ErrImageNotPinned struct{ Project, Image string }
+
+func (e ErrImageNotPinned) Error() string {
+	return fmt.Sprintf("image %s of project %s is declared but not built and pinned yet: the card waits until the factory pins it", e.Image, e.Project)
+}
+
+// errImageNotPinned is ErrImageNotPinned's activity error type: no retry
+// pins the image.
+const errImageNotPinned = "image_not_pinned"
+
+// imageStore is the store's host, where the trusted builder pushes project
+// images.
+const imageStore = "git.aisoftwarefactory.world/"
+
+// taskImage is the image t's sandbox runs on, ref@sha256:..., and what it
+// holds: t's image, else default, as the policy version in force pins it
+// for t's project and the images key signed it. An unpinned default is
+// the factory's image with a nil manifest; any other unpinned name is
+// ErrImageNotPinned, as a non-retryable activity error.
+func (r *Runner) taskImage(ctx context.Context, t Task) (string, *imagegen.Manifest, error) {
+	name := cmp.Or(t.Image, "default")
+	project, c, _ := r.cfg.Policy().ProjectOf(t.Repository)
+	pin, ok := c.Images[name]
+	switch {
+	case ok:
+		if err := r.verifyProjectImage(ctx, project, name, pin.Digest); err != nil {
+			return "", nil, err
+		}
+		return imageStore + imageRepository(project, name) + "@" + pin.Digest, &imagegen.Manifest{Tools: pin.Tools, Egress: pin.Egress}, nil
+	case name == "default":
+		return r.cfg.WorkerImage, nil, nil
+	}
+	e := ErrImageNotPinned{Project: project, Image: name}
+	return "", nil, temporal.NewNonRetryableApplicationError(e.Error(), errImageNotPinned, e)
 }
 
 // freshNamespace creates the task namespace, deleting a leftover one first:
@@ -1884,7 +1943,11 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		notes, _ := json.Marshal(fit.notes)
 		env = append(env, map[string]any{"name": "LEFT_OUT", "value": string(notes)})
 	}
-	pod := r.sandboxPodSpec(t, r.cfg.WorkerImage, s.cache, env, true)
+	if s.image != nil {
+		manifest, _ := json.Marshal(s.image)
+		env = append(env, map[string]any{"name": "IMAGE_MANIFEST", "value": string(manifest)})
+	}
+	pod := r.sandboxPodSpec(t, r.sandboxImage(t), s.cache, env, true)
 	// the clone init container alone holds the read token: the agent's
 	// container gets the clone in the workspace and no token (the push
 	// token reaches the worker on POST /push once the agent is dead)
@@ -1895,6 +1958,12 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}, harnessMount()}
 	spec["initContainers"] = append(spec["initContainers"].([]any), clone)
 	return requestEmptyDirs(pod)
+}
+
+// sandboxImage is the image t's sandbox pods run: the one its latest
+// sandbox resolved, the factory's before any did.
+func (r *Runner) sandboxImage(t Task) string {
+	return cmp.Or(t.ImageDigest, r.cfg.WorkerImage)
 }
 
 // SandboxUID is the sandbox's uid and gid: its pods' runAsUser and
@@ -2052,10 +2121,11 @@ func requestEmptyDirs(pod map[string]any) map[string]any {
 // workerEgressSpec is the sandbox network policy (architecture 6.4, research
 // Q4): default-deny egress for workers, a hard deny to the cloud metadata
 // address, and exactly four allows: the model gateway's port, Forgejo's
-// HTTP port, the Go module proxy, its checksum database and the npm
-// registry by name on 443 (ruling 99: the image carries the Go toolchain
-// and Node, and a registry joins by name with the toolchain that needs
-// it), and kube-dns for exactly those
+// HTTP port, the image's registries by name on 443 (the factory image's
+// are the Go module proxy, its checksum database and the npm registry,
+// ruling 99: the image carries the Go toolchain and Node, and a registry
+// joins by name with the toolchain that needs it; a project image's are
+// its egress), and kube-dns for exactly those
 // names. DNS is allowlisted by name because an open resolver is itself an
 // exfiltration channel. No other registry is reachable. opencode's first-run
 // npm install (its @opencode-ai/plugin dependency) is baked into the image at
@@ -2067,13 +2137,13 @@ func requestEmptyDirs(pod map[string]any) map[string]any {
 // path is identity-scoped. The live gateway pods carry the plain `app`
 // label, not app.kubernetes.io/name. Its one ingress admits factoryd on the
 // worker's message port; every other ingress is denied.
-func (r *Runner) workerEgressSpec(leased []string) map[string]any {
+func (r *Runner) workerEgressSpec(registries, leased []string) map[string]any {
 	dnsNames := []any{}
-	for _, name := range r.sandboxNames() {
+	for _, name := range r.sandboxNames(registries) {
 		dnsNames = append(dnsNames, map[string]any{"matchName": name})
 	}
 	toFQDNs := []any{}
-	for _, host := range sandboxRegistries {
+	for _, host := range registries {
 		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
 	}
 	spec := map[string]any{
@@ -2158,19 +2228,21 @@ func (r *Runner) workerEgressSpec(leased []string) map[string]any {
 
 const workerEgress = "worker-egress"
 
-// sandboxRegistries are the public names the sandbox reaches on 443;
-// storage.googleapis.com: proxy.golang.org redirects zip downloads there.
+// sandboxRegistries are the public names a sandbox on the factory's image
+// reaches on 443; storage.googleapis.com: proxy.golang.org redirects zip
+// downloads there. A project image's sandbox reaches its own egress
+// instead.
 var sandboxRegistries = []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "registry.npmjs.org"}
 
 // sandboxNames are the names the sandbox's DNS allowlist answers: the
-// gateway's, Forgejo's, the registries' and the collector's.
-func (r *Runner) sandboxNames() []string {
+// gateway's, Forgejo's, registries and the collector's.
+func (r *Runner) sandboxNames(registries []string) []string {
 	var names []string
 	for _, raw := range []string{r.cfg.GatewayURL, r.cfg.GitBaseURL} {
 		u, _ := url.Parse(raw) // validated in NewRunner
 		names = append(names, u.Hostname())
 	}
-	names = append(names, sandboxRegistries...)
+	names = append(names, registries...)
 	if r.cfg.OTLPEndpoint != "" {
 		u, _ := url.Parse(r.cfg.OTLPEndpoint) // validated in NewRunner
 		names = append(names, u.Hostname())
@@ -2210,7 +2282,8 @@ func leasedServerRule(ipv4 string) map[string]any {
 }
 
 // AdmitLeases brings every agent namespace's egress policy in line with
-// its task's live leases: it reads the live policy and applies the desired
+// its task's live leases and the registries its image reaches, as the
+// task row records them: it reads the live policy and applies the desired
 // one when they differ, so a new lease's address joins, an ended one
 // leaves, and an edit or loss out of band is repaired on the next pass.
 func (r *Runner) AdmitLeases(ctx context.Context) error {
@@ -2240,7 +2313,16 @@ func (r *Runner) AdmitLeases(ctx context.Context) error {
 		if id == ns || strings.HasPrefix(id, "ci-") {
 			continue
 		}
-		want := r.workerEgressSpec(leased[id])
+		t, _, err := r.store.Task(ctx, id)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", ns, err))
+			continue
+		}
+		egress := sandboxRegistries
+		if t.ImageDigest != "" {
+			egress = t.ImageEgress
+		}
+		want := r.workerEgressSpec(egress, leased[id])
 		have, err := r.kube.CiliumNetworkPolicySpec(ctx, ns, workerEgress)
 		if errors.Is(err, ErrForbidden) {
 			// no RoleBinding yet or any more: setupNamespace applies the
