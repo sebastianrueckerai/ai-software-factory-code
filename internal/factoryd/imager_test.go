@@ -51,18 +51,19 @@ type imagerForgejo struct {
 	prs        []*imagerPR
 	dispatches []string
 	writes     []string
-	refuse     bool // Forgejo refuses the bot's merge
+	comments   []string
+	refuse     int // Forgejo answers the bot's merge 405 (1) or 409 (2)
 	inForce    policy.Version
 }
 
 type forkBranch struct{ head, base string }
 
 type imagerPR struct {
-	number             int64
-	head, title, body  string
-	state              string
-	merged             bool
-	mergedAt, mergedBy string
+	number            int64
+	head, title, body string
+	base, state       string
+	merged            bool
+	mergedBy          string
 }
 
 func (s *imagerForgejo) commit(files map[string]string) string {
@@ -74,7 +75,7 @@ func (s *imagerForgejo) commit(files map[string]string) string {
 func (s *imagerForgejo) wire(pr *imagerPR) map[string]any {
 	b := s.fork[pr.head]
 	return map[string]any{"number": pr.number, "title": pr.title, "body": pr.body, "state": pr.state, "merged": pr.merged, "mergeable": true,
-		"merge_base": b.base, "base": map[string]string{"ref": "main"},
+		"merge_base": b.base, "base": map[string]string{"ref": pr.base},
 		"head": map[string]any{"ref": pr.head, "sha": b.head, "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-infra"}}}
 }
 
@@ -156,7 +157,7 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 			if _, cut := s.fork[head]; !ok || !cut || body["base"] != "main" {
 				t.Errorf("pull request %v", body)
 			}
-			s.prs = append(s.prs, &imagerPR{number: int64(len(s.prs) + 1), head: head, title: body["title"].(string), body: body["body"].(string), state: "open"})
+			s.prs = append(s.prs, &imagerPR{number: int64(len(s.prs) + 1), head: head, title: body["title"].(string), body: body["body"].(string), base: "main", state: "open"})
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(s.wire(s.prs[len(s.prs)-1]))
 		case r.Method == http.MethodGet && strings.HasPrefix(p, infraAPI+"/pulls/") && strings.HasSuffix(p, "/files"):
@@ -170,8 +171,11 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodPost && strings.HasPrefix(p, infraAPI+"/pulls/") && strings.HasSuffix(p, "/merge"):
 			pr, b := pr(), s.fork[pr().head]
 			switch {
-			case s.refuse:
+			case s.refuse == 1:
 				http.Error(w, `{"message":"User not allowed to merge PR"}`, http.StatusMethodNotAllowed)
+				return
+			case s.refuse == 2:
+				http.Error(w, `{"message":"merge conflict"}`, http.StatusConflict)
 				return
 			case body["Do"] != "merge" || body["head_commit_id"] != b.head || pr.state != "open":
 				http.Error(w, `{"message":"head moved"}`, http.StatusConflict)
@@ -184,6 +188,16 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 			s.main = s.commit(files)
 			pr.state, pr.merged, pr.mergedBy = "closed", true, by
 			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPatch && strings.HasPrefix(p, infraAPI+"/pulls/") && body["state"] == "closed":
+			pr().state = "closed"
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodPost && strings.HasPrefix(p, infraAPI+"/issues/") && strings.HasSuffix(p, "/comments"):
+			var n int
+			fmt.Sscanf(strings.TrimPrefix(p, infraAPI+"/issues/"), "%d", &n)
+			s.comments = append(s.comments, fmt.Sprintf("#%d: %s", n, body["body"]))
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"id":1}`)
 		case r.Method == http.MethodGet && p == forkAPI && s.fork == nil:
 			http.NotFound(w, r)
 		case r.Method == http.MethodGet && p == forkAPI || r.Method == http.MethodPost && p == infraAPI+"/forks":
@@ -214,7 +228,11 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 				fmt.Fprintf(w, `{"commit":{"id":%q}}`, b.head)
 			}
 		case r.Method == http.MethodGet && strings.HasPrefix(p, forkAPI+"/contents/"):
-			c, ok := s.commits[s.fork[q.Get("ref")].head][strings.TrimPrefix(p, forkAPI+"/contents/")]
+			ref := q.Get("ref")
+			if b, ok := s.fork[ref]; ok {
+				ref = b.head
+			}
+			c, ok := s.commits[ref][strings.TrimPrefix(p, forkAPI+"/contents/")]
 			if !ok {
 				http.NotFound(w, r)
 				return
@@ -303,6 +321,15 @@ func (s *imagerForgejo) tamper(branch string, files map[string]string) {
 	s.fork[branch] = forkBranch{head: s.commit(all), base: b.base}
 }
 
+// moveMain commits files on main as a person does.
+func (s *imagerForgejo) moveMain(files map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	all := maps.Clone(s.commits[s.main])
+	maps.Copy(all, files)
+	s.main = s.commit(all)
+}
+
 func (s *imagerForgejo) state() ([]imagerPR, []string, []string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -321,21 +348,28 @@ var imagerLadder = ModelLadder{Start: "factory/small", Stronger: "factory/big"}.
 // kind and fingerprint as the alerts table's unique index keeps them.
 type imageBook struct {
 	mu     sync.Mutex
-	builds map[string][2]time.Time // dispatched, read by project/image/key
+	builds map[string]imageBuild // by project/image/key
 	alerts []Alert
 }
 
-func (b *imageBook) ImageDispatchedAt(_ context.Context, project, image, key string) (time.Time, error) {
+type imageBuild struct {
+	dispatched, read time.Time
+	dispatches       int
+}
+
+func (b *imageBook) ImageDispatches(_ context.Context, project, image, key string) (time.Time, int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.builds[project+"/"+image+"/"+key][0], nil
+	r := b.builds[project+"/"+image+"/"+key]
+	return r.dispatched, r.dispatches, nil
 }
 
 func (b *imageBook) RecordImageDispatch(_ context.Context, project, image, key string, at time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	r := b.builds[project+"/"+image+"/"+key]
-	r[0] = at
+	r.dispatched = at
+	r.dispatches++
 	b.builds[project+"/"+image+"/"+key] = r
 	return nil
 }
@@ -344,7 +378,7 @@ func (b *imageBook) RecordImageRead(_ context.Context, project, image, key strin
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	r := b.builds[project+"/"+image+"/"+key]
-	r[1] = at
+	r.read = at
 	b.builds[project+"/"+image+"/"+key] = r
 	return nil
 }
@@ -404,7 +438,7 @@ func newImagerRig(t *testing.T, images string, edit func(main map[string]string)
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
-	book := &imageBook{builds: map[string][2]time.Time{}}
+	book := &imageBook{builds: map[string]imageBuild{}}
 	im := &Imager{Forgejo: f, Config: config, Policy: fj.version, Store: book, Registry: reg, Key: &key.PublicKey, Base: imagerBase,
 		Builder: Repo{Owner: "sf", Name: "ai-software-factory-code"}, BuildToken: "ci-tok", Ladder: imagerLadder, Now: func() time.Time { return now }}
 	return &imagerRig{fj: fj, im: im, book: book, registry: entries, tokens: tokens, now: &now, key: key}
@@ -448,8 +482,8 @@ func TestImagerDispatchesAnUnbuiltImageOnce(t *testing.T) {
 		t.Fatalf("dispatches %q, writes %q; want one, %q", dispatches, writes, want)
 	}
 	t0 := *r.now
-	if got := r.book.builds["demo-app/default/"+keyDefault]; got != [2]time.Time{t0, t0} {
-		t.Fatalf("image_builds row %v, want dispatched and read at %v", got, t0)
+	if got := r.book.builds["demo-app/default/"+keyDefault]; got != (imageBuild{dispatched: t0, read: t0, dispatches: 1}) {
+		t.Fatalf("image_builds row %+v, want dispatched once and read at %v", got, t0)
 	}
 
 	*r.now = t0.Add(44 * time.Minute)
@@ -457,8 +491,8 @@ func TestImagerDispatchesAnUnbuiltImageOnce(t *testing.T) {
 	if _, dispatches, _ := r.fj.state(); len(dispatches) != 1 {
 		t.Fatalf("44 minutes on: %d dispatches, want the one", len(dispatches))
 	}
-	if got := r.book.builds["demo-app/default/"+keyDefault]; got != [2]time.Time{t0, *r.now} {
-		t.Fatalf("image_builds row %v, want dispatched %v, read %v", got, t0, *r.now)
+	if got := r.book.builds["demo-app/default/"+keyDefault]; got != (imageBuild{dispatched: t0, read: *r.now, dispatches: 1}) {
+		t.Fatalf("image_builds row %+v, want dispatched once at %v, read %v", got, t0, *r.now)
 	}
 
 	*r.now = t0.Add(46 * time.Minute)
@@ -502,7 +536,7 @@ func TestImagerPinsReadyImagesThroughOnePullRequest(t *testing.T) {
 		"factoryd merges it itself once it has checked that, and that the tree at its head passes factoryd's config check; otherwise it stays open and factoryd raises an alert naming why.\n"
 	writes := []string{"POST sf/ai-software-factory-infra/forks by bot", "POST factory-agent/ai-software-factory-infra/contents by bot", "POST sf/ai-software-factory-infra/pulls by bot"}
 	prs, dispatches, got := r.fj.state()
-	if want := []imagerPR{{number: 1, head: "factory-pins/demo-app", title: "Image pins for demo-app", body: body, state: "open"}}; !reflect.DeepEqual(prs, want) {
+	if want := []imagerPR{{number: 1, head: "factory-pins/demo-app", title: "Image pins for demo-app", body: body, base: "main", state: "open"}}; !reflect.DeepEqual(prs, want) {
 		t.Fatalf("pull requests %+v, want %+v", prs, want)
 	}
 	if len(dispatches) != 0 || !reflect.DeepEqual(got, writes) {
@@ -661,17 +695,23 @@ func TestImagerRefusesAnImageTooLarge(t *testing.T) {
 	}
 }
 
+// brokenMaintenance breaks a process file of main the way a person's push
+// might, which the loader refuses.
+func brokenMaintenance(main map[string]string) {
+	main["factory/processes/maintenance.yaml"] += "unknown_key: 1\n"
+}
+
 // The merge is the bot's only for a pull request that changes the project
 // file's images block and nothing else, at a head whose tree passes the
 // config check: a second file, another field, a tree that fails the check
-// and Forgejo's own refusal each leave it open and raise one alert naming
-// why.
+// and Forgejo's own refusal, once it repeats, each leave it open and raise
+// one alert naming why; main has not moved, so nothing is cut again.
 func TestImagerAutoMergeRefusals(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		edit   func(main map[string]string)
 		tamper map[string]string
-		refuse bool
+		refuse int
 		code   string
 		reason string
 	}{
@@ -679,10 +719,8 @@ func TestImagerAutoMergeRefusals(t *testing.T) {
 			code: "files", reason: "pull request #1 changes factory/projects/demo-app.yaml, factory/projects/linkshort.yaml; an image pin changes factory/projects/demo-app.yaml only"},
 		{name: "another field", tamper: nil, code: "fields",
 			reason: "pull request #1 changes factory/projects/demo-app.yaml beyond its images block"},
-		{name: "a failing tree", edit: func(main map[string]string) {
-			main["factory/processes/maintenance.yaml"] += "unknown_key: 1\n"
-		}, code: "check"},
-		{name: "a refused merge", refuse: true, code: "merge"},
+		{name: "a failing tree", edit: brokenMaintenance, code: "check"},
+		{name: "a refused merge", refuse: 1, code: "merge"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			r := newImagerRig(t, demoImages, nil)
@@ -703,9 +741,12 @@ func TestImagerAutoMergeRefusals(t *testing.T) {
 			}
 			r.fj.refuse = c.refuse
 			r.pass(t)
+			if first := len(r.book.alerts); first != 1 && c.code != "merge" || first != 0 && c.code == "merge" {
+				t.Fatalf("after the first judgement: alerts %+v; a refusal alerts only once it repeats", r.book.alerts)
+			}
 			r.pass(t)
 			prs, _, writes := r.fj.state()
-			if len(prs) != 1 || prs[0].state != "open" || len(writes) != 3 && !c.refuse || len(writes) != 5 && c.refuse {
+			if len(prs) != 1 || prs[0].state != "open" || len(writes) != 3 && c.refuse == 0 || len(writes) != 5 && c.refuse != 0 {
 				t.Fatalf("pull requests %+v, writes %q; want it open, unmerged", prs, writes)
 			}
 			if len(r.book.alerts) != 1 {
@@ -731,6 +772,151 @@ func TestImagerAutoMergeRefusals(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A refusal that does not repeat, Forgejo's 405 while it checks the pull
+// request again, then a 409, raises nothing: the pass after merges.
+func TestImagerRetriesATransientRefusal(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	for _, refuse := range []int{1, 2, 0} {
+		r.fj.refuse = refuse
+		r.pass(t)
+	}
+	if prs, _, _ := r.fj.state(); len(prs) != 1 || !prs[0].merged || len(r.book.alerts) != 0 {
+		t.Fatalf("pull requests %+v, alerts %+v; want #1 merged, none", prs, r.book.alerts)
+	}
+}
+
+// A pull request whose tree fails the check, or whose merge Forgejo
+// refuses, on a branch cut before main's head is closed, and the next pass
+// cuts it afresh from main, where it merges: once per change of main, and
+// not while main stays as it was.
+func TestImagerRecutsAPullRequestMainMovedPast(t *testing.T) {
+	t.Run("main fixed after a cut from a broken main", func(t *testing.T) {
+		r := newImagerRig(t, demoImages, nil)
+		fixed := r.fj.file("main", "factory/processes/maintenance.yaml")
+		r.fj.moveMain(map[string]string{"factory/processes/maintenance.yaml": fixed + "unknown_key: 1\n"})
+		r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+		r.pass(t)
+		r.pass(t)
+		r.pass(t)
+		if prs, _, _ := r.fj.state(); len(prs) != 1 || prs[0].state != "open" || len(r.book.alerts) != 1 || r.book.alerts[0].Fingerprint != "demo-app #1 check" {
+			t.Fatalf("main still broken: pull requests %+v, alerts %+v; want #1 open, one check alert", prs, r.book.alerts)
+		}
+		r.fj.moveMain(map[string]string{"factory/processes/maintenance.yaml": fixed})
+		r.pass(t)
+		r.pass(t)
+		r.pass(t)
+		r.pass(t)
+		prs, _, writes := r.fj.state()
+		if len(prs) != 2 || prs[0].state != "closed" || prs[0].merged || !prs[1].merged || prs[1].mergedBy != "bot" {
+			t.Fatalf("pull requests %+v; want #1 closed unmerged, #2 merged by the bot", prs)
+		}
+		want := []string{"POST sf/ai-software-factory-infra/forks by bot", "POST factory-agent/ai-software-factory-infra/contents by bot", "POST sf/ai-software-factory-infra/pulls by bot",
+			"PATCH sf/ai-software-factory-infra/pulls/1 by bot", "POST sf/ai-software-factory-infra/issues/1/comments by bot",
+			"DELETE factory-agent/ai-software-factory-infra/branches/factory-pins/demo-app by bot", "POST factory-agent/ai-software-factory-infra/sync_fork by bot",
+			"POST factory-agent/ai-software-factory-infra/contents by bot", "POST sf/ai-software-factory-infra/pulls by bot",
+			"POST sf/ai-software-factory-infra/pulls/2/merge by bot"}
+		if !reflect.DeepEqual(writes, want) {
+			t.Fatalf("writes %q\nwant %q", writes, want)
+		}
+		r.fj.mu.Lock()
+		comments := slicesClone(r.fj.comments)
+		r.fj.mu.Unlock()
+		if len(comments) != 1 || !strings.HasPrefix(comments[0], "#1: Closed by factoryd: its branch was cut from c2, main is at c4 now, and the tree at the head of pull request #1 fails factoryd's config check: processes/maintenance.yaml: ") ||
+			!strings.HasSuffix(comments[0], "; the next pass cuts it afresh from main.") {
+			t.Fatalf("comments %q", comments)
+		}
+		if !strings.Contains(r.fj.file("main", demoProjectFile), "    key: "+keyDefault+"\n") || len(r.book.alerts) != 1 {
+			t.Fatalf("main's project file:\n%s\nalerts %+v", r.fj.file("main", demoProjectFile), r.book.alerts)
+		}
+	})
+	t.Run("a conflict after main moved", func(t *testing.T) {
+		r := newImagerRig(t, demoImages, nil)
+		r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+		r.pass(t)
+		r.fj.moveMain(map[string]string{"factory/routines/weekly-bump.md": "a person's edit\n"})
+		r.fj.refuse = 2
+		r.pass(t)
+		r.fj.refuse = 0
+		r.pass(t)
+		r.pass(t)
+		prs, _, _ := r.fj.state()
+		if len(prs) != 2 || prs[0].state != "closed" || prs[0].merged || !prs[1].merged || len(r.book.alerts) != 0 {
+			t.Fatalf("pull requests %+v, alerts %+v; want #1 closed, #2 merged, none", prs, r.book.alerts)
+		}
+		if got := r.fj.file("main", "factory/routines/weekly-bump.md"); got != "a person's edit\n" {
+			t.Fatalf("the person's edit is gone: %q", got)
+		}
+	})
+}
+
+// A pin pull request whose block main holds already, as the images file
+// went back to what main pins, is closed with a comment saying so.
+func TestImagerClosesAnOutdatedPullRequest(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	r.fj.mu.Lock()
+	delete(r.fj.images, "demo-app/demo-app")
+	r.fj.mu.Unlock()
+	r.pass(t)
+	r.pass(t)
+	prs, _, writes := r.fj.state()
+	if len(prs) != 1 || prs[0].state != "closed" || prs[0].merged {
+		t.Fatalf("pull requests %+v; want #1 closed unmerged", prs)
+	}
+	want := []string{"POST sf/ai-software-factory-infra/forks by bot", "POST factory-agent/ai-software-factory-infra/contents by bot", "POST sf/ai-software-factory-infra/pulls by bot",
+		"PATCH sf/ai-software-factory-infra/pulls/1 by bot", "POST sf/ai-software-factory-infra/issues/1/comments by bot"}
+	r.fj.mu.Lock()
+	comments := slicesClone(r.fj.comments)
+	r.fj.mu.Unlock()
+	if !reflect.DeepEqual(writes, want) || !reflect.DeepEqual(comments, []string{"#1: Closed by factoryd: main's factory/projects/demo-app.yaml is already what it would make it."}) {
+		t.Fatalf("writes %q, comments %q", writes, comments)
+	}
+}
+
+// A pull request from the pin branch into another base than main is no pin
+// pull request: the pass opens its own into main and merges that one.
+func TestImagerLeavesAPullRequestIntoAnotherBase(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.fj.mu.Lock()
+	r.fj.fork = map[string]forkBranch{"main": {head: r.fj.main}, "factory-pins/demo-app": {head: r.fj.main, base: r.fj.main}}
+	r.fj.prs = []*imagerPR{{number: 1, head: "factory-pins/demo-app", title: "a person's", base: "release", state: "open"}}
+	r.fj.mu.Unlock()
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	r.pass(t)
+	prs, _, _ := r.fj.state()
+	if len(prs) != 2 || prs[0].state != "open" || prs[0].merged || prs[1].base != "main" || !prs[1].merged {
+		t.Fatalf("pull requests %+v; want #1 untouched, #2 into main merged", prs)
+	}
+}
+
+// After buildTries dispatches of one key leave no signed image, the pass
+// raises one alert naming the project, image and key and that the builder
+// failed, and keeps asking.
+func TestImagerAlertsABuildThatNeverLands(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	t0 := *r.now
+	for n := range 5 {
+		*r.now = t0.Add(time.Duration(n) * 46 * time.Minute)
+		r.pass(t)
+		if got := len(r.book.alerts); got != 0 && n < 3 || got != 1 && n >= 3 {
+			t.Fatalf("dispatch %d: alerts %+v", n+1, r.book.alerts)
+		}
+	}
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 5 {
+		t.Fatalf("%d dispatches, want 5", len(dispatches))
+	}
+	want := []Alert{{Kind: AlertImage, Source: "build", Fingerprint: "build sf/sandbox-demo-app.default:" + keyDefault, Detail: map[string]any{
+		"project": "demo-app", "image": "default", "key": keyDefault, "dispatches": 3,
+		"reason": "3 builds of sf/sandbox-demo-app.default:" + keyDefault + " left no image signed by the images key: the builder project-image.yml of sf/ai-software-factory-code failed, its runs say why"}}}
+	if !reflect.DeepEqual(r.book.alerts, want) {
+		t.Fatalf("alerts %+v\nwant %+v", r.book.alerts, want)
 	}
 }
 
@@ -781,7 +967,8 @@ func TestRegistryLayerBytes(t *testing.T) {
 	}
 }
 
-// image_builds keeps the last dispatch and the last read of each key apart;
+// image_builds keeps the last dispatch, the count of dispatches and the
+// last read of each key apart;
 // an image alert is one row per fingerprint.
 func TestPGStoreImageBuilds(t *testing.T) {
 	ctx := context.Background()
@@ -801,14 +988,14 @@ func TestPGStoreImageBuilds(t *testing.T) {
 		}
 		return dispatched, read
 	}
-	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-1"); err != nil || !at.IsZero() {
-		t.Fatalf("no row: %v %v", at, err)
+	if at, n, err := s.ImageDispatches(ctx, "demo", "default", "k-1"); err != nil || !at.IsZero() || n != 0 {
+		t.Fatalf("no row: %v %d %v", at, n, err)
 	}
 	if err := s.RecordImageRead(ctx, "demo", "default", "k-1", t0); err != nil {
 		t.Fatal(err)
 	}
-	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-1"); err != nil || !at.IsZero() {
-		t.Fatalf("read, not dispatched: %v %v", at, err)
+	if at, n, err := s.ImageDispatches(ctx, "demo", "default", "k-1"); err != nil || !at.IsZero() || n != 0 {
+		t.Fatalf("read, not dispatched: %v %d %v", at, n, err)
 	}
 	for _, at := range []time.Time{t0.Add(time.Minute), t0.Add(2 * time.Minute)} {
 		if err := s.RecordImageDispatch(ctx, "demo", "default", "k-1", at); err != nil {
@@ -818,14 +1005,14 @@ func TestPGStoreImageBuilds(t *testing.T) {
 	if err := s.RecordImageRead(ctx, "demo", "default", "k-1", t0.Add(3*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-1"); err != nil || !at.Equal(t0.Add(2*time.Minute)) {
-		t.Fatalf("dispatched %v %v, want the last", at, err)
+	if at, n, err := s.ImageDispatches(ctx, "demo", "default", "k-1"); err != nil || !at.Equal(t0.Add(2*time.Minute)) || n != 2 {
+		t.Fatalf("dispatched %v %d times %v, want the last, twice", at, n, err)
 	}
 	if d, r := row(); !d.Equal(t0.Add(2*time.Minute)) || !r.Equal(t0.Add(3*time.Minute)) {
 		t.Fatalf("row %v %v", d, r)
 	}
-	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-2"); err != nil || !at.IsZero() {
-		t.Fatalf("another key: %v %v", at, err)
+	if at, n, err := s.ImageDispatches(ctx, "demo", "default", "k-2"); err != nil || !at.IsZero() || n != 0 {
+		t.Fatalf("another key: %v %d %v", at, n, err)
 	}
 	for i, fp := range []string{"a", "a", "b"} {
 		id, err := s.InsertAlert(ctx, Alert{Kind: AlertImage, Source: "file", Fingerprint: fp})

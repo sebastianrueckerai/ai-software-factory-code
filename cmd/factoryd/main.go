@@ -336,11 +336,15 @@ func main() {
 	// the store's images, read with a read:package token that can overwrite
 	// no tag: main CI's for the roller, the projects' for the imager
 	registry := rollRegistry(forgejo.BaseURL, registryReadToken)
+	factoryKey, imagesKey, err := signingKeys()
+	if err != nil {
+		log.Fatal(err)
+	}
 	// the projects' sandbox images: factory-ci's registrar token dispatches
 	// the trusted builder, the bot pins them through the infra repository,
 	// and a pod runs one only with the images key's signature
 	imager := &factoryd.Imager{Forgejo: forgejo, Config: configSource, Policy: policyLoader.Current, Store: store,
-		Registry: registry, Key: signingKey("IMAGES_COSIGN_PUB"), Base: sandboxBase,
+		Registry: registry, Key: imagesKey, Base: sandboxBase,
 		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now}
 	runner.Imager = imager
 	go imager.Run(ctx, time.Minute)
@@ -391,7 +395,7 @@ func main() {
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: 15 * time.Second,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Registry:  registry, SigningKey: signingKey("COSIGN_PUB")}
+		Registry:  registry, SigningKey: factoryKey}
 	go roller.Run(ctx)
 	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.EndCovered)
 	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {
@@ -942,11 +946,20 @@ func rollRegistry(baseURL, token string) *factoryd.Registry {
 	return &factoryd.Registry{BaseURL: baseURL, User: mustEnv("REGISTRY_READ_USER"), Password: token}
 }
 
-// signingKey is the cosign public key in env: COSIGN_PUB, main CI's
+// signingKeys are the cosign public keys: COSIGN_PUB, main CI's
 // (k8s/cosign.pub, ConfigMap image-signing), which the roller rolls only
-// images signed with; IMAGES_COSIGN_PUB, the images key's
+// images signed with, and IMAGES_COSIGN_PUB, the images key's
 // (k8s/images-cosign.pub, ConfigMap images-signing), which signs project
-// images only. factoryd does not boot without either.
+// images only. factoryd does not boot without either, nor with one key in
+// both: neither may verify the other's images.
+func signingKeys() (factory, images *ecdsa.PublicKey, err error) {
+	factory, images = signingKey("COSIGN_PUB"), signingKey("IMAGES_COSIGN_PUB")
+	if factory.Equal(images) {
+		return nil, nil, errors.New("IMAGES_COSIGN_PUB holds the key of COSIGN_PUB: the images key signs project images only, the factory key factory images only")
+	}
+	return factory, images, nil
+}
+
 func signingKey(env string) *ecdsa.PublicKey {
 	key, err := factoryd.ParseSigningKey([]byte(mustEnv(env)))
 	if err != nil {

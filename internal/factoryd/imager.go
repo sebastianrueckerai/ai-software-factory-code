@@ -36,6 +36,9 @@ const (
 	// the bot's fork of the configuration repository; the project follows.
 	pinBranchPrefix = "factory-pins/"
 	pinRole         = "image-pin"
+	// buildTries is how many dispatches of one key may leave no signed
+	// image before the pass raises that the builder fails.
+	buildTries = 3
 )
 
 // Imager reconciles the sandbox images each project declares in
@@ -73,11 +76,16 @@ type Imager struct {
 
 	mu       sync.Mutex
 	verified map[string]bool // repository@digest
+	// refusals is the last pass's merge refusal of each pin pull request,
+	// by "<project> #<number>": one that repeats raises an alert.
+	refusals map[string]string
 }
 
 // ImageStore keeps image_builds and the imager's alerts.
 type ImageStore interface {
-	ImageDispatchedAt(ctx context.Context, project, image, key string) (time.Time, error)
+	// ImageDispatches is when the build of key of project's image was last
+	// dispatched and how often it was; zero and 0 when never.
+	ImageDispatches(ctx context.Context, project, image, key string) (time.Time, int, error)
 	RecordImageDispatch(ctx context.Context, project, image, key string, at time.Time) error
 	RecordImageRead(ctx context.Context, project, image, key string, at time.Time) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
@@ -157,10 +165,7 @@ func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfi
 			pins[n] = pin
 		}
 	}
-	if len(pins) == len(c.Images) && (len(pins) == 0 || reflect.DeepEqual(pins, c.Images)) {
-		return nil
-	}
-	return i.pin(ctx, name, c.Repository, pins)
+	return i.pin(ctx, name, c.Repository, pins, c.Images)
 }
 
 // declared reads factory/images.yaml at the head of repository's default
@@ -228,12 +233,20 @@ func (i *Imager) build(ctx context.Context, project, name string, spec policy.Im
 }
 
 // dispatch asks the builder for project's image name at key, built from
-// file, unless it was asked within dispatchWait.
+// file, unless it was asked within dispatchWait. A key buildTries builds
+// left unsigned raises one alert, and is asked for again.
 func (i *Imager) dispatch(ctx context.Context, project, name, key string, file []byte) error {
 	now := i.Now()
-	at, err := i.Store.ImageDispatchedAt(ctx, project, name, key)
+	at, n, err := i.Store.ImageDispatches(ctx, project, name, key)
 	if err != nil || !at.IsZero() && now.Sub(at) < dispatchWait {
 		return err
+	}
+	if n >= buildTries {
+		repo := imageRepository(project, name)
+		i.alert(ctx, Alert{Kind: AlertImage, Source: "build", Fingerprint: "build " + repo + ":" + key, Detail: map[string]any{
+			"project": project, "image": name, "key": key, "dispatches": n,
+			"reason": fmt.Sprintf("%d builds of %s:%s left no image signed by the images key: the builder %s of %s failed, its runs say why",
+				n, repo, key, imageWorkflow, i.Builder)}})
 	}
 	if err := i.Forgejo.DispatchWorkflow(ctx, i.BuildToken, i.Builder, imageWorkflow, "main", map[string]string{
 		"project": project, "image": name, "file": base64.StdEncoding.EncodeToString(file), "base": i.Base, "key": key}); err != nil {
@@ -294,8 +307,18 @@ func pinTitle(project string) string { return "Image pins for " + project }
 // pin brings the images block of project's file on the configuration
 // repository's main to pins through the project's one pull request from
 // the bot's fork: opened from main, else its branch written in place, else,
-// once the branch holds the block, merged.
-func (i *Imager) pin(ctx context.Context, project, repository string, pins map[string]policy.ImagePin) error {
+// once the branch holds the block, merged. Its pull request closes once
+// main is what it would make it.
+func (i *Imager) pin(ctx context.Context, project, repository string, pins, inForce map[string]policy.ImagePin) error {
+	infra, rel := i.Config.Repo, policy.ProjectFile(project)
+	fork, branch, path := i.Forgejo.Fork(infra), pinBranchPrefix+project, i.Config.Dir+"/"+rel
+	own, err := i.ownPullRequest(ctx, fork, branch)
+	if err != nil {
+		return err
+	}
+	if own == nil && len(pins) == len(inForce) && (len(pins) == 0 || reflect.DeepEqual(pins, inForce)) {
+		return nil
+	}
 	block, err := imagesBlock(pins)
 	if err != nil {
 		return err
@@ -304,23 +327,20 @@ func (i *Imager) pin(ctx context.Context, project, repository string, pins map[s
 	if err != nil {
 		return err
 	}
-	main, err := i.Config.File(ctx, head, policy.ProjectFile(project))
+	main, err := i.Config.File(ctx, head, rel)
 	if err != nil {
 		return err
 	}
 	if bytes.Equal(withImages(main, block), main) {
-		return nil
-	}
-	infra := i.Config.Repo
-	fork, branch, path := i.Forgejo.Fork(infra), pinBranchPrefix+project, i.Config.Dir+"/"+policy.ProjectFile(project)
-	own, err := i.Forgejo.FindOpenPullRequestForBranch(ctx, infra.Owner, infra.Name, fork, branch)
-	if err != nil {
-		return err
+		if own == nil {
+			return nil
+		}
+		return i.closePin(ctx, *own, "main's "+path+" is already what it would make it")
 	}
 	if own == nil {
 		return i.open(ctx, project, repository, fork, branch, path, block)
 	}
-	have, blob, err := i.Forgejo.FileContent(ctx, fork.Owner, fork.Name, branch, path)
+	have, blob, err := i.Forgejo.FileContent(ctx, fork.Owner, fork.Name, own.HeadSHA, path)
 	if err != nil {
 		return err
 	}
@@ -332,7 +352,37 @@ func (i *Imager) pin(ctx context.Context, project, repository string, pins map[s
 		log.Printf("imager: wrote the images block of %s on pull request #%d", project, own.Number)
 		return nil
 	}
-	return i.merge(ctx, project, *own)
+	return i.merge(ctx, project, *own, head)
+}
+
+// ownPullRequest is the open pull request from branch on fork into main, or
+// nil.
+func (i *Imager) ownPullRequest(ctx context.Context, fork Repo, branch string) (*PullRequestRef, error) {
+	infra := i.Config.Repo
+	open, err := i.Forgejo.OpenPullRequests(ctx, infra.Owner, infra.Name)
+	if err != nil {
+		return nil, err
+	}
+	for _, pr := range open {
+		if pr.HeadRepo == fork.String() && pr.Head == branch && pr.Base == "main" {
+			return &pr, nil
+		}
+	}
+	return nil, nil
+}
+
+// closePin closes pr, saying why on it: the next pass cuts the branch
+// afresh from main, should main still lack the block.
+func (i *Imager) closePin(ctx context.Context, pr PullRequestRef, why string) error {
+	infra := i.Config.Repo
+	if err := i.Forgejo.ClosePullRequest(ctx, infra.Owner, infra.Name, pr.Number); err != nil {
+		return err
+	}
+	if _, err := i.Forgejo.CreateIssueComment(ctx, infra.Owner, infra.Name, pr.Number, "Closed by factoryd: "+why+"."); err != nil {
+		return err
+	}
+	log.Printf("imager: closed pull request #%d: %s", pr.Number, why)
+	return nil
 }
 
 // open cuts branch afresh from main with the images block, as a branch a
@@ -372,25 +422,41 @@ func (i *Imager) open(ctx context.Context, project, repository string, fork Repo
 	return nil
 }
 
-// merge merges pr as the bot unless judge finds against it; a finding, or
-// Forgejo's refusal, leaves it open with one alert naming why.
-func (i *Imager) merge(ctx context.Context, project string, pr PullRequestRef) error {
+// merge merges pr as the bot unless judge finds against it; a finding
+// leaves it open with one alert naming why, and so does a refusal by
+// Forgejo that repeats on a later pass. A failed check or refusal on a
+// branch cut before main's head closes it instead, so the next pass cuts
+// it from main: once per change of main.
+func (i *Imager) merge(ctx context.Context, project string, pr PullRequestRef, head string) error {
 	code, why, err := i.judge(ctx, project, pr)
 	if err != nil {
 		return err
 	}
+	key := fmt.Sprintf("%s #%d", project, pr.Number)
 	if code == "" {
 		infra := i.Config.Repo
 		err := i.Forgejo.MergePullRequestAsBot(ctx, infra.Owner, infra.Name, pr.Number, pr.HeadSHA, Attribution{Role: pinRole}, pinTitle(project))
 		if !errors.Is(err, ErrRefused) {
 			if err == nil {
+				delete(i.refusals, key)
 				log.Printf("imager: merged pull request #%d, the images block of %s", pr.Number, project)
 			}
 			return err
 		}
 		code, why = "merge", fmt.Sprintf("Forgejo refused the bot's merge of pull request #%d: %v", pr.Number, err)
 	}
-	i.alert(ctx, Alert{Kind: AlertImage, Source: "pin", Fingerprint: fmt.Sprintf("%s #%d %s", project, pr.Number, code),
+	if (code == "check" || code == "merge") && pr.MergeBase != head {
+		return i.closePin(ctx, pr, fmt.Sprintf("its branch was cut from %s, main is at %s now, and %s; the next pass cuts it afresh from main", pr.MergeBase, head, why))
+	}
+	if code == "merge" && i.refusals[key] != why {
+		if i.refusals == nil {
+			i.refusals = map[string]string{}
+		}
+		i.refusals[key] = why
+		log.Printf("imager: %s; the next pass tries again", why)
+		return nil
+	}
+	i.alert(ctx, Alert{Kind: AlertImage, Source: "pin", Fingerprint: key + " " + code,
 		Detail: map[string]any{"project": project, "pull_request": pr.Number, "reason": why}})
 	return nil
 }
@@ -491,22 +557,24 @@ func withImages(file []byte, block string) []byte {
 	return []byte(strings.Join(lines[:start], "") + block + strings.Join(lines[end:], ""))
 }
 
-// ImageDispatchedAt is when factoryd last dispatched the build of key of
-// project's image, zero when never.
-func (s *PGStore) ImageDispatchedAt(ctx context.Context, project, image, key string) (time.Time, error) {
+// ImageDispatches is when factoryd last dispatched the build of key of
+// project's image and how often it did, zero and 0 when never.
+func (s *PGStore) ImageDispatches(ctx context.Context, project, image, key string) (time.Time, int, error) {
 	var at sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT dispatched_at FROM image_builds WHERE project = $1 AND image = $2 AND key = $3`,
-		project, image, key).Scan(&at)
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT dispatched_at, dispatches FROM image_builds WHERE project = $1 AND image = $2 AND key = $3`,
+		project, image, key).Scan(&at, &n)
 	if errors.Is(err, sql.ErrNoRows) {
-		return time.Time{}, nil
+		return time.Time{}, 0, nil
 	}
-	return at.Time, err
+	return at.Time, n, err
 }
 
 // RecordImageDispatch records a dispatch of the build of key at at.
 func (s *PGStore) RecordImageDispatch(ctx context.Context, project, image, key string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO image_builds (project, image, key, dispatched_at) VALUES ($1, $2, $3, $4)
-		ON CONFLICT (project, image, key) DO UPDATE SET dispatched_at = EXCLUDED.dispatched_at`, project, image, key, at)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO image_builds (project, image, key, dispatched_at, dispatches) VALUES ($1, $2, $3, $4, 1)
+		ON CONFLICT (project, image, key) DO UPDATE SET dispatched_at = EXCLUDED.dispatched_at, dispatches = image_builds.dispatches + 1`,
+		project, image, key, at)
 	return err
 }
 

@@ -1,11 +1,12 @@
 -- the imager (sandbox images): per project image and build key, when
--- factoryd last dispatched its build and when a pass last read it as the
--- image's desired key
+-- factoryd last dispatched its build and how often it did, and when a pass
+-- last read it as the image's desired key
 CREATE TABLE IF NOT EXISTS image_builds (
 	project text NOT NULL,
 	image text NOT NULL,
 	key text NOT NULL,
 	dispatched_at timestamptz,
+	dispatches integer NOT NULL DEFAULT 0,
 	read_at timestamptz,
 	PRIMARY KEY (project, image, key)
 );

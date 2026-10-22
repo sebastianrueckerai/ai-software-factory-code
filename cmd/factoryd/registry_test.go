@@ -190,3 +190,30 @@ func TestFactorydTakesItsSigningKeysFromTheirConfigMaps(t *testing.T) {
 		}
 	}
 }
+
+// One key in both COSIGN_PUB and IMAGES_COSIGN_PUB is refused, naming
+// both: the images key signs project images only, the factory key factory
+// images only.
+func TestFactorydRefusesOneKeyForFactoryAndProjectImages(t *testing.T) {
+	pub := func() string {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+	}
+	factory := pub()
+	t.Setenv("COSIGN_PUB", factory)
+	t.Setenv("IMAGES_COSIGN_PUB", pub())
+	if f, i, err := signingKeys(); err != nil || f == nil || i == nil || f.Equal(i) {
+		t.Fatalf("two keys: %v %v %v", f, i, err)
+	}
+	t.Setenv("IMAGES_COSIGN_PUB", factory)
+	if _, _, err := signingKeys(); err == nil || err.Error() != "IMAGES_COSIGN_PUB holds the key of COSIGN_PUB: the images key signs project images only, the factory key factory images only" {
+		t.Fatalf("one key twice: %v", err)
+	}
+}
