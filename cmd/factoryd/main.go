@@ -158,6 +158,7 @@ func main() {
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
+		SandboxBaseImage:     mustEnv("SANDBOX_BASE_IMAGE"),
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           gatewayURL,

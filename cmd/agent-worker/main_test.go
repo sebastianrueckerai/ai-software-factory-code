@@ -33,8 +33,61 @@ func setRequiredEnv(t *testing.T) {
 		// the worker's own sandbox exports REPO_SHA; the seeded repos of
 		// the tests hold no such commit, so none is pinned here
 		"REPO_SHA": "",
+		// a start puts its executable's directory first on PATH
+		"PATH": os.Getenv("PATH"),
 	} {
 		t.Setenv(name, val)
+	}
+}
+
+// The pod's harness volume holds the worker's executable, opencode beside
+// it and the opencode bake one level up, in any image: opencode resolves
+// to the one beside the worker, ahead of an agent-writable directory on
+// PATH, and the bake fills a HOME without an opencode config; a HOME
+// with one keeps it.
+func TestUseHarnessBesideTheExecutable(t *testing.T) {
+	root := t.TempDir()
+	bin, bake, planted := filepath.Join(root, "bin"), filepath.Join(root, "opencode-home", ".config", "opencode"), t.TempDir()
+	for _, dir := range []string{bin, bake} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, body := range map[string]string{
+		filepath.Join(bin, "opencode"):      "#!/bin/sh\n",
+		filepath.Join(planted, "opencode"):  "#!/bin/sh\n",
+		filepath.Join(bake, "package.json"): `{"dependencies":{"@opencode-ai/plugin":"1.18.32"}}`,
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", planted+":/usr/bin:/bin")
+	home := t.TempDir()
+	if err := useHarness(filepath.Join(bin, "agent-worker"), home); err != nil {
+		t.Fatal(err)
+	}
+	if got := os.Getenv("PATH"); got != bin+":"+planted+":/usr/bin:/bin" {
+		t.Errorf("PATH = %q, want the executable's directory first", got)
+	}
+	if got, err := exec.LookPath("opencode"); err != nil || got != filepath.Join(bin, "opencode") {
+		t.Errorf("opencode resolves to %q (%v), want %s", got, err, filepath.Join(bin, "opencode"))
+	}
+	if got, err := os.ReadFile(filepath.Join(home, ".config", "opencode", "package.json")); err != nil ||
+		string(got) != `{"dependencies":{"@opencode-ai/plugin":"1.18.32"}}` {
+		t.Errorf("restored config = %q (%v), want the bake's package.json", got, err)
+	}
+
+	configured := t.TempDir()
+	own := filepath.Join(configured, ".config", "opencode")
+	if err := os.MkdirAll(own, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := useHarness(filepath.Join(bin, "agent-worker"), configured); err != nil {
+		t.Fatal(err)
+	}
+	if entries, err := os.ReadDir(own); err != nil || len(entries) != 0 {
+		t.Errorf("a HOME with an opencode config holds %v (%v) after the start, want it kept as it was", entries, err)
 	}
 }
 

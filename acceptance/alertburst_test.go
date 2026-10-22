@@ -274,7 +274,7 @@ func newCardDeps(t *testing.T, rig *intakeRig) *cardDeps {
 	t.Helper()
 	d := &cardDeps{}
 	cfg := factoryd.RunnerConfig{
-		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc",
+		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc", SandboxBaseImage: "reg/sandbox-base@sha256:bcd",
 		PullSecret: "forgejo-registry", FactoryNamespace: "factory",
 		GatewayURL:   "http://factory-gateway.factory.svc.cluster.local:8081",
 		GitBaseURL:   "http://forgejo-http.forgejo.svc.cluster.local:3000",

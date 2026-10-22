@@ -93,7 +93,9 @@ COPY --from=npm-cache /npm-cache /npm-cache
 RUN npm ci --offline --cache /npm-cache --no-audit --no-fund \
       && test "$(node -p "require('./node_modules/@opencode-ai/plugin/package.json').version")" = "${OPENCODE_VERSION#v}"
 
-FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
+# The sandbox without the harness and the stack, pushed as sf/sandbox-base:
+# project images build FROM it and apt-get install from its sources.
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS base
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 # useradd dates the worker's /etc/shadow entry by SOURCE_DATE_EPOCH, else
 # by the build's day.
@@ -136,6 +138,14 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
       && useradd -m -u 1000 -s /bin/bash worker \
       && rm /etc/ssl/certs/ssl-cert-snakeoil.pem /etc/ssl/private/ssl-cert-snakeoil.key /var/cache/ldconfig/aux-cache \
            /var/log/alternatives.log /var/log/apt/history.log /var/log/apt/term.log /var/log/dpkg.log
+USER 1000:1000
+ENV HOME=/home/worker
+WORKDIR /workspace
+
+FROM base
+# the commit's clock reaches this stage's steps too, as the base's
+ARG SOURCE_DATE_EPOCH
+USER root
 RUN --mount=type=bind,from=downloads,source=/opencode.tar.gz,target=/tmp/opencode.tar.gz \
       tar -xzf /tmp/opencode.tar.gz -C /tmp opencode \
       && install -m 0755 /tmp/opencode /usr/local/bin/opencode \
@@ -153,8 +163,8 @@ RUN --mount=type=bind,from=downloads,source=/node.tar.xz,target=/tmp/node.tar.xz
       && rm -r /tmp/node-compile-cache
 COPY --from=build /out/agent-worker /usr/local/bin/agent-worker
 # Pre-baked opencode provider packages (see the opencode-plugin stage above).
-# HOME here is NOT the runtime HOME -- the pod mounts an emptyDir over
-# /home/worker, so the worker copies this bake into place at start.
+# The pod's harness init container copies them out with the two binaries,
+# and the worker into the emptyDir the pod mounts over /home/worker.
 COPY --from=opencode-plugin --chown=1000:1000 /opencode-home/.config/opencode /opt/opencode-home/.config/opencode
 USER 1000:1000
 # every one of these phones home past the egress allowlist and stalls on the drop;
@@ -162,15 +172,13 @@ USER 1000:1000
 # GOTOOLCHAIN=local: go never fetches another toolchain; GOPROXY without the
 # "direct" fallback: only the module proxy is reachable, a fallback would
 # hang on the drop.
-ENV HOME=/home/worker \
-    OPENCODE_DISABLE_AUTOUPDATE=1 \
+ENV OPENCODE_DISABLE_AUTOUPDATE=1 \
     OPENCODE_DISABLE_MODELS_FETCH=1 \
     OPENCODE_DISABLE_LSP_DOWNLOAD=1 \
     PATH=/usr/local/go/bin:/home/worker/go/bin:$PATH \
     GOTOOLCHAIN=local \
     GOPROXY=https://proxy.golang.org \
     GOSUMDB=sum.golang.org
-WORKDIR /workspace
 # Go telemetry off before the first go call, as in the build stage.
 RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/telemetry/mode" && /usr/local/go/bin/go version
 ENTRYPOINT ["/usr/local/bin/opencode"]

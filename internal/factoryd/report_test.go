@@ -59,7 +59,7 @@ func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
 		t.Fatalf("pod env = %v", env)
 	}
 	// the clone init container reads the repository only: a report has no fork
-	clone := containerEnv(kube.podAt(0).spec["spec"].(map[string]any)["initContainers"].([]any)[0].(map[string]any))
+	clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
 	if clone["MODE"] != "clone" || clone["REPO_TOKEN"] != "secret:task-git/REPO_TOKEN" || clone["REPO_SHA"] != "abc123" || clone["PUSH_URL"] != "" {
 		t.Fatalf("clone env = %v", clone)
 	}

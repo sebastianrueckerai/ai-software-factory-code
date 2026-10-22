@@ -1523,7 +1523,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 		t.Fatal(err)
 	}
 	env = podEnv(kube.podAt(0))
-	clone := containerEnv(kube.podAt(0).spec["spec"].(map[string]any)["initContainers"].([]any)[0].(map[string]any))
+	clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
 	spec = "Links\n\nThe page and the API.\n\nThe plan's summary: The links API first, then the page on it.\n\n" +
 		"The plan splits pull request #9, whose head is in your clone as branch pull/9: carry over the files and hunks your brief names."
 	if env["SPEC"] != spec || clone["PULL"] != "9" || env["PULL"] != "" || env["DIRECTORIES"] != `["web"]` {

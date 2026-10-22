@@ -78,9 +78,9 @@ func buildFetchFiles(t *testing.T) map[string]string {
 // outsideFetches names every build-time fetch in the file's lines that
 // resolves beyond allowed: for a Dockerfile an ADD or RUN URL — the go
 // module and npm restore paths among them — and a FROM that is neither
-// scratch nor the store's ${UPSTREAM} copy, whose ARG default must be
-// the store; for a workflow or Go file any URL at all. Each finding
-// names the file and the URL.
+// scratch, a stage named above it, nor the store's ${UPSTREAM} copy,
+// whose ARG default must be the store; for a workflow or Go file any URL
+// at all. Each finding names the file and the URL.
 func outsideFetches(name string, lines []string, allowed map[string]bool) []string {
 	var out []string
 	dockerfile := strings.HasPrefix(name, "Dockerfile")
@@ -88,10 +88,16 @@ func outsideFetches(name string, lines []string, allowed map[string]bool) []stri
 	if dockerfile {
 		args = dockerfileARGs(lines)
 	}
+	stages := map[string]bool{"scratch": true}
 	for _, line := range lines {
 		if dockerfile {
-			if m := fromLine.FindStringSubmatch(line); m != nil && m[1] != "scratch" && !strings.HasPrefix(m[1], "${UPSTREAM}") {
-				out = append(out, fmt.Sprintf("%s: FROM %s is not the store's ${UPSTREAM} copy", name, m[1]))
+			if m := fromLine.FindStringSubmatch(line); m != nil {
+				if !stages[m[1]] && !strings.HasPrefix(m[1], "${UPSTREAM}") {
+					out = append(out, fmt.Sprintf("%s: FROM %s is not the store's ${UPSTREAM} copy", name, m[1]))
+				}
+				if f := strings.Fields(line); len(f) == 4 && strings.EqualFold(f[2], "AS") {
+					stages[f[3]] = true
+				}
 			}
 			if !strings.HasPrefix(line, "ADD ") && !strings.HasPrefix(line, "RUN ") {
 				continue
@@ -165,6 +171,16 @@ func TestOutsideFetchesAreNamedWithTheirFileAndURL(t *testing.T) {
 			wantIn: []string{"Dockerfile", "ghcr.io/example/gateway:1.2.3"},
 		},
 		{
+			// no stage above is named base: Docker Hub's library/base
+			name: "Dockerfile",
+			lines: logicalLines(strings.Join([]string{
+				storeARG,
+				"FROM base",
+				"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim AS base",
+			}, "\n")),
+			wantIn: []string{"Dockerfile", "FROM base is"},
+		},
+		{
 			name: "Dockerfile",
 			lines: logicalLines(strings.Join([]string{
 				"ARG UPSTREAM=ghcr.io/example/",
@@ -222,7 +238,8 @@ func TestOutsideFetchesAreNamedWithTheirFileAndURL(t *testing.T) {
 	}
 	quiet := outsideFetches("Dockerfile", logicalLines(strings.Join([]string{
 		storeARG,
-		"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b",
+		"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS base",
+		"FROM base",
 		`RUN wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz"`,
 		`RUN echo "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" > /etc/apt/sources.list`,
 		`RUN echo "deb [signed-by=/etc/apt/keyrings/pgdg.asc] https://apt-archive.postgresql.org/pub/repos/apt bookworm-pgdg-archive main" > /etc/apt/sources.list.d/pgdg.list`,

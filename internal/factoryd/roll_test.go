@@ -24,7 +24,8 @@ var (
 const registryHost = "git.aisoftwarefactory.world/sf/"
 
 // k8sManifests renders the code repository's two manifests pinning the
-// given digests, shaped like k8s/factoryd.yaml and k8s/deployment.yaml.
+// given digests and the sandbox base at baseIdx, shaped like
+// k8s/factoryd.yaml and k8s/deployment.yaml.
 func k8sManifests(factoryd, gateway, worker, runner string) map[string]string {
 	return map[string]string{
 		"k8s/factoryd.yaml": `apiVersion: v1
@@ -48,6 +49,8 @@ spec:
           value: ` + registryHost + `ci-runner@` + runner + `
         - name: WORKER_IMAGE
           value: ` + registryHost + `opencode-worker@` + worker + `
+        - name: SANDBOX_BASE_IMAGE
+          value: ` + registryHost + `sandbox-base@` + sha256Of(baseIdx) + `
 `,
 		"k8s/deployment.yaml": `apiVersion: apps/v1
 kind: Deployment

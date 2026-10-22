@@ -29,11 +29,13 @@ type RollTarget struct {
 
 // RollTargets are the factory's own images (ruling 178): main CI's image
 // jobs push factory-gateway (both control-plane binaries), opencode-worker
-// and ci-runner; the worker and runner references are factoryd's env.
+// with sandbox-base, its stage without the harness, and ci-runner; the
+// worker, base and runner references are factoryd's env.
 var RollTargets = []RollTarget{
 	{Name: "factoryd", File: "k8s/factoryd.yaml", Image: "factory-gateway", Deployment: "factoryd"},
 	{Name: "gateway", File: "k8s/deployment.yaml", Image: "factory-gateway", Deployment: "factory-gateway"},
 	{Name: "worker", File: "k8s/factoryd.yaml", Image: "opencode-worker", Deployment: "factoryd"},
+	{Name: "sandbox-base", File: "k8s/factoryd.yaml", Image: "sandbox-base", Deployment: "factoryd"},
 	{Name: "ci-runner", File: "k8s/factoryd.yaml", Image: "ci-runner", Deployment: "factoryd"},
 }
 

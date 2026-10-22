@@ -68,3 +68,26 @@ func TestSandboxFactsNameToolsNamesAndNoBrowser(t *testing.T) {
 		}
 	}
 }
+
+// The harness init container copies what the factory's image holds:
+// each path harnessCopy reads is where Dockerfile.sandbox installs it.
+func TestHarnessCopyReadsWhatTheImageInstalls(t *testing.T) {
+	b, err := os.ReadFile("../../Dockerfile.sandbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, install := range []string{
+		"install -m 0755 /tmp/opencode /usr/local/bin/opencode",
+		"COPY --from=build /out/agent-worker /usr/local/bin/agent-worker",
+		"COPY --from=opencode-plugin --chown=1000:1000 /opencode-home/.config/opencode /opt/opencode-home/.config/opencode",
+	} {
+		if !strings.Contains(string(b), install) {
+			t.Errorf("Dockerfile.sandbox lacks %q", install)
+		}
+	}
+	for _, read := range []string{"/usr/local/bin/opencode ", "/usr/local/bin/agent-worker ", "cp -a /opt/opencode-home /factory/"} {
+		if !strings.Contains(harnessCopy, read) {
+			t.Errorf("harnessCopy %q does not read %q", harnessCopy, read)
+		}
+	}
+}

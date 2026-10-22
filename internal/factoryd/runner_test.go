@@ -665,6 +665,7 @@ func testRunnerConfig() RunnerConfig {
 	return RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-",
 		WorkerImage:          "reg/worker@sha256:abc",
+		SandboxBaseImage:     "reg/sandbox-base@sha256:bcd",
 		PullSecret:           "forgejo-registry",
 		FactoryNamespace:     "factory",
 		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",
@@ -955,20 +956,20 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	if sc["readOnlyRootFilesystem"] != true || sc["runAsNonRoot"] != true || sc["allowPrivilegeEscalation"] != false {
 		t.Fatalf("container securityContext = %v", sc)
 	}
-	// ephemeral-storage: workspace 4, home 1, tmp 1 and the module cache 8
-	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:17Gi memory:512Mi]]" {
+	// ephemeral-storage: workspace 4, home 1, tmp 4, the harness 1 and the module cache 8
+	if res := fmt.Sprint(container["resources"]); res != "map[limits:map[cpu:2 memory:4Gi] requests:map[cpu:250m ephemeral-storage:18Gi memory:512Mi]]" {
 		t.Fatalf("container resources = %s", res)
 	}
 	if dns := fmt.Sprint(spec["dnsConfig"]); dns != "map[options:[map[name:ndots value:1]]]" {
 		t.Fatalf("dnsConfig = %s", dns)
 	}
 	volumes := spec["volumes"].([]any)
-	for i, want := range []string{"4Gi", "1Gi", "4Gi"} {
+	for i, want := range []string{"4Gi", "1Gi", "4Gi", "1Gi"} {
 		if got := volumes[i].(map[string]any)["emptyDir"].(map[string]any)["sizeLimit"]; got != want {
 			t.Fatalf("volume %d sizeLimit = %v, want %s", i, got, want)
 		}
 	}
-	projected := volumes[3].(map[string]any)["projected"].(map[string]any)
+	projected := volumes[4].(map[string]any)["projected"].(map[string]any)
 	sat := projected["sources"].([]any)[0].(map[string]any)["serviceAccountToken"].(map[string]any)
 	if sat["audience"] != "factory-gateway" {
 		t.Fatalf("projected token audience = %v", sat["audience"])
@@ -1017,11 +1018,7 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 		t.Fatalf("read mints = %v, want one read token on sf/x and factory-agent/x", reads)
 	}
 	spec := kube.podAt(0).spec["spec"].(map[string]any)
-	inits, _ := spec["initContainers"].([]any)
-	if len(inits) != 1 || inits[0].(map[string]any)["name"] != "clone" {
-		t.Fatalf("initContainers = %v, want [clone]", inits)
-	}
-	clone, worker := inits[0].(map[string]any), spec["containers"].([]any)[0].(map[string]any)
+	clone, worker := initContainer(t, spec, "clone"), spec["containers"].([]any)[0].(map[string]any)
 	want := map[string]string{
 		"MODE":       "clone",
 		"REPO_URL":   "http://forgejo-http.forgejo.svc.cluster.local:3000/sf/x.git",
@@ -1038,9 +1035,9 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 			t.Fatalf("clone %s = %v, want the worker's %v", key, clone[key], worker[key])
 		}
 	}
-	// the workspace only: no gateway token, no project cache
-	if mounts := fmt.Sprint(clone["volumeMounts"]); mounts != "[map[mountPath:/workspace name:workspace]]" {
-		t.Fatalf("clone mounts = %s, want the workspace only", mounts)
+	// the workspace and the harness only: no gateway token, no project cache
+	if mounts := fmt.Sprint(clone["volumeMounts"]); mounts != "[map[mountPath:/workspace name:workspace] map[mountPath:/factory name:harness readOnly:true]]" {
+		t.Fatalf("clone mounts = %s, want the workspace and the harness only", mounts)
 	}
 	env := containerEnv(worker)
 	for _, name := range []string{"REPO_TOKEN", "REPO_URL"} {
@@ -1051,6 +1048,87 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 	if env["REPO_SHA"] != "abc123" || env["BRANCH"] != "factory/t1" || env["PUSH_URL"] != "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/x.git" {
 		t.Fatalf("worker container env = %v, want the start, the branch and the fork", env)
 	}
+}
+
+// Every sandbox pod runs the harness from the factory's image, whatever
+// image its worker runs: an init container, first, copies agent-worker,
+// opencode and the opencode bake into the pod's harness volume, as the
+// worker's uid under the worker's confinement and resources; the worker,
+// and the clone or fetch init container copied from it, run
+// /factory/bin/agent-worker off the volume mounted read-only.
+func TestSandboxPodsTakeTheHarnessFromAnInitContainer(t *testing.T) {
+	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
+	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
+	for name, c := range map[string]struct {
+		pod   map[string]any
+		image string
+		inits []string
+	}{
+		"sandbox": {r.sandboxPodSpec(task, "reg/project@sha256:def", "", nil, false), "reg/project@sha256:def", []string{"harness"}},
+		"session": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "reg/worker@sha256:abc", []string{"harness", "clone"}},
+		"repro": {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""),
+			"reg/worker@sha256:abc", []string{"harness", "fetch"}},
+	} {
+		spec := c.pod["spec"].(map[string]any)
+		inits, _ := spec["initContainers"].([]any)
+		var names []string
+		for _, ic := range inits {
+			names = append(names, ic.(map[string]any)["name"].(string))
+		}
+		if !slices.Equal(names, c.inits) {
+			t.Fatalf("%s: init containers %v, want %v", name, names, c.inits)
+		}
+		first, worker := inits[0].(map[string]any), spec["containers"].([]any)[0].(map[string]any)
+		if first["image"] != "reg/worker@sha256:abc" || !reflect.DeepEqual(first["command"], []any{"/bin/sh", "-c",
+			"mkdir -p /factory/bin && cp /usr/local/bin/agent-worker /usr/local/bin/opencode /factory/bin/ && cp -a /opt/opencode-home /factory/"}) {
+			t.Errorf("%s: harness runs %v %q, want the factory's image copying the harness", name, first["image"], first["command"])
+		}
+		if got := string(mustJSON(first["volumeMounts"])); got != `[{"mountPath":"/factory","name":"harness"}]` {
+			t.Errorf("%s: harness mounts %s, want the harness volume alone, writable", name, got)
+		}
+		if _, ok := first["env"]; ok {
+			t.Errorf("%s: harness carries env %v, want none", name, first["env"])
+		}
+		// a failed copy names its cause in the pod's diagnosis
+		if first["terminationMessagePolicy"] != "FallbackToLogsOnError" {
+			t.Errorf("%s: harness terminationMessagePolicy %v, want FallbackToLogsOnError", name, first["terminationMessagePolicy"])
+		}
+		for _, key := range []string{"securityContext", "resources"} {
+			if !reflect.DeepEqual(first[key], worker[key]) {
+				t.Errorf("%s: harness %s = %v, want the worker's %v", name, key, first[key], worker[key])
+			}
+		}
+		if worker["image"] != c.image || !reflect.DeepEqual(worker["command"], []any{"/bin/sh", "-c", cacheUmaskSh, "/factory/bin/agent-worker"}) {
+			t.Errorf("%s: worker runs %v %q, want %s running the harness's agent-worker", name, worker["image"], worker["command"], c.image)
+		}
+		for _, ic := range slices.Concat(inits[1:], []any{worker}) {
+			ic := ic.(map[string]any)
+			if ic["image"] != c.image || !strings.Contains(string(mustJSON(ic["volumeMounts"])), `{"mountPath":"/factory","name":"harness","readOnly":true}`) {
+				t.Errorf("%s: %s runs %v with mounts %s, want %s with the harness read-only", name, ic["name"], ic["image"], mustJSON(ic["volumeMounts"]), c.image)
+			}
+		}
+		var harnessVolume any
+		for _, v := range spec["volumes"].([]any) {
+			if v.(map[string]any)["name"] == "harness" {
+				harnessVolume = v
+			}
+		}
+		if got := string(mustJSON(harnessVolume)); got != `{"emptyDir":{"sizeLimit":"1Gi"},"name":"harness"}` {
+			t.Errorf("%s: harness volume %s, want an emptyDir of 1Gi", name, got)
+		}
+	}
+}
+
+// initContainer is the pod spec's init container name.
+func initContainer(t *testing.T, spec map[string]any, name string) map[string]any {
+	t.Helper()
+	for _, ic := range spec["initContainers"].([]any) {
+		if ic.(map[string]any)["name"] == name {
+			return ic.(map[string]any)
+		}
+	}
+	t.Fatalf("no init container %s in %v", name, spec["initContainers"])
+	return nil
 }
 
 // podEnv flattens a pod's worker container env into name → value.
@@ -3157,6 +3235,15 @@ func TestNewRunnerRefusesEgressProbeTargetsTheProbeCannotUse(t *testing.T) {
 	}
 	if _, err := NewRunner(testRunnerConfig(), newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused")); err != nil {
 		t.Fatalf("example.com:443 and 192.0.2.7:443: %v", err)
+	}
+}
+
+func TestNewRunnerRequiresTheSandboxBase(t *testing.T) {
+	cfg := testRunnerConfig()
+	cfg.SandboxBaseImage = ""
+	const want = "runner: AgentNamespacePrefix, WorkerImage, SandboxBaseImage, GatewayURL, GitBaseURL and Leases are required"
+	if _, err := NewRunner(cfg, newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused")); err == nil || err.Error() != want {
+		t.Fatalf("err = %v, want %s", err, want)
 	}
 }
 

@@ -20,6 +20,8 @@ env:
   # the runner's warm-step mounts.
   GATEWAY_INPUTS: Dockerfile .dockerignore go.mod go.sum cmd internal
   SANDBOX_INPUTS: Dockerfile.sandbox .dockerignore go.mod go.sum cmd internal opencode-plugin/package.json opencode-plugin/package-lock.json
+  # the sandbox's base stage copies nothing from the context
+  SANDBOX_BASE_INPUTS: Dockerfile.sandbox
   RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance
   BUILDKIT: git.aisoftwarefactory.world/upstream/docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
 # One main run at a time: a newer push waits out the running one instead of
@@ -137,10 +139,13 @@ jobs:
           fetch-depth: 0
       - name: registry login
         run: echo "${{ secrets.REGISTRY_PASSWORD }}" | docker login git.aisoftwarefactory.world -u "${{ secrets.REGISTRY_USER }}" --password-stdin
-      - name: build and push sandbox image
+      - name: build and push the sandbox images
+        # the base too, sandbox-base: the sandbox without the harness and
+        # the stack, which project images build on
         run: |
           SHA=${GITHUB_SHA::7}
           EPOCH=$(git log -1 --pretty=%ct -- $SANDBOX_INPUTS)
+          BASE_EPOCH=$(git log -1 --pretty=%ct -- $SANDBOX_BASE_INPUTS)
           B=image-sandbox
           printf '[registry."%s"]\n  http = true\n' "${CACHE%%/*}" > /tmp/buildkitd.toml
           # buildx takes no TLS endpoint from the environment, only a context
@@ -150,6 +155,10 @@ jobs:
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
           trap 'docker buildx rm "$B"' EXIT
+          docker buildx build --builder "$B" -f Dockerfile.sandbox --target base --build-arg SOURCE_DATE_EPOCH=$BASE_EPOCH --metadata-file /tmp/base.json \
+            --cache-from type=registry,ref=$CACHE/sandbox-base:main,registry.insecure=true \
+            --cache-to type=registry,ref=$CACHE/sandbox-base:main,mode=max,registry.insecure=true,ignore-error=true \
+            --output type=image,name=git.aisoftwarefactory.world/sf/sandbox-base:$SHA,push=true,rewrite-timestamp=true .
           docker buildx build --builder "$B" -f Dockerfile.sandbox --build-arg SOURCE_DATE_EPOCH=$EPOCH --metadata-file /tmp/image.json \
             --cache-from type=registry,ref=$CACHE/opencode-worker:main,registry.insecure=true \
             --cache-to type=registry,ref=$CACHE/opencode-worker:main,mode=max,registry.insecure=true,ignore-error=true \
@@ -158,7 +167,7 @@ jobs:
           # the builder keeps no image in the daemon
           docker run --rm --entrypoint sh git.aisoftwarefactory.world/sf/opencode-worker:$SHA \
             -c "gcc --version && make --version && python3 --version"
-      - name: sign the sandbox image
+      - name: sign the sandbox images
         # as the gateway's
         env:
           COSIGN_PRIVATE_KEY: ${{ secrets.COSIGN_PRIVATE_KEY }}
@@ -166,6 +175,8 @@ jobs:
         run: |
           docker build -f Dockerfile.runner --target cosign -o /tmp/cosign .
           printf '{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}' > /tmp/signing-config.json
+          /tmp/cosign/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
+            git.aisoftwarefactory.world/sf/sandbox-base@$(jq -r '."containerimage.digest"' /tmp/base.json)
           /tmp/cosign/cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config /tmp/signing-config.json \
             git.aisoftwarefactory.world/sf/opencode-worker@$(jq -r '."containerimage.digest"' /tmp/image.json)
   image-runner:

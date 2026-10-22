@@ -102,7 +102,8 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 // Both reproduction runs (base and head) read nothing an agent left in the
 // project's shared cache (ruling 291): Go's and npm's caches sit in the
 // pod's own emptyDir, PATH names no cache directory, and the fetch init
-// container gets the same mounts and no cache either.
+// container gets the same mounts and no cache either; the harness init
+// container mounts the harness alone.
 func TestReproPodHasNoSharedCache(t *testing.T) {
 	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
 	pod := r.reproPodSpec(Task{ID: "t1", Repository: "linkshort/linkshort"}, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", "b0")
@@ -112,15 +113,19 @@ func TestReproPodHasNoSharedCache(t *testing.T) {
 		vols = append(vols, string(mustJSON(v)))
 	}
 	if want := []string{`{"emptyDir":{"sizeLimit":"4Gi"},"name":"workspace"}`, `{"emptyDir":{"sizeLimit":"1Gi"},"name":"home"}`,
-		`{"emptyDir":{"sizeLimit":"4Gi"},"name":"tmp"}`, `{"emptyDir":{"sizeLimit":"8Gi"},"name":"build"}`}; !reflect.DeepEqual(vols, want) {
+		`{"emptyDir":{"sizeLimit":"4Gi"},"name":"tmp"}`, `{"emptyDir":{"sizeLimit":"1Gi"},"name":"harness"}`,
+		`{"emptyDir":{"sizeLimit":"8Gi"},"name":"build"}`}; !reflect.DeepEqual(vols, want) {
 		t.Errorf("volumes = %v, want %v", vols, want)
 	}
-	wantMounts := `[{"mountPath":"/workspace","name":"workspace"},{"mountPath":"/home/worker","name":"home"},{"mountPath":"/tmp","name":"tmp"},{"mountPath":"/build","name":"build"}]`
-	for _, key := range []string{"initContainers", "containers"} {
-		c := spec[key].([]any)[0].(map[string]any)
+	wantMounts := `[{"mountPath":"/workspace","name":"workspace"},{"mountPath":"/home/worker","name":"home"},{"mountPath":"/tmp","name":"tmp"},` +
+		`{"mountPath":"/factory","name":"harness","readOnly":true},{"mountPath":"/build","name":"build"}]`
+	for name, c := range map[string]map[string]any{"fetch": initContainer(t, spec, "fetch"), "worker": spec["containers"].([]any)[0].(map[string]any)} {
 		if got := string(mustJSON(c["volumeMounts"])); got != wantMounts {
-			t.Errorf("%s mounts = %s, want %s", key, got, wantMounts)
+			t.Errorf("%s mounts = %s, want %s", name, got, wantMounts)
 		}
+	}
+	if got := string(mustJSON(initContainer(t, spec, "harness")["volumeMounts"])); got != `[{"mountPath":"/factory","name":"harness"}]` {
+		t.Errorf("harness mounts = %s, want the harness alone", got)
 	}
 	env := map[string]string{}
 	for _, e := range spec["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
@@ -156,7 +161,9 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 		return out
 	}
 	runner := []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/forgejo-runner"}
-	worker := []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/agent-worker"}
+	// the harness copy mounts no cache and sets no PATH: its cp is the image's
+	harness := []any{"/bin/sh", "-c", "mkdir -p /factory/bin && cp /usr/local/bin/agent-worker /usr/local/bin/opencode /factory/bin/ && cp -a /opt/opencode-home /factory/"}
+	worker := []any{"/bin/sh", "-c", cacheUmaskSh, "/factory/bin/agent-worker"}
 	spawner := newTestCISpawner(t, newFakeKube(), &ciHub{})
 	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
 	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
@@ -168,8 +175,8 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false),
 			[][]any{{"/bin/sh", "-c", buildReadyScript}, runner}},
 		// the clone and the fetch init containers are copies of the worker's
-		"worker": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), [][]any{worker, worker}},
-		"repro":  {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), [][]any{worker, worker}},
+		"worker": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), [][]any{harness, worker, worker}},
+		"repro":  {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), [][]any{harness, worker, worker}},
 	} {
 		if got := commands(c.pod); !reflect.DeepEqual(got, c.want) {
 			t.Errorf("%s commands = %q, want %q", name, got, c.want)
@@ -181,8 +188,8 @@ func TestPodCommandsNameAbsolutePaths(t *testing.T) {
 // fill, so the scheduler counts them against a node's allocatable: a pull
 // request's CI pod workspace 8, home 2, tmp 4 and the module cache 8; a
 // smoke run's the same without the cache; an agent's workspace 4, home 1,
-// tmp 1 and the module cache 8; a reproduction's the same with its build
-// directory 8 in the cache's place. An init container requests the same
+// tmp 4, the harness 1 and the module cache 8; a reproduction's the same
+// with its build directory 8 in the cache's place. An init container requests the same
 // as the container it copies, so the pod's request stays the sum; cpu and
 // memory stay the LimitRange's defaults.
 func TestPodsRequestTheirEmptyDirs(t *testing.T) {
@@ -197,8 +204,8 @@ func TestPodsRequestTheirEmptyDirs(t *testing.T) {
 		"ci runner":       {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted"}, "cache-ci-linkshort", nil, false), "22Gi", "1", false},
 		"ci build runner": {spawner.runnerPodSpec(ciJobKind{label: "pr-untrusted-build", build: true}, "cache-ci-linkshort", &BuildVM{IPv4: "10.0.0.5"}, false), "22Gi", "1", true},
 		"ci smoke runner": {spawner.runnerPodSpec(ciJobKind{label: "demo-smoke", smoke: true, handle: "h-1"}, "", nil, false), "14Gi", "1", false},
-		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "17Gi", "250m", true},
-		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), "17Gi", "250m", true},
+		"worker":          {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "18Gi", "250m", true},
+		"repro":           {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""), "18Gi", "250m", true},
 	} {
 		spec := c.pod["spec"].(map[string]any)
 		requests := spec["containers"].([]any)[0].(map[string]any)["resources"].(map[string]any)["requests"].(map[string]any)

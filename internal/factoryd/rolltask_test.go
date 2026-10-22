@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -250,6 +251,8 @@ var (
 	runnerIdx      = imageIndex(runnerImg, "sha256:a7")
 	runnerRebuilt  = imageIndex(runnerImg, "sha256:a8")
 	runnerRebuilt2 = imageIndex(runnerImg, "sha256:a9")
+	baseIdx        = imageIndex(sha256Of(`{"img":"base"}`), "sha256:b1")
+	baseNewIdx     = imageIndex(sha256Of(`{"img":"base-new"}`), "sha256:b2")
 )
 
 const (
@@ -673,9 +676,12 @@ func imageGreen(shas ...string) map[string][]map[string]string {
 }
 
 // registryOf serves each index under its digest and under the tags given,
-// each signed as main CI signs what it pushes.
+// each signed as main CI signs what it pushes. The sandbox base is
+// baseIdx, the one k8sManifests pins, at every tag the others are given,
+// unless the tags name its own.
 func registryOf(tags map[string]string, indexes ...string) map[string]string {
-	out := map[string]string{}
+	out := map[string]string{"sf/sandbox-base/manifests/" + sha256Of(baseIdx): baseIdx}
+	maps.Copy(out, cosignSigned(testCosignKey, "sf/sandbox-base", sha256Of(baseIdx)))
 	for _, image := range []string{"factory-gateway", "opencode-worker", "ci-runner"} {
 		for _, idx := range indexes {
 			out["sf/"+image+"/manifests/"+sha256Of(idx)] = idx
@@ -684,8 +690,11 @@ func registryOf(tags map[string]string, indexes ...string) map[string]string {
 	}
 	for key, idx := range tags {
 		out[key] = idx
-		repository, _, _ := strings.Cut(key, "/manifests/")
+		repository, tag, _ := strings.Cut(key, "/manifests/")
 		maps.Copy(out, cosignSigned(testCosignKey, repository, sha256Of(idx)))
+		if base := "sf/sandbox-base/manifests/" + tag; tags[base] == "" {
+			out[base] = baseIdx
+		}
 	}
 	return out
 }
@@ -1353,11 +1362,10 @@ func TestRollerSkipsARollMergeOfTheLastRolledCommit(t *testing.T) {
 	}
 }
 
-// Every roll target is pinned exactly once in the repository's own
-// manifests: an edit there that breaks the roller fails here.
-// Main CI signs every image the roller rolls (roadmap 46): the job that
-// pushes it writes the pushed digest to /tmp/image.json, and its next step
-// signs exactly that digest with the key from the Actions secrets, run here
+// Main CI signs every image the roller rolls (roadmap 46): the build that
+// pushes it writes the pushed digest to a metadata file, and the step after
+// its job's push step signs exactly that digest, for each image the step
+// pushed in its order, with the key from the Actions secrets, run here
 // with docker, jq and the cosign it exports standing in. No other step of
 // any workflow reads the key: pull request runs never see it.
 func TestMainCISignsEveryImageTheRollerRolls(t *testing.T) {
@@ -1386,29 +1394,50 @@ func TestMainCISignsEveryImageTheRollerRolls(t *testing.T) {
 	raw, ci := read("ci.yml")
 	keyEnv := map[string]string{"COSIGN_PRIVATE_KEY": "${{ secrets.COSIGN_PRIVATE_KEY }}", "COSIGN_PASSWORD": "${{ secrets.COSIGN_PASSWORD }}"}
 	const digest = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-	for _, target := range RollTargets {
-		pushed := "name=git.aisoftwarefactory.world/sf/" + target.Image + ":$SHA"
-		var job string
-		var steps []step
-		for name, j := range ci.Jobs {
-			for _, st := range j.Steps {
-				if strings.Contains(st.Run, pushed) && strings.Contains(st.Run, "push=true") {
-					job, steps = name, j.Steps
+	// a push step's images in its order, each by the metadata file its
+	// build command writes
+	type push struct{ image, metadata string }
+	type signing struct {
+		job    string
+		pushes []push
+		sign   step
+	}
+	pushed := regexp.MustCompile(`name=git\.aisoftwarefactory\.world/sf/([a-z-]+):\$SHA\b.*push=true`)
+	metadata := regexp.MustCompile(`--metadata-file (\S+)`)
+	var signings []*signing
+	for name, j := range ci.Jobs {
+		for i, st := range j.Steps {
+			var pushes []push
+			for _, cmd := range strings.Split(strings.ReplaceAll(st.Run, "\\\n", " "), "\n") {
+				if m := pushed.FindStringSubmatch(cmd); m != nil {
+					file := metadata.FindStringSubmatch(cmd)
+					if file == nil {
+						t.Errorf("job %s pushes %s without a --metadata-file", name, m[1])
+						continue
+					}
+					pushes = append(pushes, push{m[1], file[1]})
 				}
 			}
+			if len(pushes) == 0 {
+				continue
+			}
+			if i+1 == len(j.Steps) {
+				t.Errorf("job %s: no step follows its push", name)
+				continue
+			}
+			signings = append(signings, &signing{name, pushes, j.Steps[i+1]})
 		}
-		if job == "" {
-			t.Errorf("%s: no job of ci.yml pushes %s", target.Name, pushed)
-			continue
+	}
+	for _, target := range RollTargets {
+		if !slices.ContainsFunc(signings, func(s *signing) bool {
+			return slices.ContainsFunc(s.pushes, func(p push) bool { return p.image == target.Image })
+		}) {
+			t.Errorf("%s: no job of ci.yml pushes git.aisoftwarefactory.world/sf/%s:$SHA", target.Name, target.Image)
 		}
-		i := slices.IndexFunc(steps, func(st step) bool { return strings.Contains(st.Run, pushed) })
-		if !strings.Contains(steps[i].Run, "--metadata-file /tmp/image.json") || i+1 == len(steps) {
-			t.Errorf("%s: job %s writes no /tmp/image.json, or no step follows its push", target.Name, job)
-			continue
-		}
-		sign := steps[i+1]
-		if !maps.Equal(sign.Env, keyEnv) {
-			t.Errorf("%s: job %s's step %q has env %v, want the key's two Actions secrets", target.Name, job, sign.Name, sign.Env)
+	}
+	for _, s := range signings {
+		if !maps.Equal(s.sign.Env, keyEnv) {
+			t.Errorf("job %s's step %q has env %v, want the key's two Actions secrets", s.job, s.sign.Name, s.sign.Env)
 		}
 		dir := t.TempDir()
 		stub := func(name, body string) {
@@ -1423,26 +1452,28 @@ func TestMainCISignsEveryImageTheRollerRolls(t *testing.T) {
 [ "$6" = -o ] && mkdir -p "$7" && printf '#!/bin/sh\necho "cosign $* key=$COSIGN_PRIVATE_KEY password=$COSIGN_PASSWORD" >> "$LOG"\n' > "$7/cosign" && chmod +x "$7/cosign"
 `)
 		stub("jq", `echo "jq $*" >> "$LOG"; echo `+digest+"\n")
-		cmd := exec.Command("sh", "-e", "-c", strings.ReplaceAll(sign.Run, "/tmp/", dir+"/"))
+		cmd := exec.Command("sh", "-e", "-c", strings.ReplaceAll(s.sign.Run, "/tmp/", dir+"/"))
 		cmd.Env = append(os.Environ(), "PATH="+filepath.Join(dir, "bin")+":/usr/bin:/bin", "LOG="+filepath.Join(dir, "log"),
 			"COSIGN_PRIVATE_KEY=the-key", "COSIGN_PASSWORD=its-password")
 		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("%s: job %s's sign step: %v: %s", target.Name, job, err, out)
+			t.Fatalf("job %s's sign step: %v: %s", s.job, err, out)
 		}
 		log, err := os.ReadFile(filepath.Join(dir, "log"))
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := "docker build -f Dockerfile.runner --target cosign -o " + dir + "/cosign .\n" +
-			"jq -r .\"containerimage.digest\" " + dir + "/image.json\n" +
-			"cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config " + dir + "/signing-config.json git.aisoftwarefactory.world/sf/" +
-			target.Image + "@" + digest + " key=the-key password=its-password\n"
+		want := "docker build -f Dockerfile.runner --target cosign -o " + dir + "/cosign .\n"
+		for _, p := range s.pushes {
+			want += "jq -r .\"containerimage.digest\" " + strings.ReplaceAll(p.metadata, "/tmp/", dir+"/") + "\n" +
+				"cosign sign --yes --key env://COSIGN_PRIVATE_KEY --signing-config " + dir + "/signing-config.json git.aisoftwarefactory.world/sf/" +
+				p.image + "@" + digest + " key=the-key password=its-password\n"
+		}
 		if string(log) != want {
-			t.Errorf("%s: job %s's sign step ran\n%s\nwant\n%s", target.Name, job, log, want)
+			t.Errorf("job %s's sign step ran\n%s\nwant\n%s", s.job, log, want)
 		}
 		if config, err := os.ReadFile(filepath.Join(dir, "signing-config.json")); err != nil ||
 			string(config) != `{"mediaType":"application/vnd.dev.sigstore.signingconfig.v0.2+json"}` {
-			t.Errorf("%s: signing config %q %v, want one of no services", target.Name, config, err)
+			t.Errorf("job %s: signing config %q %v, want one of no services", s.job, config, err)
 		}
 	}
 	if n := strings.Count(raw, "secrets.COSIGN_PRIVATE_KEY"); n != 3 {
@@ -1455,6 +1486,8 @@ func TestMainCISignsEveryImageTheRollerRolls(t *testing.T) {
 	}
 }
 
+// Every roll target is pinned exactly once in the repository's own
+// manifests: an edit there that breaks the roller fails here.
 func TestRollTargetsMatchTheManifests(t *testing.T) {
 	for _, target := range RollTargets {
 		content, err := os.ReadFile("../../" + target.File)
@@ -1464,6 +1497,39 @@ func TestRollTargetsMatchTheManifests(t *testing.T) {
 		if _, _, err := pinnedRef(content, target.Image); err != nil {
 			t.Errorf("%s in %s: %v", target.Name, target.File, err)
 		}
+	}
+}
+
+// The sandbox base rolls as the factory's other images do: a commit that
+// changed only the base files a roll of the base alone, signed by the
+// factory's key, and its bump moves SANDBOX_BASE_IMAGE and nothing else.
+func TestRollerRollsTheSandboxBase(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+			"sf/sandbox-base/manifests/c1c1c1c":    baseNewIdx,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	newBase := sha256Of(baseNewIdx)
+	if len(store.rolls) != 1 || !maps.Equal(store.rolls[0].Changes, map[string]string{"sandbox-base": newBase}) ||
+		!strings.HasPrefix(store.rolls[0].Summary, "roll c1c1c1c: sandbox-base\n\n") ||
+		!strings.Contains(store.rolls[0].Summary, "\n- sandbox-base: "+registryHost+"sandbox-base@"+newBase+"\n") {
+		t.Fatalf("roll requests %+v, want one rolling the sandbox base alone", store.rolls)
+	}
+	pins := mainPins()["k8s/factoryd.yaml"]
+	bumped, err := bumpDigest([]byte(pins), "sandbox-base", newBase)
+	if want := strings.Replace(pins, "        - name: SANDBOX_BASE_IMAGE\n          value: "+registryHost+"sandbox-base@"+sha256Of(baseIdx)+"\n",
+		"        - name: SANDBOX_BASE_IMAGE\n          value: "+registryHost+"sandbox-base@"+newBase+"\n", 1); err != nil || want == pins || string(bumped) != want {
+		t.Fatalf("bumped manifest (%v):\n%s\nwant:\n%s", err, bumped, want)
 	}
 }
 
@@ -2049,7 +2115,8 @@ func TestAwaitRolloutReadsTheDeploymentThroughTheKube(t *testing.T) {
 	r, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Kind: "agent", Repository: "sf/repo", PRNumber: 9, Source: SourceRoll}, kube, &fakeObjectStore{})
 	pinned := func(image, digest string) string { return registryHost + image + "@" + digest }
 	factorydAt := func(gateway string) string {
-		return "image: " + pinned("factory-gateway", gateway) + "\nworker: " + pinned("opencode-worker", digestOld) + "\nci: " + pinned("ci-runner", digestOld) + "\n"
+		return "image: " + pinned("factory-gateway", gateway) + "\nworker: " + pinned("opencode-worker", digestOld) + "\nbase: " + pinned("sandbox-base", digestOld) +
+			"\nci: " + pinned("ci-runner", digestOld) + "\n"
 	}
 	files := map[string]string{
 		"k8s/factoryd.yaml m9":   factorydAt(digestNew),

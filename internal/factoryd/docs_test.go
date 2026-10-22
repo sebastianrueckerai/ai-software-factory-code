@@ -38,7 +38,7 @@ func TestSessionReadsTheProjectsDocumentRepository(t *testing.T) {
 				t.Fatalf("forgejo calls = %v, want %q", hub.calls, tc.reads)
 			}
 			spec := kube.podAt(0).spec["spec"].(map[string]any)
-			clone := spec["initContainers"].([]any)[0].(map[string]any)
+			clone := initContainer(t, spec, "clone")
 			cloneEnv, workerEnv := containerEnv(clone), podEnv(kube.podAt(0))
 			wantDir := ""
 			if tc.docsURL != "" {

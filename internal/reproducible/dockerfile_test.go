@@ -239,7 +239,7 @@ func TestDockerfilesDropTheAptInstallClocks(t *testing.T) {
 		clocks []string
 	}{
 		{"Dockerfile", []string{"final"}, clocks},
-		{"Dockerfile.sandbox", []string{"final"}, withSSLCert},
+		{"Dockerfile.sandbox", []string{"base"}, withSSLCert},
 		{"Dockerfile.runner", []string{"final"}, withSSLCert},
 	}
 	for _, w := range want {
@@ -275,7 +275,7 @@ func TestDockerfilesDateUseraddByTheEpoch(t *testing.T) {
 		stages []string
 	}{
 		{"Dockerfile", nil},
-		{"Dockerfile.sandbox", []string{"final"}},
+		{"Dockerfile.sandbox", []string{"base"}},
 		{"Dockerfile.runner", []string{"final"}},
 	}
 	for _, w := range want {
@@ -620,7 +620,7 @@ func TestDockerfilesTakeAptFromDatedOrVersionPinnedSources(t *testing.T) {
 		stages []string
 	}{
 		{"Dockerfile", []string{"final"}},
-		{"Dockerfile.sandbox", []string{"final"}},
+		{"Dockerfile.sandbox", []string{"base"}},
 		{"Dockerfile.runner", []string{"final"}},
 	}
 	pins := map[string]string{}

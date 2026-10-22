@@ -235,12 +235,12 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	endBrief := s.tel.phase("brief")
 	defer func() { endBrief(err) }()
 
-	// The pod mounts an emptyDir over HOME (the image root is read-only), so
-	// restore the image-baked opencode provider packages into it.
-	if _, err := os.Stat(filepath.Join(s.env.home, ".config", "opencode")); os.IsNotExist(err) {
-		if err := os.CopyFS(filepath.Join(s.env.home, ".config", "opencode"), os.DirFS(bakedConfigDir)); err != nil {
-			return s, startError{"restore pre-baked opencode config", err}
-		}
+	exe, err := os.Executable()
+	if err == nil {
+		err = useHarness(exe, s.env.home)
+	}
+	if err != nil {
+		return s, startError{"harness", err}
 	}
 	s.repoDir = filepath.Join(ws, "repo")
 	if err := fetched(ws); err != nil {
@@ -424,9 +424,25 @@ func killOthers() error {
 	}
 }
 
+// useHarness readies the harness the pod's harness volume holds beside
+// the worker's executable exe, whatever the image: opencode resolves from
+// exe's directory first, and, as the pod mounts an emptyDir over HOME,
+// the opencode bake one level up fills home's opencode config when home
+// has none.
+func useHarness(exe, home string) error {
+	bin := filepath.Dir(exe)
+	if err := os.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH")); err != nil {
+		return err
+	}
+	config := filepath.Join(home, ".config", "opencode")
+	if _, err := os.Stat(config); !os.IsNotExist(err) {
+		return nil
+	}
+	return os.CopyFS(config, os.DirFS(filepath.Join(bin, "..", "opencode-home", ".config", "opencode")))
+}
+
 const (
-	bakedConfigDir = "/opt/opencode-home/.config/opencode"
-	workspace      = "/workspace"
+	workspace = "/workspace"
 	// pushWait bounds the wait for factoryd's push token: the pod's 60 s
 	// grace period after a stop also holds the commit and the push
 	pushWait = 30 * time.Second

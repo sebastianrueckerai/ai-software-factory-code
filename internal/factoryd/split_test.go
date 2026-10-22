@@ -186,7 +186,7 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 	if env["MODE"] != "report" || env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
 	}
-	clone := containerEnv(kube.podAt(0).spec["spec"].(map[string]any)["initContainers"].([]any)[0].(map[string]any))
+	clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
 	if clone["PULL"] != "9" || clone["REPO_SHA"] != "abc123" {
 		t.Fatalf("clone env %v", clone)
 	}

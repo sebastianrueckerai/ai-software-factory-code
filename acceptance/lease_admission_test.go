@@ -636,6 +636,7 @@ func newHarness(t *testing.T, reg *registry) *harness {
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: nsPrefix,
 		WorkerImage:          "reg/worker@sha256:abc",
+		SandboxBaseImage:     "reg/sandbox-base@sha256:bcd",
 		PullSecret:           pullSecret,
 		FactoryNamespace:     factoryNS,
 		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",

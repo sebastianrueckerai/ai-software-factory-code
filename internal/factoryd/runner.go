@@ -39,6 +39,7 @@ import (
 type RunnerConfig struct {
 	AgentNamespacePrefix string // "factory-agents-"
 	WorkerImage          string // pinned digest
+	SandboxBaseImage     string // pinned digest of sf/sandbox-base, what project images build FROM
 	PullSecret           string // registry pull secret copied into task namespaces
 	FactoryNamespace     string // where the pull secret lives
 	GatewayURL           string // http://factory-gateway.factory.svc.cluster.local:8081
@@ -284,8 +285,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if supervisor == nil {
 		return nil, fmt.Errorf("runner: a supervisor model is required")
 	}
-	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" || cfg.Leases == nil {
-		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, GatewayURL, GitBaseURL and Leases are required")
+	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.SandboxBaseImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" || cfg.Leases == nil {
+		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, SandboxBaseImage, GatewayURL, GitBaseURL and Leases are required")
 	}
 	if cfg.Models.Start == "" || cfg.Models.Stronger == "" {
 		return nil, fmt.Errorf("runner: both model ladder rungs are required")
@@ -1875,7 +1876,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		notes, _ := json.Marshal(fit.notes)
 		env = append(env, map[string]any{"name": "LEFT_OUT", "value": string(notes)})
 	}
-	pod := r.sandboxPodSpec(t, s.cache, env, true)
+	pod := r.sandboxPodSpec(t, r.cfg.WorkerImage, s.cache, env, true)
 	// the clone init container alone holds the read token: the agent's
 	// container gets the clone in the workspace and no token (the push
 	// token reaches the worker on POST /push once the agent is dead)
@@ -1883,8 +1884,8 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	clone := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
 	clone["name"] = "clone"
 	clone["env"] = cloneEnv
-	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}}
-	spec["initContainers"] = []any{clone}
+	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}, harnessMount}
+	spec["initContainers"] = append(spec["initContainers"].([]any), clone)
 	return requestEmptyDirs(pod)
 }
 
@@ -1893,12 +1894,22 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 // probe holds itself to.
 const SandboxUID = 1000
 
-// sandboxPodSpec is a gVisor worker pod in the task namespace; only an
+// harnessCopy fills the pod's harness volume from the factory's image
+// (WORKER_IMAGE): agent-worker, opencode and the opencode bake, which the
+// worker runs from /factory whatever image it runs on.
+const harnessCopy = "mkdir -p /factory/bin && cp /usr/local/bin/agent-worker /usr/local/bin/opencode /factory/bin/ && cp -a /opt/opencode-home /factory/"
+
+// harnessMount is the harness volume in every container but the one that
+// fills it: read-only, as the agent runs as the worker's uid.
+var harnessMount = map[string]any{"name": "harness", "mountPath": "/factory", "readOnly": true}
+
+// sandboxPodSpec is a gVisor worker pod in the task namespace running
+// image, its harness copied in first from the factory's image; only an
 // agent session gets the gateway token, and cache names the project's
 // shared cache claim ("" none). Every sandbox pod carries the
 // worker label the egress policy selects: without it no policy would
 // confine its egress.
-func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gatewayToken bool) map[string]any {
+func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]any, gatewayToken bool) map[string]any {
 	pullSecrets := []any{}
 	if r.cfg.PullSecret != "" {
 		pullSecrets = append(pullSecrets, map[string]any{"name": r.cfg.PullSecret})
@@ -1907,6 +1918,7 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 		map[string]any{"name": "workspace", "mountPath": "/workspace"},
 		map[string]any{"name": "home", "mountPath": "/home/worker"},
 		map[string]any{"name": "tmp", "mountPath": "/tmp"},
+		harnessMount,
 	}
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
@@ -1914,6 +1926,7 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 		// the agent runs the checks CI runs, so its tmp is the CI pod's:
 		// 1 GiB evicted a session building factoryd's race tests (#816)
 		map[string]any{"name": "tmp", "emptyDir": map[string]any{"sizeLimit": "4Gi"}},
+		map[string]any{"name": "harness", "emptyDir": map[string]any{"sizeLimit": "1Gi"}},
 	}
 	if gatewayToken {
 		mounts = append(mounts, map[string]any{"name": "gateway-token", "mountPath": "/var/run/secrets/tokens", "readOnly": true})
@@ -1937,6 +1950,14 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 		map[string]any{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		map[string]any{"name": "EGRESS_CANARY", "value": r.cfg.EgressCanary},
 		map[string]any{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP})
+	securityContext := map[string]any{
+		"runAsNonRoot":             true,
+		"runAsUser":                SandboxUID,
+		"runAsGroup":               SandboxUID,
+		"allowPrivilegeEscalation": false,
+		"capabilities":             map[string]any{"drop": []any{"ALL"}},
+		"readOnlyRootFilesystem":   true,
+	}
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
@@ -1957,24 +1978,29 @@ func (r *Runner) sandboxPodSpec(t Task, cache string, env []map[string]any, gate
 			// FQDN service names resolve on the first query; search-path
 			// expansions would be refused by the DNS allowlist
 			"dnsConfig": map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},
+			"initContainers": []any{map[string]any{
+				"name":    "harness",
+				"image":   r.cfg.WorkerImage,
+				"command": []any{"/bin/sh", "-c", harnessCopy},
+				"resources": map[string]any{
+					"requests": sandboxRequests,
+					"limits":   sandboxLimits,
+				},
+				"volumeMounts":             []any{map[string]any{"name": "harness", "mountPath": "/factory"}},
+				"securityContext":          securityContext,
+				"terminationMessagePolicy": "FallbackToLogsOnError",
+			}},
 			"containers": []any{map[string]any{
 				"name":    "worker",
-				"image":   r.cfg.WorkerImage,
-				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/usr/local/bin/agent-worker"},
+				"image":   image,
+				"command": []any{"/bin/sh", "-c", cacheUmaskSh, "/factory/bin/agent-worker"},
 				"env":     env,
 				"resources": map[string]any{
 					"requests": sandboxRequests,
 					"limits":   sandboxLimits,
 				},
-				"volumeMounts": mounts,
-				"securityContext": map[string]any{
-					"runAsNonRoot":             true,
-					"runAsUser":                SandboxUID,
-					"runAsGroup":               SandboxUID,
-					"allowPrivilegeEscalation": false,
-					"capabilities":             map[string]any{"drop": []any{"ALL"}},
-					"readOnlyRootFilesystem":   true,
-				},
+				"volumeMounts":    mounts,
+				"securityContext": securityContext,
 			}},
 			"volumes": volumes,
 		},

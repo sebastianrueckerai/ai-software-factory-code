@@ -1613,7 +1613,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 		}
 		return strings.Join(out, "; ")
 	}
-	if got := envOf(parsed.Spec.InitContainers); got != "fetch: MODE REPO_URL REPO_TOKEN PR_REF REPO_SHA" {
+	if got := envOf(parsed.Spec.InitContainers); got != "harness: ; fetch: MODE REPO_URL REPO_TOKEN PR_REF REPO_SHA" {
 		t.Fatalf("init containers = %s", got)
 	}
 	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT GOPATH GOMODCACHE GOCACHE npm_config_cache PATH GATEWAY_URL EGRESS_CANARY EGRESS_DIRECT_IP" {

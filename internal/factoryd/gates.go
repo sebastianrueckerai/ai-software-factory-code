@@ -792,7 +792,7 @@ func fenced(s string) string {
 // build result (ruling 291): Go and npm build cold in the pod's own
 // emptyDir, with PATH naming no cache directory.
 func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[string]any {
-	pod := r.sandboxPodSpec(t, "", []map[string]any{
+	pod := r.sandboxPodSpec(t, r.cfg.WorkerImage, "", []map[string]any{
 		{"name": "MODE", "value": "repro"},
 		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_COMMAND", "value": t.ReproCommand},
@@ -820,7 +820,7 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[str
 	if at != "" {
 		fetch["env"] = append(fetch["env"].([]map[string]any), map[string]any{"name": "CHECKOUT_SHA", "value": at})
 	}
-	spec["initContainers"] = []any{fetch}
+	spec["initContainers"] = append(spec["initContainers"].([]any), fetch)
 	return requestEmptyDirs(pod)
 }
 
