@@ -36,7 +36,7 @@ func runImage(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stderr, usage)
 		return 2
 	}
-	data, err := os.ReadFile(*file)
+	data, err := os.ReadFile(*file) // #nosec G703 -- the operator's own path argument
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -73,14 +73,14 @@ func writeImageContext(dir string, spec policy.ImageSpec, base string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil { // #nosec G703 -- the operator's own path argument
 		return err
 	}
 	for _, f := range []struct {
 		name string
 		data []byte
 	}{{"Dockerfile", dockerfile}, {"upstream-files.txt", copies}, {"manifest.json", append(manifest, '\n')}} {
-		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0o644); err != nil { // #nosec G306 -- build context for the builder
+		if err := os.WriteFile(filepath.Join(dir, f.name), f.data, 0o644); err != nil { // #nosec G306 G703 -- the builder's build context, in the operator's own directory
 			return err
 		}
 	}
