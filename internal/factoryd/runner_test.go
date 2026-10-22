@@ -243,9 +243,17 @@ func (k *fakeKube) Create(ctx context.Context, path string, obj map[string]any) 
 	return nil
 }
 
+// CreatePod refuses a pod in a namespace that does not exist or is being
+// deleted, as the API server does.
 func (k *fakeKube) CreatePod(ctx context.Context, namespace, name string, pod map[string]any) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	if _, ok := k.namespaces[namespace]; !ok {
+		return fmt.Errorf("%w: namespace %s", ErrNotFound, namespace)
+	}
+	if k.terminating[namespace] {
+		return fmt.Errorf("%w: namespace %s is being terminated", ErrForbidden, namespace)
+	}
 	if _, ok := k.pods[namespace+"/"+name]; ok {
 		return ErrAlreadyExists
 	}
@@ -2850,6 +2858,7 @@ func TestReadLogLinesSkipsDropsLongLinesAndHoldsBrokenTails(t *testing.T) {
 // loses nothing; every line is delivered afterwards, in order.
 func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
 	kube := newFakeKube()
+	kube.CreateNamespace(context.Background(), "ns", nil)
 	kube.CreatePod(context.Background(), "ns", "p", nil)
 	var body strings.Builder
 	for i := 0; i < 5000; i++ {
@@ -2886,6 +2895,7 @@ func TestFollowPodLogReadsAheadWithoutLimit(t *testing.T) {
 // fails loudly instead of losing lines.
 func TestFollowPodLogFailsLoudlyPastItsBuffer(t *testing.T) {
 	kube := newFakeKube()
+	kube.CreateNamespace(context.Background(), "ns", nil)
 	kube.CreatePod(context.Background(), "ns", "p", nil)
 	kube.scriptPods(0, strings.Repeat("0123456789\n", 1000))
 	ctx, cancel := context.WithCancel(context.Background())

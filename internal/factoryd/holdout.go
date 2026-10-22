@@ -242,6 +242,14 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 		r.record(ctx, t.ID, "holdouts_not_drafted", map[string]any{"round": revision, "reason": err.Error()})
 		return nil
 	}
+	// the planner session's sandbox went with its session: the dry runs
+	// build their own
+	done, err := r.reproSandbox(ctx, &t, repo)
+	if err != nil {
+		r.record(ctx, t.ID, "holdouts_not_drafted", map[string]any{"round": revision, "reason": "dry run: " + err.Error()})
+		return nil
+	}
+	defer done()
 	run := t
 	for pass := 0; ; pass++ {
 		pending := false
@@ -820,6 +828,11 @@ func (r *Runner) SettleHoldouts(ctx context.Context, taskID string, pin int64, p
 // hold-out's draft ran on, inside the pull request's history: red is a
 // rewrite that holds, anything else bends.
 func (r *Runner) rewriteOnBase(ctx context.Context, t Task, repo Repo, pr int64, commit string, ho Holdout) (string, string, error) {
+	done, err := r.reproSandbox(ctx, &t, repo)
+	if err != nil {
+		return "", "", err
+	}
+	defer done()
 	run := t
 	run.ReproCommand = holdoutScript([]Holdout{ho})
 	rep, err := r.runRepro(ctx, run, repo, pullRef(pr), commit, ho.DryHead)

@@ -198,6 +198,7 @@ func TestSuperviseGateWaitChecks(t *testing.T) {
 func TestSuperviseGateRunSessionRetries(t *testing.T) {
 	c := newGateCase(t, ActivityRunSession, `{"action":"retry","diagnosis":"the worker hangs on a dead model stream"}`, nil)
 	ns := "factory-agents-t1"
+	c.kube.CreateNamespace(context.Background(), ns, nil)
 	c.kube.CreatePod(context.Background(), ns, "worker-s-1", nil)
 	var body strings.Builder
 	for i := 1; i <= 150; i++ {
@@ -505,6 +506,7 @@ func TestSuperviseGateRefusedCallEscalates(t *testing.T) {
 func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
 	c := newGateCase(t, ActivityRunSession, `{"action":"retry","diagnosis":"x"}`, nil)
 	c.kube.secrets["factory-agents-t1/task-git"] = map[string]string{"REPO_TOKEN": "tok-read-secret", "PUSH_TOKEN": "tok-push-secret"}
+	c.kube.CreateNamespace(context.Background(), "factory-agents-t1", nil)
 	c.kube.CreatePod(context.Background(), "factory-agents-t1", "worker-s-1", nil)
 	c.kube.scriptPods(0, "working")
 	defer c.runner.trackPod("t1", "factory-agents-t1", "worker-s-1")()
@@ -574,6 +576,7 @@ func TestSuperviseGateReadsTokensOnlyWhileASandboxRuns(t *testing.T) {
 
 	c = newGateCase(t, ActivityRunSession, `{"action":"wait","diagnosis":"x"}`, nil)
 	c.kube.getErr = map[string]error{"factory-agents-t1/task-git": fmt.Errorf("%w: GET secret", ErrForbidden)}
+	c.kube.CreateNamespace(context.Background(), "factory-agents-t1", nil)
 	c.kube.CreatePod(context.Background(), "factory-agents-t1", "worker-s-1", nil)
 	defer c.runner.trackPod("t1", "factory-agents-t1", "worker-s-1")()
 	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)

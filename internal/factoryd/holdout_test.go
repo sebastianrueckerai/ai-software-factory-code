@@ -112,9 +112,9 @@ func holdoutPlanTask() Task {
 
 // askHoldouts runs the whole round: the review model proposes two
 // hold-outs beside the project's past failures, the drafts dry-run on
-// the main head, the one that cannot run is rewritten once and runs
-// again, and the round lands proposed with its verdicts. A rewritten
-// draft never lands without its own run.
+// the main head in a sandbox of their own, the one that cannot run is
+// rewritten once and runs again, and the round lands proposed with its
+// verdicts. A rewritten draft never lands without its own run.
 func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -157,8 +157,10 @@ func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 	if len(kube.podOrder) != 2 {
 		t.Fatalf("pods %d, want the dry run and the corrective one", len(kube.podOrder))
 	}
-	if mints := hub.minted(); len(mints) != 0 {
-		t.Fatalf("a dry run mints nothing, minted %v", mints)
+	// the planner's sandbox went with its session: the dry runs build
+	// their own, with a read token, and tear it down
+	if mints := hub.minted(); !slices.Equal(mints, []string{"task-plan1-base"}) || !slices.Contains(kube.deletedNs, "factory-agents-plan1") {
+		t.Fatalf("minted %v, deleted namespaces %v; want one read token and the sandbox gone", mints, kube.deletedNs)
 	}
 	if len(ll.chats) != 2 || ll.chats[0]["model"] != "big" || !slices.Equal(ll.purposes, []string{"review", "review"}) {
 		t.Fatalf("chats %v, purposes %v", ll.chats, ll.purposes)

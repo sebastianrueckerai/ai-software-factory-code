@@ -791,6 +791,7 @@ func TestRecordsAndBriefWorker(t *testing.T) {
 	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}, kube, &fakeObjectStore{})
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
+	kube.CreateNamespace(t.Context(), "ns-t1", nil)
 	if err := kube.CreatePod(t.Context(), "ns-t1", "worker-t1", nil); err != nil {
 		t.Fatal(err)
 	}

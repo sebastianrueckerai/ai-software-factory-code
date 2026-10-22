@@ -536,23 +536,11 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, detail))
 		return ReproResult{NotReproduced: note}, nil
 	}
-	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return ReproResult{}, fmt.Errorf("revoke leftover credentials: %w", err)
-	}
-	cleanup := context.WithoutCancel(ctx)
-	defer func() {
-		r.forgetNamespace(cleanup, t.ID)
-		if err := r.completion.reconcile(cleanup, t.ID); err != nil {
-			log.Printf("task %s: revoke the reproduction's credentials: %v", t.ID, err)
-		}
-	}()
-	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
+	done, err := r.reproSandbox(ctx, &t, repo)
 	if err != nil {
 		return ReproResult{}, err
 	}
-	if _, _, err := r.setupNamespace(ctx, &t, base); err != nil {
-		return ReproResult{}, err
-	}
+	defer done()
 	// a sandbox that cannot start, its pod's or its worker's egress probe,
 	// is the start escalation, as a session's is
 	cannotStart := func(err error) (ReproResult, error) {
@@ -630,6 +618,32 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	}
 	r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, detail))
 	return res, nil
+}
+
+// reproSandbox builds the sandbox t's reproduction runs share: leftover
+// credentials revoked, a read token on repo for the fetch, the namespace
+// on t's image. done tears it down and revokes the token, however the runs
+// end.
+func (r *Runner) reproSandbox(ctx context.Context, t *Task, repo Repo) (done func(), err error) {
+	if err := r.completion.reconcile(ctx, t.ID); err != nil {
+		return nil, fmt.Errorf("revoke leftover credentials: %w", err)
+	}
+	cleanup := context.WithoutCancel(ctx)
+	done = func() {
+		r.forgetNamespace(cleanup, t.ID)
+		if err := r.completion.reconcile(cleanup, t.ID); err != nil {
+			log.Printf("task %s: revoke the reproduction sandbox's credentials: %v", t.ID, err)
+		}
+	}
+	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
+	if err == nil {
+		_, _, err = r.setupNamespace(ctx, t, base)
+	}
+	if err != nil {
+		done()
+		return nil, err
+	}
+	return done, nil
 }
 
 // runRepro runs the task's reproduction command in one sandbox pod of the

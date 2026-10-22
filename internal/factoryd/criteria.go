@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"regexp"
 	"slices"
 	"strconv"
@@ -233,23 +232,11 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "criteria": entries, "findings": findings}))
 		return CriteriaResult{Findings: findings}, nil
 	}
-	if err := r.completion.reconcile(ctx, t.ID); err != nil {
-		return CriteriaResult{}, fmt.Errorf("revoke leftover credentials: %w", err)
-	}
-	cleanup := context.WithoutCancel(ctx)
-	defer func() {
-		r.forgetNamespace(cleanup, t.ID)
-		if err := r.completion.reconcile(cleanup, t.ID); err != nil {
-			log.Printf("task %s: revoke the criteria gate's credentials: %v", t.ID, err)
-		}
-	}()
-	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
+	done, err := r.reproSandbox(ctx, &t, repo)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
-	if _, _, err := r.setupNamespace(ctx, &t, base); err != nil {
-		return CriteriaResult{}, err
-	}
+	defer done()
 	// a sandbox that cannot start is the start escalation, as a
 	// reproduction's is
 	cannotStart := func(err error) (CriteriaResult, error) {
