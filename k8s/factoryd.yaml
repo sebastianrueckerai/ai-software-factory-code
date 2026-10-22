@@ -86,7 +86,8 @@ rules:
   verbs: [create, get, patch]
 ---
 # Bound per project namespace by factoryd itself (Task 65): what
-# registration keeps there, and the Deployments the alerts endpoint reads.
+# registration keeps there, the Deployments the alerts endpoint reads, and
+# the pods, ReplicaSets and events the deployment_health read answers from.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -100,14 +101,47 @@ rules:
   resources: [secrets]
   verbs: [list]
 - apiGroups: [apps]
-  resources: [deployments]
-  verbs: [list]
+  resources: [deployments, replicasets]
+  verbs: [get, list]
+- apiGroups: [""]
+  resources: [pods, events]
+  verbs: [get, list]
 - apiGroups: [kustomize.toolkit.fluxcd.io]
   resources: [kustomizations]
   verbs: [get, create, patch]
 - apiGroups: [cilium.io]
   resources: [ciliumnetworkpolicies]
   verbs: [get, create, patch]
+---
+# deployment_health's reads alone, for a seed project's namespace, which no
+# registration binds and which must not hand factoryd-project's Secrets to
+# factoryd: factoryd's own here, the platform's and Forgejo's in the infra
+# repository.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: factoryd-health
+rules:
+- apiGroups: [""]
+  resources: [pods, events]
+  verbs: [get, list]
+- apiGroups: [apps]
+  resources: [deployments, replicasets]
+  verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factoryd-health
+  namespace: factory
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: factoryd-health
+subjects:
+- kind: ServiceAccount
+  name: factoryd
+  namespace: factory
 ---
 # What a project's Flux Kustomization applies with, as the namespace's flux
 # account (ruling 157): the workload kinds a project deploys, nothing

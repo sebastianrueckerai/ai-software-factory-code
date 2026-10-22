@@ -86,6 +86,8 @@ type ServerOptions struct {
 	PlanFiler PlanFiler
 	// HoldoutVerdicter is the file_verdict tool's hand-over to factoryd.
 	HoldoutVerdicter HoldoutVerdicter
+	// DeploymentReader is the deployment_health tool's read at factoryd.
+	DeploymentReader DeploymentReader
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).

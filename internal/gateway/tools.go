@@ -71,6 +71,13 @@ type PlanFiled struct {
 	Findings []string `json:"findings"`
 }
 
+// DeploymentReader reads a Deployment of the task's project as the cluster
+// reports it (the deployment_health tool). Implemented by Factoryd; tests
+// substitute a fake.
+type DeploymentReader interface {
+	DeploymentHealth(ctx context.Context, taskID, deployment, namespace string) (string, error)
+}
+
 // HoldoutVerdicter files an audit session's hold-out verdict (the
 // file_verdict tool): factoryd checks it against the hold-out the audit
 // runs on and stores it as the session's answer. Implemented by Factoryd;
@@ -120,6 +127,7 @@ var (
 	_ Escalator        = (*Factoryd)(nil)
 	_ PlanFiler        = (*Factoryd)(nil)
 	_ HoldoutVerdicter = (*Factoryd)(nil)
+	_ DeploymentReader = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -199,6 +207,38 @@ func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled
 	}
 	err = json.Unmarshal(b, &res)
 	return res, err
+}
+
+// DeploymentHealth returns factoryd's plain-text report. A refusal comes
+// back as an error that is factoryd's one sentence, for the agent to
+// correct its call by.
+func (f *Factoryd) DeploymentHealth(ctx context.Context, taskID, deployment, namespace string) (string, error) {
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/deployment-health",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID     string `json:"task_id"`
+			Deployment string `json:"deployment"`
+			Namespace  string `json:"namespace,omitempty"`
+		}{taskID, deployment, namespace})
+	var pe *providerError
+	if errors.As(err, &pe) {
+		// a refusal and factoryd's 502 (the cluster did not answer) are its
+		// sentences; another 5xx says nothing an agent can act on
+		if sentence := strings.TrimSpace(pe.body); sentence != "" && (pe.status < 500 || pe.status == http.StatusBadGateway) {
+			return "", errors.New(sentence)
+		}
+		return "", fmt.Errorf("factoryd answered %d", pe.status)
+	}
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		Text string `json:"text"`
+	}
+	if err := json.Unmarshal(b, &res); err != nil {
+		return "", err
+	}
+	return res.Text, nil
 }
 
 func (f *Factoryd) FileVerdict(ctx context.Context, taskID string, v HoldoutVerdictIn) (VerdictFiled, error) {
@@ -304,6 +344,11 @@ type FilePlanIn struct {
 	Plan string `json:"plan" jsonschema:"the complete plan json: one object with spec, summary, criteria and cards"`
 }
 
+type DeploymentHealthIn struct {
+	Deployment string `json:"deployment" jsonschema:"the Deployment's name, a DNS-1123 subdomain such as web-api"`
+	Namespace  string `json:"namespace,omitempty" jsonschema:"the namespace, a DNS-1123 label; leave it out to look in each of the project's namespaces"`
+}
+
 type FileVerdictIn struct {
 	Idx      int    `json:"idx" jsonschema:"the hold-out's idx, from the task card"`
 	Verdict  string `json:"verdict" jsonschema:"wrong_test, real_gap or spec_question"`
@@ -396,6 +441,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			return s.manualRead(c), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDeploymentHealth, Description: "Read a Deployment of this card's project as the cluster reports it right now: the Deployment's replicas, " +
+		"its pods with each container's restart count, state and last termination (reason, exit code, time), and the Kubernetes events of the last hour for the Deployment, its ReplicaSets and pods. " +
+		"No logs and no Secrets. The namespace may be omitted: factoryd looks in each of the project's namespaces. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in DeploymentHealthIn) (*mcp.CallToolResult, any, error) {
+			return s.deploymentHealth(ctx, c, in), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -691,6 +742,9 @@ func (s *Server) fal(c *toolCaller, in FalIn) paidCall {
 // escalationTimeout bounds the hand-over to factoryd.
 const escalationTimeout = 30 * time.Second
 
+// deploymentHealthTimeout bounds the read at factoryd.
+const deploymentHealthTimeout = 20 * time.Second
+
 // admitTool refuses a tool none of the task's classes lists in the policy.
 func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
 	if !c.allows(tool) {
@@ -759,6 +813,39 @@ func (s *Server) manualRead(c *toolCaller) *mcp.CallToolResult {
 		return r
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: manual.Text()}}}
+}
+
+var (
+	dnsSubdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$`)
+	dnsLabel     = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+)
+
+// deploymentHealth has factoryd read one Deployment of the task's project.
+// Free, for the classes that list it.
+func (s *Server) deploymentHealth(ctx context.Context, c *toolCaller, in DeploymentHealthIn) *mcp.CallToolResult {
+	tool := policy.ToolDeploymentHealth
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	dep, ns := strings.TrimSpace(in.Deployment), strings.TrimSpace(in.Namespace)
+	if len(dep) > 253 || !dnsSubdomain.MatchString(dep) {
+		return s.refuseTool(c, tool, "refused_arguments", "deployment is required: a DNS-1123 subdomain of at most 253 bytes (lowercase letters, digits, '-' and '.', starting and ending alphanumeric)")
+	}
+	if ns != "" && (len(ns) > 63 || !dnsLabel.MatchString(ns)) {
+		return s.refuseTool(c, tool, "refused_arguments", "namespace must be left out or be a DNS-1123 label of at most 63 bytes (lowercase letters, digits and '-', starting and ending alphanumeric)")
+	}
+	ctx, cancel := context.WithTimeout(ctx, deploymentHealthTimeout)
+	defer cancel()
+	text, err := s.opts.DeploymentReader.DeploymentHealth(ctx, c.task.ID, dep, ns)
+	if err != nil {
+		s.auditTool(c, tool, "error_deployment_health", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError(err.Error())
+	}
+	s.auditTool(c, tool, "deployment_read", dep, &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
 // filePlan hands the planner's plan to factoryd, which checks the whole

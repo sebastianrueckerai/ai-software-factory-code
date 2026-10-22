@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"maps"
 	"net/url"
 	"os"
 	"slices"
@@ -204,6 +205,82 @@ func TestFactorydOnlyListsTheClustersJobs(t *testing.T) {
 	for _, res := range []string{"batch/cronjobs", "postgresql.cnpg.io/scheduledbackups"} {
 		if !slices.Equal(verbs[res], []string{"list"}) {
 			t.Errorf("factoryd's ClusterRole grants %v on %s, want [list]", verbs[res], res)
+		}
+	}
+}
+
+// deployment_health reads pods, events, ReplicaSets and Deployments. A seed
+// project's namespace, factoryd's own among them, binds ClusterRole
+// factoryd-health, which holds those reads and nothing else: factoryd-project
+// also lets registration keep Secrets, Kustomizations and network policies,
+// which a seed namespace (the platform's, Forgejo's) must not hand to
+// factoryd. A registered project's namespace reads through factoryd-project's
+// binding, so that role holds the same reads. Neither grants a pod's log,
+// exec or attach, nor writes any of the four kinds.
+func TestDeploymentHealthReadsThroughARoleOfReadsOnly(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	verbs := map[string]map[string][]string{}
+	var bound string
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                           `yaml:"kind"`
+			Metadata struct{ Name, Namespace string } `yaml:"metadata"`
+			RoleRef  struct{ Kind, Name string }      `yaml:"roleRef"`
+			Subjects []struct{ Kind, Name, Namespace string }
+			Rules    []struct {
+				APIGroups []string `yaml:"apiGroups"`
+				Resources []string `yaml:"resources"`
+				Verbs     []string `yaml:"verbs"`
+			} `yaml:"rules"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		switch {
+		case doc.Kind == "RoleBinding" && doc.Metadata.Namespace == "factory" && doc.RoleRef.Name == "factoryd-project":
+			t.Errorf("RoleBinding %s binds factoryd-project in the seed namespace factory", doc.Metadata.Name)
+		case doc.Kind == "RoleBinding" && doc.Metadata.Name == "factoryd-health" && doc.Metadata.Namespace == "factory" &&
+			len(doc.Subjects) == 1 && doc.Subjects[0].Kind == "ServiceAccount" && doc.Subjects[0].Name == "factoryd" && doc.Subjects[0].Namespace == "factory":
+			bound = doc.RoleRef.Kind + "/" + doc.RoleRef.Name
+		case doc.Kind == "ClusterRole" && (doc.Metadata.Name == "factoryd-health" || doc.Metadata.Name == "factoryd-project"):
+			v := map[string][]string{}
+			for _, r := range doc.Rules {
+				for _, g := range r.APIGroups {
+					for _, res := range r.Resources {
+						v[g+"/"+res] = append(v[g+"/"+res], r.Verbs...)
+					}
+				}
+			}
+			verbs[doc.Metadata.Name] = v
+		}
+	}
+	if bound != "ClusterRole/factoryd-health" {
+		t.Errorf("RoleBinding factoryd-health in factory for ServiceAccount factoryd binds %q, want ClusterRole/factoryd-health", bound)
+	}
+	reads := map[string][]string{"/pods": {"get", "list"}, "/events": {"get", "list"}, "apps/replicasets": {"get", "list"}, "apps/deployments": {"get", "list"}}
+	if got := verbs["factoryd-health"]; !maps.EqualFunc(got, reads, func(a, b []string) bool { return slices.Equal(slices.Sorted(slices.Values(a)), b) }) {
+		t.Errorf("ClusterRole factoryd-health grants %v, want exactly %v", got, reads)
+	}
+	project := verbs["factoryd-project"]
+	for res := range reads {
+		for _, v := range []string{"get", "list"} {
+			if !slices.Contains(project[res], v) {
+				t.Errorf("factoryd-project lacks %s on %s: %v", v, res, project[res])
+			}
+		}
+		for _, v := range []string{"create", "update", "patch", "delete", "deletecollection"} {
+			if slices.Contains(project[res], v) {
+				t.Errorf("factoryd-project may %s %s", v, res)
+			}
+		}
+	}
+	for _, res := range []string{"/pods/log", "/pods/exec", "/pods/attach"} {
+		if len(project[res]) != 0 {
+			t.Errorf("factoryd-project grants %v on %s", project[res], res)
 		}
 	}
 }

@@ -490,3 +490,18 @@ func (c *Console) resourceRecord(ctx context.Context, a actor, id int64, kind st
 	}
 	c.record(ctx, a, res.Repo, res.OwnerRef, 0, kind, map[string]any{"resource": id, "kind": res.Kind})
 }
+
+// deploymentHealthText is the Deployment of project p as factoryd reads it;
+// a refusal keeps its status and sentence.
+func (c *Console) deploymentHealthText(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
+	text, err := c.cfg.DeploymentHealth(ctx, p, strings.TrimSpace(deployment), strings.TrimSpace(namespace))
+	var no *factoryd.HealthRefusal
+	if errors.As(err, &no) {
+		return "", refuse(no.Status, no.Msg)
+	}
+	if err != nil {
+		log.Printf("console: deployment health: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the Deployment")
+	}
+	return text, nil
+}

@@ -374,3 +374,19 @@ func TestCostsPageDateParams(t *testing.T) {
 		t.Errorf("default range %v to %v: want 14 days, today included", r.ledger.from, r.ledger.to)
 	}
 }
+
+type healthStub struct{}
+
+func (healthStub) DeploymentHealth(_ context.Context, ns, name string, _ time.Time) (factoryd.DeploymentHealth, error) {
+	return factoryd.DeploymentHealth{Namespace: ns, Name: name, Desired: 1, Ready: 1, Updated: 1, Available: 1}, nil
+}
+
+// deployment_health reads in the turn's project's namespaces and refuses
+// another project's, naming the project's own.
+func TestDeploymentHealthIsScopedToTheTurnsProject(t *testing.T) {
+	r, _, g := newChatRig(t)
+	equal(t, "the reads", reads(t, r, g, "deployment_health", `{"deployment":"factoryd"}`, "deployment_health", `{"deployment":"forgejo","namespace":"forgejo"}`), []string{
+		"Deployment factoryd in namespace factory: 1 of 1 ready (1 updated, 1 available)\nReplicaSets: none\nPods: none\nEvents of the last hour: none",
+		"Refused: namespace forgejo is not one of project ai-software-factory-code's namespaces (factory): name one of them or leave namespace out",
+	})
+}

@@ -103,6 +103,7 @@ func main() {
 		PlanFiler:        factoryd,
 		HoldoutVerdicter: factoryd,
 		Delegator:        factoryd,
+		DeploymentReader: factoryd,
 		Cloud:            cloud,
 		Telemetry:        tel,
 		FactorydToken:    cfg.FactorydToken,

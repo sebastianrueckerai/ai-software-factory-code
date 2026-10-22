@@ -323,7 +323,7 @@ func main() {
 	// and the alerts of the factory projects' Kustomizations (roadmap 259)
 	alertIntake := &factoryd.AlertIntake{User: "signoz", Password: signozWebhookPassword,
 		Namespaces: kube, Projects: store, Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
-		Kube: kube, Namespace: kube.Namespace(),
+		Kube: kube, Namespace: kube.Namespace(), Health: kube,
 		// a signal card's filing pins the deployed build's commit as its
 		// reproduction base (roadmap 194), from the rolls this factoryd
 		// records of its own Deployments
@@ -432,6 +432,8 @@ func main() {
 	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
 		Store: store, Forgejo: forgejo, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget,
 		Policy: func() policy.Tree { return policyLoader.Current().Tree }})))
+	// the gateway's hand-over of an agent's deployment_health read
+	mux.Handle("POST /internal/deployment-health", requireBearer(gatewayToken, factoryd.DeploymentHealthHandler(store, kube, time.Now)))
 	// the gateway's hand-over of a planner's file_plan
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
 	// the gateway's hand-over of an audit session's hold-out verdict
@@ -567,9 +569,12 @@ func main() {
 		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.Go(ctx, taskID, by)
 		},
-		Resources:  cloudres.AgentStore(store.CloudResources()),
-		Jobs:       factoryd.ClusterJobs{Kube: kube},
-		Alerts:     store,
+		Resources: cloudres.AgentStore(store.CloudResources()),
+		Jobs:      factoryd.ClusterJobs{Kube: kube},
+		Alerts:    store,
+		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
+			return factoryd.DeploymentHealthText(ctx, kube, p, deployment, namespace, time.Now())
+		},
 		Projects:   store,
 		Events:     store,
 		Figures:    store,

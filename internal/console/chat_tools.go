@@ -58,6 +58,8 @@ type toolInput struct {
 	FromDate   string   `json:"from_date,omitempty"`
 	ToDate     string   `json:"to_date,omitempty"`
 	State      string   `json:"state,omitempty"`
+	Deployment string   `json:"deployment,omitempty"`
+	Namespace  string   `json:"namespace,omitempty"`
 	ID         int64    `json:"id,omitempty"`
 	Verdict    string   `json:"verdict,omitempty"`
 	DependsOn  string   `json:"depends_on,omitempty"`
@@ -1106,6 +1108,14 @@ var tools = []chatTool{
 		about:  "The factory's alerts, newest first.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.c.alertsText(t.r.Context(), t.a, cmp.Or(in.State, "open"))
+			return s, nil, err
+		}},
+	{name: "deployment_health", title: "Read a Deployment",
+		params:   map[string]any{"deployment": str("the Deployment's name"), "namespace": str("a project namespace (default: the first that holds it)")},
+		required: []string{"deployment"},
+		about:    "A Deployment's pods, restarts, last terminations and last hour of events, without logs or Secrets.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.c.deploymentHealthText(t.r.Context(), t.p, in.Deployment, in.Namespace)
 			return s, nil, err
 		}},
 	{name: "resources", title: "Read the resources",

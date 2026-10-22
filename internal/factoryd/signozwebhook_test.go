@@ -1764,3 +1764,41 @@ func TestAClearedAlertSkipsARowWhoseTaskIsMissing(t *testing.T) {
 		t.Fatalf("row %+v, closed %v: nothing should change", row, r.fj.closed)
 	}
 }
+
+// The card of an alert with a service carries the service's Deployment as
+// factoryd read it, or the one line that says it could not; a rig without a
+// health reader files the body as before.
+func TestAlertCardCarriesTheDeploymentsHealth(t *testing.T) {
+	const filed = "filed by factoryd from SigNoz alert fp1"
+	withService := func() map[string]any {
+		a := sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds)
+		a["labels"].(map[string]string)["service"] = "api"
+		return a
+	}
+	for _, c := range []struct {
+		name   string
+		health *fakeHealth
+		want   string
+	}{
+		{"read", &fakeHealth{}, "\n\nThe Deployment `api` in `demo-staging` as factoryd read it when it filed this card:\n\n```\n" +
+			"Deployment api in namespace demo-staging: 1 of 1 ready (1 updated, 1 available)\nReplicaSets: none\nPods: none\nEvents of the last hour: none\n```"},
+		{"failed", &fakeHealth{byNS: map[string]error{"demo-staging": errors.New("boom")}},
+			"\n\nfactoryd could not read the Deployment `api` in `demo-staging`: the cluster did not answer the read of Deployment api in namespace demo-staging: try again shortly"},
+		{"nil reader", nil, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newAlertRig(t)
+			if c.health != nil {
+				r.in.Health = c.health
+			}
+			if rr := r.post(t, "signoz", "hook-pw", withService()); rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body)
+			}
+			got := r.fj.issues[0]
+			_, after, ok := strings.Cut(got, filed)
+			if !ok || after != c.want {
+				t.Fatalf("after %q: %q, want %q", filed, after, c.want)
+			}
+		})
+	}
+}

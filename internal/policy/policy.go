@@ -125,7 +125,7 @@ const DefaultChatWindow = 128000
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
 	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci",
-	"alerts", "resources", "settings", "policy",
+	"alerts", "deployment_health", "resources", "settings", "policy",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
 	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
@@ -915,13 +915,17 @@ const (
 	// (the spec-intake concept, piece 6).
 	ToolFileVerdict = "file_verdict"
 	ToolManual      = "manual"
+	// ToolDeploymentHealth reads a Deployment of the task's project as
+	// factoryd sees it: its pods, restarts, last terminations and the last
+	// hour's events, never a log or a Secret.
+	ToolDeploymentHealth = "deployment_health"
 	// ToolDelegate files a small follow-up card on the cheap rung that
 	// starts when the caller's card has landed (roadmap 222, item 6).
 	ToolDelegate = "delegate"
 )
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

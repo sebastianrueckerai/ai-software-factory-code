@@ -174,7 +174,11 @@ type Config struct {
 	CloseFactoryPR FactoryCloser
 	Resources      Resources
 	Alerts         Alerts
-	Projects       Projects
+	// DeploymentHealth reads a Deployment of the project's namespaces
+	// (factoryd.DeploymentHealthText); its refusals are
+	// *factoryd.HealthRefusal.
+	DeploymentHealth func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error)
+	Projects         Projects
 	// Events records what the human's buttons did and answers a project's
 	// feed (factoryd.PGStore).
 	Events Events

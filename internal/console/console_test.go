@@ -1004,6 +1004,9 @@ func newRig(t *testing.T) *rig {
 		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
+		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
+			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
+		},
 		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,
 		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {

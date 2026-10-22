@@ -1135,6 +1135,31 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   reproducible, no answer in 14 days", closes the issue, and the task ends
   `closed` (a final state like done and failed). A healed run waits for
   what is left of the 14 days.
+- `deployment_health` (`deployment`, optional `namespace`): free, listed
+  as `deployment_health: {}`. A Deployment of the task's project as the
+  cluster reports it now: its replicas, the ReplicaSets that hold pods
+  (the older ones by number), each pod with every container's restarts,
+  state and last termination (reason, exit code, time), and the
+  Kubernetes events of the last hour for the Deployment, its ReplicaSets
+  and their pods, gone ones too (at most 40, the text cut at 12 KiB). No
+  log and no Secret. The gateway checks the names and posts the read to
+  factoryd's `POST /internal/deployment-health` (bearer `gateway-factoryd`,
+  `{task_id, deployment, namespace}`), which answers `{"text"}`. The
+  namespace must be one of the project's; left out, factoryd answers from
+  the first of them that holds the Deployment. A refusal is one sentence
+  that names what to change (400 a bad name, 403 a namespace not the
+  project's or a read the cluster forbids, 404 no such Deployment, 409 a
+  final task or an inactive project, 502 the cluster did not answer), and
+  the agent reads it as the tool's error. Left out, a namespace that
+  refuses or fails does not stop the search; it is the answer only when no
+  other holds the Deployment. The console's project agent has the
+  same read as its tool `deployment_health`, for the turn's project.
+  factoryd reads through ClusterRole `factoryd-project` in a registered
+  project's namespaces and through `factoryd-health`, which holds those
+  reads alone, in a seed project's (bound in `factory` by
+  `k8s/factoryd.yaml`, in `platform` and `forgejo` by the infra
+  repository). `factoryd-project` also carries registration's Secrets and
+  is never bound in a seed namespace.
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the
@@ -1714,7 +1739,7 @@ ready"), which nothing clears; for a factory project:
   failed waits here.
 - The cluster, per namespace: the namespace with `factory/project=<name>` and
   pod security `restricted`; RoleBinding `factoryd` (ClusterRole
-  `factoryd-project`); the CiliumNetworkPolicy `project`, a default deny that
+  `factoryd-project`, which also holds `deployment_health`'s reads); the CiliumNetworkPolicy `project`, a default deny that
   admits in the namespace itself, the edge gateway's Envoy, the CNPG
   operator (8000, 5432) and, in the `deploy/staging` environment's
   namespace, the project's own CI runners (pods `ci-runner` in namespaces
@@ -1927,7 +1952,10 @@ repository as the bot, title `alert: <name> in <namespace>` (`alert: <name>
 on <service> in <namespace>` when the alert carries a `service`,
 `service.name`, `k8s.deployment.name` or `deployment` label), the body the
 firing time, the SigNoz link, the value and annotations and the labels
-(fenced, one line each), labels `bug` and `state/queued`, and starts its
+(fenced, one line each), then, when the service label names a
+Deployment in the alert's namespace, factoryd's reading of it as
+`deployment_health` gives it (fenced, read within 5 s) or one line saying
+why it could not read it, labels `bug` and `state/queued`, and starts its
 agent task at the default branch's head (source `alert`, standing
 `telemetry`: the brief marks the text as untrusted; no reproduction: the
 agent brings its own); a firing still resent 30 minutes after its task

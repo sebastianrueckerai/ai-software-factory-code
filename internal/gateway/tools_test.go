@@ -172,14 +172,29 @@ func (f *fakeVerdicter) FileVerdict(_ context.Context, taskID string, v HoldoutV
 	return f.res, f.err
 }
 
+type fakeDeploymentReader struct {
+	mu    sync.Mutex
+	calls []string
+	text  string
+	err   error
+}
+
+func (f *fakeDeploymentReader) DeploymentHealth(_ context.Context, taskID, deployment, namespace string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID+"|"+deployment+"|"+namespace)
+	return f.text, f.err
+}
+
 type toolEnv struct {
-	store     *memStore
-	providers *fakeProviders
-	escalator *fakeEscalator
-	filer     *fakePlanFiler
-	verdicter *fakeVerdicter
-	delegator *fakeDelegator
-	session   *mcp.ClientSession
+	deployments *fakeDeploymentReader
+	store       *memStore
+	providers   *fakeProviders
+	escalator   *fakeEscalator
+	filer       *fakePlanFiler
+	verdicter   *fakeVerdicter
+	delegator   *fakeDelegator
+	session     *mcp.ClientSession
 }
 
 func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
@@ -191,12 +206,14 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	filer := &fakePlanFiler{}
 	verdicter := &fakeVerdicter{}
 	delegator := &fakeDelegator{}
+	deployments := &fakeDeploymentReader{text: "deployment web: 2/2 ready"}
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: "s-1"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
 		Escalator: esc, PlanFiler: filer, HoldoutVerdicter: verdicter, Delegator: delegator,
+		DeploymentReader: deployments,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
@@ -206,7 +223,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, deployments: deployments, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -262,7 +279,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "delegate,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,web_scrape,web_search"
+	want := "delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1229,5 +1246,115 @@ func TestFactorydDelegateClient(t *testing.T) {
 	res, err := f.Delegate(context.Background(), "t-1", Delegation{Title: "x", Brief: "y"})
 	if err != nil || res.Issue != 77 || res.TaskID != "t-child" || body != `{"task_id":"t-1","title":"x","brief":"y"}` {
 		t.Fatalf("res %+v err %v body %s", res, err, body)
+	}
+}
+
+func TestDeploymentHealthTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolDeploymentHealth, map[string]any{"deployment": "web-api", "namespace": "factory"})
+	if isErr || text != "deployment web: 2/2 ready" {
+		t.Fatalf("result = %q, %v", text, isErr)
+	}
+	if text, isErr := e.call(t, policy.ToolDeploymentHealth, map[string]any{"deployment": "web"}); isErr || text == "" {
+		t.Fatalf("no namespace = %q", text)
+	}
+	if !slices.Equal(e.deployments.calls, []string{"42|web-api|factory", "42|web|"}) {
+		t.Fatalf("calls = %v", e.deployments.calls)
+	}
+	if a := e.lastAudit(t); a.Decision != "deployment_read" || a.Tool != policy.ToolDeploymentHealth || len(e.toolLedger()) != 0 {
+		t.Fatalf("audit = %+v", a)
+	}
+
+	e.deployments.err = errors.New("namespace kube-system is not one of project p's namespaces: factory")
+	if text, isErr := e.call(t, policy.ToolDeploymentHealth, map[string]any{"deployment": "web", "namespace": "kube-system"}); !isErr ||
+		text != "namespace kube-system is not one of project p's namespaces: factory" {
+		t.Fatalf("refusal = %q, %v", text, isErr)
+	}
+}
+
+func TestDeploymentHealthToolRefusesBadArguments(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for _, args := range []map[string]any{
+		{"deployment": ""},
+		{"deployment": "  "},
+		{"deployment": "Web"},
+		{"deployment": "-web"},
+		{"deployment": "web."},
+		{"deployment": "we b"},
+		{"deployment": "web/../x"},
+		{"deployment": strings.Repeat("a", 254)},
+		{"deployment": "web", "namespace": "Fac"},
+		{"deployment": "web", "namespace": "a.b"},
+		{"deployment": "web", "namespace": "-a"},
+		{"deployment": "web", "namespace": strings.Repeat("a", 64)},
+	} {
+		if text, isErr := e.call(t, policy.ToolDeploymentHealth, args); !isErr || !strings.Contains(text, "refused_arguments") {
+			t.Errorf("%v = %q", args, text)
+		}
+	}
+	for _, ok := range []map[string]any{
+		{"deployment": "a.b-c"},
+		{"deployment": strings.Repeat("a", 253), "namespace": strings.Repeat("a", 63)},
+	} {
+		if text, isErr := e.call(t, policy.ToolDeploymentHealth, ok); isErr {
+			t.Errorf("%v refused: %q", ok, text)
+		}
+	}
+	if len(e.deployments.calls) != 2 {
+		t.Fatalf("calls = %v, want only the two valid ones", e.deployments.calls)
+	}
+}
+
+func TestDeploymentHealthToolNeedsTheClassToListIt(t *testing.T) {
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	delete(v.Document.Classes["coder"].Tools, policy.ToolDeploymentHealth)
+	e := newToolEnv(t, running("coder"), v)
+	if text, isErr := e.call(t, policy.ToolDeploymentHealth, map[string]any{"deployment": "web"}); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted = %q", text)
+	}
+	if len(e.deployments.calls) != 0 {
+		t.Fatalf("calls = %v", e.deployments.calls)
+	}
+}
+
+func TestFactorydDeploymentHealthClient(t *testing.T) {
+	var method, path, auth, body string
+	status, reply := http.StatusOK, `{"text":"deployment web: 2/2 ready\nevents: none"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		method, path, auth, body = r.Method, r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	text, err := f.DeploymentHealth(context.Background(), "t-1", "web", "factory")
+	if err != nil || text != "deployment web: 2/2 ready\nevents: none" {
+		t.Fatalf("text %q err %v", text, err)
+	}
+	if method != http.MethodPost || path != "/internal/deployment-health" || auth != "Bearer shared" ||
+		body != `{"task_id":"t-1","deployment":"web","namespace":"factory"}` {
+		t.Fatalf("%s %s auth %q body %s", method, path, auth, body)
+	}
+	if _, err := f.DeploymentHealth(context.Background(), "t-1", "web", ""); err != nil || body != `{"task_id":"t-1","deployment":"web"}` {
+		t.Fatalf("body %s err %v", body, err)
+	}
+
+	for _, code := range []int{http.StatusForbidden, http.StatusNotFound} {
+		status, reply = code, "namespace kube-system is not one of project p's namespaces: factory\n"
+		if _, err := f.DeploymentHealth(context.Background(), "t-1", "web", "kube-system"); err == nil ||
+			err.Error() != "namespace kube-system is not one of project p's namespaces: factory" {
+			t.Fatalf("%d: err = %v", code, err)
+		}
+	}
+	// factoryd's 502 is its own sentence (the cluster did not answer); a
+	// 500 is not, and the agent gets the status alone
+	status, reply = http.StatusBadGateway, "the cluster did not answer the read of Deployment web in namespace factory: try again shortly\n"
+	if _, err := f.DeploymentHealth(context.Background(), "t-1", "web", ""); err == nil || err.Error() != "the cluster did not answer the read of Deployment web in namespace factory: try again shortly" {
+		t.Fatalf("502: err = %v, want factoryd's sentence", err)
+	}
+	status, reply = http.StatusInternalServerError, "boom"
+	if _, err := f.DeploymentHealth(context.Background(), "t-1", "web", ""); err == nil || err.Error() != "factoryd answered 500" {
+		t.Fatalf("5xx err = %v", err)
 	}
 }

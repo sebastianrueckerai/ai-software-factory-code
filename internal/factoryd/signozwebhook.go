@@ -178,6 +178,9 @@ type AlertIntake struct {
 	// error on this rule rather than dereference a nil reader.
 	Kube      DeploymentReader
 	Namespace string
+	// Health reads the alerting service's Deployment into the card it
+	// files; nil = the card carries no such section.
+	Health DeploymentHealthReader
 	// Rolls reads the deployed build's commit of a Deployment of the
 	// factory's own namespace (Namespace), from the rolls the same
 	// factoryd records: a signal card's filing pins it as the task's
@@ -753,6 +756,7 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 		return err
 	}
 	title, body := alertIssue(a, p.Name, ns, in.hostsFor(p))
+	body += in.healthSection(ctx, a, p, ns)
 	if row.Detail["refiled"] == true {
 		body = "factoryd: the alert still fires from the same start " + refileAfter.String() + " after the fix of its last issue merged.\n\n" + body
 	}
@@ -864,6 +868,25 @@ func (in *AlertIntake) project(ctx context.Context, ns string) (Project, bool, e
 		return Project{}, false, err
 	}
 	return p, p.Active() && slices.Contains(p.Namespaces, ns), nil
+}
+
+// healthSection is the Deployment of the alert's service as factoryd reads
+// it, for the filed card: "" without a reader, a service or a namespace of
+// the project.
+func (in *AlertIntake) healthSection(ctx context.Context, a SigNozAlert, p Project, ns string) string {
+	dep := alertService(a.Labels)
+	if in.Health == nil || dep == "" || !slices.Contains(p.Namespaces, ns) {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	text, err := DeploymentHealthText(ctx, in.Health, p, dep, ns, time.Now())
+	if err != nil {
+		text = fmt.Sprintf("factoryd could not read the Deployment `%s` in `%s`: %s", dep, ns, oneLine(err.Error()))
+	} else {
+		text = fmt.Sprintf("The Deployment `%s` in `%s` as factoryd read it when it filed this card:\n\n%s", dep, ns, fenced(text))
+	}
+	return "\n\n" + sanitize.Outbound(text, in.hostsFor(p))
 }
 
 // alertService is the alert's service label: the first of service,
