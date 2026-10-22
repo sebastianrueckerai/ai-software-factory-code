@@ -84,7 +84,7 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
 	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
 	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-time.Hour), FixTask: "fix1"}}
-	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "in-review", Repository: codeRepo, IssueNumber: 40}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "merged", Repository: codeRepo, IssueNumber: 40}
 	ctx := context.Background()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -131,6 +131,43 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	}
 	if len(f.pulls) != 1 || len(reverted) != 1 {
 		t.Fatalf("pull requests %q, reverts %q; want one of each", f.pulls, reverted)
+	}
+}
+
+// Main green again without the fix-forward card's merge (card #1220 worked
+// on for 24 minutes on a red another commit had fixed): the green run ends
+// the card. A comment names the run and the issue closes as factoryd's
+// own, which stops its session. A card the pause filed that its own merge
+// ended, or that ended already, is left as it is.
+func TestRollerEndsTheFixCardWhenMainTurnsGreenWithoutIt(t *testing.T) {
+	for _, tc := range []struct {
+		status string
+		ends   bool
+	}{{"queued", true}, {"running", true}, {"in-review", true}, {"waiting-human", true}, {"failed", true},
+		{"merged", false}, {"closing", false}, {"done", false}, {"closed", false}} {
+		f := &rollForgejo{
+			runs:  []map[string]any{pushRun(59, commitC2, "success"), pushRun(58, commitC1, "failure")},
+			files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+			registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+				gwOldIdx, workerOldIdx, runnerIdx),
+		}
+		roller, store, _ := newTestRoller(t, f)
+		roller.Forgejo.PublicURL = "https://git.example"
+		store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+		store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-time.Hour), FixTask: "fix1"}}
+		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: tc.status, Repository: codeRepo, IssueNumber: 40}
+		if err := roller.poll(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		var comments, closed []string
+		if tc.ends {
+			comments = []string{"40 factoryd: main's push run 0 at " + commitC2 + " is green (https://git.example/" + codeRepo +
+				"/actions/runs/0): the red this card was filed for is gone. Closing this issue."}
+			closed = []string{"40"}
+		}
+		if !slices.Equal(f.comments, comments) || !slices.Equal(f.closed, closed) {
+			t.Errorf("a %s fix card: comments %q, closed issues %q, want %q and %q", tc.status, f.comments, f.closed, comments, closed)
+		}
 	}
 }
 

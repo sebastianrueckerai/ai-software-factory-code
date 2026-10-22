@@ -19,8 +19,9 @@ import (
 // the red commit as a factory-PR card. A run whose every failed job lost
 // its runner (killed, shut down, or its docker daemon restarted) files a
 // human card to re-run them instead, and no revert: the commit is not at
-// fault. The next green run of main ends the pause and wakes the queue's
-// heads.
+// fault. The next green run of main ends the pause, wakes the queue's
+// heads and ends the pause's card, unless the card's own merge made main
+// green.
 const (
 	SourceMainFix = "mainfix"
 	SourceRerun   = "rerun"
@@ -86,8 +87,8 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 		}
 		log.Printf("roller: main is green again at %s (run %d): the merge queue of %s goes on", newest.CommitSHA, newest.ID, project)
 		signalQueueHeads(ctx, r.Store, r.Workflows)
-		if err := r.closeRerun(ctx, pause, *newest); err != nil {
-			log.Printf("roller: close re-run card %s: %v", pause.FixTask, err)
+		if err := r.endPauseCard(ctx, pause, *newest); err != nil {
+			log.Printf("roller: end the pause's card %s: %v", pause.FixTask, err)
 		}
 		return nil
 	case newest.Status == "failure" && !paused:
@@ -165,18 +166,25 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	return nil
 }
 
-// closeRerun closes the pause's re-run card once run, main's green push
-// run, ended the pause: a comment naming the run, then the issue's close
-// as factoryd's own, which finishes the human card (issueClosed). A
-// fix-forward card ends with its own merge.
-func (r *Roller) closeRerun(ctx context.Context, pause QueuePause, run ActionRun) error {
+// endPauseCard ends the pause's card once run, main's green push run,
+// ended the pause: a comment naming the run, then the issue's close as
+// factoryd's own (issueClosed). The re-run card's human finishes, and a
+// fix-forward card still open stops its session: the red it was filed for
+// is gone. A fix card that merged made main green itself and is left as
+// it is, as is one that ended or is ending.
+func (r *Roller) endPauseCard(ctx context.Context, pause QueuePause, run ActionRun) error {
 	t, ok, err := r.Store.Task(ctx, pause.FixTask)
-	if err != nil || !ok || t.Source != SourceRerun || t.Status != "waiting-human" {
+	if err != nil || !ok {
 		return err
 	}
-	msg := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d): the merge queue's pause has ended. Closing this issue.",
-		run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
-	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, msg)
+	green := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d)", run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
+	switch {
+	case t.Source == SourceRerun && t.Status == "waiting-human":
+		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
+	case t.Source == SourceMainFix && (t.Status == "failed" || !Final(t.Status) && t.Status != "merged" && t.Status != "closing"):
+		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the red this card was filed for is gone. Closing this issue.")
+	}
+	return nil
 }
 
 // lostRunners answers, for each of run's failed statuses, the job's link

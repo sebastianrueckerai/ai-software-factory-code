@@ -565,7 +565,9 @@ From change id `red-head-restage` on (roadmap 202 with 67), a queue head
 whose checks are red at its merge (`merge_red_head`) does not wait for a
 human: its approval request is withdrawn (an approval sent meanwhile
 finds none open) and it takes its turn again. A red main pauses the
-queue, so that turn comes once a fix made main green; main is merged in,
+queue and files a fix-forward card. The green run that ends the pause
+also ends that card, with a comment naming the run, unless the card's own
+merge made main green. So that turn comes once a fix made main green; main is merged in,
 and a head that moved runs its checks. With nothing new from main the
 head's own checks are waited on and the red ones run again on an empty
 commit (`RerunChecks`); red checks that pass there, on the same tree, are
