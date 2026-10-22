@@ -952,8 +952,8 @@ func TestRollerRefusesImagesWithoutTheFactorysSignature(t *testing.T) {
 	want := ask + "\n\n```\n" + ask + "\n```\n\n" +
 		"Why: Main CI's run is green, and factoryd rolls none of its images: an image it rolls must carry a cosign signature by the factory's key (k8s/cosign.pub), and these do not.\n\n" +
 		"Info: The run: https://git.example/sf/ai-software-factory-code/actions/runs/412\n\n" +
-		"- factoryd: " + gw + " carries no signature by the factory's key over this digest (1 by another key or over another digest)\n" +
-		"- gateway: " + gw + " carries no signature by the factory's key over this digest (1 by another key or over another digest)\n" +
+		"- factoryd: " + gw + " carries no signature by this key over this digest (1 by another key or over another digest)\n" +
+		"- gateway: " + gw + " carries no signature by this key over this digest (1 by another key or over another digest)\n" +
 		"- worker: " + worker + " carries no signature\n\n" +
 		"Main CI's image jobs sign each image they push. No signature means a job did not sign it or the tag was pushed outside main CI; " +
 		"a signature by another key means the code repository's Actions secret COSIGN_PRIVATE_KEY is not the key k8s/cosign.pub holds. " +

@@ -1,0 +1,836 @@
+package factoryd
+
+import (
+	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"maps"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
+)
+
+const (
+	imagerBase = "git.aisoftwarefactory.world/sf/sandbox-base@sha256:0000000000000000000000000000000000000000000000000000000000000001"
+	// printf '{"Apt":["jq"],"Upstream":null,"Env":null,"Path":null,"Egress":null}\n<the base digest>\n1' | sha256sum
+	keyDefault = "k-e8e539498d5e035a1e0dea2d"
+	// the same over {"Apt":["chromium"],"Upstream":null,"Env":null,"Path":null,"Egress":["cdn.example.org"]}
+	keyBrowser      = "k-cfdd7cd93002923a3d192ddd"
+	infraAPI        = "/api/v1/repos/sf/ai-software-factory-infra"
+	forkAPI         = "/api/v1/repos/factory-agent/ai-software-factory-infra"
+	codeAPI         = "/api/v1/repos/sf/ai-software-factory-code"
+	demoProjectFile = "factory/projects/demo-app.yaml"
+	demoImages      = "images:\n  default:\n    apt: [jq]\n"
+	bothImages      = "images:\n  default:\n    apt: [jq]\n  browser:\n    apt: [chromium]\n    egress: [cdn.example.org]\n"
+)
+
+// imagerForgejo is a scripted Forgejo for the imager: each project
+// repository's factory/images.yaml on main, the dispatches of the code
+// repository's project-image.yml, and sf/ai-software-factory-infra with
+// its commits, main, the bot's fork and the pull requests. The bot reads
+// every repository, owns its fork and merges; factory-config's token reads
+// the infra repository; factory-ci's dispatches workflows only.
+type imagerForgejo struct {
+	mu         sync.Mutex
+	images     map[string]string            // factory/images.yaml by repository
+	commits    map[string]map[string]string // the infra repository's commits: every file by its path
+	main       string
+	fork       map[string]forkBranch // the fork's branches by name; nil: no fork
+	prs        []*imagerPR
+	dispatches []string
+	writes     []string
+	refuse     bool // Forgejo refuses the bot's merge
+	inForce    policy.Version
+}
+
+type forkBranch struct{ head, base string }
+
+type imagerPR struct {
+	number             int64
+	head, title, body  string
+	state              string
+	merged             bool
+	mergedAt, mergedBy string
+}
+
+func (s *imagerForgejo) commit(files map[string]string) string {
+	sha := fmt.Sprintf("c%d", len(s.commits)+1)
+	s.commits[sha] = files
+	return sha
+}
+
+func (s *imagerForgejo) wire(pr *imagerPR) map[string]any {
+	b := s.fork[pr.head]
+	return map[string]any{"number": pr.number, "title": pr.title, "body": pr.body, "state": pr.state, "merged": pr.merged, "mergeable": true,
+		"merge_base": b.base, "base": map[string]string{"ref": "main"},
+		"head": map[string]any{"ref": pr.head, "sha": b.head, "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-infra"}}}
+}
+
+func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		by := "nobody"
+		if u, pw, ok := r.BasicAuth(); ok && u == "factory-agent" && pw == "bot-pw" {
+			by = "bot"
+		} else if a := r.Header.Get("Authorization"); a == "token config-tok" {
+			by = "config"
+		} else if a == "token ci-tok" {
+			by = "ci"
+		}
+		p, q := r.URL.Path, r.URL.Query()
+		if r.Method != http.MethodGet {
+			s.writes = append(s.writes, r.Method+" "+strings.TrimPrefix(p, "/api/v1/repos/")+" by "+by)
+		}
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		pr := func() *imagerPR {
+			var n int
+			fmt.Sscanf(strings.TrimPrefix(p, infraAPI+"/pulls/"), "%d", &n)
+			return s.prs[n-1]
+		}
+		content := func(c string) {
+			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(c)), "encoding": "base64", "sha": blobOf(c)})
+		}
+		switch {
+		case by == "nobody":
+			http.NotFound(w, r)
+		case by == "ci":
+			if r.Method != http.MethodPost || p != codeAPI+"/actions/workflows/project-image.yml/dispatches" {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
+			b, _ := json.Marshal(body)
+			s.dispatches = append(s.dispatches, string(b))
+			w.WriteHeader(http.StatusNoContent)
+		case by == "config" && (r.Method != http.MethodGet || !strings.HasPrefix(p, infraAPI+"/")):
+			http.NotFound(w, r)
+		case by == "config" && p == infraAPI+"/branches/main":
+			fmt.Fprintf(w, `{"commit":{"id":%q}}`, s.main)
+		case by == "config" && strings.HasPrefix(p, infraAPI+"/raw/"):
+			c, ok := s.commits[q.Get("ref")][strings.TrimPrefix(p, infraAPI+"/raw/")]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprint(w, c)
+		case by == "config" && strings.HasPrefix(p, infraAPI+"/git/trees/"):
+			sha := strings.TrimPrefix(p, infraAPI+"/git/trees/")
+			if _, ok := s.commits[sha]; ok {
+				fmt.Fprintf(w, `{"total_count":1,"tree":[{"path":"factory","type":"tree","mode":"040000","sha":"T%s"}]}`, sha)
+				return
+			}
+			var entries []treeEntry
+			for path, c := range s.commits[strings.TrimPrefix(sha, "T")] {
+				if rel, ok := strings.CutPrefix(path, "factory/"); ok {
+					entries = append(entries, treeEntry{Path: rel, Type: "blob", Mode: "100644", SHA: blobOf(c)})
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"total_count": len(entries), "tree": entries})
+		case by == "config":
+			t.Errorf("unexpected %s %s by config", r.Method, r.URL)
+			http.NotFound(w, r)
+		case r.Method == http.MethodGet && p == infraAPI+"/pulls" && q.Get("state") == "open":
+			out := []map[string]any{}
+			for _, pr := range s.prs {
+				if pr.state == "open" && q.Get("page") == "1" {
+					out = append(out, s.wire(pr))
+				}
+			}
+			json.NewEncoder(w).Encode(out)
+		case r.Method == http.MethodPost && p == infraAPI+"/pulls":
+			head, ok := strings.CutPrefix(body["head"].(string), "factory-agent:")
+			if _, cut := s.fork[head]; !ok || !cut || body["base"] != "main" {
+				t.Errorf("pull request %v", body)
+			}
+			s.prs = append(s.prs, &imagerPR{number: int64(len(s.prs) + 1), head: head, title: body["title"].(string), body: body["body"].(string), state: "open"})
+			w.WriteHeader(http.StatusCreated)
+			json.NewEncoder(w).Encode(s.wire(s.prs[len(s.prs)-1]))
+		case r.Method == http.MethodGet && strings.HasPrefix(p, infraAPI+"/pulls/") && strings.HasSuffix(p, "/files"):
+			out := []map[string]string{}
+			if b := s.fork[pr().head]; q.Get("page") == "1" {
+				for _, path := range changed(s.commits[b.base], s.commits[b.head]) {
+					out = append(out, map[string]string{"filename": path})
+				}
+			}
+			json.NewEncoder(w).Encode(out)
+		case r.Method == http.MethodPost && strings.HasPrefix(p, infraAPI+"/pulls/") && strings.HasSuffix(p, "/merge"):
+			pr, b := pr(), s.fork[pr().head]
+			switch {
+			case s.refuse:
+				http.Error(w, `{"message":"User not allowed to merge PR"}`, http.StatusMethodNotAllowed)
+				return
+			case body["Do"] != "merge" || body["head_commit_id"] != b.head || pr.state != "open":
+				http.Error(w, `{"message":"head moved"}`, http.StatusConflict)
+				return
+			}
+			files := maps.Clone(s.commits[s.main])
+			for _, path := range changed(s.commits[b.base], s.commits[b.head]) {
+				files[path] = s.commits[b.head][path]
+			}
+			s.main = s.commit(files)
+			pr.state, pr.merged, pr.mergedBy = "closed", true, by
+			fmt.Fprint(w, `{}`)
+		case r.Method == http.MethodGet && p == forkAPI && s.fork == nil:
+			http.NotFound(w, r)
+		case r.Method == http.MethodGet && p == forkAPI || r.Method == http.MethodPost && p == infraAPI+"/forks":
+			if s.fork == nil {
+				s.fork = map[string]forkBranch{"main": {head: s.main}}
+				w.WriteHeader(http.StatusAccepted)
+			}
+			fmt.Fprint(w, `{"fork":true,"private":true,"parent":{"full_name":"sf/ai-software-factory-infra"}}`)
+		case p == forkAPI+"/sync_fork" && r.Method == http.MethodGet:
+			behind := 0
+			if s.fork["main"].head != s.main {
+				behind = 1
+			}
+			fmt.Fprintf(w, `{"allowed":true,"commits_behind":%d}`, behind)
+		case p == forkAPI+"/sync_fork" && r.Method == http.MethodPost:
+			s.fork["main"] = forkBranch{head: s.main}
+			w.WriteHeader(http.StatusNoContent)
+		case strings.HasPrefix(p, forkAPI+"/branches/"):
+			name := strings.TrimPrefix(p, forkAPI+"/branches/")
+			b, ok := s.fork[name]
+			switch {
+			case !ok:
+				http.NotFound(w, r)
+			case r.Method == http.MethodDelete:
+				delete(s.fork, name)
+				w.WriteHeader(http.StatusNoContent)
+			default:
+				fmt.Fprintf(w, `{"commit":{"id":%q}}`, b.head)
+			}
+		case r.Method == http.MethodGet && strings.HasPrefix(p, forkAPI+"/contents/"):
+			c, ok := s.commits[s.fork[q.Get("ref")].head][strings.TrimPrefix(p, forkAPI+"/contents/")]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			content(c)
+		case r.Method == http.MethodPost && p == forkAPI+"/contents":
+			from := s.fork[body["branch"].(string)]
+			files := maps.Clone(s.commits[from.head])
+			for _, op := range body["files"].([]any) {
+				op := op.(map[string]any)
+				path := op["path"].(string)
+				c, _ := base64.StdEncoding.DecodeString(op["content"].(string))
+				if old, exists := files[path]; op["operation"] != "update" || !exists || op["sha"] != blobOf(old) {
+					t.Errorf("%v of %s with sha %v, exists %v", op["operation"], path, op["sha"], exists)
+				}
+				files[path] = string(c)
+			}
+			sha := s.commit(files)
+			if nb, _ := body["new_branch"].(string); nb != "" {
+				s.fork[nb] = forkBranch{head: sha, base: from.head}
+			} else {
+				s.fork[body["branch"].(string)] = forkBranch{head: sha, base: from.base}
+			}
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"commit":{"sha":%q}}`, sha)
+		case r.Method == http.MethodGet && strings.HasSuffix(p, "/contents/factory/images.yaml"):
+			repo := strings.TrimSuffix(strings.TrimPrefix(p, "/api/v1/repos/"), "/contents/factory/images.yaml")
+			c, ok := s.images[repo]
+			if q.Get("ref") != "main" || !ok {
+				http.NotFound(w, r)
+				return
+			}
+			content(c)
+		case r.Method == http.MethodGet && strings.Count(strings.TrimPrefix(p, "/api/v1/repos/"), "/") == 1:
+			fmt.Fprint(w, `{"default_branch":"main"}`)
+		default:
+			t.Errorf("unexpected %s %s by %s", r.Method, r.URL, by)
+			w.WriteHeader(http.StatusTeapot)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// load makes main's tree the version in force, as the loader does.
+func (s *imagerForgejo) load(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	files := map[string][]byte{}
+	for path, c := range s.commits[s.main] {
+		if rel, ok := strings.CutPrefix(path, "factory/"); ok {
+			files[rel] = []byte(c)
+		}
+	}
+	tree, err := CheckTree(files, imagerLadder)
+	if err != nil {
+		t.Fatalf("main's tree: %v", err)
+	}
+	s.inForce = policy.Version{Commit: s.main, Tree: tree}
+}
+
+func (s *imagerForgejo) version() policy.Version {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.inForce
+}
+
+// file is path at the head of the fork's branch, or main's for "main".
+func (s *imagerForgejo) file(branch, path string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if branch == "main" {
+		return s.commits[s.main][path]
+	}
+	return s.commits[s.fork[branch].head][path]
+}
+
+// tamper commits files on the fork's branch as someone other than the pass.
+func (s *imagerForgejo) tamper(branch string, files map[string]string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b := s.fork[branch]
+	all := maps.Clone(s.commits[b.head])
+	maps.Copy(all, files)
+	s.fork[branch] = forkBranch{head: s.commit(all), base: b.base}
+}
+
+func (s *imagerForgejo) state() ([]imagerPR, []string, []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var prs []imagerPR
+	for _, pr := range s.prs {
+		prs = append(prs, *pr)
+	}
+	return prs, slicesClone(s.dispatches), slicesClone(s.writes)
+}
+
+func slicesClone(s []string) []string { return append([]string(nil), s...) }
+
+var imagerLadder = ModelLadder{Start: "factory/small", Stronger: "factory/big"}.Aliases()
+
+// imageBook is the imager's store: image_builds and the alerts, one per
+// kind and fingerprint as the alerts table's unique index keeps them.
+type imageBook struct {
+	mu     sync.Mutex
+	builds map[string][2]time.Time // dispatched, read by project/image/key
+	alerts []Alert
+}
+
+func (b *imageBook) ImageDispatchedAt(_ context.Context, project, image, key string) (time.Time, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builds[project+"/"+image+"/"+key][0], nil
+}
+
+func (b *imageBook) RecordImageDispatch(_ context.Context, project, image, key string, at time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	r := b.builds[project+"/"+image+"/"+key]
+	r[0] = at
+	b.builds[project+"/"+image+"/"+key] = r
+	return nil
+}
+
+func (b *imageBook) RecordImageRead(_ context.Context, project, image, key string, at time.Time) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	r := b.builds[project+"/"+image+"/"+key]
+	r[1] = at
+	b.builds[project+"/"+image+"/"+key] = r
+	return nil
+}
+
+func (b *imageBook) InsertAlert(_ context.Context, a Alert) (int64, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, have := range b.alerts {
+		if have.Kind == a.Kind && have.Fingerprint == a.Fingerprint {
+			return 0, nil
+		}
+	}
+	b.alerts = append(b.alerts, a)
+	return int64(len(b.alerts)), nil
+}
+
+type imagerRig struct {
+	fj       *imagerForgejo
+	im       *Imager
+	book     *imageBook
+	registry map[string]string
+	tokens   *int
+	now      *time.Time
+	key      *ecdsa.PrivateKey // the images key
+}
+
+// newImagerRig is sf/ai-software-factory-infra with main's factory/ the
+// policy fixture, edited by edit, in force, demo-app/demo-app's
+// factory/images.yaml images (none for ""), an empty registry and the
+// imager as factoryd wires it.
+func newImagerRig(t *testing.T, images string, edit func(main map[string]string)) *imagerRig {
+	t.Helper()
+	fixture, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	main := map[string]string{}
+	for rel, b := range fixture {
+		main["factory/"+rel] = string(b)
+	}
+	if edit != nil {
+		edit(main)
+	}
+	fj := &imagerForgejo{images: map[string]string{}, commits: map[string]map[string]string{}}
+	if images != "" {
+		fj.images["demo-app/demo-app"] = images
+	}
+	fj.main = fj.commit(main)
+	fj.load(t)
+	srv := fj.server(t)
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", HTTP: srv.Client()}
+	config := &ForgejoConfig{Forgejo: f, Token: "config-tok", Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Branch: "main", Dir: "factory"}
+	entries := map[string]string{}
+	reg, tokens := testRegistry(t, entries)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	book := &imageBook{builds: map[string][2]time.Time{}}
+	im := &Imager{Forgejo: f, Config: config, Policy: fj.version, Store: book, Registry: reg, Key: &key.PublicKey, Base: imagerBase,
+		Builder: Repo{Owner: "sf", Name: "ai-software-factory-code"}, BuildToken: "ci-tok", Ladder: imagerLadder, Now: func() time.Time { return now }}
+	return &imagerRig{fj: fj, im: im, book: book, registry: entries, tokens: tokens, now: &now, key: key}
+}
+
+func (r *imagerRig) pass(t *testing.T) {
+	t.Helper()
+	if err := r.im.pass(context.Background()); err != nil {
+		t.Fatalf("pass: %v", err)
+	}
+}
+
+// publish pushes the image of tag into repository as the builder does, an
+// index around a linux/amd64 manifest of layers of these sizes, signed by
+// signer unless nil, and returns the index's digest.
+func (r *imagerRig) publish(repository, tag string, signer *ecdsa.PrivateKey, layers ...int64) string {
+	var ls []string
+	for i, n := range layers {
+		ls = append(ls, fmt.Sprintf(`{"mediaType":"application/vnd.oci.image.layer.v1.tar+gzip","digest":"sha256:%064x","size":%d}`, i, n))
+	}
+	manifest := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:c0","size":7777},"layers":[` + strings.Join(ls, ",") + `]}`
+	index := strings.Replace(testIndexTemplate, "IMG", sha256Of(manifest), 1)
+	r.registry[repository+"/manifests/"+tag] = index
+	r.registry[repository+"/manifests/"+sha256Of(manifest)] = manifest
+	if signer != nil {
+		maps.Copy(r.registry, cosignSigned(signer, repository, sha256Of(index)))
+	}
+	return sha256Of(index)
+}
+
+// A declared image no build has made is dispatched to the trusted builder
+// with its file, the base and its key, once: not again within 45 minutes,
+// and again after.
+func TestImagerDispatchesAnUnbuiltImageOnce(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.pass(t)
+	want := `{"inputs":{"base":"` + imagerBase + `","file":"` + base64.StdEncoding.EncodeToString([]byte(demoImages)) +
+		`","image":"default","key":"` + keyDefault + `","project":"demo-app"},"ref":"main"}`
+	if _, dispatches, writes := r.fj.state(); !reflect.DeepEqual(dispatches, []string{want}) ||
+		!reflect.DeepEqual(writes, []string{"POST sf/ai-software-factory-code/actions/workflows/project-image.yml/dispatches by ci"}) {
+		t.Fatalf("dispatches %q, writes %q; want one, %q", dispatches, writes, want)
+	}
+	t0 := *r.now
+	if got := r.book.builds["demo-app/default/"+keyDefault]; got != [2]time.Time{t0, t0} {
+		t.Fatalf("image_builds row %v, want dispatched and read at %v", got, t0)
+	}
+
+	*r.now = t0.Add(44 * time.Minute)
+	r.pass(t)
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 1 {
+		t.Fatalf("44 minutes on: %d dispatches, want the one", len(dispatches))
+	}
+	if got := r.book.builds["demo-app/default/"+keyDefault]; got != [2]time.Time{t0, *r.now} {
+		t.Fatalf("image_builds row %v, want dispatched %v, read %v", got, t0, *r.now)
+	}
+
+	*r.now = t0.Add(46 * time.Minute)
+	r.pass(t)
+	if _, dispatches, _ := r.fj.state(); !reflect.DeepEqual(dispatches, []string{want, want}) {
+		t.Fatalf("46 minutes on: dispatches %q, want the second", dispatches)
+	}
+	if _, _, writes := r.fj.state(); len(writes) != 2 || len(r.book.alerts) != 0 {
+		t.Fatalf("writes %q, alerts %+v: want the two dispatches only", writes, r.book.alerts)
+	}
+}
+
+// Two ready images, signed by the images key, open one pull request from
+// the bot's fork whose only change appends the exact images block to the
+// project file; the next pass merges it as the bot, and the pass after,
+// with the pins in force, writes nothing.
+func TestImagerPinsReadyImagesThroughOnePullRequest(t *testing.T) {
+	r := newImagerRig(t, bothImages, nil)
+	digestDefault := r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000, 2345)
+	digestBrowser := r.publish("sf/sandbox-demo-app.browser", keyBrowser, r.key, 5000)
+	before := r.fj.file("main", demoProjectFile)
+	r.pass(t)
+
+	block := "images:\n" +
+		"  browser:\n" +
+		"    digest: " + digestBrowser + "\n" +
+		"    key: " + keyBrowser + "\n" +
+		"    tools:\n" +
+		"      - chromium\n" +
+		"    egress:\n" +
+		"      - cdn.example.org\n" +
+		"  default:\n" +
+		"    digest: " + digestDefault + "\n" +
+		"    key: " + keyDefault + "\n" +
+		"    tools:\n" +
+		"      - jq\n"
+	if got := r.fj.file("factory-pins/demo-app", demoProjectFile); got != before+block {
+		t.Fatalf("the branch's project file:\n%s\nwant:\n%s", got, before+block)
+	}
+	body := "factoryd pins the sandbox images factory/images.yaml of demo-app/demo-app declares: this pull request changes only the images block of factory/projects/demo-app.yaml.\n\n" +
+		"factoryd merges it itself once it has checked that, and that the tree at its head passes factoryd's config check; otherwise it stays open and factoryd raises an alert naming why.\n"
+	writes := []string{"POST sf/ai-software-factory-infra/forks by bot", "POST factory-agent/ai-software-factory-infra/contents by bot", "POST sf/ai-software-factory-infra/pulls by bot"}
+	prs, dispatches, got := r.fj.state()
+	if want := []imagerPR{{number: 1, head: "factory-pins/demo-app", title: "Image pins for demo-app", body: body, state: "open"}}; !reflect.DeepEqual(prs, want) {
+		t.Fatalf("pull requests %+v, want %+v", prs, want)
+	}
+	if len(dispatches) != 0 || !reflect.DeepEqual(got, writes) {
+		t.Fatalf("dispatches %q, writes %q; want none, %q", dispatches, got, writes)
+	}
+
+	r.pass(t)
+	writes = append(writes, "POST sf/ai-software-factory-infra/pulls/1/merge by bot")
+	if prs, _, got := r.fj.state(); !prs[0].merged || prs[0].mergedBy != "bot" || !reflect.DeepEqual(got, writes) {
+		t.Fatalf("pull request %+v, writes %q; want merged by the bot, %q", prs[0], got, writes)
+	}
+	if got := r.fj.file("main", demoProjectFile); got != before+block {
+		t.Fatalf("main's project file:\n%s", got)
+	}
+	r.fj.load(t)
+	r.pass(t)
+	if _, _, got := r.fj.state(); !reflect.DeepEqual(got, writes) || len(r.book.alerts) != 0 {
+		t.Fatalf("with the pins in force: writes %q, alerts %+v; want no more", got, r.book.alerts)
+	}
+}
+
+// demoPinned is demo-app's project file with comments around an images
+// block that pins default at its desired key and old, which images.yaml no
+// longer declares.
+func demoPinned(main map[string]string) {
+	main[demoProjectFile] = strings.Replace(main[demoProjectFile], "merge_rule: auto\n",
+		"merge_rule: auto\n# the pins: factoryd's\nimages:\n"+
+			"  default:\n    digest: sha256:"+strings.Repeat("d", 64)+"\n    key: "+keyDefault+"\n    tools: [jq]\n"+
+			"  old:\n    digest: sha256:"+strings.Repeat("e", 64)+"\n    key: k-"+strings.Repeat("0", 24)+"\n    tools: [make]\n    egress: [old.example.org]\n"+
+			"\n# objects: the registration's\n", 1)
+}
+
+// A pinned name images.yaml no longer declares leaves the block, every
+// other byte of the file kept; once the file is gone the whole block
+// leaves, written on the open pull request's branch in place, and the pass
+// after merges it.
+func TestImagerDropsAnUndeclaredPin(t *testing.T) {
+	r := newImagerRig(t, demoImages, demoPinned)
+	before := r.fj.file("main", demoProjectFile)
+	r.pass(t)
+	head, rest, _ := strings.Cut(before, "# the pins: factoryd's\n")
+	_, tail, _ := strings.Cut(rest, "    egress: [old.example.org]\n")
+	want := head + "# the pins: factoryd's\nimages:\n  default:\n    digest: sha256:" + strings.Repeat("d", 64) + "\n    key: " + keyDefault + "\n    tools:\n      - jq\n" + tail
+	if !strings.HasPrefix(tail, "\n# objects: the registration's\nobjects: factory\n") {
+		t.Fatalf("the fixture moved: %q", tail)
+	}
+	if got := r.fj.file("factory-pins/demo-app", demoProjectFile); got != want {
+		t.Fatalf("the branch's project file:\n%s\nwant:\n%s", got, want)
+	}
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 0 {
+		t.Fatalf("dispatches %q: default is built", dispatches)
+	}
+
+	r.fj.mu.Lock()
+	delete(r.fj.images, "demo-app/demo-app")
+	r.fj.mu.Unlock()
+	r.pass(t)
+	want = head + "# the pins: factoryd's\n" + tail
+	if got := r.fj.file("factory-pins/demo-app", demoProjectFile); got != want {
+		t.Fatalf("the branch without images.yaml:\n%s\nwant:\n%s", got, want)
+	}
+	writes := []string{"POST sf/ai-software-factory-infra/forks by bot", "POST factory-agent/ai-software-factory-infra/contents by bot",
+		"POST sf/ai-software-factory-infra/pulls by bot", "POST factory-agent/ai-software-factory-infra/contents by bot"}
+	if prs, _, got := r.fj.state(); len(prs) != 1 || prs[0].state != "open" || !reflect.DeepEqual(got, writes) {
+		t.Fatalf("pull requests %+v, writes %q; want the one open, %q", prs, got, writes)
+	}
+	r.pass(t)
+	if got := r.fj.file("main", demoProjectFile); got != want {
+		t.Fatalf("main after the merge:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// An invalid images.yaml raises one alert per blob, however many passes
+// read it, and the project's pins stay: no pull request, no dispatch.
+func TestImagerAlertsAnInvalidFileOnce(t *testing.T) {
+	bad := "images:\n  default:\n    apt: [\"jq;rm\"]\n"
+	r := newImagerRig(t, bad, demoPinned)
+	r.pass(t)
+	r.pass(t)
+	want := []Alert{{Kind: AlertImage, Source: "file", Fingerprint: "demo-app factory/images.yaml " + blobOf(bad), Detail: map[string]any{
+		"project": "demo-app", "repository": "demo-app/demo-app", "blob": blobOf(bad),
+		"findings": []string{`image "default": apt "jq;rm" must match ^[a-z0-9][a-z0-9+.-]+$ (a Debian package name without a version)`}}}}
+	if !reflect.DeepEqual(r.book.alerts, want) {
+		t.Fatalf("alerts %+v, want %+v", r.book.alerts, want)
+	}
+	if prs, dispatches, writes := r.fj.state(); len(prs)+len(dispatches)+len(writes) != 0 {
+		t.Fatalf("pull requests %+v, dispatches %q, writes %q; want none", prs, dispatches, writes)
+	}
+	worse := bad + "  x:\n    apt: []\n"
+	r.fj.mu.Lock()
+	r.fj.images["demo-app/demo-app"] = worse
+	r.fj.mu.Unlock()
+	r.pass(t)
+	if len(r.book.alerts) != 2 || r.book.alerts[1].Fingerprint != "demo-app factory/images.yaml "+blobOf(worse) {
+		t.Fatalf("alerts %+v, want a second for the new blob", r.book.alerts)
+	}
+}
+
+// A tag signed by the factory's key is not ready: the images key alone
+// makes a project image, so the pass builds it again. The other way round,
+// the roll's verification with the factory's key refuses an image the
+// images key signed, and verifyProjectImage takes only the images key's,
+// reading the registry once per digest.
+func TestImagerTakesTheImagesKeyOnly(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	factoryKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byFactory := r.publish("sf/sandbox-demo-app.default", keyDefault, factoryKey, 1000)
+	r.pass(t)
+	if prs, dispatches, _ := r.fj.state(); len(prs) != 0 || len(dispatches) != 1 {
+		t.Fatalf("pull requests %+v, dispatches %q; want none, one", prs, dispatches)
+	}
+	byImages := r.publish("sf/sandbox-demo-app.browser", keyBrowser, r.key, 2000)
+
+	ctx := context.Background()
+	tok, err := r.im.Registry.Token(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refusal ErrUnsigned
+	if err := r.im.Registry.Verify(ctx, tok, "sf/sandbox-demo-app.browser", byImages, &factoryKey.PublicKey); !errors.As(err, &refusal) {
+		t.Fatalf("the roll's verification of an images-key image: %v, want a refusal", err)
+	}
+	runner := &Runner{Imager: r.im}
+	if err := runner.verifyProjectImage(ctx, "demo-app", "default", byFactory); !errors.As(err, &refusal) {
+		t.Fatalf("a factory-key image: %v, want a refusal", err)
+	}
+	if err := runner.verifyProjectImage(ctx, "demo-app", "browser", byImages); err != nil {
+		t.Fatalf("an images-key image: %v", err)
+	}
+	reads := *r.tokens
+	if err := runner.verifyProjectImage(ctx, "demo-app", "browser", byImages); err != nil || *r.tokens != reads {
+		t.Fatalf("again: %v, %d token reads, want none (cached)", err, *r.tokens-reads)
+	}
+	if err := runner.verifyProjectImage(ctx, "linkshort", "browser", byImages); err == nil {
+		t.Fatal("the digest verified under another project's image")
+	}
+}
+
+// An image above policy.MaxImageBytes compressed raises one alert and is
+// never pinned, nor built again.
+func TestImagerRefusesAnImageTooLarge(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	digest := r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 3<<30, 1<<30+1)
+	r.pass(t)
+	r.pass(t)
+	want := []Alert{{Kind: AlertImage, Source: "size", Fingerprint: "sf/sandbox-demo-app.default@" + digest, Detail: map[string]any{
+		"project": "demo-app", "image": "default", "digest": digest, "bytes": int64(4<<30 + 1), "max": int64(policy.MaxImageBytes)}}}
+	if !reflect.DeepEqual(r.book.alerts, want) {
+		t.Fatalf("alerts %+v, want %+v", r.book.alerts, want)
+	}
+	if prs, dispatches, writes := r.fj.state(); len(prs)+len(dispatches)+len(writes) != 0 {
+		t.Fatalf("pull requests %+v, dispatches %q, writes %q; want none", prs, dispatches, writes)
+	}
+}
+
+// The merge is the bot's only for a pull request that changes the project
+// file's images block and nothing else, at a head whose tree passes the
+// config check: a second file, another field, a tree that fails the check
+// and Forgejo's own refusal each leave it open and raise one alert naming
+// why.
+func TestImagerAutoMergeRefusals(t *testing.T) {
+	for _, c := range []struct {
+		name   string
+		edit   func(main map[string]string)
+		tamper map[string]string
+		refuse bool
+		code   string
+		reason string
+	}{
+		{name: "a second file", tamper: map[string]string{"factory/projects/linkshort.yaml": "# yaml-language-server: $schema=../schema/project.schema.json\n"},
+			code: "files", reason: "pull request #1 changes factory/projects/demo-app.yaml, factory/projects/linkshort.yaml; an image pin changes factory/projects/demo-app.yaml only"},
+		{name: "another field", tamper: nil, code: "fields",
+			reason: "pull request #1 changes factory/projects/demo-app.yaml beyond its images block"},
+		{name: "a failing tree", edit: func(main map[string]string) {
+			main["factory/processes/maintenance.yaml"] += "unknown_key: 1\n"
+		}, code: "check"},
+		{name: "a refused merge", refuse: true, code: "merge"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newImagerRig(t, demoImages, nil)
+			if c.edit != nil {
+				r.fj.mu.Lock()
+				files := maps.Clone(r.fj.commits[r.fj.main])
+				c.edit(files)
+				r.fj.main = r.fj.commit(files)
+				r.fj.mu.Unlock()
+			}
+			r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+			r.pass(t)
+			switch {
+			case c.tamper != nil:
+				r.fj.tamper("factory-pins/demo-app", c.tamper)
+			case c.code == "fields":
+				r.fj.tamper("factory-pins/demo-app", map[string]string{demoProjectFile: strings.Replace(r.fj.file("factory-pins/demo-app", demoProjectFile), "merge_rule: auto", "merge_rule: human", 1)})
+			}
+			r.fj.refuse = c.refuse
+			r.pass(t)
+			r.pass(t)
+			prs, _, writes := r.fj.state()
+			if len(prs) != 1 || prs[0].state != "open" || len(writes) != 3 && !c.refuse || len(writes) != 5 && c.refuse {
+				t.Fatalf("pull requests %+v, writes %q; want it open, unmerged", prs, writes)
+			}
+			if len(r.book.alerts) != 1 {
+				t.Fatalf("alerts %+v, want one", r.book.alerts)
+			}
+			a := r.book.alerts[0]
+			reason, _ := a.Detail["reason"].(string)
+			if a.Kind != AlertImage || a.Source != "pin" || a.Fingerprint != "demo-app #1 "+c.code || a.Detail["project"] != "demo-app" || a.Detail["pull_request"] != int64(1) {
+				t.Fatalf("alert %+v", a)
+			}
+			switch c.code {
+			case "check":
+				if !strings.HasPrefix(reason, "the tree at the head of pull request #1 fails factoryd's config check: processes/maintenance.yaml: ") {
+					t.Fatalf("reason %q", reason)
+				}
+			case "merge":
+				if !strings.HasPrefix(reason, "Forgejo refused the bot's merge of pull request #1: ") || !strings.Contains(reason, "User not allowed to merge PR") {
+					t.Fatalf("reason %q", reason)
+				}
+			default:
+				if reason != c.reason {
+					t.Fatalf("reason %q, want %q", reason, c.reason)
+				}
+			}
+		})
+	}
+}
+
+// withImages replaces the top-level images block, from its key to the last
+// indented line before the next top-level key, and keeps every other byte:
+// the comments before, inside the next key's lead and after; with no block
+// it appends one, and an empty block removes it.
+func TestWithImagesKeepsEveryOtherByte(t *testing.T) {
+	block := "images:\n  a:\n    digest: sha256:aa\n"
+	for _, c := range []struct{ name, file, block, want string }{
+		{"replaced between comments",
+			"# head\nrepository: a/b\n# before\nimages:\n  old:\n    digest: sha256:00\n\n  # inside\n    key: k\n\n# after\nnotify: [x]\n# end\n", block,
+			"# head\nrepository: a/b\n# before\n" + block + "\n# after\nnotify: [x]\n# end\n"},
+		{"removed", "repository: a/b\nimages:\n  old: {}\nnotify: [x]\n", "", "repository: a/b\nnotify: [x]\n"},
+		{"a flow block", "images: {}\nnotify: [x]\n", block, block + "notify: [x]\n"},
+		{"at the end", "repository: a/b\n# before\nimages:\n  old: {}\n  # trailing\n", block, "repository: a/b\n# before\n" + block},
+		{"appended", "repository: a/b\n# end\n", block, "repository: a/b\n# end\n" + block},
+		{"appended after a last line without newline", "repository: a/b", block, "repository: a/b\n" + block},
+		{"none to remove", "repository: a/b\n", "", "repository: a/b\n"},
+		{"a nested images key stays", "chat:\n  images: x\n", block, "chat:\n  images: x\n" + block},
+	} {
+		if got := string(withImages([]byte(c.file), c.block)); got != c.want {
+			t.Errorf("%s:\n%q\nwant\n%q", c.name, got, c.want)
+		}
+	}
+}
+
+// The registry's compressed size of an image is the sum of its layers': an
+// index's linux/amd64 manifest's, a plain manifest's own.
+func TestRegistryLayerBytes(t *testing.T) {
+	manifest := `{"schemaVersion":2,"config":{"digest":"sha256:c0","size":9},"layers":[{"digest":"sha256:a","size":3},{"digest":"sha256:b","size":4}]}`
+	index := strings.Replace(testIndexTemplate, "IMG", sha256Of(manifest), 1)
+	reg, _ := testRegistry(t, map[string]string{"sf/x/manifests/k": index, "sf/x/manifests/" + sha256Of(manifest): manifest})
+	ctx := context.Background()
+	tok, err := reg.Token(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := reg.Resolve(ctx, tok, "sf/x", "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, err := reg.LayerBytes(ctx, tok, "sf/x", m.Platform); err != nil || n != 7 {
+		t.Fatalf("layer bytes %d %v, want 7", n, err)
+	}
+	if _, err := reg.LayerBytes(ctx, tok, "sf/x", "sha256:"+strings.Repeat("f", 64)); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a missing manifest: %v", err)
+	}
+}
+
+// image_builds keeps the last dispatch and the last read of each key apart;
+// an image alert is one row per fingerprint.
+func TestPGStoreImageBuilds(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE image_builds; DELETE FROM alerts WHERE kind = 'image'`); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	row := func() (dispatched, read *time.Time) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx, `SELECT dispatched_at, read_at FROM image_builds WHERE project = 'demo' AND image = 'default' AND key = 'k-1'`).Scan(&dispatched, &read); err != nil {
+			t.Fatal(err)
+		}
+		return dispatched, read
+	}
+	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-1"); err != nil || !at.IsZero() {
+		t.Fatalf("no row: %v %v", at, err)
+	}
+	if err := s.RecordImageRead(ctx, "demo", "default", "k-1", t0); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-1"); err != nil || !at.IsZero() {
+		t.Fatalf("read, not dispatched: %v %v", at, err)
+	}
+	for _, at := range []time.Time{t0.Add(time.Minute), t0.Add(2 * time.Minute)} {
+		if err := s.RecordImageDispatch(ctx, "demo", "default", "k-1", at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.RecordImageRead(ctx, "demo", "default", "k-1", t0.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-1"); err != nil || !at.Equal(t0.Add(2*time.Minute)) {
+		t.Fatalf("dispatched %v %v, want the last", at, err)
+	}
+	if d, r := row(); !d.Equal(t0.Add(2*time.Minute)) || !r.Equal(t0.Add(3*time.Minute)) {
+		t.Fatalf("row %v %v", d, r)
+	}
+	if at, err := s.ImageDispatchedAt(ctx, "demo", "default", "k-2"); err != nil || !at.IsZero() {
+		t.Fatalf("another key: %v %v", at, err)
+	}
+	for i, fp := range []string{"a", "a", "b"} {
+		id, err := s.InsertAlert(ctx, Alert{Kind: AlertImage, Source: "file", Fingerprint: fp})
+		if err != nil || (id == 0) != (i == 1) {
+			t.Fatalf("alert %d (%s): id %d %v, want one row per fingerprint", i, fp, id, err)
+		}
+	}
+}

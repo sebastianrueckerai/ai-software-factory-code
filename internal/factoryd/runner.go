@@ -170,6 +170,9 @@ type Runner struct {
 	// (Registrar.TemplateUpdates). Both are set before the worker starts.
 	Routines     RoutineRunStore
 	TemplatePass func(ctx context.Context) (cards int, err error)
+	// Imager verifies a project image before a pod runs it
+	// (verifyProjectImage); set before the worker starts.
+	Imager *Imager
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send

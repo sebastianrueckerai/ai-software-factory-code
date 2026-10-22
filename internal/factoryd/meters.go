@@ -105,7 +105,7 @@ func (p *ChainPoller) RegisterPollAge(meter metric.Meter) error {
 
 // alertKinds are the alerts table's kinds, reported by
 // factory.alert.count with every verdict.
-var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz, AlertScreening, AlertMonthCap, AlertChainRed, AlertChainStalled, AlertChainUncarried}
+var alertKinds = []string{AlertGateBound, AlertSupervisorTrip, AlertEscalation, AlertInfoRequest, AlertSigNoz, AlertScreening, AlertMonthCap, AlertChainRed, AlertChainStalled, AlertChainUncarried, AlertImage}
 
 // RegisterAlertCount exports factory.alert.count{kind,verdict}, read from
 // the alerts table at each export: every kind and verdict, 0 when the table

@@ -573,6 +573,14 @@ func (f *Forgejo) RerunActionRun(ctx context.Context, token, owner, repo string,
 	return err
 }
 
+// DispatchWorkflow runs workflow, a file of repo's .forgejo/workflows/, on
+// ref with inputs through token (workflow_dispatch).
+func (f *Forgejo) DispatchWorkflow(ctx context.Context, token string, repo Repo, workflow, ref string, inputs map[string]string) error {
+	_, err := f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/actions/workflows/%s/dispatches", repo, url.PathEscape(workflow)),
+		mustJSON(map[string]any{"ref": ref, "inputs": inputs}), anySuccess)
+	return err
+}
+
 // LatestCommit is the newest commit on branch that touched path, and its
 // first parent ("" for a root commit).
 func (f *Forgejo) LatestCommit(ctx context.Context, owner, repo, branch, path string) (sha, parent string, err error) {
@@ -1661,11 +1669,21 @@ func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, numbe
 // approval of a human on main's approvals whitelist, where main requires
 // one (every repository on the merge rule human).
 func (f *Forgejo) MergePullRequest(ctx context.Context, token, owner, repo string, number int64, head string, a Attribution, subject string) error {
+	return mergePullRequest(ctx, f.tokenCall(token), owner, repo, number, head, a, subject)
+}
+
+// MergePullRequestAsBot is MergePullRequest as the bot, the merge of the
+// pull requests factoryd opens and judges itself (the imager's pins).
+func (f *Forgejo) MergePullRequestAsBot(ctx context.Context, owner, repo string, number int64, head string, a Attribution, subject string) error {
+	return mergePullRequest(ctx, f.call, owner, repo, number, head, a, subject)
+}
+
+func mergePullRequest(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), owner, repo string, number int64, head string, a Attribution, subject string) error {
 	payload, err := json.Marshal(map[string]any{"Do": "merge", "head_commit_id": head, "MergeMessageField": a.Message(subject)})
 	if err != nil {
 		return err
 	}
-	_, err = f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", owner, repo, number), payload, http.StatusOK)
+	_, err = call(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/merge", owner, repo, number), payload, http.StatusOK)
 	// do retries a 409 as transient; on merge it is a conflict or a head
 	// that moved, which no retry fixes
 	if err != nil && !errors.Is(err, ErrRefused) && strings.Contains(err.Error(), ": status 409: ") {

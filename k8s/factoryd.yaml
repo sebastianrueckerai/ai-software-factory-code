@@ -618,6 +618,11 @@ spec:
         # rolls only an image signed with it; a new key restarts factoryd
         - name: COSIGN_PUB
           valueFrom: {configMapKeyRef: {name: image-signing, key: cosign.pub}}
+        # the public half of the images key (sandbox images), which signs
+        # project images only: the imager pins and a pod runs only a project
+        # image signed with it; a new key restarts factoryd
+        - name: IMAGES_COSIGN_PUB
+          valueFrom: {configMapKeyRef: {name: images-signing, key: images-cosign.pub}}
         # the repository holding the configuration tree factory/; every
         # other repository factoryd works on is named by a project file
         - name: CONFIG_REPO

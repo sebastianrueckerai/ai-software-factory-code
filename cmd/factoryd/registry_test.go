@@ -95,28 +95,15 @@ func TestTheRollerReadsTheRegistryWithTheReadToken(t *testing.T) {
 }
 
 // The roller's key is the public half of main CI's cosign key (roadmap
-// 46): factoryd reads it from ConfigMap image-signing, which the
-// kustomization makes from k8s/cosign.pub with a hashed name, so a new
-// key restarts factoryd.
-func TestTheRollerTakesItsSigningKeyFromCosignPub(t *testing.T) {
-	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("COSIGN_PUB", string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})))
-	if got := rollSigningKey(); !got.Equal(&key.PublicKey) {
-		t.Fatalf("signing key %v, want the PEM's", got)
-	}
-
+// 46), the imager's the images key's: factoryd reads each from its
+// ConfigMap, which the kustomization makes from the file in k8s/ with a
+// hashed name, so a new key restarts factoryd.
+func TestFactorydTakesItsSigningKeysFromTheirConfigMaps(t *testing.T) {
 	b, err := os.ReadFile("../../k8s/factoryd.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ref struct{ Name, Key string }
+	refs := map[string]struct{ Name, Key string }{}
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	for {
 		var doc struct {
@@ -146,16 +133,12 @@ func TestTheRollerTakesItsSigningKeyFromCosignPub(t *testing.T) {
 		}
 		for _, c := range doc.Spec.Template.Spec.Containers {
 			for _, e := range c.Env {
-				if c.Name == "factoryd" && e.Name == "COSIGN_PUB" {
-					ref = e.ValueFrom.ConfigMapKeyRef
+				if c.Name == "factoryd" {
+					refs[e.Name] = e.ValueFrom.ConfigMapKeyRef
 				}
 			}
 		}
 	}
-	if ref.Name != "image-signing" || ref.Key != "cosign.pub" {
-		t.Fatalf("COSIGN_PUB from ConfigMap %+v, want image-signing's cosign.pub", ref)
-	}
-
 	k, err := os.ReadFile("../../k8s/kustomization.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -172,17 +155,38 @@ func TestTheRollerTakesItsSigningKeyFromCosignPub(t *testing.T) {
 	if err := yaml.Unmarshal(k, &kustomization); err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, g := range kustomization.ConfigMapGenerator {
-		if g.Name != "image-signing" {
-			continue
+
+	for _, c := range []struct{ env, configMap, file string }{
+		{"COSIGN_PUB", "image-signing", "cosign.pub"},
+		{"IMAGES_COSIGN_PUB", "images-signing", "images-cosign.pub"},
+	} {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
 		}
-		found = true
-		if g.Namespace != "factory" || !slices.Equal(g.Files, []string{"cosign.pub"}) || g.Options.DisableNameSuffixHash {
-			t.Fatalf("image-signing %+v, want factory's, from cosign.pub, with a hashed name", g)
+		der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	if !found {
-		t.Fatal("the kustomization generates no ConfigMap image-signing")
+		t.Setenv(c.env, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der})))
+		if got := signingKey(c.env); !got.Equal(&key.PublicKey) {
+			t.Fatalf("%s: key %v, want the PEM's", c.env, got)
+		}
+		if ref := refs[c.env]; ref.Name != c.configMap || ref.Key != c.file {
+			t.Fatalf("%s from ConfigMap %+v, want %s's %s", c.env, ref, c.configMap, c.file)
+		}
+		found := false
+		for _, g := range kustomization.ConfigMapGenerator {
+			if g.Name != c.configMap {
+				continue
+			}
+			found = true
+			if g.Namespace != "factory" || !slices.Equal(g.Files, []string{c.file}) || g.Options.DisableNameSuffixHash {
+				t.Fatalf("%s %+v, want factory's, from %s, with a hashed name", c.configMap, g, c.file)
+			}
+		}
+		if !found {
+			t.Fatalf("the kustomization generates no ConfigMap %s", c.configMap)
+		}
 	}
 }

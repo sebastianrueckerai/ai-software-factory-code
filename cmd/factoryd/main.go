@@ -157,10 +157,11 @@ func main() {
 	signoz := &factoryd.SigNoz{
 		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
 		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}
+	sandboxBase := mustEnv("SANDBOX_BASE_IMAGE")
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
-		SandboxBaseImage:     mustEnv("SANDBOX_BASE_IMAGE"),
+		SandboxBaseImage:     sandboxBase,
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           gatewayURL,
@@ -332,6 +333,17 @@ func main() {
 		Flux:      kube, SigNoz: signoz, Metrics: metrics}
 	registrar.FluxAlerts = alertIntake.FluxPass
 	go registrar.ReconcileLoop(ctx, func() int64 { return policyLoader.Current().ID }, time.Minute, time.Hour)
+	// the store's images, read with a read:package token that can overwrite
+	// no tag: main CI's for the roller, the projects' for the imager
+	registry := rollRegistry(forgejo.BaseURL, registryReadToken)
+	// the projects' sandbox images: factory-ci's registrar token dispatches
+	// the trusted builder, the bot pins them through the infra repository,
+	// and a pod runs one only with the images key's signature
+	imager := &factoryd.Imager{Forgejo: forgejo, Config: configSource, Policy: policyLoader.Current, Store: store,
+		Registry: registry, Key: signingKey("IMAGES_COSIGN_PUB"), Base: sandboxBase,
+		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now}
+	runner.Imager = imager
+	go imager.Run(ctx, time.Minute)
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
@@ -376,11 +388,10 @@ func main() {
 	go rolls.Run(ctx)
 	// the roll as a factory task (ruling 178): main CI's images of a green
 	// commit, read with a read:package token, open the roll's pull request
-	registry := rollRegistry(forgejo.BaseURL, registryReadToken)
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: 15 * time.Second,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Registry:  registry, SigningKey: rollSigningKey()}
+		Registry:  registry, SigningKey: signingKey("COSIGN_PUB")}
 	go roller.Run(ctx)
 	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.EndCovered)
 	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {
@@ -931,13 +942,15 @@ func rollRegistry(baseURL, token string) *factoryd.Registry {
 	return &factoryd.Registry{BaseURL: baseURL, User: mustEnv("REGISTRY_READ_USER"), Password: token}
 }
 
-// rollSigningKey is the public half of main CI's cosign key
-// (k8s/cosign.pub, ConfigMap image-signing): the roller rolls only an
-// image signed with it.
-func rollSigningKey() *ecdsa.PublicKey {
-	key, err := factoryd.ParseSigningKey([]byte(mustEnv("COSIGN_PUB")))
+// signingKey is the cosign public key in env: COSIGN_PUB, main CI's
+// (k8s/cosign.pub, ConfigMap image-signing), which the roller rolls only
+// images signed with; IMAGES_COSIGN_PUB, the images key's
+// (k8s/images-cosign.pub, ConfigMap images-signing), which signs project
+// images only. factoryd does not boot without either.
+func signingKey(env string) *ecdsa.PublicKey {
+	key, err := factoryd.ParseSigningKey([]byte(mustEnv(env)))
 	if err != nil {
-		log.Fatalf("COSIGN_PUB: %v", err)
+		log.Fatalf("%s: %v", env, err)
 	}
 	return key
 }

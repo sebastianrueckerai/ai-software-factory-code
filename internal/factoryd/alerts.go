@@ -41,6 +41,10 @@ const (
 	// project's stall bound, one open row per card (fingerprint repository
 	// and id), resolved when the card gains a carry row or leaves merged.
 	AlertChainUncarried = "chain_uncarried"
+	// AlertImage is the imager's: an invalid factory/images.yaml (source
+	// file), an image above policy.MaxImageBytes (size), a pin pull request
+	// it will not or cannot merge (pin); one row per fingerprint, ever.
+	AlertImage = "image"
 )
 
 // An alert's verdict: it pointed at a real problem, or it was noise.

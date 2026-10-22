@@ -18,6 +18,11 @@ configMapGenerator:
 - name: image-signing
   namespace: factory
   files: [cosign.pub]
+# The public half of the images key, which signs project images only
+# (sandbox images), for the imager and the pod start.
+- name: images-signing
+  namespace: factory
+  files: [images-cosign.pub]
 - name: signoz-rules
   namespace: factory
   files: [alerts/5xx-rate.json, alerts/restarts-factoryd.json, alerts/restarts-gateway.json, platform/signoz/project-rules/ci-queue-p95.json, alerts/roll-not-live-factoryd.json, alerts/roll-not-live-gateway.json]

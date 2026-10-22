@@ -203,12 +203,12 @@ func TestRegistryVerifiesCosignSignatures(t *testing.T) {
 		want                     string
 	}{
 		{"another key", "sf/img", cosignImage, &stranger.PublicKey,
-			"sf/img@" + cosignImage + " carries no signature by the factory's key over this digest (1 by another key or over another digest)"},
+			"sf/img@" + cosignImage + " carries no signature by this key over this digest (1 by another key or over another digest)"},
 		{"no signature", "sf/img", other, key, "sf/img@" + other + " carries no signature"},
 		{"copied", "sf/copied", other, key,
-			"sf/copied@" + other + " carries no signature by the factory's key over this digest (1 by another key or over another digest)"},
+			"sf/copied@" + other + " carries no signature by this key over this digest (1 by another key or over another digest)"},
 		{"tampered", "sf/tampered", cosignImage, key,
-			"sf/tampered@" + cosignImage + " carries no signature by the factory's key over this digest (1 by another key or over another digest)"},
+			"sf/tampered@" + cosignImage + " carries no signature by this key over this digest (1 by another key or over another digest)"},
 	} {
 		var refusal ErrUnsigned
 		if err := reg.Verify(ctx, tok, c.repository, c.digest, c.key); !errors.As(err, &refusal) || err.Error() != c.want {

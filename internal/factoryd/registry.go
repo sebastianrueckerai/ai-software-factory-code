@@ -79,6 +79,31 @@ func (r *Registry) Resolve(ctx context.Context, token, repository, reference str
 	return ImageManifest{}, fmt.Errorf("registry %s:%s: the index has no linux/amd64 image", repository, reference)
 }
 
+// LayerBytes is the compressed size of repository's image manifest digest,
+// a Platform: the sum of its layers' sizes.
+func (r *Registry) LayerBytes(ctx context.Context, token, repository, digest string) (int64, error) {
+	if !signatureRef.MatchString(digest) {
+		return 0, fmt.Errorf("registry %s@%s: not a sha256 digest", repository, digest)
+	}
+	body, err := r.get(ctx, "/v2/"+repository+"/manifests/"+digest, bearer(token))
+	if err != nil {
+		return 0, err
+	}
+	var m struct {
+		Layers []struct {
+			Size int64 `json:"size"`
+		} `json:"layers"`
+	}
+	if err := json.Unmarshal(body, &m); err != nil {
+		return 0, fmt.Errorf("registry %s@%s: %w", repository, digest, err)
+	}
+	var n int64
+	for _, l := range m.Layers {
+		n += l.Size
+	}
+	return n, nil
+}
+
 // bearer authorizes a read of a manifest or blob with token.
 func bearer(token string) func(*http.Request) {
 	return func(req *http.Request) {
@@ -105,8 +130,8 @@ const (
 // may name: it goes into a request's path.
 var signatureRef = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
 
-// ErrUnsigned refuses an image no signature by the factory's key covers;
-// its message names the image and why.
+// ErrUnsigned refuses an image no signature by the key it was verified
+// with covers; its message names the image and why.
 type ErrUnsigned string
 
 func (e ErrUnsigned) Error() string { return string(e) }
@@ -169,7 +194,7 @@ func (r *Registry) Verify(ctx context.Context, token, repository, digest string,
 	if n == 0 {
 		return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature", repository, digest))
 	}
-	return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature by the factory's key over this digest (%d by another key or over another digest)", repository, digest, n))
+	return ErrUnsigned(fmt.Sprintf("%s@%s carries no signature by this key over this digest (%d by another key or over another digest)", repository, digest, n))
 }
 
 // signedBy reports whether the signature manifest of repository carries a

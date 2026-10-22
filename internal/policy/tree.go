@@ -378,6 +378,14 @@ func decodeOne(b []byte, out any, strict bool) error {
 	return nil
 }
 
+// DecodeProject decodes a project file strictly, as ParseTree does, without
+// its checks.
+func DecodeProject(b []byte) (ProjectConfig, error) {
+	var p ProjectConfig
+	err := decodeOne(b, &p, true)
+	return p, err
+}
+
 // ReadDir reads every regular file under dir, keyed by its slash path
 // relative to dir, as ParseTree and CheckSchemas take them. Any other
 // entry, a symbolic link included, is an error, as it is in the loader.
