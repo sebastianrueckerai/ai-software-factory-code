@@ -52,6 +52,8 @@ func main() {
 			return
 		case "schema", "config":
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+		case "image":
+			os.Exit(runImage(os.Args[2:], os.Stdout, os.Stderr))
 		}
 	}
 	addr := flag.String("addr", ":8080", "listen address")
