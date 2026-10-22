@@ -38,7 +38,7 @@ func TestTreeValidateJudgesAStoredTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(tree.Templates["ts-go"]) != 9 || tree.Projects["linkshort"].Template != "ts-go" {
+	if len(tree.Templates["ts-go"]) != 10 || tree.Projects["linkshort"].Template != "ts-go" {
 		t.Fatalf("templates %v, linkshort %+v", len(tree.Templates["ts-go"]), tree.Projects["linkshort"])
 	}
 	delete(tree.Templates["ts-go"], ".forgejo/roll.sh")
@@ -62,7 +62,7 @@ func TestRenderTemplate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(out) != 9 {
+	if len(out) != 10 {
 		t.Fatalf("rendered %d files", len(out))
 	}
 	for p, b := range out {

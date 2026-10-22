@@ -214,3 +214,11 @@ func TestValidateEgress(t *testing.T) {
 	f = oneImage(ImageSpec{Apt: []string{"curl"}, Egress: []string{"pypi.org", "pypi.org"}})
 	wantOne(t, f.Validate(), "egress", "twice")
 }
+
+func TestTemplateImagesFileIsValid(t *testing.T) {
+	files := fixtureTree(t)
+	f, findings := ParseImagesFile(files["templates/ts-go/factory/images.yaml"])
+	if len(findings) != 0 || len(f.Images["default"].Upstream) != 2 {
+		t.Fatalf("findings %v, default %+v", findings, f.Images["default"])
+	}
+}

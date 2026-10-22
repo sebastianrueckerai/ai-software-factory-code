@@ -40,7 +40,7 @@ func TestParseTreeAccepts(t *testing.T) {
 	if got := slices.Sorted(maps.Keys(files)); !slices.Equal(got, []string{"policy.yaml", "processes/maintenance.yaml", "processes/spec.yaml", "projects/ai-software-factory-code.yaml", "projects/ai-software-factory-infra.yaml", "projects/demo-app.yaml", "projects/linkshort.yaml", "routines/weekly-bump.md",
 		"templates/ts-go/.forgejo/issue_template/bug.yaml", "templates/ts-go/.forgejo/issue_template/improvement.yaml", "templates/ts-go/.forgejo/roll.sh",
 		"templates/ts-go/.forgejo/workflows/ci.yml", "templates/ts-go/.forgejo/workflows/pr.yml", "templates/ts-go/.gitignore", "templates/ts-go/AGENTS.md",
-		"templates/ts-go/deploy/base/kustomization.yaml", "templates/ts-go/deploy/staging/kustomization.yaml"}) {
+		"templates/ts-go/deploy/base/kustomization.yaml", "templates/ts-go/deploy/staging/kustomization.yaml", "templates/ts-go/factory/images.yaml"}) {
 		t.Fatalf("ReadDir keys = %v", got)
 	}
 	tree, err := ParseTree(files)
