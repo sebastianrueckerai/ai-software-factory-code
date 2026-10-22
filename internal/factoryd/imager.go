@@ -39,7 +39,15 @@ const (
 	// buildTries is how many dispatches of one key may leave no signed
 	// image before the pass raises that the builder fails.
 	buildTries = 3
+	// unusedFor is how long an image but default stays pinned with no card
+	// on it before a card removes it; the check runs once a day.
+	unusedFor   = 30 * 24 * time.Hour
+	unusedCheck = 24 * time.Hour
 )
+
+// SourceImageRemoval is the source of the card that removes an image no
+// card ran on for unusedFor.
+const SourceImageRemoval = "image_removal"
 
 // Imager reconciles the sandbox images each project declares in
 // factory/images.yaml, a pass a minute: a declared image whose pin is not
@@ -47,7 +55,10 @@ const (
 // holds it signed by the images key it is pinned in the project's file of
 // the configuration repository, through one pull request per project from
 // the bot's fork, which the imager merges itself when it changes the
-// images block and nothing else.
+// images block and nothing else. Once a pin changes in force, the store
+// keeps of that image only the pinned build and the one before; once a
+// day, an image but default no card ran on for unusedFor gets a card that
+// removes it.
 type Imager struct {
 	// Forgejo is the bot: it reads every project repository, owns the fork
 	// of Config's repository and merges the pin pull requests.
@@ -73,9 +84,16 @@ type Imager struct {
 	// Ladder is the model ladder's aliases CheckTree holds a tree to.
 	Ladder []string
 	Now    func() time.Time
-	// Workflows wakes the cards parked on an image.
+	// Workflows wakes the cards parked on an image and starts the removal
+	// cards, whose events Timeline records.
 	Workflows Workflows
+	Timeline  *Timeline
+	// OpenBao holds the Forgejo site admin's login at AdminSecret, which
+	// deletes the store's builds no pin keeps.
+	OpenBao SecretReader
 
+	// unusedAt is when the last check for unused images ended clean.
+	unusedAt time.Time
 	mu       sync.Mutex
 	verified map[string]bool // repository@digest
 	// refusals is the last pass's merge refusal of each pin pull request,
@@ -83,8 +101,8 @@ type Imager struct {
 	refusals map[string]string
 }
 
-// ImageStore keeps image_builds, the imager's alerts and the cards parked
-// on an image.
+// ImageStore keeps image_builds, image_pins, the imager's alerts, the cards
+// parked on an image and the removal cards it files.
 type ImageStore interface {
 	// ImageDispatches is when the build of key of project's image was last
 	// dispatched and how often it was; zero and 0 when never.
@@ -101,6 +119,30 @@ type ImageStore interface {
 	WakeImagePark(ctx context.Context, task string, created time.Time, refused string) error
 	Task(ctx context.Context, id string) (Task, bool, error)
 	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
+	// ImagePins are the pins the imager last saw in force; SaveImagePin
+	// replaces a row whole.
+	ImagePins(ctx context.Context) ([]ImagePinRow, error)
+	SaveImagePin(ctx context.Context, r ImagePinRow) error
+	DeleteImagePin(ctx context.Context, project, image string) error
+	// ImageUsed is whether a card that is unfinished or finished since
+	// since ran on a build of repository.
+	ImageUsed(ctx context.Context, repository string, since time.Time) (bool, error)
+	Project(ctx context.Context, name string) (Project, bool, error)
+	CreateTask(ctx context.Context, t Task) error
+}
+
+// ImagePinRow is image_pins' row: the pin of Project's Image the imager
+// last saw in force, Key and Digest, and the one before it, "" for none
+// seen; Since when the name has been pinned; Retained once the store holds
+// no build of the image but the two pins'; RemovalTask the last card filed
+// to remove the image as unused, "" for none.
+type ImagePinRow struct {
+	Project, Image              string
+	Key, Digest                 string
+	PreviousKey, PreviousDigest string
+	Since                       time.Time
+	Retained                    bool
+	RemovalTask                 string
 }
 
 // imageRepository is where the store holds project's image.
@@ -125,8 +167,11 @@ func (i *Imager) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// pass reconciles every project in force whose agents run, then wakes the
-// cards parked on an image whose wait is over.
+// pass keeps the store's builds to the pins in force (retain), reconciles
+// every project in force whose agents run, wakes the cards parked on an
+// image whose wait is over, and files the removal of unused images.
+// Retention runs first: a build it deletes is never pinned in the same
+// pass.
 func (i *Imager) pass(ctx context.Context) error {
 	_, baseDigest, ok := strings.Cut(i.Base, "@")
 	if !ok {
@@ -135,6 +180,9 @@ func (i *Imager) pass(ctx context.Context) error {
 	start := i.Now()
 	v := i.Policy()
 	var errs []error
+	if err := i.retain(ctx, v, start); err != nil {
+		errs = append(errs, fmt.Errorf("retention: %w", err))
+	}
 	declared := map[string]map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
 		c := v.Projects[name]
@@ -152,7 +200,175 @@ func (i *Imager) pass(ctx context.Context) error {
 	if err := i.wake(ctx, v, declared, start); err != nil {
 		errs = append(errs, fmt.Errorf("wake: %w", err))
 	}
+	if err := i.unused(ctx, v, start); err != nil {
+		errs = append(errs, fmt.Errorf("unused images: %w", err))
+	}
 	return errors.Join(errs...)
+}
+
+// retain records the pins in force against the rows of the last pass. A
+// pin first seen is recorded as it is: what was pinned before is unknown.
+// A changed pin keeps the one before it, and once per change the store
+// keeps of the image only the two (sweep). A name no longer pinned loses
+// every build, then its row.
+func (i *Imager) retain(ctx context.Context, v policy.Version, now time.Time) error {
+	rows, err := i.Store.ImagePins(ctx)
+	if err != nil {
+		return err
+	}
+	var a AdminAuth
+	sweep := func(r ImagePinRow, kept ...policy.ImagePin) error {
+		if a.User == "" {
+			var err error
+			if a, err = adminAuth(ctx, i.OpenBao); err != nil {
+				return err
+			}
+		}
+		return i.sweep(ctx, a, r.Project, r.Image, kept...)
+	}
+	var errs []error
+	seen := map[string]ImagePinRow{}
+	for _, r := range rows {
+		seen[r.Project+"/"+r.Image] = r
+		if _, pinned := v.Projects[r.Project].Images[r.Image]; pinned {
+			continue
+		}
+		if err := sweep(r); err != nil {
+			errs = append(errs, fmt.Errorf("image %s of %s: %w", r.Image, r.Project, err))
+		} else if err := i.Store.DeleteImagePin(ctx, r.Project, r.Image); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	for _, project := range slices.Sorted(maps.Keys(v.Projects)) {
+		pins := v.Projects[project].Images
+		for _, image := range slices.Sorted(maps.Keys(pins)) {
+			pin := pins[image]
+			r, ok := seen[project+"/"+image]
+			switch {
+			case !ok:
+				r = ImagePinRow{Project: project, Image: image, Key: pin.Key, Digest: pin.Digest, Since: now, Retained: true}
+			case r.Key != pin.Key || r.Digest != pin.Digest:
+				r.PreviousKey, r.PreviousDigest, r.Key, r.Digest, r.Retained = r.Key, r.Digest, pin.Key, pin.Digest, false
+			case r.Retained:
+				continue
+			}
+			if !r.Retained {
+				err := sweep(r, pin, policy.ImagePin{Key: r.PreviousKey, Digest: r.PreviousDigest})
+				r.Retained = err == nil
+				if err != nil {
+					errs = append(errs, fmt.Errorf("image %s of %s: %w", image, project, err))
+				}
+			}
+			if err := i.Store.SaveImagePin(ctx, r); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// sweep deletes, with the site admin's login a, every version of project's
+// image in the store but the kept pins': each one's key, the tag
+// sha256-<hex> of cosign's signature, and the manifests the two indexes
+// name, which Forgejo lists as versions named by their digests.
+func (i *Imager) sweep(ctx context.Context, a AdminAuth, project, image string, kept ...policy.ImagePin) error {
+	repo := imageRepository(project, image)
+	keep := map[string]bool{}
+	var keys []string
+	var tok string
+	for _, pin := range kept {
+		sig := "sha256-" + strings.TrimPrefix(pin.Digest, "sha256:")
+		keep[pin.Key], keep[pin.Digest], keep[sig] = true, true, true
+		keys = append(keys, pin.Key)
+		if tok == "" {
+			var err error
+			if tok, err = i.Registry.Token(ctx); err != nil {
+				return err
+			}
+		}
+		for _, ref := range []string{pin.Digest, sig} {
+			entries, err := i.Registry.IndexEntries(ctx, tok, repo, ref)
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return err
+			}
+			for _, e := range entries {
+				keep[e] = true
+			}
+		}
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	n, err := i.Forgejo.AdminDeletePackages(ctx, a, owner, name, func(p PackageVersion) bool {
+		return p.Type == "container" && p.Name == name && !keep[p.Version]
+	})
+	if err == nil {
+		log.Printf("imager: deleted %d versions of %s, kept %s", n, repo, cmp.Or(strings.Join(keys, " and "), "none"))
+	}
+	return err
+}
+
+// unused files, once a day, the removal card of each image but default of
+// a project whose agents run, pinned since unusedFor ago at least, unless
+// its removal card is open or a card ran on it since then.
+func (i *Imager) unused(ctx context.Context, v policy.Version, now time.Time) error {
+	if now.Sub(i.unusedAt) < unusedCheck {
+		return nil
+	}
+	rows, err := i.Store.ImagePins(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, r := range rows {
+		c := v.Projects[r.Project]
+		if _, pinned := c.Images[r.Image]; !pinned || r.Image == "default" || c.Agents == policy.AgentsNone || now.Sub(r.Since) < unusedFor {
+			continue
+		}
+		if err := i.removal(ctx, v, r, now); err != nil {
+			errs = append(errs, fmt.Errorf("image %s of %s: %w", r.Image, r.Project, err))
+		}
+	}
+	if len(errs) == 0 {
+		i.unusedAt = now
+	}
+	return errors.Join(errs...)
+}
+
+// removal files the card that removes r's image on its project's
+// repository, unless r's removal card is open or a card ran on the image
+// within unusedFor of now.
+func (i *Imager) removal(ctx context.Context, v policy.Version, r ImagePinRow, now time.Time) error {
+	if r.RemovalTask != "" {
+		card, ok, err := i.Store.Task(ctx, r.RemovalTask)
+		if err != nil || ok && !Final(card.Status) && card.Status != "merged" {
+			return err
+		}
+	}
+	used, err := i.Store.ImageUsed(ctx, imageRepository(r.Project, r.Image), now.Add(-unusedFor))
+	if err != nil || used {
+		return err
+	}
+	p, ok, err := i.Store.Project(ctx, r.Project)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("project %s has no row", r.Project)
+	}
+	title := "Remove image " + r.Image + " (unused for 30 days)"
+	body := fmt.Sprintf("Image %s of project %s has been pinned for 30 days, and no card ran on it in that time.\n\n"+
+		"Delete the %s entry from %s, and nothing else. After this card merges, the factory unpins the image and deletes its copies in the store.\n\n"+
+		"Acceptance:\n- %s no longer declares image %s.\n- %s passes the factory's check, which the policy gate runs on this pull request.\n\n"+
+		"Size: small\nRung: cheap", r.Image, r.Project, r.Image, imagesPath, imagesPath, r.Image, imagesPath)
+	card, ref, err := FileAgentTask(ctx, i.Store, i.Forgejo, i.Workflows, i.Timeline, p, title, body, nil, Task{
+		ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(v.Document.Budget, p.Budget, "small", false, 0),
+		Objective: title + "\n\n" + body, Source: SourceImageRemoval, Rung: RungCheap, Size: "small",
+	})
+	if err != nil {
+		return err
+	}
+	log.Printf("imager: image %s of %s unused for %s: removal card %s, issue #%d", r.Image, r.Project, unusedFor, card.ID, ref.Number)
+	r.RemovalTask = card.ID
+	return i.Store.SaveImagePin(ctx, r)
 }
 
 // project reconciles the images name declares: a pin at its desired key
@@ -686,4 +902,49 @@ func (s *PGStore) RecordImageRead(ctx context.Context, project, image, key strin
 	_, err := s.db.ExecContext(ctx, `INSERT INTO image_builds (project, image, key, read_at) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (project, image, key) DO UPDATE SET read_at = EXCLUDED.read_at`, project, image, key, at)
 	return err
+}
+
+// ImagePins are image_pins' rows, by project and image.
+func (s *PGStore) ImagePins(ctx context.Context) ([]ImagePinRow, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT project, image, key, digest, previous_key, previous_digest, since, retained, removal_task
+		FROM image_pins ORDER BY project, image`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ImagePinRow
+	for rows.Next() {
+		var r ImagePinRow
+		if err := rows.Scan(&r.Project, &r.Image, &r.Key, &r.Digest, &r.PreviousKey, &r.PreviousDigest, &r.Since, &r.Retained, &r.RemovalTask); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// SaveImagePin writes r over the row of its project and image.
+func (s *PGStore) SaveImagePin(ctx context.Context, r ImagePinRow) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO image_pins (project, image, key, digest, previous_key, previous_digest, since, retained, removal_task)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		ON CONFLICT (project, image) DO UPDATE SET key = EXCLUDED.key, digest = EXCLUDED.digest, previous_key = EXCLUDED.previous_key,
+			previous_digest = EXCLUDED.previous_digest, since = EXCLUDED.since, retained = EXCLUDED.retained, removal_task = EXCLUDED.removal_task`,
+		r.Project, r.Image, r.Key, r.Digest, r.PreviousKey, r.PreviousDigest, r.Since, r.Retained, r.RemovalTask)
+	return err
+}
+
+// DeleteImagePin deletes the row of project's image.
+func (s *PGStore) DeleteImagePin(ctx context.Context, project, image string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM image_pins WHERE project = $1 AND image = $2`, project, image)
+	return err
+}
+
+// ImageUsed is whether a card that is unfinished or finished since since
+// ran on a build of repository: its image_digest is <host>/<repository>@<digest>.
+// A card created since since is one of them.
+func (s *PGStore) ImageUsed(ctx context.Context, repository string, since time.Time) (bool, error) {
+	var used bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE strpos(image_digest, $1) > 0 AND (finished_at IS NULL OR finished_at >= $2))`,
+		"/"+repository+"@", since).Scan(&used)
+	return used, err
 }

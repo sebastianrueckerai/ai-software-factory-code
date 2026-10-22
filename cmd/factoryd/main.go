@@ -345,10 +345,12 @@ func main() {
 	// the projects' sandbox images: factory-ci's registrar token dispatches
 	// the trusted builder, the bot pins them through the infra repository,
 	// a pod runs one only with the images key's signature, and each pass
-	// wakes the cards parked on an image
+	// wakes the cards parked on an image; the site admin's login deletes
+	// the builds no pin keeps
 	imager := &factoryd.Imager{Forgejo: forgejo, Config: configSource, Policy: policyLoader.Current, Store: store,
 		Registry: registry, Key: imagesKey, Base: sandboxBase,
-		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now, Workflows: workflows}
+		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now, Workflows: workflows,
+		Timeline: runner.Timeline(), OpenBao: registrar.OpenBao}
 	runner.Imager = imager
 	go imager.Run(ctx, time.Minute)
 	if err := taskWorker.Start(); err != nil {

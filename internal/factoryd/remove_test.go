@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -78,6 +79,13 @@ func newRemovalRig(t *testing.T) *removalRig {
 	rig.fj.packages = []map[string]string{
 		{"type": "container", "name": "demo-app", "version": "1.0.0"},
 		{"type": "container", "name": "demo-app", "version": "1.0.1"},
+	}
+	rig.fj.sfPackages = []map[string]string{
+		{"type": "container", "name": "sandbox-demo-app.x", "version": "k-1"},
+		{"type": "container", "name": "sandbox-demo-app.x", "version": "sha256-1"},
+		{"type": "container", "name": "sandbox-demo-app-b.y", "version": "k-2"},
+		{"type": "container", "name": "sandbox-demo-app.y", "version": "k-3"},
+		{"type": "container", "name": "sandbox-my-sandbox-demo-app.z", "version": "k-4"},
 	}
 	rig.fj.forks = map[string]bool{"factory-agent": true, "factory-projects": true}
 	rig.store.mirrors = map[string]bool{"demo-app": true}
@@ -185,6 +193,7 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 		"project demo-app: flux gitrepository: deleted",
 		"project demo-app: flux secret demo-app-git: deleted",
 		"project demo-app: packages: deleted 2",
+		"project demo-app: sandbox images: deleted 3",
 		"project demo-app: repository demo-app/demo-app: deleted",
 		"project demo-app: fork factory-agent/demo-app: deleted",
 		"project demo-app: fork factory-projects/demo-app: deleted",
@@ -224,6 +233,12 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 				t.Errorf("token %d of %s (%s) lives", id, un, tok[1])
 			}
 		}
+	}
+	if want := []map[string]string{
+		{"type": "container", "name": "sandbox-demo-app-b.y", "version": "k-2"},
+		{"type": "container", "name": "sandbox-my-sandbox-demo-app.z", "version": "k-4"},
+	}; !reflect.DeepEqual(rig.fj.sfPackages, want) {
+		t.Fatalf("sf's packages %v; want the other projects' %v", rig.fj.sfPackages, want)
 	}
 	if rig.litellm.holds("sk-done-1") || rig.litellm.holds("sk-done-2") || !rig.litellm.holds("sk-other") {
 		t.Fatal("the wrong LiteLLM keys went, or another project's did")
@@ -411,6 +426,7 @@ func TestRemoveDryRun(t *testing.T) {
 		"project demo-app: namespace demo-prod: would delete /api/v1/namespaces/demo-prod",
 		"project demo-app: flux gitrepository: would delete /apis/source.toolkit.fluxcd.io/v1/namespaces/flux-system/gitrepositories/demo-app",
 		"project demo-app: packages: would delete demo-app's packages",
+		"project demo-app: sandbox images: would delete sf/sandbox-demo-app.*",
 		"project demo-app: repository demo-app/demo-app: would delete",
 		"project demo-app: fork factory-agent/demo-app: would delete",
 		"project demo-app: fork factory-projects/demo-app: would delete",

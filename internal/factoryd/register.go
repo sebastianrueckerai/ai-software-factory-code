@@ -1297,7 +1297,7 @@ func (r *Registrar) Register(ctx context.Context, name string, rotate bool) (Pro
 // each limited to the repository. A token p already has is kept unless
 // rotate.
 func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
-	a, err := r.adminAuth(ctx)
+	a, err := adminAuth(ctx, r.OpenBao)
 	if err != nil {
 		return err
 	}
@@ -1572,12 +1572,12 @@ func (r *Registrar) imported(ctx context.Context, name string, m Mirror) (Change
 }
 
 // adminAuth reads the site admin's login from OpenBao; the caller holds it
-// for one registration and never logs it.
-func (r *Registrar) adminAuth(ctx context.Context) (AdminAuth, error) {
-	if r.OpenBao == nil {
+// for one run and never logs it.
+func adminAuth(ctx context.Context, openBao SecretReader) (AdminAuth, error) {
+	if openBao == nil {
 		return AdminAuth{}, errors.New("the Forgejo admin's login: no OpenBao client")
 	}
-	kv, err := r.OpenBao.KV(ctx, AdminSecret)
+	kv, err := openBao.KV(ctx, AdminSecret)
 	if err != nil {
 		return AdminAuth{}, fmt.Errorf("the Forgejo admin's login: %w", err)
 	}

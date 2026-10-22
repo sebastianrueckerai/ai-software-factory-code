@@ -75,6 +75,7 @@ type forgejoState struct {
 	// the CI user.
 	mirrors    []map[string]any    // the repository's push mirrors
 	packages   []map[string]string // type/name/version of the org's
+	sfPackages []map[string]string // type/name/version of sf's, the sandbox images
 	forks      map[string]bool     // owner -> its fork of demo-app exists
 	ciUserGone bool                // the CI user is deleted
 	orgGone    bool                // the organisation is deleted
@@ -450,6 +451,20 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 		case strings.HasPrefix(p, repo+"/push_mirrors/") && r.Method == http.MethodDelete:
 			name := strings.TrimPrefix(p, repo+"/push_mirrors/")
 			s.mirrors = slices.DeleteFunc(s.mirrors, func(m map[string]any) bool { return m["remote_name"] == name })
+			w.WriteHeader(http.StatusNoContent)
+		case admin && r.Method == http.MethodGet && p == "/api/v1/packages/sf":
+			var out []map[string]string
+			for _, m := range s.sfPackages {
+				if strings.Contains(m["name"], strings.ToLower(r.URL.Query().Get("q"))) {
+					out = append(out, m)
+				}
+			}
+			list(nonNil(out))
+		case admin && r.Method == http.MethodDelete && strings.HasPrefix(p, "/api/v1/packages/sf/"):
+			parts := strings.Split(strings.TrimPrefix(p, "/api/v1/packages/sf/"), "/")
+			s.sfPackages = slices.DeleteFunc(s.sfPackages, func(m map[string]string) bool {
+				return m["type"] == parts[0] && m["name"] == parts[1] && m["version"] == parts[2]
+			})
 			w.WriteHeader(http.StatusNoContent)
 		case admin && r.Method == http.MethodGet && p == "/api/v1/packages/demo-app":
 			list(nonNil(s.packages))

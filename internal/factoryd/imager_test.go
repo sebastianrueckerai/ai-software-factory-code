@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -54,6 +55,11 @@ type imagerForgejo struct {
 	comments   []string
 	refuse     int // Forgejo answers the bot's merge 405 (1) or 409 (2)
 	inForce    policy.Version
+	// packages are sf's container package versions by package name, which
+	// the site admin lists and deletes; lists counts the lists
+	packages map[string][]string
+	lists    int
+	issues   []string // the issues filed on demo-app/demo-app, title and body
 }
 
 type forkBranch struct{ head, base string }
@@ -87,6 +93,8 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 		by := "nobody"
 		if u, pw, ok := r.BasicAuth(); ok && u == "factory-agent" && pw == "bot-pw" {
 			by = "bot"
+		} else if ok && u == "sebastian" && pw == "admin-pw" {
+			by = "admin"
 		} else if a := r.Header.Get("Authorization"); a == "token config-tok" {
 			by = "config"
 		} else if a == "token ci-tok" {
@@ -108,6 +116,28 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 		}
 		switch {
 		case by == "nobody":
+			http.NotFound(w, r)
+		case by == "admin" && r.Method == http.MethodGet && p == "/api/v1/packages/sf":
+			s.lists++
+			out := []map[string]string{}
+			for _, name := range slices.Sorted(maps.Keys(s.packages)) {
+				if q.Get("page") == "1" && strings.Contains(name, strings.ToLower(q.Get("q"))) {
+					for _, v := range s.packages[name] {
+						out = append(out, map[string]string{"type": "container", "name": name, "version": v})
+					}
+				}
+			}
+			json.NewEncoder(w).Encode(out)
+		case by == "admin" && r.Method == http.MethodDelete && strings.HasPrefix(p, "/api/v1/packages/sf/container/"):
+			name, version, _ := strings.Cut(strings.TrimPrefix(p, "/api/v1/packages/sf/container/"), "/")
+			if !slices.Contains(s.packages[name], version) {
+				http.NotFound(w, r)
+				return
+			}
+			s.packages[name] = slices.DeleteFunc(s.packages[name], func(v string) bool { return v == version })
+			w.WriteHeader(http.StatusNoContent)
+		case by == "admin":
+			t.Errorf("unexpected %s %s by the admin", r.Method, r.URL)
 			http.NotFound(w, r)
 		case by == "ci":
 			if r.Method != http.MethodPost || p != codeAPI+"/actions/workflows/project-image.yml/dispatches" {
@@ -266,6 +296,12 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			content(c)
+		case r.Method == http.MethodPost && p == "/api/v1/repos/demo-app/demo-app/issues":
+			s.issues = append(s.issues, body["title"].(string)+"\n\n"+body["body"].(string))
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"number":%d}`, 100+len(s.issues))
+		case r.Method == http.MethodPut && strings.HasPrefix(p, "/api/v1/repos/demo-app/demo-app/issues/") && strings.HasSuffix(p, "/labels"):
+			fmt.Fprint(w, `[]`)
 		case r.Method == http.MethodGet && strings.Count(strings.TrimPrefix(p, "/api/v1/repos/"), "/") == 1:
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		default:
@@ -352,7 +388,52 @@ type imageBook struct {
 	alerts  []Alert
 	parks   []ImagePark
 	tasks   map[string]Task
-	removed []string // "task on dependency" of every dependency removed
+	removed []string               // "task on dependency" of every dependency removed
+	pins    map[string]ImagePinRow // by project/image
+	used    map[string]bool        // the repositories a card ran on lately
+	asked   []string               // ImageUsed's questions, "<repository> since <time>"
+}
+
+func (b *imageBook) ImagePins(context.Context) ([]ImagePinRow, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []ImagePinRow
+	for _, k := range slices.Sorted(maps.Keys(b.pins)) {
+		out = append(out, b.pins[k])
+	}
+	return out, nil
+}
+
+func (b *imageBook) SaveImagePin(_ context.Context, r ImagePinRow) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.pins[r.Project+"/"+r.Image] = r
+	return nil
+}
+
+func (b *imageBook) DeleteImagePin(_ context.Context, project, image string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.pins, project+"/"+image)
+	return nil
+}
+
+func (b *imageBook) ImageUsed(_ context.Context, repository string, since time.Time) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.asked = append(b.asked, repository+" since "+since.Format(time.RFC3339))
+	return b.used[repository], nil
+}
+
+func (b *imageBook) Project(_ context.Context, name string) (Project, bool, error) {
+	return demoProject(), name == "demo-app", nil
+}
+
+func (b *imageBook) CreateTask(_ context.Context, t Task) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.tasks[t.ID] = t
+	return nil
 }
 
 func (b *imageBook) OpenImageParks(context.Context) ([]ImagePark, error) {
@@ -488,7 +569,7 @@ func newImagerRig(t *testing.T, images string, edit func(main map[string]string)
 	if edit != nil {
 		edit(main)
 	}
-	fj := &imagerForgejo{images: map[string]string{}, commits: map[string]map[string]string{}}
+	fj := &imagerForgejo{images: map[string]string{}, commits: map[string]map[string]string{}, packages: map[string][]string{}}
 	if images != "" {
 		fj.images["demo-app/demo-app"] = images
 	}
@@ -504,11 +585,11 @@ func newImagerRig(t *testing.T, images string, edit func(main map[string]string)
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
-	book := &imageBook{builds: map[string]imageBuild{}, tasks: map[string]Task{}}
+	book := &imageBook{builds: map[string]imageBuild{}, tasks: map[string]Task{}, pins: map[string]ImagePinRow{}, used: map[string]bool{}}
 	signals := &imageSignals{}
 	im := &Imager{Forgejo: f, Config: config, Policy: fj.version, Store: book, Registry: reg, Key: &key.PublicKey, Base: imagerBase,
 		Builder: Repo{Owner: "sf", Name: "ai-software-factory-code"}, BuildToken: "ci-tok", Ladder: imagerLadder, Now: func() time.Time { return now },
-		Workflows: signals}
+		Workflows: signals, OpenBao: &fakeKV{data: map[string]string{"username": "sebastian", "password": "admin-pw"}}}
 	return &imagerRig{signals: signals, fj: fj, im: im, book: book, registry: entries, tokens: tokens, now: &now, key: key}
 }
 
@@ -530,11 +611,38 @@ func (r *imagerRig) publish(repository, tag string, signer *ecdsa.PrivateKey, la
 	manifest := `{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"sha256:c0","size":7777},"layers":[` + strings.Join(ls, ",") + `]}`
 	index := strings.Replace(testIndexTemplate, "IMG", sha256Of(manifest), 1)
 	r.registry[repository+"/manifests/"+tag] = index
+	r.registry[repository+"/manifests/"+sha256Of(index)] = index
 	r.registry[repository+"/manifests/"+sha256Of(manifest)] = manifest
 	if signer != nil {
 		maps.Copy(r.registry, cosignSigned(signer, repository, sha256Of(index)))
 	}
 	return sha256Of(index)
+}
+
+// build publishes the image of tag into repository as publish does, and
+// answers its digest and the versions the store lists for it: the tag, the
+// manifest its index names, and, signed, cosign's tag and signature
+// manifest.
+func (r *imagerRig) build(repository, tag string, signer *ecdsa.PrivateKey, layers ...int64) (string, []string) {
+	before := maps.Clone(r.registry)
+	digest := r.publish(repository, tag, signer, layers...)
+	var versions []string
+	for k := range r.registry {
+		v, ok := strings.CutPrefix(k, repository+"/manifests/")
+		if _, had := before[k]; ok && !had && v != digest {
+			versions = append(versions, v)
+		}
+	}
+	slices.Sort(versions)
+	return digest, versions
+}
+
+// versions are the versions of sf's package name, sorted, and how many
+// lists the admin read.
+func (s *imagerForgejo) versions(name string) ([]string, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Sorted(slices.Values(s.packages[name])), s.lists
 }
 
 // A declared image no build has made is dispatched to the trusted builder
@@ -1172,5 +1280,233 @@ func TestPGStoreImageBuilds(t *testing.T) {
 		if err != nil || (id == 0) != (i == 1) {
 			t.Fatalf("alert %d (%s): id %d %v, want one row per fingerprint", i, fp, id, err)
 		}
+	}
+}
+
+// After a pin merges and comes in force, the next pass keeps of the image's
+// package exactly the pinned build and the build pinned before it, each
+// with cosign's signature, and deletes every other version, once: the pass
+// after lists nothing. The pin first seen deletes nothing, and a package
+// whose name the image's starts stays whole.
+func TestImagerKeepsThePinnedAndThePreviousBuild(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	const repo = "sf/sandbox-demo-app.default"
+	keyOld, keyAncient, keyUnsigned := "k-"+strings.Repeat("1", 24), "k-"+strings.Repeat("0", 24), "k-"+strings.Repeat("2", 24)
+	_, ancient := r.build(repo, keyAncient, r.key, 800)
+	digestOld, old := r.build(repo, keyOld, r.key, 900)
+	_, unsigned := r.build(repo, keyUnsigned, nil, 950)
+	digestNew, current := r.build(repo, keyDefault, r.key, 1000)
+	if len(ancient) != 4 || len(old) != 4 || len(unsigned) != 2 || len(current) != 4 {
+		t.Fatalf("builds: %q %q %q %q", ancient, old, unsigned, current)
+	}
+	r.fj.moveMain(map[string]string{demoProjectFile: r.fj.file("main", demoProjectFile) +
+		"images:\n  default:\n    digest: " + digestOld + "\n    key: " + keyOld + "\n    tools: [jq]\n"})
+	r.fj.load(t)
+	all := slices.Sorted(slices.Values(slices.Concat(ancient, old, unsigned, current)))
+	r.fj.mu.Lock()
+	r.fj.packages["sandbox-demo-app.default"] = slices.Clone(all)
+	r.fj.packages["sandbox-demo-app.default2"] = []string{keyAncient}
+	r.fj.mu.Unlock()
+
+	r.pass(t)
+	r.pass(t)
+	if prs, _, _ := r.fj.state(); len(prs) != 1 || !prs[0].merged {
+		t.Fatalf("pull requests %+v; want the pin merged", prs)
+	}
+	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 0 {
+		t.Fatalf("before the merged pin is in force: versions %q, %d lists; want all, none", got, lists)
+	}
+	r.fj.load(t)
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, slices.Sorted(slices.Values(slices.Concat(old, current)))) {
+		t.Fatalf("versions kept %q\nwant the pinned build's %q and the previous one's %q", got, current, old)
+	}
+	if got, _ := r.fj.versions("sandbox-demo-app.default2"); !slices.Equal(got, []string{keyAncient}) {
+		t.Fatalf("another package lost versions: %q", got)
+	}
+	want := ImagePinRow{Project: "demo-app", Image: "default", Key: keyDefault, Digest: digestNew, PreviousKey: keyOld, PreviousDigest: digestOld,
+		Since: *r.now, Retained: true}
+	if got := r.book.pins["demo-app/default"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("row %+v\nwant %+v", got, want)
+	}
+	_, lists := r.fj.versions("")
+	r.pass(t)
+	if _, again := r.fj.versions(""); again != lists {
+		t.Fatalf("a pass with the pin unchanged listed the store again")
+	}
+}
+
+// A name that leaves the pins in force loses every version in the store
+// and its row; the name still pinned keeps its package.
+func TestImagerDropsTheCopiesOfAnUnpinnedImage(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	r.fj.mu.Lock()
+	r.fj.packages["sandbox-demo-app.browser"] = []string{keyBrowser, "sha256-" + strings.Repeat("b", 64), "sha256:" + strings.Repeat("c", 64)}
+	r.fj.packages["sandbox-demo-app.default"] = []string{keyDefault}
+	r.fj.mu.Unlock()
+	r.pass(t)
+	r.fj.mu.Lock()
+	r.fj.images["demo-app/demo-app"] = demoImages
+	r.fj.mu.Unlock()
+	r.pass(t)
+	r.pass(t)
+	if got, lists := r.fj.versions("sandbox-demo-app.browser"); len(got) != 3 || lists != 0 {
+		t.Fatalf("before the pins are in force: versions %q, %d lists", got, lists)
+	}
+	r.fj.load(t)
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.browser"); len(got) != 0 {
+		t.Fatalf("the unpinned image keeps %q", got)
+	}
+	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, []string{keyDefault}) {
+		t.Fatalf("the pinned image keeps %q", got)
+	}
+	if _, ok := r.book.pins["demo-app/browser"]; ok || r.book.pins["demo-app/default"].Key != keyDefault {
+		t.Fatalf("rows %+v; want default's alone", r.book.pins)
+	}
+}
+
+// An image but default whose name has been pinned for 30 days, on which no
+// card ran in those 30 days, gets one card on its project's repository that
+// removes it. The check runs once a day and files no other card while that
+// one is open.
+func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	t0, day := *r.now, 24*time.Hour
+	r.book.pins["demo-app/default"] = ImagePinRow{Project: "demo-app", Image: "default", Key: keyDefault, Digest: "sha256:" + strings.Repeat("d", 64),
+		Since: t0.Add(-60 * day), Retained: true}
+	r.book.pins["demo-app/browser"] = ImagePinRow{Project: "demo-app", Image: "browser", Key: keyBrowser, Digest: "sha256:" + strings.Repeat("b", 64),
+		Since: t0.Add(-29 * day), Retained: true}
+	r.book.used["sf/sandbox-demo-app.browser"] = true
+	at := func(d time.Duration) {
+		t.Helper()
+		*r.now = t0.Add(d)
+		r.pass(t)
+	}
+	issues := func() []string {
+		r.fj.mu.Lock()
+		defer r.fj.mu.Unlock()
+		return slicesClone(r.fj.issues)
+	}
+	at(0)
+	at(25 * time.Hour)
+	r.book.used["sf/sandbox-demo-app.browser"] = false
+	at(26 * time.Hour)
+	if got, asked := issues(), []string{"sf/sandbox-demo-app.browser since 2026-09-23T13:00:00Z"}; len(got) != 0 || !slices.Equal(r.book.asked, asked) {
+		t.Fatalf("issues %q, asked %q; want none, %q", got, r.book.asked, asked)
+	}
+
+	at(50 * time.Hour)
+	title := "Remove image browser (unused for 30 days)"
+	body := "Image browser of project demo-app has been pinned for 30 days, and no card ran on it in that time.\n\n" +
+		"Delete the browser entry from factory/images.yaml, and nothing else. After this card merges, the factory unpins the image and deletes its copies in the store.\n\n" +
+		"Acceptance:\n- factory/images.yaml no longer declares image browser.\n- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
+		"Size: small\nRung: cheap"
+	if got := issues(); !slices.Equal(got, []string{title + "\n\n" + body}) {
+		t.Fatalf("issues %q", got)
+	}
+	card := r.book.tasks[r.book.pins["demo-app/browser"].RemovalTask]
+	if card.Source != SourceImageRemoval || card.Repository != "demo-app/demo-app" || card.IssueNumber != 101 || card.Status != "queued" ||
+		card.Objective != title+"\n\n"+body || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" || card.BudgetEUR <= 0 {
+		t.Fatalf("the card %+v", card)
+	}
+
+	at(51 * time.Hour)
+	at(75 * time.Hour)
+	if got := issues(); len(got) != 1 || len(r.book.asked) != 2 {
+		t.Fatalf("with the card open: issues %q, asked %q", got, r.book.asked)
+	}
+	card.Status = "closed"
+	r.book.tasks[card.ID] = card
+	at(100 * time.Hour)
+	if got := issues(); len(got) != 2 || r.book.pins["demo-app/browser"].RemovalTask == card.ID {
+		t.Fatalf("after the card closed: issues %q, row %+v", got, r.book.pins["demo-app/browser"])
+	}
+}
+
+// image_pins keeps one row per project image, replaced whole. ImageUsed
+// finds a card on any build of the image that is unfinished, however old,
+// or finished since the time asked, and none on an image whose name starts
+// with the image's.
+func TestPGStoreImagePins(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE image_pins`); err != nil {
+		t.Fatal(err)
+	}
+	t0 := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
+	rows := func() []ImagePinRow {
+		t.Helper()
+		got, err := s.ImagePins(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i := range got {
+			got[i].Since = got[i].Since.UTC()
+		}
+		return got
+	}
+	def := ImagePinRow{Project: "pins", Image: "default", Key: "k-1", Digest: "sha256:1", Since: t0, Retained: true}
+	browser := ImagePinRow{Project: "pins", Image: "browser", Key: "k-2", Digest: "sha256:2", Since: t0.Add(time.Hour)}
+	for _, r := range []ImagePinRow{def, browser} {
+		if err := s.SaveImagePin(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{browser, def}) {
+		t.Fatalf("rows %+v", got)
+	}
+	changed := ImagePinRow{Project: "pins", Image: "default", Key: "k-3", Digest: "sha256:3", PreviousKey: "k-1", PreviousDigest: "sha256:1",
+		Since: t0, RemovalTask: "t-remove"}
+	if err := s.SaveImagePin(ctx, changed); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteImagePin(ctx, "pins", "browser"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{changed}) {
+		t.Fatalf("rows %+v", got)
+	}
+
+	suffix := fmt.Sprint(time.Now().UnixNano())
+	repo, longer, open := "sf/sandbox-used"+suffix+".browser", "sf/sandbox-used"+suffix+".browser2", "sf/sandbox-used"+suffix+".video"
+	now := time.Now()
+	since := now.Add(-30 * 24 * time.Hour)
+	ran := func(id, image, status string, finished *time.Time, created time.Time) {
+		t.Helper()
+		id += "-" + suffix
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", Repository: "sf/used", Objective: id}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetTaskImage(ctx, id, "git.example.org/"+image+"@sha256:"+strings.Repeat("a", 64), nil); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = $2, finished_at = $3, created_at = $4 WHERE id = $1`, id, status, finished, created); err != nil {
+			t.Fatal(err)
+		}
+	}
+	used := func(repository string) bool {
+		t.Helper()
+		ok, err := s.ImageUsed(ctx, repository, since)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	longAgo := now.Add(-31 * 24 * time.Hour)
+	ran("t-old", repo, "done", &longAgo, longAgo)
+	ran("t-longer", longer, "running", nil, now)
+	if used(repo) {
+		t.Fatal("a card finished 31 days ago, or one on another image, counts")
+	}
+	lately := now.Add(-29 * 24 * time.Hour)
+	ran("t-lately", repo, "failed", &lately, longAgo)
+	ran("t-open", open, "waiting-human", nil, now.Add(-40*24*time.Hour))
+	if !used(repo) || !used(open) {
+		t.Fatalf("a card finished 29 days ago: %v; an open card created 40 days ago: %v", used(repo), used(open))
 	}
 }

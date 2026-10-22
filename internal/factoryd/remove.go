@@ -122,7 +122,7 @@ func (rem *Remover) Remove(ctx context.Context, name string, dry bool) ([]string
 	}
 	var a AdminAuth
 	if !dry {
-		if a, err = rem.adminAuth(ctx); err != nil {
+		if a, err = adminAuth(ctx, rem.OpenBao); err != nil {
 			run.fail("the Forgejo admin's login", err)
 			return run.lines, errors.Join(run.errs...)
 		}
@@ -245,9 +245,10 @@ func (run *removalRun) cluster(ctx context.Context, dry bool) {
 }
 
 // forgejo is step 4, with the site admin's login: the packages, the
-// repository, both forks, the organisation, the CI user, and the
-// project's tokens on factory-projects, factory-merge, factory-gate and
-// factory-chat. dry names each target without a call.
+// project's sandbox images in sf, the repository, both forks, the
+// organisation, the CI user, and the project's tokens on factory-projects,
+// factory-merge, factory-gate and factory-chat. dry names each target
+// without a call.
 func (run *removalRun) forgejo(ctx context.Context, a AdminAuth, repo Repo, dry bool) {
 	rem, name := run.rem, run.name
 	f := rem.Forgejo
@@ -256,6 +257,7 @@ func (run *removalRun) forgejo(ctx context.Context, a AdminAuth, repo Repo, dry 
 	tokens := []struct{ user, token string }{{rem.ProjectsUser, "git-" + name}, {MergeUser, "project-" + name}, {GateUser, "project-" + name}, {ChatUser, "project-" + name}}
 	if dry {
 		run.line("packages", Change("would delete "+name+"'s packages"))
+		run.line("sandbox images", Change("would delete "+imageRepository(name, "*")))
 		run.line("repository "+repo.String(), Change("would delete"))
 		for _, fork := range forks {
 			run.line("fork "+fork.String(), Change("would delete"))
@@ -274,7 +276,11 @@ func (run *removalRun) forgejo(ctx context.Context, a AdminAuth, repo Repo, dry 
 		run.line(object, c)
 		return true
 	}
-	if n, err := f.AdminDeletePackages(ctx, a, name); !step("packages", count(n), err) {
+	if n, err := f.AdminDeletePackages(ctx, a, name, "", nil); !step("packages", count(n), err) {
+		return
+	}
+	owner, prefix, _ := strings.Cut(imageRepository(name, ""), "/")
+	if n, err := f.AdminDeletePackages(ctx, a, owner, prefix, func(p PackageVersion) bool { return strings.HasPrefix(p.Name, prefix) }); !step("sandbox images", count(n), err) {
 		return
 	}
 	if c, err := f.AdminDeleteRepo(ctx, a, repo); !step("repository "+repo.String(), c, err) {
@@ -369,36 +375,27 @@ func count(n int) Change {
 	return Change(fmt.Sprintf("deleted %d", n))
 }
 
-// adminAuth reads the site admin's login from OpenBao, as register's does.
-func (rem *Remover) adminAuth(ctx context.Context) (AdminAuth, error) {
-	if rem.OpenBao == nil {
-		return AdminAuth{}, errors.New("the Forgejo admin's login: no OpenBao client")
-	}
-	kv, err := rem.OpenBao.KV(ctx, AdminSecret)
-	if err != nil {
-		return AdminAuth{}, fmt.Errorf("the Forgejo admin's login: %w", err)
-	}
-	a := AdminAuth{User: kv["username"], Password: kv["password"]}
-	if a.User == "" || a.Password == "" {
-		return AdminAuth{}, fmt.Errorf("the Forgejo admin's login: %s lacks username or password", AdminSecret)
-	}
-	return a, nil
+// PackageVersion is one version of a package as Forgejo lists it.
+type PackageVersion struct {
+	Type    string `json:"type"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
-// AdminDeletePackages deletes every package owner holds (the project's
-// container images in its organisation) and says how many.
-func (f *Forgejo) AdminDeletePackages(ctx context.Context, a AdminAuth, owner string) (int, error) {
+// AdminDeletePackages deletes, as the site admin, every version of owner's
+// packages whose name holds q ("" any) that drop picks (nil: every one),
+// and says how many.
+func (f *Forgejo) AdminDeletePackages(ctx context.Context, a AdminAuth, owner, q string, drop func(PackageVersion) bool) (int, error) {
 	call := f.adminCall(a)
-	pkgs, err := GetPages[struct {
-		Type    string `json:"type"`
-		Name    string `json:"name"`
-		Version string `json:"version"`
-	}](ctx, call, "/api/v1/packages/"+url.PathEscape(owner)+"?")
+	pkgs, err := GetPages[PackageVersion](ctx, call, "/api/v1/packages/"+url.PathEscape(owner)+"?q="+url.QueryEscape(q)+"&")
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, p := range pkgs {
+		if drop != nil && !drop(p) {
+			continue
+		}
 		path := fmt.Sprintf("/api/v1/packages/%s/%s/%s/%s", url.PathEscape(owner), url.PathEscape(p.Type), url.PathEscape(p.Name), url.PathEscape(p.Version))
 		if _, err := call(ctx, http.MethodDelete, path, nil, http.StatusNoContent); err != nil && !errors.Is(err, ErrNotFound) {
 			return n, err
