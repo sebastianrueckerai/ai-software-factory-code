@@ -56,10 +56,14 @@ type imagerForgejo struct {
 	refuse     int // Forgejo answers the bot's merge 405 (1) or 409 (2)
 	inForce    policy.Version
 	// packages are sf's container package versions by package name, which
-	// the site admin lists and deletes; lists counts the lists
-	packages map[string][]string
-	lists    int
-	issues   []string // the issues filed on demo-app/demo-app, title and body
+	// the site admin lists and deletes; lists counts the lists, the next
+	// failLists of which answer 500, and with bumpOnList a list loads a new
+	// version of main's commit
+	packages   map[string][]string
+	lists      int
+	failLists  int
+	bumpOnList bool
+	issues     []string // the issues filed on demo-app/demo-app, title and body
 }
 
 type forkBranch struct{ head, base string }
@@ -117,11 +121,21 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 		switch {
 		case by == "nobody":
 			http.NotFound(w, r)
+		case by == "admin" && r.Method == http.MethodGet && p == "/api/v1/packages/sf" && q.Get("page") != "1":
+			fmt.Fprint(w, `[]`)
 		case by == "admin" && r.Method == http.MethodGet && p == "/api/v1/packages/sf":
 			s.lists++
+			if s.failLists > 0 {
+				s.failLists--
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			if s.bumpOnList {
+				s.inForce.ID++
+			}
 			out := []map[string]string{}
 			for _, name := range slices.Sorted(maps.Keys(s.packages)) {
-				if q.Get("page") == "1" && strings.Contains(name, strings.ToLower(q.Get("q"))) {
+				if strings.Contains(name, strings.ToLower(q.Get("q"))) {
 					for _, v := range s.packages[name] {
 						out = append(out, map[string]string{"type": "container", "name": name, "version": v})
 					}
@@ -328,7 +342,7 @@ func (s *imagerForgejo) load(t *testing.T) {
 	if err != nil {
 		t.Fatalf("main's tree: %v", err)
 	}
-	s.inForce = policy.Version{Commit: s.main, Tree: tree}
+	s.inForce = policy.Version{ID: s.inForce.ID + 1, Commit: s.main, Tree: tree}
 }
 
 func (s *imagerForgejo) version() policy.Version {
@@ -390,8 +404,9 @@ type imageBook struct {
 	tasks   map[string]Task
 	removed []string               // "task on dependency" of every dependency removed
 	pins    map[string]ImagePinRow // by project/image
-	used    map[string]bool        // the repositories a card ran on lately
-	asked   []string               // ImageUsed's questions, "<repository> since <time>"
+	used    map[string]bool        // the store repositories of the images a card names lately
+	usedErr error                  // ImageUsed's answer when set
+	asked   []string               // ImageUsed's questions, "<repository> <image> <store> since <time>"
 }
 
 func (b *imageBook) ImagePins(context.Context) ([]ImagePinRow, error) {
@@ -418,11 +433,11 @@ func (b *imageBook) DeleteImagePin(_ context.Context, project, image string) err
 	return nil
 }
 
-func (b *imageBook) ImageUsed(_ context.Context, repository string, since time.Time) (bool, error) {
+func (b *imageBook) ImageUsed(_ context.Context, repository, image, store string, since time.Time) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	b.asked = append(b.asked, repository+" since "+since.Format(time.RFC3339))
-	return b.used[repository], nil
+	b.asked = append(b.asked, repository+" "+image+" "+store+" since "+since.Format(time.RFC3339))
+	return b.used[store], b.usedErr
 }
 
 func (b *imageBook) Project(_ context.Context, name string) (Project, bool, error) {
@@ -1336,40 +1351,137 @@ func TestImagerKeepsThePinnedAndThePreviousBuild(t *testing.T) {
 	}
 }
 
-// A name that leaves the pins in force loses every version in the store
-// and its row; the name still pinned keeps its package.
-func TestImagerDropsTheCopiesOfAnUnpinnedImage(t *testing.T) {
+// A name that leaves the pins in force keeps its last pin's build for 30
+// days after the unpin is first seen, its other builds going at once, then
+// loses every version and its row; the name still pinned keeps its package,
+// and a project absent from the version in force is remove-project's.
+func TestImagerKeepsAnUnpinnedImagesLastBuildFor30Days(t *testing.T) {
 	r := newImagerRig(t, bothImages, demoBothPinned)
+	const repo = "sf/sandbox-demo-app.browser"
+	_, older := r.build(repo, "k-"+strings.Repeat("4", 24), r.key, 700)
+	digestBrowser, last := r.build(repo, keyBrowser, r.key, 750)
+	r.fj.moveMain(map[string]string{demoProjectFile: strings.Replace(r.fj.file("main", demoProjectFile), "sha256:"+strings.Repeat("b", 64), digestBrowser, 1)})
+	r.fj.load(t)
+	gone := ImagePinRow{Project: "gone-app", Image: "default", Key: keyDefault, Digest: "sha256:" + strings.Repeat("9", 64), Since: r.now.Add(-time.Hour)}
+	r.book.pins["gone-app/default"] = gone
 	r.fj.mu.Lock()
-	r.fj.packages["sandbox-demo-app.browser"] = []string{keyBrowser, "sha256-" + strings.Repeat("b", 64), "sha256:" + strings.Repeat("c", 64)}
+	r.fj.packages["sandbox-demo-app.browser"] = slices.Concat(older, last)
 	r.fj.packages["sandbox-demo-app.default"] = []string{keyDefault}
-	r.fj.mu.Unlock()
-	r.pass(t)
-	r.fj.mu.Lock()
+	r.fj.packages["sandbox-gone-app.default"] = []string{keyDefault}
 	r.fj.images["demo-app/demo-app"] = demoImages
 	r.fj.mu.Unlock()
 	r.pass(t)
 	r.pass(t)
-	if got, lists := r.fj.versions("sandbox-demo-app.browser"); len(got) != 3 || lists != 0 {
-		t.Fatalf("before the pins are in force: versions %q, %d lists", got, lists)
+	if got, lists := r.fj.versions("sandbox-demo-app.browser"); len(got) != 8 || lists != 0 {
+		t.Fatalf("before the unpin is in force: versions %q, %d lists", got, lists)
 	}
 	r.fj.load(t)
+	t0 := *r.now
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.browser"); !slices.Equal(got, last) {
+		t.Fatalf("the unpinned image keeps %q; want its last build %q", got, last)
+	}
+	if row := r.book.pins["demo-app/browser"]; !row.UnpinnedAt.Equal(t0) || !row.Retained || row.Key != keyBrowser {
+		t.Fatalf("the unpinned row %+v", row)
+	}
+	*r.now = t0.Add(30*24*time.Hour - time.Minute)
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.browser"); !slices.Equal(got, last) {
+		t.Fatalf("29 days on, the unpinned image keeps %q", got)
+	}
+	*r.now = t0.Add(30 * 24 * time.Hour)
 	r.pass(t)
 	if got, _ := r.fj.versions("sandbox-demo-app.browser"); len(got) != 0 {
-		t.Fatalf("the unpinned image keeps %q", got)
+		t.Fatalf("30 days on, the unpinned image keeps %q", got)
+	}
+	if _, ok := r.book.pins["demo-app/browser"]; ok || r.book.pins["demo-app/default"].Key != keyDefault {
+		t.Fatalf("rows %+v; want browser's gone", r.book.pins)
 	}
 	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, []string{keyDefault}) {
 		t.Fatalf("the pinned image keeps %q", got)
 	}
-	if _, ok := r.book.pins["demo-app/browser"]; ok || r.book.pins["demo-app/default"].Key != keyDefault {
-		t.Fatalf("rows %+v; want default's alone", r.book.pins)
+	if got, _ := r.fj.versions("sandbox-gone-app.default"); !slices.Equal(got, []string{keyDefault}) || !reflect.DeepEqual(r.book.pins["gone-app/default"], gone) {
+		t.Fatalf("a project absent from the version in force: versions %q, row %+v", got, r.book.pins["gone-app/default"])
 	}
 }
 
-// An image but default whose name has been pinned for 30 days, on which no
-// card ran in those 30 days, gets one card on its project's repository that
-// removes it. The check runs once a day and files no other card while that
-// one is open.
+// A sweep runs only while infra's main is the commit in force: a pin merged
+// there and not loaded yet keeps its build through the retry of a sweep that
+// failed, and once loaded it is the pin the sweep keeps.
+func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	const repo = "sf/sandbox-demo-app.default"
+	keyOld, keyMid := "k-"+strings.Repeat("1", 24), "k-"+strings.Repeat("2", 24)
+	digestOld, old := r.build(repo, keyOld, r.key, 900)
+	digestMid, mid := r.build(repo, keyMid, r.key, 950)
+	digestNew, merged := r.build(repo, keyDefault, r.key, 1000)
+	r.fj.moveMain(map[string]string{demoProjectFile: r.fj.file("main", demoProjectFile) +
+		"images:\n  default:\n    digest: " + digestMid + "\n    key: " + keyMid + "\n    tools: [jq]\n"})
+	r.fj.load(t)
+	r.book.pins["demo-app/default"] = ImagePinRow{Project: "demo-app", Image: "default", Key: keyMid, Digest: digestMid,
+		PreviousKey: keyOld, PreviousDigest: digestOld, Since: *r.now}
+	all := slices.Sorted(slices.Values(slices.Concat(old, mid, merged)))
+	r.fj.mu.Lock()
+	r.fj.packages["sandbox-demo-app.default"] = slices.Clone(all)
+	r.fj.failLists = 2
+	r.fj.mu.Unlock()
+	for n := range 2 {
+		if err := r.im.pass(context.Background()); err == nil || !strings.Contains(err.Error(), "retention: image default of demo-app: ") {
+			t.Fatalf("pass %d: %v; want the failed sweep", n+1, err)
+		}
+	}
+	if prs, _, _ := r.fj.state(); len(prs) != 1 || !prs[0].merged {
+		t.Fatalf("pull requests %+v; want the pin of %s merged", prs, keyDefault)
+	}
+	r.pass(t)
+	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 2 || r.book.pins["demo-app/default"].Retained {
+		t.Fatalf("main past the commit in force: versions %q, %d lists, row %+v; want all, the two failed, the sweep due", got, lists, r.book.pins["demo-app/default"])
+	}
+	r.fj.load(t)
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, slices.Sorted(slices.Values(slices.Concat(mid, merged)))) {
+		t.Fatalf("versions kept %q; want the merged pin's and the one before", got)
+	}
+	if row := r.book.pins["demo-app/default"]; row.Key != keyDefault || row.Digest != digestNew || row.PreviousKey != keyMid || !row.Retained {
+		t.Fatalf("row %+v", row)
+	}
+}
+
+// A sweep stops before its first delete once the version in force is no
+// longer the one whose pins it keeps; the next pass sweeps again.
+func TestImagerSweepStopsWhenTheVersionMoves(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	const repo = "sf/sandbox-demo-app.default"
+	_, stale := r.build(repo, "k-"+strings.Repeat("1", 24), r.key, 900)
+	digest, current := r.build(repo, keyDefault, r.key, 1000)
+	r.fj.moveMain(map[string]string{demoProjectFile: r.fj.file("main", demoProjectFile) +
+		"images:\n  default:\n    digest: " + digest + "\n    key: " + keyDefault + "\n    tools: [jq]\n"})
+	r.fj.load(t)
+	r.book.pins["demo-app/default"] = ImagePinRow{Project: "demo-app", Image: "default", Key: keyDefault, Digest: digest,
+		PreviousKey: "k-" + strings.Repeat("3", 24), PreviousDigest: "sha256:" + strings.Repeat("3", 64), Since: *r.now}
+	all := slices.Sorted(slices.Values(slices.Concat(stale, current)))
+	r.fj.mu.Lock()
+	r.fj.packages["sandbox-demo-app.default"] = slices.Clone(all)
+	r.fj.bumpOnList = true
+	r.fj.mu.Unlock()
+	r.pass(t)
+	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 1 || r.book.pins["demo-app/default"].Retained {
+		t.Fatalf("the version moved: versions %q, %d lists, row %+v; want all, one list, the sweep due", got, lists, r.book.pins["demo-app/default"])
+	}
+	r.fj.mu.Lock()
+	r.fj.bumpOnList = false
+	r.fj.mu.Unlock()
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, current) || !r.book.pins["demo-app/default"].Retained {
+		t.Fatalf("the next pass: versions %q, row %+v; want %q", got, r.book.pins["demo-app/default"], current)
+	}
+}
+
+// An image but default whose name has been pinned for 30 days, which no
+// card named or ran on in those 30 days, gets one card on its project's
+// repository that removes it. The check runs once a day, failed or not. An
+// open card, or one finished within 30 days (merged: the unpin lands
+// meanwhile; declined: the 30 days start again), files no other.
 func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 	r := newImagerRig(t, bothImages, demoBothPinned)
 	t0, day := *r.now, 24*time.Hour
@@ -1377,29 +1489,39 @@ func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 		Since: t0.Add(-60 * day), Retained: true}
 	r.book.pins["demo-app/browser"] = ImagePinRow{Project: "demo-app", Image: "browser", Key: keyBrowser, Digest: "sha256:" + strings.Repeat("b", 64),
 		Since: t0.Add(-29 * day), Retained: true}
-	r.book.used["sf/sandbox-demo-app.browser"] = true
-	at := func(d time.Duration) {
-		t.Helper()
+	at := func(d time.Duration) error {
 		*r.now = t0.Add(d)
-		r.pass(t)
+		return r.im.pass(context.Background())
 	}
 	issues := func() []string {
 		r.fj.mu.Lock()
 		defer r.fj.mu.Unlock()
 		return slicesClone(r.fj.issues)
 	}
-	at(0)
-	at(25 * time.Hour)
-	r.book.used["sf/sandbox-demo-app.browser"] = false
-	at(26 * time.Hour)
-	if got, asked := issues(), []string{"sf/sandbox-demo-app.browser since 2026-09-23T13:00:00Z"}; len(got) != 0 || !slices.Equal(r.book.asked, asked) {
-		t.Fatalf("issues %q, asked %q; want none, %q", got, r.book.asked, asked)
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("pass: %v", err)
+		}
+	}
+	must(at(0))
+	r.book.usedErr = errors.New("the store is down")
+	if err := at(25 * time.Hour); err == nil || !strings.Contains(err.Error(), "the store is down") {
+		t.Fatalf("pass = %v; want the failed check", err)
+	}
+	r.book.usedErr = nil
+	must(at(26 * time.Hour))
+	r.book.used["sf/sandbox-demo-app.browser"] = true
+	must(at(50 * time.Hour))
+	if got := issues(); len(got) != 0 || len(r.book.asked) != 2 {
+		t.Fatalf("issues %q, asked %q; want none, the checks of 25 h and 50 h", got, r.book.asked)
 	}
 
-	at(50 * time.Hour)
+	r.book.used["sf/sandbox-demo-app.browser"] = false
+	must(at(75 * time.Hour))
 	title := "Remove image browser (unused for 30 days)"
 	body := "Image browser of project demo-app has been pinned for 30 days, and no card ran on it in that time.\n\n" +
-		"Delete the browser entry from factory/images.yaml, and nothing else. After this card merges, the factory unpins the image and deletes its copies in the store.\n\n" +
+		"Delete the browser entry from factory/images.yaml, and nothing else. After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n" +
 		"Acceptance:\n- factory/images.yaml no longer declares image browser.\n- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
 		"Size: small\nRung: cheap"
 	if got := issues(); !slices.Equal(got, []string{title + "\n\n" + body}) {
@@ -1411,23 +1533,41 @@ func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 		t.Fatalf("the card %+v", card)
 	}
 
-	at(51 * time.Hour)
-	at(75 * time.Hour)
-	if got := issues(); len(got) != 1 || len(r.book.asked) != 2 {
-		t.Fatalf("with the card open: issues %q, asked %q", got, r.book.asked)
-	}
-	card.Status = "closed"
+	must(at(76 * time.Hour))
+	must(at(100 * time.Hour))
+	declined := t0.Add(100 * time.Hour)
+	card.Status, card.FinishedAt = "closed", &declined
 	r.book.tasks[card.ID] = card
-	at(100 * time.Hour)
-	if got := issues(); len(got) != 2 || r.book.pins["demo-app/browser"].RemovalTask == card.ID {
-		t.Fatalf("after the card closed: issues %q, row %+v", got, r.book.pins["demo-app/browser"])
+	must(at(125 * time.Hour))
+	if got := issues(); len(got) != 1 {
+		t.Fatalf("with the card open, then declined a day ago: issues %q", got)
+	}
+	must(at(100*time.Hour + 30*day))
+	second := r.book.tasks[r.book.pins["demo-app/browser"].RemovalTask]
+	if got := issues(); len(got) != 2 || second.ID == card.ID {
+		t.Fatalf("30 days after the decline: issues %q, row %+v", got, r.book.pins["demo-app/browser"])
+	}
+	merged := t0.Add(100*time.Hour + 30*day)
+	second.Status, second.FinishedAt = "merged", &merged
+	r.book.tasks[second.ID] = second
+	must(at(125*time.Hour + 30*day))
+	asked := []string{
+		"demo-app/demo-app browser sf/sandbox-demo-app.browser since 2026-09-23T13:00:00Z",
+		"demo-app/demo-app browser sf/sandbox-demo-app.browser since 2026-09-24T14:00:00Z",
+		"demo-app/demo-app browser sf/sandbox-demo-app.browser since 2026-09-25T15:00:00Z",
+		"demo-app/demo-app browser sf/sandbox-demo-app.browser since 2026-10-26T16:00:00Z",
+	}
+	if got := issues(); len(got) != 2 || !slices.Equal(r.book.asked, asked) {
+		t.Fatalf("with the second card merged: issues %q, asked %q; want 2, %q", got, r.book.asked, asked)
 	}
 }
 
-// image_pins keeps one row per project image, replaced whole. ImageUsed
-// finds a card on any build of the image that is unfinished, however old,
-// or finished since the time asked, and none on an image whose name starts
-// with the image's.
+// image_pins keeps one row per project image, replaced whole, and
+// DeleteProjectImages drops a project's image_pins and image_builds rows.
+// ImageUsed finds a card of the project's repository that names the image
+// or ran on a build of it, unfinished however old or finished since the
+// time asked, and none that names another image or is another
+// repository's.
 func TestPGStoreImagePins(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -1435,7 +1575,7 @@ func TestPGStoreImagePins(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE image_pins`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE image_pins; TRUNCATE image_builds`); err != nil {
 		t.Fatal(err)
 	}
 	t0 := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
@@ -1447,66 +1587,82 @@ func TestPGStoreImagePins(t *testing.T) {
 		}
 		for i := range got {
 			got[i].Since = got[i].Since.UTC()
+			if !got[i].UnpinnedAt.IsZero() {
+				got[i].UnpinnedAt = got[i].UnpinnedAt.UTC()
+			}
 		}
 		return got
 	}
 	def := ImagePinRow{Project: "pins", Image: "default", Key: "k-1", Digest: "sha256:1", Since: t0, Retained: true}
 	browser := ImagePinRow{Project: "pins", Image: "browser", Key: "k-2", Digest: "sha256:2", Since: t0.Add(time.Hour)}
-	for _, r := range []ImagePinRow{def, browser} {
+	other := ImagePinRow{Project: "other", Image: "default", Key: "k-9", Digest: "sha256:9", Since: t0}
+	for _, r := range []ImagePinRow{def, browser, other} {
 		if err := s.SaveImagePin(ctx, r); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{browser, def}) {
+	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{other, browser, def}) {
 		t.Fatalf("rows %+v", got)
 	}
 	changed := ImagePinRow{Project: "pins", Image: "default", Key: "k-3", Digest: "sha256:3", PreviousKey: "k-1", PreviousDigest: "sha256:1",
-		Since: t0, RemovalTask: "t-remove"}
+		Since: t0, UnpinnedAt: t0.Add(2 * time.Hour), RemovalTask: "t-remove"}
 	if err := s.SaveImagePin(ctx, changed); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.DeleteImagePin(ctx, "pins", "browser"); err != nil {
 		t.Fatal(err)
 	}
-	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{changed}) {
+	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{other, changed}) {
 		t.Fatalf("rows %+v", got)
+	}
+	if err := s.RecordImageRead(ctx, "pins", "default", "k-3", t0); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.DeleteProjectImages(ctx, "pins"); err != nil || n != 2 {
+		t.Fatalf("deleted %d image rows, %v; want the pin's and the build's", n, err)
+	}
+	if got := rows(); !reflect.DeepEqual(got, []ImagePinRow{other}) {
+		t.Fatalf("rows after the project's went %+v", got)
 	}
 
 	suffix := fmt.Sprint(time.Now().UnixNano())
-	repo, longer, open := "sf/sandbox-used"+suffix+".browser", "sf/sandbox-used"+suffix+".browser2", "sf/sandbox-used"+suffix+".video"
+	repo := "used" + suffix + "/app"
+	store := func(image string) string { return "sf/sandbox-used" + suffix + "." + image }
 	now := time.Now()
 	since := now.Add(-30 * 24 * time.Hour)
-	ran := func(id, image, status string, finished *time.Time, created time.Time) {
+	card := func(id, repository, image, ranOn, status string, finished *time.Time, created time.Time) {
 		t.Helper()
 		id += "-" + suffix
-		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", Repository: "sf/used", Objective: id}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", Repository: repository, Objective: id, Image: image}); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.SetTaskImage(ctx, id, "git.example.org/"+image+"@sha256:"+strings.Repeat("a", 64), nil); err != nil {
-			t.Fatal(err)
+		if ranOn != "" {
+			if err := s.SetTaskImage(ctx, id, "git.example.org/"+ranOn+"@sha256:"+strings.Repeat("a", 64), nil); err != nil {
+				t.Fatal(err)
+			}
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = $2, finished_at = $3, created_at = $4 WHERE id = $1`, id, status, finished, created); err != nil {
 			t.Fatal(err)
 		}
 	}
-	used := func(repository string) bool {
+	used := func(image string) bool {
 		t.Helper()
-		ok, err := s.ImageUsed(ctx, repository, since)
+		ok, err := s.ImageUsed(ctx, repo, image, store(image), since)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return ok
 	}
-	longAgo := now.Add(-31 * 24 * time.Hour)
-	ran("t-old", repo, "done", &longAgo, longAgo)
-	ran("t-longer", longer, "running", nil, now)
-	if used(repo) {
-		t.Fatal("a card finished 31 days ago, or one on another image, counts")
+	longAgo, lately := now.Add(-31*24*time.Hour), now.Add(-29*24*time.Hour)
+	card("t-old", repo, "browser", store("browser"), "done", &longAgo, longAgo)
+	card("t-longer", repo, "browser2", store("browser2"), "running", nil, now)
+	card("t-elsewhere", "other"+suffix+"/app", "browser", store("browser"), "running", nil, now)
+	if used("browser") {
+		t.Fatal("a card finished 31 days ago, one on another image or one of another repository counts")
 	}
-	lately := now.Add(-29 * 24 * time.Hour)
-	ran("t-lately", repo, "failed", &lately, longAgo)
-	ran("t-open", open, "waiting-human", nil, now.Add(-40*24*time.Hour))
-	if !used(repo) || !used(open) {
-		t.Fatalf("a card finished 29 days ago: %v; an open card created 40 days ago: %v", used(repo), used(open))
+	card("t-lately", repo, "browser", store("browser"), "failed", &lately, longAgo)
+	card("t-plan", repo, "video", "", "waiting-deps", nil, now.Add(-40*24*time.Hour))
+	if !used("browser") || !used("video") {
+		t.Fatalf("a card finished 29 days ago: %v; a plan card naming the image, waiting since 40 days: %v", used("browser"), used("video"))
 	}
 }

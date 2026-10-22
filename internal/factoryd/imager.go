@@ -43,6 +43,9 @@ const (
 	// on it before a card removes it; the check runs once a day.
 	unusedFor   = 30 * 24 * time.Hour
 	unusedCheck = 24 * time.Hour
+	// unpinGrace is how long the store keeps the last build of a name no
+	// longer pinned, so an unpin by mistake is undone by pinning it again.
+	unpinGrace = 30 * 24 * time.Hour
 )
 
 // SourceImageRemoval is the source of the card that removes an image no
@@ -56,8 +59,9 @@ const SourceImageRemoval = "image_removal"
 // the configuration repository, through one pull request per project from
 // the bot's fork, which the imager merges itself when it changes the
 // images block and nothing else. Once a pin changes in force, the store
-// keeps of that image only the pinned build and the one before; once a
-// day, an image but default no card ran on for unusedFor gets a card that
+// keeps of that image only the pinned build and the one before, and of a
+// name no longer pinned its last build for unpinGrace; once a day, an
+// image but default no card named or ran on for unusedFor gets a card that
 // removes it.
 type Imager struct {
 	// Forgejo is the bot: it reads every project repository, owns the fork
@@ -124,23 +128,26 @@ type ImageStore interface {
 	ImagePins(ctx context.Context) ([]ImagePinRow, error)
 	SaveImagePin(ctx context.Context, r ImagePinRow) error
 	DeleteImagePin(ctx context.Context, project, image string) error
-	// ImageUsed is whether a card that is unfinished or finished since
-	// since ran on a build of repository.
-	ImageUsed(ctx context.Context, repository string, since time.Time) (bool, error)
+	// ImageUsed is whether a card of repository, unfinished or finished
+	// since since, names image or ran on a build of it, which the store
+	// keeps at store.
+	ImageUsed(ctx context.Context, repository, image, store string, since time.Time) (bool, error)
 	Project(ctx context.Context, name string) (Project, bool, error)
 	CreateTask(ctx context.Context, t Task) error
 }
 
 // ImagePinRow is image_pins' row: the pin of Project's Image the imager
 // last saw in force, Key and Digest, and the one before it, "" for none
-// seen; Since when the name has been pinned; Retained once the store holds
-// no build of the image but the two pins'; RemovalTask the last card filed
-// to remove the image as unused, "" for none.
+// seen; Since when the name has been pinned; UnpinnedAt when the imager
+// first saw it no longer pinned, zero while it is; Retained once the store
+// holds no build of the image but those it keeps; RemovalTask the last
+// card filed to remove the image as unused, "" for none.
 type ImagePinRow struct {
 	Project, Image              string
 	Key, Digest                 string
 	PreviousKey, PreviousDigest string
 	Since                       time.Time
+	UnpinnedAt                  time.Time
 	Retained                    bool
 	RemovalTask                 string
 }
@@ -206,38 +213,70 @@ func (i *Imager) pass(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// retain records the pins in force against the rows of the last pass. A
-// pin first seen is recorded as it is: what was pinned before is unknown.
-// A changed pin keeps the one before it, and once per change the store
-// keeps of the image only the two (sweep). A name no longer pinned loses
-// every build, then its row.
+// retain records the pins in force against the rows of the last pass and
+// keeps the store to them. A pin first seen is recorded as it is: what was
+// pinned before is unknown. A changed pin keeps the one before it, and the
+// store keeps of the image only the two. A name no longer pinned keeps its
+// last pin's build for unpinGrace from when the unpin was first seen, then
+// loses every version and its row. A project absent from v is
+// remove-project's. Nothing is deleted while infra's main is past v's
+// commit, whose pin may not be in force yet: a sweep that did not run, or
+// failed, runs at a later pass.
 func (i *Imager) retain(ctx context.Context, v policy.Version, now time.Time) error {
 	rows, err := i.Store.ImagePins(ctx)
 	if err != nil {
 		return err
 	}
+	var head string
 	var a AdminAuth
-	sweep := func(r ImagePinRow, kept ...policy.ImagePin) error {
-		if a.User == "" {
-			var err error
-			if a, err = adminAuth(ctx, i.OpenBao); err != nil {
-				return err
+	// sweep keeps of r's image only kept's builds; false when it did not
+	sweep := func(r ImagePinRow, kept ...policy.ImagePin) (bool, error) {
+		var err error
+		if head == "" {
+			if head, err = i.Config.Head(ctx); err != nil {
+				return false, err
 			}
 		}
-		return i.sweep(ctx, a, r.Project, r.Image, kept...)
+		if head != v.Commit {
+			return false, nil
+		}
+		if a.User == "" {
+			if a, err = adminAuth(ctx, i.OpenBao); err != nil {
+				return false, err
+			}
+		}
+		return i.sweep(ctx, a, v, r.Project, r.Image, kept...)
 	}
 	var errs []error
+	note := func(r ImagePinRow, err error) {
+		if err != nil {
+			errs = append(errs, fmt.Errorf("image %s of %s: %w", r.Image, r.Project, err))
+		}
+	}
 	seen := map[string]ImagePinRow{}
 	for _, r := range rows {
 		seen[r.Project+"/"+r.Image] = r
-		if _, pinned := v.Projects[r.Project].Images[r.Image]; pinned {
+		c, present := v.Projects[r.Project]
+		if _, pinned := c.Images[r.Image]; pinned || !present {
 			continue
 		}
-		if err := sweep(r); err != nil {
-			errs = append(errs, fmt.Errorf("image %s of %s: %w", r.Image, r.Project, err))
-		} else if err := i.Store.DeleteImagePin(ctx, r.Project, r.Image); err != nil {
-			errs = append(errs, err)
+		switch {
+		case r.UnpinnedAt.IsZero():
+			r.UnpinnedAt, r.Retained = now, false
+		case now.Sub(r.UnpinnedAt) >= unpinGrace:
+			done, err := sweep(r)
+			note(r, err)
+			if done {
+				note(r, i.Store.DeleteImagePin(ctx, r.Project, r.Image))
+			}
+			continue
+		case r.Retained:
+			continue
 		}
+		done, err := sweep(r, policy.ImagePin{Key: r.Key, Digest: r.Digest})
+		note(r, err)
+		r.Retained = done
+		note(r, i.Store.SaveImagePin(ctx, r))
 	}
 	for _, project := range slices.Sorted(maps.Keys(v.Projects)) {
 		pins := v.Projects[project].Images
@@ -247,21 +286,20 @@ func (i *Imager) retain(ctx context.Context, v policy.Version, now time.Time) er
 			switch {
 			case !ok:
 				r = ImagePinRow{Project: project, Image: image, Key: pin.Key, Digest: pin.Digest, Since: now, Retained: true}
-			case r.Key != pin.Key || r.Digest != pin.Digest:
-				r.PreviousKey, r.PreviousDigest, r.Key, r.Digest, r.Retained = r.Key, r.Digest, pin.Key, pin.Digest, false
-			case r.Retained:
+			case !r.UnpinnedAt.IsZero():
+				r.UnpinnedAt, r.Since, r.RemovalTask, r.Retained = time.Time{}, now, "", false
+			case r.Retained && r.Key == pin.Key && r.Digest == pin.Digest:
 				continue
 			}
+			if r.Key != pin.Key || r.Digest != pin.Digest {
+				r.PreviousKey, r.PreviousDigest, r.Key, r.Digest, r.Retained = r.Key, r.Digest, pin.Key, pin.Digest, false
+			}
 			if !r.Retained {
-				err := sweep(r, pin, policy.ImagePin{Key: r.PreviousKey, Digest: r.PreviousDigest})
-				r.Retained = err == nil
-				if err != nil {
-					errs = append(errs, fmt.Errorf("image %s of %s: %w", image, project, err))
-				}
+				done, err := sweep(r, pin, policy.ImagePin{Key: r.PreviousKey, Digest: r.PreviousDigest})
+				note(r, err)
+				r.Retained = done
 			}
-			if err := i.Store.SaveImagePin(ctx, r); err != nil {
-				errs = append(errs, err)
-			}
+			note(r, i.Store.SaveImagePin(ctx, r))
 		}
 	}
 	return errors.Join(errs...)
@@ -270,8 +308,9 @@ func (i *Imager) retain(ctx context.Context, v policy.Version, now time.Time) er
 // sweep deletes, with the site admin's login a, every version of project's
 // image in the store but the kept pins': each one's key, the tag
 // sha256-<hex> of cosign's signature, and the manifests the two indexes
-// name, which Forgejo lists as versions named by their digests.
-func (i *Imager) sweep(ctx context.Context, a AdminAuth, project, image string, kept ...policy.ImagePin) error {
+// name, which Forgejo lists as versions named by their digests. It stops
+// before a delete, false, once the version in force is no longer v.
+func (i *Imager) sweep(ctx context.Context, a AdminAuth, v policy.Version, project, image string, kept ...policy.ImagePin) (bool, error) {
 	repo := imageRepository(project, image)
 	keep := map[string]bool{}
 	var keys []string
@@ -283,13 +322,13 @@ func (i *Imager) sweep(ctx context.Context, a AdminAuth, project, image string, 
 		if tok == "" {
 			var err error
 			if tok, err = i.Registry.Token(ctx); err != nil {
-				return err
+				return false, err
 			}
 		}
 		for _, ref := range []string{pin.Digest, sig} {
 			entries, err := i.Registry.IndexEntries(ctx, tok, repo, ref)
 			if err != nil && !errors.Is(err, ErrNotFound) {
-				return err
+				return false, err
 			}
 			for _, e := range entries {
 				keep[e] = true
@@ -297,22 +336,37 @@ func (i *Imager) sweep(ctx context.Context, a AdminAuth, project, image string, 
 		}
 	}
 	owner, name, _ := strings.Cut(repo, "/")
-	n, err := i.Forgejo.AdminDeletePackages(ctx, a, owner, name, func(p PackageVersion) bool {
-		return p.Type == "container" && p.Name == name && !keep[p.Version]
-	})
-	if err == nil {
-		log.Printf("imager: deleted %d versions of %s, kept %s", n, repo, cmp.Or(strings.Join(keys, " and "), "none"))
+	versions, err := i.Forgejo.AdminPackages(ctx, a, owner, name)
+	if err != nil {
+		return false, err
 	}
-	return err
+	n := 0
+	for _, p := range versions {
+		if p.Type != "container" || p.Name != name || keep[p.Version] {
+			continue
+		}
+		if i.Policy().ID != v.ID {
+			log.Printf("imager: the version in force moved past %d while %s was swept, %d versions deleted: a later pass sweeps it", v.ID, repo, n)
+			return false, nil
+		}
+		if err := i.Forgejo.AdminDeletePackage(ctx, a, owner, p); err != nil {
+			return false, err
+		}
+		n++
+	}
+	log.Printf("imager: deleted %d versions of %s, kept %s", n, repo, cmp.Or(strings.Join(keys, " and "), "none"))
+	return true, nil
 }
 
 // unused files, once a day, the removal card of each image but default of
 // a project whose agents run, pinned since unusedFor ago at least, unless
-// its removal card is open or a card ran on it since then.
+// a card named it or ran on it since then. The day counts from the last
+// check, failed or not.
 func (i *Imager) unused(ctx context.Context, v policy.Version, now time.Time) error {
 	if now.Sub(i.unusedAt) < unusedCheck {
 		return nil
 	}
+	i.unusedAt = now
 	rows, err := i.Store.ImagePins(ctx)
 	if err != nil {
 		return err
@@ -323,27 +377,26 @@ func (i *Imager) unused(ctx context.Context, v policy.Version, now time.Time) er
 		if _, pinned := c.Images[r.Image]; !pinned || r.Image == "default" || c.Agents == policy.AgentsNone || now.Sub(r.Since) < unusedFor {
 			continue
 		}
-		if err := i.removal(ctx, v, r, now); err != nil {
+		if err := i.removal(ctx, v, c.Repository, r, now); err != nil {
 			errs = append(errs, fmt.Errorf("image %s of %s: %w", r.Image, r.Project, err))
 		}
-	}
-	if len(errs) == 0 {
-		i.unusedAt = now
 	}
 	return errors.Join(errs...)
 }
 
 // removal files the card that removes r's image on its project's
-// repository, unless r's removal card is open or a card ran on the image
-// within unusedFor of now.
-func (i *Imager) removal(ctx context.Context, v policy.Version, r ImagePinRow, now time.Time) error {
+// repository, unless a card of it named the image or ran on it within
+// unusedFor of now, or r's removal card is open or finished within
+// unusedFor: a merged one's unpin lands meanwhile, a declined one's 30 days
+// start again.
+func (i *Imager) removal(ctx context.Context, v policy.Version, repository string, r ImagePinRow, now time.Time) error {
 	if r.RemovalTask != "" {
 		card, ok, err := i.Store.Task(ctx, r.RemovalTask)
-		if err != nil || ok && !Final(card.Status) && card.Status != "merged" {
+		if err != nil || ok && (card.FinishedAt == nil || now.Sub(*card.FinishedAt) < unusedFor) {
 			return err
 		}
 	}
-	used, err := i.Store.ImageUsed(ctx, imageRepository(r.Project, r.Image), now.Add(-unusedFor))
+	used, err := i.Store.ImageUsed(ctx, repository, r.Image, imageRepository(r.Project, r.Image), now.Add(-unusedFor))
 	if err != nil || used {
 		return err
 	}
@@ -356,7 +409,7 @@ func (i *Imager) removal(ctx context.Context, v policy.Version, r ImagePinRow, n
 	}
 	title := "Remove image " + r.Image + " (unused for 30 days)"
 	body := fmt.Sprintf("Image %s of project %s has been pinned for 30 days, and no card ran on it in that time.\n\n"+
-		"Delete the %s entry from %s, and nothing else. After this card merges, the factory unpins the image and deletes its copies in the store.\n\n"+
+		"Delete the %s entry from %s, and nothing else. After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n"+
 		"Acceptance:\n- %s no longer declares image %s.\n- %s passes the factory's check, which the policy gate runs on this pull request.\n\n"+
 		"Size: small\nRung: cheap", r.Image, r.Project, r.Image, imagesPath, imagesPath, r.Image, imagesPath)
 	card, ref, err := FileAgentTask(ctx, i.Store, i.Forgejo, i.Workflows, i.Timeline, p, title, body, nil, Task{
@@ -906,7 +959,7 @@ func (s *PGStore) RecordImageRead(ctx context.Context, project, image, key strin
 
 // ImagePins are image_pins' rows, by project and image.
 func (s *PGStore) ImagePins(ctx context.Context) ([]ImagePinRow, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT project, image, key, digest, previous_key, previous_digest, since, retained, removal_task
+	rows, err := s.db.QueryContext(ctx, `SELECT project, image, key, digest, previous_key, previous_digest, since, unpinned_at, retained, removal_task
 		FROM image_pins ORDER BY project, image`)
 	if err != nil {
 		return nil, err
@@ -915,9 +968,11 @@ func (s *PGStore) ImagePins(ctx context.Context) ([]ImagePinRow, error) {
 	var out []ImagePinRow
 	for rows.Next() {
 		var r ImagePinRow
-		if err := rows.Scan(&r.Project, &r.Image, &r.Key, &r.Digest, &r.PreviousKey, &r.PreviousDigest, &r.Since, &r.Retained, &r.RemovalTask); err != nil {
+		var unpinned sql.NullTime
+		if err := rows.Scan(&r.Project, &r.Image, &r.Key, &r.Digest, &r.PreviousKey, &r.PreviousDigest, &r.Since, &unpinned, &r.Retained, &r.RemovalTask); err != nil {
 			return nil, err
 		}
+		r.UnpinnedAt = unpinned.Time
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -925,11 +980,13 @@ func (s *PGStore) ImagePins(ctx context.Context) ([]ImagePinRow, error) {
 
 // SaveImagePin writes r over the row of its project and image.
 func (s *PGStore) SaveImagePin(ctx context.Context, r ImagePinRow) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO image_pins (project, image, key, digest, previous_key, previous_digest, since, retained, removal_task)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	unpinned := sql.NullTime{Time: r.UnpinnedAt, Valid: !r.UnpinnedAt.IsZero()}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO image_pins (project, image, key, digest, previous_key, previous_digest, since, unpinned_at, retained, removal_task)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (project, image) DO UPDATE SET key = EXCLUDED.key, digest = EXCLUDED.digest, previous_key = EXCLUDED.previous_key,
-			previous_digest = EXCLUDED.previous_digest, since = EXCLUDED.since, retained = EXCLUDED.retained, removal_task = EXCLUDED.removal_task`,
-		r.Project, r.Image, r.Key, r.Digest, r.PreviousKey, r.PreviousDigest, r.Since, r.Retained, r.RemovalTask)
+			previous_digest = EXCLUDED.previous_digest, since = EXCLUDED.since, unpinned_at = EXCLUDED.unpinned_at, retained = EXCLUDED.retained,
+			removal_task = EXCLUDED.removal_task`,
+		r.Project, r.Image, r.Key, r.Digest, r.PreviousKey, r.PreviousDigest, r.Since, unpinned, r.Retained, r.RemovalTask)
 	return err
 }
 
@@ -939,12 +996,22 @@ func (s *PGStore) DeleteImagePin(ctx context.Context, project, image string) err
 	return err
 }
 
-// ImageUsed is whether a card that is unfinished or finished since since
-// ran on a build of repository: its image_digest is <host>/<repository>@<digest>.
-// A card created since since is one of them.
-func (s *PGStore) ImageUsed(ctx context.Context, repository string, since time.Time) (bool, error) {
+// DeleteProjectImages deletes project's image_pins and image_builds rows
+// and says how many went.
+func (s *PGStore) DeleteProjectImages(ctx context.Context, project string) (int64, error) {
+	var n int64
+	err := s.db.QueryRowContext(ctx, `WITH pins AS (DELETE FROM image_pins WHERE project = $1 RETURNING 1),
+		builds AS (DELETE FROM image_builds WHERE project = $1 RETURNING 1)
+		SELECT (SELECT count(*) FROM pins) + (SELECT count(*) FROM builds)`, project).Scan(&n)
+	return n, err
+}
+
+// ImageUsed is whether a card of repository, unfinished or finished since
+// since, names image, or ran on a build of it: its image_digest is
+// <host>/<store>@<digest>. A card created since since is one of them.
+func (s *PGStore) ImageUsed(ctx context.Context, repository, image, store string, since time.Time) (bool, error) {
 	var used bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE strpos(image_digest, $1) > 0 AND (finished_at IS NULL OR finished_at >= $2))`,
-		"/"+repository+"@", since).Scan(&used)
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE repository = $1 AND (image = $2 OR strpos(image_digest, $3) > 0)
+		AND (finished_at IS NULL OR finished_at >= $4))`, repository, image, "/"+store+"@", since).Scan(&used)
 	return used, err
 }

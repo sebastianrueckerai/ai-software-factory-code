@@ -29,9 +29,9 @@ const (
 // RemovalStore is what remove-project reads and deletes of the store: the
 // project's row (the configuration's files joined in, so a file still in
 // the version in force is visible), its cards (the open ones refuse the
-// removal, the rest name their LiteLLM keys), and its rows (the project's
-// and its mirrors'; the tasks, events, ledger, audit and chat rows stay
-// as history).
+// removal, the rest name their LiteLLM keys), and its rows (the project's,
+// its mirrors' and its images'; the tasks, events, ledger, audit and chat
+// rows stay as history).
 type RemovalStore interface {
 	Project(ctx context.Context, name string) (Project, bool, error)
 	ProjectTasks(ctx context.Context, repository string) ([]Task, error)
@@ -39,6 +39,9 @@ type RemovalStore interface {
 	// DeleteProjectMirrors removes project's mirror rows and says how
 	// many (0: none were left).
 	DeleteProjectMirrors(ctx context.Context, project string) (int64, error)
+	// DeleteProjectImages removes project's image_pins and image_builds
+	// rows and says how many.
+	DeleteProjectImages(ctx context.Context, project string) (int64, error)
 }
 
 // RemovalKube is the slice of the Kubernetes API removal uses: the
@@ -335,9 +338,9 @@ func (run *removalRun) litellmKeys(ctx context.Context, repo Repo, dry bool) {
 	run.line("litellm keys", count(n))
 }
 
-// rows is step 6: the projects row (with its tokens) and the project's
-// project_mirrors rows. The tasks, events, ledger, audit and chat rows
-// stay as history.
+// rows is step 6: the projects row (with its tokens), the project's
+// project_mirrors rows and its image rows (image_pins, image_builds). The
+// tasks, events, ledger, audit and chat rows stay as history.
 func (run *removalRun) rows(ctx context.Context, dry bool) {
 	rem, name := run.rem, run.name
 	_, ok, err := rem.Store.Project(ctx, name)
@@ -351,6 +354,7 @@ func (run *removalRun) rows(ctx context.Context, dry bool) {
 			run.line("row", Gone)
 		}
 		run.line("project_mirrors rows", Change("would delete"))
+		run.line("image rows", Change("would delete"))
 		return
 	}
 	if ok {
@@ -366,6 +370,11 @@ func (run *removalRun) rows(ctx context.Context, dry bool) {
 		return
 	}
 	run.line("project_mirrors rows", count(int(n)))
+	n, err = rem.Store.DeleteProjectImages(ctx, name)
+	if run.fail("image rows", err) {
+		return
+	}
+	run.line("image rows", count(int(n)))
 }
 
 func count(n int) Change {
@@ -382,12 +391,26 @@ type PackageVersion struct {
 	Version string `json:"version"`
 }
 
-// AdminDeletePackages deletes, as the site admin, every version of owner's
-// packages whose name holds q ("" any) that drop picks (nil: every one),
-// and says how many.
+// AdminPackages lists, as the site admin, every version of owner's
+// packages whose name holds q ("" any).
+func (f *Forgejo) AdminPackages(ctx context.Context, a AdminAuth, owner, q string) ([]PackageVersion, error) {
+	return GetPages[PackageVersion](ctx, f.adminCall(a), "/api/v1/packages/"+url.PathEscape(owner)+"?q="+url.QueryEscape(q)+"&")
+}
+
+// AdminDeletePackage deletes version p of owner's packages as the site
+// admin; one already gone is no error.
+func (f *Forgejo) AdminDeletePackage(ctx context.Context, a AdminAuth, owner string, p PackageVersion) error {
+	path := fmt.Sprintf("/api/v1/packages/%s/%s/%s/%s", url.PathEscape(owner), url.PathEscape(p.Type), url.PathEscape(p.Name), url.PathEscape(p.Version))
+	if _, err := f.adminCall(a)(ctx, http.MethodDelete, path, nil, http.StatusNoContent); err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	return nil
+}
+
+// AdminDeletePackages deletes every version AdminPackages lists that drop
+// picks (nil: every one) and says how many.
 func (f *Forgejo) AdminDeletePackages(ctx context.Context, a AdminAuth, owner, q string, drop func(PackageVersion) bool) (int, error) {
-	call := f.adminCall(a)
-	pkgs, err := GetPages[PackageVersion](ctx, call, "/api/v1/packages/"+url.PathEscape(owner)+"?q="+url.QueryEscape(q)+"&")
+	pkgs, err := f.AdminPackages(ctx, a, owner, q)
 	if err != nil {
 		return 0, err
 	}
@@ -396,8 +419,7 @@ func (f *Forgejo) AdminDeletePackages(ctx context.Context, a AdminAuth, owner, q
 		if drop != nil && !drop(p) {
 			continue
 		}
-		path := fmt.Sprintf("/api/v1/packages/%s/%s/%s/%s", url.PathEscape(owner), url.PathEscape(p.Type), url.PathEscape(p.Name), url.PathEscape(p.Version))
-		if _, err := call(ctx, http.MethodDelete, path, nil, http.StatusNoContent); err != nil && !errors.Is(err, ErrNotFound) {
+		if err := f.AdminDeletePackage(ctx, a, owner, p); err != nil {
 			return n, err
 		}
 		n++
