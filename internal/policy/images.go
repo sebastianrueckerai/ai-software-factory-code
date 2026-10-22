@@ -23,12 +23,40 @@ var (
 	imageNameRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 	aptNameRE      = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
 	upstreamNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	digestRE       = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	buildKeyRE     = regexp.MustCompile(`^k-[0-9a-f]{24}$`)
 	sha256RE       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	envKeyRE       = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 	hostLabelRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
 	fileRE         = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 	safePathRE     = regexp.MustCompile(`^/[A-Za-z0-9._/+-]*$`)
 )
+
+// validate returns one finding per breach of the pin of image name.
+func (p ImagePin) validate(name string) []string {
+	var out []string
+	bad := func(format string, a ...any) {
+		out = append(out, fmt.Sprintf("image %q: "+format, append([]any{name}, a...)...))
+	}
+	if !imageNameRE.MatchString(name) {
+		bad("name: lowercase letters, digits and dashes, at most 32")
+	}
+	if !digestRE.MatchString(p.Digest) {
+		bad("digest %q: want sha256:<64 hex>", p.Digest)
+	}
+	if !buildKeyRE.MatchString(p.Key) {
+		bad("key %q: want k-<24 hex>", p.Key)
+	}
+	if len(p.Tools) == 0 {
+		bad("tools: at least one")
+	}
+	for _, h := range p.Egress {
+		if !validHost(h) {
+			bad("egress %q must be a lowercase hostname with a dot, no wildcard or IP", h)
+		}
+	}
+	return out
+}
 
 // ImagesFile is factory/images.yaml at the root of a project's repository:
 // the tools its agent sessions need, one sandbox image per name on top of the

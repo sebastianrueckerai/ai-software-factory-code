@@ -296,6 +296,10 @@ type ProjectConfig struct {
 	// every head must carry and the stall bound; a file without one gets
 	// mode run and a 30m stall.
 	Chain ChainConfig `yaml:"chain,omitempty" json:"chain,omitempty"`
+	// Images pins the project's sandbox images by name: factoryd writes the
+	// block through an auto-merged pull request after each build, and cards
+	// run on the pinned digests.
+	Images map[string]ImagePin `yaml:"images,omitempty" json:"images,omitempty"`
 }
 
 // AutonomyState is the project's autonomy as the selector shows it: full
@@ -459,6 +463,20 @@ func reservedNamespace(ns string) bool {
 	return strings.HasPrefix(ns, "kube-") || strings.HasPrefix(ns, "factory-")
 }
 
+// ImagePin is one image as built: the digest pushed under the BuildKey of its
+// spec, with the tools and egress hosts the spec held then.
+type ImagePin struct {
+	// Digest is the image's content digest, sha256:<64 hex>.
+	Digest string `yaml:"digest" json:"digest"`
+	// Key is the build key the image was built under.
+	Key string `yaml:"key" json:"key"`
+	// Tools are the tools the image carries, at least one.
+	Tools []string `yaml:"tools" json:"tools"`
+	// Egress are the hostnames a session on the image may reach beyond the
+	// defaults.
+	Egress []string `yaml:"egress,omitempty" json:"egress,omitempty"`
+}
+
 // Validate checks the file's shape; name is its file name without .yaml.
 // A factory project is its own organisation <name>/<name> (ruling 164)
 // whose objects registration creates; a seed project's objects are the
@@ -570,6 +588,14 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if err := p.Chat.validate(); err != nil {
 		bad("%v", err)
+	}
+	if len(p.Images) > MaxImages {
+		bad("images: %d names, at most %d", len(p.Images), MaxImages)
+	}
+	for _, n := range slices.Sorted(maps.Keys(p.Images)) {
+		for _, f := range p.Images[n].validate(n) {
+			bad("%s", f)
+		}
 	}
 	for i, r := range p.Routines {
 		errs = append(errs, r.Validate("project "+name))

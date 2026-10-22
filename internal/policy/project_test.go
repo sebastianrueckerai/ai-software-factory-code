@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // A project's month cap may only tighten the policy's (fixture month_eur
@@ -350,5 +352,61 @@ func TestChainConfigDefaults(t *testing.T) {
 	}
 	if got := (ChainConfig{}).Resolved(); !reflect.DeepEqual(got, ChainConfig{Mode: "run", Stall: 30 * time.Minute}) {
 		t.Fatalf("Resolved of an empty chain = %+v, want mode run, no requires, stall 30m", got)
+	}
+}
+
+func TestProjectImagePins(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const key = "k-0123456789abcdef01234567"
+	var c ProjectConfig
+	src := "images:\n  default:\n    digest: " + digest + "\n    key: " + key + "\n    tools: [go]\n    egress: [proxy.golang.org]\n"
+	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]ImagePin{"default": {Digest: digest, Key: key, Tools: []string{"go"}, Egress: []string{"proxy.golang.org"}}}
+	if !reflect.DeepEqual(c.Images, want) {
+		t.Fatalf("Images = %+v, want %+v", c.Images, want)
+	}
+	var none ProjectConfig
+	if err := yaml.Unmarshal([]byte("repository: a/b\n"), &none); err != nil || none.Images != nil {
+		t.Fatalf("absent block: %v, %+v", err, none.Images)
+	}
+
+	base := func() ProjectConfig {
+		return ProjectConfig{Repository: "sf/x", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone,
+			Tokens: &SeedTokens{Read: SecretConfig},
+			Images: map[string]ImagePin{"default": {Digest: digest, Key: key, Tools: []string{"go"}}}}
+	}
+	if err := base().Validate("x"); err != nil {
+		t.Fatalf("good pins: %v", err)
+	}
+	for name, tc := range map[string]struct {
+		change func(*ProjectConfig)
+		want   string
+	}{
+		"name": {func(p *ProjectConfig) { p.Images = map[string]ImagePin{"Bad": p.Images["default"]} }, `project x: image "Bad": name`},
+		"digest": {func(p *ProjectConfig) {
+			p.Images["default"] = ImagePin{Digest: "sha256:ab", Key: key, Tools: []string{"go"}}
+		}, `project x: image "default": digest "sha256:ab"`},
+		"key": {func(p *ProjectConfig) {
+			p.Images["default"] = ImagePin{Digest: digest, Key: "k-1", Tools: []string{"go"}}
+		}, `project x: image "default": key "k-1"`},
+		"tools": {func(p *ProjectConfig) { p.Images["default"] = ImagePin{Digest: digest, Key: key} }, `project x: image "default": tools`},
+		"egress": {func(p *ProjectConfig) {
+			p.Images["default"] = ImagePin{Digest: digest, Key: key, Tools: []string{"go"}, Egress: []string{"10.0.0.1"}}
+		}, `project x: image "default": egress "10.0.0.1"`},
+		"too many": {func(p *ProjectConfig) {
+			p.Images = map[string]ImagePin{}
+			for _, n := range []string{"a", "b", "c", "d", "e"} {
+				p.Images[n] = ImagePin{Digest: digest, Key: key, Tools: []string{"go"}}
+			}
+		}, "images: 5"},
+	} {
+		p := base()
+		tc.change(&p)
+		err := p.Validate("x")
+		if err == nil || !strings.Contains(err.Error(), tc.want) || strings.Count(err.Error(), "\n") != 0 {
+			t.Errorf("%s: err = %v, want one error containing %q", name, err, tc.want)
+		}
 	}
 }

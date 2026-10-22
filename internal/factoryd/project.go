@@ -54,6 +54,8 @@ type Project struct {
 	// with; TemplateFiles are its files in the same configuration version.
 	Template      string
 	TemplateFiles map[string]string
+	// Images are the file's image pins by name.
+	Images map[string]policy.ImagePin
 	// File is whether the configuration holds projects/<name>.yaml: a row
 	// without one is kept for its tokens and nothing acts on it.
 	File      bool
@@ -143,7 +145,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 		if c.Tokens != nil {
 			p.Tokens = *c.Tokens
 		}
-		p.Template, p.TemplateFiles = c.Template, v.Templates[c.Template]
+		p.Template, p.TemplateFiles, p.Images = c.Template, v.Templates[c.Template], c.Images
 		byName[name] = p
 	}
 	out := slices.Collect(maps.Values(byName))

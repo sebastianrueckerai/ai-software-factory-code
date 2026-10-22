@@ -568,3 +568,16 @@ func TestSchemaContentHash(t *testing.T) {
 		t.Errorf("SchemaContentHash = %q, want d3acf55b8262", got)
 	}
 }
+
+func TestProjectSchemaHasImages(t *testing.T) {
+	schemas, err := Schemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(schemas["project.schema.json"])
+	for _, w := range []string{`"images"`, `"digest"`, `"tools"`} {
+		if !strings.Contains(s, w) {
+			t.Errorf("project.schema.json lacks %s", w)
+		}
+	}
+}

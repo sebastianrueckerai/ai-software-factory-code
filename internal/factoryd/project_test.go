@@ -228,3 +228,20 @@ func TestPGProjects(t *testing.T) {
 		t.Fatalf("tokens of an unknown project = %v", err)
 	}
 }
+
+func TestProjectsOfImages(t *testing.T) {
+	const pin = "digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n    key: k-0123456789abcdef01234567\n    tools: [go]\n"
+	files := testFiles(testPolicyYAML)
+	files["projects/demo-app.yaml"] = []byte(policy.Header("projects/demo-app.yaml") + "\n" + demoFile + "images:\n  default:\n    " + pin)
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := projectsOf(nil, policy.Version{ID: 1, Tree: tree})
+	if got[0].Images != nil {
+		t.Fatalf("infra Images = %+v, want nil", got[0].Images)
+	}
+	if im := got[1].Images["default"]; got[1].Name != "demo-app" || im.Key != "k-0123456789abcdef01234567" || len(im.Tools) != 1 || im.Tools[0] != "go" {
+		t.Fatalf("Images = %+v", got[1].Images)
+	}
+}
