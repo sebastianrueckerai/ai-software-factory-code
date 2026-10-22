@@ -1,0 +1,234 @@
+package policy
+
+import (
+	"bytes"
+	"fmt"
+	"net"
+	"net/url"
+	"path"
+	"regexp"
+	"slices"
+	"strings"
+)
+
+const (
+	// MaxImages is the most image names one project may declare.
+	MaxImages = 4
+	// MaxImageBytes caps a built image's compressed size; the pin step
+	// enforces it.
+	MaxImageBytes = 4 << 30
+)
+
+var (
+	imageNameRE    = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+	aptNameRE      = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
+	upstreamNameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+	sha256RE       = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	envKeyRE       = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	hostLabelRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+)
+
+// ImagesFile is factory/images.yaml at the root of a project's repository:
+// the tools its agent sessions need, one sandbox image per name on top of the
+// factory's base image. The name default is the image of every card that
+// names none. Its values end up in a Dockerfile, so Validate also guards
+// against injection.
+type ImagesFile struct {
+	Images map[string]ImageSpec `yaml:"images"`
+}
+
+// ImageSpec is one image: the tools added to the base image and the
+// environment, PATH entries and egress hosts that go with them.
+type ImageSpec struct {
+	// Apt lists Debian packages from the base image's dated snapshot, so
+	// versions are fixed and not pinned here.
+	Apt []string `yaml:"apt"`
+	// Upstream lists downloads pinned by SHA-256.
+	Upstream []UpstreamLine    `yaml:"upstream"`
+	Env      map[string]string `yaml:"env"`
+	// Path lists directories appended to PATH.
+	Path []string `yaml:"path"`
+	// Egress lists hostnames the session may reach beyond the defaults.
+	Egress []string `yaml:"egress"`
+}
+
+// UpstreamLine is one pinned download. An archive (.tar.gz, .tgz, .tar.xz)
+// unpacks into To with Strip leading path components removed; any other file
+// is placed at To.
+type UpstreamLine struct {
+	Name   string `yaml:"name"`
+	URL    string `yaml:"url"`
+	SHA256 string `yaml:"sha256"`
+	To     string `yaml:"to"`
+	Strip  int    `yaml:"strip"`
+}
+
+// ParseImagesFile decodes strictly (an unknown key is a finding) and returns
+// the decode error or Validate's findings; a nil slice means the file is good.
+func ParseImagesFile(data []byte) (ImagesFile, []string) {
+	var f ImagesFile
+	if err := decodeOne(bytes.TrimSpace(data), &f, true); err != nil {
+		return f, []string{"images.yaml: " + err.Error()}
+	}
+	return f, f.Validate()
+}
+
+// Validate returns one finding per breach, images in name order.
+func (f ImagesFile) Validate() []string {
+	if len(f.Images) == 0 {
+		return []string{"images.yaml: images must name at least one image"}
+	}
+	var out []string
+	if len(f.Images) > MaxImages {
+		out = append(out, fmt.Sprintf("images.yaml: at most %d images, found %d", MaxImages, len(f.Images)))
+	}
+	names := make([]string, 0, len(f.Images))
+	for n := range f.Images {
+		names = append(names, n)
+	}
+	slices.Sort(names)
+	for _, n := range names {
+		out = append(out, f.Images[n].validate(n)...)
+	}
+	return out
+}
+
+func (s ImageSpec) validate(name string) []string {
+	var out []string
+	bad := func(format string, a ...any) {
+		out = append(out, fmt.Sprintf("image %q: ", name)+fmt.Sprintf(format, a...))
+	}
+	if !imageNameRE.MatchString(name) {
+		bad("name must match %s", imageNameRE)
+	}
+	if len(s.Apt) == 0 && len(s.Upstream) == 0 {
+		bad("declares no tool: apt or upstream needs an entry, or the image equals the base image")
+	}
+
+	seen := map[string]bool{}
+	for _, p := range s.Apt {
+		switch {
+		case !aptNameRE.MatchString(p):
+			bad("apt %q must match %s (a Debian package name without a version)", p, aptNameRE)
+		case seen[p]:
+			bad("apt %q is listed twice", p)
+		}
+		seen[p] = true
+	}
+
+	names, urls := map[string]bool{}, map[string]bool{}
+	for _, u := range s.Upstream {
+		bad := func(format string, a ...any) {
+			bad("upstream %q: "+format, append([]any{u.Name}, a...)...)
+		}
+		if !upstreamNameRE.MatchString(u.Name) {
+			bad("name must match %s", upstreamNameRE)
+		}
+		if names[u.Name] {
+			bad("name is used twice")
+		}
+		names[u.Name] = true
+		if msg := checkUpstreamURL(u.URL); msg != "" {
+			bad("url %q %s", u.URL, msg)
+		} else if urls[u.URL] {
+			bad("url %q is used twice", u.URL)
+		}
+		urls[u.URL] = true
+		if !sha256RE.MatchString(u.SHA256) {
+			bad("sha256 %q must be 64 lowercase hex characters", u.SHA256)
+		}
+		if !cleanAbs(u.To) || u.To == "/" {
+			bad("to %q must be an absolute, clean path below /", u.To)
+		}
+		switch {
+		case u.Strip < 0 || u.Strip > 8:
+			bad("strip %d must be 0 to 8", u.Strip)
+		case u.Strip != 0 && !isArchive(u.URL):
+			bad("strip %d needs an archive url (.tar.gz, .tgz or .tar.xz)", u.Strip)
+		}
+	}
+
+	keys := make([]string, 0, len(s.Env))
+	for k := range s.Env {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	for _, k := range keys {
+		v := s.Env[k]
+		switch {
+		case !envKeyRE.MatchString(k):
+			bad("env %q must match %s", k, envKeyRE)
+		case k == "PATH" || k == "HOME" || strings.HasPrefix(k, "OPENCODE_") || strings.HasPrefix(k, "FACTORY_"):
+			bad("env %q is owned by the harness (PATH entries go in path)", k)
+		case strings.ContainsAny(v, "\n\x00") || len(v) > 1024:
+			bad("env %q value must be at most 1024 bytes without newline or NUL", k)
+		}
+	}
+
+	seen = map[string]bool{}
+	for _, p := range s.Path {
+		switch {
+		case !cleanAbs(p) || strings.Contains(p, ":"):
+			bad("path %q must be an absolute, clean directory without ':'", p)
+		case seen[p]:
+			bad("path %q is listed twice", p)
+		}
+		seen[p] = true
+	}
+
+	seen = map[string]bool{}
+	for _, h := range s.Egress {
+		switch {
+		case !validHost(h):
+			bad("egress %q must be a lowercase hostname with a dot, no wildcard or IP", h)
+		case seen[h]:
+			bad("egress %q is listed twice", h)
+		}
+		seen[h] = true
+	}
+	return out
+}
+
+func checkUpstreamURL(raw string) string {
+	u, err := url.Parse(raw)
+	switch {
+	case err != nil:
+		return "does not parse"
+	case u.Scheme != "https":
+		return "must use https"
+	case u.Hostname() == "":
+		return "needs a host"
+	case u.User != nil:
+		return "must not carry user info"
+	}
+	return ""
+}
+
+func cleanAbs(p string) bool {
+	return path.IsAbs(p) && path.Clean(p) == p
+}
+
+func isArchive(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	for _, ext := range []string{".tar.gz", ".tgz", ".tar.xz"} {
+		if strings.HasSuffix(u.Path, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+func validHost(h string) bool {
+	if len(h) > 253 || !strings.Contains(h, ".") || net.ParseIP(h) != nil {
+		return false
+	}
+	for _, l := range strings.Split(h, ".") {
+		if len(l) > 63 || !hostLabelRE.MatchString(l) {
+			return false
+		}
+	}
+	return true
+}
