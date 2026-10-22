@@ -78,10 +78,23 @@ func parkRig(t *testing.T, images string, pins ...string) (*Runner, *fakeStore, 
 	return r, store, rf, wf
 }
 
+// toolCardRules are the rules every tool card's body ends with, the base's
+// tools as sandboxTools names them.
+const toolCardRules = "Rules:\n" +
+	"- Every image is built FROM the sandbox base, which has only git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests). " +
+	"Every image declares this project's own stack too: the cards that run on it build and test this project.\n" +
+	"- A project has at most 4 images. default is the image of every card that names none.\n" +
+	"- An upstream line needs the real sha256 of its file, as its publisher lists it.\n" +
+	"- egress names only the hosts the image's tools must reach.\n" +
+	"- This card runs on the project's default image and never gets the tools it declares: declare them and finish; " +
+	"the factory's build and the check of factory/images.yaml on this pull request test the file.\n\n"
+
 // One ask files one tool card on the project's repository: a small child
 // of the asking card on the cheap rung, which the asking card depends on,
-// with the need, the file on main, the format, the base's tools and the
-// cap. The card waits in waiting-image.
+// with the need, what the asking card's image holds as an entry to start
+// from, the file on main, the format, the rules and the cap. The card
+// waits in waiting-image. A card on its default image asks into an image
+// named for its tool.
 func TestParkForToolFilesOneCard(t *testing.T) {
 	const file = "images:\n  default:\n    apt: [jq]\n"
 	r, store, rf, wf := parkRig(t, file, "default")
@@ -90,7 +103,7 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Human || p.Park.Refused != "" || p.Park.Target != "ffmpeg" || p.Park.ToolTask == "" || p.Park.ToolIssue != 31 || p.Park.CreatedAt.IsZero() {
+	if p.Ask != "" || p.Note != "" || p.Park.Refused != "" || p.Park.Target != "ffmpeg" || p.Park.ToolTask == "" || p.Park.ToolIssue != 31 || p.Park.CreatedAt.IsZero() {
 		t.Fatalf("park = %+v, want a tool card for image ffmpeg", p)
 	}
 	card := store.tasks[p.Park.ToolTask]
@@ -100,15 +113,12 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 	}
 	body := "Card #41 (t-asker) needs ffmpeg, which its sandbox lacks: cut the demo video to 10 s\n\n" +
 		"Add ffmpeg to image ffmpeg in factory/images.yaml. After this card merges, the factory builds the image, signs it and pins it, " +
-		"and card #41 restarts on it from its branch.\n\n" +
+		"and card #41 restarts on image ffmpeg from its branch, where it must still build and test this project.\n\n" +
+		"Card #41 runs on image default now, which holds jq, sox and reaches no package registry. " +
+		"Image ffmpeg starts as a copy of its entry under the new name; add ffmpeg to it:\n```\nimages:\n  ffmpeg:\n    apt:\n      - jq\n```\n\n" +
 		"factory/images.yaml on main:\n```\n" + file + "```\n\n" +
 		"The file's format, one complete example:\n```\n" + imagesExample + "```\n\n" +
-		"Rules:\n" +
-		"- Every image is built FROM the sandbox base, which has only git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests). " +
-		"An image that must also build and test this project declares the project's own stack too.\n" +
-		"- A project has at most 4 images. default is the image of every card that names none.\n" +
-		"- An upstream line needs the real sha256 of its file, as its publisher lists it.\n" +
-		"- egress names only the hosts the tool must reach.\n\n" +
+		toolCardRules +
 		"Acceptance:\n" +
 		"- factory/images.yaml declares image ffmpeg, and ffmpeg is in it.\n" +
 		"- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
@@ -135,8 +145,11 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 		row.Need != "cut the demo video to 10 s" || row.ToolTask != p.Park.ToolTask || row.WokenAt != nil {
 		t.Fatalf("park row = %+v", row)
 	}
+	// a retry of the activity finds its park: no second card
+	if again, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut the demo video to 10 s"); err != nil || again.Park.ToolTask != p.Park.ToolTask || len(rf.issues) != 1 {
+		t.Fatalf("retry = %+v %v, issues %d", again, err, len(rf.issues))
+	}
 
-	// a card on the default image asks into an image named for its tool
 	second, err := r.ParkForTool(ctx, "t-second", "SoX 14", "mix the trailer's sound")
 	if err != nil {
 		t.Fatal(err)
@@ -147,9 +160,50 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 	}
 }
 
+// The tool card tells what the asking card's image holds, as an entry the
+// target extends: the image's own entry where the card asks into it, the
+// factory image's stack where the card runs on the factory's image.
+func TestToolCardStartsFromTheAskersImage(t *testing.T) {
+	const file = "images:\n  default:\n    apt: [jq]\n  video:\n    apt: [ffmpeg]\n    egress: [cdn.example.org]\n"
+	r, store, _, _ := parkRig(t, file, "video")
+	ctx := context.Background()
+	c := r.cfg.Policy().Projects["ai-software-factory-code"]
+	c.Images["video"] = policy.ImagePin{Digest: "sha256:" + strings.Repeat("d", 64), Key: keyDefault, Tools: []string{"ffmpeg"}, Egress: []string{"cdn.example.org"}}
+	tk := store.tasks["t-asker"]
+	tk.Image = "video"
+	store.tasks["t-asker"] = tk
+	p, err := r.ParkForTool(ctx, "t-asker", "sox", "mix the sound")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Card #41 runs on image video now, which holds ffmpeg and reaches cdn.example.org. Add sox to its entry:\n" +
+		"```\nimages:\n  video:\n    apt:\n      - ffmpeg\n    egress:\n      - cdn.example.org\n```\n\n"
+	if obj := store.tasks[p.Park.ToolTask].Objective; !strings.Contains(obj, want) {
+		t.Fatalf("objective %q lacks %q", obj, want)
+	}
+	// default has no pin: the card ran on the factory's image
+	stack, err := imagesEntry("ffmpeg", FactoryStack())
+	if err != nil {
+		t.Fatal(err)
+	}
+	q, err := r.ParkForTool(ctx, "t-second", "ffmpeg", "cut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = "Card #42 runs on the factory's image now: the sandbox base with Go 1.26 and Node 24 with npm. " +
+		"Image ffmpeg starts from this entry, the same stack; add ffmpeg to it:\n```\n" + stack + "```\n\n"
+	if obj := store.tasks[q.Park.ToolTask].Objective; !strings.Contains(obj, want) {
+		t.Fatalf("objective %q lacks %q", obj, want)
+	}
+	if !strings.Contains(stack, "      - name: go\n        url: https://go.dev/dl/go1.26.9.linux-amd64.tar.gz\n") {
+		t.Fatalf("stack entry = %q", stack)
+	}
+}
+
 // A second ask for the same image joins the open tool card: the comment
 // on its issue and the need in its brief, no second card; the joining card
-// depends on it too.
+// depends on it too. The open card is found by the card itself: a later
+// park of the card that filed it does not hide it.
 func TestParkForToolJoinsTheOpenCard(t *testing.T) {
 	r, store, rf, _ := parkRig(t, "", "default")
 	ctx := context.Background()
@@ -164,6 +218,10 @@ func TestParkForToolJoinsTheOpenCard(t *testing.T) {
 	}
 	if !strings.Contains(store.tasks[first.Park.ToolTask].Objective, "factory/images.yaml on main: none yet; create it.\n\n") {
 		t.Fatalf("objective without a file = %q", store.tasks[first.Park.ToolTask].Objective)
+	}
+	// the asker parks again elsewhere: its row names another image now
+	if _, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "docs", Tool: "pandoc"}, true); err != nil {
+		t.Fatal(err)
 	}
 	before := store.tasks[first.Park.ToolTask].Objective
 	second, err := r.ParkForTool(ctx, "t-second", "sox", "mix the trailer's sound")
@@ -202,39 +260,83 @@ func TestParkForToolJoinsTheOpenCard(t *testing.T) {
 	}
 }
 
+// The park is recorded with its tool card's id before the card is filed:
+// a retry after the row finds the id and files the card under it, once.
+func TestParkForToolRetryFilesThePreassignedCard(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	if _, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "ffmpeg", Tool: "ffmpeg", Need: "cut",
+		ToolTask: "t-pre"}, true); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
+		if err != nil || p.Park.ToolTask != "t-pre" || p.Park.ToolIssue != 31 {
+			t.Fatalf("park = %+v %v", p, err)
+		}
+	}
+	if len(rf.issues) != 1 || store.tasks["t-pre"].Parent != "t-asker" || !slices.Equal(store.deps["t-asker"], []string{"t-pre"}) {
+		t.Fatalf("issues %d, card %+v, deps %v: want the one card under the preassigned id", len(rf.issues), store.tasks["t-pre"], store.deps)
+	}
+}
+
+// A tool card declares tools and never gets them: its own request_tool is
+// refused at once, telling it to declare the tool and finish.
+func TestParkForToolRefusesTheToolCard(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: SourceToolRequest, Parent: "t-asker"}); err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.ParkForTool(ctx, "t-tool", "ffmpeg", "check the encoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The tool ffmpeg did not arrive: this card declares tools in factory/images.yaml, and its own sandbox never gets them. " +
+		"This session runs on the image the card ran on before. Declare the tool and finish: the factory's build and the check of factory/images.yaml on this pull request test the file."
+	if p.Note != want || p.Ask != "" || len(rf.issues) != 0 || len(store.deps["t-tool"]) != 0 || store.tasks["t-tool"].Status != "running" {
+		t.Fatalf("park = %+v, issues %d, deps %v; want the note %q", p, len(rf.issues), store.deps["t-tool"], want)
+	}
+}
+
 // A new image past the project's MaxImages names, pinned or declared, is
-// refused at once: no card, the card keeps running for its next session.
-// The same ask again goes to a human with the refusal, and the refusal is
-// spent: the ask after the human's answer is judged afresh. An ask for a
-// name the project has passes the cap.
+// refused at once: no card, the card keeps running for its next session,
+// told that a human must free a name. Any ask after a refused park goes
+// to a human, and the refusal is spent: the ask after the human's answer
+// is judged afresh. An ask for a name the project has passes the cap.
 func TestParkForToolRefusesANewImageAtTheCap(t *testing.T) {
 	const file = "images:\n  default:\n    apt: [jq]\n  video:\n    apt: [ffmpeg]\n  docs:\n    apt: [pandoc]\n"
 	r, store, rf, _ := parkRig(t, file, "default", "browser")
 	ctx := context.Background()
-	refusal := "image sox would be new, and project ai-software-factory-code has 4 images already (browser, default, docs, video), the most a project may have: " +
-		"a human must free a name, so ask one with escalate_to_human or go on without sox"
+	fact := "image sox would be new, and project ai-software-factory-code has 4 images already (browser, default, docs, video), the most a project may have"
 	p, err := r.ParkForTool(ctx, "t-asker", "sox", "mix the sound")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Park.Refused != refusal || p.Human || p.Park.ToolTask != "" || len(rf.issues) != 0 {
+	note := "The tool sox did not arrive: " + fact + ". This session runs on the image the card ran on before. " +
+		"A human must free a name: ask one with escalate_to_human, or go on without the tool."
+	if p.Park.Refused != fact || p.Note != note || p.Ask != "" || p.Park.ToolTask != "" || len(rf.issues) != 0 {
 		t.Fatalf("park = %+v, issues %d; want the cap's refusal, no card", p, len(rf.issues))
 	}
 	if store.tasks["t-asker"].Status != "running" {
 		t.Fatalf("refused card is %s, want running", store.tasks["t-asker"].Status)
 	}
-	again, err := r.ParkForTool(ctx, "t-asker", "sox", "mix the sound")
+	// an ask into a declared image, which the cap lets pass, follows a refusal: a human
+	again, err := r.ParkForTool(ctx, "t-asker", "video", "cut the clip")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if again.Park.Refused != refusal || !again.Human || len(rf.issues) != 0 {
-		t.Fatalf("the second ask = %+v, want the refusal for a human", again)
+	ask := "The agent asks again for a tool: video on image video, after the factory refused its last ask (sox on image sox): " + fact + "\n" +
+		"Why: cut the clip\n" +
+		"Recommendation: free an image name in factory/images.yaml, then answer; or answer how the card goes on without the tool, or close this issue to end the card."
+	if again.Ask != ask || again.Note != "" || len(rf.issues) != 0 || escalationSource(ask) != "image" {
+		t.Fatalf("the ask after a refusal = %+v, want the question %q", again, ask)
 	}
-	if row, _, _ := store.ImagePark(ctx, "t-asker"); row.Refused != "" {
+	if row, _, _ := store.ImagePark(ctx, "t-asker"); row.Refused != "" || row.WokenAt == nil || row.Target != "video" {
 		t.Fatalf("row after the human's turn = %+v, want the refusal spent", row)
 	}
 	third, err := r.ParkForTool(ctx, "t-asker", "sox", "mix the sound")
-	if err != nil || third.Human || third.Park.Refused != refusal {
+	if err != nil || third.Ask != "" || third.Park.Refused != fact {
 		t.Fatalf("the ask after the answer = %+v %v, want a fresh refusal", third, err)
 	}
 	// a card on image video asks into video: no new name
@@ -246,18 +348,45 @@ func TestParkForToolRefusesANewImageAtTheCap(t *testing.T) {
 	}
 }
 
-// A card refused an image before goes to a human when it asks for it again
-// whatever refused it: here the tool card closed without a merge.
+// The human's question after a refused park points at what refused it: a
+// tool card that closed unmerged, or one merged without the image.
 func TestParkForToolAfterAWakeRefusal(t *testing.T) {
-	r, store, rf, _ := parkRig(t, "", "default")
+	for refusal, advice := range map[string]string{
+		"#31 closed without a merge":                "see why #31 closed, and reopen it or file the tool's card again, then answer",
+		"#31 merged without declaring image ffmpeg": "make factory/images.yaml declare image ffmpeg with the tool, then answer",
+	} {
+		r, store, rf, _ := parkRig(t, "", "default")
+		ctx := context.Background()
+		if _, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "ffmpeg", Tool: "ffmpeg", ToolTask: "t-31",
+			Refused: refusal}, false); err != nil {
+			t.Fatal(err)
+		}
+		p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
+		want := "The agent asks again for a tool: ffmpeg on image ffmpeg, after the factory refused its last ask (ffmpeg on image ffmpeg): " + refusal + "\nWhy: cut\n" +
+			"Recommendation: " + advice + "; or answer how the card goes on without the tool, or close this issue to end the card."
+		if err != nil || p.Ask != want || len(rf.issues) != 0 {
+			t.Fatalf("%s: park = %+v %v, issues %d; want %q", refusal, p, err, len(rf.issues), want)
+		}
+	}
+}
+
+// An ask for the tool whose park on the same image arrived goes to a
+// human: the automation's loop would file the same card again.
+func TestParkForToolAfterTheImageArrived(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default", "ffmpeg")
 	ctx := context.Background()
-	if _, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "ffmpeg", Tool: "ffmpeg",
-		Refused: "#31 closed without a merge"}, false); err != nil {
+	if _, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "ffmpeg", Tool: "ffmpeg", ToolTask: "t-31"}, false); err != nil {
 		t.Fatal(err)
 	}
 	p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
-	if err != nil || !p.Human || p.Park.Refused != "#31 closed without a merge" || len(rf.issues) != 0 {
-		t.Fatalf("park = %+v %v, issues %d", p, err, len(rf.issues))
+	want := "The agent asks again for a tool: image ffmpeg arrived with jq, sox; the agent asks for ffmpeg again\nWhy: cut\n" +
+		"Recommendation: see whether image ffmpeg holds the tool where the card looks for it, then answer with what you find; or close this issue to end the card."
+	if err != nil || p.Ask != want || len(rf.issues) != 0 || escalationSource(want) != "image" {
+		t.Fatalf("park = %+v %v, issues %d; want %q", p, err, len(rf.issues), want)
+	}
+	// another tool is a new ask
+	if p, err := r.ParkForTool(ctx, "t-asker", "sox", "mix"); err != nil || p.Ask != "" || len(rf.issues) != 1 {
+		t.Fatalf("another tool = %+v %v, issues %d", p, err, len(rf.issues))
 	}
 }
 
@@ -273,7 +402,7 @@ func TestParkForToolWithoutATool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.Park.Target != "video" || p.Park.ToolTask != "" || p.Park.Refused != "" || p.Human || len(rf.issues) != 0 {
+	if p.Park.Target != "video" || p.Park.ToolTask != "" || p.Park.Refused != "" || p.Ask != "" || p.Note != "" || len(rf.issues) != 0 {
 		t.Fatalf("park = %+v, issues %d", p, len(rf.issues))
 	}
 	if store.tasks["t-asker"].Status != "waiting-image" {
@@ -304,8 +433,9 @@ func TestImageArrived(t *testing.T) {
 
 // image_parks keeps one row per task, its latest park: ParkImage replaces
 // it and stamps it, ImagePark reads it with its tool card's issue,
-// OpenToolCard finds the open card of a project's image, OpenImageParks
-// the waiting rows, and WakeImagePark wakes the park it names only.
+// OpenToolCard finds the open tool card of a repository's image by the
+// card itself, OpenImageParks the waiting rows of cards that have not
+// ended, and WakeImagePark wakes the park it names only.
 func TestPGStoreImageParks(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -321,7 +451,7 @@ func TestPGStoreImageParks(t *testing.T) {
 	for _, tk := range []Task{
 		{ID: asker, Status: "running", Repository: "sf/parks", IssueNumber: 41, Objective: "a"},
 		{ID: other, Status: "running", Repository: "sf/parks", IssueNumber: 42, Objective: "b"},
-		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Objective: "Add ffmpeg to image video"},
+		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: SourceToolRequest, Objective: "Add ffmpeg to image video\n\nCard #41 needs ffmpeg"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
@@ -339,11 +469,13 @@ func TestPGStoreImageParks(t *testing.T) {
 		!got.CreatedAt.Equal(p.CreatedAt) || got.WokenAt != nil || got.Refused != "" || got.Project != "parks" {
 		t.Fatalf("read = %+v %v %v", got, ok, err)
 	}
-	if card, ok, err := s.OpenToolCard(ctx, "parks", "video"); err != nil || !ok || card.ID != tool || card.IssueNumber != 50 {
+	if card, ok, err := s.OpenToolCard(ctx, "sf/parks", "video"); err != nil || !ok || card.ID != tool || card.IssueNumber != 50 {
 		t.Fatalf("open tool card = %+v %v %v", card, ok, err)
 	}
-	if _, ok, err := s.OpenToolCard(ctx, "parks", "browser"); err != nil || ok {
-		t.Fatalf("another image's card: %v %v", ok, err)
+	for repo, target := range map[string]string{"sf/parks": "browser", "sf/other": "video"} {
+		if _, ok, err := s.OpenToolCard(ctx, repo, target); err != nil || ok {
+			t.Fatalf("%s's image %s has a card: %v %v", repo, target, ok, err)
+		}
 	}
 	refused, err := s.ParkImage(ctx, ImagePark{Task: other, Project: "parks", Target: "sox", Tool: "sox", Refused: "the cap"}, false)
 	if err != nil || refused.WokenAt == nil {
@@ -377,11 +509,18 @@ func TestPGStoreImageParks(t *testing.T) {
 	if got, _, _ := s.ImagePark(ctx, asker); got.Refused != "" || got.Tool != "sox" || got.WokenAt != nil {
 		t.Fatalf("replaced row = %+v", got)
 	}
+	// a card that ended parks no more
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now() WHERE id = $1`, asker); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := s.OpenImageParks(ctx); err != nil || len(open) != 0 {
+		t.Fatalf("open parks of an ended card = %+v %v", open, err)
+	}
 	// a merged tool card is open no more
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = $1`, tool); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok, err := s.OpenToolCard(ctx, "parks", "video"); err != nil || ok {
+	if _, ok, err := s.OpenToolCard(ctx, "sf/parks", "video"); err != nil || ok {
 		t.Fatalf("a merged tool card is open: %v %v", ok, err)
 	}
 	if err := s.SetObjective(ctx, tool, "Add ffmpeg to image video\n\nmore"); err != nil {
@@ -469,13 +608,13 @@ func TestWorkflowToolRefusalGoesToTheNextSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(missingTool("s1", "sox", "mix"), pushed("s2", "c2"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.onPark(ToolPark{Park: ImagePark{Target: "sox", Tool: "sox", Refused: "image sox would be new"}})
+	note := "The tool sox did not arrive: image sox would be new. This session runs on the image the card ran on before."
+	h.onPark(ToolPark{Park: ImagePark{Target: "sox", Tool: "sox", Refused: "image sox would be new"}, Note: note})
 	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	want := "The tool sox did not arrive: image sox would be new. This session runs on the image the card ran on before."
-	if len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, want) || len(h.arrived) != 0 || len(h.escalated) != 0 {
+	if len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, note) || len(h.arrived) != 0 || len(h.escalated) != 0 {
 		t.Fatalf("sessions %+v, arrived %q, escalated %q", h.sessions, h.arrived, h.escalated)
 	}
 	if h.sessions[1].Sessions != 4 {
@@ -483,22 +622,21 @@ func TestWorkflowToolRefusalGoesToTheNextSession(t *testing.T) {
 	}
 }
 
-// A refusal of an image the card was refused before goes to a human, as
-// an escalation does; the answer runs the next session.
+// An ask the park sends to a human (a card refused before) asks it, as an
+// escalation does; the answer runs the next session.
 func TestWorkflowRepeatedToolRefusalAsksAHuman(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(missingTool("s1", "sox", "mix"), pushed("s2", "c2"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.onPark(ToolPark{Park: ImagePark{Target: "sox", Tool: "sox", Refused: "#50 closed without a merge"}, Human: true})
+	ask := toolAskedAgain + "sox on image sox, after the factory refused its last ask (sox on image sox): #50 closed without a merge\nWhy: mix\nRecommendation: see why #50 closed"
+	h.onPark(ToolPark{Park: ImagePark{Target: "sox", Tool: "sox"}, Ask: ask})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "do without sox", Comment: 700})
 	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q", final)
 	}
-	want := "The agent asks again for sox on image sox, which the factory refused: #50 closed without a merge\nWhy: mix\n" +
-		"Recommendation: free an image name or fix factory/images.yaml, then answer: the agent may ask again; or answer how to go on without the tool, or close this issue to end the card."
-	if !slices.Equal(h.escalated, []string{want}) || escalationSource(want) != "image" {
-		t.Fatalf("escalated %q, want %q", h.escalated, want)
+	if !slices.Equal(h.escalated, []string{ask}) {
+		t.Fatalf("escalated %q, want %q", h.escalated, ask)
 	}
 	if len(h.sessions) != 2 || len(h.sessions[1].Answers) != 1 || h.sessions[1].Sessions != 4 {
 		t.Fatalf("sessions = %+v", h.sessions)

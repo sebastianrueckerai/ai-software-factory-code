@@ -444,7 +444,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		return PolicyGate{}, err
 	}
 	g.Cheats = cheats(splitDiff(diff))
-	if g.Images, err = r.imagesFindings(ctx, repo, pr, files); err != nil {
+	if g.Images, err = r.imagesFindings(ctx, repo, pr, commit, files); err != nil {
 		return PolicyGate{}, err
 	}
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
@@ -480,9 +480,10 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 }
 
 // imagesFindings are ParseImagesFile's findings on factory/images.yaml at
-// the head of pull request pr of repo, among whose files it is; none where
-// the pull request removes it.
-func (r *Runner) imagesFindings(ctx context.Context, repo Repo, pr int64, files []PRFile) ([]string, error) {
+// the gated commit of pull request pr of repo (its head for a run that
+// passes none), among whose files it is; none where the pull request
+// removes it.
+func (r *Runner) imagesFindings(ctx context.Context, repo Repo, pr int64, commit string, files []PRFile) ([]string, error) {
 	if !slices.ContainsFunc(files, func(f PRFile) bool { return f.Filename == imagesPath }) {
 		return nil, nil
 	}
@@ -494,7 +495,7 @@ func (r *Runner) imagesFindings(ctx context.Context, repo Repo, pr int64, files 
 	if err != nil {
 		return nil, err
 	}
-	raw, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, st.HeadSHA, imagesPath)
+	raw, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, cmp.Or(commit, st.HeadSHA), imagesPath)
 	if errors.Is(err, ErrNotFound) {
 		return nil, nil
 	}

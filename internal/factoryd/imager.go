@@ -251,7 +251,7 @@ func (i *Imager) woken(ctx context.Context, v policy.Version, declared map[strin
 	}
 	switch card.Status {
 	case "failed", "closed":
-		return fmt.Sprintf("#%d closed without a merge", card.IssueNumber), true, nil
+		return fmt.Sprintf("#%d"+closedUnmerged, card.IssueNumber), true, nil
 	case "merged", "done":
 	default:
 		return "", false, nil
@@ -261,7 +261,7 @@ func (i *Imager) woken(ctx context.Context, v policy.Version, declared map[strin
 		return "", false, nil
 	}
 	if !names[p.Target] {
-		return fmt.Sprintf("#%d merged without declaring image %s", card.IssueNumber, p.Target), true, nil
+		return fmt.Sprintf("#%d"+mergedUndeclared+"%s", card.IssueNumber, p.Target), true, nil
 	}
 	if !pinned {
 		return "", false, nil

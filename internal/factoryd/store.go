@@ -467,11 +467,11 @@ type Store interface {
 	SetObjective(ctx context.Context, id, objective string) error
 	// ImagePark is task's latest park on an image; ParkImage records p as
 	// it, parked now, waiting or (a refusal) woken at once; OpenToolCard
-	// is the tool card of project's image target that has not ended or
+	// is the tool card of repository's image target that has not ended or
 	// merged.
 	ImagePark(ctx context.Context, task string) (ImagePark, bool, error)
 	ParkImage(ctx context.Context, p ImagePark, waits bool) (ImagePark, error)
-	OpenToolCard(ctx context.Context, project, target string) (Task, bool, error)
+	OpenToolCard(ctx context.Context, repository, target string) (Task, bool, error)
 	// OpenApproval records a pending approval request and returns its id;
 	// a merge or plan request denies the task's earlier pending one of its
 	// kind (a retry, a new head, a new plan revision) as superseded.

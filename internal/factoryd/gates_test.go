@@ -55,6 +55,8 @@ type gateForgejo struct {
 	// raw serves GET raw of other repositories (the document repo's
 	// design decisions): "owner/name/raw/<path>" to its content.
 	raw map[string]string
+	// rawRefs are the refs of the raw file reads, in order
+	rawRefs []string
 }
 
 func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
@@ -128,6 +130,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, `{"id":%d}`, 800+len(f.comments))
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
 			rest := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/")
+			f.rawRefs = append(f.rawRefs, r.URL.Query().Get("ref"))
 			if c, ok := f.raw[rest]; ok {
 				io.WriteString(w, c)
 				return
@@ -298,6 +301,9 @@ func TestGatePolicyChecksTheImagesFile(t *testing.T) {
 			g := getInto[PolicyGate](t, val, err)
 			if !slices.Equal(g.Images, c.want) || len(g.Cheats) != 0 {
 				t.Fatalf("images findings = %q, want %q", g.Images, c.want)
+			}
+			if len(fj.rawRefs) > 0 && !slices.Equal(fj.rawRefs, []string{"c1"}) {
+				t.Fatalf("raw reads at %q, want the gated commit c1", fj.rawRefs)
 			}
 			got, _ := timelineStep(t, objects, "t1", "gate_policy")["images"].([]any)
 			if fmt.Sprint(got) != fmt.Sprint(anySlice(c.want)) {

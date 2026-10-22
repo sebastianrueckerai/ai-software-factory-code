@@ -664,7 +664,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	if brief.Facts != "" {
 		b.WriteString(brief.Facts + "\n")
 	}
-	b.WriteString(SandboxFacts(brief.Image) + "\n")
+	b.WriteString(SandboxFacts(brief.Image, brief.Tools) + "\n")
 	switch {
 	case brief.Docs:
 		b.WriteString("The project's document repository (the roadmap, the plans, the architecture, the design rounds and their prototypes) is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n")
@@ -737,7 +737,7 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	switch {
 	case guide != "":
 	case brief.CardRole != "":
-		guide = featureGuide(brief.CardRole, brief.Image)
+		guide = featureGuide(brief.CardRole, brief.Image, brief.Tools)
 	default:
 		guide = workGuide(brief.Tools, brief.Image)
 	}
@@ -777,7 +777,7 @@ func workGuide(tools []string, m *imagegen.Manifest) string {
 	if slices.Contains(tools, policy.ToolDelegate) {
 		g += downARung
 	}
-	return g + guideEnd(m)
+	return g + guideEnd(m, tools)
 }
 
 // noAnswer is both coding guides' one sentence on asking; when to ask, and
@@ -790,21 +790,24 @@ const noAnswer = "Nobody answers a question in a message. "
 const downARung = "Routine, well-specified work goes down a rung: in this session, the task tool's general or explore agent runs on the cheaper model and its result returns to you; " +
 	"for work after this card, call delegate. "
 
-// guideEnd closes every coding guide on image m (nil: the factory's): the
-// checks, the push, the sandbox, the last message.
-func guideEnd(m *imagegen.Manifest) string {
+// guideEnd closes every coding guide on image m (nil: the factory's) with
+// the session's tools: the checks, the push, the sandbox, the last
+// message.
+func guideEnd(m *imagegen.Manifest, tools []string) string {
 	return "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
 		"no further tests, re-runs or reading of library sources to confirm. " +
 		"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
-		installLine(m) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
+		installLine(m, tools) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
 		"To wait for a background job (start it with its output in a file and note $!), run agent-worker wait <pid> [seconds up to 590] with a timeout of 600000 ms: one call blocks until the process ends, where a sleep loop costs a model call per poll. " +
 		"End with a short last message: what you changed, and whether you recommend merging it and why."
 }
 
 // installLine is guideEnd's sentence on what the checks need: go install
 // and go run where image m has Go, npm where it has Node (the factory's
-// image, nil, has both), and request_tool for any other tool.
-func installLine(m *imagegen.Manifest) string {
+// image, nil, has both), and request_tool for any other tool where tools
+// hold it.
+func installLine(m *imagegen.Manifest, tools []string) string {
+	ask := slices.Contains(tools, policy.ToolRequestTool)
 	var with []string
 	if m == nil || slices.ContainsFunc(m.Tools, func(t string) bool { return slices.Contains([]string{"go", "golang", "golang-go"}, t) }) {
 		with = append(with, "go install", "go run")
@@ -812,27 +815,33 @@ func installLine(m *imagegen.Manifest) string {
 	if m == nil || slices.ContainsFunc(m.Tools, func(t string) bool { return slices.Contains([]string{"node", "nodejs", "npm"}, t) }) {
 		with = append(with, "npm")
 	}
-	if len(with) == 0 {
+	switch {
+	case len(with) == 0 && ask:
 		return "Ask for a tool the checks need and the sandbox lacks with request_tool. "
+	case len(with) == 0:
+		return ""
 	}
 	list := with[len(with)-1]
 	if len(with) > 1 {
 		list = strings.Join(with[:len(with)-1], ", ") + " or " + list
 	}
-	return "Install what the checks need with " + list + ", and ask for any other tool with request_tool; the caches under /cache persist for this project. "
+	if ask {
+		list += ", and ask for any other tool with request_tool"
+	}
+	return "Install what the checks need with " + list + "; the caches under /cache persist for this project. "
 }
 
 // featureGuide ends the brief of a plan's card of role instead of
 // workGuide: build the card, a test per acceptance item; the integration
 // card turns the spec's acceptance tests into acceptance/. The harness
 // reads the repository's AGENTS.md into the session itself.
-func featureGuide(role string, m *imagegen.Manifest) string {
+func featureGuide(role string, m *imagegen.Manifest, tools []string) string {
 	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. " +
 		"Write the tests the acceptance items name, with the names, inputs and numbers they give; no probe tests or debug programs. "
 	if role == RoleIntegration {
 		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
 	}
-	return g + noAnswer + guideEnd(m)
+	return g + noAnswer + guideEnd(m, tools)
 }
 
 // mcpTimeoutMS is opencode's per-request timeout on the gateway's MCP

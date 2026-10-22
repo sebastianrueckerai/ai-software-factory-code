@@ -58,6 +58,52 @@ func TestSandboxToolsAreTheImages(t *testing.T) {
 	}
 }
 
+// FactoryStack is the factory image's stack as an images.yaml image: Go
+// at the version Dockerfile.sandbox's golang base pins, Node at the line
+// upstream-files.txt pins with its sha256, the final stage's Go env and
+// PATH, and the factory image's registries; it passes the file's checks.
+// A bump of either file fails here until the stack follows.
+func TestFactoryStackIsTheFactoryImage(t *testing.T) {
+	dockerfile := sandboxDockerfile(t)
+	golang := regexp.MustCompile(`golang:(\d+\.\d+\.\d+)-alpine@`).FindStringSubmatch(dockerfile)
+	node := regexp.MustCompile(`ARG NODE_VERSION=(\S+)`).FindStringSubmatch(dockerfile)
+	if golang == nil || node == nil {
+		t.Fatal("Dockerfile.sandbox pins no golang base or no NODE_VERSION")
+	}
+	files, err := os.ReadFile("../../upstream-files.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var nodeLine []string
+	for _, line := range strings.Split(string(files), "\n") {
+		if f := strings.Fields(line); len(f) == 5 && f[0] == "node" && f[1] == "v"+node[1] {
+			nodeLine = f
+		}
+	}
+	if nodeLine == nil {
+		t.Fatalf("upstream-files.txt has no node v%s line", node[1])
+	}
+	s := FactoryStack()
+	want := []policy.UpstreamLine{
+		{Name: "go", URL: "https://go.dev/dl/go" + golang[1] + ".linux-amd64.tar.gz", SHA256: s.Upstream[0].SHA256, To: "/usr/local/go", Strip: 1},
+		{Name: "node", URL: nodeLine[3], SHA256: nodeLine[4], To: "/usr/local", Strip: 1},
+	}
+	if !reflect.DeepEqual(s.Upstream, want) {
+		t.Fatalf("upstream = %+v, want %+v", s.Upstream, want)
+	}
+	for k, v := range s.Env {
+		if !strings.Contains(dockerfile, k+"="+v) {
+			t.Errorf("env %s=%s is not Dockerfile.sandbox's", k, v)
+		}
+	}
+	if len(s.Env) != 3 || !strings.Contains(dockerfile, "ENV PATH="+strings.Join(s.Path, ":")+":$PATH") || !slices.Equal(s.Egress, sandboxRegistries) || len(s.Apt) != 0 {
+		t.Fatalf("stack = %+v: want the final stage's three Go variables, its PATH and the factory image's registries", s)
+	}
+	if f := (policy.ImagesFile{Images: map[string]policy.ImageSpec{"default": s}}).Validate(); len(f) > 0 {
+		t.Fatalf("findings = %q", f)
+	}
+}
+
 // A project image builds FROM the base stage: the brief's base tools are
 // that stage's apt packages, and Go and Node come only after it.
 func TestSandboxBaseToolsAreTheBaseStages(t *testing.T) {
@@ -95,25 +141,33 @@ func holdTools(t *testing.T, where string, installed []string) {
 }
 
 // The brief states the image the session runs: the factory's, as before,
-// or the base's tools, then the project image's, and its registries.
+// or the base's tools, then the project image's, and its registries. How a
+// missing tool comes is request_tool's where the session has it.
 func TestSandboxFactsFollowTheImage(t *testing.T) {
-	const requestTool = "A tool it lacks cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
+	const (
+		requestTool = "A tool it lacks cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
+		noTool      = "A tool it lacks cannot be installed at runtime: the download hosts are not reachable."
+	)
 	base := "The sandbox has git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests)"
 	for name, c := range map[string]struct {
 		m    *imagegen.Manifest
 		want string
 	}{
 		"factory": {nil, base + ", Go 1.26, Node 24 with npm. It reaches the factory's gateway and Git server and " +
-			"proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. " + requestTool},
+			"proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. "},
 		"browser": {&imagegen.Manifest{Tools: []string{"chromium", "fonts-liberation"}, Egress: []string{"cdn.example.org", "registry.npmjs.org"}},
-			base + ", chromium, fonts-liberation. It reaches the factory's gateway and Git server and cdn.example.org, registry.npmjs.org; every other name fails to resolve. " + requestTool},
+			base + ", chromium, fonts-liberation. It reaches the factory's gateway and Git server and cdn.example.org, registry.npmjs.org; every other name fails to resolve. "},
 		"offline": {&imagegen.Manifest{Tools: []string{"jq"}},
-			base + ", jq. It reaches the factory's gateway and Git server and no package registries; every other name fails to resolve. " + requestTool},
+			base + ", jq. It reaches the factory's gateway and Git server and no package registries; every other name fails to resolve. "},
 	} {
-		if got := SandboxFacts(c.m); got != c.want {
-			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
+		tools := []string{policy.ToolEscalate, policy.ToolRequestTool}
+		if got := SandboxFacts(c.m, tools); got != c.want+requestTool {
+			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want+requestTool)
 		}
-		if got := briefText(harness.TaskBrief{Objective: "o", Image: c.m}, "T"); !strings.Contains(got, c.want+"\n") {
+		if got := SandboxFacts(c.m, nil); got != c.want+noTool {
+			t.Errorf("%s without request_tool:\n got %q\nwant %q", name, got, c.want+noTool)
+		}
+		if got := briefText(harness.TaskBrief{Objective: "o", Image: c.m, Tools: tools}, "T"); !strings.Contains(got, c.want+requestTool+"\n") {
 			t.Errorf("%s: the brief lacks its facts:\n%s", name, got)
 		}
 	}
@@ -167,7 +221,7 @@ func TestTaskImage(t *testing.T) {
 		!errors.As(err, &app) || !app.NonRetryable() || app.Type() != errImageNotPinned {
 		t.Fatalf("variant unpinned: %v, want ErrImageNotPinned as a non-retryable activity error", err)
 	}
-	if want := "image video of project demo-app has no pin in force: the card waits until the factory pins it"; errMessage(err) != want {
+	if want := "image video of project demo-app has no pin in force: no sandbox runs on it until the factory pins it"; errMessage(err) != want {
 		t.Fatalf("variant unpinned says %q, want %q", errMessage(err), want)
 	}
 	if _, _, err := r.taskImage(ctx, Task{ID: "t1", Repository: "linkshort/linkshort", Image: "browser"}); !errors.As(err, &notPinned) {
@@ -319,7 +373,7 @@ func egressNames(spec map[string]any) (fqdns, dns []string) {
 }
 
 func TestSandboxFactsNameToolsNamesAndRequestTool(t *testing.T) {
-	got := SandboxFacts(nil)
+	got := SandboxFacts(nil, []string{policy.ToolRequestTool})
 	for _, want := range []string{"git", "ripgrep (rg)", "gcc and make", "Go 1.26", "Node 24 with npm", "PostgreSQL 17",
 		"proxy.golang.org", "registry.npmjs.org", "request_tool"} {
 		if !strings.Contains(got, want) {

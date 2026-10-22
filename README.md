@@ -1169,20 +1169,25 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   parks the card on an image: the card's own, else one named after the
   tool. A tool card on the project's repository (source `tool_request`,
   small, the cheap rung, a child the asking card depends on) adds the tool
-  to `factory/images.yaml`; a second ask for the same image joins the open
-  card with a comment. The card waits in `waiting-image` (no work slot)
-  until the imager's `image_ready`: once the tool card merged and the pin
-  in force carries the key a pass after the merge read, the next session
-  runs on the image from the branch, its findings naming the tool's
-  arrival. A tool card closed unmerged, or merged without declaring the
-  image, a new image past the project's four, or one refused before
-  (which goes to a human) reach the next session as why the tool did not
-  come. After 24 hours without a wake the card asks a human; the image's
-  arrival ends that wait too. The asking session takes no number of the
-  session cap. A session start whose image has no pin in force parks the
-  same way, with no tool card. A pull request that changes
-  `factory/images.yaml` has the file checked at its head; each finding
-  goes back to the agent like an anti-cheat finding.
+  to `factory/images.yaml`, starting from the asking card's image as an
+  entry (its own on main, or `FactoryStack`, the factory image's Go and
+  Node, where it runs on the factory's image); a second ask for the same
+  image joins the open card with a comment. The park's row names the tool
+  card before it is filed, so a retry files it once. The card waits in
+  `waiting-image` (no work slot) until the imager's `image_ready`: once
+  the tool card merged and the pin in force carries the key a pass after
+  the merge read, the next session runs on the image from the branch, its
+  findings naming the tool's arrival. A tool card closed unmerged, or
+  merged without declaring the image, reaches the next session as why the
+  tool did not come; so do, at once, a new image past the project's four
+  and a tool card's own ask (it declares tools it never gets). Any ask
+  after a refused park, and an ask for the tool whose image arrived, goes
+  to a human. After 24 hours without a wake the card asks a human; the
+  image's arrival ends that wait too. The asking session takes no number
+  of the session cap. A session start whose image has no pin in force
+  parks the same way, with no tool card. A pull request that changes
+  `factory/images.yaml` has the file checked at the gated commit; each
+  finding goes back to the agent like an anti-cheat finding.
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

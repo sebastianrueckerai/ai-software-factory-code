@@ -668,7 +668,7 @@ func (s *accBatchStore) ImagePark(ctx context.Context, task string) (factoryd.Im
 func (s *accBatchStore) ParkImage(ctx context.Context, p factoryd.ImagePark, waits bool) (factoryd.ImagePark, error) {
 	panic("unused")
 }
-func (s *accBatchStore) OpenToolCard(ctx context.Context, project, target string) (factoryd.Task, bool, error) {
+func (s *accBatchStore) OpenToolCard(ctx context.Context, repository, target string) (factoryd.Task, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {

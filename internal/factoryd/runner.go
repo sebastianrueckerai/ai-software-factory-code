@@ -1671,7 +1671,7 @@ func (r *Runner) reachesCanary(names []string) (string, bool) {
 type ErrImageNotPinned struct{ Project, Image string }
 
 func (e ErrImageNotPinned) Error() string {
-	return fmt.Sprintf("image %s of project %s has no pin in force: the card waits until the factory pins it", e.Image, e.Project)
+	return fmt.Sprintf("image %s of project %s has no pin in force: no sandbox runs on it until the factory pins it", e.Image, e.Project)
 }
 
 // errImageNotPinned is ErrImageNotPinned's activity error type: no retry

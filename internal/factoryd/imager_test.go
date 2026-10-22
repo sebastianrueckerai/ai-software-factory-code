@@ -360,7 +360,7 @@ func (b *imageBook) OpenImageParks(context.Context) ([]ImagePark, error) {
 	defer b.mu.Unlock()
 	var out []ImagePark
 	for _, p := range b.parks {
-		if p.WokenAt == nil {
+		if t, ok := b.tasks[p.Task]; p.WokenAt == nil && !(ok && Final(t.Status)) {
 			out = append(out, p)
 		}
 	}
@@ -691,7 +691,8 @@ func demoBothPinned(main map[string]string) {
 // image is pinned; a tool card closed unmerged at once, and one merged
 // without declaring the image once a pass after the merge reads the file,
 // each with its refusal, which drops the card's dependency on the tool
-// card. A woken park is not signalled again.
+// card. A woken park is not signalled again, and the park of a card that
+// ended is not read.
 func TestImagerWakesParkedCards(t *testing.T) {
 	r := newImagerRig(t, bothImages, demoBothPinned)
 	t0 := *r.now
@@ -710,6 +711,8 @@ func TestImagerWakesParkedCards(t *testing.T) {
 	park("t-d", "browser", "chromium", &Task{ID: "t-tool-d", Status: "closed", IssueNumber: 61, FinishedAt: &merged})
 	park("t-e", "docs", "pandoc", &Task{ID: "t-tool-e", Status: "done", IssueNumber: 62, FinishedAt: &merged})
 	park("t-f", "browser", "chromium", &Task{ID: "t-tool-f", Status: "running", IssueNumber: 63})
+	park("t-g", "browser", "", nil)
+	r.book.tasks["t-g"] = Task{ID: "t-g", Status: "closed"}
 
 	r.pass(t)
 	if want := []string{"t-b image_ready browser: ", "t-d image_ready browser: #61 closed without a merge"}; !reflect.DeepEqual(r.signals.got, want) {

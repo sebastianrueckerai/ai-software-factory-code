@@ -72,14 +72,14 @@ type ImagesFile struct {
 type ImageSpec struct {
 	// Apt lists Debian packages from the base image's dated snapshot, so
 	// versions are fixed and not pinned here.
-	Apt []string `yaml:"apt"`
+	Apt []string `yaml:"apt,omitempty"`
 	// Upstream lists downloads pinned by SHA-256.
-	Upstream []UpstreamLine    `yaml:"upstream"`
-	Env      map[string]string `yaml:"env"`
+	Upstream []UpstreamLine    `yaml:"upstream,omitempty"`
+	Env      map[string]string `yaml:"env,omitempty"`
 	// Path lists directories appended to PATH.
-	Path []string `yaml:"path"`
+	Path []string `yaml:"path,omitempty"`
 	// Egress lists hostnames the session may reach beyond the defaults.
-	Egress []string `yaml:"egress"`
+	Egress []string `yaml:"egress,omitempty"`
 }
 
 // UpstreamLine is one pinned download. An archive (.tar.gz, .tgz, .tar.xz)
@@ -90,7 +90,7 @@ type UpstreamLine struct {
 	URL    string `yaml:"url"`
 	SHA256 string `yaml:"sha256"`
 	To     string `yaml:"to"`
-	Strip  int    `yaml:"strip"`
+	Strip  int    `yaml:"strip,omitempty"`
 }
 
 // ParseImagesFile decodes strictly (an unknown key is a finding) and returns

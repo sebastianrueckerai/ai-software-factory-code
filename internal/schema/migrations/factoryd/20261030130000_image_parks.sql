@@ -17,4 +17,3 @@ CREATE TABLE IF NOT EXISTS image_parks (
 	woken_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS image_parks_waiting ON image_parks (created_at) WHERE woken_at IS NULL;
-CREATE INDEX IF NOT EXISTS image_parks_target ON image_parks (project, target) WHERE tool_task <> '';
