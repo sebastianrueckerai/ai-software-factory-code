@@ -360,7 +360,7 @@ func (b *imageBook) OpenImageParks(context.Context) ([]ImagePark, error) {
 	defer b.mu.Unlock()
 	var out []ImagePark
 	for _, p := range b.parks {
-		if t, ok := b.tasks[p.Task]; p.WokenAt == nil && !(ok && Final(t.Status)) {
+		if t, ok := b.tasks[p.Task]; p.WokenAt == nil && !(ok && (Final(t.Status) || t.Status == "merged")) {
 			out = append(out, p)
 		}
 	}

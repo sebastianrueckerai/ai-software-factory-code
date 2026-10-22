@@ -312,10 +312,12 @@ func TestEscalationHandlerToolRequest(t *testing.T) {
 		t.Fatalf("80 and 600 characters = %d, want accepted", code)
 	}
 	for name, body := range map[string]string{
-		"no tool":   `{"task_id":"t-run","kind":"missing_tool","need":"n"}`,
-		"no need":   `{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":" "}`,
-		"long tool": fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":%q,"need":"n"}`, strings.Repeat("a", 81)),
-		"long need": fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":%q}`, strings.Repeat("n", 601)),
+		"no tool":             `{"task_id":"t-run","kind":"missing_tool","need":"n"}`,
+		"no need":             `{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":" "}`,
+		"long tool":           fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":%q,"need":"n"}`, strings.Repeat("a", 81)),
+		"long need":           fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":%q}`, strings.Repeat("n", 601)),
+		"tool on two lines":   `{"task_id":"t-run","kind":"missing_tool","tool":"ff\nmpeg","need":"n"}`,
+		"need with a control": `{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":"cut\u0007"}`,
 	} {
 		if code := post(&fakeSessions{}, body); code != http.StatusBadRequest {
 			t.Errorf("%s = %d, want 400", name, code)

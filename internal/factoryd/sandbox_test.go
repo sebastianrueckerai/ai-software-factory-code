@@ -145,8 +145,8 @@ func holdTools(t *testing.T, where string, installed []string) {
 // missing tool comes is request_tool's where the session has it.
 func TestSandboxFactsFollowTheImage(t *testing.T) {
 	const (
-		requestTool = "A tool it lacks cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
-		noTool      = "A tool it lacks cannot be installed at runtime: the download hosts are not reachable."
+		requestTool = "A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
+		noTool      = "A tool those hosts do not serve cannot be installed at runtime."
 	)
 	base := "The sandbox has git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests)"
 	for name, c := range map[string]struct {

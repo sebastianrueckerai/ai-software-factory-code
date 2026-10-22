@@ -1161,7 +1161,8 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   repository). `factoryd-project` also carries registration's Secrets and
   is never bound in a seed namespace.
 - `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
-  required): free, through the class's tool list (`request_tool: {}`).
+  required, each one line without control characters): free, through the
+  class's tool list (`request_tool: {}`), never a tool card's session.
   The agent asks for a tool its sandbox lacks instead of installing it.
   It goes the way of an escalation (an `agent_tool_request` intake event,
   the session stops with outcome `missing_tool`, the work in progress on
@@ -1180,9 +1181,10 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   findings naming the tool's arrival. A tool card closed unmerged, or
   merged without declaring the image, reaches the next session as why the
   tool did not come; so do, at once, a new image past the project's four
-  and a tool card's own ask (it declares tools it never gets). Any ask
-  after a refused park, and an ask for the tool whose image arrived, goes
-  to a human. After 24 hours without a wake the card asks a human; the
+  and, as a backstop, a tool card's own ask (it declares tools it never
+  gets). Any ask after a refused park goes to a human, and so does an ask
+  for the tool whose image arrived from a card on that image; a card not
+  on it takes it at once. After 24 hours without a wake the card asks a human; the
   image's arrival ends that wait too. The asking session takes no number
   of the session cap. A session start whose image has no pin in force
   parks the same way, with no tool card. A pull request that changes

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -61,8 +62,9 @@ const (
 // validate checks the fields of its kind, as the gateway does.
 func (a AgentAsk) validate() error {
 	if a.Kind == AskTool {
-		if n, m := utf8.RuneCountInString(a.Tool), utf8.RuneCountInString(a.Need); n == 0 || n > maxTool || m == 0 || m > maxNeed {
-			return fmt.Errorf("tool (1 to %d characters) and need (1 to %d characters) are required", maxTool, maxNeed)
+		if n, m := utf8.RuneCountInString(a.Tool), utf8.RuneCountInString(a.Need); n == 0 || n > maxTool || m == 0 || m > maxNeed ||
+			strings.ContainsFunc(a.Tool+a.Need, unicode.IsControl) {
+			return fmt.Errorf("tool (1 to %d characters) and need (1 to %d characters) are required, each on one line without control characters", maxTool, maxNeed)
 		}
 		return nil
 	}

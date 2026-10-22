@@ -927,6 +927,11 @@ const (
 	ToolRequestTool = "request_tool"
 )
 
+// SourceToolRequest is the source of a tool card, which adds a tool an
+// agent asked for to one of its project's images: its own session never
+// gets request_tool, as its sandbox never gets the tools it declares.
+const SourceToolRequest = "tool_request"
+
 // FreeTools are the tools a class lists without caps.
 var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth}
 
@@ -1181,12 +1186,19 @@ func (d Document) AllowsTool(classes []string, tool string) bool {
 	return ok
 }
 
-// Tools are the tools any of classes may call, sorted: what the gateway
-// lists to the task and the brief names.
-func (d Document) Tools(classes []string) []string {
+// AllowsSessionTool reports whether a session of a card of source with
+// classes may call tool: one of the classes lists it, and it is no tool
+// card's request_tool.
+func (d Document) AllowsSessionTool(classes []string, source, tool string) bool {
+	return d.AllowsTool(classes, tool) && (tool != ToolRequestTool || source != SourceToolRequest)
+}
+
+// Tools are the tools a session of a card of source with classes may
+// call, sorted: what the gateway lists to the task and the brief names.
+func (d Document) Tools(classes []string, source string) []string {
 	var out []string
 	for _, tool := range append(slices.Clone(PaidTools), FreeTools...) {
-		if d.AllowsTool(classes, tool) {
+		if d.AllowsSessionTool(classes, source, tool) {
 			out = append(out, tool)
 		}
 	}

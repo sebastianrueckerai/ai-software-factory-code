@@ -21,7 +21,7 @@ import (
 // SourceToolRequest is the source of a tool card: the card that adds a
 // tool an agent asked for with request_tool to one of its project's
 // images, a child of the asking card, which depends on it.
-const SourceToolRequest = "tool_request"
+const SourceToolRequest = policy.SourceToolRequest
 
 // imageWait is how long a card parked on an image waits before a human
 // hears of it.
@@ -132,6 +132,8 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 		return r.askAgain(ctx, t, p, toolAskedAgain+fmt.Sprintf("%s on image %s, after the factory refused its last ask (%s on image %s): %s\nWhy: %s\n"+
 			"Recommendation: %s; or answer how the card goes on without the tool, or close this issue to end the card.",
 			tool, p.Target, prev.Tool, prev.Target, prev.Refused, need, refusalAdvice(prev.Refused)), true)
+	case had && prev.WokenAt != nil && prev.Refused == "" && prev.ToolTask != "" && prev.Target == p.Target && strings.EqualFold(prev.Tool, tool) && t.Image != prev.Target:
+		return ToolPark{Park: prev}, nil
 	case had && prev.WokenAt != nil && prev.Refused == "" && prev.ToolTask != "" && prev.Target == p.Target && strings.EqualFold(prev.Tool, tool):
 		with := ""
 		if pin, ok := c.Images[p.Target]; ok && len(pin.Tools) > 0 {
@@ -226,7 +228,8 @@ func (r *Runner) askAgain(ctx context.Context, t Task, p ImagePark, ask string, 
 
 // onToolCard puts park p of card t, recorded with its tool card's id, on
 // that card: it files it under the id where no card has it, else joins it
-// with t's need where t is not on it yet; then t depends on it and waits.
+// with t's need, a line of its objective and a comment on its issue, each
+// once; then t depends on it and waits.
 // pinned and declared are the project's images, file its images.yaml on
 // main.
 func (r *Runner) onToolCard(ctx context.Context, t Task, repo Repo, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (ToolPark, error) {
@@ -238,12 +241,14 @@ func (r *Runner) onToolCard(ctx context.Context, t Task, repo Repo, p ImagePark,
 		if card, err = r.fileToolCard(ctx, t, p, pinned, declared, file); err != nil {
 			return ToolPark{}, err
 		}
-	} else if on := fmt.Sprintf("Card #%d (%s) needs %s", t.IssueNumber, t.ID, p.Tool); !strings.Contains(card.Objective, on) {
-		join := on + " in image " + p.Target + " too: " + p.Need
-		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, card.IssueNumber, join); err != nil {
-			return ToolPark{}, err
+	} else if lines := strings.Split(card.Objective, "\n"); !slices.Contains(lines, askLine(t, p)) {
+		join := fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", t.IssueNumber, t.ID, p.Tool, p.Target, p.Need)
+		if !slices.Contains(lines, join) {
+			if err := r.store.SetObjective(ctx, card.ID, card.Objective+"\n\n"+join); err != nil {
+				return ToolPark{}, err
+			}
 		}
-		if err := r.store.SetObjective(ctx, card.ID, card.Objective+"\n\n"+join); err != nil {
+		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, join); err != nil {
 			return ToolPark{}, err
 		}
 	}
@@ -355,12 +360,17 @@ func imagesEntry(name string, spec policy.ImageSpec) (string, error) {
 	return b.String(), e.Close()
 }
 
+// askLine opens the tool card of card t's park p: the tool and the need.
+func askLine(t Task, p ImagePark) string {
+	return fmt.Sprintf("Card #%d (%s) needs %s, which its sandbox lacks: %s", t.IssueNumber, t.ID, p.Tool, p.Need)
+}
+
 // toolCardBody is the brief of park p's tool card: the need and the asking
 // card t, what t's image holds now (imageNow), the file on main, its
 // format, the rules that matter and what follows the merge.
 func toolCardBody(t Task, p ImagePark, now string, file []byte) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Card #%d (%s) needs %s, which its sandbox lacks: %s\n\n", t.IssueNumber, t.ID, p.Tool, p.Need)
+	b.WriteString(askLine(t, p) + "\n\n")
 	fmt.Fprintf(&b, "Add %s to image %s in %s. After this card merges, the factory builds the image, signs it and pins it, "+
 		"and card #%d restarts on image %s from its branch, where it must still build and test this project.\n\n",
 		p.Tool, p.Target, imagesPath, t.IssueNumber, p.Target)

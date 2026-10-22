@@ -1879,7 +1879,7 @@ func (f *envFit) text(name, s, what string) string {
 }
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
-	toolsJSON, _ := json.Marshal(s.policy.Tools(t.RequiredCapabilities))
+	toolsJSON, _ := json.Marshal(s.policy.Tools(t.RequiredCapabilities, t.Source))
 	var fit envFit
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},

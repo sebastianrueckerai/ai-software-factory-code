@@ -370,14 +370,18 @@ func TestParkForToolAfterAWakeRefusal(t *testing.T) {
 	}
 }
 
-// An ask for the tool whose park on the same image arrived goes to a
-// human: the automation's loop would file the same card again.
+// An ask for the tool whose park on the same image arrived, from a card
+// that runs on that image, goes to a human: the automation's loop would
+// file the same card again.
 func TestParkForToolAfterTheImageArrived(t *testing.T) {
 	r, store, rf, _ := parkRig(t, "", "default", "ffmpeg")
 	ctx := context.Background()
 	if _, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "ffmpeg", Tool: "ffmpeg", ToolTask: "t-31"}, false); err != nil {
 		t.Fatal(err)
 	}
+	tk := store.tasks["t-asker"]
+	tk.Image = "ffmpeg"
+	store.tasks["t-asker"] = tk
 	p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
 	want := "The agent asks again for a tool: image ffmpeg arrived with jq, sox; the agent asks for ffmpeg again\nWhy: cut\n" +
 		"Recommendation: see whether image ffmpeg holds the tool where the card looks for it, then answer with what you find; or close this issue to end the card."
@@ -387,6 +391,57 @@ func TestParkForToolAfterTheImageArrived(t *testing.T) {
 	// another tool is a new ask
 	if p, err := r.ParkForTool(ctx, "t-asker", "sox", "mix"); err != nil || p.Ask != "" || len(rf.issues) != 1 {
 		t.Fatalf("another tool = %+v %v, issues %d", p, err, len(rf.issues))
+	}
+}
+
+// A card that does not run on the image its park's wake brought (a human
+// answered the 24 h question, the image arrived after) takes it at its
+// next ask for the tool: the woken park, which the workflow takes at once.
+func TestParkForToolTakesTheArrivedImage(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default", "ffmpeg")
+	ctx := context.Background()
+	woken, err := store.ParkImage(ctx, ImagePark{Task: "t-asker", Project: "ai-software-factory-code", Target: "ffmpeg", Tool: "ffmpeg", Need: "cut", ToolTask: "t-31"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut it again")
+	if err != nil || p.Ask != "" || p.Note != "" || p.Park.Target != "ffmpeg" || p.Park.WokenAt == nil || !p.Park.CreatedAt.Equal(woken.CreatedAt) || len(rf.issues) != 0 {
+		t.Fatalf("park = %+v %v, issues %d; want the woken park", p, err, len(rf.issues))
+	}
+	if store.tasks["t-asker"].Status != "running" {
+		t.Fatalf("card is %s, want running: it takes the image at once", store.tasks["t-asker"].Status)
+	}
+}
+
+// A join matches the card's whole line: a tool whose name begins an
+// earlier ask's (go after golang) joins too. A retry of the join changes
+// nothing, and one after a lost comment posts it once.
+func TestParkForToolJoinMatchesTheWholeLine(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	tk := store.tasks["t-asker"]
+	tk.Image = "video"
+	store.tasks["t-asker"] = tk
+	first, err := r.ParkForTool(ctx, "t-asker", "golang", "build the encoder")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tk.Status = "running"
+	store.tasks["t-asker"] = tk
+	before := store.tasks[first.Park.ToolTask].Objective
+	join := "Card #41 (t-asker) needs go in image video too: build"
+	for range 2 {
+		p, err := r.ParkForTool(ctx, "t-asker", "go", "build")
+		if err != nil || p.Park.ToolTask != first.Park.ToolTask {
+			t.Fatalf("park = %+v %v", p, err)
+		}
+		if got := store.tasks[first.Park.ToolTask].Objective; got != before+"\n\n"+join || !slices.Equal(rf.comments, []string{"31 " + join}) {
+			t.Fatalf("objective %q, comments %q: want the join once", got, rf.comments)
+		}
+	}
+	rf.comments = nil
+	if _, err := r.ParkForTool(ctx, "t-asker", "go", "build"); err != nil || !slices.Equal(rf.comments, []string{"31 " + join}) {
+		t.Fatalf("a retry after a lost comment: %v, comments %q", err, rf.comments)
 	}
 }
 
@@ -763,6 +818,27 @@ func TestWorkflowMissingToolBeforeTheChange(t *testing.T) {
 	}
 	if len(h.parked) != 0 || !slices.Equal(h.escalated, []string{missingTool("s1", "ffmpeg", "cut").Reason}) {
 		t.Fatalf("parked %q, escalated %q", h.parked, h.escalated)
+	}
+}
+
+// A park the imager woke already, which ParkForTool returns where the card
+// asks again for the tool whose image arrived, puts the card on the image
+// at once: no wait, no human.
+func TestWorkflowParkOnAnArrivedImage(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(missingTool("s1", "ffmpeg", "cut"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	p := ffmpegPark()
+	woken := parkedAt.Add(time.Hour)
+	p.Park.WokenAt = &woken
+	h.onPark(p)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) || len(h.escalated) != 0 || len(h.sessions) != 2 ||
+		!slices.Contains(h.sessions[1].Findings, "The tool ffmpeg arrived: this session runs on image ffmpeg (ffmpeg).") {
+		t.Fatalf("arrived %q, escalated %q, sessions %+v", h.arrived, h.escalated, h.sessions)
 	}
 }
 

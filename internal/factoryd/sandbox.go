@@ -59,9 +59,9 @@ var sandboxIncidental = []string{"ca-certificates", "tzdata", "xz-utils", "libc6
 // How a missing tool comes is request_tool's where the session's tools
 // hold it.
 func SandboxFacts(m *imagegen.Manifest, tools []string) string {
-	noInstall := "A tool it lacks cannot be installed at runtime: the download hosts are not reachable."
+	noInstall := "A tool those hosts do not serve cannot be installed at runtime."
 	if slices.Contains(tools, policy.ToolRequestTool) {
-		noInstall = "A tool it lacks cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
+		noInstall = "A tool those hosts do not serve cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
 	}
 	has := make([]string, len(sandboxTools))
 	for i, t := range sandboxTools {

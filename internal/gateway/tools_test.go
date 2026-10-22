@@ -797,13 +797,15 @@ func TestRequestTool(t *testing.T) {
 		t.Fatalf("80 and 600 characters = %q, want accepted", text)
 	}
 	for name, args := range map[string]map[string]any{
-		"no tool":   {"tool": " ", "need": "n"},
-		"no need":   {"tool": "ffmpeg", "need": ""},
-		"long tool": {"tool": strings.Repeat("a", 81), "need": "n"},
-		"long need": {"tool": "ffmpeg", "need": strings.Repeat("n", 601)},
+		"no tool":             {"tool": " ", "need": "n"},
+		"no need":             {"tool": "ffmpeg", "need": ""},
+		"long tool":           {"tool": strings.Repeat("a", 81), "need": "n"},
+		"long need":           {"tool": "ffmpeg", "need": strings.Repeat("n", 601)},
+		"tool on two lines":   {"tool": "ff\nmpeg", "need": "n"},
+		"need with a control": {"tool": "ffmpeg", "need": "cut\u0007"},
 	} {
 		if text, isErr := e.call(t, policy.ToolRequestTool, args); !isErr || !strings.Contains(text, "refused_arguments") ||
-			!strings.Contains(text, "tool (1 to 80 characters) and need (1 to 600 characters) are required") {
+			!strings.Contains(text, "tool (1 to 80 characters) and need (1 to 600 characters) are required, each on one line without control characters") {
 			t.Errorf("%s = %q, want refused_arguments naming both bounds", name, text)
 		}
 	}
@@ -815,6 +817,17 @@ func TestRequestTool(t *testing.T) {
 	unlisted := newToolEnv(t, running("coder"), v)
 	if text, isErr := unlisted.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") {
 		t.Fatalf("unlisted = %q", text)
+	}
+	// a tool card declares tools its own sandbox never gets: no request_tool
+	card := running("coder")
+	card.Source = policy.SourceToolRequest
+	tc := newToolEnv(t, card, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	if res, err := tc.session.ListTools(context.Background(), nil); err != nil || slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestTool }) {
+		t.Fatalf("a tool card's tools list request_tool: %v", err)
+	}
+	if text, isErr := tc.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") ||
+		!strings.Contains(text, "a tool card declares tools its own sandbox never gets") || len(tc.escalator.asks) != 0 {
+		t.Fatalf("a tool card's request_tool = %q", text)
 	}
 }
 

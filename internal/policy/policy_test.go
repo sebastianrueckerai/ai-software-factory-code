@@ -193,9 +193,18 @@ func TestTools(t *testing.T) {
 		{[]string{"coder", "researcher"}, []string{"replicate_predict", "web_scrape"}},
 		{[]string{"nobody"}, nil},
 	} {
-		if got := d.Tools(tc.classes); !slices.Equal(got, tc.want) {
+		if got := d.Tools(tc.classes, ""); !slices.Equal(got, tc.want) {
 			t.Errorf("Tools(%v) = %v, want %v", tc.classes, got, tc.want)
 		}
+	}
+	// a tool card's session never gets request_tool
+	coder := d.Classes["coder"]
+	coder.Tools[ToolRequestTool] = ToolCap{}
+	if got := d.Tools([]string{"coder"}, ""); !slices.Equal(got, []string{"replicate_predict", "request_tool", "web_scrape"}) {
+		t.Errorf("a card's tools = %v", got)
+	}
+	if got := d.Tools([]string{"coder"}, SourceToolRequest); !slices.Equal(got, []string{"replicate_predict", "web_scrape"}) || d.AllowsSessionTool([]string{"coder"}, SourceToolRequest, ToolRequestTool) {
+		t.Errorf("a tool card's tools = %v, want no request_tool", got)
 	}
 }
 

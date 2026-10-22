@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -485,9 +486,10 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 }
 
 // allows is the one admission check of a tool, for tools/list and for
-// every call: one of the task's classes lists it.
+// every call: one of the task's classes lists it, and it is no tool
+// card's request_tool.
 func (c *toolCaller) allows(tool string) bool {
-	return c.pv.Document.AllowsTool(c.task.Classes, tool)
+	return c.pv.Document.AllowsSessionTool(c.task.Classes, c.task.Source, tool)
 }
 
 // paidCall is one paid tool call. prepare validates the arguments and
@@ -768,11 +770,14 @@ const deploymentHealthTimeout = 20 * time.Second
 
 // admitTool refuses a tool none of the task's classes lists in the policy.
 func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
-	if !c.allows(tool) {
-		return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf(
-			"%s is not allowed for capability classes %q under policy version %d", tool, c.task.Classes, c.pv.ID))
+	switch {
+	case c.allows(tool):
+		return nil
+	case c.pv.Document.AllowsTool(c.task.Classes, tool):
+		return s.refuseTool(c, tool, "refused_capability", tool+" is not a tool card's: a tool card declares tools its own sandbox never gets")
 	}
-	return nil
+	return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf(
+		"%s is not allowed for capability classes %q under policy version %d", tool, c.task.Classes, c.pv.ID))
 }
 
 // escalate hands the agent's question to factoryd, which stops the session
@@ -834,8 +839,10 @@ func (s *Server) requestTool(ctx context.Context, c *toolCaller, in RequestToolI
 		return r
 	}
 	name, need := strings.TrimSpace(in.Tool), strings.TrimSpace(in.Need)
-	if n, m := utf8.RuneCountInString(name), utf8.RuneCountInString(need); n == 0 || n > maxTool || m == 0 || m > maxNeed {
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("tool (1 to %d characters) and need (1 to %d characters) are required", maxTool, maxNeed))
+	if n, m := utf8.RuneCountInString(name), utf8.RuneCountInString(need); n == 0 || n > maxTool || m == 0 || m > maxNeed ||
+		strings.ContainsFunc(name+need, unicode.IsControl) {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
+			"tool (1 to %d characters) and need (1 to %d characters) are required, each on one line without control characters", maxTool, maxNeed))
 	}
 	return s.handOver(ctx, c, tool, Escalation{Kind: KindMissingTool, Tool: name, Need: need}, "tool_requested",
 		"asked for "+name+"; this session will end. Your work in progress is pushed; the card restarts on an image with the tool once it is built, "+

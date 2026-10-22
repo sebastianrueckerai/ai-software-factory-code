@@ -561,6 +561,15 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			reply(map[string]any{"number": 30 + len(f.issues), "html_url": "https://git.example/sf/code/issues/31"})
 		case (r.Method == "PUT" || r.Method == "GET") && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
+		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
+			n := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments")
+			out := []map[string]string{}
+			for _, c := range f.comments {
+				if body, ok := strings.CutPrefix(c, n+" "); ok {
+					out = append(out, map[string]string{"body": body})
+				}
+			}
+			reply(out)
 		case r.Method == "POST" && strings.HasSuffix(p, "/comments"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
