@@ -347,9 +347,74 @@ var imagerLadder = ModelLadder{Start: "factory/small", Stronger: "factory/big"}.
 // imageBook is the imager's store: image_builds and the alerts, one per
 // kind and fingerprint as the alerts table's unique index keeps them.
 type imageBook struct {
-	mu     sync.Mutex
-	builds map[string]imageBuild // by project/image/key
-	alerts []Alert
+	mu      sync.Mutex
+	builds  map[string]imageBuild // by project/image/key
+	alerts  []Alert
+	parks   []ImagePark
+	tasks   map[string]Task
+	removed []string // "task on dependency" of every dependency removed
+}
+
+func (b *imageBook) OpenImageParks(context.Context) ([]ImagePark, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	var out []ImagePark
+	for _, p := range b.parks {
+		if p.WokenAt == nil {
+			out = append(out, p)
+		}
+	}
+	return out, nil
+}
+
+func (b *imageBook) WakeImagePark(_ context.Context, task string, created time.Time, refused string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for i, p := range b.parks {
+		if p.Task == task && p.CreatedAt.Equal(created) && p.WokenAt == nil {
+			now := time.Now()
+			b.parks[i].WokenAt, b.parks[i].Refused = &now, refused
+		}
+	}
+	return nil
+}
+
+func (b *imageBook) ImageReadAt(_ context.Context, project, image, key string) (time.Time, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.builds[project+"/"+image+"/"+key].read, nil
+}
+
+func (b *imageBook) RemoveTaskDeps(_ context.Context, id string, dependsOn []string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, d := range dependsOn {
+		b.removed = append(b.removed, id+" on "+d)
+	}
+	return nil
+}
+
+func (b *imageBook) Task(_ context.Context, id string) (Task, bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	t, ok := b.tasks[id]
+	return t, ok, nil
+}
+
+// imageSignals records the imager's signals as "<task> <signal> <image>:
+// <refusal>".
+type imageSignals struct {
+	mu  sync.Mutex
+	got []string
+}
+
+func (w *imageSignals) Start(context.Context, string) error                    { return nil }
+func (w *imageSignals) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
+func (w *imageSignals) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.got = append(w.got, taskID+" "+name+" "+sig.Image+": "+sig.Refusal)
+	return nil
 }
 
 type imageBuild struct {
@@ -396,6 +461,7 @@ func (b *imageBook) InsertAlert(_ context.Context, a Alert) (int64, error) {
 }
 
 type imagerRig struct {
+	signals  *imageSignals
 	fj       *imagerForgejo
 	im       *Imager
 	book     *imageBook
@@ -438,10 +504,12 @@ func newImagerRig(t *testing.T, images string, edit func(main map[string]string)
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
-	book := &imageBook{builds: map[string]imageBuild{}}
+	book := &imageBook{builds: map[string]imageBuild{}, tasks: map[string]Task{}}
+	signals := &imageSignals{}
 	im := &Imager{Forgejo: f, Config: config, Policy: fj.version, Store: book, Registry: reg, Key: &key.PublicKey, Base: imagerBase,
-		Builder: Repo{Owner: "sf", Name: "ai-software-factory-code"}, BuildToken: "ci-tok", Ladder: imagerLadder, Now: func() time.Time { return now }}
-	return &imagerRig{fj: fj, im: im, book: book, registry: entries, tokens: tokens, now: &now, key: key}
+		Builder: Repo{Owner: "sf", Name: "ai-software-factory-code"}, BuildToken: "ci-tok", Ladder: imagerLadder, Now: func() time.Time { return now },
+		Workflows: signals}
+	return &imagerRig{signals: signals, fj: fj, im: im, book: book, registry: entries, tokens: tokens, now: &now, key: key}
 }
 
 func (r *imagerRig) pass(t *testing.T) {
@@ -606,6 +674,88 @@ func TestImagerDropsAnUndeclaredPin(t *testing.T) {
 	r.pass(t)
 	if got := r.fj.file("main", demoProjectFile); got != want {
 		t.Fatalf("main after the merge:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// demoBothPinned pins demo-app's default and browser images at the keys
+// bothImages desires.
+func demoBothPinned(main map[string]string) {
+	main[demoProjectFile] = strings.Replace(main[demoProjectFile], "merge_rule: auto\n", "merge_rule: auto\nimages:\n"+
+		"  browser:\n    digest: sha256:"+strings.Repeat("b", 64)+"\n    key: "+keyBrowser+"\n    tools: [chromium]\n    egress: [cdn.example.org]\n"+
+		"  default:\n    digest: sha256:"+strings.Repeat("d", 64)+"\n    key: "+keyDefault+"\n    tools: [jq]\n", 1)
+}
+
+// At the end of each pass the imager wakes the parked cards whose wait is
+// over: a tool card that merged once a pass begun after the merge reads the
+// pin in force at its desired key; a park without a tool card once its
+// image is pinned; a tool card closed unmerged at once, and one merged
+// without declaring the image once a pass after the merge reads the file,
+// each with its refusal, which drops the card's dependency on the tool
+// card. A woken park is not signalled again.
+func TestImagerWakesParkedCards(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	t0 := *r.now
+	merged := t0.Add(time.Minute)
+	park := func(task, target, tool string, card *Task) {
+		p := ImagePark{Task: task, Project: "demo-app", Target: target, Tool: tool, CreatedAt: t0.Add(-time.Hour)}
+		if card != nil {
+			p.ToolTask, p.ToolIssue = card.ID, card.IssueNumber
+			r.book.tasks[card.ID] = *card
+		}
+		r.book.parks = append(r.book.parks, p)
+	}
+	park("t-a", "browser", "chromium", &Task{ID: "t-tool-a", Status: "merged", IssueNumber: 60, FinishedAt: &merged})
+	park("t-b", "browser", "", nil)
+	park("t-c", "video", "", nil)
+	park("t-d", "browser", "chromium", &Task{ID: "t-tool-d", Status: "closed", IssueNumber: 61, FinishedAt: &merged})
+	park("t-e", "docs", "pandoc", &Task{ID: "t-tool-e", Status: "done", IssueNumber: 62, FinishedAt: &merged})
+	park("t-f", "browser", "chromium", &Task{ID: "t-tool-f", Status: "running", IssueNumber: 63})
+
+	r.pass(t)
+	if want := []string{"t-b image_ready browser: ", "t-d image_ready browser: #61 closed without a merge"}; !reflect.DeepEqual(r.signals.got, want) {
+		t.Fatalf("a pass before the merges: signals %q, want %q", r.signals.got, want)
+	}
+	*r.now = merged.Add(time.Minute)
+	r.pass(t)
+	want := []string{"t-b image_ready browser: ", "t-d image_ready browser: #61 closed without a merge",
+		"t-a image_ready browser: ", "t-e image_ready docs: #62 merged without declaring image docs"}
+	if !reflect.DeepEqual(r.signals.got, want) {
+		t.Fatalf("a pass after the merges: signals %q, want %q", r.signals.got, want)
+	}
+	*r.now = merged.Add(2 * time.Minute)
+	r.pass(t)
+	if !reflect.DeepEqual(r.signals.got, want) {
+		t.Fatalf("a third pass: signals %q, want no more", r.signals.got)
+	}
+	for _, p := range r.book.parks {
+		woken := p.Task == "t-a" || p.Task == "t-b" || p.Task == "t-d" || p.Task == "t-e"
+		if (p.WokenAt != nil) != woken {
+			t.Errorf("park %s woken %v, want %v", p.Task, p.WokenAt, woken)
+		}
+	}
+	if p := r.book.parks[3]; p.Refused != "#61 closed without a merge" {
+		t.Fatalf("t-d's park = %+v, want its refusal", p)
+	}
+	if want := []string{"t-d on t-tool-d", "t-e on t-tool-e"}; !reflect.DeepEqual(r.book.removed, want) {
+		t.Fatalf("dependencies removed %q, want %q: a refused card waits on its tool card no more", r.book.removed, want)
+	}
+	if _, _, writes := r.fj.state(); len(writes) != 0 {
+		t.Fatalf("writes %q, want none: the pins are at their desired keys", writes)
+	}
+}
+
+// A pin in force at a key older than a merged tool card's file wakes
+// nothing: the pass after the merge reads the new key, which the pin does
+// not carry yet.
+func TestImagerWaitsForTheMergedKey(t *testing.T) {
+	newBrowser := "images:\n  default:\n    apt: [jq]\n  browser:\n    apt: [chromium, ffmpeg]\n    egress: [cdn.example.org]\n"
+	r := newImagerRig(t, newBrowser, demoBothPinned)
+	merged := r.now.Add(-time.Minute)
+	r.book.tasks["t-tool"] = Task{ID: "t-tool", Status: "merged", IssueNumber: 60, FinishedAt: &merged}
+	r.book.parks = []ImagePark{{Task: "t-a", Project: "demo-app", Target: "browser", Tool: "ffmpeg", ToolTask: "t-tool", ToolIssue: 60, CreatedAt: merged.Add(-time.Hour)}}
+	r.pass(t)
+	if len(r.signals.got) != 0 || r.book.parks[0].WokenAt != nil {
+		t.Fatalf("signals %q, park %+v: want none while the pin is at the old key", r.signals.got, r.book.parks[0])
 	}
 }
 

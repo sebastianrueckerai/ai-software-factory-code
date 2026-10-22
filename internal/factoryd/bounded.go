@@ -18,10 +18,11 @@ import (
 // start (every status but queued) and a queued card already admitted
 // (its workflow died before running) start as before: no slot is taken,
 // or the one it holds is its own. A card parked on a person —
-// waiting-human for an answer, waiting-poster for a fund after a cap —
-// holds no slot (roadmap 233): the bound counts only what runs, and a
-// person's answer resumes the card as running even at the bound, an
-// overshoot of one gate pass that touches only the card just unblocked.
+// waiting-human for an answer, waiting-poster for a fund after a cap — or
+// on its image (waiting-image) holds no slot (roadmap 233): the bound
+// counts only what runs, and a person's answer or the image resumes the
+// card as running even at the bound, an overshoot of one gate pass that
+// touches only the card just unblocked.
 type BoundedWorkflows struct {
 	Workflows
 	// Store reads the card and counts its repository's work slots.

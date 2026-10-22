@@ -90,7 +90,8 @@ type fakeStore struct {
 	createFails int
 	// createCalls counts every CreateTask call, failed or not
 	createCalls      int
-	deps             map[string][]string // task → the tasks it depends on
+	deps             map[string][]string  // task → the tasks it depends on
+	parks            map[string]ImagePark // image_parks by task
 	plans            map[string][]PlanRevision
 	questions        map[string][]PlanQuestion     // by "task revision"
 	kinds            map[string][]string           // each question's kind beside it, by "task revision"
@@ -801,6 +802,65 @@ func (s *fakeStore) SetTaskImage(ctx context.Context, id, digest string, egress 
 	t.ImageDigest, t.ImageEgress = digest, slices.Clone(egress)
 	s.tasks[id] = t
 	return nil
+}
+
+func (s *fakeStore) SetTaskImageName(ctx context.Context, id, image string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Image = image
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) SetObjective(ctx context.Context, id, objective string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Objective = objective
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) ImagePark(ctx context.Context, task string) (ImagePark, bool, error) {
+	p, ok := s.parks[task]
+	if ok && p.ToolTask != "" {
+		p.ToolIssue = s.tasks[p.ToolTask].IssueNumber
+	}
+	return p, ok, nil
+}
+
+// ParkImage stamps a park a microsecond after the one before, as the
+// database's clock does.
+func (s *fakeStore) ParkImage(ctx context.Context, p ImagePark, waits bool) (ImagePark, error) {
+	if s.parks == nil {
+		s.parks = map[string]ImagePark{}
+	}
+	p.CreatedAt, p.WokenAt = time.Now().Truncate(time.Microsecond), nil
+	if prev, ok := s.parks[p.Task]; ok && !p.CreatedAt.After(prev.CreatedAt) {
+		p.CreatedAt = prev.CreatedAt.Add(time.Microsecond)
+	}
+	if !waits {
+		at := p.CreatedAt
+		p.WokenAt = &at
+	}
+	s.parks[p.Task] = p
+	return p, nil
+}
+
+func (s *fakeStore) OpenToolCard(ctx context.Context, project, target string) (Task, bool, error) {
+	var newest ImagePark
+	for _, p := range s.parks {
+		t, ok := s.tasks[p.ToolTask]
+		if p.Project != project || p.Target != target || !ok || Final(t.Status) || t.Status == "merged" || p.CreatedAt.Before(newest.CreatedAt) {
+			continue
+		}
+		newest = p
+	}
+	t, ok := s.tasks[newest.ToolTask]
+	return t, ok, nil
 }
 
 func (s *fakeStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {

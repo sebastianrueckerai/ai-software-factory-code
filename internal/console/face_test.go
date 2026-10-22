@@ -83,19 +83,20 @@ func TestCardFaceTitle(t *testing.T) {
 	}
 }
 
-// The pill: one class per state and the status's own words, so the three
-// waits stay apart; the author's wait wears the hollow pill.
+// The pill: one class per state and the status's own words, so the waits
+// stay apart; the author's wait wears the hollow pill, and a card parked on
+// its image says it waits for it.
 func TestCardFacePillPerStatus(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	for status, class := range map[string]string{
 		"running": "st-running", "closing": "st-running", "queued": "st-queued", "waiting-deps": "st-waiting",
-		"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow", "in-review": "st-review",
+		"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow", "waiting-image": "st-waiting", "in-review": "st-review",
 		"done": "st-done", "failed": "st-failed", "closed": "st-closed", "backlog": "st-backlog",
 	} {
 		r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: "work"})
 		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-		word := cmp.Or(map[string]string{"running": "building", "closing": "building", "in-review": "verifying"}[status], status)
+		word := cmp.Or(map[string]string{"running": "building", "closing": "building", "in-review": "verifying", "waiting-image": "waiting for image"}[status], status)
 		want := `<span class="pill ` + class + `">` + word + `</span>`
 		if glyph, final := map[string]string{"done": "✓", "failed": "✕", "closed": "⊘"}[status]; final {
 			want = `<span class="st"><span class="g" aria-hidden="true">` + glyph + `</span>` + status + `</span>`

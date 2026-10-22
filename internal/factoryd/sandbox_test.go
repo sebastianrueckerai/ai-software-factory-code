@@ -97,20 +97,18 @@ func holdTools(t *testing.T, where string, installed []string) {
 // The brief states the image the session runs: the factory's, as before,
 // or the base's tools, then the project image's, and its registries.
 func TestSandboxFactsFollowTheImage(t *testing.T) {
+	const requestTool = "A tool it lacks cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."
 	base := "The sandbox has git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests)"
 	for name, c := range map[string]struct {
 		m    *imagegen.Manifest
 		want string
 	}{
 		"factory": {nil, base + ", Go 1.26, Node 24 with npm. It reaches the factory's gateway and Git server and " +
-			"proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. " +
-			"It has no browser and none can be installed, since the download hosts are not reachable: a check that needs a screenshot or a page in a browser cannot run here."},
+			"proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. " + requestTool},
 		"browser": {&imagegen.Manifest{Tools: []string{"chromium", "fonts-liberation"}, Egress: []string{"cdn.example.org", "registry.npmjs.org"}},
-			base + ", chromium, fonts-liberation. It reaches the factory's gateway and Git server and cdn.example.org, registry.npmjs.org; every other name fails to resolve. " +
-				"A tool it lacks cannot be installed: the download hosts are not reachable."},
+			base + ", chromium, fonts-liberation. It reaches the factory's gateway and Git server and cdn.example.org, registry.npmjs.org; every other name fails to resolve. " + requestTool},
 		"offline": {&imagegen.Manifest{Tools: []string{"jq"}},
-			base + ", jq. It reaches the factory's gateway and Git server and no package registries; every other name fails to resolve. " +
-				"A tool it lacks cannot be installed: the download hosts are not reachable."},
+			base + ", jq. It reaches the factory's gateway and Git server and no package registries; every other name fails to resolve. " + requestTool},
 	} {
 		if got := SandboxFacts(c.m); got != c.want {
 			t.Errorf("%s:\n got %q\nwant %q", name, got, c.want)
@@ -169,7 +167,7 @@ func TestTaskImage(t *testing.T) {
 		!errors.As(err, &app) || !app.NonRetryable() || app.Type() != errImageNotPinned {
 		t.Fatalf("variant unpinned: %v, want ErrImageNotPinned as a non-retryable activity error", err)
 	}
-	if want := "image video of project demo-app is declared but not built and pinned yet: the card waits until the factory pins it"; errMessage(err) != want {
+	if want := "image video of project demo-app has no pin in force: the card waits until the factory pins it"; errMessage(err) != want {
 		t.Fatalf("variant unpinned says %q, want %q", errMessage(err), want)
 	}
 	if _, _, err := r.taskImage(ctx, Task{ID: "t1", Repository: "linkshort/linkshort", Image: "browser"}); !errors.As(err, &notPinned) {
@@ -320,10 +318,10 @@ func egressNames(spec map[string]any) (fqdns, dns []string) {
 	return fqdns, dns
 }
 
-func TestSandboxFactsNameToolsNamesAndNoBrowser(t *testing.T) {
+func TestSandboxFactsNameToolsNamesAndRequestTool(t *testing.T) {
 	got := SandboxFacts(nil)
 	for _, want := range []string{"git", "ripgrep (rg)", "gcc and make", "Go 1.26", "Node 24 with npm", "PostgreSQL 17",
-		"proxy.golang.org", "registry.npmjs.org", "no browser"} {
+		"proxy.golang.org", "registry.npmjs.org", "request_tool"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("SandboxFacts lacks %q:\n%s", want, got)
 		}

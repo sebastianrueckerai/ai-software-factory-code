@@ -381,15 +381,17 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 	return verdict{}, false
 }
 
-// cheatFindings sends the policy gate's anti-cheat findings where the
-// checks stage's on_findings sends its own: the policy stage's rule is fail
-// by a floor and would fail the task for a skipped test.
+// cheatFindings sends the policy gate's anti-cheat findings and its images
+// file's where the checks stage's on_findings sends its own: the policy
+// stage's rule is fail by a floor and would fail the task for a skipped
+// test.
 func (t *taskRun) cheatFindings(g GateResults, capped, card *[]string) (verdict, bool) {
-	if len(g.Policy.Cheats) == 0 {
+	findings := slices.Concat(g.Policy.Cheats, g.Policy.Images)
+	if len(findings) == 0 {
 		return verdict{}, false
 	}
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
-	return t.onFindings(t.cfg.Stages[i], g, g.Policy.Cheats, capped, card)
+	return t.onFindings(t.cfg.Stages[i], g, findings, capped, card)
 }
 
 // recordFindings keeps findings meant for the agent on the timeline, sent

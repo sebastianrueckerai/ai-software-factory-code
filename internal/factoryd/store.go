@@ -271,7 +271,7 @@ type Store interface {
 	// or failed stamps the finish time and leaves the gate.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	// MarkStarted moves a queued, waiting-deps, running, in-review,
-	// waiting-human or waiting-poster task to running.
+	// waiting-human, waiting-poster or waiting-image task to running.
 	MarkStarted(ctx context.Context, id string) error
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
 	// moment it took one of its project's work_in_progress slots.
@@ -282,9 +282,11 @@ type Store interface {
 	// in a status a started card holds until it settles, plus queued
 	// cards already admitted. A lane-less card (a roll, a factory pull
 	// request) and human and chat cards hold none. A card parked on a
-	// person (waiting-human, waiting-poster) holds none either: no
-	// session runs and no spend accrues, so its slot frees at once, and
-	// the answer that resumes it overshoots the bound for one gate pass.
+	// person (waiting-human, waiting-poster) or on its image
+	// (waiting-image) holds none either: no session runs and no spend
+	// accrues, so its slot frees at once (the tool card the image waits on
+	// may need it), and the answer or the image that resumes it overshoots
+	// the bound for one gate pass.
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	// CountBacklog counts repository's cards that hold no admission
 	// stamp: backlog rows and queued rows not yet admitted, the
@@ -458,6 +460,18 @@ type Store interface {
 	// SetTaskImage records the image task id's sandbox runs on and the
 	// registries it reaches, at each sandbox's start.
 	SetTaskImage(ctx context.Context, id, digest string, egress []string) error
+	// SetTaskImageName sets the project image task id runs on, by name.
+	SetTaskImageName(ctx context.Context, id, image string) error
+	// SetObjective replaces task id's objective, which the next session's
+	// brief reads.
+	SetObjective(ctx context.Context, id, objective string) error
+	// ImagePark is task's latest park on an image; ParkImage records p as
+	// it, parked now, waiting or (a refusal) woken at once; OpenToolCard
+	// is the tool card of project's image target that has not ended or
+	// merged.
+	ImagePark(ctx context.Context, task string) (ImagePark, bool, error)
+	ParkImage(ctx context.Context, p ImagePark, waits bool) (ImagePark, error)
+	OpenToolCard(ctx context.Context, project, target string) (Task, bool, error)
 	// OpenApproval records a pending approval request and returns its id;
 	// a merge or plan request denies the task's earlier pending one of its
 	// kind (a retry, a new head, a new plan revision) as superseded.
@@ -1396,7 +1410,7 @@ func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time)
 
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	changed, err := s.changeStatus(ctx, `status = 'running'`,
-		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster')`, id)
+		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image')`, id)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}

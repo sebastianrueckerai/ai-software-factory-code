@@ -41,13 +41,16 @@ func SandboxFacts(m *imagegen.Manifest) string {
 	}
 	if m == nil {
 		return "The sandbox has " + strings.Join(append(tools, factoryTools...), ", ") + ". It reaches the factory's gateway and Git server and " +
-			strings.Join(sandboxRegistries, ", ") + " (the Go module proxy and the npm registry); every other name fails to resolve. " +
-			"It has no browser and none can be installed, since the download hosts are not reachable: a check that needs a screenshot or a page in a browser cannot run here."
+			strings.Join(sandboxRegistries, ", ") + " (the Go module proxy and the npm registry); every other name fails to resolve. " + noInstall
 	}
 	reach := "no package registries"
 	if len(m.Egress) > 0 {
 		reach = strings.Join(m.Egress, ", ")
 	}
 	return "The sandbox has " + strings.Join(append(tools, m.Tools...), ", ") + ". It reaches the factory's gateway and Git server and " +
-		reach + "; every other name fails to resolve. A tool it lacks cannot be installed: the download hosts are not reachable."
+		reach + "; every other name fails to resolve. " + noInstall
 }
+
+// noInstall closes the sandbox facts: how the agent gets a tool the
+// sandbox lacks.
+const noInstall = "A tool it lacks cannot be installed at runtime: request_tool asks the factory to add it to one of the project's images, and the card restarts on that image."

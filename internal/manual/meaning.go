@@ -30,7 +30,7 @@ var Gates = []string{GateIntake, GateSession, GateChecks, GatePolicy, GateReview
 var FinalStatuses = []string{"done", "failed", "closed"}
 
 // Statuses are a task's statuses, the final ones last.
-var Statuses = append([]string{"backlog", "queued", "waiting-deps", "running", "closing", "in-review", "merged", "waiting-human", "waiting-poster"},
+var Statuses = append([]string{"backlog", "queued", "waiting-deps", "running", "closing", "in-review", "merged", "waiting-human", "waiting-image", "waiting-poster"},
 	FinalStatuses...)
 
 // StatusMeaning is status in one sentence, as the project agent reads it.
@@ -52,6 +52,8 @@ func StatusMeaning(status string) string {
 		return "is merged; done when the chain runs its change live"
 	case "waiting-human":
 		return "waits on a human: an answer, an approval or a decision"
+	case "waiting-image":
+		return "waits for its sandbox image to be built and pinned"
 	case "waiting-poster":
 		return "waits on its poster's information"
 	case "done":

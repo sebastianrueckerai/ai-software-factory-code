@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -104,9 +105,9 @@ type VerdictFiled struct {
 }
 
 // Escalation is what an agent asks: a human (escalate_to_human: the
-// question, why, what the agent would do and the answers it offers) or the
+// question, why, what the agent would do and the answers it offers), the
 // issue's author (request_info: the question, what it tried, what it
-// needs).
+// needs) or the factory for a tool (request_tool: the tool, what for).
 type Escalation struct {
 	Kind           string   `json:"kind"`
 	Question       string   `json:"question"`
@@ -115,12 +116,15 @@ type Escalation struct {
 	Choices        []string `json:"choices,omitempty"`
 	Tried          string   `json:"tried,omitempty"`
 	Needs          string   `json:"needs,omitempty"`
+	Tool           string   `json:"tool,omitempty"`
+	Need           string   `json:"need,omitempty"`
 }
 
 // Escalation kinds.
 const (
 	KindEscalation  = "escalation"
 	KindInfoRequest = "info_request"
+	KindMissingTool = "missing_tool"
 )
 
 var (
@@ -340,6 +344,11 @@ type RequestInfoIn struct {
 	Needs    string `json:"needs" jsonschema:"what information would let you go on"`
 }
 
+type RequestToolIn struct {
+	Tool string `json:"tool" jsonschema:"the tool, such as chromium, ffmpeg or python3.12"`
+	Need string `json:"need" jsonschema:"what you need it for in this card"`
+}
+
 type FilePlanIn struct {
 	Plan string `json:"plan" jsonschema:"the complete plan json: one object with spec, summary, criteria and cards"`
 }
@@ -381,6 +390,12 @@ const (
 	maxRecommendation = 2000
 )
 
+// maxTool and maxNeed bound request_tool's tool and need, in characters.
+const (
+	maxTool = 80
+	maxNeed = 600
+)
+
 // maxChoices and maxChoicesBytes bound the choices passed on to factoryd,
 // which checks each one where it stores them.
 const (
@@ -419,6 +434,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"what you tried and what you need. This session ends; the task resumes with the author's answer, or the issue closes as not reproducible after 14 days. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestInfoIn) (*mcp.CallToolResult, any, error) {
 			return s.requestInfo(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestTool, Description: "Ask for a tool this sandbox lacks, such as a browser, ffmpeg or a language runtime, instead of trying to install it: " +
+		"the sandbox refuses installs. Your work in progress is pushed, a card adds the tool to one of the project's images, and this card restarts on that image " +
+		"from its branch once the image is built. Name the tool and what you need it for."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestToolIn) (*mcp.CallToolResult, any, error) {
+			return s.requestTool(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a small follow-up card on the cheap model rung that starts when this card has landed: " +
 		"routine, well-specified work this card need not do itself. Give it a title and a brief a weaker model acts on alone: the files, the change, how to check it. " +
@@ -801,6 +822,26 @@ func (s *Server) requestInfo(ctx context.Context, c *toolCaller, in RequestInfoI
 		"asked the issue's author; this session will end. The task resumes with the author's answer. Stop working now.")
 }
 
+// requestTool hands the agent's request for a tool to factoryd, which
+// stops the session and parks the card on an image with the tool. Free,
+// for the classes that list it.
+func (s *Server) requestTool(ctx context.Context, c *toolCaller, in RequestToolIn) *mcp.CallToolResult {
+	tool := policy.ToolRequestTool
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	name, need := strings.TrimSpace(in.Tool), strings.TrimSpace(in.Need)
+	if n, m := utf8.RuneCountInString(name), utf8.RuneCountInString(need); n == 0 || n > maxTool || m == 0 || m > maxNeed {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("tool (1 to %d characters) and need (1 to %d characters) are required", maxTool, maxNeed))
+	}
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindMissingTool, Tool: name, Need: need}, "tool_requested",
+		"asked for "+name+"; this session will end. Your work in progress is pushed; the card restarts on an image with the tool once it is built, "+
+			"or the next session is told why not. Stop working now.")
+}
+
 // manualRead answers the manual tool with the factory manual from
 // internal/manual, the one source the project agent's manual reads too.
 // Free, for the classes that list it.
@@ -947,6 +988,10 @@ func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Esc
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the escalation did not reach factoryd: " + err.Error())
 	}
-	s.auditTool(c, tool, decision, textutil.Truncate(e.Question, 500), &c.task.SpentEUR, nil)
+	asked := e.Question
+	if e.Kind == KindMissingTool {
+		asked = e.Tool + ": " + e.Need
+	}
+	s.auditTool(c, tool, decision, textutil.Truncate(asked, 500), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: answer}}}
 }

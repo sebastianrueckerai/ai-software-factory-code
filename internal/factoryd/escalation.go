@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -28,8 +29,9 @@ type SessionEscalator interface {
 
 // AgentAsk is an agent's escalate_to_human (Kind AskEscalation: the
 // question, why, and what the agent would do, ruling 149, and the answers
-// it offers as Choices, ruling 256) or request_info (AskInfo: the question
-// for the issue's author, what it tried, what it needs, ruling 150).
+// it offers as Choices, ruling 256), request_info (AskInfo: the question
+// for the issue's author, what it tried, what it needs, ruling 150) or
+// request_tool (AskTool: the tool the sandbox lacks and what for).
 type AgentAsk struct {
 	Kind           string   `json:"kind"`
 	Question       string   `json:"question"`
@@ -38,16 +40,32 @@ type AgentAsk struct {
 	Choices        []string `json:"choices,omitempty"`
 	Tried          string   `json:"tried"`
 	Needs          string   `json:"needs"`
+	Tool           string   `json:"tool,omitempty"`
+	Need           string   `json:"need,omitempty"`
 }
 
 // AgentAsk kinds.
 const (
 	AskEscalation = "escalation"
 	AskInfo       = "info_request"
+	AskTool       = "missing_tool"
+)
+
+// maxTool and maxNeed bound a tool request's tool and need, in
+// characters, as the gateway does.
+const (
+	maxTool = 80
+	maxNeed = 600
 )
 
 // validate checks the fields of its kind, as the gateway does.
 func (a AgentAsk) validate() error {
+	if a.Kind == AskTool {
+		if n, m := utf8.RuneCountInString(a.Tool), utf8.RuneCountInString(a.Need); n == 0 || n > maxTool || m == 0 || m > maxNeed {
+			return fmt.Errorf("tool (1 to %d characters) and need (1 to %d characters) are required", maxTool, maxNeed)
+		}
+		return nil
+	}
 	fields := map[string]int{"question": len(a.Question)}
 	switch a.Kind {
 	case AskEscalation:
@@ -55,7 +73,7 @@ func (a AgentAsk) validate() error {
 	case AskInfo:
 		fields["tried"], fields["needs"] = len(a.Tried), len(a.Needs)
 	default:
-		return fmt.Errorf("kind %q: want %s or %s", a.Kind, AskEscalation, AskInfo)
+		return fmt.Errorf("kind %q: want %s, %s or %s", a.Kind, AskEscalation, AskInfo, AskTool)
 	}
 	for name, n := range fields {
 		limit := maxEscalationText
@@ -70,21 +88,27 @@ func (a AgentAsk) validate() error {
 }
 
 // reason is the ask as the workflow carries it: an escalation's reason
-// (its first line the question, escalationQuestion) or the information
-// request's text.
+// (its first line the question, escalationQuestion), the information
+// request's text, or a tool request as a run from before the tool park
+// asks a human.
 func (a AgentAsk) reason() string {
-	if a.Kind == AskInfo {
+	switch a.Kind {
+	case AskInfo:
 		return agentAsksAuthor + a.Question + "\nTried: " + a.Tried + "\nNeeds: " + a.Needs
+	case AskTool:
+		return AgentAsks + "a sandbox with " + a.Tool + "\nWhy: " + a.Need
 	}
 	return AgentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
 }
 
 // IntakeAgentEscalation is the intake event of an agent's escalate_to_human,
-// IntakeAgentInfoRequest of its request_info: recorded, never signalled
-// (the session's supervision acts on them).
+// IntakeAgentInfoRequest of its request_info, IntakeAgentToolRequest of its
+// request_tool: recorded, never signalled (the session's supervision acts
+// on them).
 const (
 	IntakeAgentEscalation  = "agent_escalation"
 	IntakeAgentInfoRequest = "agent_info_request"
+	IntakeAgentToolRequest = "agent_tool_request"
 )
 
 // IntakeEscalation records an escalation's issue comment (its CommentID)
@@ -206,12 +230,12 @@ func offeredChoices(taskID string, choices []string) []string {
 }
 
 // EscalationHandler is POST /internal/escalations, the gateway's hand-over
-// of an agent's escalate_to_human or request_info (behind the gateway's
-// bearer): the task must be running and its session take the ask, which
-// is then recorded as an intake event; the session stops as on a
-// supervisor's escalate: work in progress pushed, the question on the
+// of an agent's escalate_to_human, request_info or request_tool (behind
+// the gateway's bearer): the task must be running and its session take the
+// ask, which is then recorded as an intake event; the session stops as on
+// a supervisor's escalate: work in progress pushed, the question on the
 // issue, and the human's (or for request_info the issue author's) answer
-// resumes it.
+// resumes it, or for request_tool the image's arrival.
 func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -223,7 +247,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			return
 		}
 		ask := in.AgentAsk
-		for _, f := range []*string{&ask.Question, &ask.Reason, &ask.Recommendation, &ask.Tried, &ask.Needs} {
+		for _, f := range []*string{&ask.Question, &ask.Reason, &ask.Recommendation, &ask.Tried, &ask.Needs, &ask.Tool, &ask.Need} {
 			*f = strings.TrimSpace(*f)
 		}
 		if in.TaskID == "" {
@@ -234,10 +258,10 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		if ask.Kind == AskInfo {
-			ask.Choices = nil // the issue's author answers on Forgejo, where no button shows
-		} else {
+		if ask.Kind == AskEscalation {
 			ask.Choices = offeredChoices(in.TaskID, ask.Choices)
+		} else {
+			ask.Choices = nil // no human picks: the issue's author answers on Forgejo, a tool request waits for its image
 		}
 		t, ok, err := store.Task(r.Context(), in.TaskID)
 		if err != nil {
@@ -261,10 +285,13 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			return
 		}
 		kind, body := IntakeAgentEscalation, ask.Question+"\n\nWhy: "+ask.Reason+"\n\nRecommendation: "+ask.Recommendation
-		if ask.Kind == AskInfo {
+		switch ask.Kind {
+		case AskInfo:
 			kind, body = IntakeAgentInfoRequest, ask.Question+"\n\nTried: "+ask.Tried+"\n\nNeeds: "+ask.Needs
+		case AskTool:
+			kind, body = IntakeAgentToolRequest, ask.Tool+"\n\nNeed: "+ask.Need
 		}
-		log.Printf("task %s: the agent asked (%s): %s", t.ID, ask.Kind, textutil.Truncate(ask.Question, 200))
+		log.Printf("task %s: the agent asked (%s): %s", t.ID, ask.Kind, textutil.Truncate(cmp.Or(ask.Question, ask.Tool), 200))
 		// the session already took it: a failed record is logged, not undone
 		if _, err := store.InsertIntakeEvent(context.WithoutCancel(r.Context()), IntakeEvent{
 			TaskID: t.ID, Kind: kind, Author: "agent", Body: body, Choices: ask.Choices,

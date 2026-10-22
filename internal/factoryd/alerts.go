@@ -123,6 +123,8 @@ func escalationSource(reason string) string {
 		return "no_answer"
 	case strings.HasPrefix(reason, contentFilterRefusal):
 		return "content_filter"
+	case strings.HasPrefix(reason, imageWaited), strings.HasPrefix(reason, toolAskedAgain):
+		return "image"
 	}
 	return "supervisor"
 }

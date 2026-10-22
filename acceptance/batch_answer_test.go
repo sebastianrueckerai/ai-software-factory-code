@@ -656,6 +656,21 @@ func (s *accBatchStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerp
 func (s *accBatchStore) SetTaskImage(ctx context.Context, id, digest string, egress []string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetTaskImageName(ctx context.Context, id, image string) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetObjective(ctx context.Context, id, objective string) error {
+	panic("unused")
+}
+func (s *accBatchStore) ImagePark(ctx context.Context, task string) (factoryd.ImagePark, bool, error) {
+	return factoryd.ImagePark{}, false, nil
+}
+func (s *accBatchStore) ParkImage(ctx context.Context, p factoryd.ImagePark, waits bool) (factoryd.ImagePark, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenToolCard(ctx context.Context, project, target string) (factoryd.Task, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
 	panic("unused")
 }

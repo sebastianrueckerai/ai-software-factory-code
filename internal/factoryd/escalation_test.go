@@ -286,6 +286,85 @@ func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
 	}
 }
 
+// The agent's request_tool reaches the session as a missing_tool ask, the
+// tool and the need trimmed and no choices; the intake event records both.
+// A tool of 1 to 80 characters and a need of 1 to 600 pass, as at the
+// gateway.
+func TestEscalationHandlerToolRequest(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
+	post := func(s *fakeSessions, body string) int {
+		rec := httptest.NewRecorder()
+		EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(body)))
+		return rec.Code
+	}
+	s := &fakeSessions{}
+	if code := post(s, `{"task_id":"t-run","kind":"missing_tool","tool":" ffmpeg ","need":" cut the demo video ","choices":["a","b"]}`); code != http.StatusAccepted {
+		t.Fatalf("tool request = %d", code)
+	}
+	if want := (AgentAsk{Kind: AskTool, Tool: "ffmpeg", Need: "cut the demo video"}); len(s.asks) != 1 || !reflect.DeepEqual(s.asks[0], want) {
+		t.Fatalf("delivered %+v, want %+v", s.asks, want)
+	}
+	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeAgentToolRequest || e[0].Author != "agent" || e[0].Body != "ffmpeg\n\nNeed: cut the demo video" || e[0].Choices != nil {
+		t.Fatalf("intake events = %+v", e)
+	}
+	if code := post(s, fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":%q,"need":%q}`, strings.Repeat("ä", 80), strings.Repeat("ö", 600))); code != http.StatusAccepted {
+		t.Fatalf("80 and 600 characters = %d, want accepted", code)
+	}
+	for name, body := range map[string]string{
+		"no tool":   `{"task_id":"t-run","kind":"missing_tool","need":"n"}`,
+		"no need":   `{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":" "}`,
+		"long tool": fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":%q,"need":"n"}`, strings.Repeat("a", 81)),
+		"long need": fmt.Sprintf(`{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":%q}`, strings.Repeat("n", 601)),
+	} {
+		if code := post(&fakeSessions{}, body); code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", name, code)
+		}
+	}
+}
+
+// The agent's request_tool ends the session with the outcome missing_tool,
+// the tool, the need and the work in progress, no supervisor call and no
+// trip alert.
+func TestRunSessionAgentToolRequest(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	f := &fakeLiteLLM{content: `{"action":"continue"}`}
+	runner.supervisor = testSupervisorModel(f.srv(t).URL)
+	runner.stopWait = 200 * time.Millisecond
+	ask := AgentAsk{Kind: AskTool, Tool: "ffmpeg", Need: "cut the demo video"}
+	delivered := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := runner.EscalateSession(t.Context(), "t2", ask)
+			if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+				delivered <- err
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, hangLogs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("EscalateSession = %v", err)
+	}
+	if res.Outcome != OutcomeMissingTool || res.Tool != "ffmpeg" || res.Need != "cut the demo video" ||
+		res.Reason != "The agent asks: a sandbox with ffmpeg\nWhy: cut the demo video" {
+		t.Fatalf("result = %+v", res)
+	}
+	if len(f.chats) != 0 || len(store.alertRows()) != 0 || len(hub.comments) != 0 {
+		t.Fatalf("supervisor calls %d, alerts %+v, comments %q: want none from the session", len(f.chats), store.alertRows(), hub.comments)
+	}
+	if !strings.Contains(string(objGet(objects, "sessions/t2/"+res.SessionID+".jsonl")), `"detector":"agent_tool_request"`) {
+		t.Fatal("the session record lacks the tool request")
+	}
+}
+
 // The agent's request_info ends the session like an escalation, with the
 // outcome needs_info and the request as its reason, no supervisor call,
 // no trip alert (the workflow's RequestInfo records info_request).

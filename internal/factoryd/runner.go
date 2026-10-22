@@ -1318,7 +1318,7 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		detail["session"] = s.id
 		r.record(ctx, t.ID, "checkin", detail)
 	}
-	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripCheckIn {
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripCheckIn {
 		return // the agent's question (the workflow's escalation or info_request alert) or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
@@ -1666,12 +1666,12 @@ func (r *Runner) reachesCanary(names []string) (string, bool) {
 	})
 }
 
-// ErrImageNotPinned refuses a card whose image is declared and not built
-// and pinned yet.
+// ErrImageNotPinned refuses a card whose image has no pin in force: not
+// built yet, unpinned or no longer declared.
 type ErrImageNotPinned struct{ Project, Image string }
 
 func (e ErrImageNotPinned) Error() string {
-	return fmt.Sprintf("image %s of project %s is declared but not built and pinned yet: the card waits until the factory pins it", e.Image, e.Project)
+	return fmt.Sprintf("image %s of project %s has no pin in force: the card waits until the factory pins it", e.Image, e.Project)
 }
 
 // errImageNotPinned is ErrImageNotPinned's activity error type: no retry

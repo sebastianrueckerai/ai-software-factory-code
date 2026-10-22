@@ -46,7 +46,7 @@ var runClasses = map[string]string{"queued": "st-closed", "planning": "st-runnin
 // runKind is the stage a status puts a card in, "" for a final one.
 func runKind(status, lane string) string {
 	switch status {
-	case "backlog", "queued", "waiting-deps":
+	case "backlog", "queued", "waiting-deps", "waiting-image":
 		return "queued"
 	case "running", "closing":
 		if lane == policy.LanePlan {

@@ -52,6 +52,9 @@ type PolicyGate struct {
 	// Cheats is the diff's anti-cheat findings (cheats): for the agent,
 	// through the checks stage's rule.
 	Cheats []string `json:",omitempty"`
+	// Images is ParseImagesFile's findings on factory/images.yaml at the
+	// head of a pull request that changes it: for the agent, as Cheats.
+	Images []string `json:",omitempty"`
 }
 
 // large: the pull request is class large by its lines.
@@ -441,6 +444,9 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		return PolicyGate{}, err
 	}
 	g.Cheats = cheats(splitDiff(diff))
+	if g.Images, err = r.imagesFindings(ctx, repo, pr, files); err != nil {
+		return PolicyGate{}, err
+	}
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
 		return PolicyGate{}, err
 	} else if ok {
@@ -469,8 +475,37 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		return PolicyGate{}, err
 	}
 	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
-		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule, "cheats": g.Cheats}))
+		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule, "cheats": g.Cheats, "images": g.Images}))
 	return g, nil
+}
+
+// imagesFindings are ParseImagesFile's findings on factory/images.yaml at
+// the head of pull request pr of repo, among whose files it is; none where
+// the pull request removes it.
+func (r *Runner) imagesFindings(ctx context.Context, repo Repo, pr int64, files []PRFile) ([]string, error) {
+	if !slices.ContainsFunc(files, func(f PRFile) bool { return f.Filename == imagesPath }) {
+		return nil, nil
+	}
+	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+	if err != nil {
+		return nil, err
+	}
+	holder, err := SplitRepo(cmp.Or(st.HeadRepo, repo.String()))
+	if err != nil {
+		return nil, err
+	}
+	raw, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, st.HeadSHA, imagesPath)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read %s at the head: %w", imagesPath, err)
+	}
+	_, findings := policy.ParseImagesFile(raw)
+	for i, f := range findings {
+		findings[i] = imagesPath + " at the pull request's head: " + f
+	}
+	return findings, nil
 }
 
 // GateMigration flags the pull request's schema migrations for the human's

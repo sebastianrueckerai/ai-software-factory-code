@@ -51,7 +51,7 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 // ended at its merge: the chain poller ends it, nothing restarts it.
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()
-	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "tc": "closing", "tm": "merged", "td": "done", "tf": "failed"} {
+	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "ti": "waiting-image", "tc": "closing", "tm": "merged", "td": "done", "tf": "failed"} {
 		store.CreateTask(context.Background(), withStatus(Task{ID: id, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30}, st))
 	}
 	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
@@ -74,14 +74,15 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=done": 1,
 	})
 	slices.Sort(wf.started)
-	if want := []string{"tc", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
+	if want := []string{"tc", "ti", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
 		t.Fatalf("started = %v, want %v", wf.started, want)
 	}
 	slices.Sort(wf.signals)
-	want := []string{"tv human_comment sebastian #0 c80: answer: do X", "tv issue_closed sebastian #0: ",
+	want := []string{"ti human_comment sebastian #0 c80: answer: do X", "ti issue_closed sebastian #0: ",
+		"tv human_comment sebastian #0 c80: answer: do X", "tv issue_closed sebastian #0: ",
 		"tw human_comment sebastian #0 c80: answer: do X", "tw issue_closed sebastian #0: "}
 	if !slices.Equal(wf.signals, want) {
-		t.Fatalf("signals = %q, want the closed issue and the owner's comment re-read for the in-review and waiting-human tasks only", wf.signals)
+		t.Fatalf("signals = %q, want the closed issue and the owner's comment re-read for the waiting and in-review tasks only", wf.signals)
 	}
 	if len(store.pruned) != 1 || store.pruned[0] != 30*24*time.Hour {
 		t.Fatalf("pruned = %v, want one pass forgetting deliveries older than 30 days", store.pruned)

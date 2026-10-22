@@ -153,7 +153,7 @@ var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 // data-holds names for a card's action to move the card to.
 var columnHolds = [][]string{
 	colNeedsYou: {"waiting-human", "waiting-poster"},
-	colQueued:   {"backlog", "queued", "waiting-deps"},
+	colQueued:   {"backlog", "queued", "waiting-deps", "waiting-image"},
 	colProgress: {"running", "closing", "in-review", "merged"},
 	colDone:     {"done", "failed", "closed"},
 }
@@ -411,6 +411,9 @@ func faceWords(k card, a *approvalCard) string {
 	if k.Status == "waiting-poster" {
 		w = append(w, "waiting on the author")
 	}
+	if k.Status == "waiting-image" {
+		w = append(w, k.Pill())
+	}
 	if k.Kind == "human" {
 		w = append(w, "human task")
 	}
@@ -469,7 +472,7 @@ func isState(k card, v string) bool {
 // stateColumns are the wide view's columns after the lanes, in board
 // order; closing counts as running.
 var stateColumns = []struct{ Title, Status string }{
-	{"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting on the author", "waiting-poster"},
+	{"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting for image", "waiting-image"}, {"Waiting on the author", "waiting-poster"},
 	{"In review", "in-review"}, {"Merged", "merged"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
 }
 
@@ -622,7 +625,7 @@ var statusClasses = map[string]string{
 	"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow",
 	"in-review": "st-review", "merged": "st-merged", "done": "st-done", "failed": "st-failed",
 	"closed": "st-closed", "backlog": "st-backlog", "plan": "st-plan",
-	"waiting-deps": "st-waiting",
+	"waiting-deps": "st-waiting", "waiting-image": "st-waiting",
 }
 
 func statusClass(status string) string { return cmp.Or(statusClasses[status], "st-other") }
@@ -1319,9 +1322,13 @@ func (d boardData) cols() []column {
 func (k card) Final() bool { return factoryd.Final(k.Status) }
 
 // Pill is the pill's word: the stage word, except a merged card, which
-// says merged and wears its chain word beside the pill.
+// says merged and wears its chain word beside the pill, and a card parked
+// on its image, which says it waits for it.
 func (k card) Pill() string {
-	if k.Status == "merged" || k.Stage == "" {
+	switch {
+	case k.Status == "waiting-image":
+		return "waiting for image"
+	case k.Status == "merged" || k.Stage == "":
 		return k.Status
 	}
 	return k.Stage

@@ -524,7 +524,7 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 	for _, m := range regexp.MustCompile(`<h3 id="col-\d+">([^<]+) <span`).FindAllStringSubmatch(body, -1) {
 		titles = append(titles, m[1])
 	}
-	if want := []string{"Backlog", "Plan", "Ready", "Running", "Waiting on a human", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
+	if want := []string{"Backlog", "Plan", "Ready", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
 		t.Errorf("the wide view's columns are %v, want %v", titles, want)
 	}
 	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,

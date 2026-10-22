@@ -94,6 +94,11 @@ type workflowHarness struct {
 	headChecks []string
 	// finish is a real Finish behind the stub; nil: none
 	finish func(ctx context.Context, taskID, final, reason string) error
+	// parked are ParkForTool's asks as "tool|need", arrived ImageArrived's
+	// calls as "image|tool" and arrivedAt their times (onPark)
+	parked    []string
+	arrived   []string
+	arrivedAt []time.Time
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -230,6 +235,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityFileSplit: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
 			return ChildrenResult{}, nil
 		},
+		ActivityParkForTool:  func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
+		ActivityImageArrived: func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

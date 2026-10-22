@@ -58,6 +58,10 @@ const (
 	// quiet for the stale window: SignalWithStart starts a workflow that
 	// died; a live one has no handler and drops it.
 	SignalStaleNudge = "stale_nudge"
+	// SignalImageReady is the imager's wake of a card parked on an image
+	// (versionToolPark): TaskSignal's Image, Refusal and At, the park's
+	// created_at, which tells its own park from an earlier one.
+	SignalImageReady = "image_ready"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -74,6 +78,10 @@ type TaskSignal struct {
 	Revision int
 	SHA256   string
 	Index    int
+	// Image and Refusal are image_ready's: the image the card waited on,
+	// and why it does not run on it ("" when it does).
+	Image   string `json:",omitempty"`
+	Refusal string `json:",omitempty"`
 }
 
 // Activity names, registered by Runner.RegisterActivities.
@@ -125,6 +133,8 @@ const (
 	ActivitySessionFunded               = "SessionFunded"
 	ActivitySessionAnswered             = "SessionAnswered"
 	ActivityDayResume                   = "DayResume"
+	ActivityParkForTool                 = "ParkForTool"
+	ActivityImageArrived                = "ImageArrived"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -208,7 +218,7 @@ type TaskConfig struct {
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
 // on it. redirect, retry_stronger and escalate are the supervisor's
 // verdicts (architecture 6.6, ruling 87); needs_info is the agent's
-// request_info (ruling 150).
+// request_info (ruling 150), missing_tool its request_tool.
 type SessionOutcome string
 
 const (
@@ -219,6 +229,7 @@ const (
 	OutcomeEscalate      SessionOutcome = "escalate"
 	OutcomeWallClock     SessionOutcome = "wall_clock"
 	OutcomeNeedsInfo     SessionOutcome = "needs_info"
+	OutcomeMissingTool   SessionOutcome = "missing_tool"
 	// OutcomeProviderRefused: the model provider refused the session's
 	// first call and every one after (ruling 267); the session never
 	// worked, so it is no attempt.
@@ -336,6 +347,9 @@ type SessionResult struct {
 	// Started is when the session began, its pod's first start for a
 	// session reattached after a restart: the since of its answer read.
 	Started time.Time `json:",omitzero"`
+	// Tool and Need are a missing_tool session's request_tool.
+	Tool string `json:",omitempty"`
+	Need string `json:",omitempty"`
 }
 
 type PullRequest struct {
@@ -418,6 +432,9 @@ type RunState struct {
 	// 3.12): an alert card checks its alert still fires before its first
 	// model call.
 	Source string
+	// Park is the task's latest park on an image (image_parks), nil for
+	// none: a healed run of a card in waiting-image waits on in it.
+	Park *ImagePark `json:",omitempty"`
 }
 
 // ChecksState is WaitChecks' verdict on the PR head's combined status.
@@ -525,6 +542,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
 	// its value is unused; the call stays until no running history carries the marker
 	workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
 	final, err := run.program()
@@ -573,7 +591,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole} {
+		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalImageReady} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1060,6 +1078,18 @@ const (
 	// versionChainDone (change id "chain-done"): a run that recorded it
 	// waited at its merge for the chain; none waits now.
 	versionChainDone workflow.Version = 1
+	// versionToolPark (change id "tool-park"): a session that ends in
+	// missing_tool (request_tool) parks the card on an image (ParkForTool):
+	// a refusal goes to the next session at once, or to a human when the
+	// card was refused that image before; else the card waits for the
+	// imager's image_ready, and after imageWait for a human too, and the
+	// next session runs on the image with the arrival, or why it did not
+	// come, in its findings. The asking session takes no number of the
+	// cap, as an answered question does. A session start whose image has no
+	// pin (ErrImageNotPinned) parks the same way with no tool card and takes
+	// nothing. A run from before asks a human for the tool, and an unpinned
+	// image fails the session as before.
+	versionToolPark workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1167,6 +1197,7 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
+	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1397,7 +1428,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		// here is over: only a card that would start or resume work checks.
 		if t.alertPreCheck >= versionAlertPreCheck && st.Source == SourceAlert && !st.Skip && !st.Merged &&
 			!st.IssueClosed && !st.PRClosed && !st.Roll && st.Status != "closing" &&
-			st.Status != "waiting-human" && st.Status != "waiting-poster" && st.PR.Number == 0 {
+			st.Status != "waiting-human" && st.Status != "waiting-poster" && st.Status != "waiting-image" && st.PR.Number == 0 {
 			var firing bool
 			if err := workflow.ExecuteActivity(t.short, ActivityAlertPreCheck, t.taskID).Get(t.ctx, &firing); err != nil {
 				return t.finish("failed", "alert pre-check: "+errMessage(err))
@@ -1461,6 +1492,22 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			setFindings(answer, "changes")
+		case t.toolPark >= versionToolPark && st.Park != nil &&
+			(st.Status == "waiting-image" || st.Status == "waiting-human" && strings.HasPrefix(st.Question, imageWaited)):
+			// a card parked on its image waits on, asked again where it asked
+			t.pr, startRef = st.PR, st.Head
+			asked := ""
+			if st.Status == "waiting-human" {
+				asked = st.Question
+			}
+			final, why, answer, notes := t.awaitImage(*st.Park, st.Park.CreatedAt, asked)
+			if final, why := held(final, why, answer); final != "" {
+				return t.finish(final, why)
+			}
+			addFindings(notes, "image")
+			if st.Park.Tool != "" {
+				buy()
+			}
 		case t.v3 >= versionSupervisor && st.Status == "waiting-human":
 			t.pr, startRef = st.PR, st.Head
 			final, why, answer := t.awaitHumanAgain(st.Question, st.Choices)
@@ -1674,6 +1721,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		v, decided, err := t.race(t.sessionOptions(remaining), &res, ActivityRunSession, in)
 		t.gateFindings, t.deadFrom, handoverNote = false, "", ""
+		if t.toolPark >= versionToolPark && !decided && imageNotPinned(err) {
+			// no sandbox started: no attempt, no agent time, the same input
+			// once the image is pinned
+			final, why, answer, notes := t.parkOnImage("", "")
+			if final, why := held(final, why, answer); final != "" {
+				return t.finish(final, why)
+			}
+			addFindings(notes, "image")
+			continue
+		}
 		if t.podWait >= versionPodWait && err == nil && !decided && res.Outcome == OutcomeNotStarted {
 			// no agent ran: no attempt, no agent time, the same input after
 			if ask := t.notStarted(res.Summary); ask != "" {
@@ -1864,6 +1921,21 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := askUnanswered(); final != "" {
 				return t.finish(final, why)
 			}
+			continue
+		case OutcomeMissingTool:
+			if t.toolPark < versionToolPark {
+				if final, why := held(t.awaitHuman(res.Reason, nil)); final != "" {
+					return t.finish(final, why)
+				}
+				buy()
+				continue
+			}
+			final, why, answer, notes := t.parkOnImage(res.Tool, res.Need)
+			if final, why := held(final, why, answer); final != "" {
+				return t.finish(final, why)
+			}
+			addFindings(notes, "image")
+			buy()
 			continue
 		case OutcomeNeedsInfo, OutcomeEscalate:
 			if res.Outcome == OutcomeNeedsInfo && t.v14 >= versionNeedsInfo {
@@ -3316,14 +3388,23 @@ func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why
 	return t.awaitAnswer(question, nil)
 }
 
-// awaitHumanUntil is awaitHuman that also ends, with no answer, when day,
-// a wait on the day cap, ends on its own (versionDayCap).
-func (t *taskRun) awaitHumanUntil(reason string, choices []string, day *dayWait) (final, why string, answer []string) {
+// waitEnd ends a wait for a human on its own, with no answer: the day
+// cap's turn (dayWait) or an image's arrival (imageReady).
+type waitEnd interface {
+	start(t *taskRun)
+	add(sel workflow.Selector)
+	over() bool
+	stop()
+}
+
+// awaitHumanUntil is awaitHuman that also ends, with no answer, when end
+// does (versionDayCap, versionToolPark); nil never does.
+func (t *taskRun) awaitHumanUntil(reason string, choices []string, end waitEnd) (final, why string, answer []string) {
 	question := escalationQuestion(reason)
 	if err := t.ask(reason, question, choices); err != nil {
 		return "failed", escalateFailed + errMessage(err), nil
 	}
-	return t.awaitAnswer(question, day)
+	return t.awaitAnswer(question, end)
 }
 
 // ask escalates the task with reason, which asks question, and the
@@ -3339,9 +3420,11 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 
 // awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
 // asked last, which asked question.
-func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string, answer []string) {
-	day.start(t)
-	defer day.stop()
+func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, answer []string) {
+	if end != nil {
+		end.start(t)
+		defer end.stop()
+	}
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
 	// at is where the wait's next answer goes in t.answers, newest first:
 	// a burst reads in the order it was written (versionAnswerBurst)
@@ -3384,13 +3467,15 @@ func (t *taskRun) awaitAnswer(question string, day *dayWait) (final, why string,
 		for _, n := range wake {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
-		day.add(sel)
+		if end != nil {
+			end.add(sel)
+		}
 		sel.Select(t.ctx)
 		heard, stop := pass()
 		if stop || len(heard) > 0 && t.answerBurst >= versionAnswerBurst && t.awaitBurst(wake, pass, heard) {
 			return final, why, nil
 		}
-		if len(heard) > 0 || len(answer) > 0 || day.over() {
+		if len(heard) > 0 || len(answer) > 0 || end != nil && end.over() {
 			return "", "", answer
 		}
 	}
@@ -3803,6 +3888,13 @@ func isWallClockTimeout(err error) bool {
 func isTerminal(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errTerminal
+}
+
+// imageNotPinned is a RunSession that refused its card's image as one with
+// no pin in force (ErrImageNotPinned).
+func imageNotPinned(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errImageNotPinned
 }
 
 // escalateFailed opens the final reason of a task whose escalation failed:

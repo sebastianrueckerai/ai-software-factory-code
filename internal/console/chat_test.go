@@ -1140,6 +1140,7 @@ Running (1):
   #11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox)
 Waiting on a human (1):
   #13 t-e "Use a replica?" waiting-human (waits on a human: an answer, an approval or a decision)
+Waiting for image (0):
 Waiting on the author (0):
 In review (0):
 Merged (0):

@@ -241,7 +241,7 @@ behind that issue number or branch — is silently dropped rather than
 erroring.
 
 A task's state (`backlog`, `queued`, `waiting-deps`, `running`, `waiting-human`,
-`waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
+`waiting-image`, `waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
 onto its issue as exactly one `state/*` label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
 site behind the task workflow's activities, completion, and the webhook
@@ -1160,6 +1160,29 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   `k8s/factoryd.yaml`, in `platform` and `forgejo` by the infra
   repository). `factoryd-project` also carries registration's Secrets and
   is never bound in a seed namespace.
+- `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
+  required): free, through the class's tool list (`request_tool: {}`).
+  The agent asks for a tool its sandbox lacks instead of installing it.
+  It goes the way of an escalation (an `agent_tool_request` intake event,
+  the session stops with outcome `missing_tool`, the work in progress on
+  the branch); from change id `tool-park` on the workflow's `ParkForTool`
+  parks the card on an image: the card's own, else one named after the
+  tool. A tool card on the project's repository (source `tool_request`,
+  small, the cheap rung, a child the asking card depends on) adds the tool
+  to `factory/images.yaml`; a second ask for the same image joins the open
+  card with a comment. The card waits in `waiting-image` (no work slot)
+  until the imager's `image_ready`: once the tool card merged and the pin
+  in force carries the key a pass after the merge read, the next session
+  runs on the image from the branch, its findings naming the tool's
+  arrival. A tool card closed unmerged, or merged without declaring the
+  image, a new image past the project's four, or one refused before
+  (which goes to a human) reach the next session as why the tool did not
+  come. After 24 hours without a wake the card asks a human; the image's
+  arrival ends that wait too. The asking session takes no number of the
+  session cap. A session start whose image has no pin in force parks the
+  same way, with no tool card. A pull request that changes
+  `factory/images.yaml` has the file checked at its head; each finding
+  goes back to the agent like an anti-cheat finding.
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

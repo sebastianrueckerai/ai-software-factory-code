@@ -209,7 +209,7 @@ func (c *SchemaCopier) budget() policy.Budget {
 }
 
 // openStatuses are the statuses of a card whose work is not over.
-var openStatuses = []string{"queued", "running", "in-review", "waiting-human", "waiting-poster", "waiting-deps"}
+var openStatuses = []string{"queued", "running", "in-review", "waiting-human", "waiting-poster", "waiting-deps", "waiting-image"}
 
 // buildCards are the unfinished cards of this copier's build on repository
 // repo: the pass files one per build at most, however often it runs and

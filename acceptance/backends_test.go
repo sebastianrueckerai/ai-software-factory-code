@@ -639,6 +639,36 @@ func (s *acceptanceStore) SetTaskImage(_ context.Context, id, digest string, egr
 	return nil
 }
 
+func (s *acceptanceStore) SetTaskImageName(_ context.Context, id, image string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Image = image
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *acceptanceStore) SetObjective(_ context.Context, id, objective string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Objective = objective
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *acceptanceStore) ImagePark(context.Context, string) (factoryd.ImagePark, bool, error) {
+	return factoryd.ImagePark{}, false, nil
+}
+
+func (s *acceptanceStore) ParkImage(context.Context, factoryd.ImagePark, bool) (factoryd.ImagePark, error) {
+	panic("unused")
+}
+
+func (s *acceptanceStore) OpenToolCard(context.Context, string, string) (factoryd.Task, bool, error) {
+	panic("unused")
+}
+
 func (s *acceptanceStore) SetTaskMergeCommit(_ context.Context, id, commit string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

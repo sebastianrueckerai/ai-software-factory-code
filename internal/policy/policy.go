@@ -922,10 +922,13 @@ const (
 	// ToolDelegate files a small follow-up card on the cheap rung that
 	// starts when the caller's card has landed (roadmap 222, item 6).
 	ToolDelegate = "delegate"
+	// ToolRequestTool asks for a tool the sandbox lacks: a card adds it to
+	// one of the project's images, and the caller's card restarts on it.
+	ToolRequestTool = "request_tool"
 )
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

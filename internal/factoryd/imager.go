@@ -73,6 +73,8 @@ type Imager struct {
 	// Ladder is the model ladder's aliases CheckTree holds a tree to.
 	Ladder []string
 	Now    func() time.Time
+	// Workflows wakes the cards parked on an image.
+	Workflows Workflows
 
 	mu       sync.Mutex
 	verified map[string]bool // repository@digest
@@ -81,7 +83,8 @@ type Imager struct {
 	refusals map[string]string
 }
 
-// ImageStore keeps image_builds and the imager's alerts.
+// ImageStore keeps image_builds, the imager's alerts and the cards parked
+// on an image.
 type ImageStore interface {
 	// ImageDispatches is when the build of key of project's image was last
 	// dispatched and how often it was; zero and 0 when never.
@@ -89,6 +92,15 @@ type ImageStore interface {
 	RecordImageDispatch(ctx context.Context, project, image, key string, at time.Time) error
 	RecordImageRead(ctx context.Context, project, image, key string, at time.Time) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	// ImageReadAt is when a pass last read key as the desired key of
+	// project's image, zero when none did.
+	ImageReadAt(ctx context.Context, project, image, key string) (time.Time, error)
+	// OpenImageParks are the parks that wait; WakeImagePark wakes task's
+	// park of created with refused, a later one left as it is.
+	OpenImageParks(ctx context.Context) ([]ImagePark, error)
+	WakeImagePark(ctx context.Context, task string, created time.Time, refused string) error
+	Task(ctx context.Context, id string) (Task, bool, error)
+	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
 }
 
 // imageRepository is where the store holds project's image.
@@ -113,7 +125,8 @@ func (i *Imager) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// pass reconciles every project in force whose agents run.
+// pass reconciles every project in force whose agents run, then wakes the
+// cards parked on an image whose wait is over.
 func (i *Imager) pass(ctx context.Context) error {
 	_, baseDigest, ok := strings.Cut(i.Base, "@")
 	if !ok {
@@ -122,14 +135,22 @@ func (i *Imager) pass(ctx context.Context) error {
 	start := i.Now()
 	v := i.Policy()
 	var errs []error
+	declared := map[string]map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
 		c := v.Projects[name]
 		if c.Agents == policy.AgentsNone {
 			continue
 		}
-		if err := i.project(ctx, name, c, baseDigest, start); err != nil {
+		names, err := i.project(ctx, name, c, baseDigest, start)
+		if names != nil {
+			declared[name] = names
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
 		}
+	}
+	if err := i.wake(ctx, v, declared, start); err != nil {
+		errs = append(errs, fmt.Errorf("wake: %w", err))
 	}
 	return errors.Join(errs...)
 }
@@ -137,10 +158,15 @@ func (i *Imager) pass(ctx context.Context) error {
 // project reconciles the images name declares: a pin at its desired key
 // stays, an image ready at it is pinned, one not built is dispatched, and a
 // pinned name no longer declared leaves. An invalid file changes nothing.
-func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfig, baseDigest string, start time.Time) error {
+// It returns the names the file declares, nil when it did not read.
+func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfig, baseDigest string, start time.Time) (map[string]bool, error) {
 	file, raw, ok, err := i.declared(ctx, name, c.Repository)
 	if err != nil || !ok {
-		return err
+		return nil, err
+	}
+	names := map[string]bool{}
+	for n := range file.Images {
+		names[n] = true
 	}
 	pins := map[string]policy.ImagePin{}
 	for n, p := range c.Images {
@@ -152,20 +178,96 @@ func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfi
 		spec := file.Images[n]
 		key := imagegen.BuildKey(spec, baseDigest)
 		if err := i.Store.RecordImageRead(ctx, name, n, key, start); err != nil {
-			return err
+			return names, err
 		}
 		if pins[n].Key == key {
 			continue
 		}
 		pin, ready, err := i.build(ctx, name, n, spec, key, raw)
 		if err != nil {
-			return fmt.Errorf("image %s: %w", n, err)
+			return names, fmt.Errorf("image %s: %w", n, err)
 		}
 		if ready {
 			pins[n] = pin
 		}
 	}
-	return i.pin(ctx, name, c.Repository, pins, c.Images)
+	return names, i.pin(ctx, name, c.Repository, pins, c.Images)
+}
+
+// wake signals image_ready to each card parked on an image whose wait is
+// over, at the end of the pass begun at start under v, whose reads found
+// declared, each project's declared names (none where its file did not
+// read), and wakes its park; a refused card's dependency on its tool card
+// goes.
+func (i *Imager) wake(ctx context.Context, v policy.Version, declared map[string]map[string]bool, start time.Time) error {
+	parks, err := i.Store.OpenImageParks(ctx)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, p := range parks {
+		refusal, ready, err := i.woken(ctx, v, declared, start, p)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("task %s: %w", p.Task, err))
+			continue
+		}
+		if !ready {
+			continue
+		}
+		if err := i.Workflows.Signal(ctx, p.Task, SignalImageReady, TaskSignal{Author: FactoryDecider, Image: p.Target, Refusal: refusal, At: p.CreatedAt}); err != nil {
+			errs = append(errs, fmt.Errorf("task %s: %w", p.Task, err))
+			continue
+		}
+		if err := i.Store.WakeImagePark(ctx, p.Task, p.CreatedAt, refusal); err != nil {
+			errs = append(errs, fmt.Errorf("task %s: %w", p.Task, err))
+			continue
+		}
+		// a refused card waits on its tool card no more
+		if refusal != "" {
+			if err := i.Store.RemoveTaskDeps(ctx, p.Task, []string{p.ToolTask}); err != nil {
+				errs = append(errs, fmt.Errorf("task %s: %w", p.Task, err))
+			}
+		}
+		log.Printf("imager: woke task %s on image %s of %s %s", p.Task, p.Target, p.Project, cmp.Or(refusal, "ready"))
+	}
+	return errors.Join(errs...)
+}
+
+// woken is whether park p's wait is over at the end of the pass begun at
+// start under v, which read declared, and the refusal it ends with. A park
+// with a tool card is over once the card merged and the pin in force
+// carries the desired key a pass begun after the merge read; with a
+// refusal once it closed unmerged, or once a pass begun after its merge
+// read a file that does not declare the image. One without a tool card is
+// over once its image is pinned.
+func (i *Imager) woken(ctx context.Context, v policy.Version, declared map[string]map[string]bool, start time.Time, p ImagePark) (refusal string, over bool, err error) {
+	pin, pinned := v.Projects[p.Project].Images[p.Target]
+	if p.ToolTask == "" {
+		return "", pinned, nil
+	}
+	card, ok, err := i.Store.Task(ctx, p.ToolTask)
+	if err != nil || !ok {
+		return "", false, err
+	}
+	switch card.Status {
+	case "failed", "closed":
+		return fmt.Sprintf("#%d closed without a merge", card.IssueNumber), true, nil
+	case "merged", "done":
+	default:
+		return "", false, nil
+	}
+	names, read := declared[p.Project]
+	if card.FinishedAt == nil || !start.After(*card.FinishedAt) || !read {
+		return "", false, nil
+	}
+	if !names[p.Target] {
+		return fmt.Sprintf("#%d merged without declaring image %s", card.IssueNumber, p.Target), true, nil
+	}
+	if !pinned {
+		return "", false, nil
+	}
+	at, err := i.Store.ImageReadAt(ctx, p.Project, p.Target, pin.Key)
+	return "", err == nil && at.After(*card.FinishedAt), err
 }
 
 // declared reads factory/images.yaml at the head of repository's default

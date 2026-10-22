@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -133,6 +134,7 @@ type fakeEscalator struct {
 	mu      sync.Mutex
 	calls   []string
 	choices [][]string
+	asks    []Escalation
 	err     error
 }
 
@@ -141,6 +143,7 @@ func (f *fakeEscalator) Escalate(_ context.Context, taskID string, e Escalation)
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, strings.Join([]string{taskID, e.Kind, e.Question, e.Reason, e.Recommendation, e.Tried, e.Needs}, "|"))
 	f.choices = append(f.choices, e.Choices)
+	f.asks = append(f.asks, e)
 	return f.err
 }
 
@@ -279,7 +282,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,web_scrape,web_search"
+	want := "delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,request_tool,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -751,6 +754,67 @@ func TestRequestInfo(t *testing.T) {
 	}
 	if len(e.escalator.calls) != 1 || len(unlisted.escalator.calls) != 0 {
 		t.Fatalf("calls = %v / %v", e.escalator.calls, unlisted.escalator.calls)
+	}
+}
+
+// request_tool asks for a tool the sandbox lacks: the tool (1 to 80
+// characters) and what for (1 to 600), both required; the session ends,
+// and its description alone tells the agent what follows.
+func TestRequestTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestTool })
+	if i < 0 {
+		t.Fatal("no request_tool")
+	}
+	if want := "Ask for a tool this sandbox lacks, such as a browser, ffmpeg or a language runtime, instead of trying to install it: the sandbox refuses installs. " +
+		"Your work in progress is pushed, a card adds the tool to one of the project's images, and this card restarts on that image from its branch once the image is built. " +
+		"Name the tool and what you need it for."; res.Tools[i].Description != want {
+		t.Fatalf("description = %q, want %q", res.Tools[i].Description, want)
+	}
+	b, _ := json.Marshal(res.Tools[i].InputSchema)
+	var schema struct{ Required []string }
+	if err := json.Unmarshal(b, &schema); err != nil || !slices.Equal(schema.Required, []string{"tool", "need"}) {
+		t.Fatalf("required = %q (%v), want tool and need", schema.Required, err)
+	}
+
+	text, isErr := e.call(t, policy.ToolRequestTool, map[string]any{"tool": " ffmpeg ", "need": " cut the demo video to 10 s "})
+	if isErr || text != "asked for ffmpeg; this session will end. Your work in progress is pushed; the card restarts on an image with the tool once it is built, "+
+		"or the next session is told why not. Stop working now." {
+		t.Fatalf("result = %q", text)
+	}
+	if want := (Escalation{Kind: KindMissingTool, Tool: "ffmpeg", Need: "cut the demo video to 10 s"}); len(e.escalator.asks) != 1 || !reflect.DeepEqual(e.escalator.asks[0], want) {
+		t.Fatalf("asks = %+v, want %+v", e.escalator.asks, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "tool_requested" || a.Tool != policy.ToolRequestTool || a.Reason != "ffmpeg: cut the demo video to 10 s" {
+		t.Fatalf("audit = %+v", a)
+	}
+	// 80 and 600 characters pass however many bytes they take
+	if text, isErr := e.call(t, policy.ToolRequestTool, map[string]any{"tool": strings.Repeat("ä", 80), "need": strings.Repeat("ö", 600)}); isErr {
+		t.Fatalf("80 and 600 characters = %q, want accepted", text)
+	}
+	for name, args := range map[string]map[string]any{
+		"no tool":   {"tool": " ", "need": "n"},
+		"no need":   {"tool": "ffmpeg", "need": ""},
+		"long tool": {"tool": strings.Repeat("a", 81), "need": "n"},
+		"long need": {"tool": "ffmpeg", "need": strings.Repeat("n", 601)},
+	} {
+		if text, isErr := e.call(t, policy.ToolRequestTool, args); !isErr || !strings.Contains(text, "refused_arguments") ||
+			!strings.Contains(text, "tool (1 to 80 characters) and need (1 to 600 characters) are required") {
+			t.Errorf("%s = %q, want refused_arguments naming both bounds", name, text)
+		}
+	}
+	if len(e.escalator.asks) != 2 {
+		t.Fatalf("asks = %d, want the two valid ones", len(e.escalator.asks))
+	}
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	delete(v.Document.Classes["coder"].Tools, policy.ToolRequestTool)
+	unlisted := newToolEnv(t, running("coder"), v)
+	if text, isErr := unlisted.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted = %q", text)
 	}
 }
 

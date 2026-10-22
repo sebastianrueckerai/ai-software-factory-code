@@ -559,7 +559,7 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			f.issues = append(f.issues, in["title"]+"\n\n"+in["body"])
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"number": 30 + len(f.issues), "html_url": "https://git.example/sf/code/issues/31"})
-		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
+		case (r.Method == "PUT" || r.Method == "GET") && strings.HasSuffix(p, "/labels"):
 			reply([]any{})
 		case r.Method == "POST" && strings.HasSuffix(p, "/comments"):
 			var in map[string]string

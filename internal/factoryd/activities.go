@@ -139,6 +139,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityFileSplit:                   r.FileSplit,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
+		ActivityParkForTool:                 r.ParkForTool,
+		ActivityImageArrived:                r.ImageArrived,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -281,7 +283,7 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 // pull request is open) and mirrors the state onto the issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
-		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"},
+		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"},
 		// waiting-human: a human answered a gate's escalation and the gate runs
 		// again; waiting-poster: a cap right after the author's answer
 		// verifies the branch's head
@@ -932,6 +934,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		switch {
 		case out.trip.Kind == TripAgentInfoRequest:
 			res.Outcome, res.Reason = OutcomeNeedsInfo, d.Reason
+		case out.trip.Kind == TripAgentToolRequest:
+			res.Outcome, res.Reason, res.Tool, res.Need, res.Commit = OutcomeMissingTool, d.Reason, d.Tool, d.Need, out.commit
 		case d.Action == ActionRedirect:
 			res.Outcome = OutcomeRedirect
 		case d.Action == ActionRetryStronger:
@@ -1085,8 +1089,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if t.Status != "waiting-human" {
 		// queued: the screening stage's suspect verdict, before any session;
 		// waiting-deps: a dependency ended failed or closed; waiting-poster:
-		// the author's answer screened suspect, or a cap reached on it
-		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster"}, "waiting-human"); err != nil {
+		// the author's answer screened suspect, or a cap reached on it;
+		// waiting-image: the image did not come within imageWait
+		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster", "waiting-image"}, "waiting-human"); err != nil {
 			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
@@ -1535,6 +1540,11 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	st.DayCap, st.DayCapUntil = dayCapWait(events)
 	st.Screening = waitsOnScreening(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
+	if p, ok, err := r.store.ImagePark(ctx, taskID); err != nil {
+		return RunState{}, err
+	} else if ok {
+		st.Park = &p
+	}
 	r.record(ctx, taskID, "reconcile", map[string]any{"status": st.Status, "pr": st.PR.Number, "head": st.Head,
 		"merged": st.Merged, "pr_closed": st.PRClosed, "issue_closed": st.IssueClosed, "skip": st.Skip, "findings": len(st.Findings),
 		"answers": len(st.Answers)})

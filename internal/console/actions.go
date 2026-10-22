@@ -178,6 +178,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 		return "steer sends its session a message; its pull request comes when the session ends"
 	case "queued", "waiting-deps":
 		return "nothing to do until it starts"
+	case "waiting-image":
+		return "nothing to do until its image is pinned and it restarts; close ends it"
 	case "in-review":
 		if f.rerun {
 			return factoryRedFits

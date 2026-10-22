@@ -26,11 +26,12 @@ const (
 	TripWallClock  TripKind = "wall_clock"
 	TripRepetition TripKind = "repetition"
 	TripShutdown   TripKind = "shutdown" // not a detector: factoryd is stopping
-	// TripAgentEscalation: the agent called escalate_to_human, and
-	// TripAgentInfoRequest request_info; decided already, no supervisor
-	// call
+	// TripAgentEscalation: the agent called escalate_to_human,
+	// TripAgentInfoRequest request_info and TripAgentToolRequest
+	// request_tool; decided already, no supervisor call
 	TripAgentEscalation  TripKind = "agent_escalation"
 	TripAgentInfoRequest TripKind = "agent_info_request"
+	TripAgentToolRequest TripKind = "agent_tool_request"
 	// TripLoop: loopNudges nudges delivered with no new file content in between
 	// (NudgeSent), or the provider's refusal of repeated calls
 	// (sessionResult); a redirect, no supervisor call
@@ -307,18 +308,22 @@ const (
 	agentAsksAuthor = "The agent asks the issue's author: "
 )
 
-// AgentAsk trips on the agent's own escalate_to_human or request_info: an
-// escalation with its question, or the information request, the
-// supervisor model not asked.
+// AgentAsk trips on the agent's own escalate_to_human, request_info or
+// request_tool: an escalation with its question, the information request,
+// or the tool request with its tool and need, the supervisor model not
+// asked.
 func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
 	kind, detail := TripAgentEscalation, "the agent called escalate_to_human"
-	if a.Kind == AskInfo {
+	switch a.Kind {
+	case AskInfo:
 		kind, detail = TripAgentInfoRequest, "the agent called request_info"
+	case AskTool:
+		kind, detail = TripAgentToolRequest, "the agent called request_tool"
 	}
-	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason(), Choices: a.Choices}})
+	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason(), Choices: a.Choices, Tool: a.Tool, Need: a.Need}})
 }
 
 // TakeNudge is the nudge the last event earned, once.

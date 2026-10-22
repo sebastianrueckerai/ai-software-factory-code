@@ -316,6 +316,7 @@ var BootLabels = map[string]string{
 	"state/running":        "#1f6feb",
 	"state/waiting-human":  "#d4a72c",
 	"state/waiting-poster": "#fbca04",
+	"state/waiting-image":  "#f9d0c4",
 	"state/in-review":      "#8250df",
 	"state/done":           "#2da44e",
 	"state/failed":         "#cf222e",
@@ -1768,7 +1769,7 @@ func (in *Intake) resignalDecision(ctx context.Context, t Task, e IntakeEvent) e
 	// a decision on another pull request of the task branch was ignored
 	// by the workflow and stays ignored
 	if !decision || !e.Trusted || !e.Signalled || time.Since(e.CreatedAt) < decisionResignalAfter ||
-		!slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster"}, t.Status) || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
+		!slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status) || (name != SignalIssueClosed && sig.PR != t.PRNumber) {
 		return nil
 	}
 	log.Printf("intake: task %s still %s after decision %d (%s): signalling it again", t.ID, t.Status, e.ID, e.Kind)

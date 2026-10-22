@@ -17,6 +17,7 @@ func TestStatusMeaning(t *testing.T) {
 		{"in-review", "passes the gates after its session"},
 		{"merged", "is merged; done when the chain runs its change live"},
 		{"waiting-human", "waits on a human: an answer, an approval or a decision"},
+		{"waiting-image", "waits for its sandbox image to be built and pinned"},
 		{"waiting-poster", "waits on its poster's information"},
 		{"done", "is done"},
 		{"failed", "has failed"},
@@ -29,7 +30,7 @@ func TestStatusMeaning(t *testing.T) {
 		}
 	}
 	var listed []string
-	for _, tt := range tests[:12] {
+	for _, tt := range tests[:13] {
 		listed = append(listed, tt.status)
 	}
 	if !slices.Equal(Statuses, listed) {

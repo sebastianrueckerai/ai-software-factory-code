@@ -274,6 +274,48 @@ func TestGatePolicyFlagsCheats(t *testing.T) {
 	}
 }
 
+// A pull request that changes factory/images.yaml has the file checked at
+// its head: each finding goes to the agent as the cheats do, and the gate
+// records them; a valid file, one the pull request removes or one it does
+// not touch has none.
+func TestGatePolicyChecksTheImagesFile(t *testing.T) {
+	changed := []string{`{"filename":"factory/images.yaml"}`}
+	for name, c := range map[string]struct {
+		files []string
+		raw   map[string]string
+		want  []string
+	}{
+		"invalid": {changed, map[string]string{"sf/repo/raw/factory/images.yaml": "images:\n  default:\n    apt: [\"jq;rm\"]\n"},
+			[]string{`factory/images.yaml at the pull request's head: image "default": apt "jq;rm" must match ^[a-z0-9][a-z0-9+.-]+$ (a Debian package name without a version)`}},
+		"valid":     {changed, map[string]string{"sf/repo/raw/factory/images.yaml": "images:\n  default:\n    apt: [jq]\n"}, nil},
+		"removed":   {changed, nil, nil},
+		"untouched": {[]string{`{"filename":"main.go"}`}, map[string]string{"sf/repo/raw/factory/images.yaml": "images: [broken"}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{files: c.files, raw: c.raw}
+			r, _, objects := newGateRunner(t, gateTask, fj)
+			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+			g := getInto[PolicyGate](t, val, err)
+			if !slices.Equal(g.Images, c.want) || len(g.Cheats) != 0 {
+				t.Fatalf("images findings = %q, want %q", g.Images, c.want)
+			}
+			got, _ := timelineStep(t, objects, "t1", "gate_policy")["images"].([]any)
+			if fmt.Sprint(got) != fmt.Sprint(anySlice(c.want)) {
+				t.Fatalf("gate_policy step images = %v, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+// anySlice is ss as a decoded JSON array holds it, nil for none.
+func anySlice(ss []string) []any {
+	var out []any
+	for _, s := range ss {
+		out = append(out, s)
+	}
+	return out
+}
+
 // A rename out of .forgejo counts under its old name: forbidden, and the
 // comment names the path.
 func TestGatePolicyForbidsARenameOutOfAWorkflowDir(t *testing.T) {

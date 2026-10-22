@@ -402,6 +402,26 @@ func TestWorkflowCheatsGoBackToTheAgent(t *testing.T) {
 	}
 }
 
+// The images file's findings at the head go back to the agent as the
+// cheats do: the next session's findings name them.
+func TestWorkflowImagesFindingsGoBackToTheAgent(t *testing.T) {
+	finding := `factory/images.yaml at the pull request's head: image "video": declares no tool: apt or upstream needs an entry, or the image equals the base image`
+	g := newGateHarness(t)
+	g.gateSeq = []PolicyGate{
+		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, Images: []string{finding}},
+		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7},
+	}
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{finding}) {
+		t.Fatalf("sessions = %+v, want a second session holding the finding", g.sessions)
+	}
+}
+
 // A reproduction whose sandbox could not start asks the human with its
 // start escalation, before the staged gates and after them alike, and the
 // answer runs the reproduction again on the same commit: no new session,

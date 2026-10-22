@@ -1575,7 +1575,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	section := "ISSUE-t>>>\n\nThe spec and the plan: this card is one of a plan's. Between the lines <<<SPEC-t and SPEC-t>>> stand the spec, " +
 		"the plan's issue as a writer wrote it, and the plan's summary as the planner wrote it: the whole application, of which this card builds its own part only.\n" +
 		"<<<SPEC-t\nBuild a link shortener, cc ＠ops.\n\nThe plan's summary: links first.\nSPEC-t>>>\n\n"
-	if !strings.Contains(text, section) || !strings.HasSuffix(text, toolsLine+"\n"+featureGuide(RoleIntegration)) ||
+	if !strings.Contains(text, section) || !strings.HasSuffix(text, toolsLine+"\n"+featureGuide(RoleIntegration, nil)) ||
 		!strings.Contains(text, "turn the spec's acceptance tests into Go tests under acceptance/") || strings.Contains(text, "reproduce the reported fault") {
 		t.Fatalf("brief:\n%s", text)
 	}
