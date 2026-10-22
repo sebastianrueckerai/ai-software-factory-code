@@ -1207,7 +1207,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .lvlpop .lp-head { display: flex; justify-content: space-between; margin: 0; padding: 4px 8px 6px; color: var(--text-faint); font: 11px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
 .lvlpop [data-lvl] { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; gap: 1px 8px; width: 100%; height: auto; margin: 0; padding: 7px 8px; border: 0; border-radius: 2px; background: none; color: var(--text); font-family: var(--font-ui); text-align: left; white-space: normal; cursor: pointer; }
 /* every row carries its level's own lamp, brighter with each level (C33); the ✓ marks the current one */
-.lvlpop [data-lvl] i { grid-row: 1 / 3; margin-top: 5px; width: 9px; height: 9px; border: 1px solid var(--line-strong); border-radius: 1px; }
+.lvlpop [data-lvl] i { grid-row: 1 / 3; margin-top: 5px; width: 9px; height: 9px; border: 1px solid transparent; border-radius: 1px; }
 .lvlpop [data-lvl][aria-checked="true"] i { border-color: var(--lamp); background: var(--lamp); box-shadow: var(--lamp-glow); }
 .lvlpop [data-lvl] b { font-size: 12.5px; font-weight: 600; }
 .lvlpop [data-lvl] .ck { color: var(--accent); font: 12px var(--font-mono); }

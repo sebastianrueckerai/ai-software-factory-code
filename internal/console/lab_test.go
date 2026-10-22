@@ -72,7 +72,8 @@ func TestLab(t *testing.T) {
 	docsToken, _ := factoryd.NewReadToken()
 	r.c.cfg.ForgejoURL, r.c.cfg.DocsToken = docs.URL, docsToken
 	// the configuration tree, so the level control's write lands (C32)
-	withInfra(t, r).files = map[string]string{"factory/projects/" + labCodeProject.Name + ".yaml": "repository: sf/code\nmerge_rule: human\n"}
+	r.infra = withInfra(t, r)
+	r.infra.files = map[string]string{"factory/projects/" + labCodeProject.Name + ".yaml": "repository: sf/code\nmerge_rule: human\n"}
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
 	r.gateway = &chatGateway{t: t, lenient: true}
 	model := httptest.NewServer(r.gateway)
@@ -559,6 +560,16 @@ func (r *rig) seedScene(s labScene) string {
 	if config == nil {
 		config = &policy.ProjectConfig{Repository: repository, MergeRule: "human", Objects: "seed",
 			Agents: "coder", Process: "spec", Namespaces: []string{"factory"}}
+	}
+	if r.infra != nil {
+		// the scene's project file on infra's main, so the level control's pick commits it as on the factory's
+		file := fmt.Sprintf("repository: %s\nmerge_rule: %s\n", config.Repository, config.MergeRule)
+		if config.Autonomy != "" {
+			file += "autonomy: " + config.Autonomy + "\n"
+		}
+		r.infra.mu.Lock()
+		r.infra.files["factory/projects/"+project.Name+".yaml"] = file
+		r.infra.mu.Unlock()
 	}
 	r.ledger.mu.Lock()
 	r.ledger.files = map[string]policy.ProjectConfig{project.Name: *config}
