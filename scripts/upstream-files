@@ -31,11 +31,11 @@ fail() {
 }
 # held <package> <version> <file>: the store's copy answers a read
 held() {
-  curl -fsS -o /dev/null -u "$login" "$generic/$1/$2/$3"
+  curl -gfsS -o /dev/null -u "$login" "$generic/$1/$2/$3"
 }
 # put <package> <version> <file> <path>: the store's new copy
 put() {
-  curl -fsS -o /dev/null -u "$login" -X PUT --upload-file "$4" "$generic/$1/$2/$3"
+  curl -gfsS -o /dev/null -u "$login" -X PUT --upload-file "$4" "$generic/$1/$2/$3"
 }
 # sha <file>: its sha256
 sha() {
@@ -47,7 +47,7 @@ while read -r package version name url sum; do
     continue
   fi
   file=$work/$name
-  if ! curl -fsSL --retry 5 -o "$file" "$url" || ! echo "$sum  $file" | sha256sum -c --quiet -; then
+  if ! curl -gfsSL --retry 5 -o "$file" "$url" || ! echo "$sum  $file" | sha256sum -c --quiet -; then
     fail "$name: its URL does not serve the pinned sha256 $sum"
     continue
   fi

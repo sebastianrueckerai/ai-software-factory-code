@@ -74,6 +74,18 @@ func TestProjectImageWorkflow(t *testing.T) {
 	if strings.Contains(string(data), "secrets.COSIGN_") {
 		t.Error("the factory's own COSIGN secrets are referenced")
 	}
+	if !strings.Contains(sign.Run, "--key env://IMAGES_COSIGN_PRIVATE_KEY") {
+		t.Error("sign does not pass --key env://IMAGES_COSIGN_PRIVATE_KEY")
+	}
+	render := job.Steps[slices.IndexFunc(job.Steps, func(s step) bool { return strings.Contains(s.Run, "image key") })]
+	if !strings.Contains(render.Run, `if [ "$got" != "$KEY" ]; then`) || !strings.Contains(render.Run, "exit 1") {
+		t.Error("render does not fail when the computed key differs from KEY")
+	}
+	safe := strings.Index(render.Run, `[[ "$PROJECT" =~ ^[a-z0-9][a-z0-9-]*$ ]]`)
+	safeImage := strings.Index(render.Run, `[[ "$IMAGE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]]`)
+	if safe < 0 || safeImage < 0 || safe > strings.Index(render.Run, "docker pull") || safeImage > strings.Index(render.Run, "docker pull") {
+		t.Error("render does not check the project and image names before anything else")
+	}
 	for _, s := range job.Steps {
 		if strings.Contains(s.Run, "${{ inputs.") || strings.Contains(s.Run, "${{inputs.") {
 			t.Errorf("step %q puts an input inside run", s.Name)

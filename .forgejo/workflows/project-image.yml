@@ -51,6 +51,8 @@ jobs:
         # asked: nothing is built from it.
         run: |
           set -euo pipefail
+          [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "the project name is not a safe path" >&2; exit 1; }
+          [[ "$IMAGE" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { echo "the image name is not a safe path" >&2; exit 1; }
           docker pull -q "$FACTORYD_IMAGE" >/dev/null
           id=$(docker create "$FACTORYD_IMAGE")
           docker cp "$id:/usr/local/bin/factoryd" /tmp/factoryd
