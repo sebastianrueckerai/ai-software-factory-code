@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // criteriaPlan is a plan with one revision holding three criteria (a test
@@ -128,6 +130,21 @@ func TestDecideCriterion(t *testing.T) {
 	}
 	if fmt.Sprint(rows) != fmt.Sprint(want) {
 		t.Errorf("rows =\n%v\nwant\n%v", rows, want)
+	}
+}
+
+// The delta round's prompt shows a card's image and lists the project's
+// pinned images as the planner's guide does.
+func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
+	if !strings.Contains(deltaSystem, `"rung_reason": "...", "image": "..."}}`) {
+		t.Fatalf("deltaSystem lacks the image field: %s", deltaSystem)
+	}
+	if got := deltaPrompt(nil); got != deltaSystem {
+		t.Fatalf("no pins: %q, want deltaSystem alone", got)
+	}
+	want := deltaSystem + " Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
+	if got := deltaPrompt(map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}); got != want {
+		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
 	}
 }
 

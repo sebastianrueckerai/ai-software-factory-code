@@ -367,7 +367,7 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 			cmp.Or(reason, "the timeline records no reason")))
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "backlog",
 			Lane: policy.LaneBacklog, Process: old.Process, Objective: objective, Repository: old.Repository, SHA: old.SHA, Kind: "agent",
-			Source: SourcePlan, Parent: old.Parent, PlanKey: old.PlanKey, Author: old.Author, AuthorWriter: old.AuthorWriter}
+			Source: SourcePlan, Parent: old.Parent, PlanKey: old.PlanKey, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
 		switch ok, err := r.store.ReplaceFailedCard(ctx, old.ID, t); {
 		case err != nil:
 			return 0, err

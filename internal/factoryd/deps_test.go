@@ -633,6 +633,20 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 	}
 }
 
+// The replacement of a failed card runs on the image the card named.
+func TestRetryPlanCardKeepsTheImage(t *testing.T) {
+	r, store, _, _, _ := newRetryRig(t)
+	a := store.tasks["t-a"]
+	a.Image = "browser"
+	store.tasks["t-a"] = a
+	if _, err := r.RetryPlanCard(context.Background(), "t-a", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if got := cardsByKey(t, store)["links-api"].Image; got != "browser" {
+		t.Fatalf("the replacement's image %q, want browser", got)
+	}
+}
+
 // A card retried once, a card that did not fail and a task that is no
 // card of a plan are refused, and nothing is filed.
 func TestRetryRefusedTwice(t *testing.T) {

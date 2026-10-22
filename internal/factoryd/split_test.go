@@ -315,11 +315,11 @@ func asStrings(v any) []string {
 
 // FileSplit files the split's cards like a plan's, the member who split
 // the card their author, budgets by size, the dependencies among them, and
-// puts them into lane ready at main's head, where their workflows start;
-// the card's issue names them.
+// puts them into lane ready at main's head, where their workflows start,
+// on the split card's image; the card's issue names them.
 func TestFileSplitStartsTheCards(t *testing.T) {
 	big := Task{ID: "t-big", Kind: "agent", Status: "in-review", Lane: policy.LaneReady, Process: "spec", Repository: "linkshort/linkshort",
-		IssueNumber: 1, PRNumber: 9, Author: "alice", AuthorWriter: true, Priority: 2, Objective: "Links\n\nThe links page and API."}
+		IssueNumber: 1, PRNumber: 9, Author: "alice", AuthorWriter: true, Priority: 2, Objective: "Links\n\nThe links page and API.", Image: "browser"}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {title: "Links", poster: "alice"}}, next: 1}
 	runner, _, store := newTestRunner(t, big, newFakeKube(), &fakeObjectStore{})
 	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
@@ -346,7 +346,7 @@ func TestFileSplitStartsTheCards(t *testing.T) {
 	}{{api, 2, 5}, {web, 3, 5}} {
 		k := c.card
 		if k.IssueNumber != c.issue || k.Status != "queued" || k.Lane != policy.LaneReady || k.SHA != "m1" || k.BudgetEUR != c.eur ||
-			k.Process != "spec" || k.Author != "sebastian" || !slices.Equal(k.RequiredCapabilities, []string{policy.ClassCoder}) {
+			k.Process != "spec" || k.Author != "sebastian" || !slices.Equal(k.RequiredCapabilities, []string{policy.ClassCoder}) || k.Image != "browser" {
 			t.Fatalf("card %s: %+v", k.PlanKey, k)
 		}
 		if labels := fj.issues[c.issue].labels; !slices.Equal(labels, []string{LabelAgent, "state/queued"}) {

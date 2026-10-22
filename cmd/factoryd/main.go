@@ -158,10 +158,12 @@ func main() {
 		BaseURL: env("SIGNOZ_URL", "http://signoz.platform.svc.cluster.local:8080"),
 		Email:   mustEnv("SIGNOZ_EMAIL"), Password: signozPassword}
 	sandboxBase := mustEnv("SANDBOX_BASE_IMAGE")
+	registryHost := env("REGISTRY_HOST", "git.aisoftwarefactory.world")
 	runner, err := factoryd.NewRunner(factoryd.RunnerConfig{
 		AgentNamespacePrefix: env("AGENT_NAMESPACE_PREFIX", "factory-agents-"),
 		WorkerImage:          mustEnv("WORKER_IMAGE"),
 		SandboxBaseImage:     sandboxBase,
+		RegistryHost:         registryHost,
 		PullSecret:           env("PULL_SECRET", "forgejo-registry"),
 		FactoryNamespace:     kube.Namespace(),
 		GatewayURL:           gatewayURL,
@@ -236,7 +238,7 @@ func main() {
 		RunnerImage:      mustEnv("CI_RUNNER_IMAGE"),
 		PullSecret:       env("PULL_SECRET", "forgejo-registry"),
 		GitBaseURL:       gitBase,
-		RegistryHost:     env("REGISTRY_HOST", "git.aisoftwarefactory.world"),
+		RegistryHost:     registryHost,
 		MaxConcurrent:    envInt("CI_MAX_CONCURRENT", 8),
 		JobTimeout:       ciJobTimeout,
 		Queue:            ciQueue,

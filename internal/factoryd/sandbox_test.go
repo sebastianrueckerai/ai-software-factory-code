@@ -1,7 +1,11 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"errors"
 	"os"
 	"reflect"
@@ -122,15 +126,23 @@ func TestSandboxFactsFollowTheImage(t *testing.T) {
 // digest is the image's.
 func imageRunner(t *testing.T) (*Runner, string) {
 	t.Helper()
+	r, digest, _ := signedImageRunner(t, nil)
+	return r, digest
+}
+
+// signedImageRunner is imageRunner with the image signed by signer, the
+// images key for nil, and the imager's rig.
+func signedImageRunner(t *testing.T, signer *ecdsa.PrivateKey) (*Runner, string, *imagerRig) {
+	t.Helper()
 	rig := newImagerRig(t, "", nil)
-	digest := rig.publish("sf/sandbox-demo-app.browser", keyBrowser, rig.key, 1000)
+	digest := rig.publish("sf/sandbox-demo-app.browser", keyBrowser, cmp.Or(signer, rig.key), 1000)
 	v := rig.fj.version()
 	name, c, _ := v.ProjectOf("demo-app/demo-app")
 	c.Images = map[string]policy.ImagePin{"browser": {Digest: digest, Key: keyBrowser, Tools: []string{"chromium"}, Egress: []string{"cdn.example.org"}}}
 	v.Projects[name] = c
 	cfg := testRunnerConfig()
 	cfg.Policy = func() policy.Version { return v }
-	return &Runner{cfg: cfg, Imager: rig.im}, digest
+	return &Runner{cfg: cfg, Imager: rig.im}, digest, rig
 }
 
 // A card runs on the image it names, else on default, as the policy in
@@ -142,7 +154,7 @@ func TestTaskImage(t *testing.T) {
 	ctx := context.Background()
 	image, m, err := r.taskImage(ctx, Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser"})
 	want := &imagegen.Manifest{Tools: []string{"chromium"}, Egress: []string{"cdn.example.org"}}
-	if err != nil || image != "git.aisoftwarefactory.world/sf/sandbox-demo-app.browser@"+digest || !reflect.DeepEqual(m, want) {
+	if err != nil || image != "store.test/sf/sandbox-demo-app.browser@"+digest || !reflect.DeepEqual(m, want) {
 		t.Fatalf("pinned: %q %+v %v, want the store's image at the pin and its manifest", image, m, err)
 	}
 	for _, task := range []Task{{ID: "t1", Repository: "demo-app/demo-app"}, {ID: "t1", Repository: "demo-app/demo-app", Image: "default"}} {
@@ -165,13 +177,34 @@ func TestTaskImage(t *testing.T) {
 	}
 }
 
+// A pin whose digest the images key did not sign runs no sandbox: the
+// refusal is final, and one alert per image and digest says so.
+func TestTaskImageRefusesAnUnsignedPin(t *testing.T) {
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, digest, rig := signedImageRunner(t, other)
+	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser"}
+	for range 2 {
+		if _, _, err := r.taskImage(context.Background(), task); !isTerminal(err) || !strings.Contains(err.Error(), "image browser of project demo-app is pinned at "+digest) {
+			t.Fatalf("taskImage = %v, want a terminal refusal naming the image and its digest", err)
+		}
+	}
+	want := []Alert{{Kind: AlertImage, Source: "unsigned", Fingerprint: "unsigned sf/sandbox-demo-app.browser@" + digest,
+		Detail: map[string]any{"project": "demo-app", "image": "browser", "digest": digest}}}
+	if !reflect.DeepEqual(rig.book.alerts, want) {
+		t.Fatalf("alerts %+v, want %+v", rig.book.alerts, want)
+	}
+}
+
 // Every pod of a card runs on the image its sandbox resolved, which the
 // task row records with the names the sandbox reaches: the image's own,
 // beside the gateway's and Git's, held by the lease loop too. An unpinned
 // variant leaves no namespace.
 func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 	r, digest := imageRunner(t)
-	ref := "git.aisoftwarefactory.world/sf/sandbox-demo-app.browser@" + digest
+	ref := "store.test/sf/sandbox-demo-app.browser@" + digest
 	ctx := context.Background()
 	kube := newFakeKube()
 	r.kube = kube
@@ -224,6 +257,46 @@ func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 	var notPinned ErrImageNotPinned
 	if _, _, err := r.setupNamespace(ctx, &waiting, ForgejoToken{}); !errors.As(err, &notPinned) || kube.createdNs["factory-agents-t2"] != nil {
 		t.Fatalf("unpinned variant: %v, namespace %v; want ErrImageNotPinned before any namespace", err, kube.createdNs["factory-agents-t2"])
+	}
+}
+
+// An image whose egress names the egress canary's host would fail every
+// sandbox's egress probe: its sandbox is refused for good, naming the
+// image and the host, before any namespace.
+func TestSandboxRefusesAnImageReachingTheCanary(t *testing.T) {
+	r, _ := imageRunner(t)
+	kube := newFakeKube()
+	r.kube, r.store = kube, newFakeStore()
+	_, c, _ := r.cfg.Policy().ProjectOf("demo-app/demo-app")
+	pin := c.Images["browser"]
+	pin.Egress = []string{"cdn.example.org", "Example.com."}
+	c.Images["browser"] = pin
+	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser"}
+	r.store.CreateTask(context.Background(), task)
+	_, _, err := r.setupNamespace(context.Background(), &task, ForgejoToken{})
+	if !isTerminal(err) || !strings.Contains(err.Error(), "image browser") || !strings.Contains(err.Error(), "example.com, the egress canary") || len(kube.createdNs) != 0 {
+		t.Fatalf("setupNamespace = %v, namespaces %v; want a terminal refusal naming the image and the canary, no namespace", err, kube.createdNs)
+	}
+}
+
+// An image that declares no egress reaches no registry: its policy holds
+// no 443 rule (an empty toFQDNs would admit 443 to every destination), and
+// its DNS answers the gateway, Git and the collector only.
+func TestEgressLessImageReachesNoRegistry(t *testing.T) {
+	cfg := testRunnerConfig()
+	cfg.OTLPEndpoint = testCollector
+	spec := (&Runner{cfg: cfg}).workerEgressSpec(nil, nil)
+	for _, rule := range spec["egress"].([]any) {
+		if _, ok := rule.(map[string]any)["toFQDNs"]; ok {
+			t.Errorf("a toFQDNs rule: %v", rule)
+		}
+		if strings.Contains(string(mustJSON(rule)), `"port":"443"`) {
+			t.Errorf("a 443 rule: %v", rule)
+		}
+	}
+	if _, dns := egressNames(spec); !slices.Equal(dns, []string{"factory-gateway.factory.svc.cluster.local",
+		"forgejo-http.forgejo.svc.cluster.local", "signoz-otel-collector.platform.svc.cluster.local"}) {
+		t.Fatalf("DNS answers %q, want the gateway, Git and the collector", dns)
 	}
 }
 

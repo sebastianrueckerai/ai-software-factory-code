@@ -43,6 +43,7 @@ type RunnerConfig struct {
 	AgentNamespacePrefix string // "factory-agents-"
 	WorkerImage          string // pinned digest
 	SandboxBaseImage     string // pinned digest of sf/sandbox-base, what project images build FROM
+	RegistryHost         string // the store's host, where project images live (REGISTRY_HOST)
 	PullSecret           string // registry pull secret copied into task namespaces
 	FactoryNamespace     string // where the pull secret lives
 	GatewayURL           string // http://factory-gateway.factory.svc.cluster.local:8081
@@ -291,8 +292,8 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if supervisor == nil {
 		return nil, fmt.Errorf("runner: a supervisor model is required")
 	}
-	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.SandboxBaseImage == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" || cfg.Leases == nil {
-		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, SandboxBaseImage, GatewayURL, GitBaseURL and Leases are required")
+	if cfg.AgentNamespacePrefix == "" || cfg.WorkerImage == "" || cfg.SandboxBaseImage == "" || cfg.RegistryHost == "" || cfg.GatewayURL == "" || cfg.GitBaseURL == "" || cfg.Leases == nil {
+		return nil, fmt.Errorf("runner: AgentNamespacePrefix, WorkerImage, SandboxBaseImage, RegistryHost, GatewayURL, GitBaseURL and Leases are required")
 	}
 	if cfg.Models.Start == "" || cfg.Models.Stronger == "" {
 		return nil, fmt.Errorf("runner: both model ladder rungs are required")
@@ -309,8 +310,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if err := CheckEgressTargets(cfg.EgressCanary, cfg.EgressDirectIP); err != nil {
 		return nil, fmt.Errorf("runner: %w", err)
 	}
-	canary, _, _ := net.SplitHostPort(cfg.EgressCanary)
-	if slices.ContainsFunc((&Runner{cfg: cfg}).sandboxNames(sandboxRegistries), func(name string) bool { return strings.EqualFold(name, strings.TrimSuffix(canary, ".")) }) {
+	if canary, ok := (&Runner{cfg: cfg}).reachesCanary((&Runner{cfg: cfg}).sandboxNames(sandboxRegistries)); ok {
 		return nil, fmt.Errorf("runner: the egress canary %s is on the sandbox's DNS allowlist, so its probe would fail every session's start", canary)
 	}
 	if _, err := (TokenBudget{AnswerTokens: cfg.AnswerTokens, HeadroomTokens: cfg.HeadroomTokens}).OutputLimit(); err != nil {
@@ -1579,6 +1579,10 @@ func (r *Runner) setupNamespace(ctx context.Context, t *Task, base ForgejoToken)
 	if m != nil {
 		egress = m.Egress
 	}
+	if canary, ok := r.reachesCanary(egress); ok {
+		return "", nil, terminalError("image %s (%s) reaches %s, the egress canary, so every sandbox on it fails its egress probe: "+
+			"drop the name from the image's egress in %s, or move EGRESS_CANARY", cmp.Or(t.Image, "default"), image, canary, imagesPath)
+	}
 	if err := r.store.SetTaskImage(ctx, t.ID, image, egress); err != nil {
 		return "", nil, fmt.Errorf("record the image: %w", err)
 	}
@@ -1653,6 +1657,15 @@ func (r *Runner) setupNamespace(ctx context.Context, t *Task, base ForgejoToken)
 	return cache, m, nil
 }
 
+// reachesCanary is the egress canary's host and whether names hold it: the
+// sandbox's egress probe must find the canary unreachable.
+func (r *Runner) reachesCanary(names []string) (string, bool) {
+	host, _, _ := net.SplitHostPort(r.cfg.EgressCanary)
+	return host, slices.ContainsFunc(names, func(name string) bool {
+		return strings.EqualFold(strings.TrimSuffix(name, "."), strings.TrimSuffix(host, "."))
+	})
+}
+
 // ErrImageNotPinned refuses a card whose image is declared and not built
 // and pinned yet.
 type ErrImageNotPinned struct{ Project, Image string }
@@ -1665,25 +1678,28 @@ func (e ErrImageNotPinned) Error() string {
 // pins the image.
 const errImageNotPinned = "image_not_pinned"
 
-// imageStore is the store's host, where the trusted builder pushes project
-// images.
-const imageStore = "git.aisoftwarefactory.world/"
-
 // taskImage is the image t's sandbox runs on, ref@sha256:..., and what it
 // holds: t's image, else default, as the policy version in force pins it
 // for t's project and the images key signed it. An unpinned default is
 // the factory's image with a nil manifest; any other unpinned name is
-// ErrImageNotPinned, as a non-retryable activity error.
+// ErrImageNotPinned, as a non-retryable activity error. A pin the images
+// key did not sign is refused for good and raises one alert per digest.
 func (r *Runner) taskImage(ctx context.Context, t Task) (string, *imagegen.Manifest, error) {
 	name := cmp.Or(t.Image, "default")
 	project, c, _ := r.cfg.Policy().ProjectOf(t.Repository)
 	pin, ok := c.Images[name]
 	switch {
 	case ok:
-		if err := r.verifyProjectImage(ctx, project, name, pin.Digest); err != nil {
+		var unsigned ErrUnsigned
+		if err := r.verifyProjectImage(ctx, project, name, pin.Digest); errors.As(err, &unsigned) {
+			r.Imager.alert(ctx, Alert{Kind: AlertImage, Source: "unsigned", Fingerprint: "unsigned " + imageRepository(project, name) + "@" + pin.Digest,
+				Detail: map[string]any{"project": project, "image": name, "digest": pin.Digest}})
+			return "", nil, terminalError("image %s of project %s is pinned at %s, which carries no signature by the images key: "+
+				"no sandbox runs it until a human puts the pin or the store right (%s)", name, project, pin.Digest, err)
+		} else if err != nil {
 			return "", nil, err
 		}
-		return imageStore + imageRepository(project, name) + "@" + pin.Digest, &imagegen.Manifest{Tools: pin.Tools, Egress: pin.Egress}, nil
+		return r.cfg.RegistryHost + "/" + imageRepository(project, name) + "@" + pin.Digest, &imagegen.Manifest{Tools: pin.Tools, Egress: pin.Egress}, nil
 	case name == "default":
 		return r.cfg.WorkerImage, nil, nil
 	}
@@ -2142,10 +2158,55 @@ func (r *Runner) workerEgressSpec(registries, leased []string) map[string]any {
 	for _, name := range r.sandboxNames(registries) {
 		dnsNames = append(dnsNames, map[string]any{"matchName": name})
 	}
-	toFQDNs := []any{}
-	for _, host := range registries {
-		toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
+	egress := []any{
+		map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "factory",
+					"app":                             "factory-gateway",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "8081", "protocol": "TCP"}},
+			}},
+		},
+		map[string]any{
+			"toEndpoints": []any{map[string]any{
+				"matchLabels": map[string]string{
+					"k8s:io.kubernetes.pod.namespace": "forgejo",
+					"k8s:app.kubernetes.io/name":      "forgejo",
+				},
+			}},
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
+			}},
+		},
 	}
+	// an empty toFQDNs would admit 443 to every destination
+	if len(registries) > 0 {
+		toFQDNs := []any{}
+		for _, host := range registries {
+			toFQDNs = append(toFQDNs, map[string]any{"matchName": host})
+		}
+		egress = append(egress, map[string]any{
+			"toFQDNs": toFQDNs,
+			"toPorts": []any{map[string]any{
+				"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
+			}},
+		})
+	}
+	egress = append(egress, map[string]any{
+		"toEndpoints": []any{map[string]any{
+			"matchLabels": map[string]string{
+				"k8s:io.kubernetes.pod.namespace": "kube-system",
+				"k8s:k8s-app":                     "kube-dns",
+			},
+		}},
+		"toPorts": []any{map[string]any{
+			"ports": []any{map[string]any{"port": "53", "protocol": "ANY"}},
+			"rules": map[string]any{"dns": dnsNames},
+		}},
+	})
 	spec := map[string]any{
 		"endpointSelector": map[string]any{
 			"matchLabels": map[string]string{"app.kubernetes.io/name": "opencode-worker"},
@@ -2163,48 +2224,7 @@ func (r *Runner) workerEgressSpec(registries, leased []string) map[string]any {
 		"egressDeny": []any{
 			map[string]any{"toCIDR": []string{"169.254.169.254/32"}},
 		},
-		"egress": []any{
-			map[string]any{
-				"toEndpoints": []any{map[string]any{
-					"matchLabels": map[string]string{
-						"k8s:io.kubernetes.pod.namespace": "factory",
-						"app":                             "factory-gateway",
-					},
-				}},
-				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "8081", "protocol": "TCP"}},
-				}},
-			},
-			map[string]any{
-				"toEndpoints": []any{map[string]any{
-					"matchLabels": map[string]string{
-						"k8s:io.kubernetes.pod.namespace": "forgejo",
-						"k8s:app.kubernetes.io/name":      "forgejo",
-					},
-				}},
-				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "3000", "protocol": "TCP"}},
-				}},
-			},
-			map[string]any{
-				"toFQDNs": toFQDNs,
-				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "443", "protocol": "TCP"}},
-				}},
-			},
-			map[string]any{
-				"toEndpoints": []any{map[string]any{
-					"matchLabels": map[string]string{
-						"k8s:io.kubernetes.pod.namespace": "kube-system",
-						"k8s:k8s-app":                     "kube-dns",
-					},
-				}},
-				"toPorts": []any{map[string]any{
-					"ports": []any{map[string]any{"port": "53", "protocol": "ANY"}},
-					"rules": map[string]any{"dns": dnsNames},
-				}},
-			},
-		},
+		"egress": egress,
 	}
 	if r.cfg.OTLPEndpoint != "" {
 		spec["egress"] = append(spec["egress"].([]any), map[string]any{

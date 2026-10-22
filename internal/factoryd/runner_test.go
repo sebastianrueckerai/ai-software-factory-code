@@ -666,6 +666,7 @@ func testRunnerConfig() RunnerConfig {
 		AgentNamespacePrefix: "factory-agents-",
 		WorkerImage:          "reg/worker@sha256:abc",
 		SandboxBaseImage:     "reg/sandbox-base@sha256:bcd",
+		RegistryHost:         "store.test",
 		PullSecret:           "forgejo-registry",
 		FactoryNamespace:     "factory",
 		GatewayURL:           "http://factory-gateway.factory.svc.cluster.local:8081",
@@ -3240,12 +3241,17 @@ func TestNewRunnerRefusesEgressProbeTargetsTheProbeCannotUse(t *testing.T) {
 	}
 }
 
-func TestNewRunnerRequiresTheSandboxBase(t *testing.T) {
-	cfg := testRunnerConfig()
-	cfg.SandboxBaseImage = ""
-	const want = "runner: AgentNamespacePrefix, WorkerImage, SandboxBaseImage, GatewayURL, GitBaseURL and Leases are required"
-	if _, err := NewRunner(cfg, newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused")); err == nil || err.Error() != want {
-		t.Fatalf("err = %v, want %s", err, want)
+func TestNewRunnerRequiresTheSandboxBaseAndTheStore(t *testing.T) {
+	const want = "runner: AgentNamespacePrefix, WorkerImage, SandboxBaseImage, RegistryHost, GatewayURL, GitBaseURL and Leases are required"
+	for _, unset := range []func(*RunnerConfig){
+		func(c *RunnerConfig) { c.SandboxBaseImage = "" },
+		func(c *RunnerConfig) { c.RegistryHost = "" },
+	} {
+		cfg := testRunnerConfig()
+		unset(&cfg)
+		if _, err := NewRunner(cfg, newFakeStore(), newFakeKube(), &Forgejo{}, &Completion{}, &fakeObjectStore{}, testSupervisorModel("http://unused")); err == nil || err.Error() != want {
+			t.Fatalf("err = %v, want %s", err, want)
+		}
 	}
 }
 

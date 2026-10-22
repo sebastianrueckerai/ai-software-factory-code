@@ -220,6 +220,9 @@ func (r *Runner) FileSplit(ctx context.Context, taskID string, revision int, app
 	if err != nil {
 		return ChildrenResult{}, err
 	}
+	for i := range p.Cards {
+		p.Cards[i].Image = t.Image
+	}
 	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("the split of #%d", t.IssueNumber), p, approver)
 	if err != nil {
 		return ChildrenResult{}, err

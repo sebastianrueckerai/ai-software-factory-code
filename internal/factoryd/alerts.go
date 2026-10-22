@@ -43,7 +43,8 @@ const (
 	AlertChainUncarried = "chain_uncarried"
 	// AlertImage is the imager's: an invalid factory/images.yaml (source
 	// file), an image above policy.MaxImageBytes (size), a pin pull request
-	// it will not or cannot merge (pin); one row per fingerprint, ever.
+	// it will not or cannot merge (pin), a pinned digest the images key did
+	// not sign (unsigned); one row per fingerprint, ever.
 	AlertImage = "image"
 )
 

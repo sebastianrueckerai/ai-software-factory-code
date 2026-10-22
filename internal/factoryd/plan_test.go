@@ -266,9 +266,10 @@ func TestPlanGuideOneCard(t *testing.T) {
 	}
 }
 
-// A card names one of its project's pinned images or none: any other name
-// is one finding naming the card, the image and the pinned names, and with
-// no pins at hand (a split's check) every name is one.
+// A card names one of its project's pinned images, default or none: any
+// other name is one finding naming the card, the image and the pinned
+// names, and with no pins at hand (a split's check) every name but default
+// is one.
 func TestPlanCardNamesAPinnedImage(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}
 	p := testPlan()
@@ -281,7 +282,7 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 	if got := ValidatePlan(fencePlan(p), testShape, testLimits, pins); !slices.Equal(got, want) {
 		t.Fatalf("an unknown image: %q, want %q", got, want)
 	}
-	p.Cards[2].Image = ""
+	p.Cards[2].Image = "default" // pinned or not: an unpinned default runs the factory's image
 	want = []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}
 	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); !slices.Equal(got, want) {
 		t.Fatalf("no pins: %q, want %q", got, want)
@@ -673,23 +674,34 @@ func cardsByKey(t *testing.T, store *fakeStore) map[string]Task {
 	return out
 }
 
-// A card's image reaches its task row when the task's pinned version pins
-// it for the project; an image it does not pin refuses the acceptance.
+// browserInForce is linkshort's fixture with its browser image pinned, as
+// the policy in force: a pin that landed after the plan task's version.
+func browserInForce(t *testing.T) policy.Version {
+	t.Helper()
+	v := fixtureVersion(t)
+	name, c, _ := v.ProjectOf("linkshort/linkshort")
+	c.Images = map[string]policy.ImagePin{"browser": {Digest: "sha256:" + strings.Repeat("b", 64), Key: keyBrowser, Tools: []string{"chromium"}}}
+	v.Projects[name] = c
+	return v
+}
+
+// A card's image reaches its task row when the policy in force pins it for
+// the project, the version taskImage resolves with, even when the pin
+// landed after the plan task's version; an image no version in force pins
+// refuses the acceptance.
 func TestChildrenCarryTheirImage(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Image = "browser"
 	r, store, _, _ := newPlanRunner(t, p)
+	r.cfg.Policy = func() policy.Version { return fixtureVersion(t) }
 	if res := createChildren(t, r); len(res.Issues) != 0 ||
 		!slices.Equal(res.Refused, []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}) {
 		t.Fatalf("no pin: %+v, want the refusal", res)
 	}
 
 	r, store, _, _ = newPlanRunner(t, p)
-	pinned := fixtureVersion(t)
-	name, c, _ := pinned.ProjectOf("linkshort/linkshort")
-	c.Images = map[string]policy.ImagePin{"browser": {Digest: "sha256:" + strings.Repeat("b", 64), Key: keyBrowser, Tools: []string{"chromium"}}}
-	pinned.Projects[name] = c
-	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	inForce := browserInForce(t)
+	r.cfg.Policy = func() policy.Version { return inForce }
 	if res := createChildren(t, r); len(res.Issues) != 4 || len(res.Refused) != 0 {
 		t.Fatalf("pinned: %+v, want four cards", res)
 	}
@@ -1807,6 +1819,33 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") ||
 		env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
+	}
+}
+
+// The planner's guide lists the images the policy in force pins, a pin
+// that landed after the plan task's version included.
+func TestRunPlanGuideListsThePinsInForce(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	pinned, inForce := fixtureVersion(t), browserInForce(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	runner.cfg.Policy = func() policy.Version { return inForce }
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(true, "no plan"))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	want := "Images: browser (chromium); a card that needs one names it in image, any other card runs the default."
+	if guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]; !strings.Contains(guide, want) {
+		t.Fatalf("the guide lacks %q:\n%s", want, guide)
 	}
 }
 
