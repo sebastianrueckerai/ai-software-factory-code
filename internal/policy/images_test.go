@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -135,6 +136,11 @@ func TestValidateUpstream(t *testing.T) {
 		{"http", oneUpstream(UpstreamLine{URL: "http://example.com/tool"}), "url"},
 		{"user info", oneUpstream(UpstreamLine{URL: "https://u:p@example.com/tool"}), "url"},
 		{"no host", oneUpstream(UpstreamLine{URL: "https:///tool"}), "url"},
+		{"space in url", oneUpstream(UpstreamLine{URL: "https://example.com/a b"}), "url"},
+		{"quote in url", oneUpstream(UpstreamLine{URL: "https://example.com/a\"b"}), "url"},
+		{"newline in to", oneUpstream(UpstreamLine{To: "/opt/a\nRUN x"}), "to"},
+		{"space in to", oneUpstream(UpstreamLine{To: "/opt/a b"}), "to"},
+		{"quote in to", oneUpstream(UpstreamLine{To: "/opt/a\"b"}), "to"},
 		{"relative to", oneUpstream(UpstreamLine{To: "bin/tool"}), "to"},
 		{"unclean to", oneUpstream(UpstreamLine{To: "/opt/../x"}), "to"},
 		{"root to", oneUpstream(UpstreamLine{To: "/"}), "to"},
@@ -166,7 +172,7 @@ func TestValidateEnv(t *testing.T) {
 		f := oneImage(ImageSpec{Apt: []string{"curl"}, Env: map[string]string{k: "v"}})
 		wantOne(t, f.Validate(), "env", `"`+k+`"`)
 	}
-	for _, v := range map[string]string{"newline": "a\nb", "nul": "a\x00b", "long": strings.Repeat("x", 1025)} {
+	for _, v := range map[string]string{"newline": "a\nb", "cr": "a\rb", "del": "a\x7fb", "nul": "a\x00b", "long": strings.Repeat("x", 1025)} {
 		f := oneImage(ImageSpec{Apt: []string{"curl"}, Env: map[string]string{"GOOD": v}})
 		wantOne(t, f.Validate(), "env", `"GOOD"`)
 	}
@@ -177,21 +183,24 @@ func TestValidateEnv(t *testing.T) {
 }
 
 func TestValidatePath(t *testing.T) {
-	for _, p := range []string{"bin", "/opt/../x", "/opt/", "/a:b"} {
+	for _, p := range []string{"bin", "/opt/../x", "/opt/", "/a:b", "/a\nb", "/a b", "/a\"b"} {
 		f := oneImage(ImageSpec{Apt: []string{"curl"}, Path: []string{p}})
-		wantOne(t, f.Validate(), "path", `"`+p+`"`)
+		wantOne(t, f.Validate(), "path", fmt.Sprintf("%q", p))
 	}
 	f := oneImage(ImageSpec{Apt: []string{"curl"}, Path: []string{"/opt/bin", "/opt/bin"}})
 	wantOne(t, f.Validate(), "path", "twice")
 }
 
 func TestValidateEgress(t *testing.T) {
-	for _, h := range []string{"1.2.3.4", "*.example.com", "localhost", "Example.com", "a..com", "-a.com", strings.Repeat("a", 250) + ".com"} {
-		f := oneImage(ImageSpec{Apt: []string{"curl"}, Egress: []string{h}})
-		wantOne(t, f.Validate(), "egress")
+	long := strings.Repeat("a", 63) + "." + strings.Repeat("b", 63) + "." + strings.Repeat("c", 63) + "." + strings.Repeat("d", 62)
+	if len(long) != 254 {
+		t.Fatalf("test host is %d bytes, want 254", len(long))
 	}
-	if len(strings.Repeat("a", 250)+".com") != 254 {
-		t.Fatal("test host is not 254 bytes")
+	for _, h := range []string{"1.2.3.4", "*.example.com", "localhost", "Example.com", "a..com", "-a.com", long} {
+		t.Run(h, func(t *testing.T) {
+			f := oneImage(ImageSpec{Apt: []string{"curl"}, Egress: []string{h}})
+			wantOne(t, f.Validate(), "egress")
+		})
 	}
 	f := oneImage(ImageSpec{Apt: []string{"curl"}, Egress: []string{"pypi.org"}})
 	if got := f.Validate(); got != nil {

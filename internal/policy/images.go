@@ -26,6 +26,7 @@ var (
 	sha256RE       = regexp.MustCompile(`^[0-9a-f]{64}$`)
 	envKeyRE       = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 	hostLabelRE    = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)
+	safePathRE     = regexp.MustCompile(`^/[A-Za-z0-9._/+-]*$`)
 )
 
 // ImagesFile is factory/images.yaml at the root of a project's repository:
@@ -138,7 +139,7 @@ func (s ImageSpec) validate(name string) []string {
 			bad("sha256 %q must be 64 lowercase hex characters", u.SHA256)
 		}
 		if !cleanAbs(u.To) || u.To == "/" {
-			bad("to %q must be an absolute, clean path below /", u.To)
+			bad("to %q must be an absolute, clean path below / of letters, digits and ._/+-", u.To)
 		}
 		switch {
 		case u.Strip < 0 || u.Strip > 8:
@@ -160,8 +161,8 @@ func (s ImageSpec) validate(name string) []string {
 			bad("env %q must match %s", k, envKeyRE)
 		case k == "PATH" || k == "HOME" || strings.HasPrefix(k, "OPENCODE_") || strings.HasPrefix(k, "FACTORY_"):
 			bad("env %q is owned by the harness (PATH entries go in path)", k)
-		case strings.ContainsAny(v, "\n\x00") || len(v) > 1024:
-			bad("env %q value must be at most 1024 bytes without newline or NUL", k)
+		case len(v) > 1024 || strings.ContainsFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }):
+			bad("env %q value must be at most 1024 bytes without control characters", k)
 		}
 	}
 
@@ -169,7 +170,7 @@ func (s ImageSpec) validate(name string) []string {
 	for _, p := range s.Path {
 		switch {
 		case !cleanAbs(p) || strings.Contains(p, ":"):
-			bad("path %q must be an absolute, clean directory without ':'", p)
+			bad("path %q must be an absolute, clean directory of letters, digits and ._/+-", p)
 		case seen[p]:
 			bad("path %q is listed twice", p)
 		}
@@ -190,6 +191,9 @@ func (s ImageSpec) validate(name string) []string {
 }
 
 func checkUpstreamURL(raw string) string {
+	if strings.ContainsFunc(raw, func(r rune) bool { return r <= 0x20 || r >= 0x7f || strings.ContainsRune("\"'`\\$;|<>{}", r) }) {
+		return "must be printable ASCII without spaces or any of \"'`\\$;|<>{}"
+	}
 	u, err := url.Parse(raw)
 	switch {
 	case err != nil:
@@ -205,7 +209,7 @@ func checkUpstreamURL(raw string) string {
 }
 
 func cleanAbs(p string) bool {
-	return path.IsAbs(p) && path.Clean(p) == p
+	return safePathRE.MatchString(p) && path.Clean(p) == p
 }
 
 func isArchive(rawURL string) bool {
