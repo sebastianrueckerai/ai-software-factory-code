@@ -22,4 +22,5 @@ images:
     egress:
       - proxy.golang.org
       - sum.golang.org
+      - storage.googleapis.com
       - registry.npmjs.org

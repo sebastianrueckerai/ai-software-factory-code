@@ -916,12 +916,12 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 			dnsRule = r
 		}
 	}
-	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org", "matchName:registry.npmjs.org"} {
+	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org", "matchName:storage.googleapis.com", "matchName:registry.npmjs.org"} {
 		if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), name) {
 			t.Fatalf("DNS rule lacks %s (ruling 99: the sandbox carries the Go toolchain): %v", name, dnsRule)
 		}
 	}
-	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org] map[matchName:registry.npmjs.org]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {
+	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org] map[matchName:storage.googleapis.com] map[matchName:registry.npmjs.org]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {
 		t.Fatalf("toFQDNs rule = %v, want exactly the Go module proxy, its checksum DB and the npm registry on 443", fqdn)
 	}
 	gw := cnp["egress"].([]any)[0].(map[string]any)

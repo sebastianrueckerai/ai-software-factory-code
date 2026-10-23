@@ -2261,9 +2261,10 @@ func (r *Runner) workerEgressSpec(registries, leased []string) map[string]any {
 const workerEgress = "worker-egress"
 
 // sandboxRegistries are the public names a sandbox on the factory's image
-// reaches on 443; proxy.golang.org serves the module zips itself. A
-// project image's sandbox reaches its own egress instead.
-var sandboxRegistries = []string{"proxy.golang.org", "sum.golang.org", "registry.npmjs.org"}
+// reaches on 443; storage.googleapis.com: proxy.golang.org redirects zip
+// downloads there. A project image's sandbox reaches its own egress
+// instead.
+var sandboxRegistries = []string{"proxy.golang.org", "sum.golang.org", "storage.googleapis.com", "registry.npmjs.org"}
 
 // sandboxNames are the names the sandbox's DNS allowlist answers: the
 // gateway's, Forgejo's, registries and the collector's.
