@@ -390,3 +390,22 @@ func TestDeploymentHealthIsScopedToTheTurnsProject(t *testing.T) {
 		"Refused: namespace forgejo is not one of project ai-software-factory-code's namespaces (factory): name one of them or leave namespace out",
 	})
 }
+
+// A project that lists no namespaces runs nothing in the cluster: a call of
+// deployment_health in its chat is refused with what it lacks, and nothing
+// is read.
+func TestDeploymentHealthIsRefusedToAProjectWithoutNamespaces(t *testing.T) {
+	r, _, g := newChatRig(t)
+	members(r)
+	r.ledger.files = map[string]policy.ProjectConfig{"demo": {Repository: "demo/demo", MergeRule: "human", Objects: "factory",
+		Agents: "coder", Process: "maintenance"}}
+	g.project = "demo"
+	ck, s := memberLogin(t, r, "bob")
+	g.replies = [][]string{{call(1, "deployment_health", `{"deployment":"web"}`)}, {say("ok")}}
+	chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"is web up?"}})
+	calls := g.calls()
+	msgs := messages(t, calls[len(calls)-1])
+	got := msgs[len(msgs)-1]
+	equal(t, "the answer's role", got["role"], "tool")
+	equal(t, "the answer", got["content"], "Refused: project demo lists no namespaces: it runs nothing in the cluster for deployment_health to read")
+}

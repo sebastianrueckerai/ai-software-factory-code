@@ -932,6 +932,15 @@ const (
 // gets request_tool, as its sandbox never gets the tools it declares.
 const SourceToolRequest = "tool_request"
 
+// OffersTool reports whether a project that deploys into namespaces is
+// offered tool: a tool that reads where a project runs needs the project
+// to declare it, and deployment_health reads the cluster, so a project that
+// lists no namespaces never sees it. Every other tool is not about where a
+// project runs.
+func OffersTool(tool string, namespaces []string) bool {
+	return tool != ToolDeploymentHealth || len(namespaces) > 0
+}
+
 // FreeTools are the tools a class lists without caps.
 var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth}
 

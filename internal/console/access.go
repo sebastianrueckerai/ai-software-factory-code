@@ -355,6 +355,9 @@ func (c *Console) checkAccess() error {
 // admit refuses the turn's member tool name's table roles, its card
 // scope read from in: the chat dispatch's one check (roadmap 185).
 func (t *turn) admitTool(name string, in toolInput) error {
+	if !policy.OffersTool(name, t.p.Namespaces) {
+		return refuse(http.StatusConflict, "project "+t.p.Name+" lists no namespaces: it runs nothing in the cluster for "+name+" to read")
+	}
 	rule, ok := accessTable[name]
 	if !ok {
 		return nil
@@ -368,8 +371,12 @@ func (t *turn) admitTool(name string, in toolInput) error {
 
 // offers reports whether the turn's member holds tool name's table roles
 // over the chat's project, as admitTool judges them before a card is
-// named: a card the turn reaches is the chat project's.
+// named: a card the turn reaches is the chat project's. A tool that reads
+// where the project runs is offered only where it runs (policy.OffersTool).
 func (t *turn) offers(name string) bool {
+	if !policy.OffersTool(name, t.p.Namespaces) {
+		return false
+	}
 	rule := accessTable[name]
 	repository := t.p.Repository
 	if rule.scope == scFactory {

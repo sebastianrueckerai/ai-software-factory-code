@@ -38,6 +38,8 @@ func toolPolicy(scrape policy.ToolCap) policy.Version {
 	for _, tool := range policy.FreeTools {
 		v.Document.Classes["coder"].Tools[tool] = policy.ToolCap{}
 	}
+	// the task's project runs in the cluster, so deployment_health is offered
+	v.Projects = map[string]policy.ProjectConfig{"code": {Repository: "sf/code", Namespaces: []string{"factory"}}}
 	v.Document.Prices = policy.ToolPrices{
 		Firecrawl: policy.FirecrawlPrices{EURPerCredit: 0.005, ScrapeCredits: 1, SearchCredits: 2},
 		Replicate: policy.ReplicatePrices{EURPerSecond: map[string]float64{"cpu": 0.0001}, MaxSeconds: 90,
@@ -267,7 +269,7 @@ func (e *toolEnv) toolLedger() []ledgerRow {
 }
 
 func running(classes ...string) Task {
-	return Task{ID: "42", BudgetEUR: 1, Status: "running", Classes: classes}
+	return Task{ID: "42", BudgetEUR: 1, Status: "running", Classes: classes, Repository: "sf/code"}
 }
 
 func near6(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
@@ -1363,6 +1365,28 @@ func TestDeploymentHealthTool(t *testing.T) {
 	if text, isErr := e.call(t, policy.ToolDeploymentHealth, map[string]any{"deployment": "web", "namespace": "kube-system"}); !isErr ||
 		text != "namespace kube-system is not one of project p's namespaces: factory" {
 		t.Fatalf("refusal = %q, %v", text, isErr)
+	}
+}
+
+// A card whose project lists no namespaces runs nothing in the cluster: it
+// is not offered deployment_health, and a call is refused as for a tool its
+// classes do not list, with no read at factoryd.
+func TestDeploymentHealthToolNeedsAProjectInTheCluster(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	pv.Projects = map[string]policy.ProjectConfig{"code": {Repository: "sf/code"}}
+	e := newToolEnv(t, running("coder"), pv)
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolDeploymentHealth }) {
+		t.Fatalf("tools/list offers %s to a project without namespaces", policy.ToolDeploymentHealth)
+	}
+	if text, isErr := e.call(t, policy.ToolDeploymentHealth, map[string]any{"deployment": "web"}); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("call = %q, %v; want the refusal", text, isErr)
+	}
+	if len(e.deployments.calls) != 0 {
+		t.Fatalf("factoryd read %v for a project without namespaces", e.deployments.calls)
 	}
 }
 

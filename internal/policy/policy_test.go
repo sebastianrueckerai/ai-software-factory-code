@@ -1227,3 +1227,23 @@ func TestCheckinLimitsAreBounded(t *testing.T) {
 		}
 	}
 }
+
+// A tool that reads where a project runs is offered only to a project that
+// declares it: deployment_health reads the cluster, so a project that
+// lists no namespaces (a library, an app on its own server) never sees it.
+func TestOffersToolFollowsWhereTheProjectRuns(t *testing.T) {
+	for _, c := range []struct {
+		tool       string
+		namespaces []string
+		want       bool
+	}{
+		{ToolDeploymentHealth, []string{"factory"}, true},
+		{ToolDeploymentHealth, nil, false},
+		{ToolManual, nil, true},
+		{ToolEscalate, []string{"factory"}, true},
+	} {
+		if got := OffersTool(c.tool, c.namespaces); got != c.want {
+			t.Errorf("OffersTool(%s, %v) = %v, want %v", c.tool, c.namespaces, got, c.want)
+		}
+	}
+}

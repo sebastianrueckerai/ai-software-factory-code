@@ -478,10 +478,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 }
 
 // allows is the one admission check of a tool, for tools/list and for
-// every call: one of the task's classes lists it, and it is no tool
-// card's request_tool.
+// every call: one of the task's classes lists it, it is no tool card's
+// request_tool, and the task's project is offered it (policy.OffersTool:
+// deployment_health only where the project lists namespaces).
 func (c *toolCaller) allows(tool string) bool {
-	return c.pv.Document.AllowsSessionTool(c.task.Classes, c.task.Source, tool)
+	_, p, _ := c.pv.ProjectOf(c.task.Repository)
+	return c.pv.Document.AllowsSessionTool(c.task.Classes, c.task.Source, tool) && policy.OffersTool(tool, p.Namespaces)
 }
 
 // paidCall is one paid tool call. prepare validates the arguments and

@@ -1137,7 +1137,10 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   `closed` (a final state like done and failed). A healed run waits for
   what is left of the 14 days.
 - `deployment_health` (`deployment`, optional `namespace`): free, listed
-  as `deployment_health: {}`. A Deployment of the task's project as the
+  as `deployment_health: {}`, and offered only to a card whose project
+  lists namespaces (`policy.OffersTool`): a project that runs nothing in
+  the cluster, such as a library or an app on its own server, never sees
+  it, in the agent's tools or in the chat, and a call is refused. A Deployment of the task's project as the
   cluster reports it now: its replicas, the ReplicaSets that hold pods
   (the older ones by number), each pod with every container's restarts,
   state and last termination (reason, exit code, time), and the
