@@ -586,6 +586,7 @@ func main() {
 		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryPlanCard(ctx, taskID, by)
 		},
+		RequestImage: runner.RequestImage,
 		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.Go(ctx, taskID, by)
 		},

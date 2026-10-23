@@ -162,12 +162,14 @@ var accessTable = map[string]accessRule{
 	"board_view": rMember, "board_view_reset": rMember,
 	"watch_card": rMember, "unwatch_card": rMember, "set_timer": rMember, "analyze_image": rMember, "read_attachment": rMember, "summarize_attachment": rMember,
 	"costs": rFactory, "alerts": rFactory, "deployment_health": rMember, "resources": rFactory, "settings": rFactory, "policy": rFactory,
+	"project_images": rMember,
 
 	// chat tools: writes
 	"alert_verdict":    {need: factoryWriter | approver, scope: scFactory, what: "judge an alert"},
 	"promote_resource": {need: factoryWriter | approver, scope: scFactory, what: "authorize spend"},
 	"release_resource": rFactory,
 	"new_card":         {need: writer, scope: scChat},
+	"request_image":    {need: writer, scope: scChat},
 	"move_card":        rLane,
 	"answer":           rCard,
 	"tell_card":        rCard,

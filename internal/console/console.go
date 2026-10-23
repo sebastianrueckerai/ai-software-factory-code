@@ -132,6 +132,9 @@ type Tasks interface {
 	// its unstarted filings, the ready check's room (roadmap 239).
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	CountBacklog(ctx context.Context, repository string) (int, error)
+	// ProjectImageParks are the parks of project's cards that wait for an
+	// image, the oldest first, each with its tool card's issue.
+	ProjectImageParks(ctx context.Context, project string) ([]factoryd.ImagePark, error)
 }
 
 // Config wires the console. ForgejoURL serves the code exchange and API
@@ -221,6 +224,12 @@ type Config struct {
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
 	GoCard func(ctx context.Context, taskID, by string) (int64, error)
+	// RequestImage puts by's ask in the chat of repository for tool, for
+	// need, on the tool card of image, else of one named after the tool
+	// (factoryd's Runner.RequestImage): the card, and whether the ask
+	// filed it or joined it; a refusal is factoryd.ErrImageRequest. nil
+	// offers the project agent no request_image.
+	RequestImage func(ctx context.Context, repository, tool, need, image, by string) (factoryd.Task, bool, error)
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error

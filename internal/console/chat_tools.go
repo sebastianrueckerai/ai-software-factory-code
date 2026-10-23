@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -81,6 +82,11 @@ type toolInput struct {
 	Info           string   `json:"info,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
+	// Tool, Need and Image are request_image's ask: the tool, what for
+	// and the image it goes into; Image is new_card's image too.
+	Tool  string `json:"tool,omitempty"`
+	Need  string `json:"need,omitempty"`
+	Image string `json:"image,omitempty"`
 	// Found is the analysis the attach_analysis tool records inside an
 	// ask.
 	Found      string `json:"found,omitempty"`
@@ -203,12 +209,14 @@ var (
 )
 
 // chatTools are the tools the agent is offered, in policy.ChatTools'
-// order: steer only where factoryd can reach a session, github_export
-// where it keeps exports, github_sync where it syncs them, the routine
-// tools where it runs routines.
+// order: steer only where factoryd can reach a session, request_image
+// where it files tool cards, github_export where it keeps exports,
+// github_sync where it syncs them, the routine tools where it runs
+// routines.
 func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
-		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "github_export" && c.cfg.Mirrors == nil ||
+		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "request_image" && c.cfg.RequestImage == nil ||
+			t.name == "github_export" && c.cfg.Mirrors == nil ||
 			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
 	})
 }
@@ -346,7 +354,8 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if in.EUR > 0 {
 		parts = append(parts, fmt.Sprintf("%.2f EUR", in.EUR))
 	}
-	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"title", in.Title}, {"body", in.Body}, {"lane", in.Lane}, {"size", in.Size}, {"action", in.Action},
+	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"lane", in.Lane},
+		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
 		if f.v != "" {
@@ -1136,6 +1145,9 @@ var tools = []chatTool{
 			s, err := t.c.policyText(t.r.Context(), t.a)
 			return s, nil, err
 		}},
+	{name: "project_images", title: "Read the sandbox images",
+		about: "The project's sandbox images in force, its open tool cards and the cards waiting for an image.",
+		run:   func(t *turn, _ toolInput) (string, *inverse, error) { s, err := t.imagesText(); return s, nil, err }},
 	{name: "alert_verdict", title: "Judge an alert", write: true,
 		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
 		required: []string{"id", "verdict"},
@@ -1166,7 +1178,8 @@ var tools = []chatTool{
 			"lane":        fallback(policy.LaneBacklog, enum("where the card starts", "backlog", "plan", "ready", "human")),
 			"size":        enum("the card's size, which sets its budget", policy.CardSizes...),
 			"rung":        enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
-			"rung_reason": str("why that rung, one line")},
+			"rung_reason": str("why that rung, one line"),
+			"image":       str("a pinned sandbox image to run on, none for the default")},
 		required: []string{"title"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -1180,8 +1193,19 @@ var tools = []chatTool{
 			if flags := filingFlags(in.Title, body); len(flags) > 0 {
 				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason, in.Image)
 			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
+		}},
+	{name: "request_image", title: "Ask for a sandbox tool", write: true,
+		params: map[string]any{
+			"tool":  map[string]any{"type": "string", "maxLength": policy.MaxToolName, "description": "the Debian package or binary name"},
+			"need":  map[string]any{"type": "string", "maxLength": policy.MaxToolNeed, "description": "what the project's cards need it for"},
+			"image": str("the image to add the tool to, none for one named after it")},
+		required: []string{"tool", "need"},
+		about:    "Ask the factory to add a tool to one of the project's sandbox images through a tool card.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.requestImage(in)
+			return s, nil, err
 		}},
 	{name: "move_card", title: "Move a card", write: true,
 		params: map[string]any{"task_id": taskParam, "lane": enum("the starting lane", policy.LanePlan, policy.LaneReady)}, required: []string{"task_id", "lane"},
@@ -1589,6 +1613,79 @@ var tools = []chatTool{
 		}},
 }
 
+// imagesText is the project_images read: the project's pins in force,
+// each with its tools, egress, short digest and key; its open tool cards;
+// its cards that wait for an image, each with the image and its tool card.
+func (t *turn) imagesText() (string, error) {
+	ctx := t.r.Context()
+	cards, err := t.c.cfg.Tasks.BoardTasks(ctx, t.p.Repository)
+	if err != nil {
+		return "", err
+	}
+	parks, err := t.c.cfg.Tasks.ProjectImageParks(ctx, t.p.Name)
+	if err != nil {
+		return "", err
+	}
+	var pinned, open, waiting []string
+	for _, name := range slices.Sorted(maps.Keys(t.p.Images)) {
+		pin := t.p.Images[name]
+		egress := cmp.Or(strings.Join(pin.Egress, ", "), "none")
+		pinned = append(pinned, fmt.Sprintf("  %s: tools %s; egress %s; digest %s; key %s", name, strings.Join(pin.Tools, ", "), egress, pin.Digest[:min(len(pin.Digest), len("sha256:")+12)], pin.Key))
+	}
+	issue := map[string]int64{}
+	for _, k := range cards {
+		issue[k.ID] = k.IssueNumber
+		if k.Source == factoryd.SourceToolRequest && k.Status != "merged" {
+			open = append(open, fmt.Sprintf("  #%d %s %q: %s", k.IssueNumber, k.ID, factoryd.CardTitle(k.Task), k.Status))
+		}
+	}
+	for _, p := range parks {
+		card, tool := p.Task, "no tool card"
+		if n := issue[p.Task]; n > 0 {
+			card = fmt.Sprintf("#%d %s", n, p.Task)
+		}
+		if p.ToolTask != "" {
+			tool = fmt.Sprintf("tool card #%d", p.ToolIssue)
+		}
+		waiting = append(waiting, fmt.Sprintf("  %s: image %s, %s", card, p.Target, tool))
+	}
+	var b strings.Builder
+	for i, part := range []struct {
+		head  string
+		lines []string
+	}{{"Pinned images", pinned}, {"Open tool cards", open}, {"Cards in waiting-image", waiting}} {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		if len(part.lines) == 0 {
+			b.WriteString(part.head + ": none.")
+			continue
+		}
+		b.WriteString(part.head + ":\n" + strings.Join(part.lines, "\n"))
+	}
+	return b.String(), nil
+}
+
+// requestImage is request_image: the member's ask for a tool on the tool
+// card of one of the project's images (factoryd's Runner.RequestImage),
+// which it files or joins.
+func (t *turn) requestImage(in toolInput) (string, error) {
+	card, filed, err := t.c.cfg.RequestImage(t.r.Context(), t.p.Repository, strings.TrimSpace(in.Tool), strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.s.user)
+	var no factoryd.ErrImageRequest
+	switch {
+	case errors.As(err, &no):
+		return "", refuse(http.StatusConflict, string(no))
+	case err != nil:
+		log.Printf("console: the tool card of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+		return "", refuse(http.StatusBadGateway, "The tool card could not be filed; see the factoryd log.")
+	}
+	what := fmt.Sprintf("Filed tool card #%d %s %q.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
+	if !filed {
+		what = fmt.Sprintf("The ask joined tool card #%d %s %q, which no session has started.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
+	}
+	return what + " After it merges, the factory builds, signs and pins the image; cards can then name it in image.", nil
+}
+
 // diffLimit bounds the diff the agent reads.
 const diffLimit = 20 << 10
 
@@ -1659,6 +1756,7 @@ func (t *turn) systemText() (string, error) {
 	for _, g := range gateOrder {
 		fmt.Fprintf(&b, "  %s: %s\n", g, factoryd.GateMeaning(g))
 	}
+	b.WriteString("\nSandbox images:\n" + manual.Images + "\n")
 	b.WriteString("\nThe tools:\n" + toolNotes)
 	b.WriteString("\nAutonomy states:\n")
 	for _, s := range policy.AutonomyStates {

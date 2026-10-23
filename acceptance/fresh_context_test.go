@@ -37,8 +37,10 @@ const (
 	queuedCardHead  = `#5 t-m "Fix the cache." queued (waits for its session to start), €0.00 of €3.00`
 	// statusEnd ends every turn's system message: the code project's
 	// status line, #11 running and #5 waiting in the Queued column before
-	// and after its move, the chat's task no card.
-	statusEnd = "\n\nThe project now:\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"
+	// and after its move, the chat's task no card, and its sandbox images,
+	// none pinned.
+	statusEnd = "\n\nThe project now:\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+		"Sandbox images: none; every card runs the factory image."
 )
 
 // freshRig is the chat rig of these tests: the fixture stores, the code
@@ -56,7 +58,8 @@ func freshRig(t *testing.T) *rig {
 // change between them: the first turn moves #5 from the backlog into
 // ready through the agent's own tool and the fixture board, naming it
 // "#5", the second reads it as 5, with no board read between. Each
-// turn's system message ends with the status line and holds no card; the
+// turn's system message ends with the status and images lines and holds
+// no card; the
 // second turn's card read answers the card in its new state.
 func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	r := freshRig(t)
@@ -83,7 +86,7 @@ func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	for i, call := range calls {
 		sys, _ := messagesOf(call)[0]["content"].(string)
 		if !strings.HasPrefix(sys, "You are the project agent of project ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
-			t.Errorf("call %d's system message is not the prompt and the status line alone:\n%s", i, sys)
+			t.Errorf("call %d's system message is not the prompt, the status line and the images line alone:\n%s", i, sys)
 		}
 	}
 }

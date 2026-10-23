@@ -27,6 +27,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -1184,7 +1185,8 @@ func TestChatTextReply(t *testing.T) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"; !strings.HasSuffix(system, want) {
+	if want := "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
 	equal(t, "messages", len(msgs), 2)
@@ -1270,7 +1272,7 @@ func TestChatToolSentences(t *testing.T) {
 			}
 		}
 	}
-	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "move_card",
+	equal(t, "the tools marked (needs OK)", marked, []string{"alert_verdict", "promote_resource", "release_resource", "new_card", "request_image", "move_card",
 		"answer", "tell_card", "retry", "start_plan", "accept_plan", "request_changes", "reject_plan", "approve_merge", "deny_merge", "invite",
 		"github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card", "write_doc", "set_autonomy",
 		"routine_write", "routine_delete", "routine_run", "routine_skip"})
@@ -1306,12 +1308,12 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources", "settings", "policy",
-			"release_resource", "new_card", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
+			"project_images", "release_resource", "new_card", "request_image", "move_card", "answer", "comment", "tell_card", "request_changes", "reject_plan", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
 			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
-			"session_steps", "session_step", "session_search", "ci", "deployment_health", "new_card", "move_card", "answer", "comment", "tell_card",
+			"session_steps", "session_step", "session_search", "ci", "deployment_health", "project_images", "new_card", "request_image", "move_card", "answer", "comment", "tell_card",
 			"request_changes", "reject_plan", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
 			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
@@ -1608,6 +1610,8 @@ func TestSystemTool(t *testing.T) {
 	contains(got, first+"\n",
 		"\n  backlog: waits in the backlog until a member moves it into a lane\n",
 		"\n  waiting-human: waits on a human: an answer, an approval or a decision\n",
+		"\n  human: a human decides\n\nSandbox images:\nA sandbox image is the sandbox base with the tools a project's cards need. ",
+		"\nSandbox images:\n"+manual.Images+"\n\nThe tools:\n",
 		"\nThe tools:\n  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.\n",
 		"\n  A card's sessions are numbered from 1, the first; n names one, the newest by default.\n",
 		"\nAutonomy states:\n  manual: every action of the agent confirms, as today\n"+

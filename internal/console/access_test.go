@@ -141,8 +141,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 39 || len(tools) != 73 {
-		t.Fatalf("%d of %d tools checked as writes: want 39 of 73", writes, len(tools))
+	if writes != 40 || len(tools) != 75 {
+		t.Fatalf("%d of %d tools checked as writes: want 40 of 75", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -277,8 +277,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 39 {
-		t.Fatalf("%d write tools driven: want 39", writes)
+	if writes != 40 {
+		t.Fatalf("%d write tools driven: want 40", writes)
 	}
 }
 

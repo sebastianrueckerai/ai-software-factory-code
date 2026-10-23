@@ -271,6 +271,11 @@ func (s *acceptTasks) BoardTasks(_ context.Context, repository string) ([]factor
 	return out, nil
 }
 
+// ProjectImageParks: no card waits for an image here.
+func (s *acceptTasks) ProjectImageParks(context.Context, string) ([]factoryd.ImagePark, error) {
+	return nil, nil
+}
+
 func (s *acceptTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

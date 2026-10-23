@@ -625,6 +625,11 @@ func (a *AcceptanceRig) BoardTasks(_ context.Context, repository string) ([]fact
 	return cards, nil
 }
 
+// ProjectImageParks: the rig's cards wait for no image.
+func (a *AcceptanceRig) ProjectImageParks(context.Context, string) ([]factoryd.ImagePark, error) {
+	return nil, nil
+}
+
 func (a *AcceptanceRig) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

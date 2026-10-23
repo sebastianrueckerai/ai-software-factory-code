@@ -1179,7 +1179,9 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   entry (its own on main, or `FactoryStack`, the factory image's Go and
   Node, where it runs on the factory's image); a second ask for the same
   image joins the open card with a comment while no session has started
-  it, else files its own. The tool and the need reach Forgejo through the
+  it, else files its own. The project agent's `request_image` files and
+  joins the same cards (`Runner.RequestImage`), with no card that waits.
+  The tool and the need reach Forgejo through the
   outbound sanitiser, as an escalation's text does. The park's row names
   the tool card before it is filed, so a retry files it once. The card
   waits in `waiting-image` (no work slot) until the imager's
@@ -1586,7 +1588,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   which closes the month before's, no card and no workflow), at most 8
   calls a turn, each after a budget
   check. Its tools (`policy.ChatTools`) are the reads `system` (the
-  factory's manual, rendered from the code at call time), `board`,
+  factory's manual, rendered from the code at call time; its states,
+  gates and section on sandbox images come from `internal/manual`, which
+  the workers' `manual` tool reads too), `board`,
   `card` (the card in full, with a pointer to the read holding its
   reviews, audit, checks, plan and sessions), `history`, `card_history`,
   `costs`, `diff`, `plan` (a plan's newest revision: its rows with their
@@ -1598,14 +1602,24 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `session_search` (a session's summary with why it started, its steps one
   line each, steps in full, a search of the transcripts and, with no step
   matching, of the sessions' ends; transcripts over 8 MiB are only
-  searched) and `ci` (a commit's combined CI status with each job's, main's
+  searched), `ci` (a commit's combined CI status with each job's, main's
   head unless a ref or sha names another, through the member's token) and
+  `project_images` (the project's pins in force with their tools, egress,
+  short digest and key, its open tool cards, and its cards in
+  `waiting-image` with the image each waits for), and
   one per console action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
   `POST /projects/{name}/chat/proposals/{id}` runs, and `move_card`,
   `comment`, `set_summary` and `set_accent` answer an undo token for
-  `POST /projects/{name}/chat/undo/{token}`. Both are the member's on
+  `POST /projects/{name}/chat/undo/{token}`. `new_card` takes an `image`,
+  a name the project pins in force (`default` names none), which reaches
+  the issue as an `Image:` line the intake reads into the card's row; any
+  other name is refused with the pins and `request_image`.
+  `request_image` (`tool`, `need`, an optional `image`, else one named
+  after the tool) puts the member's ask on a tool card as a session's
+  `request_tool` does (above), refused at the same cap. Proposals and
+  undo tokens are the member's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
   another member's). A wake, the turn the Waker starts on a member's
   thread with no member behind it, makes every Forgejo call as
@@ -1629,13 +1643,15 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and member, each assistant row with its
   tool calls and their results; a turn's context is the project's status
-  line and board, its last 30 events and the last 40 messages, every
-  board and tool text through `sanitize.Inbound`.
+  line, a line of its sandbox images (`Sandbox images:` the pins in force
+  with their tools, and what a card without an image runs), the thread's
+  summary and its last 200 messages, the status and every tool text
+  through `sanitize.Inbound`.
   `GET /projects/{name}/chat` answers the last 100 as JSON. The `chat`
   block of `policy.yaml` or a project file (`model`, `monthly_eur`,
   `confirm`; defaults in `policy.DefaultChat`) sets the rest; a project
   file's keys replace the policy's, its `monthly_eur` at most the
-  policy's. By default the OK is asked for `new_card`, `move_card`,
+  policy's. By default the OK is asked for `new_card`, `request_image`, `move_card`,
   `answer` and `steer` (text injected into the board could otherwise make
   the agent answer a waiting card or message a running session as the
   member), `start_plan`, `retry`, `accept_plan`, `request_changes`,

@@ -282,6 +282,21 @@ type fakeTasks struct {
 	// the ledger its card_funded row goes to
 	fundedEUR float64
 	events    *fakeEvents
+	// parks are the open image parks, every project's
+	parks []factoryd.ImagePark
+}
+
+// ProjectImageParks are the parks of project's cards.
+func (s *fakeTasks) ProjectImageParks(_ context.Context, project string) ([]factoryd.ImagePark, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.ImagePark
+	for _, p := range s.parks {
+		if p.Project == project {
+			out = append(out, p)
+		}
+	}
+	return out, nil
 }
 
 // FundCard raises task id's budget and records e, both or neither, as the
@@ -955,6 +970,12 @@ type rig struct {
 	syncGate    chan struct{} // GitHubSync waits on it, when set
 	// chatToken is every project's chat token, the wake's identity
 	chatToken string
+	// imageAsks are "repository: tool | need | image, by user" per
+	// RequestImage, which answers imageCard, imageFiled and imageErr
+	imageAsks  []string
+	imageCard  factoryd.Task
+	imageFiled bool
+	imageErr   error
 }
 
 var monthly = 8.99
@@ -1123,6 +1144,10 @@ func newRig(t *testing.T) *rig {
 		GoCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.handed = append(r.handed, taskID+" by "+by)
 			return 16, r.goErr
+		},
+		RequestImage: func(_ context.Context, repository, tool, need, image, by string) (factoryd.Task, bool, error) {
+			r.imageAsks = append(r.imageAsks, repository+": "+tool+" | "+need+" | "+image+", by "+by)
+			return r.imageCard, r.imageFiled, r.imageErr
 		},
 		AddCollaborator: func(_ context.Context, repo factoryd.Repo, user, permission string) error {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)

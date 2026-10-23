@@ -234,6 +234,11 @@ func (s *accBatchTasks) BoardTasks(_ context.Context, repository string) ([]fact
 	return out, nil
 }
 
+// ProjectImageParks: no card waits for an image here.
+func (s *accBatchTasks) ProjectImageParks(context.Context, string) ([]factoryd.ImagePark, error) {
+	return nil, nil
+}
+
 func (s *accBatchTasks) FinishedTasks(_ context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -348,7 +348,7 @@ func TestChatNewCardRung(t *testing.T) {
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane ready."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
-	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", ""); err == nil {
+	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", "", ""); err == nil {
 		t.Fatal("a rung without a reason was filed")
 	}
 }

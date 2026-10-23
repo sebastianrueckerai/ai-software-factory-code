@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"net/url"
@@ -343,7 +344,7 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 // posts the issue, and the card_filed row that names the member is
 // written before the answer: an unrecorded filing closes its issue and
 // refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason string) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason, image string) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -378,6 +379,16 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	i := slices.IndexFunc(ps, func(p factoryd.Project) bool { return p.Name == project })
 	if i < 0 || a.repository != "" && ps[i].Repository != a.repository {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "choose a project agents work on")
+	}
+	if image == "default" {
+		image = ""
+	}
+	if _, ok := ps[i].Images[image]; image != "" && !ok {
+		return factoryd.Repo{}, 0, refuse(http.StatusConflict, unpinnedImage(ps[i], image))
+	}
+	if image != "" {
+		body += "\nImage: " + image
+		detail["image"] = image
 	}
 	// a closed intake refuses the wake's own filings — the turn the Waker
 	// started without the member's ask — while the member's own ask still
@@ -458,6 +469,16 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 			"The factory could not record the filing of %s#%d, so it is no card; the issue is closed. File the card again.", repo, issue.Number))
 	}
 	return repo, issue.Number, nil
+}
+
+// unpinnedImage refuses a card on image, which project p does not pin in
+// force, naming its pins and request_image.
+func unpinnedImage(p factoryd.Project, image string) string {
+	if len(p.Images) == 0 {
+		return "Project " + p.Name + " pins no sandbox images. Leave image out for the default, or add the image with request_image."
+	}
+	return fmt.Sprintf("Project %s pins no image %s: its images are %s. Name one of them, leave image out for the default, or add the image with request_image.",
+		p.Name, image, strings.Join(slices.Sorted(maps.Keys(p.Images)), ", "))
 }
 
 // doMoveCard moves backlog card id into a starting lane of its process:
