@@ -2,7 +2,9 @@
 # The repository's checks as pr.yml runs them; an agent runs `bash check`
 # before it ends. `bash check static` stops before the tests: the
 # pre-push hook's gate (.githooks/pre-push). gosec is the runner image's
-# version.
+# version. govulncheck stays CI's: it reads the runner image's copy of
+# its database, which no sandbox or clone holds, and a finding reaches
+# the agent as the failing job's log lines.
 set -euo pipefail
 cd "$(dirname "$0")"
 

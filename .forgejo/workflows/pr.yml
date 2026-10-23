@@ -1,7 +1,7 @@
 # Ruling 78/89 (task 41): pull requests from agent branches run on the
 # untrusted host executor — a fresh gVisor pod, no repository or registry
 # credential beyond the per-run job token Forgejo injects, default-deny
-# egress. Every tool a step needs (Go, gosec, PostgreSQL's server) ships pre-installed in
+# egress. Every tool a step needs (Go, gosec, govulncheck and its database, PostgreSQL's server) ships pre-installed in
 # Dockerfile.runner so no step reaches past the egress allowlist for
 # tooling; only actions/checkout itself and the Go module proxy are
 # reachable, and for image-build the job's own build VM, the read-only
@@ -100,6 +100,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: gosec ./...
+      # the runner image's copy of vuln.go.dev (Dockerfile.runner), which
+      # the job's egress cannot reach
+      - run: govulncheck -db file:///usr/local/share/govulndb ./...
   job-env-audit:
     runs-on: pr-untrusted
     steps:
