@@ -1,14 +1,14 @@
 # Flake hunt: internal/factoryd race suite, 2026-10-17
 
 Question (issue a33247da): how flaky is `go test -race ./internal/factoryd/`
-really? CI run 1402 at 078d004 was cancelled by design, but the standing
+really? CI run 1402 at 380121c was cancelled by design, but the standing
 theory before that cause was named was a flake, and nothing had measured the
 suite. This file is the log the issue asks for: every run, its seed context,
 its failing tests, what repeated, what was fixed, and the verdict.
 
 ## Method
 
-- Base commit under test: 0325bbc (`git rev-parse HEAD`), the tree the issue
+- Base commit under test: d7acece (`git rev-parse HEAD`), the tree the issue
   was filed against.
 - Each run: `go test -race -p 1 -count=1 -shuffle=<seed> ./internal/factoryd/`
   against a throwaway PostgreSQL 17 server on a unix socket
@@ -69,8 +69,8 @@ its failing tests, what repeated, what was fixed, and the verdict.
   wall-clock time (about 2 to 4.9 minutes per run, two lanes on two CPUs).
 - Because no failure appeared even once, nothing repeated, there was no race
   or timing assumption to fix, and the issue's ten-run proof of a fix has
-  nothing to prove. The suite, as it stands at 0325bbc, measured 0/22 flaky
+  nothing to prove. The suite, as it stands at d7acece, measured 0/22 flaky
   under the same shape CI uses (`scripts/pg-test.sh go test -race -p 1`).
-- CI run 1402's cancellation at 078d004 was, by this evidence, not a flake
+- CI run 1402's cancellation at 380121c was, by this evidence, not a flake
   of the factoryd race suite: 22 seeded runs, including shuffled orders
   never exercised by that run, all passed.

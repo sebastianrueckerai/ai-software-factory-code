@@ -889,7 +889,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 
 // A call cut by a restart never releases its hold: the sweep books it and
 // writes the call's audit row, decision swept, so every booked call has
-// one (#276's security-audit call, cut by the roll of 28afe1f at 23:18:15Z,
+// one (#276's security-audit call, cut by the roll of 0de8a61 at 23:18:15Z,
 // had none). Kind and alias come from the hold's ref: purpose/alias for a
 // factoryd call, the alias for an agent's, the tool's name for a tool call;
 // the author is the task's issue author (roadmap 41). Each booked row

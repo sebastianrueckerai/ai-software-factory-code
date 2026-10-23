@@ -99,7 +99,7 @@ func apply(ctx context.Context, conn *sql.Conn, name, text string) error {
 // drops "--" line comments, then splits on ";" outside single-quoted
 // strings and dollar-quoted blocks, and skips empty pieces. A semicolon in
 // a comment or a string is no separator; without this the runner turns the
-// tail of "-- foo; bar" into a statement (the roll of 7a56918 crash-looped
+// tail of "-- foo; bar" into a statement (the roll of 655f607 crash-looped
 // factoryd at boot on exactly such a fragment).
 func splitStatements(text string) []string {
 	var stmts []string

@@ -61,7 +61,7 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/ag
 # fetch) are its only network reads without a retry — apt above retries
 # eight times — and busybox wget has none of its own, so a single store
 # blip failed the build outright: main run 1620's image-sandbox went red
-# on sandbox inputs identical to the green run before it (1bec5978 changed
+# on sandbox inputs identical to the green run before it (2ef3c97c changed
 # k8s pins only), the class of fault five bounded retries rule out.
 FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS npm-cache
 COPY opencode-plugin/package-lock.json /tmp/package-lock.json
