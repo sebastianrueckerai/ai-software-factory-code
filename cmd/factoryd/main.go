@@ -458,6 +458,10 @@ func main() {
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
 	// the gateway's hand-over of an audit session's hold-out verdict
 	mux.Handle("POST /internal/holdout-verdict", requireBearer(gatewayToken, runner.AuditVerdictHandler))
+	// the gateway's hand-over of a session's analyze_image: the chat's look,
+	// on the card's account
+	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
+	mux.Handle("POST /internal/image-look", requireBearer(gatewayToken, runner.ImageLookHandler(operator)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -485,7 +489,7 @@ func main() {
 	}
 	// the console is the only listener the edge gateway reaches; the
 	// webhook and intake API above stay in-cluster
-	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
+
 	// the messengers (roadmap 145): Telegram when its bot key is seated,
 	// Discord when its application is; their routes ride the console's
 	// public host

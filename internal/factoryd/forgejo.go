@@ -232,12 +232,15 @@ func (f *Forgejo) RevokeToken(ctx context.Context, id int64) error {
 }
 
 func (f *Forgejo) call(ctx context.Context, method, path string, payload []byte, wantStatus int) ([]byte, error) {
+	return f.do(ctx, method, path, payload, wantStatus, f.callAuth())
+}
+
+// callAuth is call's credentials: the client's token, else the bot's login.
+func (f *Forgejo) callAuth() func(*http.Request) {
 	if f.token != "" {
-		return f.tokenCall(f.token)(ctx, method, path, payload, wantStatus)
+		return func(r *http.Request) { r.Header.Set("Authorization", "token "+f.token) }
 	}
-	return f.do(ctx, method, path, payload, wantStatus, func(r *http.Request) {
-		r.SetBasicAuth(f.BotUser, f.BotPassword)
-	})
+	return func(r *http.Request) { r.SetBasicAuth(f.BotUser, f.BotPassword) }
 }
 
 // orgCall authenticates with the org-read token.
@@ -258,6 +261,12 @@ const maxForgejoAnswer = 1 << 20
 const anySuccess = 0
 
 func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request)) ([]byte, error) {
+	return f.doLimit(ctx, method, path, payload, wantStatus, auth, maxForgejoAnswer)
+}
+
+// doLimit is do with an answer of at most limit bytes: a longer one is cut
+// there and ErrAnswerTooLong.
+func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request), limit int) ([]byte, error) {
 	var reader io.Reader
 	if payload != nil {
 		reader = bytes.NewReader(payload)
@@ -280,13 +289,13 @@ func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, w
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(res.Body, maxForgejoAnswer+1))
+	body, err := io.ReadAll(io.LimitReader(res.Body, int64(limit)+1))
 	if err != nil {
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
 	var tooLong error
-	if len(body) > maxForgejoAnswer {
-		body, tooLong = body[:maxForgejoAnswer], fmt.Errorf("forgejo %s %s: %w", method, path, ErrAnswerTooLong)
+	if len(body) > limit {
+		body, tooLong = body[:limit], fmt.Errorf("forgejo %s %s: %w", method, path, ErrAnswerTooLong)
 	}
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
@@ -1469,6 +1478,37 @@ type IssueComment struct {
 	User      struct {
 		UserName string `json:"login"`
 	} `json:"user"`
+	Assets []IssueAsset `json:"assets"`
+}
+
+// IssueAsset is a file attached to an issue or a comment.
+type IssueAsset struct {
+	Name string `json:"name"`
+	Size int64  `json:"size"`
+	UUID string `json:"uuid"`
+}
+
+// IssueAssets are the files attached to issue number itself, its comments'
+// left out.
+func (f *Forgejo) IssueAssets(ctx context.Context, owner, repo string, number int64) ([]IssueAsset, error) {
+	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner, repo, number), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var res struct {
+		Assets []IssueAsset `json:"assets"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil {
+		return nil, fmt.Errorf("forgejo issue %s/%s #%d: %w", owner, repo, number, err)
+	}
+	return res.Assets, nil
+}
+
+// Attachment is the bytes of attachment uuid, at most limit: Forgejo's
+// download route, which takes the API's credentials. A larger one is
+// ErrAnswerTooLong.
+func (f *Forgejo) Attachment(ctx context.Context, uuid string, limit int) ([]byte, error) {
+	return f.doLimit(ctx, http.MethodGet, "/attachments/"+url.PathEscape(uuid), nil, http.StatusOK, f.callAuth(), limit)
 }
 
 // CommentOnce posts body on issue number unless a comment of exactly that

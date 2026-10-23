@@ -78,7 +78,9 @@ func main() {
 		Audit:   store,
 	}
 	lite := &gateway.LiteLLM{BaseURL: cfg.LiteLLMURL, MasterKey: cfg.LiteLLMMasterKey}
-	factoryd := &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 30 * time.Second}}
+	// the longest hand-over is an image look (imageLookTimeout); every
+	// call bounds itself shorter
+	factoryd := &gateway.Factoryd{BaseURL: cfg.FactorydURL, Token: cfg.FactorydToken, HTTP: &http.Client{Timeout: 150 * time.Second}}
 	// the tool connectors' clients dial through the egress guard (roadmap
 	// 42): every connection on an agent's behalf resolves once, refuses
 	// non-public addresses and dials the address it checked; LiteLLM,
@@ -104,6 +106,7 @@ func main() {
 		HoldoutVerdicter: factoryd,
 		Delegator:        factoryd,
 		DeploymentReader: factoryd,
+		ImageLooker:      factoryd,
 		Cloud:            cloud,
 		Telemetry:        tel,
 		FactorydToken:    cfg.FactorydToken,

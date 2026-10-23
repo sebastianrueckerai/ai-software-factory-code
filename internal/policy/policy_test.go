@@ -110,6 +110,9 @@ func TestParseRejects(t *testing.T) {
 		"unknown tool":        {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
 		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "tool escalate_to_human is free: list it as {}"},
 		"scrape unpriced":     {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
+		"image look without a vision model": {strings.Replace(valid, "tools: {}", "tools: {analyze_image: {}}", 1),
+			"class coder lists analyze_image but names no vision_model, which its looks call"},
+		"unknown vision model": {strings.Replace(valid, "tools: {}", "vision_model: big\n    tools: {}", 1), "vision_model"},
 		"replicate sku without rate": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +
 			"prices: {replicate: {max_seconds: 90, models: {a/b: gpu-t4}, eur_per_second: {cpu: 0.0001}}}\n", `runs on "gpu-t4", which has no positive eur_per_second`},
 		"replicate max_seconds below the cancel floor": {strings.Replace(valid, "tools: {}", "tools: {replicate_predict: {max_requests: 5, max_eur: 1}}", 1) +

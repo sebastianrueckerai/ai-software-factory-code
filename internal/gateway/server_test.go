@@ -2683,6 +2683,41 @@ func TestFactorydVisionCallStripsThePayloadFromTheHold(t *testing.T) {
 	}
 }
 
+// A session's analyze_image is factoryd's vision call on the card's own
+// task: the class's vision_model is the alias it may name, beside the
+// class's other factoryd models on the key; a class naming none refuses.
+func TestFactorydVisionCallOnACodersTask(t *testing.T) {
+	body := fmt.Sprintf(`{"messages":[{"role":"user","content":[{"type":"text","text":"is the button blue"},{"type":"image_url","image_url":{"url":%q}}]}],"model":"vision"}`,
+		imageDataURL(t, pngHeader(800, 600)))
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.002"}})
+	store := newMemStore(Task{Classes: []string{"coder"}, ModelAlias: "small", ID: "42", BudgetEUR: 2, Status: "running"})
+	pv := factoryPolicy()
+	coder := pv.Document.Classes["coder"]
+	coder.VisionModel = "vision"
+	pv.Document.Classes["coder"] = coder
+	store.setPolicy(pv)
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice, "vision": testPrice}})
+	h := s.Routes("test")
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusOK {
+		t.Fatalf("the vision call = %d: %s", rr.Code, rr.Body)
+	}
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,supervisor,vision" {
+		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases", calls)
+	}
+
+	store.setPolicy(factoryPolicy())
+	s = NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice, "vision": testPrice}})
+	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
+		t.Fatalf("a class without vision_model = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+}
+
 // The sniffer reads legal headers a strict walk would refuse: JPEG's
 // fill bytes between markers, and the VP8X canvas's size-minus-one.
 func TestImageDimsReadsFillBytesAndTheTrueCanvas(t *testing.T) {

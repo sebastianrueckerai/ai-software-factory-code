@@ -12,6 +12,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -40,7 +42,7 @@ const (
 	// each one's size cap, and the whole post's room (four of each, the
 	// text and the multipart overhead) the reader stops at
 	chatImageMax   = 4
-	chatImageBytes = 8 << 20
+	chatImageBytes = policy.MaxLookBytes
 	chatDocMax     = 4
 	chatDocBytes   = 32 << 20
 	chatPostRoom   = 168 << 20
@@ -681,9 +683,7 @@ func chatImages(r *http.Request) ([]chatImage, string) {
 			return nil, fmt.Sprintf("%s (%s): an image is at most %d MiB", name, string(fileName), chatImageBytes>>20)
 		}
 		ct := http.DetectContentType(data)
-		switch ct {
-		case "image/png", "image/jpeg", "image/webp", "image/gif":
-		default:
+		if !slices.Contains(policy.LookTypes, ct) {
 			return nil, fmt.Sprintf("%s (%s) is not a PNG, JPEG, WebP or GIF image", name, string(fileName))
 		}
 		out = append(out, chatImage{name: name, fileName: string(fileName), contentType: ct, data: data})
@@ -1226,17 +1226,12 @@ func imageSize(n int64) string {
 	}
 }
 
-// lookImage is the analyze_image tool's run: the conversation's newest
-// image under in.Name, looked at once by the vision model on the chat
-// task's account. A name no member sent refuses naming the images there
-// are.
-func (t *turn) lookImage(in toolInput) (string, error) {
-	if ask := strings.TrimSpace(in.Ask); len(ask) > 2000 {
-		return "", refuse(http.StatusBadRequest, "ask: what to look for, at most 2000 characters")
-	}
+// imageNamed is the conversation's newest image under name. A name no
+// member sent refuses naming the images there are.
+func (t *turn) imageNamed(name string) (*factoryd.ChatAttachment, error) {
 	atts, err := t.c.cfg.Chat.ChatAttachments(t.r.Context(), t.p.Repository, t.owner, t.conv)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	var found *factoryd.ChatAttachment
 	var names []string
@@ -1247,15 +1242,29 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 		if !slices.Contains(names, atts[i].Name) {
 			names = append(names, atts[i].Name)
 		}
-		if atts[i].Name == in.Name && found == nil {
+		if atts[i].Name == name && found == nil {
 			found = &atts[i]
 		}
 	}
 	if found == nil {
 		if len(names) == 0 {
-			return "", refuse(http.StatusBadRequest, fmt.Sprintf("no image %q: this conversation holds no image", in.Name))
+			return nil, refuse(http.StatusBadRequest, fmt.Sprintf("no image %q: this conversation holds no image", name))
 		}
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("no image %q: the conversation's images are %s", in.Name, strings.Join(names, ", ")))
+		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("no image %q: the conversation's images are %s", name, strings.Join(names, ", ")))
+	}
+	return found, nil
+}
+
+// lookImage is the analyze_image tool's run: the conversation's newest
+// image under in.Name, looked at once by the vision model on the chat
+// task's account.
+func (t *turn) lookImage(in toolInput) (string, error) {
+	if ask := strings.TrimSpace(in.Ask); len(ask) > 2000 {
+		return "", refuse(http.StatusBadRequest, "ask: what to look for, at most 2000 characters")
+	}
+	found, err := t.imageNamed(in.Name)
+	if err != nil {
+		return "", err
 	}
 	b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
 	if err != nil {
@@ -1266,6 +1275,62 @@ func (t *turn) lookImage(in toolInput) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s (%s): %s", found.Name, found.FileName, look), nil
+}
+
+// assetExt is the extension an uploaded image's name takes from its
+// content type.
+var assetExt = map[string]string{"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+
+// assets resolves names to the conversation's images with their bytes, each
+// named as its Forgejo asset (img1.png), a repeated name once. An unknown
+// name refuses.
+func (t *turn) assets(names []string) ([]upload, error) {
+	var out []upload
+	for i, name := range names {
+		if slices.Contains(names[:i], name) {
+			continue
+		}
+		found, err := t.imageNamed(name)
+		if err != nil {
+			return nil, err
+		}
+		b, err := t.c.cfg.Timelines.Get(t.r.Context(), fmt.Sprintf("attachments/%d/%d", found.Conversation, found.ID))
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, upload{name: found.Name + assetExt[found.ContentType], data: b})
+	}
+	return out, nil
+}
+
+// withAssets is text ending in the line that names the assets the intake
+// and the sessions read, or text whole without any.
+func withAssets(text string, ups []upload) string {
+	if len(ups) == 0 {
+		return text
+	}
+	names := make([]string, len(ups))
+	for i, u := range ups {
+		names[i] = u.name
+	}
+	return text + "\n\nAttachments: " + strings.Join(names, ", ")
+}
+
+// uploadAssets posts each upload to the assets path as the member and
+// answers the sentence naming the images Forgejo did not take as the
+// thread names them, "" when all went up.
+func (c *Console) uploadAssets(ctx context.Context, s *session, path string, ups []upload) string {
+	var failed []string
+	for _, u := range ups {
+		if err := c.as(ctx, s, http.MethodPost, path+"?name="+url.QueryEscape(u.name), u, http.StatusCreated, nil); err != nil {
+			log.Printf("console: upload %s to %s: %v", u.name, path, err)
+			failed = append(failed, strings.TrimSuffix(u.name, filepath.Ext(u.name)))
+		}
+	}
+	if len(failed) == 0 {
+		return ""
+	}
+	return " Forgejo did not take " + strings.Join(failed, ", ") + ": attach them again with comment's attachments."
 }
 
 // document resolves the conversation's newest document under in.Name

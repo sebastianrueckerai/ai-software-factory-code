@@ -143,7 +143,7 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 	}
 	ctx, cancel := context.WithTimeout(ctx, operatorTimeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.GatewayURL+"/v1/chat/completions", bytes.NewReader(payload))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.GatewayURL+"/v1/chat/completions", bytes.NewReader(payload)) // #nosec G704 -- the host is the configured GatewayURL; a caller's words ride only the body
 	if err != nil {
 		return OperatorMessage{}, err
 	}
@@ -158,7 +158,7 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 	if client == nil {
 		client = http.DefaultClient
 	}
-	res, err := client.Do(req)
+	res, err := client.Do(req) // #nosec G704 -- the request built above, to GatewayURL
 	if err != nil {
 		return OperatorMessage{}, err
 	}

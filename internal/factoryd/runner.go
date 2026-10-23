@@ -1204,7 +1204,7 @@ func (p *runnerTools) post(ctx context.Context, name string, args map[string]any
 	}
 	req.Header.Set("Authorization", "Bearer "+p.token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := checkinMessages.Do(req)
+	resp, err := workerReads.Do(req)
 	if err != nil {
 		return "", false, err
 	}

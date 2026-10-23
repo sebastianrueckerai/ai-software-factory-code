@@ -19,10 +19,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -68,7 +70,8 @@ func (c *checkinServe) waitBrief(log func(string, ...any)) string {
 
 // serve mounts the check-in's three endpoints under the /message bearer:
 // the tools the check-in's model calls, the handover that starts the
-// conversation, and the parent session's record.
+// conversation, and the parent session's record; and POST /image, a
+// workspace image's bytes for a look.
 func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter, *http.Request) bool) {
 	mux.HandleFunc("POST /tool", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
@@ -96,6 +99,25 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 			Output string `json:"output"`
 			Cut    bool   `json:"cut"`
 		}{out, cut})
+	})
+	mux.HandleFunc("POST /image", func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		var in struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Path == "" {
+			http.Error(w, `want {"path": "..."}`, http.StatusBadRequest)
+			return
+		}
+		b, status, err := c.image(in.Path)
+		if err != nil {
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", http.DetectContentType(b))
+		w.Write(b) // #nosec G104 -- best-effort response write
 	})
 	mux.HandleFunc("POST /brief", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
@@ -180,6 +202,58 @@ func (c *checkinServe) under(path string) (string, error) {
 		return "", errOutside
 	}
 	return p, nil
+}
+
+// image reads the image file at path, absolute inside the workspace or
+// relative to the repo, through the workspace's os.Root: a symlink out of
+// it refuses at the open itself, so the agent cannot swap one in after a
+// check. A FIFO or another non-regular file refuses without a read. A
+// refusal is one sentence for the agent, with the status to answer it by.
+func (c *checkinServe) image(path string) ([]byte, int, error) {
+	p := path
+	if !filepath.IsAbs(p) {
+		p = filepath.Join(c.repo(), p)
+	}
+	outside := fmt.Errorf("%s is %w", path, errOutside)
+	rel, err := filepath.Rel(c.ws, filepath.Clean(p))
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, http.StatusForbidden, outside
+	}
+	root, err := os.OpenRoot(c.ws)
+	if err != nil {
+		return nil, http.StatusInternalServerError, err
+	}
+	defer root.Close() // #nosec G307 -- a read-only root's close failure is not worth an answer
+	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		return nil, http.StatusNotFound, fmt.Errorf("no file %s in the workspace", path)
+	case errors.Is(err, os.ErrPermission):
+		return nil, http.StatusForbidden, fmt.Errorf("%s cannot be read", path)
+	case err != nil:
+		return nil, http.StatusForbidden, fmt.Errorf("%s goes through a symlink that is absolute or leaves the workspace: name the file by its own path", path)
+	}
+	defer f.Close() // #nosec G307 -- a read-only file's close failure is not worth an answer
+	fi, err := f.Stat()
+	switch {
+	case err != nil:
+		return nil, http.StatusBadRequest, fmt.Errorf("%s: %w", path, err)
+	case fi.IsDir():
+		return nil, http.StatusBadRequest, fmt.Errorf("%s is a directory, not an image file", path)
+	case !fi.Mode().IsRegular():
+		return nil, http.StatusBadRequest, fmt.Errorf("%s is not a regular file", path)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, policy.MaxLookBytes+1))
+	if err != nil {
+		return nil, http.StatusBadRequest, fmt.Errorf("%s: %w", path, err)
+	}
+	if len(b) > policy.MaxLookBytes {
+		return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("%s is larger than %d MiB", path, policy.MaxLookBytes>>20)
+	}
+	if ct := http.DetectContentType(b); !slices.Contains(policy.LookTypes, ct) {
+		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("%s is %s, not a PNG, JPEG, WebP or GIF image", path, ct)
+	}
+	return b, http.StatusOK, nil
 }
 
 func (c *checkinServe) readFile(path string) (string, bool, error) {

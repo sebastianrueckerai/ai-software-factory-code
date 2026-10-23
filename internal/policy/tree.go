@@ -194,7 +194,7 @@ func checkSessions(d Document) error {
 func checkOutputLimits(d Document) error {
 	aliases := append(slices.Clone(ChatModels), Small)
 	for _, c := range d.Classes {
-		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel)
+		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel, c.VisionModel)
 		aliases = append(aliases, c.Models...)
 	}
 	slices.Sort(aliases)

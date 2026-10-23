@@ -78,6 +78,12 @@ type DeploymentReader interface {
 	DeploymentHealth(ctx context.Context, taskID, deployment, namespace string) (string, error)
 }
 
+// ImageLooker has the task's vision model look at one image (the
+// analyze_image tool). Implemented by Factoryd; tests substitute a fake.
+type ImageLooker interface {
+	LookAtImage(ctx context.Context, taskID string, in AnalyzeImageIn) (string, error)
+}
+
 // HoldoutVerdicter files an audit session's hold-out verdict (the
 // file_verdict tool): factoryd checks it against the hold-out the audit
 // runs on and stores it as the session's answer. Implemented by Factoryd;
@@ -131,6 +137,7 @@ var (
 	_ PlanFiler        = (*Factoryd)(nil)
 	_ HoldoutVerdicter = (*Factoryd)(nil)
 	_ DeploymentReader = (*Factoryd)(nil)
+	_ ImageLooker      = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -223,9 +230,27 @@ func (f *Factoryd) DeploymentHealth(ctx context.Context, taskID, deployment, nam
 			Deployment string `json:"deployment"`
 			Namespace  string `json:"namespace,omitempty"`
 		}{taskID, deployment, namespace})
+	return factorydText(b, err)
+}
+
+// LookAtImage returns the vision model's answer on the image in names, as
+// DeploymentHealth its report.
+func (f *Factoryd) LookAtImage(ctx context.Context, taskID string, in AnalyzeImageIn) (string, error) {
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/image-look",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+			AnalyzeImageIn
+		}{taskID, in})
+	return factorydText(b, err)
+}
+
+// factorydText is the text of factoryd's {"text"} answer b; a refusal is
+// factoryd's one sentence as the error.
+func factorydText(b []byte, err error) (string, error) {
 	var pe *providerError
 	if errors.As(err, &pe) {
-		// a refusal and factoryd's 502 (the cluster did not answer) are its
+		// a refusal and factoryd's 502 (what it asked did not answer) are its
 		// sentences; another 5xx says nothing an agent can act on
 		if sentence := strings.TrimSpace(pe.body); sentence != "" && (pe.status < 500 || pe.status == http.StatusBadGateway) {
 			return "", errors.New(sentence)
@@ -357,6 +382,19 @@ type DeploymentHealthIn struct {
 	Namespace  string `json:"namespace,omitempty" jsonschema:"the namespace, a DNS-1123 label; leave it out to look in each of the project's namespaces"`
 }
 
+type AnalyzeImageIn struct {
+	Path      string `json:"path,omitempty" jsonschema:"an image file in the workspace, such as a screenshot you took: absolute under /workspace or relative to the repository"`
+	CardImage string `json:"card_image,omitempty" jsonschema:"an image on the card's issue or its comments: its name, such as img1.png, or its /attachments/ link"`
+	Ask       string `json:"ask,omitempty" jsonschema:"what to look for, at most 2000 characters; leave it out to have the image described"`
+}
+
+// The bounds of an image look's arguments.
+const (
+	maxImagePath = 4096
+	maxCardImage = 512
+	maxImageAsk  = 2000
+)
+
 type FileVerdictIn struct {
 	Idx      int    `json:"idx" jsonschema:"the hold-out's idx, from the task card"`
 	Verdict  string `json:"verdict" jsonschema:"wrong_test, real_gap or spec_question"`
@@ -461,6 +499,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"No logs and no Secrets. The namespace may be omitted: factoryd looks in each of the project's namespaces. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DeploymentHealthIn) (*mcp.CallToolResult, any, error) {
 			return s.deploymentHealth(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolAnalyzeImage, Description: "Have a vision model look at one image and answer in words: a file in your workspace, " +
+		"such as a screenshot of the page you built, or an image on the card's issue, such as a screenshot the card was filed with. " +
+		"Name exactly one of path and card_image; ask says what to look for. PNG, JPEG, WebP or GIF of at most 8 MiB. Spends on the card's budget as a model call."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in AnalyzeImageIn) (*mcp.CallToolResult, any, error) {
+			return s.analyzeImage(ctx, c, in), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -762,6 +806,11 @@ const escalationTimeout = 30 * time.Second
 // deploymentHealthTimeout bounds the read at factoryd.
 const deploymentHealthTimeout = 20 * time.Second
 
+// imageLookTimeout bounds an image look at factoryd: the image's read and
+// the vision call (factoryd's operatorTimeout, 2 minutes), inside
+// opencode's 150 s on an MCP call.
+const imageLookTimeout = 145 * time.Second
+
 // admitTool refuses a tool none of the task's classes lists in the policy.
 func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
 	switch {
@@ -885,6 +934,39 @@ func (s *Server) deploymentHealth(ctx context.Context, c *toolCaller, in Deploym
 		return toolError(err.Error())
 	}
 	s.auditTool(c, tool, "deployment_read", dep, &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+// analyzeImage has factoryd look at the image in names with the task's
+// vision model. Free, for the classes that list it; the look spends on the
+// task's account as a model call.
+func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImageIn) *mcp.CallToolResult {
+	tool := policy.ToolAnalyzeImage
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	in.Path, in.CardImage, in.Ask = strings.TrimSpace(in.Path), strings.TrimSpace(in.CardImage), strings.TrimSpace(in.Ask)
+	switch {
+	case (in.Path == "") == (in.CardImage == ""):
+		return s.refuseTool(c, tool, "refused_arguments", "name exactly one of path (a workspace file) and card_image (an image on the card's issue)")
+	case len(in.Path) > maxImagePath:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxImagePath))
+	case len(in.CardImage) > maxCardImage:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("card_image is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
+	case len(in.Ask) > maxImageAsk:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters", maxImageAsk))
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), imageLookTimeout)
+	defer cancel()
+	text, err := s.opts.ImageLooker.LookAtImage(ctx, c.task.ID, in)
+	if err != nil {
+		s.auditTool(c, tool, "error_image_look", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError(err.Error())
+	}
+	s.auditTool(c, tool, "image_looked", cmp.Or(in.CardImage, in.Path), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 

@@ -26,49 +26,50 @@ import (
 
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
-	TaskID     string   `json:"task_id,omitempty"`
-	Title      string   `json:"title,omitempty"`
-	Body       string   `json:"body,omitempty"`
-	Lane       string   `json:"lane,omitempty"`
-	Text       string   `json:"text,omitempty"`
-	EUR        float64  `json:"eur,omitempty"`
-	Question   int      `json:"question,omitempty"`
-	Note       string   `json:"note,omitempty"`
-	Minutes    int      `json:"minutes,omitempty"`
-	Action     string   `json:"action,omitempty"`
-	Revision   int      `json:"revision,omitempty"`
-	SHA256     string   `json:"sha256,omitempty"`
-	Summary    string   `json:"summary,omitempty"`
-	Accent     string   `json:"accent,omitempty"`
-	Login      string   `json:"login,omitempty"`
-	N          int      `json:"n,omitempty"`
-	Thread     int64    `json:"thread,omitempty"`
-	Ref        string   `json:"ref,omitempty"`
-	Path       string   `json:"path,omitempty"`
-	SHA        string   `json:"sha,omitempty"`
-	WithDiff   bool     `json:"with_diff,omitempty"`
-	Remote     string   `json:"remote,omitempty"`
-	From       int      `json:"from,omitempty"`
-	To         int      `json:"to,omitempty"`
-	Query      string   `json:"query,omitempty"`
-	Size       string   `json:"size,omitempty"`
-	Rung       string   `json:"rung,omitempty"`
-	RungReason string   `json:"rung_reason,omitempty"`
-	Acceptance []string `json:"acceptance,omitempty"`
-	By         string   `json:"by,omitempty"`
-	FromDate   string   `json:"from_date,omitempty"`
-	ToDate     string   `json:"to_date,omitempty"`
-	State      string   `json:"state,omitempty"`
-	Deployment string   `json:"deployment,omitempty"`
-	Namespace  string   `json:"namespace,omitempty"`
-	ID         int64    `json:"id,omitempty"`
-	Verdict    string   `json:"verdict,omitempty"`
-	DependsOn  string   `json:"depends_on,omitempty"`
-	Remove     bool     `json:"remove,omitempty"`
-	Mode       string   `json:"mode,omitempty"`
-	Autonomy   string   `json:"autonomy,omitempty"`
-	Content    string   `json:"content,omitempty"`
-	BacklogCap int      `json:"backlog_cap,omitempty"`
+	TaskID      string   `json:"task_id,omitempty"`
+	Title       string   `json:"title,omitempty"`
+	Body        string   `json:"body,omitempty"`
+	Lane        string   `json:"lane,omitempty"`
+	Text        string   `json:"text,omitempty"`
+	EUR         float64  `json:"eur,omitempty"`
+	Question    int      `json:"question,omitempty"`
+	Note        string   `json:"note,omitempty"`
+	Minutes     int      `json:"minutes,omitempty"`
+	Action      string   `json:"action,omitempty"`
+	Revision    int      `json:"revision,omitempty"`
+	SHA256      string   `json:"sha256,omitempty"`
+	Summary     string   `json:"summary,omitempty"`
+	Accent      string   `json:"accent,omitempty"`
+	Login       string   `json:"login,omitempty"`
+	N           int      `json:"n,omitempty"`
+	Thread      int64    `json:"thread,omitempty"`
+	Ref         string   `json:"ref,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	SHA         string   `json:"sha,omitempty"`
+	WithDiff    bool     `json:"with_diff,omitempty"`
+	Remote      string   `json:"remote,omitempty"`
+	From        int      `json:"from,omitempty"`
+	To          int      `json:"to,omitempty"`
+	Query       string   `json:"query,omitempty"`
+	Size        string   `json:"size,omitempty"`
+	Rung        string   `json:"rung,omitempty"`
+	RungReason  string   `json:"rung_reason,omitempty"`
+	Acceptance  []string `json:"acceptance,omitempty"`
+	Attachments []string `json:"attachments,omitempty"`
+	By          string   `json:"by,omitempty"`
+	FromDate    string   `json:"from_date,omitempty"`
+	ToDate      string   `json:"to_date,omitempty"`
+	State       string   `json:"state,omitempty"`
+	Deployment  string   `json:"deployment,omitempty"`
+	Namespace   string   `json:"namespace,omitempty"`
+	ID          int64    `json:"id,omitempty"`
+	Verdict     string   `json:"verdict,omitempty"`
+	DependsOn   string   `json:"depends_on,omitempty"`
+	Remove      bool     `json:"remove,omitempty"`
+	Mode        string   `json:"mode,omitempty"`
+	Autonomy    string   `json:"autonomy,omitempty"`
+	Content     string   `json:"content,omitempty"`
+	BacklogCap  int      `json:"backlog_cap,omitempty"`
 	// Old and New are a document edit's passage and its replacement,
 	// BaseSHA256 the hash the document was read with; Find narrows a
 	// document read to the lines that hold it, Regex makes Find a pattern,
@@ -370,6 +371,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if len(in.Attachments) > 0 {
+		parts = append(parts, "attachments "+strings.Join(in.Attachments, ", "))
 	}
 	if len(in.Acceptance) > 0 {
 		items := make([]string, len(in.Acceptance))
@@ -1188,7 +1192,9 @@ var tools = []chatTool{
 			"size":        enum("the card's size, which sets its budget", policy.CardSizes...),
 			"rung":        enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
 			"rung_reason": str("why that rung, one line"),
-			"image":       str("a pinned sandbox image to run on, none for the default")},
+			"image":       str("a pinned sandbox image to run on, none for the default"),
+			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
+				"description": "the thread's images to attach (img1, as their rows show)"}},
 		required: []string{"title"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -1199,11 +1205,20 @@ var tools = []chatTool{
 					body += "\n- " + a
 				}
 			}
+			ups, err := t.assets(in.Attachments)
+			if err != nil {
+				return "", nil, err
+			}
+			body = withAssets(body, ups)
 			if flags := filingFlags(in.Title, body); len(flags) > 0 {
 				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
 			}
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason, in.Image)
-			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane), nil, err
+			if err != nil {
+				return "", nil, err
+			}
+			path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
+			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, path, ups), nil, nil
 		}},
 	{name: "request_image", title: "Ask for a sandbox tool", write: true,
 		params: map[string]any{
@@ -1237,11 +1252,33 @@ var tools = []chatTool{
 			note, err := t.answer(in)
 			return note, nil, err
 		}},
-	{name: "comment", title: "Comment on a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+	{name: "comment", title: "Comment on a card", write: true,
+		params: map[string]any{"task_id": taskParam, "text": textParam,
+			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
+				"description": "the thread's images to attach (img1, as their rows show)"}},
 		required: []string{"task_id", "text"},
 		about:    "Comment on a card's issue.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, in.Text)
+			ups, err := t.assets(in.Attachments)
+			if err != nil {
+				return "", nil, err
+			}
+			var assets string
+			if len(ups) > 0 {
+				card, err := t.card(in)
+				if err != nil {
+					return "", nil, err
+				}
+				repo, err := factoryd.SplitRepo(card.Repository)
+				if err != nil {
+					return "", nil, err
+				}
+				assets = fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
+			}
+			posted, note, err := t.c.doComment(t.r.Context(), t.a, in.TaskID, withAssets(in.Text, ups))
+			if err == nil && len(ups) > 0 {
+				note += t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, fmt.Sprintf("%s%d/assets", assets, posted), ups)
+			}
 			return note, &inverse{"delete_comment", toolInput{TaskID: in.TaskID, N: int(posted)}}, err
 		}},
 	{name: "tell_card", title: "Tell a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},

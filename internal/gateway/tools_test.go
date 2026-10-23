@@ -29,7 +29,7 @@ import (
 // 90 s, fal megapixel endpoints held at 4 megapixels.
 func toolPolicy(scrape policy.ToolCap) policy.Version {
 	v := testPolicy(7, 20)
-	v.Document.Classes["coder"] = policy.Class{Models: []string{"small"}, Tools: map[string]policy.ToolCap{
+	v.Document.Classes["coder"] = policy.Class{Models: []string{"small"}, VisionModel: "vision", Tools: map[string]policy.ToolCap{
 		policy.ToolWebScrape: scrape,
 		policy.ToolWebSearch: {MaxRequests: 30, MaxEUR: 0.2},
 		policy.ToolReplicate: {MaxRequests: 5, MaxEUR: 0.5},
@@ -191,8 +191,23 @@ func (f *fakeDeploymentReader) DeploymentHealth(_ context.Context, taskID, deplo
 	return f.text, f.err
 }
 
+type fakeImageLooker struct {
+	mu    sync.Mutex
+	calls []string
+	text  string
+	err   error
+}
+
+func (f *fakeImageLooker) LookAtImage(_ context.Context, taskID string, in AnalyzeImageIn) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID+"|"+in.Path+"|"+in.CardImage+"|"+in.Ask)
+	return f.text, f.err
+}
+
 type toolEnv struct {
 	deployments *fakeDeploymentReader
+	looker      *fakeImageLooker
 	store       *memStore
 	providers   *fakeProviders
 	escalator   *fakeEscalator
@@ -212,13 +227,14 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	verdicter := &fakeVerdicter{}
 	delegator := &fakeDelegator{}
 	deployments := &fakeDeploymentReader{text: "deployment web: 2/2 ready"}
+	looker := &fakeImageLooker{text: "img1.png (Screenshot.png): a login form, the button grey"}
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: "s-1"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
 		Escalator: esc, PlanFiler: filer, HoldoutVerdicter: verdicter, Delegator: delegator,
-		DeploymentReader: deployments,
+		DeploymentReader: deployments, ImageLooker: looker,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
@@ -228,7 +244,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, deployments: deployments, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, deployments: deployments, looker: looker, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -284,7 +300,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,request_tool,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,request_tool,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1473,6 +1489,107 @@ func TestFactorydDeploymentHealthClient(t *testing.T) {
 	}
 	status, reply = http.StatusInternalServerError, "boom"
 	if _, err := f.DeploymentHealth(context.Background(), "t-1", "web", ""); err == nil || err.Error() != "factoryd answered 500" {
+		t.Fatalf("5xx err = %v", err)
+	}
+}
+
+// analyze_image hands the image the agent names to factoryd, which looks
+// at it on the card's account: the tool books nothing itself.
+func TestAnalyzeImageTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolAnalyzeImage, map[string]any{"card_image": "img1.png", "ask": "is the button blue?"})
+	if isErr || text != "img1.png (Screenshot.png): a login form, the button grey" {
+		t.Fatalf("result = %q, %v", text, isErr)
+	}
+	if _, isErr := e.call(t, policy.ToolAnalyzeImage, map[string]any{"path": " shots/home.png "}); isErr {
+		t.Fatal("a workspace path was refused")
+	}
+	if !slices.Equal(e.looker.calls, []string{"42||img1.png|is the button blue?", "42|shots/home.png||"}) {
+		t.Fatalf("calls = %v", e.looker.calls)
+	}
+	if a := e.lastAudit(t); a.Decision != "image_looked" || a.Tool != policy.ToolAnalyzeImage || a.Reason != "shots/home.png" || len(e.toolLedger()) != 0 {
+		t.Fatalf("audit = %+v, tool ledger %v", a, e.toolLedger())
+	}
+
+	e.looker.err = errors.New("no image img9 on card #12: its images are img1.png, img2.png")
+	if text, isErr := e.call(t, policy.ToolAnalyzeImage, map[string]any{"card_image": "img9"}); !isErr ||
+		text != "no image img9 on card #12: its images are img1.png, img2.png" {
+		t.Fatalf("refusal = %q, %v", text, isErr)
+	}
+	if a := e.lastAudit(t); a.Decision != "error_image_look" {
+		t.Fatalf("audit = %+v", a)
+	}
+}
+
+func TestAnalyzeImageToolRefusesBadArguments(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for _, args := range []map[string]any{
+		{},
+		{"path": "  ", "card_image": ""},
+		{"path": "a.png", "card_image": "img1"},
+		{"path": strings.Repeat("a", 4097)},
+		{"card_image": strings.Repeat("a", 513)},
+		{"card_image": "img1", "ask": strings.Repeat("a", 2001)},
+	} {
+		if text, isErr := e.call(t, policy.ToolAnalyzeImage, args); !isErr || !strings.Contains(text, "refused_arguments") {
+			t.Errorf("%v = %q", args, text)
+		}
+	}
+	for _, ok := range []map[string]any{
+		{"path": strings.Repeat("a", 4096)},
+		{"card_image": strings.Repeat("a", 512), "ask": strings.Repeat("a", 2000)},
+	} {
+		if text, isErr := e.call(t, policy.ToolAnalyzeImage, ok); isErr {
+			t.Errorf("refused: %q", text)
+		}
+	}
+	if len(e.looker.calls) != 2 {
+		t.Fatalf("calls = %d, want only the two valid ones", len(e.looker.calls))
+	}
+}
+
+func TestAnalyzeImageToolNeedsARunningTaskWhoseClassListsIt(t *testing.T) {
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	delete(v.Document.Classes["coder"].Tools, policy.ToolAnalyzeImage)
+	e := newToolEnv(t, running("coder"), v)
+	if text, isErr := e.call(t, policy.ToolAnalyzeImage, map[string]any{"card_image": "img1"}); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted = %q", text)
+	}
+	review := running("coder")
+	review.Status = "review"
+	e2 := newToolEnv(t, review, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	if text, isErr := e2.call(t, policy.ToolAnalyzeImage, map[string]any{"card_image": "img1"}); !isErr || !strings.Contains(text, "refused_task_status") {
+		t.Fatalf("in review = %q", text)
+	}
+	if len(e.looker.calls)+len(e2.looker.calls) != 0 {
+		t.Fatalf("calls = %v %v", e.looker.calls, e2.looker.calls)
+	}
+}
+
+func TestFactorydImageLookClient(t *testing.T) {
+	var path, auth, body string
+	status, reply := http.StatusOK, `{"text":"shots/home.png: a page with a blue header"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		path, auth, body = r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	text, err := f.LookAtImage(context.Background(), "t-1", AnalyzeImageIn{Path: "shots/home.png", Ask: "the header's colour"})
+	if err != nil || text != "shots/home.png: a page with a blue header" {
+		t.Fatalf("text %q err %v", text, err)
+	}
+	if path != "/internal/image-look" || auth != "Bearer shared" || body != `{"task_id":"t-1","path":"shots/home.png","ask":"the header's colour"}` {
+		t.Fatalf("%s auth %q body %s", path, auth, body)
+	}
+	status, reply = http.StatusNotFound, "no file shots/x.png in the workspace\n"
+	if _, err := f.LookAtImage(context.Background(), "t-1", AnalyzeImageIn{Path: "shots/x.png"}); err == nil || err.Error() != "no file shots/x.png in the workspace" {
+		t.Fatalf("404: err = %v", err)
+	}
+	status, reply = http.StatusInternalServerError, "boom"
+	if _, err := f.LookAtImage(context.Background(), "t-1", AnalyzeImageIn{CardImage: "img1"}); err == nil || err.Error() != "factoryd answered 500" {
 		t.Fatalf("5xx err = %v", err)
 	}
 }

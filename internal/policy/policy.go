@@ -137,8 +137,8 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 // ChatModels are the aliases a chat block may name.
 var ChatModels = []string{Big, Small}
 
-// ChatVisionModels are the vision aliases a chat block may name.
-var ChatVisionModels = []string{"vision"}
+// VisionModels are the vision aliases a chat block or a class may name.
+var VisionModels = []string{"vision"}
 
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
@@ -251,8 +251,8 @@ func (c *ChatConfig) validate() error {
 	if c.Model != "" && !slices.Contains(ChatModels, c.Model) {
 		return fmt.Errorf("chat.model %q: want one of %v", c.Model, ChatModels)
 	}
-	if c.VisionModel != "" && !slices.Contains(ChatVisionModels, c.VisionModel) {
-		return fmt.Errorf("chat.vision_model %q: want one of %v", c.VisionModel, ChatVisionModels)
+	if c.VisionModel != "" && !slices.Contains(VisionModels, c.VisionModel) {
+		return fmt.Errorf("chat.vision_model %q: want one of %v", c.VisionModel, VisionModels)
 	}
 	if c.MonthlyEUR < 0 {
 		return errors.New("chat.monthly_eur must not be negative")
@@ -833,6 +833,9 @@ type Class struct {
 	// CheckinModel is the alias the check-in agent calls on the task's
 	// account; absent reads ReviewModel (the escalation ladder's plan D).
 	CheckinModel string `yaml:"checkin_model,omitempty" json:"checkin_model,omitempty"`
+	// VisionModel is the alias an analyze_image look calls on the task's
+	// account (purpose vision); a class that lists analyze_image names one.
+	VisionModel string `yaml:"vision_model,omitempty" json:"vision_model,omitempty"`
 	// Time overrides limits.agent_time and limits.check_in for tasks of
 	// this class; a process or project's Time wins over it.
 	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
@@ -851,13 +854,20 @@ const (
 	// PurposeCheckin is the check-in agent's conversation at a gate
 	// return (the escalation ladder's plan D).
 	PurposeCheckin = "checkin"
-	// PurposeVision is a chat turn's look at an image the member pasted:
-	// the only purpose an image part may ride.
+	// PurposeVision is a look at one image: a chat turn's at an image the
+	// member pasted, a session's analyze_image at a card's image or a
+	// workspace file. The only purpose an image part may ride.
 	PurposeVision = "vision"
 	// PurposeTitle is a chat thread's naming call (roadmap 304): one
 	// cheap call that writes the thread's title from its first message.
 	PurposeTitle = "title"
 )
+
+// LookTypes are the image types a look takes, sniffed from its bytes.
+var LookTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
+
+// MaxLookBytes is the largest image a look takes.
+const MaxLookBytes = 8 << 20
 
 // Purposes are the factoryd purposes the gateway admits.
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle}
@@ -925,6 +935,10 @@ const (
 	// ToolRequestTool asks for a tool the sandbox lacks: a card adds it to
 	// one of the project's images, and the caller's card restarts on it.
 	ToolRequestTool = "request_tool"
+	// ToolAnalyzeImage has the class's vision model look at an image of
+	// the card's issue or a file in the workspace; the look spends on the
+	// card's account as a model call.
+	ToolAnalyzeImage = "analyze_image"
 )
 
 // SourceToolRequest is the source of a tool card, which adds a tool an
@@ -942,7 +956,7 @@ func OffersTool(tool string, namespaces []string) bool {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {
@@ -1125,6 +1139,12 @@ func (d Document) Validate() error {
 				return fmt.Errorf("policy: class %s: %w", name, err)
 			}
 		}
+		if c.VisionModel != "" && !slices.Contains(VisionModels, c.VisionModel) {
+			return fmt.Errorf("policy: class %s vision_model %q: want one of %v", name, c.VisionModel, VisionModels)
+		}
+		if _, ok := c.Tools[ToolAnalyzeImage]; ok && c.VisionModel == "" {
+			return fmt.Errorf("policy: class %s lists %s but names no vision_model, which its looks call", name, ToolAnalyzeImage)
+		}
 		for tool, tc := range c.Tools {
 			if slices.Contains(FreeTools, tool) {
 				if tc != (ToolCap{}) {
@@ -1232,16 +1252,19 @@ const ClassChat = "chat"
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
 // project agent's (operator) is the chat block's; the compaction's and
-// the thread naming's are Small, for a chat task only.
+// the thread naming's are Small, for a chat task only; a chat task's look
+// is the chat block's vision model, a session's its class's.
 func (d Document) FactoryModel(classes []string, purpose string) string {
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeVision || purpose == PurposeTitle {
+	chat := slices.Contains(classes, ClassChat)
+	if purpose == PurposeVision && chat {
+		return d.ChatOf(ProjectConfig{}).VisionModel
+	}
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeTitle {
 		switch {
-		case !slices.Contains(classes, ClassChat):
+		case !chat:
 			return ""
 		case purpose == PurposeCompact, purpose == PurposeTitle:
 			return Small
-		case purpose == PurposeVision:
-			return d.ChatOf(ProjectConfig{}).VisionModel
 		}
 		return d.ChatOf(ProjectConfig{}).Model
 	}
@@ -1257,6 +1280,8 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 			alias = cl.AuditModel
 		case PurposeCheckin:
 			alias = cmp.Or(cl.CheckinModel, cl.ReviewModel)
+		case PurposeVision:
+			alias = cl.VisionModel
 		}
 		if alias != "" {
 			return alias

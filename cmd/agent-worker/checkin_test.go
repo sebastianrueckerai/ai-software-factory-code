@@ -20,10 +20,12 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 func checkinHandler(t *testing.T, ck *checkinServe) http.Handler {
@@ -311,5 +313,76 @@ func TestRecordsEndpoint(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(ws, ".factory", "sessions", "a.jsonl")); !os.IsNotExist(err) {
 		t.Errorf("a refused session wrote a file: %v", err)
+	}
+}
+
+func postImage(t *testing.T, h http.Handler, auth, path string) (int, string, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/image", strings.NewReader(fmt.Sprintf(`{"path":%q}`, path)))
+	req.Header.Set("Authorization", auth)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec.Code, rec.Header().Get("Content-Type"), rec.Body.String()
+}
+
+// POST /image answers a workspace image's bytes, refuses a path outside
+// the workspace (a symlink out included), and names what is wrong with a
+// file that is not a small image.
+func TestImageEndpoint(t *testing.T) {
+	ws := t.TempDir()
+	repo := filepath.Join(ws, "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "shots"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	png := "\x89PNG\r\n\x1a\n" + "pixels"
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(filepath.Join(repo, "shots", "page.png"), png)
+	write(filepath.Join(ws, "scratch.png"), png)
+	write(filepath.Join(repo, "notes.txt"), "just text\n")
+	write(filepath.Join(repo, "huge.png"), "\x89PNG\r\n\x1a\n"+strings.Repeat("x", policy.MaxLookBytes+1-8))
+	secret := filepath.Join(t.TempDir(), "secret.png")
+	write(secret, png)
+	if err := os.Symlink(secret, filepath.Join(repo, "link.png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("shots", "page.png"), filepath.Join(repo, "inside.png")); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(repo, "fifo.png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := checkinHandler(t, newCheckinServe(ws))
+	const auth = "Bearer session-secret"
+
+	for name, tc := range map[string]struct {
+		path   string
+		status int
+		ctype  string
+		body   string
+	}{
+		"relative to the repo":  {"shots/page.png", 200, "image/png", png},
+		"absolute in workspace": {filepath.Join(ws, "scratch.png"), 200, "image/png", png},
+		"absolute outside":      {"/etc/hostname", 403, "", "/etc/hostname is outside the workspace\n"},
+		"climbing out":          {"../../etc/hostname", 403, "", "../../etc/hostname is outside the workspace\n"},
+		"symlink out":           {"link.png", 403, "", "link.png goes through a symlink that is absolute or leaves the workspace: name the file by its own path\n"},
+		"symlink inside":        {"inside.png", 200, "image/png", png},
+		"a FIFO, never opened for a read that blocks": {"fifo.png", 400, "", "fifo.png is not a regular file\n"},
+		"missing":             {"shots/none.png", 404, "", "no file shots/none.png in the workspace\n"},
+		"directory":           {"shots", 400, "", "shots is a directory, not an image file\n"},
+		"text":                {"notes.txt", 415, "", "notes.txt is text/plain; charset=utf-8, not a PNG, JPEG, WebP or GIF image\n"},
+		"over the size limit": {"huge.png", 413, "", "huge.png is larger than 8 MiB\n"},
+	} {
+		code, ctype, body := postImage(t, h, auth, tc.path)
+		if code != tc.status || body != tc.body || (tc.ctype != "" && ctype != tc.ctype) {
+			t.Errorf("%s: status %d, type %q, body %.80q; want %d, %q, %.80q", name, code, ctype, body, tc.status, tc.ctype, tc.body)
+		}
+	}
+	if code, _, body := postImage(t, h, "", "shots/page.png"); code != http.StatusUnauthorized || body != "unauthorized\n" {
+		t.Errorf("no bearer: status %d, body %q, want 401 unauthorized", code, body)
 	}
 }

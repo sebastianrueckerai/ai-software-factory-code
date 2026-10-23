@@ -71,6 +71,8 @@ type fakeForgejo struct {
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
 	patched    []string // "path {body}" per PATCH of an issue
+	assets     []asset  // multipart uploads to an issue's or a comment's assets
+	failAssets bool     // asset uploads answer 500
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
 	pullHead string            // PR 9's current head; empty answers no pull read
@@ -81,6 +83,13 @@ type fakeForgejo struct {
 	// makes it a card
 	scene string
 	file  func(issue map[string]any) int64
+}
+
+// asset is an upload as Forgejo's asset endpoints read it: the query's name
+// and the file of the form field attachment.
+type asset struct {
+	path, name, field, file string
+	data                    []byte
 }
 
 func newFakeForgejo(t *testing.T) *fakeForgejo {
@@ -235,6 +244,25 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
 		f.closed = append(f.closed, r.URL.Path+" "+body["state"])
+		w.WriteHeader(http.StatusCreated)
+		w.Write([]byte(`{}`))
+	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/assets"):
+		if f.failAssets {
+			http.Error(w, `{"message":"asset refused"}`, http.StatusInternalServerError)
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		for field, files := range r.MultipartForm.File {
+			for _, fh := range files {
+				file, _ := fh.Open()
+				data, _ := io.ReadAll(file)
+				file.Close()
+				f.assets = append(f.assets, asset{path: r.URL.Path, name: r.URL.Query().Get("name"), field: field, file: fh.Filename, data: data})
+			}
+		}
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{}`))
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):

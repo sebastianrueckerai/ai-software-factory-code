@@ -33,13 +33,40 @@ func TestChatDefaults(t *testing.T) {
 		t.Fatalf("FactoryModel(chat, vision) = %q, want vision", got)
 	}
 	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeVision); got != "" {
-		t.Fatalf("FactoryModel(coder, vision) = %q, want none: only a chat task looks at images", got)
+		t.Fatalf("FactoryModel(coder, vision) = %q, want none: the fixture's coder names no vision_model", got)
 	}
 	if !slices.Contains(Purposes, PurposeVision) {
 		t.Fatalf("Purposes = %v, want vision among them", Purposes)
 	}
 	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeOperator); got != "" {
 		t.Fatalf("FactoryModel(coder, operator) = %q, want none: only a chat task calls the operator", got)
+	}
+}
+
+// A class that lists analyze_image names its vision model, which its
+// sessions' looks call on the card's account beside the class's other
+// factoryd models.
+func TestClassVisionModel(t *testing.T) {
+	files := fixtureTree(t)
+	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), "    supervisor_model: supervisor\n    tools:\n",
+		"    supervisor_model: supervisor\n    vision_model: vision\n    tools:\n      analyze_image: {}\n", 1))
+	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), "pulse: 2048}", "pulse: 2048, vision: 4096}", 1))
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := tree.Document
+	if got := d.FactoryModel([]string{"coder"}, PurposeVision); got != "vision" {
+		t.Fatalf("FactoryModel(coder, vision) = %q, want vision", got)
+	}
+	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "supervisor", "vision"}) {
+		t.Fatalf("FactoryModels(coder) = %v, want [big supervisor vision]", got)
+	}
+	if !d.AllowsTool([]string{"coder"}, ToolAnalyzeImage) {
+		t.Fatal("coder does not allow analyze_image")
+	}
+	if got := d.FactoryModel([]string{ClassChat}, PurposeVision); got != "vision" {
+		t.Fatalf("FactoryModel(chat, vision) = %q, want the chat block's vision", got)
 	}
 }
 

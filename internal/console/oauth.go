@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -289,9 +290,33 @@ func (e *apiError) reason() string {
 // bytes of a longer one.
 const answerMax = 1 << 20
 
+// upload is a payload api sends as multipart/form-data: the file in the
+// form field attachment, as Forgejo's asset endpoints read it.
+type upload struct {
+	name string
+	data []byte
+}
+
 func (c *Console) api(ctx context.Context, token, method, path string, payload any, want int, out any) error {
 	var body io.Reader
-	if payload != nil {
+	contentType := "application/json"
+	switch p := payload.(type) {
+	case nil:
+	case upload:
+		var form bytes.Buffer
+		mw := multipart.NewWriter(&form)
+		part, err := mw.CreateFormFile("attachment", p.name)
+		if err != nil {
+			return err
+		}
+		if _, err := part.Write(p.data); err != nil {
+			return err
+		}
+		if err := mw.Close(); err != nil {
+			return err
+		}
+		body, contentType = &form, mw.FormDataContentType()
+	default:
 		b, err := json.Marshal(payload)
 		if err != nil {
 			return err
@@ -305,7 +330,7 @@ func (c *Console) api(ctx context.Context, token, method, path string, payload a
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
 	if payload != nil {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 	}
 	res, err := c.cfg.HTTP.Do(req)
 	if err != nil {

@@ -1164,6 +1164,30 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   `k8s/factoryd.yaml`, in `platform` and `forgejo` by the infra
   repository). `factoryd-project` also carries registration's Secrets and
   is never bound in a seed namespace.
+- `analyze_image` (exactly one of `path` and `card_image`, an optional
+  `ask` of at most 2000 bytes): free, listed as `analyze_image: {}` by a
+  class that names `vision_model` (the loader refuses one without). The
+  look is one call of the class's vision alias on the card's account
+  (purpose `vision`, the chat's door): it books as a model call and the
+  card's budget caps it. The gateway checks the arguments and posts the
+  look to factoryd's `POST /internal/image-look` (bearer
+  `gateway-factoryd`, `{task_id, path, card_image, ask}`), which answers
+  `{"text"}`, the image's name and what the model saw. A `card_image` is
+  an image attached to the card's issue, its comments, or its parent
+  card's issue: a `/attachments/` uuid in it picks that one, else its name
+  with or without the extension; two of one name refuse with their links.
+  factoryd reads it with its Forgejo login from `/attachments/{uuid}`. A
+  `path` is a file of the running session's workspace, absolute under
+  `/workspace` or relative to the repository, which factoryd asks the
+  pod's worker for (`POST /image` under the session's message bearer).
+  The worker opens it through the workspace's `os.Root`, so a symlink that
+  is absolute or leaves the workspace refuses at the open itself, and a
+  FIFO or other non-regular file refuses unread. The image must sniff as
+  PNG, JPEG, WebP or GIF of at most 8 MiB. A refusal is one sentence (400,
+  403 outside the workspace, 404 no such image, 409 a final task, no live
+  session, a session's worker from before the read, comments past 1 MiB,
+  a class without `vision_model`, or a refused hold, 413, 415, 502 a read
+  or the model did not answer), the agent's tool error.
 - `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
   required, each one line without control characters): free, through the
   class's tool list (`request_tool: {}`), never a tool card's session; a
@@ -1620,7 +1644,14 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   the issue as an `Image:` line among the field lines (`Size:`, `Rung:`)
   after a blank line; the intake reads it into the card's row from a
   writer's issue only. The proposal and the filing refuse any other name
-  with the pins and `request_image`. `request_image` (`tool`, `need`, an
+  with the pins and `request_image`. `new_card` and `comment` take
+  `attachments`, at most 4 of the thread's images by name (`img1`): an
+  unknown name refuses before anything is posted; the text gains a line
+  `Attachments: img1.png, ...` and each image goes up as an asset of the
+  issue or the comment, named for its type, as the member. An upload
+  Forgejo refuses leaves the card or comment standing, and the answer
+  names the images to attach again. A session looks at them with
+  `analyze_image`. `request_image` (`tool`, `need`, an
   optional `image`, else one named after the tool) puts the member's ask
   on a tool card as a session's `request_tool` does (above), refused at
   the same cap; the card opens with who asked for which tool and why. A

@@ -88,6 +88,8 @@ type ServerOptions struct {
 	HoldoutVerdicter HoldoutVerdicter
 	// DeploymentReader is the deployment_health tool's read at factoryd.
 	DeploymentReader DeploymentReader
+	// ImageLooker is the analyze_image tool's look at factoryd.
+	ImageLooker ImageLooker
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).
@@ -606,9 +608,7 @@ func dataImage(u string) ([]byte, int, bool) {
 	if semi < 0 || meta[semi+1:] != "base64" {
 		return nil, 0, false
 	}
-	switch strings.ToLower(meta[:semi]) {
-	case "image/png", "image/jpeg", "image/webp", "image/gif":
-	default:
+	if !slices.Contains(policy.LookTypes, strings.ToLower(meta[:semi])) {
 		return nil, 0, false
 	}
 	payload, err := base64.StdEncoding.DecodeString(u[comma+1:])
