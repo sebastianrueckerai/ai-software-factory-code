@@ -520,10 +520,7 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			sel.Select(t.ctx)
 			if final, why, ok := t.decided(); ok {
 				cancel()
-				// the decision stands; a dependency left behind only says so
-				if err := t.leavePark(p); err != nil {
-					why += "; the issue's dependency on the tool card stays: " + errMessage(err)
-				}
+				t.leavePark(p)
 				return final, why, nil, nil
 			}
 		}
@@ -532,6 +529,7 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 	if ready.sig == nil {
 		if asked != "" {
 			if err := t.ask(healedReason, asked, nil); err != nil {
+				t.leavePark(p)
 				return "failed", escalateFailed + errMessage(err), nil, nil
 			}
 			final, why, answer = t.awaitAnswer(asked, ready)
@@ -539,16 +537,12 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			final, why, answer = t.awaitHumanUntil(imageWaitAsk(p), nil, ready)
 		}
 		if final != "" || ready.sig == nil {
-			if err := t.leavePark(p); err != nil {
-				return "failed", "leave the image park: " + errMessage(err), nil, nil
-			}
+			t.leavePark(p)
 			return final, why, answer, nil
 		}
 	}
 	if ready.sig.Refusal != "" {
-		if err := t.leavePark(p); err != nil {
-			return "failed", "leave the image park: " + errMessage(err), nil, nil
-		}
+		t.leavePark(p)
 		return "", "", answer, []string{toolRefused(p.Tool, ready.sig.Refusal)}
 	}
 	var line string
@@ -562,12 +556,21 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 }
 
 // leavePark ends park p without its image: the card waits on its tool
-// card no more (LeaveImagePark).
-func (t *taskRun) leavePark(p ImagePark) error {
+// card no more (LeaveImagePark). A leave that fails after the activity's
+// retries blocks none of the card's work: its timeline notes that the
+// issue's dependency on the tool card stays.
+func (t *taskRun) leavePark(p ImagePark) {
 	if p.ToolTask == "" {
-		return nil
+		return
 	}
-	return workflow.ExecuteActivity(t.short, ActivityLeaveImagePark, t.taskID, p.ToolTask).Get(t.ctx, nil)
+	err := workflow.ExecuteActivity(t.short, ActivityLeaveImagePark, t.taskID, p.ToolTask).Get(t.ctx, nil)
+	if err == nil {
+		return
+	}
+	detail := map[string]any{"image": p.Target, "tool_card": p.ToolTask, "dependency_kept": errMessage(err)}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "image_park", detail).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record the image park's kept dependency", "task", t.taskID, "error", err)
+	}
 }
 
 // LeaveImagePark drops card taskID's dependency on tool card toolTask, in

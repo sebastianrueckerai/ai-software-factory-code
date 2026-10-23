@@ -755,7 +755,7 @@ func (h *workflowHarness) onPark(parks ...ToolPark) {
 	h.env.OnActivity(ActivityLeaveImagePark, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, toolTask string) error {
 			h.left = append(h.left, toolTask)
-			return nil
+			return h.leaveErr
 		})
 	h.env.OnActivity(ActivityParkForTool, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, tool, need string) (ToolPark, error) {
@@ -930,6 +930,59 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 	})
 }
 
+// A leave that fails after the activity's retries blocks none of the
+// card's work, on every path: the card goes on as it would, and its
+// timeline notes that the issue's dependency on the tool card stays.
+func TestWorkflowParkKeptDependencyIsANote(t *testing.T) {
+	kept := func(t *testing.T, h *workflowHarness) {
+		t.Helper()
+		for _, s := range h.recorded {
+			if s.step == "image_park" && s.detail["tool_card"] == "t-tool" && s.detail["image"] == "ffmpeg" && s.detail["dependency_kept"] == "forgejo answered 422" {
+				return
+			}
+		}
+		t.Fatalf("recorded %+v, want the kept dependency noted", h.recorded)
+	}
+	leaveFails := temporal.NewNonRetryableApplicationError("forgejo answered 422", "forgejo", nil)
+	t.Run("a refusal", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.onSessions(missingTool("s1", "ffmpeg", "cut the demo video"), pushed("s2", "c2"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.onPark(ffmpegPark())
+		h.leaveErr = leaveFails
+		h.signalAfter(time.Hour, SignalImageReady, TaskSignal{Image: "ffmpeg", Refusal: "#50 closed without a merge", At: parkedAt})
+		h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+		if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+			t.Fatalf("final = %q, sessions %d; want the card done", final, len(h.sessions))
+		}
+		kept(t, h)
+	})
+	t.Run("a human answers", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.onSessions(missingTool("s1", "ffmpeg", "cut the demo video"), pushed("s2", "c2"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.onPark(ffmpegPark())
+		h.leaveErr = leaveFails
+		h.signalAfter(26*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on without it", Comment: 700})
+		h.signalAfter(27*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+		if final := h.run(t); final != "done" || len(h.sessions) != 2 {
+			t.Fatalf("final = %q, sessions %d; want the card done", final, len(h.sessions))
+		}
+		kept(t, h)
+	})
+	t.Run("the issue closes", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.onSessions(missingTool("s1", "ffmpeg", "cut the demo video"))
+		h.onPark(ffmpegPark())
+		h.leaveErr = leaveFails
+		h.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+		if final := h.run(t); final != "closed" || strings.Contains(h.finals[len(h.finals)-1][1], "dependency") {
+			t.Fatalf("final = %q, finals %v; want closed as decided", final, h.finals)
+		}
+		kept(t, h)
+	})
+}
+
 // A session start whose image has no pin parks with no tool card and
 // takes nothing: no attempt, no agent time; the pin's wake runs the
 // session as the card's first.
@@ -1039,6 +1092,20 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 		}
 		if !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) || len(h.sessions) != 1 || h.sessions[0].Attempt != 2 || h.sessions[0].Sessions != 4 {
 			t.Fatalf("arrived %q, sessions %+v", h.arrived, h.sessions)
+		}
+	})
+	t.Run("asked, and the ask fails", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		p := ffmpegPark().Park
+		h.state = RunState{Status: "waiting-human", Park: &p, Question: imageWaited + "ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?",
+			Usage: TaskUsage{Attempts: 1}}
+		h.onPark(ffmpegPark())
+		h.escalateErr = temporal.NewNonRetryableApplicationError("forgejo down", errTerminal, nil)
+		if final := h.run(t); final != "failed" || !strings.HasPrefix(h.finals[len(h.finals)-1][1], escalateFailed) {
+			t.Fatalf("final = %q, finals %v; want the failed ask", final, h.finals)
+		}
+		if !slices.Equal(h.left, []string{"t-tool"}) {
+			t.Fatalf("left %q, want the park left", h.left)
 		}
 	})
 	t.Run("asked", func(t *testing.T) {

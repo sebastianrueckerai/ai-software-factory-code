@@ -1193,7 +1193,8 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   backstop, a tool card's own ask (it declares tools it never gets). A
   park that ends without its image drops the card's dependency on the
   tool card, in `task_deps` and on Forgejo, so the card's issue can
-  close. Any ask after a refused park goes to a human, and so does an ask
+  close; a drop that still fails after its retries blocks nothing, and
+  the card's timeline notes it. Any ask after a refused park goes to a human, and so does an ask
   for the tool whose image arrived from a card on that image; a card not
   on it takes it at once. After 24 hours without a wake the card asks a human; the
   image's arrival ends that wait too. The asking session takes no number

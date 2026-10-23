@@ -96,11 +96,12 @@ type workflowHarness struct {
 	finish func(ctx context.Context, taskID, final, reason string) error
 	// parked are ParkForTool's asks as "tool|need", arrived ImageArrived's
 	// calls as "image|tool" and arrivedAt their times, left
-	// LeaveImagePark's tool cards (onPark)
+	// LeaveImagePark's tool cards (onPark), leaveErr its error
 	parked    []string
 	arrived   []string
 	arrivedAt []time.Time
 	left      []string
+	leaveErr  error // LeaveImagePark's error, nil = none
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
