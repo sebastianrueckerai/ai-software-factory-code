@@ -1136,21 +1136,23 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 
 // A member's ask in the project chat files the same tool card a session's
 // ask files, with no asking card: no parent, no dependency, no park; the
-// member authors it. The body opens with who asked and why, and says what
-// the image is for once it is pinned.
+// member authors it. The body opens with who asked for which tool and
+// why, and says what the image is for once it is pinned.
 func TestRequestImageFilesAToolCard(t *testing.T) {
 	const file = "images:\n  default:\n    apt: [jq]\n"
 	r, store, rf, wf := parkRig(t, file, "default")
 	ctx := context.Background()
-	card, filed, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut the demo video to 10 s.", "", "sebastian")
+	ask, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut the demo video to 10 s.", "", "sebastian", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !filed || card.Source != SourceToolRequest || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" || card.Lane != policy.LaneReady ||
-		card.Status != "queued" || card.Priority != 0 || card.IssueNumber != 31 || card.Repository != codeRepo || card.Author != "sebastian" || !card.AuthorWriter {
-		t.Fatalf("tool card = %+v, filed %v", card, filed)
+	card := ask.Card
+	if !ask.Filed || ask.Target != "ffmpeg" || card.Source != SourceToolRequest || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" ||
+		card.Lane != policy.LaneReady || card.Status != "queued" || card.Priority != 0 || card.IssueNumber != 31 || card.Repository != codeRepo ||
+		card.Author != "sebastian" || !card.AuthorWriter {
+		t.Fatalf("ask = %+v", ask)
 	}
-	body := "Requested in the project chat by sebastian: cut the demo video to 10 s.\n\n" +
+	body := "Requested in the project chat by sebastian: ffmpeg, cut the demo video to 10 s.\n\n" +
 		"Add ffmpeg to image ffmpeg in factory/images.yaml. After this card merges, the factory builds the image, signs it and pins it, " +
 		"and cards that name image ffmpeg run on it, so it must still build and test this project.\n\n" +
 		"Image default holds jq, sox and reaches no package registry. " +
@@ -1227,11 +1229,11 @@ func TestRequestImageStartsFromTheTargetsEntry(t *testing.T) {
 				c := r.cfg.Policy().Projects["ai-software-factory-code"]
 				c.Images["video"] = policy.ImagePin{Digest: "sha256:" + strings.Repeat("d", 64), Key: keyDefault, Tools: []string{"ffmpeg"}, Egress: []string{"cdn.example.org"}}
 			}
-			card, _, err := r.RequestImage(context.Background(), codeRepo, tc.tool, "a need", tc.image, "sebastian")
+			ask, err := r.RequestImage(context.Background(), codeRepo, tc.tool, "a need", tc.image, "sebastian", nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			obj := store.tasks[card.ID].Objective
+			obj := store.tasks[ask.Card.ID].Objective
 			if !strings.Contains(obj, tc.after+"\n\n"+tc.start) {
 				t.Fatalf("objective %q lacks %q", obj, tc.after+"\n\n"+tc.start)
 			}
@@ -1244,7 +1246,8 @@ func TestRequestImageStartsFromTheTargetsEntry(t *testing.T) {
 
 // The chat's ask joins the open tool card of its image that no session
 // has started, a session's or the chat's, with a line in its brief and a
-// comment on its issue, each once; the same ask again changes nothing. A
+// comment on its issue, each once; the same ask again changes nothing,
+// and an ask for another tool with the same need is no repeat. A
 // session's ask joins the chat's card as it joins any other. A started
 // card is joined no more.
 func TestRequestImageJoinsTheOpenCard(t *testing.T) {
@@ -1262,9 +1265,9 @@ func TestRequestImageJoinsTheOpenCard(t *testing.T) {
 	before := store.tasks[first.Park.ToolTask].Objective
 	join := "Requested in the project chat by sebastian: sox in image video too: mix the sound."
 	for range 2 {
-		card, filed, err := r.RequestImage(ctx, codeRepo, "sox", "mix the sound", "video", "sebastian")
-		if err != nil || filed || card.ID != first.Park.ToolTask || card.IssueNumber != 31 {
-			t.Fatalf("join = %+v %v %v, want the open card %s", card, filed, err, first.Park.ToolTask)
+		ask, err := r.RequestImage(ctx, codeRepo, "sox", "mix the sound", "video", "sebastian", nil)
+		if err != nil || ask.Filed || ask.Target != "video" || ask.Card.ID != first.Park.ToolTask || ask.Card.IssueNumber != 31 {
+			t.Fatalf("join = %+v %v, want the open card %s", ask, err, first.Park.ToolTask)
 		}
 		if got := store.tasks[first.Park.ToolTask].Objective; got != before+"\n\n"+join || !slices.Equal(rf.comments, []string{"31 " + join}) || len(rf.issues) != 1 {
 			t.Fatalf("objective %q, comments %q, issues %d: want the join once", got, rf.comments, len(rf.issues))
@@ -1275,27 +1278,59 @@ func TestRequestImageJoinsTheOpenCard(t *testing.T) {
 	}
 
 	// the chat files a card of its own for another image; asking again is the card's own ask
-	own, filed, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian")
-	if err != nil || !filed || len(rf.issues) != 2 {
-		t.Fatalf("own card = %+v %v %v, issues %d", own, filed, err, len(rf.issues))
+	own, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian", nil)
+	if err != nil || !own.Filed || len(rf.issues) != 2 {
+		t.Fatalf("own card = %+v %v, issues %d", own, err, len(rf.issues))
 	}
-	if again, filed, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian"); err != nil || filed || again.ID != own.ID ||
-		store.tasks[own.ID].Objective != own.Objective || len(rf.comments) != 1 {
-		t.Fatalf("the same ask again = %+v %v %v, comments %q; want no change", again, filed, err, rf.comments)
+	if again, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian", nil); err != nil || again.Filed || again.Card.ID != own.Card.ID ||
+		store.tasks[own.Card.ID].Objective != own.Card.Objective || len(rf.comments) != 1 {
+		t.Fatalf("the same ask again = %+v %v, comments %q; want no change", again, err, rf.comments)
+	}
+	latex := "Requested in the project chat by sebastian: latex in image docs too: render the docs."
+	if other, err := r.RequestImage(ctx, codeRepo, "latex", "render the docs", "docs", "sebastian", nil); err != nil || other.Filed || other.Card.ID != own.Card.ID ||
+		store.tasks[own.Card.ID].Objective != own.Card.Objective+"\n\n"+latex || !slices.Equal(rf.comments, []string{"31 " + join, "32 " + latex}) {
+		t.Fatalf("another tool with the same need = %+v %v, objective %q, comments %q; want the join", other, err, store.tasks[own.Card.ID].Objective, rf.comments)
 	}
 	tk := store.tasks["t-second"]
 	tk.Image = "docs"
 	store.tasks["t-second"] = tk
-	p, err := r.ParkForTool(ctx, "t-second", "latex", "typeset")
-	if err != nil || p.Park.ToolTask != own.ID || !strings.HasSuffix(store.tasks[own.ID].Objective, "\n\nCard #42 (t-second) needs latex in image docs too: typeset") {
-		t.Fatalf("a session's join of the chat's card = %+v %v, objective %q", p, err, store.tasks[own.ID].Objective)
+	p, err := r.ParkForTool(ctx, "t-second", "biber", "typeset")
+	if err != nil || p.Park.ToolTask != own.Card.ID || !strings.HasSuffix(store.tasks[own.Card.ID].Objective, "\n\nCard #42 (t-second) needs biber in image docs too: typeset") {
+		t.Fatalf("a session's join of the chat's card = %+v %v, objective %q", p, err, store.tasks[own.Card.ID].Objective)
 	}
 
-	tool := store.tasks[own.ID]
+	tool := store.tasks[own.Card.ID]
 	tool.Status = "running"
-	store.tasks[own.ID] = tool
-	if next, filed, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian"); err != nil || !filed || next.ID == own.ID || len(rf.issues) != 3 {
-		t.Fatalf("an ask after the card started = %+v %v %v, issues %d; want a card of its own", next, filed, err, len(rf.issues))
+	store.tasks[own.Card.ID] = tool
+	if next, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian", nil); err != nil || !next.Filed || next.Card.ID == own.Card.ID || len(rf.issues) != 3 {
+		t.Fatalf("an ask after the card started = %+v %v, issues %d; want a card of its own", next, err, len(rf.issues))
+	}
+}
+
+// The chat's admission (a wake's closed intake, the backlog cap) judges
+// an ask that files a new card, by the card's title, before it is filed:
+// its refusal files nothing. An ask that joins an open card files none
+// and is not judged.
+func TestRequestImageAdmitsOnlyAFiling(t *testing.T) {
+	r, _, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	var judged []string
+	full := errors.New("the backlog is full")
+	admit := func(title string) error {
+		judged = append(judged, title)
+		return full
+	}
+	if _, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut", "video", "sebastian", admit); !errors.Is(err, full) ||
+		!slices.Equal(judged, []string{"Add ffmpeg to image video"}) || len(rf.issues) != 0 {
+		t.Fatalf("a filing at the cap = %v, judged %q, issues %d; want the refusal and no card", err, judged, len(rf.issues))
+	}
+	open, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut", "video", "sebastian", nil)
+	if err != nil || !open.Filed {
+		t.Fatalf("a filing = %+v %v", open, err)
+	}
+	judged = nil
+	if ask, err := r.RequestImage(ctx, codeRepo, "sox", "mix", "video", "sebastian", admit); err != nil || ask.Filed || ask.Card.ID != open.Card.ID || len(judged) != 0 {
+		t.Fatalf("a join = %+v %v, judged %q; want the join, not judged", ask, err, judged)
 	}
 }
 
@@ -1318,7 +1353,7 @@ func TestRequestImageRefusals(t *testing.T) {
 		{"sox", "mix\nthe sound", "", args},
 		{"sox", "mix", "Video", "image Video: lowercase letters, digits and dashes, at most 32; leave it out for an image named after the tool."},
 	} {
-		_, _, err := r.RequestImage(ctx, codeRepo, tc.tool, tc.need, tc.image, "sebastian")
+		_, err := r.RequestImage(ctx, codeRepo, tc.tool, tc.need, tc.image, "sebastian", nil)
 		var refused ErrImageRequest
 		if !errors.As(err, &refused) || string(refused) != tc.want {
 			t.Errorf("RequestImage(%q, %q, %q) = %v, want the refusal %q", tc.tool, tc.need, tc.image, err, tc.want)
@@ -1327,22 +1362,24 @@ func TestRequestImageRefusals(t *testing.T) {
 	if len(rf.issues) != 0 {
 		t.Fatalf("issues %q, want none", rf.issues)
 	}
-	if card, filed, err := r.RequestImage(ctx, codeRepo, "sox", "mix the sound", "video", "sebastian"); err != nil || !filed || len(rf.issues) != 1 {
-		t.Fatalf("an ask into a declared image = %+v %v %v", card, filed, err)
+	if ask, err := r.RequestImage(ctx, codeRepo, "sox", "mix the sound", "video", "sebastian", nil); err != nil || !ask.Filed || len(rf.issues) != 1 {
+		t.Fatalf("an ask into a declared image = %+v %v", ask, err)
 	}
 
 	r.Imager = &Imager{Config: &ForgejoConfig{Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}}}
-	_, _, err := r.RequestImage(ctx, codeRepo, "sox", "mix", "", "sebastian")
+	_, err := r.RequestImage(ctx, codeRepo, "sox", "mix", "", "sebastian", nil)
 	var refused ErrImageRequest
-	if want := "The factory refuses: sf/ai-software-factory-code is the factory's configuration repository, which declares no sandbox images."; !errors.As(err, &refused) || string(refused) != want {
+	if want := "The factory refuses: sf/ai-software-factory-code is the factory's configuration repository, which declares no sandbox images. " +
+		"Ask for the tool in the chat of the project whose cards need it."; !errors.As(err, &refused) || string(refused) != want {
 		t.Fatalf("an ask on the configuration repository = %v, want %q", err, want)
 	}
 	r.Imager = nil
 	c := r.cfg.Policy().Projects["ai-software-factory-code"]
 	c.Agents = policy.AgentsNone
 	r.cfg.Policy().Projects["ai-software-factory-code"] = c
-	_, _, err = r.RequestImage(ctx, codeRepo, "sox", "mix", "", "sebastian")
-	if want := "The factory refuses: project ai-software-factory-code runs no agents, so none of its cards runs in a sandbox image."; !errors.As(err, &refused) || string(refused) != want {
+	_, err = r.RequestImage(ctx, codeRepo, "sox", "mix", "", "sebastian", nil)
+	if want := "The factory refuses: project ai-software-factory-code runs no agents, so none of its cards runs in a sandbox image. " +
+		"Ask for the tool in the chat of the project whose cards need it."; !errors.As(err, &refused) || string(refused) != want {
 		t.Fatalf("an ask on a project without agents = %v, want %q", err, want)
 	}
 	if len(rf.issues) != 1 {
@@ -1358,15 +1395,31 @@ func TestRequestImageNeutralisesTheAgentsText(t *testing.T) {
 	v.Document.LinkHosts = []string{"docs.example.org"}
 	r.cfg.Policy = func() policy.Version { return v }
 	r.forgejo.PublicURL = "https://git.example"
-	card, _, err := r.RequestImage(context.Background(), codeRepo, "ffmpeg @mallory", hostile, "", "sebastian")
+	ask, err := r.RequestImage(context.Background(), codeRepo, "ffmpeg @mallory", hostile, "", "sebastian", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Add ffmpeg ＠mallory to image ffmpeg-mallory\n\nRequested in the project chat by sebastian: " + hostileOut + ".\n\n"
+	want := "Add ffmpeg ＠mallory to image ffmpeg-mallory\n\nRequested in the project chat by sebastian: ffmpeg ＠mallory, " + hostileOut + ".\n\n"
 	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], want) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
 		t.Fatalf("issues %q, want the card opening %q", rf.issues, want)
 	}
-	if obj := store.tasks[card.ID].Objective; !strings.HasPrefix(obj, want) {
+	if obj := store.tasks[ask.Card.ID].Objective; !strings.HasPrefix(obj, want) {
 		t.Fatalf("objective %q, want it opening %q", obj, want)
+	}
+}
+
+// A tool card whose project the store lacks is a terminal error that
+// names the asker: the asking card's task, or the chat's repository.
+func TestToolCardWithoutAProjectNamesTheAsker(t *testing.T) {
+	r, store, _, _ := parkRig(t, "", "default")
+	store.projects = []Project{}
+	var app *temporal.ApplicationError
+	if _, err := r.ParkForTool(context.Background(), "t-asker", "ffmpeg", "cut"); !errors.As(err, &app) ||
+		!strings.Contains(err.Error(), "task t-asker: repository sf/ai-software-factory-code is no project's") {
+		t.Fatalf("the card's ask = %v, want the task named", err)
+	}
+	if _, err := r.RequestImage(context.Background(), codeRepo, "ffmpeg", "cut", "", "sebastian", nil); !errors.As(err, &app) ||
+		!strings.Contains(err.Error(), "repository sf/ai-software-factory-code is no project's") || strings.Contains(err.Error(), "task ") {
+		t.Fatalf("the chat's ask = %v, want the repository named", err)
 	}
 }

@@ -2549,33 +2549,32 @@ func TestIntakeReadsAndDerivesTheRung(t *testing.T) {
 }
 
 // A card's image comes from its body's Image line, the last one, key and
-// name in any case, where the project pins that name in the version in
-// force; default, a name it does not pin and no line leave the card on
-// its project's default image.
+// name in any case, where a writer filed it and the project pins that
+// name in the version in force; default, a name it does not pin, an
+// outsider's line and no line leave the card on its project's default
+// image.
 func TestIntakeReadsTheImage(t *testing.T) {
-	for _, tc := range []struct{ body, image string }{
-		{"Build it.\n\nSize: small\nImage: chromium", "chromium"},
-		{"Build it.\nimage: Chromium", "chromium"},
-		{"Build it.\nImage: video\nImage: chromium", "chromium"},
-		{"Build it.\nImage: default", ""},
-		{"Build it.\nImage: browser", ""},
-		{"Image: the screenshot is broken", ""},
-		{"Build it.", ""},
+	for _, tc := range []struct{ poster, body, image string }{
+		{"sebastian", "Build it.\n\nSize: small\nImage: chromium", "chromium"},
+		{"sebastian", "Build it.\nimage: Chromium", "chromium"},
+		{"sebastian", "Build it.\nImage: video\nImage: chromium", "chromium"},
+		{"sebastian", "Build it.\nImage: default", ""},
+		{"sebastian", "Build it.\nImage: browser", ""},
+		{"sebastian", "Image: the screenshot is broken", ""},
+		{"sebastian", "Build it.", ""},
+		{"outsider", "Build it.\n\nImage: chromium", ""},
 	} {
 		in, store, _ := newTestIntake(t)
 		p := seedProject("sf/ai-software-factory-code")
 		p.Images = map[string]policy.ImagePin{"chromium": {Tools: []string{"chromium"}}, "video": {Tools: []string{"ffmpeg"}}}
 		store.projects = []Project{p}
-		body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add X", tc.body)
+		body := issueOpenedBody(7, tc.poster, []string{"agent"}, "Add X", tc.body)
 		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
-			t.Fatalf("%q: status = %d, body = %s", tc.body, rr.Code, rr.Body)
+			t.Fatalf("%s %q: status = %d, body = %s", tc.poster, tc.body, rr.Code, rr.Body)
 		}
-		var got Task
-		for _, task := range store.tasks {
-			got = task
-		}
-		if got.Image != tc.image {
-			t.Fatalf("%q: image %q, want %q", tc.body, got.Image, tc.image)
+		got, ok, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 7)
+		if !ok || got.Image != tc.image {
+			t.Fatalf("%s %q: image %q (%v), want %q", tc.poster, tc.body, got.Image, ok, tc.image)
 		}
 	}
 }

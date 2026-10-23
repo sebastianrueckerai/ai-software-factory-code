@@ -1614,11 +1614,18 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `comment`, `set_summary` and `set_accent` answer an undo token for
   `POST /projects/{name}/chat/undo/{token}`. `new_card` takes an `image`,
   a name the project pins in force (`default` names none), which reaches
-  the issue as an `Image:` line the intake reads into the card's row; any
-  other name is refused with the pins and `request_image`.
-  `request_image` (`tool`, `need`, an optional `image`, else one named
-  after the tool) puts the member's ask on a tool card as a session's
-  `request_tool` does (above), refused at the same cap. Proposals and
+  the issue as an `Image:` line among the field lines (`Size:`, `Rung:`)
+  after a blank line; the intake reads it into the card's row from a
+  writer's issue only. The proposal and the filing refuse any other name
+  with the pins and `request_image`. `request_image` (`tool`, `need`, an
+  optional `image`, else one named after the tool) puts the member's ask
+  on a tool card as a session's `request_tool` does (above), refused at
+  the same cap; the card opens with who asked for which tool and why. A
+  filing meets the chat's admission as `new_card`'s does (a wake files
+  nothing on a closed intake, and no ask files past the backlog cap; a
+  join files nothing and meets neither) and writes a `card_filed` row
+  with the lane, title, image and tool. A project without agents offers
+  neither `project_images` nor `request_image`. Proposals and
   undo tokens are the member's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
   another member's). A wake, the turn the Waker starts on a member's
@@ -1644,7 +1651,8 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   is `chat_messages`, per project and member, each assistant row with its
   tool calls and their results; a turn's context is the project's status
   line, a line of its sandbox images (`Sandbox images:` the pins in force
-  with their tools, and what a card without an image runs), the thread's
+  with their tools, and what a card without an image runs; none for a
+  project without agents), the thread's
   summary and its last 200 messages, the status and every tool text
   through `sanitize.Inbound`.
   `GET /projects/{name}/chat` answers the last 100 as JSON. The `chat`

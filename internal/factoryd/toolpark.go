@@ -159,7 +159,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 	if refusal := capRefusal(project, p.Target, c.Images, declared); refusal != "" {
 		return r.refuse(ctx, t, p, refusal, " A human must free a name: ask one with escalate_to_human, or go on without the tool.")
 	}
-	if p.ToolTask, err = r.toolCardOf(ctx, t.Repository, p.Target, t.ID); err != nil {
+	if p.ToolTask, _, err = r.toolCardOf(ctx, t.Repository, p.Target, t.ID); err != nil {
 		return ToolPark{}, err
 	}
 	if p, err = r.store.ParkImage(ctx, p, true); err != nil {
@@ -174,46 +174,65 @@ type ErrImageRequest string
 
 func (e ErrImageRequest) Error() string { return string(e) }
 
+// ImageAsk is RequestImage's answer: the tool card the ask is on, the
+// image it adds the tool to, and whether the ask filed the card or joined
+// it.
+type ImageAsk struct {
+	Card   Task
+	Target string
+	Filed  bool
+}
+
+// elsewhere is the fitting action of an ask refused for its project.
+const elsewhere = " Ask for the tool in the chat of the project whose cards need it."
+
 // RequestImage puts the ask of member by in the project chat of
 // repository for tool, for need, on the tool card of image image, else of
 // one named after the tool (toolImage), as a session's ask goes on it
 // (ParkForTool) with no card that waits: it joins the open card of the
-// image no session has started, else files one; filed says which. Bad
-// arguments, an ask on the configuration repository or a project without
-// agents and a new image past the project's MaxImages names are
-// ErrImageRequest.
-func (r *Runner) RequestImage(ctx context.Context, repository, tool, need, image, by string) (card Task, filed bool, err error) {
+// image no session has started, else files one, which admit, when given,
+// judges by its title first. Bad arguments, an ask on the configuration
+// repository or a project without agents and a new image past the
+// project's MaxImages names are ErrImageRequest.
+func (r *Runner) RequestImage(ctx context.Context, repository, tool, need, image, by string, admit func(title string) error) (ImageAsk, error) {
 	if refusal := policy.ToolAskRefusal(tool, need); refusal != "" {
-		return Task{}, false, ErrImageRequest(refusal)
+		return ImageAsk{}, ErrImageRequest(refusal)
 	}
 	if image != "" && !policy.IsImageName(image) {
-		return Task{}, false, ErrImageRequest("image " + image + ": lowercase letters, digits and dashes, at most 32; leave it out for an image named after the tool.")
+		return ImageAsk{}, ErrImageRequest("image " + image + ": lowercase letters, digits and dashes, at most 32; leave it out for an image named after the tool.")
 	}
 	project, c, ok := r.cfg.Policy().ProjectOf(repository)
 	switch {
 	case !ok:
-		return Task{}, false, fmt.Errorf("repository %s is no project's", repository)
+		return ImageAsk{}, fmt.Errorf("repository %s is no project's", repository)
 	case r.Imager != nil && repository == r.Imager.Config.Repo.String():
-		return Task{}, false, ErrImageRequest("The factory refuses: " + repository + " is the factory's configuration repository, which declares no sandbox images.")
+		return ImageAsk{}, ErrImageRequest("The factory refuses: " + repository + " is the factory's configuration repository, which declares no sandbox images." + elsewhere)
 	case c.Agents == policy.AgentsNone:
-		return Task{}, false, ErrImageRequest("The factory refuses: project " + project + " runs no agents, so none of its cards runs in a sandbox image.")
+		return ImageAsk{}, ErrImageRequest("The factory refuses: project " + project + " runs no agents, so none of its cards runs in a sandbox image." + elsewhere)
 	}
 	repo, err := SplitRepo(repository)
 	if err != nil {
-		return Task{}, false, err
+		return ImageAsk{}, err
 	}
 	raw, declared, err := r.imagesOnMain(ctx, repo)
 	if err != nil {
-		return Task{}, false, err
+		return ImageAsk{}, err
 	}
 	p := ImagePark{Project: project, Target: cmp.Or(image, toolImage(tool)), Tool: tool, Need: need}
 	if refusal := capRefusal(project, p.Target, c.Images, declared); refusal != "" {
-		return Task{}, false, ErrImageRequest("The factory refuses: " + refusal + ". Add the tool to one of them with image, or file a card that removes an image from " + imagesPath + ".")
+		return ImageAsk{}, ErrImageRequest("The factory refuses: " + refusal + ". Add the tool to one of them with image, or file a card that removes an image from " + imagesPath + ".")
 	}
-	if p.ToolTask, err = r.toolCardOf(ctx, repository, p.Target, ""); err != nil {
-		return Task{}, false, err
+	var open bool
+	if p.ToolTask, open, err = r.toolCardOf(ctx, repository, p.Target, ""); err != nil {
+		return ImageAsk{}, err
 	}
-	return r.putOnToolCard(ctx, toolAsker{repository: repository, by: by}, repo, p, c.Images, declared, raw)
+	if !open && admit != nil {
+		if err := admit("Add " + tool + " to image " + p.Target); err != nil {
+			return ImageAsk{}, err
+		}
+	}
+	card, filed, err := r.putOnToolCard(ctx, toolAsker{repository: repository, by: by}, repo, p, c.Images, declared, raw)
+	return ImageAsk{Card: card, Target: p.Target, Filed: filed}, err
 }
 
 // imagesOnMain is repo's images.yaml on main and the images it declares,
@@ -232,18 +251,19 @@ func (r *Runner) imagesOnMain(ctx context.Context, repo Repo) ([]byte, map[strin
 
 // toolCardOf is the id of the tool card an ask for image target of
 // repository goes on: the open card of the image while no session has
-// started it, else a new one. The asking card self never waits on itself.
-func (r *Runner) toolCardOf(ctx context.Context, repository, target, self string) (string, error) {
+// started it (open), else a new one. The asking card self never waits on
+// itself.
+func (r *Runner) toolCardOf(ctx context.Context, repository, target, self string) (id string, open bool, err error) {
 	card, open, err := r.store.OpenToolCard(ctx, repository, target)
 	switch {
 	case err != nil:
-		return "", err
+		return "", false, err
 	case open && card.ID == self:
-		return "", terminalError("task %s is the open tool card of image %s: it cannot wait for itself", self, target)
+		return "", false, terminalError("task %s is the open tool card of image %s: it cannot wait for itself", self, target)
 	case open && slices.Contains(notStarted, card.Status):
-		return card.ID, nil
+		return card.ID, true, nil
 	}
-	return NewTaskID(), nil
+	return NewTaskID(), false, nil
 }
 
 // toolAsker is who asks a tool card for a tool on repository: card, which
@@ -257,10 +277,10 @@ type toolAsker struct {
 // cardAsker is card t as a tool card's asker.
 func cardAsker(t Task) toolAsker { return toolAsker{repository: t.Repository, card: &t} }
 
-// askLine opens the tool card of a's ask p: who needs the tool and why.
+// askLine opens the tool card of a's ask p: who needs which tool and why.
 func (a toolAsker) askLine(p ImagePark) string {
 	if a.card == nil {
-		return fmt.Sprintf("Requested in the project chat by %s: %s.", a.by, strings.TrimSuffix(p.Need, "."))
+		return fmt.Sprintf("Requested in the project chat by %s: %s, %s.", a.by, p.Tool, strings.TrimSuffix(p.Need, "."))
 	}
 	return fmt.Sprintf("Card #%d (%s) needs %s, which its sandbox lacks: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Need)
 }
@@ -496,7 +516,11 @@ func (r *Runner) fileToolCard(ctx context.Context, a toolAsker, p ImagePark, pin
 		return Task{}, err
 	}
 	if !ok {
-		return Task{}, terminalError("repository %s is no project's", a.repository)
+		who := "repository " + a.repository
+		if a.card != nil {
+			who = "task " + a.card.ID + ": " + who
+		}
+		return Task{}, terminalError("%s is no project's", who)
 	}
 	now, err := imageNow(a, p, pinned, declared)
 	if err != nil {

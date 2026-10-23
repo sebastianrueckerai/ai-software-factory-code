@@ -221,13 +221,17 @@ func (c *Console) chatTools() []chatTool {
 	})
 }
 
+// imageTools are the chat's tools of sandbox images, which a project
+// without agents has none of.
+var imageTools = []string{"project_images", "request_image"}
+
 // offered are the schemas of the chat's tools the turn's member holds the
 // access table's roles for: the model is offered no tool the dispatch
-// would refuse them.
+// would refuse them, and no image tool on a project without agents.
 func (t *turn) offered() []factoryd.OperatorTool {
 	var defs []factoryd.OperatorTool
 	for _, tool := range t.c.chatTools() {
-		if t.offers(tool.name) {
+		if t.offers(tool.name) && (t.p.Agents != policy.AgentsNone || !slices.Contains(imageTools, tool.name)) {
 			defs = append(defs, tool.def(slices.Contains(t.cfg.Confirm, tool.name)))
 		}
 	}
@@ -323,6 +327,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	}
 	if tool.name == "github_export" {
 		if _, err := t.exportToken(); err != nil {
+			return "", err
+		}
+	}
+	if tool.name == "new_card" {
+		if _, err := pinnedImage(t.p, in.Image); err != nil {
 			return "", err
 		}
 	}
@@ -1668,20 +1677,33 @@ func (t *turn) imagesText() (string, error) {
 
 // requestImage is request_image: the member's ask for a tool on the tool
 // card of one of the project's images (factoryd's Runner.RequestImage),
-// which it files or joins.
+// which it files or joins. A filing meets the chat's admission, as
+// new_card's does, and is recorded as the chat's filing.
 func (t *turn) requestImage(in toolInput) (string, error) {
-	card, filed, err := t.c.cfg.RequestImage(t.r.Context(), t.p.Repository, strings.TrimSpace(in.Tool), strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.s.user)
+	ctx, tool := t.r.Context(), strings.TrimSpace(in.Tool)
+	admit := func(title string) error {
+		return t.c.chatFiling(ctx, t.a, t.p, func(tree policy.Tree) string {
+			return factoryd.BacklogRefusal(ctx, t.c.cfg.Tasks, tree, t.p.Repository, title)
+		})
+	}
+	ask, err := t.c.cfg.RequestImage(ctx, t.p.Repository, tool, strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.s.user, admit)
 	var no factoryd.ErrImageRequest
+	var admission *refusal
 	switch {
+	case errors.As(err, &admission):
+		return "", err
 	case errors.As(err, &no):
 		return "", refuse(http.StatusConflict, string(no))
 	case err != nil:
 		log.Printf("console: the tool card of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The tool card could not be filed; see the factoryd log.")
 	}
-	what := fmt.Sprintf("Filed tool card #%d %s %q.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
-	if !filed {
-		what = fmt.Sprintf("The ask joined tool card #%d %s %q, which no session has started.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
+	card := ask.Card
+	what := fmt.Sprintf("The ask joined tool card #%d %s %q, which no session has started.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
+	if ask.Filed {
+		what = fmt.Sprintf("Filed tool card #%d %s %q.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
+		t.c.record(ctx, t.a, t.p.Repository, card.ID, card.IssueNumber, factoryd.EventCardFiled,
+			map[string]any{"lane": card.Lane, "title": factoryd.CardTitle(card), "image": ask.Target, "tool": tool})
 	}
 	return what + " After it merges, the factory builds, signs and pins the image; cards can then name it in image.", nil
 }

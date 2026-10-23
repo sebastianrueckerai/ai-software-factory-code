@@ -488,7 +488,8 @@ func askedBudget(body string) (size string, eur float64) {
 // askedImage is the image the issue body's last line "Image: <name>"
 // names, key and name in any case, where pins, the project's in force,
 // hold it; "" for default, an unpinned name or no line: the card runs on
-// its project's default image.
+// its project's default image. The intake reads it from a writer's issue
+// only.
 func askedImage(body string, pins map[string]policy.ImagePin) string {
 	image := ""
 	for l := range strings.Lines(body) {
@@ -968,7 +969,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Author:       poster,
 		AuthorWriter: writer,
 		ReproCommand: ReproCommand(issue.Body),
-		Image:        askedImage(issue.Body, p.Images),
+	}
+	if writer {
+		task.Image = askedImage(issue.Body, p.Images)
 	}
 	if p.Agents == policy.AgentsNone || IssueLane(names, p.Lanes) == LaneHuman {
 		// no runner ever claims the human lane: it waits on a human from

@@ -226,10 +226,12 @@ type Config struct {
 	GoCard func(ctx context.Context, taskID, by string) (int64, error)
 	// RequestImage puts by's ask in the chat of repository for tool, for
 	// need, on the tool card of image, else of one named after the tool
-	// (factoryd's Runner.RequestImage): the card, and whether the ask
-	// filed it or joined it; a refusal is factoryd.ErrImageRequest. nil
-	// offers the project agent no request_image.
-	RequestImage func(ctx context.Context, repository, tool, need, image, by string) (factoryd.Task, bool, error)
+	// (factoryd's Runner.RequestImage): the card, its image and whether
+	// the ask filed it or joined it. admit judges a filing by the card's
+	// title before it is filed, its error the answer; a refusal of
+	// factoryd's is factoryd.ErrImageRequest. nil offers the project
+	// agent no request_image.
+	RequestImage func(ctx context.Context, repository, tool, need, image, by string, admit func(title string) error) (factoryd.ImageAsk, error)
 	// CloseCard ends card taskID, which has no issue, closed for by
 	// (factoryd's Intake.CloseCard).
 	CloseCard func(ctx context.Context, taskID, by string) error

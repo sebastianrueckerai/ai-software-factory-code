@@ -4,8 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -13,27 +15,45 @@ import (
 
 // The chat's default context names the project's sandbox images, the pins
 // in force with their tools, and what a card without an image runs: the
-// factory image, or image default where the project pins it.
+// factory image, or image default where the project pins it. A project
+// without agents runs no card in a sandbox: its context names no images,
+// and its agent is offered neither project_images nor request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
-	const status = "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n"
+	const status = "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"
 	for _, tc := range []struct {
-		pins map[string]policy.ImagePin
-		line string
+		agents string
+		pins   map[string]policy.ImagePin
+		line   string
 	}{
-		{nil, "Sandbox images: none; every card runs the factory image."},
-		{map[string]policy.ImagePin{"chromium": {Tools: []string{"chromium", "fonts-liberation", "go", "node"}}},
-			"Sandbox images: chromium (chromium, fonts-liberation, go, node); a card without an image runs the factory image."},
-		{map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "default": {Tools: []string{"jq", "go"}}},
-			"Sandbox images: default (jq, go), video (ffmpeg); a card without an image runs image default."},
+		{policy.AgentsCoder, nil, "\nSandbox images: none; every card runs the factory image."},
+		{policy.AgentsCoder, map[string]policy.ImagePin{"chromium": {Tools: []string{"chromium", "fonts-liberation", "go", "node"}}},
+			"\nSandbox images: chromium (chromium, fonts-liberation, go, node); a card without an image runs the factory image."},
+		{policy.AgentsCoder, map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "default": {Tools: []string{"jq", "go"}}},
+			"\nSandbox images: default (jq, go), video (ffmpeg); a card without an image runs image default."},
+		{policy.AgentsNone, map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}}, ""},
 	} {
 		r, _, g := newChatRig(t)
-		r.projects.rows[0].Images = tc.pins
+		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)
 		g.replies = [][]string{{say("ok")}}
 		chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs where?"}})
-		system, _ := messages(t, g.calls()[0])[0]["content"].(string)
-		if !strings.HasSuffix(system, status+tc.line) {
-			t.Errorf("the system message does not end with %q:\n%s", status+tc.line, system)
+		call := g.calls()[0]
+		system, _ := messages(t, call)[0]["content"].(string)
+		if tc.agents == policy.AgentsNone {
+			if strings.Contains(system, "Sandbox images") || !strings.HasSuffix(system, "the cards €0.00, the chat €0.00") {
+				t.Errorf("none: the system message names images or does not end with the status line:\n%s", system)
+			}
+		} else if !strings.HasSuffix(system, status+tc.line) {
+			t.Errorf("%s: the system message does not end with %q:\n%s", tc.agents, status+tc.line, system)
+		}
+		var offered []string
+		for _, tool := range call["tools"].([]any) {
+			if name := tool.(map[string]any)["function"].(map[string]any)["name"].(string); name == "project_images" || name == "request_image" {
+				offered = append(offered, name)
+			}
+		}
+		if want := map[string][]string{policy.AgentsCoder: {"project_images", "request_image"}}[tc.agents]; !slices.Equal(offered, want) {
+			t.Errorf("%s: the image tools offered are %v, want %v", tc.agents, offered, want)
 		}
 	}
 }
@@ -94,7 +114,7 @@ func TestChatNewCardImage(t *testing.T) {
 		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., lane backlog, image chromium","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\nImage: chromium")
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nImage: chromium")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"lane": "backlog", "title": "Shoot the page", "image": "chromium", "thread": int64(1)}})
 
@@ -105,9 +125,16 @@ func TestChatNewCardImage(t *testing.T) {
 	equal(t, "Do it on default", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
 	equal(t, "the issue's body on default", r.fg.issues[0]["body"], "Screenshot the landing page.")
 
+	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave image out for the default, or add the image with request_image."
 	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Lane: policy.LaneBacklog, Image: "video"})
-	equal(t, "an unpinned image", []any{code, msg}, []any{http.StatusConflict,
-		"Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave image out for the default, or add the image with request_image."})
+	equal(t, "an unpinned image", []any{code, msg}, []any{http.StatusConflict, unpinned})
+	// the proposal judges the image, so the agent corrects it before Do it
+	ck, s := r.loggedIn(t)
+	args = `{"image":"video","lane":"backlog","title":"Shoot the page"}`
+	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it on video"}})
+	equal(t, "the proposal of an unpinned image", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + unpinned + `"}`, `text {"text":"Refused."}`, `done {}`})
 	r.projects.rows[0].Images = nil
 	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Lane: policy.LaneBacklog, Image: "video"})
 	equal(t, "a project without images", []any{code, msg}, []any{http.StatusConflict,
@@ -116,12 +143,15 @@ func TestChatNewCardImage(t *testing.T) {
 
 // request_image is the member's ask for a tool, confirmed as new_card is:
 // Do it hands the project's repository, the arguments and the member to
-// factoryd, which files or joins the tool card the result names. A
-// refusal of factoryd's reaches the agent as it is.
+// factoryd, which files or joins the tool card the result names. A filed
+// card is recorded as the chat's filing, with its lane, title, image and
+// tool; a join files nothing and records nothing. A refusal of factoryd's
+// reaches the agent as it is.
 func TestChatRequestImage(t *testing.T) {
 	const after = " After it merges, the factory builds, signs and pins the image; cards can then name it in image."
+	tool := factoryd.Task{ID: "t-tool", IssueNumber: 50, Lane: policy.LaneReady, Objective: "Add ffmpeg to image video\n\nRequested in the project chat by sebastian: ffmpeg, cut it."}
 	r, g := newWritesRig(t)
-	r.imageCard, r.imageFiled = factoryd.Task{ID: "t-tool", IssueNumber: 50, Objective: "Add ffmpeg to image video\n\nRequested in the project chat by sebastian: cut it."}, true
+	r.imageAsk = factoryd.ImageAsk{Card: tool, Target: "video", Filed: true}
 	before := r.events.count()
 	args := `{"image":"video","need":"cut the demo video","tool":"ffmpeg"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "request_image", args)
@@ -130,12 +160,15 @@ func TestChatRequestImage(t *testing.T) {
 		`done {}`})
 	equal(t, "Do it", done, ran("request_image", args, `Filed tool card #50 t-tool \"Add ffmpeg to image video\".`+after))
 	equal(t, "the ask", r.imageAsks, []string{"sf/code: ffmpeg | cut the demo video | video, by sebastian"})
-	chatRows(t, r.events, before, "sebastian")
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-tool", IssueNumber: 50, Kind: factoryd.EventCardFiled,
+		Detail: map[string]any{"lane": "ready", "title": "Add ffmpeg to image video", "image": "video", "tool": "ffmpeg", "thread": int64(1)}})
 
-	r.imageFiled = false
+	r.imageAsk.Filed = false
+	before = r.events.count()
 	_, done, _ = proposeAndDo(t, r, g, "request_image", `{"need":"mix the sound","tool":"sox"}`)
 	equal(t, "a join", done, ran("request_image", `{"need":"mix the sound","tool":"sox"}`,
 		`The ask joined tool card #50 t-tool \"Add ffmpeg to image video\", which no session has started.`+after))
+	chatRows(t, r.events, before, "sebastian")
 
 	r.imageErr = factoryd.ErrImageRequest("The factory refuses: image sox would be new.")
 	code, msg := refused(t, r, "request_image", toolInput{Tool: "sox", Need: "mix"})
@@ -143,4 +176,66 @@ func TestChatRequestImage(t *testing.T) {
 	r.imageErr = errors.New("the store is down")
 	code, msg = refused(t, r, "request_image", toolInput{Tool: "sox", Need: "mix"})
 	equal(t, "a failure", []any{code, msg}, []any{http.StatusBadGateway, "The tool card could not be filed; see the factoryd log."})
+}
+
+// At assisted the agent asks for a tool without the member's OK, as it
+// files a card: the filing's row names the level, the agent as the
+// decider and the chat task, which the inbox's poke reads.
+func TestChatRequestImageAtAssisted(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
+	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Lane: policy.LaneReady, Objective: "Add ffmpeg to image ffmpeg\n\nRequested."},
+		Target: "ffmpeg", Filed: true}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("Asked.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"we need ffmpeg"}})
+	if !strings.Contains(events[0], `"result":"Filed tool card #50 t-tool`) {
+		t.Fatalf("the unconfirmed ask did not run: %v", events)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-tool", IssueNumber: 50, Kind: factoryd.EventCardFiled,
+		Detail: map[string]any{"lane": "ready", "title": "Add ffmpeg to image ffmpeg", "image": "ffmpeg", "tool": "ffmpeg", "autonomy": "assisted", "merge_rule": "human",
+			"decider": "agent", "chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now()), "thread": int64(1)}})
+}
+
+// request_image's filing meets the chat's admission, as new_card's does:
+// a wake files no tool card on a closed intake, and no ask files one past
+// the project's backlog cap. The refusal names the state and what to do.
+func TestChatRequestImageAdmission(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
+	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Lane: policy.LaneReady}, Target: "ffmpeg", Filed: true}
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/projects/ai-software-factory-code/intake", url.Values{"csrf": {s.csrf}, "intake": {"closed"}}), ck); rec.Code != http.StatusNoContent {
+		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
+	}
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("The intake is closed.")}}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_heartbeat", "The daily heartbeat: look for what to start."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var results []string
+	for _, row := range rows {
+		for _, tc := range row.ToolCalls {
+			results = append(results, tc.Result)
+		}
+	}
+	equal(t, "the wake's ask", results, []string{
+		"Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts."})
+	chatRows(t, r.events, before, "sebastian")
+
+	// t-m in the backlog and t-r not yet admitted fill a cap of 2
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: policy.MergeHuman, BacklogCap: 2}}
+	code, msg := refused(t, r, "request_image", toolInput{Tool: "ffmpeg", Need: "cut"})
+	equal(t, "an ask past the backlog cap", []any{code, msg}, []any{http.StatusConflict,
+		"The ready check refuses the filing: card Add ffmpeg to image ffmpeg: the backlog holds 2 of its 2 cards; file it when one starts"})
+	chatRows(t, r.events, before, "sebastian")
 }

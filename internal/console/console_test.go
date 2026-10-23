@@ -971,11 +971,11 @@ type rig struct {
 	// chatToken is every project's chat token, the wake's identity
 	chatToken string
 	// imageAsks are "repository: tool | need | image, by user" per
-	// RequestImage, which answers imageCard, imageFiled and imageErr
-	imageAsks  []string
-	imageCard  factoryd.Task
-	imageFiled bool
-	imageErr   error
+	// RequestImage, which answers imageAsk and imageErr, judging the
+	// filing of imageAsk by its admission first
+	imageAsks []string
+	imageAsk  factoryd.ImageAsk
+	imageErr  error
 }
 
 var monthly = 8.99
@@ -1145,9 +1145,14 @@ func newRig(t *testing.T) *rig {
 			r.handed = append(r.handed, taskID+" by "+by)
 			return 16, r.goErr
 		},
-		RequestImage: func(_ context.Context, repository, tool, need, image, by string) (factoryd.Task, bool, error) {
+		RequestImage: func(_ context.Context, repository, tool, need, image, by string, admit func(string) error) (factoryd.ImageAsk, error) {
 			r.imageAsks = append(r.imageAsks, repository+": "+tool+" | "+need+" | "+image+", by "+by)
-			return r.imageCard, r.imageFiled, r.imageErr
+			if r.imageAsk.Filed {
+				if err := admit("Add " + tool + " to image " + r.imageAsk.Target); err != nil {
+					return factoryd.ImageAsk{}, err
+				}
+			}
+			return r.imageAsk, r.imageErr
 		},
 		AddCollaborator: func(_ context.Context, repo factoryd.Repo, user, permission string) error {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)

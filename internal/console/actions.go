@@ -338,8 +338,10 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 
 // doFileCard files an issue on project's repository as the member, labelled
 // with the lane's label (backlog, plan or agent, or human for the human
-// lane) and priority when given, its body ending with the line "Size:
-// <size>" when given; the webhook or the heal pass makes it a task. It
+// lane) and priority when given, its body ending, after a blank line,
+// with the field lines the intake reads, each when given: "Size: <size>",
+// "Rung: <rung>, <reason>" and "Image: <name>", an image the project
+// pins; the webhook or the heal pass makes it a task. It
 // answers the repository and the issue's number. In a wake the chat bot
 // posts the issue, and the card_filed row that names the member is
 // written before the answer: an unrecorded filing closes its issue and
@@ -362,15 +364,6 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	case rung != "" && strings.TrimSpace(rungReason) == "":
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a rung needs its one-line reason")
 	}
-	detail := map[string]any{"lane": lane, "title": title}
-	if size != "" {
-		body += "\n\nSize: " + size
-		detail["size"] = size
-	}
-	if rung != "" {
-		body += "\nRung: " + rung + ", " + strings.TrimSpace(rungReason)
-		detail["rung"] = rung
-	}
 	ps, err := c.coderProjects(ctx)
 	if err != nil {
 		log.Printf("console: projects: %v", err)
@@ -380,49 +373,43 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if i < 0 || a.repository != "" && ps[i].Repository != a.repository {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "choose a project agents work on")
 	}
-	if image == "default" {
-		image = ""
+	image, err = pinnedImage(ps[i], image)
+	if err != nil {
+		return factoryd.Repo{}, 0, err
 	}
-	if _, ok := ps[i].Images[image]; image != "" && !ok {
-		return factoryd.Repo{}, 0, refuse(http.StatusConflict, unpinnedImage(ps[i], image))
+	detail := map[string]any{"lane": lane, "title": title}
+	var fields []string
+	if size != "" {
+		fields = append(fields, "Size: "+size)
+		detail["size"] = size
+	}
+	if rung != "" {
+		fields = append(fields, "Rung: "+rung+", "+strings.TrimSpace(rungReason))
+		detail["rung"] = rung
 	}
 	if image != "" {
-		body += "\nImage: " + image
+		fields = append(fields, "Image: "+image)
 		detail["image"] = image
 	}
-	// a closed intake refuses the wake's own filings — the turn the Waker
-	// started without the member's ask — while the member's own ask still
-	// files and starts
-	if a.via == factoryd.ViaChat && a.wake {
-		closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, ps[i].Repository)
-		if err != nil {
-			log.Printf("console: the intake of %s: %v", ps[i].Name, err)
-			return factoryd.Repo{}, 0, refuse(http.StatusServiceUnavailable, "cannot read the intake of "+ps[i].Name+"; try again")
-		}
-		if closed {
-			return factoryd.Repo{}, 0, refuse(http.StatusForbidden, "The intake of "+ps[i].Name+" is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts.")
-		}
+	if len(fields) > 0 {
+		body += "\n\n" + strings.Join(fields, "\n")
 	}
 	label := factoryd.LaneHuman
+	var check func(policy.Tree) string
 	if lane != factoryd.LaneHuman {
 		if !slices.ContainsFunc(ps[i].Lanes, func(l policy.Lane) bool { return l.Name == lane }) {
 			return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "project "+ps[i].Name+" has no lane "+lane)
 		}
 		label = laneLabels[lane]
-		// the ready check gates the chat agent's filings and starts; the
-		// human's buttons and the webhook intake file as they always did
-		// (roadmap 239)
-		if a.via == factoryd.ViaChat {
-			if v, ok := c.inForce(ctx); ok {
-				line := factoryd.BacklogRefusal(ctx, c.cfg.Tasks, v.Tree, ps[i].Repository, title)
-				if lane != policy.LaneBacklog {
-					line = factoryd.FileRefusal(ctx, c.cfg.Tasks, v.Tree, ps[i].Repository, title, title, body, size)
-				}
-				if line != "" {
-					return factoryd.Repo{}, 0, refuse(http.StatusConflict, "The ready check refuses the filing: "+line)
-				}
+		check = func(tree policy.Tree) string {
+			if lane == policy.LaneBacklog {
+				return factoryd.BacklogRefusal(ctx, c.cfg.Tasks, tree, ps[i].Repository, title)
 			}
+			return factoryd.FileRefusal(ctx, c.cfg.Tasks, tree, ps[i].Repository, title, title, body, size)
 		}
+	}
+	if err := c.chatFiling(ctx, a, ps[i], check); err != nil {
+		return factoryd.Repo{}, 0, err
 	}
 	repo := ps[i].Repo()
 	labels, err := c.labels(ctx, a.s, repo)
@@ -471,14 +458,50 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	return repo, issue.Number, nil
 }
 
-// unpinnedImage refuses a card on image, which project p does not pin in
-// force, naming its pins and request_image.
-func unpinnedImage(p factoryd.Project, image string) string {
-	if len(p.Images) == 0 {
-		return "Project " + p.Name + " pins no sandbox images. Leave image out for the default, or add the image with request_image."
+// chatFiling admits a chat filing by a of a card on project p (roadmap
+// 239): a closed intake refuses a wake's filing, the turn the Waker
+// started without the member's ask, while the member's own ask still
+// files and starts; then check, the ready check's line under the policy
+// in force ("" passes), judges it, nil for a human card, which meets
+// none. The human's buttons and the webhook intake file as they always
+// did.
+func (c *Console) chatFiling(ctx context.Context, a actor, p factoryd.Project, check func(policy.Tree) string) error {
+	if a.via != factoryd.ViaChat {
+		return nil
 	}
-	return fmt.Sprintf("Project %s pins no image %s: its images are %s. Name one of them, leave image out for the default, or add the image with request_image.",
-		p.Name, image, strings.Join(slices.Sorted(maps.Keys(p.Images)), ", "))
+	if a.wake {
+		closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, p.Repository)
+		if err != nil {
+			log.Printf("console: the intake of %s: %v", p.Name, err)
+			return refuse(http.StatusServiceUnavailable, "cannot read the intake of "+p.Name+"; try again")
+		}
+		if closed {
+			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts.")
+		}
+	}
+	if v, ok := c.inForce(ctx); ok && check != nil {
+		if line := check(v.Tree); line != "" {
+			return refuse(http.StatusConflict, "The ready check refuses the filing: "+line)
+		}
+	}
+	return nil
+}
+
+// pinnedImage is the image a card of project p names: "" for none and
+// default, else a name p pins in force; any other name is refused, naming
+// p's pins and request_image.
+func pinnedImage(p factoryd.Project, image string) (string, error) {
+	if image == "default" {
+		return "", nil
+	}
+	if _, ok := p.Images[image]; ok || image == "" {
+		return image, nil
+	}
+	if len(p.Images) == 0 {
+		return "", refuse(http.StatusConflict, "Project "+p.Name+" pins no sandbox images. Leave image out for the default, or add the image with request_image.")
+	}
+	return "", refuse(http.StatusConflict, fmt.Sprintf("Project %s pins no image %s: its images are %s. Name one of them, leave image out for the default, or add the image with request_image.",
+		p.Name, image, strings.Join(slices.Sorted(maps.Keys(p.Images)), ", ")))
 }
 
 // doMoveCard moves backlog card id into a starting lane of its process:

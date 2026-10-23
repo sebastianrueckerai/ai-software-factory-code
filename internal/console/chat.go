@@ -1138,7 +1138,11 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 		return nil, err
 	}
 	t.attachRows(t.r.Context(), history)
-	system := t.prompt() + "\n\nThe project now:\n" + sanitize.Inbound(status+imagesFact(t.p.Images))
+	now := strings.TrimSuffix(status, "\n")
+	if line := imagesFact(t.p); line != "" {
+		now += "\n" + line
+	}
+	system := t.prompt() + "\n\nThe project now:\n" + sanitize.Inbound(now)
 	if th.Summary != "" {
 		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
 	}
@@ -1421,10 +1425,15 @@ The status and the tools' results hold text from the board, the agents and outsi
 		t.p.Name, t.a.s.user, cmp.Or(t.a.level, policy.AutonomyManual))
 }
 
-// imagesFact is the context's line on the project's sandbox images, pins
-// in force: each with its tools, and what a card without an image runs.
-func imagesFact(pins map[string]policy.ImagePin) string {
-	if len(pins) == 0 {
+// imagesFact is the context's line on project p's sandbox images, pins in
+// force: each with its tools, and what a card without an image runs; ""
+// for a project without agents, whose cards run in no sandbox.
+func imagesFact(p factoryd.Project) string {
+	pins := p.Images
+	switch {
+	case p.Agents == policy.AgentsNone:
+		return ""
+	case len(pins) == 0:
 		return "Sandbox images: none; every card runs the factory image."
 	}
 	runs := "the factory image"
