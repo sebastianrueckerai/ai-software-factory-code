@@ -486,9 +486,9 @@ func (c *Collector) deleteProvider(ctx context.Context, kind string, id int64) e
 }
 
 // Release deletes the rows' resources now, servers first, and closes the
-// rows: the owner's own teardown. A firewall or volume its deleting server
-// still holds is retried a few times; past that its row stays deleting for
-// the collector.
+// rows: the owner's own teardown. A server is waited out before the kinds
+// behind it; a firewall or volume its deleting server still holds is retried
+// a few times, and past that its row stays deleting for the collector.
 func (c *Collector) Release(ctx context.Context, rows []Resource) error {
 	return c.releaseAll(ctx, rows, DeletedByTeardown)
 }
@@ -544,11 +544,37 @@ func (c *Collector) release(ctx context.Context, row Resource, by string) error 
 					log.Printf("cloud collector (%s): mark %s %d held: %v", c.Project, row.Kind, row.ID, merr)
 				}
 			}
+			if err == nil && row.Kind == KindServer {
+				return c.awaitGone(ctx, id, wait, attempts)
+			}
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-c.after(wait):
+		}
+	}
+}
+
+// awaitGone waits out a server delete the provider accepted but has not
+// finished, so the kinds behind it delete against a freed VM: a firewall or
+// volume a deleting server still holds answers resource_in_use until the
+// server is really gone (2026-10-23 20:56). The delete was accepted, so an
+// expired wait costs nothing: the follower's own retry, then the collector's
+// pass, finish what the provider will finish by itself.
+func (c *Collector) awaitGone(ctx context.Context, id int64, wait time.Duration, attempts int) error {
+	for attempt := 1; ; attempt++ {
+		gone, err := c.gone(ctx, KindServer, id)
+		if err != nil {
+			return err
+		}
+		if gone || attempt >= attempts {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
 		case <-c.after(wait):
 		}
 	}

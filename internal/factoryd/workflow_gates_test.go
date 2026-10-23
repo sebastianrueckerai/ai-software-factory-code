@@ -28,6 +28,7 @@ type gateHarness struct {
 	mergeMet     [][]string // Merge's met conditions per call
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
+	policyErrs   []error      // GatePolicy's error per call, in order; nil or short = none
 	policyCalls  int
 	repro        []ReproResult       // in order, the last repeating
 	criteria     []CriteriaResult    // in order, the last repeating; empty: no finding
@@ -89,6 +90,9 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			g.policyCommits = append(g.policyCommits, commit)
 			g.steps = append(g.steps, "policy")
 			g.policyCalls++
+			if g.policyCalls <= len(g.policyErrs) && g.policyErrs[g.policyCalls-1] != nil {
+				return PolicyGate{}, g.policyErrs[g.policyCalls-1]
+			}
 			if len(g.gateSeq) > 0 {
 				return g.gateSeq[min(g.policyCalls, len(g.gateSeq))-1], nil
 			}
@@ -273,6 +277,75 @@ func TestWorkflowGatesThenApprovalMerges(t *testing.T) {
 	}
 	if !strings.Contains(g.finals[0][1], "factory-merge after sebastian's approval") {
 		t.Fatalf("reason = %q", g.finals[0][1])
+	}
+}
+
+// A head the agent moved after its checks passed is not refused: the
+// workflow adopts the branch's new head, waits its checks and runs its
+// gates there; the approval and the merge name the new head (2026-10-23:
+// two tasks died of the policy gate's terminal refusal).
+func TestWorkflowHoldsAMovedHeadAtItsGates(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.policyErrs = []error{headMovedError("pull request #9's head moved to c2 after its checks passed on c1")}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, g.finals)
+	}
+	if want := []string{"policy", "policy", "repro c2", "review c2", "criteria c2", "approval c2", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	if !slices.Equal(g.policyCommits, []string{"c1", "c2"}) || !slices.Equal(g.merges, []string{"9 c2 sebastian"}) {
+		t.Fatalf("policy commits %v, merges %v", g.policyCommits, g.merges)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" {
+		t.Fatalf("approvals = %+v, want one on c2", g.approvals)
+	}
+}
+
+// A merge refused because the agent had moved the head past its gates
+// voids the granted approval and asks again: the new head's checks are
+// waited on and the second approval merges it (2026-10-23).
+func TestWorkflowHoldsAMovedHeadAtItsMerge(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.branchHead = "c2"
+	g.merge = []MergeResult{{MovedHead: true, Refusal: "pull request #9's head moved to c2 after its gates ran on c1"},
+		{Merged: true}}
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, g.finals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 sebastian", "9 c2 sebastian"}) {
+		t.Fatalf("merges = %v", g.merges)
+	}
+	if len(g.approvals) != 2 || g.approvals[0].Commit != "c1" || g.approvals[1].Commit != "c2" {
+		t.Fatalf("approvals = %+v, want one on c1 and one asked again on c2", g.approvals)
+	}
+}
+
+// Red checks on a moved head are the checks stage's findings: the agent
+// gets them back, and its fix goes through the gates on the new head.
+func TestWorkflowMovedHeadRedChecksGoToTheAgent(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.branchHead = "c2"
+	failing := `check "pr / test": failure — 1 test failed (https://git.example/sf/r/actions/runs/95)`
+	g.policyErrs = []error{headMovedError("pull request #9's head moved to c2 after its checks passed on c1")}
+	g.onChecks(ChecksResult{State: ChecksFailure, Findings: []string{failing}}, ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(g.sessions) != 2 {
+		t.Fatalf("final = %q, %d sessions, finals %v", final, len(g.sessions), g.finals)
+	}
+	if f := g.sessions[1].Findings; len(f) == 0 || f[0] != failing {
+		t.Fatalf("second session's findings = %q, want the red checks on the moved head", f)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" || !slices.Equal(g.merges, []string{"9 c2 sebastian"}) {
+		t.Fatalf("approvals %+v, merges %v: no approval before the red head was fixed", g.approvals, g.merges)
 	}
 }
 

@@ -1283,6 +1283,31 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 	}
 }
 
+// A merge refused because the head moved after its gates does not keep the
+// granted approval waiting: the request is voided for a fresh one on the
+// new head, and the pull request says so (2026-10-23: task t-8a7674a7d9e5
+// stalled six seconds after the grant).
+func TestMergeRefusedOnAMovedHeadVoidsTheApproval(t *testing.T) {
+	fj := &gateForgejo{head: "c2", mergeStatus: []int{http.StatusConflict}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || res.Conflict || res.RedHead || !res.MovedHead || !strings.Contains(res.Refusal, "c2") {
+		t.Fatalf("result = %+v, want a moved-head refusal naming the new head", res)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "c2") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	a := store.approvals[0]
+	if a.Status != "denied" || a.DecidedBy != FactoryDecider || !strings.Contains(a.DecisionNote, "moved") {
+		t.Fatalf("approval = %+v, want the granted approval voided by the factory", a)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"merge_moved_head"`) {
+		t.Fatal("no merge_moved_head step")
+	}
+}
+
 // Merge takes only a green head (stage11-design.md section 3, I3; success
 // or warning, as checksResult reads it): a red, a pending one or one with
 // no status reported is refused with its own kind, never a conflict, before
@@ -1703,8 +1728,8 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 func TestGatesRefuseAMovedHead(t *testing.T) {
 	fj := &gateForgejo{head: "c2", files: []string{`{"filename":"README.md"}`}}
 	r, _, _ := newGateRunner(t, gateTask, fj)
-	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1"); err == nil || !isTerminal(err) || !strings.Contains(err.Error(), "head moved to c2") {
-		t.Fatalf("GatePolicy on a moved head = %v, want a terminal refusal", err)
+	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1"); err == nil || !isHeadMoved(err) || isTerminal(err) || !strings.Contains(err.Error(), "head moved to c2") {
+		t.Fatalf("GatePolicy on a moved head = %v, want a typed head-moved refusal", err)
 	}
 	// a workflow from before versionGatesPinned passes no commit
 	if _, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9)); err != nil {

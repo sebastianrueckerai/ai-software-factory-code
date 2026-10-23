@@ -148,7 +148,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		res.Findings = append(res.Findings, AuditFinding{Item: auditNoVerdict, Why: why})
 	}
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
-		if !isTerminal(err) {
+		if !isTerminal(err) && !isHeadMoved(err) {
 			return AuditResult{}, err
 		}
 		noVerdict("the audit did not run: " + errMessage(err))

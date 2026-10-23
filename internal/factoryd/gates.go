@@ -316,6 +316,10 @@ type MergeResult struct {
 	// RedHead: the refusal is a head whose checks are not green; the
 	// approval stays, and only a change request sends the task back
 	RedHead bool
+	// MovedHead: the refusal is a head the agent moved past its gates;
+	// the granted approval is void and the workflow asks again on the
+	// new head (versionHeadHolds)
+	MovedHead bool
 }
 
 // AutoMergeNote records on the timeline that factory-merge merges the
@@ -383,15 +387,17 @@ func codeSpan(s string) string {
 	return fence + s + fence
 }
 
-// headIs refuses, terminally, a pull request whose head is not the gated
-// commit: the gates would judge another tree than the one checked.
+// headIs refuses a pull request whose head is not the gated commit: the
+// gates would judge another tree than the one checked. The refusal is
+// typed head-moved, not terminal: the workflow holds the moved head
+// (versionHeadHolds), and the model gates note it and run no model.
 func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string) error {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return err
 	}
 	if st.HeadSHA != commit {
-		return terminalError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
+		return headMovedError("pull request #%d's head moved to %s after its checks passed on %s", pr, st.HeadSHA, commit)
 	}
 	return nil
 }
@@ -1214,7 +1220,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	model := r.callModel(t, policy.PurposeReview)
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
-		if !isTerminal(err) {
+		if !isTerminal(err) && !isHeadMoved(err) {
 			return Review{}, err
 		}
 		rv := Review{Note: "model review not run: " + errMessage(err)}
@@ -1581,6 +1587,9 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		if serr == nil && st.State == "open" && !st.Mergeable {
 			return r.mergeConflict(ctx, t, repo, pr, commit, approver, err.Error()), nil
 		}
+		if serr == nil && st.State == "open" && st.HeadSHA != commit {
+			return r.movedHead(ctx, t, repo, pr, commit, approver, st.HeadSHA), nil
+		}
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, err.Error()), nil
 	}
 	if err != nil {
@@ -1657,6 +1666,24 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	r.note(ctx, t, "waiting: Forgejo refused the merge after "+approver+"'s approval: "+res.Refusal)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
+	return res
+}
+
+// movedHead answers a merge Forgejo refused because the agent had moved
+// the head past its gates (versionHeadHolds): the granted approval is
+// voided, the pull request says what the workflow does next — the new
+// head's checks are waited on and a green one asks again — and the task
+// goes back to the approval on the branch's new head.
+func (r *Runner) movedHead(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, head string) MergeResult {
+	why := fmt.Sprintf("a head that moved after its gates: the pull request's head is %s, not the gated %s", head, commit)
+	res := MergeResult{MovedHead: true, Refusal: textutil.Truncate(why, 500)}
+	note := "withdrawn: the head moved after its gates; the checks run on the new head, and a green head gets a new request"
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: the merge of %s after %s's approval was refused: %s\n\nThe approval request is %s.",
+		commit, approver, res.Refusal, note))
+	if err := r.store.ResolveApprovals(ctx, t.ID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
+		log.Printf("task %s: void the approval request: %v", t.ID, err)
+	}
+	r.record(ctx, t.ID, "merge_moved_head", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "head": head, "approver": approver}))
 	return res
 }
 

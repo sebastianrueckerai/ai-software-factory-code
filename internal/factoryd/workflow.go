@@ -146,6 +146,14 @@ func terminalError(format string, args ...any) error {
 	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errTerminal, nil)
 }
 
+// errHeadMoved types a gate's refusal of a head the agent moved past it:
+// not terminal — the workflow holds the moved head (versionHeadHolds).
+const errHeadMoved = "head-moved"
+
+func headMovedError(format string, args ...any) error {
+	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errHeadMoved, nil)
+}
+
 // ModelLadder is the one place the model aliases live (ruling 86): every
 // task starts on Start; a stronger retry (red checks, a repetition trip)
 // climbs to Stronger.
@@ -543,6 +551,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+
+	run.headHolds = workflow.GetVersion(ctx, "head-holds", workflow.DefaultVersion, versionHeadHolds)
 	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
 	// its value is unused; the call stays until no running history carries the marker
 	workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
@@ -1091,6 +1101,17 @@ const (
 	// nothing. A run from before asks a human for the tool, and an unpinned
 	// image fails the session as before.
 	versionToolPark workflow.Version = 1
+
+	// versionHeadHolds (change id "head-holds"): a head the agent moved
+	// past its gates (the policy gate's typed head-moved refusal, a merge
+	// Forgejo refused for its moved head) is adopted from the branch and
+	// its checks waited on — a green one continues the gates or asks the
+	// approval again, its granted request voided; a red one fails or goes
+	// back to the agent as the checks stage's findings. Before, the policy
+	// gate's refusal was terminal (2026-10-23: two tasks died of a retry
+	// commit pushed after checks passed) and the merge's kept the approval
+	// waiting. maxHeadHolds bounds the adoptions.
+	versionHeadHolds workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1198,6 +1219,8 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
+	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
+	holds             int              // heads adopted this run (versionHeadHolds)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
@@ -1246,6 +1269,10 @@ type verdict struct {
 	cancelled bool
 	// requested: the findings are a writer's change request
 	requested bool
+	// moved: the head the gates judged was moved past them; its findings
+	// (the moved head's checks) are the checks stage's
+	// (versionHeadHolds)
+	moved bool
 	// restage: the merge found the queue head's checks red, and its
 	// turn takes it again (versionRedHeadRestage)
 	restage bool
@@ -2643,6 +2670,10 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 			retry, cancelRetry = workflow.NewTimer(timerCtx, mergeRetryAfter), cancel
 		case res.Failed != "":
 			retry = workflow.NewTimer(t.ctx, mergeRetryAfter)
+		case res.MovedHead && t.headHolds >= versionHeadHolds:
+			// Merge voided the granted approval for the moved head
+			// (versionHeadHolds)
+			return verdict{moved: true, reason: res.Refusal}
 		case res.Conflict && t.v23 >= versionMergeConflict:
 			return conflictVerdict(res.Refusal)
 		case res.RedHead && t.restageable():
@@ -3889,6 +3920,11 @@ func isWallClockTimeout(err error) bool {
 func isTerminal(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errTerminal
+}
+
+func isHeadMoved(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errHeadMoved
 }
 
 // imageNotPinned is a RunSession that refused its card's image as one with

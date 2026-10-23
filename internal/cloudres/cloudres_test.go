@@ -19,14 +19,16 @@ import (
 
 // fakeProvider is an in-memory Hetzner project.
 type fakeProvider struct {
-	mu        sync.Mutex
-	servers   map[int64]hcloud.Server
-	firewalls map[int64]hcloud.Firewall
-	volumes   map[int64]hcloud.Volume
-	ips       map[int64]hcloud.PrimaryIP
-	deleted   []string
-	inUse     map[int64]bool // firewall ids answering resource_in_use
-	listLag   map[int64]bool // server ids missing from listings but present on GET
+	mu              sync.Mutex
+	servers         map[int64]hcloud.Server
+	firewalls       map[int64]hcloud.Firewall
+	volumes         map[int64]hcloud.Volume
+	ips             map[int64]hcloud.PrimaryIP
+	deleted         []string
+	inUse           map[int64]bool  // firewall ids answering resource_in_use
+	firewallDeletes int             // DeleteFirewall calls, refused ones included
+	fwHeldBy        map[int64]int64 // firewall id -> the live server holding it
+	listLag         map[int64]bool  // server ids missing from listings but present on GET
 
 	// With clk set, every call takes callTook on it and a server delete
 	// completes deleteTook after its call: until then the server exists,
@@ -43,7 +45,8 @@ type fakeProvider struct {
 func newFakeProvider() *fakeProvider {
 	return &fakeProvider{servers: map[int64]hcloud.Server{}, firewalls: map[int64]hcloud.Firewall{},
 		volumes: map[int64]hcloud.Volume{}, ips: map[int64]hcloud.PrimaryIP{},
-		inUse: map[int64]bool{}, listLag: map[int64]bool{}, goneAt: map[int64]time.Time{}, calledAt: map[string]time.Time{}}
+		inUse: map[int64]bool{}, listLag: map[int64]bool{}, goneAt: map[int64]time.Time{}, calledAt: map[string]time.Time{},
+		fwHeldBy: map[int64]int64{}}
 }
 
 // call models one API call's latency and completes due server deletes.
@@ -225,8 +228,15 @@ func (f *fakeProvider) DeleteFirewall(ctx context.Context, id int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.call()
+	f.firewallDeletes++
 	if f.inUse[id] {
 		return &hcloud.APIError{Status: 409, Code: "resource_in_use"}
+	}
+	// a server that still exists holds its firewall, as Hetzner's
+	if srv, held := f.fwHeldBy[id]; held {
+		if _, live := f.servers[srv]; live {
+			return &hcloud.APIError{Status: 422, Code: "resource_in_use"}
+		}
 	}
 	delete(f.firewalls, id)
 	f.did("firewall/" + itoa(id))
@@ -770,6 +780,33 @@ func TestReleaseServersFirstAndClosesNeverCreatedRows(t *testing.T) {
 	}
 }
 
+// The release frees the VM before its firewall: Hetzner's server delete is
+// async, and the firewall a deleting server still references answers
+// resource_in_use until the server is really gone, so a delete that starts
+// before the VM is free burns its retries and leaks the firewall to a later
+// collector pass (factoryd 2026-10-23 20:56:49).
+func TestReleaseFreesTheServerBeforeItsFirewall(t *testing.T) {
+	h := newHarness()
+	h.col.RetryWait = time.Millisecond
+	h.prov.clk, h.prov.callTook, h.prov.deleteTook = h.clk, time.Second, 8*time.Second
+	f := h.create(t, KindFirewall, "5", 200, time.Hour)
+	s := h.create(t, KindServer, "5", 100, time.Hour)
+	h.prov.fwHeldBy[200] = 100
+	rows, _ := h.reg.OpenByOwner(context.Background(), "ci", "5")
+	if err := h.col.Release(context.Background(), rows); err != nil {
+		t.Fatal(err)
+	}
+	if h.prov.firewallDeletes != 1 {
+		t.Fatalf("firewall deletes = %d, want one on a freed VM", h.prov.firewallDeletes)
+	}
+	if strings.Join(h.prov.deleted, ",") != "server/100,firewall/200" {
+		t.Fatalf("deleted = %v", h.prov.deleted)
+	}
+	if h.state(t, s.ID) != StateDeleted || h.state(t, f.ID) != StateDeleted {
+		t.Fatalf("states = %s %s", h.state(t, s.ID), h.state(t, f.ID))
+	}
+}
+
 // Two actors releasing the same commission (the collector's pass and the
 // agent's release_resource) delete it once: the one whose claim of the
 // row (live to deleting) fails leaves the delete to the other.
@@ -888,9 +925,9 @@ func testCommissionWithAVolumeEnds(t *testing.T, refusal *hcloud.APIError) {
 		t.Fatalf("deleted early: %v, %v", h.prov.deleted, err)
 	}
 	// 58:25 + four listings = 58:29 (ends in 1m31s): server delete at 58:30,
-	// done at 58:50; the volume is read and its detach refused (locked) at
-	// 58:31/32, 58:36/37, 58:41/42, 58:46/47 with 3 s waits, read detached
-	// at 58:51 and deleted at 58:52; the firewall at 58:53.
+	// done at 58:50 and read gone at 58:51 after six 1 s polls with 3 s
+	// waits; the volume, its server already gone, is read detached at 58:52
+	// and deleted at 58:53; the firewall at 58:54.
 	h.clk.t = t0.Add(58*time.Minute + 25*time.Second)
 	if err := h.col.Collect(ctx); err != nil {
 		t.Fatal(err)
@@ -900,8 +937,8 @@ func testCommissionWithAVolumeEnds(t *testing.T, refusal *hcloud.APIError) {
 	}
 	for name, want := range map[string]time.Duration{
 		"server/100":   58*time.Minute + 30*time.Second,
-		"volume/400":   58*time.Minute + 52*time.Second,
-		"firewall/200": 58*time.Minute + 53*time.Second,
+		"volume/400":   58*time.Minute + 53*time.Second,
+		"firewall/200": 58*time.Minute + 54*time.Second,
 	} {
 		if got := h.prov.calledAt[name]; !got.Equal(t0.Add(want)) || !got.Before(lease) {
 			t.Fatalf("%s deleted at %v, want %v", name, got.Sub(t0), want)

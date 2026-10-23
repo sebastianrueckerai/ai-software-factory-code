@@ -201,6 +201,17 @@ func (t *taskRun) runStages(commit string) verdict {
 		if stop {
 			return v
 		}
+		if v.moved && len(findings) > 0 {
+			// the policy stage held a moved head and ran the checks stage
+			// on it (versionHeadHolds): its findings are the checks
+			// stage's, whose on_findings sends them where they belong
+			i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageChecks })
+			if v, stop = t.onFindings(t.cfg.Stages[i], g, findings, &capped, &card); stop {
+				t.cancelBeside(checksFailed)
+				return v
+			}
+			continue
+		}
 		reviewed = reviewed || s.Name == policy.StageReview
 		if s.Name == policy.StageReview && review.Verdict == "" && !t.rolling && t.v20 >= versionReviewVerdict {
 			card = append(card, s.Name+": "+noVerdict+cmp.Or(review.Note, "no reason recorded"))
@@ -507,6 +518,13 @@ func (t *taskRun) recordSkip(stage, why string) {
 	}
 }
 
+// maxHeadHolds bounds the heads one run adopts after the agent moved them
+// past the gates (versionHeadHolds): an agent that keeps pushing past its
+// gates is not waiting for the workflow (tasks t-2f712335c14f and
+// t-8a7674a7d9e5, 2026-10-23); past the bound, the gate's refusal fails
+// the task.
+const maxHeadHolds = 3
+
 // runStage runs one stage on head and returns its findings, or stop with
 // the task's verdict (a terminal signal, a failed activity); a re-run of
 // the checks moves head.
@@ -562,7 +580,40 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			return findings, verdict{}, false
 		}
 	case policy.StagePolicy:
-		if err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy); err != nil {
+		err := workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy)
+		for err != nil && isHeadMoved(err) && t.headHolds >= versionHeadHolds {
+			// the agent moved the head past its gates (versionHeadHolds):
+			// hold the head, not the task — the checks ran on the moved
+			// head, and a green one is gated again
+			if t.holds >= maxHeadHolds {
+				break // the gate's refusal fails the task below
+			}
+			var branch string
+			if e := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); e != nil {
+				v, stop = failed("read the branch head", e)
+				return nil, v, stop
+			}
+			if branch == "" || branch == commit {
+				break // a raced read: the gate's refusal stands
+			}
+			t.holds++
+			*head, commit = branch, branch
+			t.checkedHead, g.ChecksPassed = "", false
+			cf, cv, cstop := t.runStage(policy.StageChecks, head, g, review)
+			if cstop {
+				return cf, cv, true
+			}
+			if len(cf) > 0 {
+				// the moved head's red checks go out as the checks
+				// stage's findings: this stage's on_findings would fail
+				// the task for them
+				cv.moved = true
+				return cf, cv, false
+			}
+			commit = *head // the checks' re-run may have moved it
+			err = workflow.ExecuteActivity(t.short, ActivityGatePolicy, t.taskID, t.pr.Number, commit, t.cfg.PolicyVersion).Get(t.ctx, &g.Policy)
+		}
+		if err != nil {
 			v, stop = failed("policy gate", err)
 			return nil, v, stop
 		}
@@ -1047,8 +1098,26 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	t.approvalRequested = workflow.Now(t.ctx)
-	if v = t.awaitApproval(commit, covered); !v.rerun {
+	if v = t.awaitApproval(commit, covered); !v.rerun && !v.moved {
 		return v
+	}
+	if v.moved {
+		// the merge was refused on a head the agent moved past its gates
+		// (versionHeadHolds): the granted approval is void, and the new
+		// head waits its checks here and asks again
+		var branch string
+		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); err != nil {
+			return verdict{final: "failed", reason: "branch head: " + errMessage(err)}
+		}
+		if branch == "" || branch == commit {
+			return verdict{final: "failed", reason: v.reason + ", and the branch holds no other head past its base"}
+		}
+		if t.holds >= maxHeadHolds {
+			return verdict{final: "failed", reason: fmt.Sprintf("the pull request's head kept moving past its gates: %d heads held, the last move to %s not adopted", t.holds, branch)}
+		}
+		t.holds++
+		t.checkedHead, g.ChecksPassed = "", false
+		return t.approve(branch, g, review, earlier, card, covered)
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, commit).Get(t.ctx, &commit); err != nil {
 		return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}
