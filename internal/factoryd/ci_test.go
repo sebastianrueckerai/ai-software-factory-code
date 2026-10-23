@@ -509,7 +509,7 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 	}
 	for _, host := range []string{
 		"proxy.golang.org", "sum.golang.org", "data.forgejo.org",
-		"registry.npmjs.org",
+		"storage.googleapis.com", "registry.npmjs.org",
 	} {
 		if !strings.Contains(cnpStr, host) {
 			t.Fatalf("egress allowlist missing %s: %s", host, cnpStr)
@@ -525,6 +525,12 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 		case strings.Contains(fmt.Sprint(r["toEndpoints"]), "kube-dns"):
 			dnsRule = r
 		}
+	}
+	if fqdnRule == nil || !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "storage.googleapis.com") {
+		t.Fatalf("443 toFQDNs rule missing storage.googleapis.com (proxy.golang.org redirects zip downloads there): %v", fqdnRule)
+	}
+	if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), "storage.googleapis.com") {
+		t.Fatalf("DNS rule missing storage.googleapis.com: %v", dnsRule)
 	}
 	if !strings.Contains(fmt.Sprint(fqdnRule["toFQDNs"]), "matchName:registry.npmjs.org") || !strings.Contains(fmt.Sprint(dnsRule), "matchName:registry.npmjs.org") {
 		t.Fatalf("the npm registry is not on 443 by name: %v, DNS %v", fqdnRule, dnsRule)
@@ -551,7 +557,7 @@ func TestCIEgressSpecAllowlist(t *testing.T) {
 // project with staging keeps exactly the project policy.
 func TestCIEgressReachesStagingOnlyWhenGranted(t *testing.T) {
 	s := &CISpawner{cfg: testCIConfig()}
-	const before = `{"egress":[{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"3000","protocol":"TCP"}]}]},{"toFQDNs":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"}],"toPorts":[{"ports":[{"port":"443","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"kube-system","k8s:k8s-app":"kube-dns"}}],"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}],"rules":{"dns":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"},{"matchName":"forgejo-http.forgejo.svc.cluster.local"},{"matchName":"factoryd.factory.svc.cluster.local"},{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"}]}}]},{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"2222","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:app":"factoryd","k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}],"egressDeny":[{"toCIDR":["169.254.169.254/32"]}],"endpointSelector":{"matchLabels":{"app.kubernetes.io/name":"ci-runner"}}}`
+	const before = `{"egress":[{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"3000","protocol":"TCP"}]}]},{"toFQDNs":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"storage.googleapis.com"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"}],"toPorts":[{"ports":[{"port":"443","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:io.kubernetes.pod.namespace":"kube-system","k8s:k8s-app":"kube-dns"}}],"toPorts":[{"ports":[{"port":"53","protocol":"ANY"}],"rules":{"dns":[{"matchName":"proxy.golang.org"},{"matchName":"sum.golang.org"},{"matchName":"storage.googleapis.com"},{"matchName":"data.forgejo.org"},{"matchName":"registry.npmjs.org"},{"matchName":"forgejo-http.forgejo.svc.cluster.local"},{"matchName":"factoryd.factory.svc.cluster.local"},{"matchName":"forgejo-ssh.forgejo.svc.cluster.local"}]}}]},{"toEndpoints":[{"matchLabels":{"k8s:app.kubernetes.io/name":"forgejo","k8s:io.kubernetes.pod.namespace":"forgejo"}}],"toPorts":[{"ports":[{"port":"2222","protocol":"TCP"}]}]},{"toEndpoints":[{"matchLabels":{"k8s:app":"factoryd","k8s:io.kubernetes.pod.namespace":"factory"}}],"toPorts":[{"ports":[{"port":"8080","protocol":"TCP"}]}]}],"egressDeny":[{"toCIDR":["169.254.169.254/32"]}],"endpointSelector":{"matchLabels":{"app.kubernetes.io/name":"ci-runner"}}}`
 	repo := CIRepo{Project: "uptime", Staging: "uptime-staging"}
 	if got := string(mustJSON(s.ciEgressSpec(nil, repo, ""))); got != before {
 		t.Fatalf("without staging:\n%s\nwant\n%s", got, before)

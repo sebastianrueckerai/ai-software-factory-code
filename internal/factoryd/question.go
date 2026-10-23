@@ -304,6 +304,7 @@ func FundRaise(reason string) float64 {
 	}
 	return need
 }
+
 // FundChoiceValue is a premade fund answer's value: the fund marker and
 // its EUR, so the click's value carries the amount it raises by.
 func FundChoiceValue(eur float64) string {
