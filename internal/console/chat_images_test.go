@@ -16,8 +16,10 @@ import (
 // The chat's default context names the project's sandbox images, the pins
 // in force with their tools, and what a card without an image runs: the
 // factory image, or image default where the project pins it. A project
-// without agents runs no card in a sandbox: its context names no images,
-// and its agent is offered neither project_images nor request_image.
+// without agents has no board and runs no card in a sandbox: its status
+// line says so with its real spend against its month cap, its context
+// names no images, and its agent is offered neither project_images nor
+// request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
 	const status = "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"
 	for _, tc := range []struct {
@@ -32,19 +34,21 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 			"\nSandbox images: default (jq, go), video (ffmpeg); a card without an image runs image default."},
 		{policy.AgentsNone, map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}}, ""},
 	} {
-		r, _, g := newChatRig(t)
+		r, chat, g := newChatRig(t)
+		want := status
+		if tc.agents == policy.AgentsNone {
+			chat.spend = []spendRow{{"sf/code", time.Now(), 3.25, false}, {"sf/code", time.Now(), 0.5, true}}
+			want = "\n\nThe project now:\nStatus: agents none, every issue goes to the human lane; " +
+				"spend this month €3.75 of €50.00: the cards €3.25, the chat €0.50"
+		}
 		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)
 		g.replies = [][]string{{say("ok")}}
 		chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what runs where?"}})
 		call := g.calls()[0]
 		system, _ := messages(t, call)[0]["content"].(string)
-		if tc.agents == policy.AgentsNone {
-			if strings.Contains(system, "Sandbox images") || !strings.HasSuffix(system, "the cards €0.00, the chat €0.00") {
-				t.Errorf("none: the system message names images or does not end with the status line:\n%s", system)
-			}
-		} else if !strings.HasSuffix(system, status+tc.line) {
-			t.Errorf("%s: the system message does not end with %q:\n%s", tc.agents, status+tc.line, system)
+		if !strings.HasSuffix(system, want+tc.line) {
+			t.Errorf("%s: the system message does not end with %q:\n%s", tc.agents, want+tc.line, system)
 		}
 		var offered []string
 		for _, tool := range call["tools"].([]any) {
@@ -55,6 +59,22 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 		if want := map[string][]string{policy.AgentsCoder: {"project_images", "request_image"}}[tc.agents]; !slices.Equal(offered, want) {
 			t.Errorf("%s: the image tools offered are %v, want %v", tc.agents, offered, want)
 		}
+	}
+}
+
+// A project factoryd does not work on, its file gone, has no board
+// either: its status line says so with its spend against its month cap.
+func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.projects.rows[0].File = false
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("ok")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
+	system, _ := messages(t, g.calls()[0])[0]["content"].(string)
+	want := "\n\nThe project now:\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+		"Sandbox images: none; every card runs the factory image."
+	if !strings.HasSuffix(system, want) {
+		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
 }
 

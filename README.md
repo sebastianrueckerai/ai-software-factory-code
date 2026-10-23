@@ -1650,7 +1650,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and member, each assistant row with its
   tool calls and their results; a turn's context is the project's status
-  line, a line of its sandbox images (`Sandbox images:` the pins in force
+  line (for a project without a board, agents none or not worked on,
+  why it has none and its spend this month against its month cap), a
+  line of its sandbox images (`Sandbox images:` the pins in force
   with their tools, and what a card without an image runs; none for a
   project without agents), the thread's
   summary and its last 200 messages, the status and every tool text

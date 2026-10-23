@@ -226,7 +226,7 @@ func TestPulseRedMergeRequestKeepsTheRedFace(t *testing.T) {
 	if rerr != nil {
 		t.Fatal(rerr)
 	}
-	text, _, err := r.c.boardText(req, projectRows()[0], actor{})
+	text, err := r.c.boardText(req, projectRows()[0], actor{})
 	if err != nil {
 		t.Fatalf("FIX MISSING: the pulse's board read dies: %v", err)
 	}

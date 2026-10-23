@@ -1125,7 +1125,7 @@ var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|
 // tools'. The turn stamps every tool result
 // it stores with the time of this read.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
-	status, _, _, err := t.snapshot()
+	status, err := t.snapshot()
 	if err != nil {
 		return nil, err
 	}
@@ -1138,7 +1138,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 		return nil, err
 	}
 	t.attachRows(t.r.Context(), history)
-	now := strings.TrimSuffix(status, "\n")
+	now := status
 	if line := imagesFact(t.p); line != "" {
 		now += "\n" + line
 	}
@@ -1443,18 +1443,33 @@ func imagesFact(p factoryd.Project) string {
 	return "Sandbox images: " + factoryd.ImageList(pins) + "; a card without an image runs " + runs + "."
 }
 
-// snapshot is the project's status line, as the board shows it, and its
-// board, as the agent reads them.
-func (t *turn) snapshot() (string, string, statusLine, error) {
-	board, d, err := t.c.boardText(t.r, t.p, t.a)
+// snapshot is the project's status line, as the board shows it. A
+// project without a board, one no agent works on, gets a line of its own
+// facts: why it has none, and its spend this month against its month cap.
+func (t *turn) snapshot() (string, error) {
+	d, err := t.c.boardOf(t.r, boardFilter{Project: t.p.Name, View: viewWide}, t.a)
+	if errors.Is(err, errNoProject) {
+		spend, err := t.c.spendLine(t.r.Context(), t.p)
+		return "Status: " + noBoard(t.p) + "; " + spend, err
+	}
 	if err != nil {
-		return "", "", statusLine{}, err
+		return "", err
 	}
 	s, github := d.Status, ""
 	if s.GitHub != "" {
 		github = "; GitHub: " + s.GitHub
 	}
-	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s\n", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR), github), board, s, nil
+	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR), github), nil
+}
+
+// noBoard is the status of project p, which has no board: with agents
+// none every issue goes to the human lane, as the settings page says;
+// else factoryd does not work on its repository (Project.Active).
+func noBoard(p factoryd.Project) string {
+	if p.Agents == policy.AgentsNone {
+		return "agents none, every issue goes to the human lane"
+	}
+	return "no board, factoryd does not work on its repository"
 }
 
 // spendLine is project p's spend this UTC month against its month cap,
