@@ -1,0 +1,26 @@
+images:
+  chromium:
+    apt: [chromium, fonts-liberation]
+    upstream:
+      - name: go
+        url: https://go.dev/dl/go1.26.9.linux-amd64.tar.gz
+        sha256: 42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d
+        to: /usr/local/go
+        strip: 1
+      - name: node
+        url: https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz
+        sha256: fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6
+        to: /usr/local
+        strip: 1
+    env:
+      GOPROXY: https://proxy.golang.org
+      GOSUMDB: sum.golang.org
+      GOTOOLCHAIN: local
+    path:
+      - /usr/local/go/bin
+      - /home/worker/go/bin
+    egress:
+      - proxy.golang.org
+      - sum.golang.org
+      - storage.googleapis.com
+      - registry.npmjs.org
