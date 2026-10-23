@@ -239,7 +239,7 @@ func TestPGStorePokes(t *testing.T) {
 		}
 		got := rows[0]
 		want := ChatMessage{ID: got.ID, At: got.At, Conversation: threads[0].Number, Role: "assistant", Kind: MessageEscalation,
-			BirthKind: asked.Kind, Content: "#603 needs you: Which store?", Choices: []string{"Postgres", "SQLite"}, TaskID: "t-1", Repeats: 1}
+			BirthKind: asked.Kind, Content: "#603 - Session store needs you: Which store?", Choices: []string{"Postgres", "SQLite"}, TaskID: "t-1", Repeats: 1}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s's poke = %+v,\nwant %+v", login, got, want)
 		}
@@ -261,7 +261,7 @@ func TestPGStorePokes(t *testing.T) {
 	}
 	inbox, _ := s.EnsureInbox(ctx, "sf/code", "bob")
 	rows, _ := s.ChatMessages(ctx, "sf/code", "bob", inbox, 10)
-	if len(rows) != 2 || rows[1].Content != "#603 needs you: Which port?" || rows[1].Repeats != 0 {
+	if len(rows) != 2 || rows[1].Content != "#603 - Session store needs you: Which port?" || rows[1].Repeats != 0 {
 		t.Fatalf("bob's inbox = %+v, want the second question as its own row", rows)
 	}
 

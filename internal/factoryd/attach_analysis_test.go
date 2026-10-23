@@ -55,7 +55,7 @@ func seedAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64, q
 	}
 	if _, err := s.AddChatMessage(t.Context(), repository, "sebastian", ChatMessage{Role: "assistant",
 		Conversation: conv, Kind: MessageEscalation, TaskID: taskID, BirthKind: EventQuestionAsked,
-		Content: fmt.Sprintf("#%d needs you: %s", issue, question), Choices: []string{"Yes", "No"}}); err != nil {
+		Content: fmt.Sprintf("#%d - %s needs you: %s", issue, question, question), Choices: []string{"Yes", "No"}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -99,7 +99,7 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := askRow(t, s, "sf/wake", "t-1"),
-		"#40 needs you: Use a replica?\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Keep one replica"; got != want {
+		"#40 - Use a replica? needs you: Use a replica?\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Keep one replica"; got != want {
 		t.Fatalf("the ask's row = %q, want %q", got, want)
 	}
 	rows := analyses(t, s, "t-1")
@@ -146,7 +146,7 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 	if !errors.As(err, &se) || se.Word != "answered" || se.By != "sebastian" {
 		t.Fatalf("the refusal = %v, want answered by sebastian", err)
 	}
-	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 needs you: Use a replica?"; got != want {
+	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?"; got != want {
 		t.Fatalf("the answered ask's row changed: %q, want %q", got, want)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 0 {
@@ -230,7 +230,7 @@ func TestAttachAnalysisReturnsItsRowsCloseError(t *testing.T) {
 	if !errors.Is(err, errHeldClose) {
 		t.Fatalf("AttachAnalysis = %v, want the rows' close failure", err)
 	}
-	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 needs you: Use a replica?"; got != want {
+	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?"; got != want {
 		t.Fatalf("the ask's row changed: %q, want %q", got, want)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 0 {

@@ -102,7 +102,7 @@ func TestPokerAppendsLaterAsksToCardThread(t *testing.T) {
 		if err != nil || len(rows) != 2 {
 			t.Fatalf("sebastian's %s after two asks = %d rows (%v), want 2", th.name, len(rows), err)
 		}
-		for i, want := range []string{"#603 needs you: Which store?", "#603 needs you: Which port?"} {
+		for i, want := range []string{"#603 - Session store needs you: Which store?", "#603 - Session store needs you: Which port?"} {
 			if rows[i].Content != want || rows[i].Kind != MessageEscalation || rows[i].TaskID != "t-1" {
 				t.Fatalf("the %s's row %d = %+v, want the ask %q", th.name, i, rows[i], want)
 			}
