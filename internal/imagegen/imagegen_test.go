@@ -27,13 +27,17 @@ func spec() policy.ImageSpec {
 	}
 }
 
-const golden = `FROM git.aisoftwarefactory.world/factory/sandbox@sha256:0000000000000000000000000000000000000000000000000000000000000001
+const golden = `FROM git.aisoftwarefactory.world/factory/sandbox@sha256:0000000000000000000000000000000000000000000000000000000000000001 AS inputs
+USER root
+ADD --checksum=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa https://git.aisoftwarefactory.world/api/packages/upstream/generic/go/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/go1.24.linux-amd64.tar.gz /tmp/factory-inputs/go
+RUN mkdir -p /stage/opt/go && tar -xf /tmp/factory-inputs/go -C /stage/opt/go --strip-components=1 --no-same-owner && rm /tmp/factory-inputs/go
+ADD --checksum=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb https://git.aisoftwarefactory.world/api/packages/upstream/generic/tool/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/tool /tmp/factory-inputs/tool
+RUN install -D -m 0755 /tmp/factory-inputs/tool /stage/usr/local/bin/tool && rm /tmp/factory-inputs/tool
+FROM git.aisoftwarefactory.world/factory/sandbox@sha256:0000000000000000000000000000000000000000000000000000000000000001
 USER root
 RUN apt-get update && apt-get install -y --no-install-recommends jq make && rm -rf /var/lib/apt/lists/*
-ADD --checksum=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa https://git.aisoftwarefactory.world/api/packages/upstream/generic/go/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/go1.24.linux-amd64.tar.gz /tmp/factory-inputs/go
-RUN mkdir -p /opt/go && tar -xf /tmp/factory-inputs/go -C /opt/go --strip-components=1 --no-same-owner && rm /tmp/factory-inputs/go
-ADD --checksum=sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb https://git.aisoftwarefactory.world/api/packages/upstream/generic/tool/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/tool /tmp/factory-inputs/tool
-RUN install -D -m 0755 /tmp/factory-inputs/tool /usr/local/bin/tool && rm /tmp/factory-inputs/tool
+COPY --from=inputs /stage/opt/ /opt/
+COPY --from=inputs /stage/usr/local/ /usr/local/
 ENV GOFLAGS="-mod=mod"
 ENV MSG="say \"hi\" \\ \$HOME"
 ENV PATH=/opt/go/bin:/opt/x:$PATH
@@ -56,6 +60,44 @@ func TestRenderGolden(t *testing.T) {
 	}
 	if strings.Join(m.Tools, ",") != "jq,make,go,tool" || strings.Join(m.Egress, ",") != "proxy.golang.org" {
 		t.Errorf("manifest = %+v", m)
+	}
+}
+
+// Upstream files unpack in a stage of their own, under /stage, and reach the
+// image by COPY with nothing run after it: a symlink one line plants (x to
+// /usr/bin, e to /etc) cannot carry a later line's write outside /opt and
+// /usr/local, which a root tar or install in the image itself would follow.
+func TestRenderUnpacksUpstreamFilesOutsideTheImage(t *testing.T) {
+	escape := policy.ImageSpec{Upstream: []policy.UpstreamLine{
+		{Name: "links", URL: "https://example.com/links.tar.gz", SHA256: shaA, To: "/opt"},
+		{Name: "git", URL: "https://example.com/git", SHA256: shaB, To: "/opt/x/git"},
+		{Name: "preload", URL: "https://example.com/preload.tar.gz", SHA256: shaB[:63] + "c", To: "/opt/e"},
+	}}
+	df, _, _, err := Render(escape, base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inputs, image, ok := strings.Cut(string(df), "FROM "+base+"\n")
+	if !ok || !strings.HasPrefix(inputs, "FROM "+base+" AS inputs\n") {
+		t.Fatalf("dockerfile:\n%s\nwant the inputs stage, then the image's", df)
+	}
+	wantRuns := []string{
+		"RUN mkdir -p /stage/opt && tar -xf /tmp/factory-inputs/links -C /stage/opt --strip-components=0 --no-same-owner && rm /tmp/factory-inputs/links",
+		"RUN install -D -m 0755 /tmp/factory-inputs/git /stage/opt/x/git && rm /tmp/factory-inputs/git",
+		"RUN mkdir -p /stage/opt/e && tar -xf /tmp/factory-inputs/preload -C /stage/opt/e --strip-components=0 --no-same-owner && rm /tmp/factory-inputs/preload",
+	}
+	var runs []string
+	for _, l := range strings.Split(inputs, "\n") {
+		if strings.HasPrefix(l, "RUN ") {
+			runs = append(runs, l)
+		}
+	}
+	if strings.Join(runs, "\n") != strings.Join(wantRuns, "\n") {
+		t.Errorf("inputs stage runs:\n%s\nwant:\n%s", strings.Join(runs, "\n"), strings.Join(wantRuns, "\n"))
+	}
+	want := "USER root\nCOPY --from=inputs /stage/opt/ /opt/\nLABEL world.aisoftwarefactory.manifest=\"{\\\"tools\\\":[\\\"links\\\",\\\"git\\\",\\\"preload\\\"],\\\"egress\\\":[]}\"\nUSER 1000:1000\n"
+	if image != want {
+		t.Errorf("image stage:\n%s\nwant:\n%s", image, want)
 	}
 }
 
@@ -107,10 +149,10 @@ func TestStoreURL(t *testing.T) {
 	}
 }
 
-// printf '{"Apt":["jq"],"Upstream":null,"Env":null,"Path":null,"Egress":null}\nsha256:0000000000000000000000000000000000000000000000000000000000000001\n1' | sha256sum
+// printf '{"Apt":["jq"],"Upstream":null,"Env":null,"Path":null,"Egress":null}\nsha256:0000000000000000000000000000000000000000000000000000000000000001\n2' | sha256sum
 func TestBuildKeyExact(t *testing.T) {
 	got := BuildKey(policy.ImageSpec{Apt: []string{"jq"}}, digest)
-	if want := "k-e8e539498d5e035a1e0dea2d"; got != want {
+	if want := "k-21da109c06519bda5dc9e83b"; got != want {
 		t.Errorf("BuildKey = %s, want %s", got, want)
 	}
 }

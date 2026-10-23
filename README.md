@@ -1207,7 +1207,11 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   store lacks signed, as after a re-seed, is built again. After three
   builds of a key leave no signed image, one alert names the builder, and
   the key is asked for once a day; a dispatch Forgejo refuses for 45
-  minutes raises one alert too. A merge Forgejo refuses with 405 while
+  minutes raises one alert too. The builder unpacks every upstream file
+  as root in a stage of its own, under `/stage`, and the image takes
+  `/opt` and `/usr/local` from it by `COPY` after its apt step, with
+  nothing run after: a symlink one upstream line plants cannot carry
+  another line's write outside those directories. A merge Forgejo refuses with 405 while
   the head's checks are pending waits; a refusal that repeats, or a
   finding, raises one alert per project and cause.
 

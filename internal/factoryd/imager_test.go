@@ -26,10 +26,10 @@ import (
 
 const (
 	imagerBase = "git.aisoftwarefactory.world/sf/sandbox-base@sha256:0000000000000000000000000000000000000000000000000000000000000001"
-	// printf '{"Apt":["jq"],"Upstream":null,"Env":null,"Path":null,"Egress":null}\n<the base digest>\n1' | sha256sum
-	keyDefault = "k-e8e539498d5e035a1e0dea2d"
+	// printf '{"Apt":["jq"],"Upstream":null,"Env":null,"Path":null,"Egress":null}\n<the base digest>\n2' | sha256sum
+	keyDefault = "k-21da109c06519bda5dc9e83b"
 	// the same over {"Apt":["chromium"],"Upstream":null,"Env":null,"Path":null,"Egress":["cdn.example.org"]}
-	keyBrowser      = "k-cfdd7cd93002923a3d192ddd"
+	keyBrowser      = "k-927695707916775c36d611ff"
 	infraAPI        = "/api/v1/repos/sf/ai-software-factory-infra"
 	forkAPI         = "/api/v1/repos/factory-agent/ai-software-factory-infra"
 	codeAPI         = "/api/v1/repos/sf/ai-software-factory-code"
