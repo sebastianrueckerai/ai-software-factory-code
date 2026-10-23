@@ -101,8 +101,14 @@ jobs:
       - uses: actions/checkout@v4
       - run: gosec ./...
       # the runner image's copy of vuln.go.dev (Dockerfile.runner), which
-      # the job's egress cannot reach
-      - run: govulncheck -db file:///usr/local/share/govulndb ./...
+      # the job's egress cannot reach. The image ships the binary in
+      # /usr/local/bin; a live image older than that leaves it only under
+      # the home the pod's emptyDir shadows, so build it from the branch's
+      # go.mod tool directive into /tmp — the module proxy is the one
+      # registry this job reaches.
+      - run: |
+          command -v govulncheck >/dev/null || GOBIN=/tmp go install -trimpath tool
+          PATH="/tmp:$PATH" govulncheck -db file:///usr/local/share/govulndb ./...
   job-env-audit:
     runs-on: pr-untrusted
     steps:
