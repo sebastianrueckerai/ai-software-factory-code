@@ -114,9 +114,8 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   `base`, pushed as `sf/sandbox-base`, is the same without the harness,
   Go and Node, apt's dated sources kept for the images built on it; its
   egress (`workerEgressSpec`) is default-deny plus the
-  gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
-  and `storage.googleapis.com` (proxy.golang.org redirects zip downloads
-  there) by name on 443, SigNoz's collector pods on 4318 when factoryd has
+  gateway, the in-cluster Forgejo, the Go module proxy and checksum DB by
+  name on 443, SigNoz's collector pods on 4318 when factoryd has
   an `OTEL_EXPORTER_OTLP_ENDPOINT` (ruling 158: the worker's own spans and
   metrics; the pod gets the same variable), and kube-dns for exactly
   those names; the cloud metadata address is denied outright. The module proxy is a covert
@@ -2266,8 +2265,7 @@ queue for a later tick) holding one
 `runtimeClassName: gvisor` pod running `forgejo-runner one-job --wait` —
 non-root, no automounted ServiceAccount token, dropped capabilities,
 default-deny egress (`ciEgressSpec`: the in-cluster Forgejo, the Go
-module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
-redirects zip downloads there), `data.forgejo.org`, and for a build job
+module proxy and checksum DB, `data.forgejo.org`, and for a build job
 `auth.docker.io` (BuildKit fetches the build VM's registry tokens through
 the `buildctl` session) and the build cache on tcp 5000; nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
 the covert channel named above, accepted by ruling 99). The namespace and the

@@ -923,9 +923,8 @@ func (s *CISpawner) ciEgressSpec(vm *BuildVM, repo CIRepo, staging string) map[s
 	u, _ := url.Parse(s.cfg.GitBaseURL) // validated in NewCISpawner
 	fqdns := []string{
 		"proxy.golang.org", "sum.golang.org", // go module proxy + checksum db
-		"storage.googleapis.com", // proxy.golang.org redirects zip downloads there
-		"data.forgejo.org",       // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
-		"registry.npmjs.org",     // npm ci
+		"data.forgejo.org",   // DEFAULT_ACTIONS_URL: where actions/checkout resolves from
+		"registry.npmjs.org", // npm ci
 	}
 	if vm != nil {
 		fqdns = append(fqdns, "auth.docker.io") // buildctl's session fetches the build VM's registry tokens

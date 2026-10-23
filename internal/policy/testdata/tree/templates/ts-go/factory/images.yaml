@@ -18,4 +18,4 @@ images:
       GOPROXY: https://proxy.golang.org
       GOSUMDB: sum.golang.org
     path: [/usr/local/go/bin, /home/worker/go/bin]
-    egress: [proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org]
+    egress: [proxy.golang.org, sum.golang.org, registry.npmjs.org]

@@ -154,7 +154,7 @@ func TestSandboxFactsFollowTheImage(t *testing.T) {
 		want string
 	}{
 		"factory": {nil, base + ", Go 1.26, Node 24 with npm. It reaches the factory's gateway and Git server and " +
-			"proxy.golang.org, sum.golang.org, storage.googleapis.com, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. "},
+			"proxy.golang.org, sum.golang.org, registry.npmjs.org (the Go module proxy and the npm registry); every other name fails to resolve. "},
 		"browser": {&imagegen.Manifest{Tools: []string{"chromium", "fonts-liberation"}, Egress: []string{"cdn.example.org", "registry.npmjs.org"}},
 			base + ", chromium, fonts-liberation. It reaches the factory's gateway and Git server and cdn.example.org, registry.npmjs.org; every other name fails to resolve. "},
 		"offline": {&imagegen.Manifest{Tools: []string{"jq"}},
