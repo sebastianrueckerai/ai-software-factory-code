@@ -294,8 +294,8 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 	}
 }
 
-// The guide shows a card's image in the json shape and, when the project
-// pins images, lists them with their tools.
+// The guide shows a card's image in the json shape and lists the images
+// with their tools only when the project pins images.
 func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium", "fonts-liberation"}}}
 	want := "Images: browser (chromium, fonts-liberation), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
@@ -303,8 +303,8 @@ func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 	if !strings.Contains(got, want) || !strings.Contains(got, `"rung_reason": "one line", "image": "..."}`) {
 		t.Fatalf("planGuide = %q, want the image field and %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, "Images:") || !strings.Contains(got, `"image": "..."`) {
-		t.Fatalf("planGuide without pins = %q, want the image field and no Images line", got)
+	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
+		t.Fatalf("planGuide without pins = %q, want no image field and no Images line", got)
 	}
 }
 

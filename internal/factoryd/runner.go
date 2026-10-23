@@ -1474,10 +1474,12 @@ func exitedHow(plain string, d PodDiagnosis) string {
 	return ""
 }
 
-// The start steps a pod can fail at for good.
+// The start steps a pod can fail at for good; stepImagePin a gate's
+// sandbox whose card's image has no pin in force.
 const (
 	stepImagePull       = "image pull"
 	stepContainerConfig = "container config"
+	stepImagePin        = "image pin"
 )
 
 // StepEgressProbe is the worker's start step that holds the sandbox to its
@@ -1554,6 +1556,8 @@ func (f *startFailure) escalation(then string) string {
 		act = "correct the sandbox pod's configuration"
 	case StepEgressProbe:
 		act = "check the task namespace's " + workerEgress + " policy, or the pod's uid, against the probe named below"
+	case stepImagePin:
+		act = "see that " + imagesPath + " on main declares the image and that its build lands, so the factory pins it"
 	}
 	return fmt.Sprintf("%s%s, and no session can fix it: %s, %s.\n%s", startRefused, f.step, act, then, f.text)
 }
@@ -1879,7 +1883,12 @@ func (f *envFit) text(name, s, what string) string {
 }
 
 func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
-	toolsJSON, _ := json.Marshal(s.policy.Tools(t.RequiredCapabilities, t.Source))
+	tools := s.policy.Tools(t.RequiredCapabilities, t.Source)
+	if s.report != "" {
+		// a report session's card restarts on no image
+		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
+	}
+	toolsJSON, _ := json.Marshal(tools)
 	var fit envFit
 	env := []map[string]any{
 		{"name": "TASK_ID", "value": t.ID},

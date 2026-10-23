@@ -1163,7 +1163,8 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   is never bound in a seed namespace.
 - `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
   required, each one line without control characters): free, through the
-  class's tool list (`request_tool: {}`), never a tool card's session.
+  class's tool list (`request_tool: {}`), never a tool card's session; a
+  report session's brief does not name it.
   The agent asks for a tool its sandbox lacks instead of installing it.
   It goes the way of an escalation (an `agent_tool_request` intake event,
   the session stops with outcome `missing_tool`, the work in progress on
@@ -1175,31 +1176,40 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   `factory/images.yaml`, starting from the asking card's image as an
   entry (its own on main, or `FactoryStack`, the factory image's Go and
   Node, where it runs on the factory's image); a second ask for the same
-  image joins the open card with a comment. The tool and the need reach
-  Forgejo through the outbound sanitiser, as an escalation's text does.
-  The park's row names the tool card before it is filed, so a retry files
-  it once. The card waits in `waiting-image` (no work slot) until the
-  imager's `image_ready`: once the tool card merged and the pin in force
-  carries the key a pass after the merge read, the next session runs on
-  the image from the branch, its findings naming the tool's arrival. A
-  tool card closed unmerged, merged without declaring the image, or
-  merged with an image whose three builds left no signed image, reaches
-  the next session as why the tool did not come; so do, at once, a new
-  image past the project's four and, as a backstop, a tool card's own ask
-  (it declares tools it never gets). Any ask after a refused park goes to
-  a human, and so does an ask
+  image joins the open card with a comment while no session has started
+  it, else files its own. The tool and the need reach Forgejo through the
+  outbound sanitiser, as an escalation's text does. The park's row names
+  the tool card before it is filed, so a retry files it once. The card
+  waits in `waiting-image` (no work slot) until the imager's
+  `image_ready`: once the tool card merged and the pin in force carries
+  the key a pass after the merge read, the next session runs on the
+  image from the branch, its findings naming the tool's arrival. A tool
+  card closed unmerged, merged without declaring the image, or merged
+  with an image whose three builds left no signed image, reaches the next
+  session as why the tool did not come; so do, at once, a new image past
+  the project's four, an ask on the configuration repository, and, as a
+  backstop, a tool card's own ask (it declares tools it never gets). A
+  park that ends without its image drops the card's dependency on the
+  tool card, in `task_deps` and on Forgejo, so the card's issue can
+  close. Any ask after a refused park goes to a human, and so does an ask
   for the tool whose image arrived from a card on that image; a card not
   on it takes it at once. After 24 hours without a wake the card asks a human; the
   image's arrival ends that wait too. The asking session takes no number
   of the session cap. A session start whose image has no pin in force
-  parks the same way, with no tool card. A pull request that changes
+  parks the same way, with no tool card; a reproduction, criteria or
+  hold-out sandbox whose image has none is the start escalation at step
+  `image pin`. A pull request that changes
   `factory/images.yaml` has the file checked at the gated commit; each
   finding goes back to the agent like an anti-cheat finding.
 
-  A pin at its desired key whose build the store lacks signed, as after a
-  re-seed, is built again. After three builds of a key leave no signed
-  image, one alert names the builder, and the key is asked for once a
-  day.
+  The imager reads every project's `factory/images.yaml` but the
+  configuration repository's. A pin at its desired key whose build the
+  store lacks signed, as after a re-seed, is built again. After three
+  builds of a key leave no signed image, one alert names the builder, and
+  the key is asked for once a day; a dispatch Forgejo refuses for 45
+  minutes raises one alert too. A merge Forgejo refuses with 405 while
+  the head's checks are pending waits; a refusal that repeats, or a
+  finding, raises one alert per project and cause.
 
   The imager keeps the store to the pins. Once a pin changes in force, the
   store keeps of that image only the pinned build, the one pinned before
@@ -1210,13 +1220,16 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   of `sf/sandbox-<project>.<image>` goes, through Forgejo's package API
   with the site admin's login. A name that leaves the pins keeps its last
   build for 30 days, so pinning it again undoes an unpin by mistake; then
-  every version goes. Nothing is deleted while infra's main is past the
-  commit in force, as a pin merged there may not be loaded yet, nor once
-  the version in force moves during a sweep. Once a day, an image other
-  than `default` whose name has been pinned for 30 days, and which no card
-  of the project named or ran on in those 30 days, gets a removal card on
-  the project's repository (source `image_removal`, small, the cheap rung)
-  that deletes its entry from `factory/images.yaml`. No other is filed
+  every version goes. Nothing is listed or deleted while infra's main is
+  past the commit in force, as a pin merged there may not be loaded yet,
+  nor deleted once the version in force moves during a sweep. Once a day
+  per image, its row keeping when so a restart checks no sooner, an image
+  other than `default` whose name has been pinned for 30 days, and which
+  no card of the project named or ran on in those 30 days, gets a removal
+  card on the project's repository (source `image_removal`, small, the
+  cheap rung) that deletes its entry from `factory/images.yaml`, or the
+  file where it is the only entry; the row names the card before it is
+  filed. No other is filed
   while that card is open or within 30 days of its end. `remove-project`
   deletes the project's `sf/sandbox-<project>.*` packages and its image
   rows.

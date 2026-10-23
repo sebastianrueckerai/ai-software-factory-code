@@ -736,6 +736,9 @@ func (s *accBatchStore) PlanCatches(context.Context, string) ([]factoryd.PlanCat
 func (s *accBatchStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
 	panic("unused")
 }
+func (s *accBatchStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
+	panic("unused")
+}
 func (s *accBatchStore) OpenDependencies(ctx context.Context, id string) ([]factoryd.Dependency, error) {
 	panic("unused")
 }

@@ -346,7 +346,7 @@ type RequestInfoIn struct {
 }
 
 type RequestToolIn struct {
-	Tool string `json:"tool" jsonschema:"the tool, such as chromium, ffmpeg or python3.12"`
+	Tool string `json:"tool" jsonschema:"the tool's Debian package or binary name, such as chromium, ffmpeg or python3"`
 	Need string `json:"need" jsonschema:"what you need it for in this card"`
 }
 
@@ -438,7 +438,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestTool, Description: "Ask for a tool this sandbox lacks, such as a browser, ffmpeg or a language runtime, instead of trying to install it: " +
 		"the sandbox refuses installs. Your work in progress is pushed, a card adds the tool to one of the project's images, and this card restarts on that image " +
-		"from its branch once the image is built. Name the tool and what you need it for."},
+		"from its branch once the image is built. Name the tool by its Debian package or binary name (chromium, ffmpeg, python3), and what you need it for."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestToolIn) (*mcp.CallToolResult, any, error) {
 			return s.requestTool(ctx, c, in), nil, nil
 		})

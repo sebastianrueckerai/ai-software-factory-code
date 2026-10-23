@@ -772,13 +772,19 @@ func TestRequestTool(t *testing.T) {
 	}
 	if want := "Ask for a tool this sandbox lacks, such as a browser, ffmpeg or a language runtime, instead of trying to install it: the sandbox refuses installs. " +
 		"Your work in progress is pushed, a card adds the tool to one of the project's images, and this card restarts on that image from its branch once the image is built. " +
-		"Name the tool and what you need it for."; res.Tools[i].Description != want {
+		"Name the tool by its Debian package or binary name (chromium, ffmpeg, python3), and what you need it for."; res.Tools[i].Description != want {
 		t.Fatalf("description = %q, want %q", res.Tools[i].Description, want)
 	}
 	b, _ := json.Marshal(res.Tools[i].InputSchema)
-	var schema struct{ Required []string }
+	var schema struct {
+		Required   []string
+		Properties map[string]struct{ Description string }
+	}
 	if err := json.Unmarshal(b, &schema); err != nil || !slices.Equal(schema.Required, []string{"tool", "need"}) {
 		t.Fatalf("required = %q (%v), want tool and need", schema.Required, err)
+	}
+	if got := schema.Properties["tool"].Description; got != "the tool's Debian package or binary name, such as chromium, ffmpeg or python3" {
+		t.Fatalf("tool's description = %q, want the Debian package or binary name", got)
 	}
 
 	text, isErr := e.call(t, policy.ToolRequestTool, map[string]any{"tool": " ffmpeg ", "need": " cut the demo video to 10 s "})

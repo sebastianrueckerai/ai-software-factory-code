@@ -1560,6 +1560,22 @@ func TestGateReproductionThatCannotStartEscalates(t *testing.T) {
 	if res := getInto[ReproResult](t, val, err); res != (ReproResult{Escalate: want}) {
 		t.Fatalf("result = %+v, want the start escalation:\n%s", res, want)
 	}
+
+	// a card whose image lost its pin since its session: the same start
+	// escalation, naming the state and the action, and no pod
+	unpinned := task
+	unpinned.Image = "video"
+	kube = newFakeKube()
+	r, _, _ = newTestRunner(t, unpinned, kube, &fakeObjectStore{})
+	v := r.cfg.Policy()
+	v.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo"}}
+	r.cfg.Policy = func() policy.Version { return v }
+	val, err = execActivity(t, r, ActivityGateReproduction, "t1", int64(9), "c1")
+	want = "the sandbox cannot start at image pin, and no session can fix it: see that factory/images.yaml on main declares the image and that its build lands, so the factory pins it, " +
+		"then answer to run the reproduction again, or close the card.\nimage video of project repo has no pin in force: no sandbox runs on it until the factory pins it"
+	if res := getInto[ReproResult](t, val, err); res != (ReproResult{Escalate: want}) || len(kube.podOrder) != 0 {
+		t.Fatalf("result = %+v, pods %d; want the start escalation and no pod:\n%s", res, len(kube.podOrder), want)
+	}
 }
 
 // scriptReproPods answers the gate's two pods in order, each once it

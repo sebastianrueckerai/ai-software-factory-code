@@ -107,6 +107,13 @@ type fakeStore struct {
 	routineCursor int64
 }
 
+func (s *fakeStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
+	if s.deps != nil {
+		s.deps[id] = slices.DeleteFunc(s.deps[id], func(d string) bool { return slices.Contains(dependsOn, d) })
+	}
+	return nil
+}
+
 func (s *fakeStore) AddTaskDeps(ctx context.Context, id string, dependsOn []string) error {
 	if s.deps == nil {
 		s.deps = map[string][]string{}

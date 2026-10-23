@@ -883,6 +883,13 @@ func (s *acceptanceStore) AddTaskDeps(_ context.Context, id string, dependsOn []
 	return nil
 }
 
+func (s *acceptanceStore) RemoveTaskDeps(_ context.Context, id string, dependsOn []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deps[id] = slices.DeleteFunc(s.deps[id], func(d string) bool { return slices.Contains(dependsOn, d) })
+	return nil
+}
+
 func (s *acceptanceStore) OpenDependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -232,11 +232,6 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "criteria": entries, "findings": findings}))
 		return CriteriaResult{Findings: findings}, nil
 	}
-	done, err := r.reproSandbox(ctx, &t, repo)
-	if err != nil {
-		return CriteriaResult{}, err
-	}
-	defer done()
 	// a sandbox that cannot start is the start escalation, as a
 	// reproduction's is
 	cannotStart := func(err error) (CriteriaResult, error) {
@@ -247,6 +242,11 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "start_failed": f.text}))
 		return CriteriaResult{Escalate: f.escalation(thenCriteria)}, nil
 	}
+	done, err := r.reproSandbox(ctx, &t, repo)
+	if err != nil {
+		return cannotStart(err)
+	}
+	defer done()
 	run := t
 	run.ReproCommand = criteriaScript(runs) + holdoutScript(hos)
 	rep, err := r.runRepro(ctx, run, repo, pullRef(pr), commit, "")

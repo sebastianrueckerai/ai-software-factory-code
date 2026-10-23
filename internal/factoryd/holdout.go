@@ -791,6 +791,10 @@ func (r *Runner) SettleHoldouts(ctx context.Context, taskID string, pin int64, p
 			rw := ho
 			rw.TestCode = res.Rewrite
 			dry, ev, err := r.rewriteOnBase(ctx, t, repo, pr, commit, rw)
+			var f *startFailure
+			if errors.As(err, &f) {
+				return HoldoutSettlement{Ask: f.escalation(thenCriteria)}, nil
+			}
 			if err != nil {
 				return HoldoutSettlement{}, err
 			}

@@ -572,13 +572,8 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, detail))
 		return ReproResult{NotReproduced: note}, nil
 	}
-	done, err := r.reproSandbox(ctx, &t, repo)
-	if err != nil {
-		return ReproResult{}, err
-	}
-	defer done()
-	// a sandbox that cannot start, its pod's or its worker's egress probe,
-	// is the start escalation, as a session's is
+	// a sandbox that cannot start, its image's pin, its pod's or its
+	// worker's egress probe, is the start escalation, as a session's is
 	cannotStart := func(err error) (ReproResult, error) {
 		var f *startFailure
 		if !errors.As(err, &f) {
@@ -587,6 +582,11 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, map[string]any{"pr": pr, "commit": commit, "start_failed": f.text}))
 		return ReproResult{Escalate: f.escalation(thenRepro)}, nil
 	}
+	done, err := r.reproSandbox(ctx, &t, repo)
+	if err != nil {
+		return cannotStart(err)
+	}
+	defer done()
 	// the base first (ruling 167: the fault must show before the fix),
 	// then the head. The base a signal card reproduces at is pinned at
 	// its filing (roadmap 194): the commit that was live when its alert
@@ -658,8 +658,8 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 
 // reproSandbox builds the sandbox t's reproduction runs share: leftover
 // credentials revoked, a read token on repo for the fetch, the namespace
-// on t's image. done tears it down and revokes the token, however the runs
-// end.
+// on t's image, whose missing pin is a *startFailure at stepImagePin. done
+// tears it down and revokes the token, however the runs end.
 func (r *Runner) reproSandbox(ctx context.Context, t *Task, repo Repo) (done func(), err error) {
 	if err := r.completion.reconcile(ctx, t.ID); err != nil {
 		return nil, fmt.Errorf("revoke leftover credentials: %w", err)
@@ -674,6 +674,10 @@ func (r *Runner) reproSandbox(ctx context.Context, t *Task, repo Repo) (done fun
 	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", []Repo{repo})
 	if err == nil {
 		_, _, err = r.setupNamespace(ctx, t, base)
+	}
+	var unpinned ErrImageNotPinned
+	if errors.As(err, &unpinned) {
+		err = &startFailure{step: stepImagePin, text: unpinned.Error()}
 	}
 	if err != nil {
 		done()

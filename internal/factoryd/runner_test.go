@@ -1245,6 +1245,23 @@ func TestRunSessionGivesAToolCardNoRequestTool(t *testing.T) {
 	}
 }
 
+// A report session's card restarts on no image: its tools leave out
+// request_tool, which a coding session of the same classes gets.
+func TestReportSessionGetsNoRequestTool(t *testing.T) {
+	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
+	doc := testPolicyVersion().Document
+	coder := doc.Classes["coder"]
+	coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
+	doc.Classes["coder"] = coder
+	task := Task{ID: "t1", Repository: "sf/repo", RequiredCapabilities: []string{"coder"}}
+	for report, want := range map[string]string{"": `["request_info","request_tool"]`, "the guide": `["request_info"]`} {
+		pod := r.workerPodSpec(task, sessionSpec{id: "s-1", policy: doc, report: report})
+		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != want {
+			t.Errorf("report %q: TOOLS = %s, want %s", report, got, want)
+		}
+	}
+}
+
 // A writer's hand-filed card: the last line "Directories: <dir>, <dir>" of
 // its issue body, key in any case, names the directories of its brief's
 // map (the pod's DIRECTORIES), and the map lists them, so the brief's

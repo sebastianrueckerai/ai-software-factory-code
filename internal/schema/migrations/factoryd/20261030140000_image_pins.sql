@@ -4,7 +4,8 @@
 -- unpinned_at when the imager first saw it no longer pinned (null while it
 -- is), retained whether the store holds no build of the image but those it
 -- keeps, removal_task the last card filed to remove the image as unused (''
--- for none)
+-- for none), checked_at when the check for an unused image last judged it
+-- (null for never)
 CREATE TABLE IF NOT EXISTS image_pins (
 	project text NOT NULL,
 	image text NOT NULL,
@@ -16,5 +17,6 @@ CREATE TABLE IF NOT EXISTS image_pins (
 	unpinned_at timestamptz,
 	retained boolean NOT NULL DEFAULT false,
 	removal_task text NOT NULL DEFAULT '',
+	checked_at timestamptz,
 	PRIMARY KEY (project, image)
 );

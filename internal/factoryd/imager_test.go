@@ -67,7 +67,12 @@ type imagerForgejo struct {
 	failLists  int
 	bumpOnList bool
 	moveOnList bool
-	issues     []string // the issues filed on demo-app/demo-app, title and body
+	issues     []string          // the issues filed on demo-app/demo-app, title and body
+	checks     map[string]string // the combined state of a commit's checks by sha, "" for none
+	failIssues int               // the next issues filed on demo-app/demo-app answer 500
+	// denyDispatch refuses factory-ci's dispatches, as a token without
+	// Actions write is refused
+	denyDispatch bool
 }
 
 type forkBranch struct{ head, base string }
@@ -161,7 +166,7 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 			t.Errorf("unexpected %s %s by the admin", r.Method, r.URL)
 			http.NotFound(w, r)
 		case by == "ci":
-			if r.Method != http.MethodPost || p != codeAPI+"/actions/workflows/project-image.yml/dispatches" {
+			if r.Method != http.MethodPost || p != codeAPI+"/actions/workflows/project-image.yml/dispatches" || s.denyDispatch {
 				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
@@ -195,6 +200,8 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 		case by == "config":
 			t.Errorf("unexpected %s %s by config", r.Method, r.URL)
 			http.NotFound(w, r)
+		case r.Method == http.MethodGet && strings.HasPrefix(p, infraAPI+"/commits/") && strings.HasSuffix(p, "/status"):
+			fmt.Fprintf(w, `{"state":%q,"statuses":[]}`, s.checks[strings.TrimSuffix(strings.TrimPrefix(p, infraAPI+"/commits/"), "/status")])
 		case r.Method == http.MethodGet && p == infraAPI+"/pulls" && q.Get("state") == "open":
 			out := []map[string]any{}
 			for _, pr := range s.prs {
@@ -317,6 +324,9 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			content(c)
+		case r.Method == http.MethodPost && p == "/api/v1/repos/demo-app/demo-app/issues" && s.failIssues > 0:
+			s.failIssues--
+			http.Error(w, "boom", http.StatusInternalServerError)
 		case r.Method == http.MethodPost && p == "/api/v1/repos/demo-app/demo-app/issues":
 			s.issues = append(s.issues, body["title"].(string)+"\n\n"+body["body"].(string))
 			w.WriteHeader(http.StatusCreated)
@@ -409,7 +419,6 @@ type imageBook struct {
 	alerts  []Alert
 	parks   []ImagePark
 	tasks   map[string]Task
-	removed []string               // "task on dependency" of every dependency removed
 	pins    map[string]ImagePinRow // by project/image
 	used    map[string]bool        // the store repositories of the images a card names lately
 	usedErr error                  // ImageUsed's answer when set
@@ -486,15 +495,6 @@ func (b *imageBook) ImageReadAt(_ context.Context, project, image, key string) (
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.builds[project+"/"+image+"/"+key].read, nil
-}
-
-func (b *imageBook) RemoveTaskDeps(_ context.Context, id string, dependsOn []string) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, d := range dependsOn {
-		b.removed = append(b.removed, id+" on "+d)
-	}
-	return nil
 }
 
 func (b *imageBook) Task(_ context.Context, id string) (Task, bool, error) {
@@ -826,9 +826,8 @@ func demoBothPinned(main map[string]string) {
 // pin in force at its desired key; a park without a tool card once its
 // image is pinned; a tool card closed unmerged at once, and one merged
 // without declaring the image once a pass after the merge reads the file,
-// each with its refusal, which drops the card's dependency on the tool
-// card. A woken park is not signalled again, and the park of a card that
-// ended is not read.
+// each with its refusal. A woken park is not signalled again, and the park
+// of a card that ended is not read.
 func TestImagerWakesParkedCards(t *testing.T) {
 	r := newImagerRig(t, bothImages, demoBothPinned)
 	t0 := *r.now
@@ -875,9 +874,6 @@ func TestImagerWakesParkedCards(t *testing.T) {
 	if p := r.book.parks[3]; p.Refused != "#61 closed without a merge" {
 		t.Fatalf("t-d's park = %+v, want its refusal", p)
 	}
-	if want := []string{"t-d on t-tool-d", "t-e on t-tool-e"}; !reflect.DeepEqual(r.book.removed, want) {
-		t.Fatalf("dependencies removed %q, want %q: a refused card waits on its tool card no more", r.book.removed, want)
-	}
 	if _, _, writes := r.fj.state(); len(writes) != 0 {
 		t.Fatalf("writes %q, want none: the pins are at their desired keys", writes)
 	}
@@ -917,6 +913,33 @@ func TestImagerRebuildsAPinTheStoreLacks(t *testing.T) {
 	}
 }
 
+// A dispatch Forgejo refuses records no build; once it has failed for 45
+// minutes, the pass raises one alert naming why.
+func TestImagerAlertsADispatchThatFails(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.fj.mu.Lock()
+	r.fj.denyDispatch = true
+	r.fj.mu.Unlock()
+	t0 := *r.now
+	for _, after := range []time.Duration{0, 44 * time.Minute, 45 * time.Minute, 90 * time.Minute} {
+		*r.now = t0.Add(after)
+		if err := r.im.pass(context.Background()); err == nil || !strings.Contains(err.Error(), "forbidden") {
+			t.Fatalf("%v on: pass = %v, want the refused dispatch", after, err)
+		}
+		if got := len(r.book.alerts); got != 0 && after < 45*time.Minute || got != 1 && after >= 45*time.Minute {
+			t.Fatalf("%v on: alerts %+v", after, r.book.alerts)
+		}
+	}
+	a := r.book.alerts[0]
+	if reason, _ := a.Detail["reason"].(string); a.Source != "dispatch" || a.Fingerprint != "dispatch sf/sandbox-demo-app.default:"+keyDefault ||
+		!strings.HasPrefix(reason, "the dispatch of project-image.yml of sf/ai-software-factory-code for sf/sandbox-demo-app.default:"+keyDefault+" has failed since 2026-10-22T12:00:00Z: ") {
+		t.Fatalf("alert %+v", a)
+	}
+	if got := r.book.builds["demo-app/default/"+keyDefault]; got.dispatches != 0 {
+		t.Fatalf("image_builds row %+v, want no dispatch recorded", got)
+	}
+}
+
 // A tool card that merged an image whose builds fail wakes its parked card
 // with the refusal once buildTries builds left no signed image, not
 // before: the card goes on to a human with the cause.
@@ -938,6 +961,70 @@ func TestImagerWakesAParkWhoseImageNeverBuilds(t *testing.T) {
 	refusal := "#60 merged, but image browser's build failed 3 times; the builder's run shows why"
 	if want := []string{"t-a image_ready browser: " + refusal}; !reflect.DeepEqual(r.signals.got, want) || r.book.parks[0].Refused != refusal {
 		t.Fatalf("signals %q, park %+v; want %q", r.signals.got, r.book.parks[0], want)
+	}
+}
+
+// Forgejo's 405 while main's required checks run on the pull request's
+// head is a wait: no refusal counts and no alert rises, however many
+// passes it lasts, and the pass after the checks merges.
+func TestImagerWaitsForPendingChecks(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	r.fj.mu.Lock()
+	r.fj.refuse, r.fj.checks = 1, map[string]string{r.fj.fork["factory-pins/demo-app"].head: "pending"}
+	r.fj.mu.Unlock()
+	for range 3 {
+		r.pass(t)
+	}
+	if prs, _, _ := r.fj.state(); len(prs) != 1 || prs[0].merged || prs[0].state != "open" || len(r.book.alerts) != 0 || len(r.im.refusals) != 0 {
+		t.Fatalf("pull requests %+v, alerts %+v, refusals %v; want #1 open, none", prs, r.book.alerts, r.im.refusals)
+	}
+	r.fj.mu.Lock()
+	r.fj.refuse = 0
+	r.fj.mu.Unlock()
+	r.pass(t)
+	if prs, _, _ := r.fj.state(); !prs[0].merged {
+		t.Fatalf("pull requests %+v; want #1 merged", prs)
+	}
+}
+
+// A finding that persists across the pull requests main's changes cut
+// afresh raises one alert per project and code, whichever pull request
+// carries it.
+func TestImagerAlertsAPersistentFindingOnce(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	r.fj.moveMain(map[string]string{"factory/processes/maintenance.yaml": r.fj.file("main", "factory/processes/maintenance.yaml") + "unknown_key: 1\n"})
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	r.pass(t)
+	r.fj.moveMain(map[string]string{"factory/routines/weekly-bump.md": "a person's edit\n"})
+	for range 3 {
+		r.pass(t)
+	}
+	prs, _, _ := r.fj.state()
+	if len(prs) != 2 || prs[0].state != "closed" || prs[1].state != "open" || len(r.book.alerts) != 1 || r.book.alerts[0].Fingerprint != "demo-app check" {
+		t.Fatalf("pull requests %+v, alerts %+v; want #1 closed, #2 open, the one check alert", prs, r.book.alerts)
+	}
+}
+
+// The configuration repository's tree holds no images file: the imager
+// reads none there, whatever its project's agents.
+func TestImagerSkipsTheConfigurationRepository(t *testing.T) {
+	r := newImagerRig(t, "", func(main map[string]string) {
+		main["factory/projects/ai-software-factory-infra.yaml"] = strings.NewReplacer("agents: none", "agents: coder\nprocess: maintenance",
+			"tokens: {read: forgejo-config, chat: forgejo-chat}", "tokens: {read: forgejo-config, actions: forgejo-ci-registrar, merge: forgejo-merge, chat: forgejo-chat}").
+			Replace(main["factory/projects/ai-software-factory-infra.yaml"])
+	})
+	if c := r.fj.version().Projects["ai-software-factory-infra"]; c.Agents != policy.AgentsCoder {
+		t.Fatalf("the infra project's agents = %q, want coder", c.Agents)
+	}
+	r.fj.mu.Lock()
+	r.fj.images["sf/ai-software-factory-infra"] = demoImages
+	r.fj.mu.Unlock()
+	r.pass(t)
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 0 {
+		t.Fatalf("dispatches %q, want none", dispatches)
 	}
 }
 
@@ -1086,7 +1173,7 @@ func TestImagerAutoMergeRefusals(t *testing.T) {
 			}
 			a := r.book.alerts[0]
 			reason, _ := a.Detail["reason"].(string)
-			if a.Kind != AlertImage || a.Source != "pin" || a.Fingerprint != "demo-app #1 "+c.code || a.Detail["project"] != "demo-app" || a.Detail["pull_request"] != int64(1) {
+			if a.Kind != AlertImage || a.Source != "pin" || a.Fingerprint != "demo-app "+c.code || a.Detail["project"] != "demo-app" || a.Detail["pull_request"] != int64(1) {
 				t.Fatalf("alert %+v", a)
 			}
 			switch c.code {
@@ -1135,7 +1222,7 @@ func TestImagerRecutsAPullRequestMainMovedPast(t *testing.T) {
 		r.pass(t)
 		r.pass(t)
 		r.pass(t)
-		if prs, _, _ := r.fj.state(); len(prs) != 1 || prs[0].state != "open" || len(r.book.alerts) != 1 || r.book.alerts[0].Fingerprint != "demo-app #1 check" {
+		if prs, _, _ := r.fj.state(); len(prs) != 1 || prs[0].state != "open" || len(r.book.alerts) != 1 || r.book.alerts[0].Fingerprint != "demo-app check" {
 			t.Fatalf("main still broken: pull requests %+v, alerts %+v; want #1 open, one check alert", prs, r.book.alerts)
 		}
 		r.fj.moveMain(map[string]string{"factory/processes/maintenance.yaml": fixed})
@@ -1474,8 +1561,9 @@ func TestImagerKeepsAnUnpinnedImagesLastBuildFor30Days(t *testing.T) {
 
 // A sweep deletes only while infra's main is the commit in force: a pin
 // merged there and not loaded yet, whose key the declaration no longer
-// desires, keeps its build through the retry of a sweep that failed, and
-// once loaded it is the pin the sweep keeps.
+// desires, keeps its build through the retry of a sweep that failed, no
+// sweep lists the store while main is past the commit, and once loaded it
+// is the pin the sweep keeps.
 func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	r := newImagerRig(t, demoImages, nil)
 	const repo = "sf/sandbox-demo-app.default"
@@ -1491,13 +1579,12 @@ func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	all := slices.Sorted(slices.Values(slices.Concat(old, mid, merged)))
 	r.fj.mu.Lock()
 	r.fj.packages["sandbox-demo-app.default"] = slices.Clone(all)
-	r.fj.failLists = 2
+	r.fj.failLists = 1
 	r.fj.mu.Unlock()
-	for n := range 2 {
-		if err := r.im.pass(context.Background()); err == nil || !strings.Contains(err.Error(), "retention: image default of demo-app: ") {
-			t.Fatalf("pass %d: %v; want the failed sweep", n+1, err)
-		}
+	if err := r.im.pass(context.Background()); err == nil || !strings.Contains(err.Error(), "retention: image default of demo-app: ") {
+		t.Fatalf("pass 1: %v; want the failed sweep", err)
 	}
+	r.pass(t)
 	if prs, _, _ := r.fj.state(); len(prs) != 1 || !prs[0].merged {
 		t.Fatalf("pull requests %+v; want the pin of %s merged", prs, keyDefault)
 	}
@@ -1505,8 +1592,8 @@ func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	r.fj.images["demo-app/demo-app"] = "images:\n  default:\n    apt: [jq, make]\n"
 	r.fj.mu.Unlock()
 	r.pass(t)
-	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 3 || r.book.pins["demo-app/default"].Retained {
-		t.Fatalf("main past the commit in force: versions %q, %d lists, row %+v; want all, the two failed and this pass's, the sweep due", got, lists, r.book.pins["demo-app/default"])
+	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 1 || r.book.pins["demo-app/default"].Retained {
+		t.Fatalf("main past the commit in force: versions %q, %d lists, row %+v; want all, the failed list alone, the sweep due", got, lists, r.book.pins["demo-app/default"])
 	}
 	r.fj.load(t)
 	r.pass(t)
@@ -1518,10 +1605,11 @@ func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	}
 }
 
-// A sweep reads main's head and the version in force right before its
-// deletes: once a person merged on main, or the version in force is no
-// longer the one whose pins it keeps, it deletes nothing, and a pass at the
-// commit in force sweeps again.
+// A sweep reads main's head before it lists the store and again, with the
+// version in force, right before its deletes: once a person merged on
+// main, or the version in force is no longer the one whose pins it keeps,
+// it deletes nothing, no pass lists the store while main is past the
+// commit in force, and a pass at the commit in force sweeps again.
 func TestImagerSweepStopsWhenMainOrTheVersionMoves(t *testing.T) {
 	for _, moves := range []string{"version", "main"} {
 		t.Run(moves, func(t *testing.T) {
@@ -1548,8 +1636,8 @@ func TestImagerSweepStopsWhenMainOrTheVersionMoves(t *testing.T) {
 			r.fj.mu.Unlock()
 			if moves == "main" {
 				r.pass(t)
-				if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 2 {
-					t.Fatalf("main past the commit in force: versions %q, %d lists; want all, one list a pass", got, lists)
+				if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 1 {
+					t.Fatalf("main past the commit in force: versions %q, %d lists; want all, no list", got, lists)
 				}
 				r.fj.load(t)
 			}
@@ -1670,9 +1758,10 @@ func TestImagerRepinsAnUnpinnedImage(t *testing.T) {
 
 // An image but default whose name has been pinned for 30 days, which no
 // card named or ran on in those 30 days, gets one card on its project's
-// repository that removes it. The check runs once a day, failed or not. An
-// open card, or one finished within 30 days (merged: the unpin lands
-// meanwhile; declined: the 30 days start again), files no other.
+// repository that removes it. The check runs once a day, failed or not,
+// and a restart of factoryd does not run it sooner. An open card, or one
+// finished within 30 days (merged: the unpin lands meanwhile; declined:
+// the 30 days start again), files no other.
 func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 	r := newImagerRig(t, bothImages, demoBothPinned)
 	t0, day := *r.now, 24*time.Hour
@@ -1701,6 +1790,9 @@ func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 		t.Fatalf("pass = %v; want the failed check", err)
 	}
 	r.book.usedErr = nil
+	old := r.im
+	r.im = &Imager{Forgejo: old.Forgejo, Config: old.Config, Policy: old.Policy, Store: old.Store, Registry: old.Registry, Key: old.Key, Base: old.Base,
+		Builder: old.Builder, BuildToken: old.BuildToken, Ladder: old.Ladder, Now: old.Now, Workflows: old.Workflows, OpenBao: old.OpenBao}
 	must(at(26 * time.Hour))
 	r.book.used["sf/sandbox-demo-app.browser"] = true
 	must(at(50 * time.Hour))
@@ -1712,7 +1804,8 @@ func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 	must(at(75 * time.Hour))
 	title := "Remove image browser (unused for 30 days)"
 	body := "Image browser of project demo-app has been pinned for 30 days, and no card ran on it in that time.\n\n" +
-		"Delete the browser entry from factory/images.yaml, and nothing else. After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n" +
+		"Delete the browser entry from factory/images.yaml and change nothing else; where it is the file's only entry, delete the file, as an images file declares one image at least. " +
+		"After this card merges, the factory unpins the image, keeps its last build in the store for 30 days, then deletes it.\n\n" +
 		"Acceptance:\n- factory/images.yaml no longer declares image browser.\n- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
 		"Size: small\nRung: cheap"
 	if got := issues(); !slices.Equal(got, []string{title + "\n\n" + body}) {
@@ -1753,6 +1846,35 @@ func TestImagerFilesOneRemovalCardForAnUnusedImage(t *testing.T) {
 	}
 }
 
+// The removal card's id is on the image's row before the card is filed: a
+// filing that failed files at the next day's check under that id, once.
+func TestImagerFilesTheRemovalCardUnderItsRowsID(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	t0, day := *r.now, 24*time.Hour
+	r.book.pins["demo-app/browser"] = ImagePinRow{Project: "demo-app", Image: "browser", Key: keyBrowser, Digest: "sha256:" + strings.Repeat("b", 64),
+		Since: t0.Add(-31 * day), Retained: true}
+	r.fj.mu.Lock()
+	r.fj.failIssues = 1
+	r.fj.mu.Unlock()
+	if err := r.im.pass(context.Background()); err == nil || !strings.Contains(err.Error(), "unused images: image browser of demo-app: ") {
+		t.Fatalf("pass = %v; want the failed filing", err)
+	}
+	id := r.book.pins["demo-app/browser"].RemovalTask
+	if id == "" || len(r.book.tasks) != 0 {
+		t.Fatalf("row %+v, cards %+v; want the card's id on the row and no card", r.book.pins["demo-app/browser"], r.book.tasks)
+	}
+	*r.now = t0.Add(day - time.Minute)
+	r.pass(t)
+	*r.now = t0.Add(day)
+	r.pass(t)
+	r.fj.mu.Lock()
+	issues := slicesClone(r.fj.issues)
+	r.fj.mu.Unlock()
+	if card := r.book.tasks[id]; card.Source != SourceImageRemoval || len(r.book.tasks) != 1 || len(issues) != 1 || r.book.pins["demo-app/browser"].RemovalTask != id {
+		t.Fatalf("cards %+v, issues %d, row %+v; want the one card under %s", r.book.tasks, len(issues), r.book.pins["demo-app/browser"], id)
+	}
+}
+
 // image_pins keeps one row per project image, replaced whole, and
 // DeleteProjectImages drops a project's image_pins and image_builds rows.
 // ImageUsed finds a card of the project's repository that names the image
@@ -1781,6 +1903,9 @@ func TestPGStoreImagePins(t *testing.T) {
 			if !got[i].UnpinnedAt.IsZero() {
 				got[i].UnpinnedAt = got[i].UnpinnedAt.UTC()
 			}
+			if !got[i].CheckedAt.IsZero() {
+				got[i].CheckedAt = got[i].CheckedAt.UTC()
+			}
 		}
 		return got
 	}
@@ -1796,7 +1921,7 @@ func TestPGStoreImagePins(t *testing.T) {
 		t.Fatalf("rows %+v", got)
 	}
 	changed := ImagePinRow{Project: "pins", Image: "default", Key: "k-3", Digest: "sha256:3", PreviousKey: "k-1", PreviousDigest: "sha256:1",
-		Since: t0, UnpinnedAt: t0.Add(2 * time.Hour), RemovalTask: "t-remove"}
+		Since: t0, UnpinnedAt: t0.Add(2 * time.Hour), RemovalTask: "t-remove", CheckedAt: t0.Add(3 * time.Hour)}
 	if err := s.SaveImagePin(ctx, changed); err != nil {
 		t.Fatal(err)
 	}

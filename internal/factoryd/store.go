@@ -525,6 +525,8 @@ type Store interface {
 	// AddTaskDeps records that task id waits on each of dependsOn; an
 	// edge recorded before stays as it is.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
+	// RemoveTaskDeps drops task id's waits on each of dependsOn.
+	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)

@@ -94,14 +94,15 @@ func toolImage(tool string) string {
 // ParkForTool parks task taskID on the sandbox image tool goes into: the
 // card's own image, else toolImage(tool); for tool "" on the image its
 // card names, which has no pin in force, with no tool card. A tool goes
-// onto a tool card, the open one of the repository and image, which it
-// joins with its need, else a new one; the park's row names the card
-// before it is filed, so a retry files it once. The card depends on it and
-// waits in waiting-image. A tool card's own ask is refused at once, and so
-// is a new image past the project's MaxImages names, pinned or declared
-// on main: a Note. An ask after a refused park, or for the tool whose park
-// on the same image arrived, is an Ask for a human; the refusal is spent,
-// so the ask after the answer is judged afresh.
+// onto a tool card, the open one of the repository and image that has not
+// started, which it joins with its need, else a new one; the park's row
+// names the card before it is filed, so a retry files it once. The card
+// depends on it and waits in waiting-image. A tool card's own ask is
+// refused at once, and so is an ask on the configuration repository and a
+// new image past the project's MaxImages names, pinned or declared on
+// main: a Note. An ask after a refused park, or for the tool whose park on
+// the same image arrived, is an Ask for a human; the refusal is spent, so
+// the ask after the answer is judged afresh.
 func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (ToolPark, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -145,6 +146,8 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 			p.Target, with, tool, need), false)
 	case t.Source == SourceToolRequest:
 		return r.refuse(ctx, t, p, toolCardRefusal, " Declare the tool and finish: the factory's build and the check of "+imagesPath+" on this pull request test the file.")
+	case r.Imager != nil && t.Repository == r.Imager.Config.Repo.String():
+		return r.refuse(ctx, t, p, configRepoRefusal, " Go on without the tool, or ask a human with escalate_to_human.")
 	}
 	raw, _, err := r.forgejo.FileContent(ctx, repo.Owner, repo.Name, prBase, imagesPath)
 	if errors.Is(err, ErrNotFound) {
@@ -166,7 +169,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 		return ToolPark{}, err
 	case open && card.ID == t.ID:
 		return ToolPark{}, terminalError("task %s is the open tool card of image %s: it cannot wait for itself", t.ID, p.Target)
-	case open:
+	case open && slices.Contains(notStarted, card.Status):
 		p.ToolTask = card.ID
 	default:
 		p.ToolTask = NewTaskID()
@@ -177,8 +180,16 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 	return r.onToolCard(ctx, t, repo, p, c.Images, file.Images, raw)
 }
 
-// toolCardRefusal is why a tool card's own ask gets no image.
-const toolCardRefusal = "this card declares tools in " + imagesPath + ", and its own sandbox never gets them"
+// notStarted are the statuses of a tool card no session has read yet,
+// which a join's need still reaches.
+var notStarted = []string{"backlog", "queued", "waiting-deps"}
+
+// toolCardRefusal is why a tool card's own ask gets no image;
+// configRepoRefusal why an ask on the configuration repository does.
+const (
+	toolCardRefusal   = "this card declares tools in " + imagesPath + ", and its own sandbox never gets them"
+	configRepoRefusal = "this card's repository is the factory's configuration repository, which declares no sandbox images"
+)
 
 // The refusals of a park at the imager's wake: its tool card closed
 // unmerged, merged without declaring the image, or merged with an image
@@ -209,6 +220,8 @@ func refusalAdvice(refusal string) string {
 		return "read the builder's run, correct the image's entry in " + imagesPath + ", then answer"
 	case refusal == toolCardRefusal:
 		return "answer that the card declares the tool and finishes without it"
+	case refusal == configRepoRefusal:
+		return "answer how the card goes on without the tool"
 	}
 	return "free an image name in " + imagesPath + ", then answer"
 }
@@ -521,10 +534,16 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			final, why, answer = t.awaitHumanUntil(imageWaitAsk(p), nil, ready)
 		}
 		if final != "" || ready.sig == nil {
+			if err := t.leavePark(p); err != nil {
+				return "failed", "leave the image park: " + errMessage(err), nil, nil
+			}
 			return final, why, answer, nil
 		}
 	}
 	if ready.sig.Refusal != "" {
+		if err := t.leavePark(p); err != nil {
+			return "failed", "leave the image park: " + errMessage(err), nil, nil
+		}
 		return "", "", answer, []string{toolRefused(p.Tool, ready.sig.Refusal)}
 	}
 	var line string
@@ -535,6 +554,36 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 		notes = []string{line}
 	}
 	return "", "", answer, notes
+}
+
+// leavePark ends park p without its image: the card waits on its tool
+// card no more (LeaveImagePark).
+func (t *taskRun) leavePark(p ImagePark) error {
+	if p.ToolTask == "" {
+		return nil
+	}
+	return workflow.ExecuteActivity(t.short, ActivityLeaveImagePark, t.taskID, p.ToolTask).Get(t.ctx, nil)
+}
+
+// LeaveImagePark drops card taskID's dependency on tool card toolTask, in
+// task_deps and on Forgejo, where an open dependency keeps the card's
+// issue from closing.
+func (r *Runner) LeaveImagePark(ctx context.Context, taskID, toolTask string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if err := r.store.RemoveTaskDeps(ctx, t.ID, []string{toolTask}); err != nil {
+		return err
+	}
+	card, ok, err := r.store.Task(ctx, toolTask)
+	if err != nil || !ok || t.IssueNumber == 0 || card.IssueNumber == 0 {
+		return err
+	}
+	if err := r.forgejo.SetIssueDependency(ctx, repo, t.IssueNumber, card.IssueNumber, true); err != nil {
+		log.Printf("task %s: drop the issue dependency on #%d: %v", t.ID, card.IssueNumber, err)
+	}
+	return nil
 }
 
 // imageReady ends a park's waits on the imager's image_ready of it: its

@@ -397,6 +397,22 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			json.NewDecoder(r.Body).Decode(&in)
 			f.deps = append(f.deps, strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies")+" on "+fmt.Sprint(in["index"]))
 			w.WriteHeader(http.StatusCreated)
+		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
+			issue := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies")
+			out := []map[string]int64{}
+			for _, d := range f.deps {
+				var n int64
+				if on, ok := strings.CutPrefix(d, issue+" on "); ok && q.Get("page") == "1" {
+					fmt.Sscan(on, &n)
+					out = append(out, map[string]int64{"number": n})
+				}
+			}
+			reply(out)
+		case repo == codeRepo && r.Method == "DELETE" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
+			var in map[string]any
+			json.NewDecoder(r.Body).Decode(&in)
+			dep := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies") + " on " + fmt.Sprint(in["index"])
+			f.deps = slices.DeleteFunc(f.deps, func(d string) bool { return d == dep })
 		case repo == codeRepo && p == "/actions/runs":
 			if q.Get("event") != "push" {
 				t.Errorf("runs query %v", q)

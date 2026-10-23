@@ -523,6 +523,71 @@ func TestToolCardNeutralisesTheAgentsText(t *testing.T) {
 	}
 }
 
+// A tool card a session started is joined no more, as its session read
+// its brief: a second ask for the image files a card of its own.
+func TestParkForToolJoinsOnlyACardNotStarted(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	for _, id := range []string{"t-asker", "t-second"} {
+		tk := store.tasks[id]
+		tk.Image = "video"
+		store.tasks[id] = tk
+	}
+	first, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tool := store.tasks[first.Park.ToolTask]
+	tool.Status = "running"
+	store.tasks[tool.ID] = tool
+	second, err := r.ParkForTool(ctx, "t-second", "sox", "mix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Park.ToolTask == first.Park.ToolTask || len(rf.issues) != 2 || len(rf.comments) != 0 || store.tasks[first.Park.ToolTask].Objective != tool.Objective {
+		t.Fatalf("second park %+v, issues %d, comments %q; want a card of its own", second, len(rf.issues), rf.comments)
+	}
+}
+
+// A park that ends without its image drops the card's dependency on its
+// tool card, in task_deps and on Forgejo, where an open one keeps the
+// card's issue from closing; a second leave changes nothing.
+func TestLeaveImagePark(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	p, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(store.deps["t-asker"], []string{p.Park.ToolTask}) || !slices.Equal(rf.deps, []string{"41 on 31"}) {
+		t.Fatalf("deps %v, issue dependencies %v", store.deps["t-asker"], rf.deps)
+	}
+	for range 2 {
+		if err := r.LeaveImagePark(ctx, "t-asker", p.Park.ToolTask); err != nil {
+			t.Fatal(err)
+		}
+		if len(store.deps["t-asker"]) != 0 || len(rf.deps) != 0 {
+			t.Fatalf("deps %v, issue dependencies %v; want none", store.deps["t-asker"], rf.deps)
+		}
+	}
+}
+
+// An ask on the configuration repository is refused at once: its tree
+// holds no images file.
+func TestParkForToolRefusesTheConfigurationRepository(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	r.Imager = &Imager{Config: &ForgejoConfig{Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}}}
+	p, err := r.ParkForTool(context.Background(), "t-asker", "ffmpeg", "cut")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The tool ffmpeg did not arrive: this card's repository is the factory's configuration repository, which declares no sandbox images. " +
+		"This session runs on the image the card ran on before. Go on without the tool, or ask a human with escalate_to_human."
+	if p.Note != want || p.Park.ToolTask != "" || len(rf.issues) != 0 || store.tasks["t-asker"].Status != "running" {
+		t.Fatalf("park %+v, issues %d; want the note %q", p, len(rf.issues), want)
+	}
+}
+
 // A session start whose image has no pin parks on that image with no tool
 // card.
 func TestParkForToolWithoutATool(t *testing.T) {
@@ -677,9 +742,15 @@ func missingTool(session, tool, need string) SessionResult {
 }
 
 // onPark answers ParkForTool in order with parks, recording each ask as
-// "tool|need", and ImageArrived with the activity's line, recording each
-// call as "image|tool" and its time.
+// "tool|need", ImageArrived with the activity's line, recording each call
+// as "image|tool" and its time, and LeaveImagePark, recording its tool
+// card.
 func (h *workflowHarness) onPark(parks ...ToolPark) {
+	h.env.OnActivity(ActivityLeaveImagePark, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, toolTask string) error {
+			h.left = append(h.left, toolTask)
+			return nil
+		})
 	h.env.OnActivity(ActivityParkForTool, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, tool, need string) (ToolPark, error) {
 			h.parked = append(h.parked, tool+"|"+need)
@@ -776,8 +847,9 @@ func TestWorkflowRepeatedToolRefusalAsksAHuman(t *testing.T) {
 	}
 }
 
-// A wake with a refusal (the tool card closed unmerged) keeps the image and
-// tells the next session why.
+// A wake with a refusal (the tool card closed unmerged) keeps the image,
+// leaves the park, so the card waits on its tool card no more, and tells
+// the next session why.
 func TestWorkflowImageRefusalAtTheWake(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(missingTool("s1", "ffmpeg", "cut the demo video"), pushed("s2", "c2"))
@@ -789,14 +861,15 @@ func TestWorkflowImageRefusalAtTheWake(t *testing.T) {
 		t.Fatalf("final = %q", final)
 	}
 	want := "The tool ffmpeg did not arrive: #50 closed without a merge. This session runs on the image the card ran on before."
-	if len(h.arrived) != 0 || len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, want) {
-		t.Fatalf("arrived %q, sessions %+v", h.arrived, h.sessions)
+	if len(h.arrived) != 0 || len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, want) || !slices.Equal(h.left, []string{"t-tool"}) {
+		t.Fatalf("arrived %q, sessions %+v, left %q", h.arrived, h.sessions, h.left)
 	}
 }
 
 // 24 hours without a wake ask a human, naming the tool card and the
 // image; the image's arrival ends that wait too, with no answer, and a
-// human's answer ends the park on the card's image as it is.
+// human's answer ends the park on the card's image as it is, which leaves
+// the park.
 func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 	ask := "The card has waited 24 h for image ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?\n" +
 		"Why: the card restarts on image ffmpeg once #50 has merged and the factory has built and pinned the image.\n" +
@@ -818,8 +891,8 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 		if at := h.escalatedAt[0].Sub(start); at < 24*time.Hour || at > 24*time.Hour+time.Minute {
 			t.Fatalf("asked after %s, want 24 h", at)
 		}
-		if !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) || len(h.sessions) != 2 || len(h.sessions[1].Answers) != 0 {
-			t.Fatalf("arrived %q, sessions %+v", h.arrived, h.sessions)
+		if !slices.Equal(h.arrived, []string{"ffmpeg|ffmpeg"}) || len(h.sessions) != 2 || len(h.sessions[1].Answers) != 0 || len(h.left) != 0 {
+			t.Fatalf("arrived %q, sessions %+v, left %q", h.arrived, h.sessions, h.left)
 		}
 	})
 	t.Run("a human answers", func(t *testing.T) {
@@ -832,8 +905,8 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q", final)
 		}
-		if len(h.arrived) != 0 || len(h.sessions) != 2 || len(h.sessions[1].Answers) != 1 || h.sessions[1].Sessions != 4 {
-			t.Fatalf("arrived %q, sessions %+v", h.arrived, h.sessions)
+		if len(h.arrived) != 0 || len(h.sessions) != 2 || len(h.sessions[1].Answers) != 1 || h.sessions[1].Sessions != 4 || !slices.Equal(h.left, []string{"t-tool"}) {
+			t.Fatalf("arrived %q, sessions %+v, left %q", h.arrived, h.sessions, h.left)
 		}
 	})
 	t.Run("the issue closes", func(t *testing.T) {

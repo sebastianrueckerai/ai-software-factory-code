@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The gate's split of a plan's criteria (piece 4): kind test and kind
@@ -347,6 +349,23 @@ func TestGateCriteriaThatCannotStartEscalates(t *testing.T) {
 	}
 	if tl := timeline(t, objects); !strings.Contains(tl, `"start_failed":"`) {
 		t.Fatalf("timeline = %s", tl)
+	}
+
+	// a card whose image lost its pin since its session: the same start
+	// escalation, naming the state and the action
+	task := seedCriteriaPlan(t)
+	task.Image = "video"
+	r, _, store = newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	v := r.cfg.Policy()
+	v.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo"}}
+	r.cfg.Policy = func() policy.Version { return v }
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}`)
+	res, err = runCriteria(t, r)
+	want = "the sandbox cannot start at image pin, and no session can fix it: see that factory/images.yaml on main declares the image and that its build lands, so the factory pins it, " +
+		"then answer to run the criteria gate again, or close the card.\nimage video of project repo has no pin in force: no sandbox runs on it until the factory pins it"
+	if err != nil || res.Escalate != want {
+		t.Fatalf("an unpinned image: result = (%+v, %v), want:\n%s", res, err, want)
 	}
 }
 

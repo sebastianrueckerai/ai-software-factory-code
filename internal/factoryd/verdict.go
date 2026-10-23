@@ -436,13 +436,14 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 }
 
 // deltaSystem is the delta round's system prompt: one card under the open
-// plan that closes the named criteria.
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"key": "...", "role": "feature", "title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "the command and its expected result"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "...", "image": "..."}}. The card's key is new. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its command the criterion's test. Keep the card small: it closes the gap, nothing else.`
+// plan that closes the named criteria; %s is the card's image field
+// (imageField).
+const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"key": "...", "role": "feature", "title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "the command and its expected result"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. The card's key is new. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its command the criterion's test. Keep the card small: it closes the gap, nothing else.`
 
 // deltaPrompt is the delta round's system prompt for a project pinning
 // pins.
 func deltaPrompt(pins map[string]policy.ImagePin) string {
-	return strings.TrimSpace(deltaSystem + " " + imagesLine(pins))
+	return strings.TrimSpace(fmt.Sprintf(deltaSystem, imageField(pins)) + " " + imagesLine(pins))
 }
 
 // deltaInput is the delta round's whole context.

@@ -134,15 +134,15 @@ func TestDecideCriterion(t *testing.T) {
 }
 
 // The delta round's prompt shows a card's image and lists the project's
-// pinned images as the planner's guide does.
+// pinned images as the planner's guide does, only when the project pins
+// images.
 func TestDeltaPromptListsTheProjectsImages(t *testing.T) {
-	if !strings.Contains(deltaSystem, `"rung_reason": "...", "image": "..."}}`) {
-		t.Fatalf("deltaSystem lacks the image field: %s", deltaSystem)
+	bare := fmt.Sprintf(deltaSystem, "")
+	if got := deltaPrompt(nil); got != bare || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "..."}}. `) {
+		t.Fatalf("no pins: %q, want deltaSystem without the image field", got)
 	}
-	if got := deltaPrompt(nil); got != deltaSystem {
-		t.Fatalf("no pins: %q, want deltaSystem alone", got)
-	}
-	want := deltaSystem + " Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
+	want := strings.Replace(bare, `"rung_reason": "..."}}`, `"rung_reason": "...", "image": "..."}}`, 1) +
+		" Images: browser (chromium), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
 	if got := deltaPrompt(map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}); got != want {
 		t.Fatalf("deltaPrompt =\n%q\nwant\n%q", got, want)
 	}
