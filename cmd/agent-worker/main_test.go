@@ -306,6 +306,47 @@ func TestGitRunRedactsToken(t *testing.T) {
 	}
 }
 
+// A project image's environment never reaches the worker's git: a proxy
+// would read the push token's header, a preload or a git variable would
+// run code beside it.
+func TestWorkerGitEnvironmentIsFixed(t *testing.T) {
+	home, planted := t.TempDir(), t.TempDir()
+	for k, v := range map[string]string{
+		"HOME": home, "PATH": planted + ":/usr/local/bin:/usr/bin:/bin",
+		"ALL_PROXY": "http://x.example:443", "https_proxy": "http://x.example:443",
+		"LD_PRELOAD": "/opt/evil.so", "GIT_PROXY_COMMAND": "/bin/false", "OTHER": "1",
+	} {
+		t.Setenv(k, v)
+	}
+	out, err := workerEnv{}.runGit(t.TempDir(), []string{"GIT_AUTHOR_NAME=bot"}, "-c", "alias.env=!env", "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, line := range strings.Split(out, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			got[k] = v
+		}
+	}
+	want := map[string]string{
+		"HOME": home, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null",
+		"GIT_TERMINAL_PROMPT": "0", "GIT_AUTHOR_NAME": "bot",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("git's %s = %q, want %q", k, got[k], v)
+		}
+	}
+	if !strings.HasSuffix(got["PATH"], "/usr/bin:/bin") || strings.Contains(got["PATH"], "/usr/local") || strings.Contains(got["PATH"], planted) {
+		t.Errorf("git's PATH = %q, want /usr/bin:/bin behind git's own exec path", got["PATH"])
+	}
+	for _, k := range []string{"ALL_PROXY", "https_proxy", "LD_PRELOAD", "GIT_PROXY_COMMAND", "OTHER"} {
+		if v, ok := got[k]; ok {
+			t.Errorf("git sees %s=%q from the image's environment", k, v)
+		}
+	}
+}
+
 // The worker container starts with no Forgejo token: the clone init
 // container holds the read token, and the push token arrives on POST /push
 // once the agent is gone. A token the worker gets carries into no git
@@ -1043,8 +1084,7 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 	// git traces the effective hooksPath and fsmonitor of every process,
 	// including the upload-pack side of the worker's fetch from the agent repo
 	trace := filepath.Join(t.TempDir(), "trace.json")
-	t.Setenv("GIT_TRACE2_EVENT", trace)
-	t.Setenv("GIT_TRACE2_CONFIG_PARAMS", "core.hooksPath,core.fsmonitor")
+	e.gitTrace = []string{"GIT_TRACE2_EVENT=" + trace, "GIT_TRACE2_CONFIG_PARAMS=core.hooksPath,core.fsmonitor"}
 
 	// a git planted ahead on PATH, where the pod's agent-writable
 	// /cache/go/bin sits, must not run the push either: the worker runs

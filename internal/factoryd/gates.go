@@ -835,8 +835,8 @@ func fenced(s string) string {
 
 // reproPodSpec is the worker pod in repro mode: no gateway token, no push
 // token, the same labels (so the sandbox egress policy selects it), image
-// and confinement. Its fetch init container alone holds the read token and
-// leaves the head in the workspace; the container that runs the
+// and confinement. Its fetch init container alone holds the read token,
+// runs the factory's image and leaves the head in the workspace; the container that runs the
 // agent-written command holds no token at all. Neither run mounts the
 // project's shared cache, where an agent may have planted a binary or a
 // build result (ruling 291): Go and npm build cold in the pod's own
@@ -859,6 +859,7 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[str
 	worker["volumeMounts"] = append(worker["volumeMounts"].([]any), map[string]any{"name": "build", "mountPath": "/build"})
 	fetch := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
 	fetch["name"] = "fetch"
+	fetch["image"] = r.cfg.WorkerImage
 	fetch["env"] = []map[string]any{
 		{"name": "MODE", "value": "repro-fetch"},
 		{"name": "REPO_URL", "value": r.repoURL(repo)},

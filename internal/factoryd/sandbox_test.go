@@ -250,10 +250,11 @@ func TestTaskImageRefusesAnUnsignedPin(t *testing.T) {
 	}
 }
 
-// Every pod of a card runs on the image its sandbox resolved, which the
-// task row records with the names the sandbox reaches: the image's own,
-// beside the gateway's and Git's, held by the lease loop too. An unpinned
-// variant leaves no namespace.
+// Every pod of a card runs its worker on the image its sandbox resolved,
+// which the task row records with the names the sandbox reaches: the
+// image's own, beside the gateway's and Git's, held by the lease loop too.
+// Its init containers, the token-holding clone and fetch among them, run
+// the factory's image. An unpinned variant leaves no namespace.
 func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 	r, digest := imageRunner(t)
 	ref := "store.test/sf/sandbox-demo-app.browser@" + digest
@@ -282,11 +283,12 @@ func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 	}
 	for name, pod := range pods {
 		spec := pod["spec"].(map[string]any)
-		inits := spec["initContainers"].([]any)
-		if got := inits[0].(map[string]any)["image"]; got != "reg/worker@sha256:abc" {
-			t.Errorf("%s: harness on %v, want the factory's image", name, got)
+		for _, c := range spec["initContainers"].([]any) {
+			if got := c.(map[string]any)["image"]; got != "reg/worker@sha256:abc" {
+				t.Errorf("%s: init container %v on %v, want the factory's image", name, c.(map[string]any)["name"], got)
+			}
 		}
-		for _, c := range slices.Concat(inits[1:], spec["containers"].([]any)) {
+		for _, c := range spec["containers"].([]any) {
 			if got := c.(map[string]any)["image"]; got != ref {
 				t.Errorf("%s: container %v on %v, want %s", name, c.(map[string]any)["name"], got, ref)
 			}

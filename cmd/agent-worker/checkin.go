@@ -272,6 +272,7 @@ func (c *checkinServe) execInRepo(argv []string) (string, bool, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- only this file's fixed git subcommands, their arguments checked here
 	cmd.Dir = c.repo()
+	cmd.Env = gitEnv(nil)
 	out := &capBuffer{max: checkinOutputCap}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()

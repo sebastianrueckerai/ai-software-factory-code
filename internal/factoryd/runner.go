@@ -1966,10 +1966,12 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	pod := r.sandboxPodSpec(t, r.sandboxImage(t), s.cache, env, true)
 	// the clone init container alone holds the read token: the agent's
 	// container gets the clone in the workspace and no token (the push
-	// token reaches the worker on POST /push once the agent is dead)
+	// token reaches the worker on POST /push once the agent is dead). It
+	// runs the factory's image, as a project image's content is agents'.
 	spec := pod["spec"].(map[string]any)
 	clone := maps.Clone(spec["containers"].([]any)[0].(map[string]any))
 	clone["name"] = "clone"
+	clone["image"] = r.cfg.WorkerImage
 	clone["env"] = cloneEnv
 	clone["volumeMounts"] = []any{map[string]any{"name": "workspace", "mountPath": "/workspace"}, harnessMount()}
 	spec["initContainers"] = append(spec["initContainers"].([]any), clone)

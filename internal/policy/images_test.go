@@ -149,6 +149,12 @@ func TestValidateUpstream(t *testing.T) {
 		{"relative to", oneUpstream(UpstreamLine{To: "bin/tool"}), "to"},
 		{"unclean to", oneUpstream(UpstreamLine{To: "/opt/../x"}), "to"},
 		{"root to", oneUpstream(UpstreamLine{To: "/"}), "to"},
+		{"git's place", oneUpstream(UpstreamLine{To: "/usr/bin/git"}), "to"},
+		{"preload", oneUpstream(UpstreamLine{To: "/etc/ld.so.preload"}), "to"},
+		{"home", oneUpstream(UpstreamLine{To: "/home/worker/bin/tool"}), "to"},
+		{"opt prefix", oneUpstream(UpstreamLine{To: "/optx/tool"}), "to"},
+		{"usr local prefix", oneUpstream(UpstreamLine{To: "/usr/localx/tool"}), "to"},
+		{"usr", oneUpstream(UpstreamLine{URL: "https://example.com/t.tgz", To: "/usr"}), "to"},
 		{"strip on plain file", oneUpstream(UpstreamLine{Strip: 1}), "strip"},
 		{"strip 9", oneUpstream(UpstreamLine{URL: "https://example.com/t.tgz", Strip: 9}), "strip"},
 		{"bad name", oneUpstream(UpstreamLine{Name: "Tool"}), "name"},
@@ -170,10 +176,16 @@ func TestValidateUpstream(t *testing.T) {
 	if f := ok.Validate(); f != nil {
 		t.Errorf("archive strip 8: %q", f)
 	}
+	for _, to := range []string{"/opt", "/opt/node", "/usr/local", "/usr/local/go"} {
+		if f := oneUpstream(UpstreamLine{URL: "https://example.com/t.tgz", To: to}).Validate(); f != nil {
+			t.Errorf("archive to %s: %q", to, f)
+		}
+	}
 }
 
 func TestValidateEnv(t *testing.T) {
-	for _, k := range []string{"PATH", "HOME", "OPENCODE_X", "FACTORY_Y", "lower"} {
+	for _, k := range []string{"PATH", "HOME", "OPENCODE_X", "FACTORY_Y", "lower",
+		"ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "https_proxy", "LD_PRELOAD", "LD_LIBRARY_PATH", "GIT_SSH_COMMAND", "GIT_CONFIG_COUNT"} {
 		f := oneImage(ImageSpec{Apt: []string{"curl"}, Env: map[string]string{k: "v"}})
 		wantOne(t, f.Validate(), "env", `"`+k+`"`)
 	}
@@ -181,7 +193,8 @@ func TestValidateEnv(t *testing.T) {
 		f := oneImage(ImageSpec{Apt: []string{"curl"}, Env: map[string]string{"GOOD": v}})
 		wantOne(t, f.Validate(), "env", `"GOOD"`)
 	}
-	ok := oneImage(ImageSpec{Apt: []string{"curl"}, Env: map[string]string{"PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright", "MAX": strings.Repeat("x", 1024)}})
+	ok := oneImage(ImageSpec{Apt: []string{"curl"}, Env: map[string]string{"PLAYWRIGHT_BROWSERS_PATH": "/opt/playwright", "MAX": strings.Repeat("x", 1024),
+		"GOPROXY": "https://proxy.golang.org", "LDFLAGS": "-s", "GITHUB_ORG": "x", "PROXY_HOST": "x"}})
 	if f := ok.Validate(); f != nil {
 		t.Errorf("accepted env refused: %q", f)
 	}

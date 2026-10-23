@@ -81,6 +81,7 @@ the agents work on. The factory was rebuilt from the Stage 17 backups on
   the bake into its `HOME`. The session pod sets opencode's
   `OPENCODE_DISABLE_*` switches in the worker's env, not the image. The
   next init container (`MODE=clone`), the read token's only holder,
+  runs the factory's image whatever image the worker runs, and
   clones the base commit
   from the repository before the agent starts (a resumed task branch that
   only the fork holds is fetched from there). The worker container starts
@@ -388,7 +389,7 @@ activities, each with a timeline step and a comment on the pull request:
    token on the task's repository only, and one pod of the worker image
    (no agent, no gateway token, no push token, the agents' egress policy).
    After the harness copy, its fetch init container (`MODE=repro-fetch`),
-   the token's only holder, fetches `refs/pull/<n>/head` into the
+   the token's only holder, on the factory's image, fetches `refs/pull/<n>/head` into the
    workspace and checks it is the
    gated head; the worker container (`MODE=repro`), with no token in its
    environment, probes the sandbox's egress as a session's worker does

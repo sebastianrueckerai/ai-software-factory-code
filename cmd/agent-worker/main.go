@@ -484,6 +484,9 @@ type workerEnv struct {
 	leftOut []string
 	// facts (FACTS) is factoryd's line for the brief
 	facts string
+	// gitTrace is a test's GIT_TRACE2 settings for every worker git; nil
+	// in a pod
+	gitTrace []string
 	// image (IMAGE_MANIFEST) is what the session's project image holds;
 	// nil on the factory's image
 	image *imagegen.Manifest
@@ -727,6 +730,19 @@ const maxGitOutput = 1 << 20
 // /cache/go/bin, where a planted git would otherwise take the push's call.
 const gitBin = "/usr/bin/git"
 
+// gitEnv is the whole environment of the worker's git, extra last: none
+// of the image's, whose proxy, preload or git variables would reach the
+// token's header.
+func gitEnv(extra []string) []string {
+	return append([]string{
+		"PATH=/usr/bin:/bin",
+		"HOME=" + os.Getenv("HOME"),
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	}, extra...)
+}
+
 // runGitCtx scrubs the token from failures, because worker stderr reaches
 // the factoryd log.
 func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args ...string) (string, error) {
@@ -734,11 +750,7 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 	if dir != "" {
 		cmd.Dir = dir
 	}
-	cmd.Env = append(append(os.Environ(),
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_TERMINAL_PROMPT=0",
-	), env...)
+	cmd.Env = append(gitEnv(e.gitTrace), env...)
 	out := &capBuffer{max: maxGitOutput}
 	cmd.Stdout, cmd.Stderr = out, out
 	err := cmd.Run()

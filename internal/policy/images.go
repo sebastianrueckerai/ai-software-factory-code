@@ -84,7 +84,7 @@ type ImageSpec struct {
 
 // UpstreamLine is one pinned download. An archive (.tar.gz, .tgz, .tar.xz)
 // unpacks into To with Strip leading path components removed; any other file
-// is placed at To.
+// is placed at To, which lies in /opt or /usr/local.
 type UpstreamLine struct {
 	Name   string `yaml:"name"`
 	URL    string `yaml:"url"`
@@ -167,8 +167,8 @@ func (s ImageSpec) validate(name string) []string {
 		if !sha256RE.MatchString(u.SHA256) {
 			bad("sha256 %q must be 64 lowercase hex characters", u.SHA256)
 		}
-		if !cleanAbs(u.To) || u.To == "/" {
-			bad("to %q must be an absolute, clean path below / of letters, digits and ._/+-", u.To)
+		if !cleanAbs(u.To) || !underLocal(u.To) {
+			bad("to %q must be an absolute, clean path of letters, digits and ._/+- in /opt or /usr/local", u.To)
 		}
 		switch {
 		case u.Strip < 0 || u.Strip > 8:
@@ -190,6 +190,8 @@ func (s ImageSpec) validate(name string) []string {
 			bad("env %q must match %s", k, envKeyRE)
 		case k == "PATH" || k == "HOME" || strings.HasPrefix(k, "OPENCODE_") || strings.HasPrefix(k, "FACTORY_"):
 			bad("env %q is owned by the harness (PATH entries go in path)", k)
+		case strings.HasSuffix(strings.ToUpper(k), "_PROXY") || strings.HasPrefix(strings.ToUpper(k), "LD_") || strings.HasPrefix(strings.ToUpper(k), "GIT_"):
+			bad("env %q would reach the harness's git or loader: no *_PROXY, LD_* or GIT_* key", k)
 		case len(v) > 1024 || strings.ContainsFunc(v, func(r rune) bool { return r < 0x20 || r == 0x7f }):
 			bad("env %q value must be at most 1024 bytes without control characters", k)
 		}
@@ -239,6 +241,17 @@ func checkUpstreamURL(raw string) string {
 		return "must end in a file name of letters, digits and ._+-"
 	}
 	return ""
+}
+
+// underLocal reports whether p is /opt or /usr/local or below them, where
+// nothing the harness runs looks.
+func underLocal(p string) bool {
+	for _, dir := range []string{"/opt", "/usr/local"} {
+		if p == dir || strings.HasPrefix(p, dir+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func cleanAbs(p string) bool {

@@ -1062,21 +1062,26 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 // Every sandbox pod runs the harness from the factory's image, whatever
 // image its worker runs: an init container, first, copies agent-worker,
 // opencode and the opencode bake into the pod's harness volume, as the
-// worker's uid under the worker's confinement and resources; the worker,
-// and the clone or fetch init container copied from it, run
-// /factory/bin/agent-worker off the volume mounted read-only.
+// worker's uid under the worker's confinement and resources; the worker
+// runs /factory/bin/agent-worker off the volume mounted read-only. The
+// clone or fetch init container, which holds the read token, runs the
+// factory's image whatever image the worker runs.
 func TestSandboxPodsTakeTheHarnessFromAnInitContainer(t *testing.T) {
 	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
 	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
+	project := Task{ID: "t1", Repository: "linkshort/linkshort", ImageDigest: "reg/project@sha256:def"}
 	for name, c := range map[string]struct {
 		pod   map[string]any
 		image string
 		inits []string
 	}{
-		"sandbox": {r.sandboxPodSpec(task, "reg/project@sha256:def", "", nil, false), "reg/project@sha256:def", []string{"harness"}},
-		"session": {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "reg/worker@sha256:abc", []string{"harness", "clone"}},
+		"sandbox":                    {r.sandboxPodSpec(task, "reg/project@sha256:def", "", nil, false), "reg/project@sha256:def", []string{"harness"}},
+		"session":                    {r.workerPodSpec(task, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "reg/worker@sha256:abc", []string{"harness", "clone"}},
+		"session on a project image": {r.workerPodSpec(project, sessionSpec{id: "s-1", cache: "cache-agent-linkshort"}), "reg/project@sha256:def", []string{"harness", "clone"}},
 		"repro": {r.reproPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""),
 			"reg/worker@sha256:abc", []string{"harness", "fetch"}},
+		"repro on a project image": {r.reproPodSpec(project, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""),
+			"reg/project@sha256:def", []string{"harness", "fetch"}},
 	} {
 		spec := c.pod["spec"].(map[string]any)
 		inits, _ := spec["initContainers"].([]any)
@@ -1112,8 +1117,12 @@ func TestSandboxPodsTakeTheHarnessFromAnInitContainer(t *testing.T) {
 		}
 		for _, ic := range slices.Concat(inits[1:], []any{worker}) {
 			ic := ic.(map[string]any)
-			if ic["image"] != c.image || !strings.Contains(string(mustJSON(ic["volumeMounts"])), `{"mountPath":"/factory","name":"harness","readOnly":true}`) {
-				t.Errorf("%s: %s runs %v with mounts %s, want %s with the harness read-only", name, ic["name"], ic["image"], mustJSON(ic["volumeMounts"]), c.image)
+			want := "reg/worker@sha256:abc"
+			if ic["name"] == "worker" {
+				want = c.image
+			}
+			if ic["image"] != want || !strings.Contains(string(mustJSON(ic["volumeMounts"])), `{"mountPath":"/factory","name":"harness","readOnly":true}`) {
+				t.Errorf("%s: %s runs %v with mounts %s, want %s with the harness read-only", name, ic["name"], ic["image"], mustJSON(ic["volumeMounts"]), want)
 			}
 		}
 		var harnessVolume any
