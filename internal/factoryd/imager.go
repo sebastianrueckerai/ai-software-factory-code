@@ -59,10 +59,10 @@ const SourceImageRemoval = "image_removal"
 // the configuration repository, through one pull request per project from
 // the bot's fork, which the imager merges itself when it changes the
 // images block and nothing else. Once a pin changes in force, the store
-// keeps of that image only the pinned build and the one before, and of a
-// name no longer pinned its last build for unpinGrace; once a day, an
-// image but default no card named or ran on for unusedFor gets a card that
-// removes it.
+// keeps of that image only the pinned build, the one before and the build
+// of the key the declaration desires, and of a name no longer pinned its
+// last build for unpinGrace; once a day, an image but default no card
+// named or ran on for unusedFor gets a card that removes it.
 type Imager struct {
 	// Forgejo is the bot: it reads every project repository, owns the fork
 	// of Config's repository and merges the pin pull requests.
@@ -96,7 +96,8 @@ type Imager struct {
 	// deletes the store's builds no pin keeps.
 	OpenBao SecretReader
 
-	// unusedAt is when the last check for unused images ended clean.
+	// unusedAt is when the last check for unused images started, failed or
+	// not.
 	unusedAt time.Time
 	mu       sync.Mutex
 	verified map[string]bool // repository@digest
@@ -174,11 +175,10 @@ func (i *Imager) Run(ctx context.Context, every time.Duration) {
 	}
 }
 
-// pass keeps the store's builds to the pins in force (retain), reconciles
-// every project in force whose agents run, wakes the cards parked on an
-// image whose wait is over, and files the removal of unused images.
-// Retention runs first: a build it deletes is never pinned in the same
-// pass.
+// pass reconciles every project in force whose agents run, keeps the
+// store's builds to the pins in force and the keys the reconcile desires
+// (retain), wakes the cards parked on an image whose wait is over, and
+// files the removal of unused images.
 func (i *Imager) pass(ctx context.Context) error {
 	_, baseDigest, ok := strings.Cut(i.Base, "@")
 	if !ok {
@@ -187,22 +187,25 @@ func (i *Imager) pass(ctx context.Context) error {
 	start := i.Now()
 	v := i.Policy()
 	var errs []error
-	if err := i.retain(ctx, v, start); err != nil {
-		errs = append(errs, fmt.Errorf("retention: %w", err))
-	}
-	declared := map[string]map[string]bool{}
+	declared, desired := map[string]map[string]bool{}, map[string]map[string]string{}
 	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
 		c := v.Projects[name]
 		if c.Agents == policy.AgentsNone {
 			continue
 		}
-		names, err := i.project(ctx, name, c, baseDigest, start)
-		if names != nil {
-			declared[name] = names
+		keys, err := i.project(ctx, name, c, baseDigest, start)
+		if keys != nil {
+			desired[name], declared[name] = keys, map[string]bool{}
+			for n := range keys {
+				declared[name][n] = true
+			}
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
 		}
+	}
+	if err := i.retain(ctx, v, desired, start); err != nil {
+		errs = append(errs, fmt.Errorf("retention: %w", err))
 	}
 	if err := i.wake(ctx, v, declared, start); err != nil {
 		errs = append(errs, fmt.Errorf("wake: %w", err))
@@ -214,38 +217,35 @@ func (i *Imager) pass(ctx context.Context) error {
 }
 
 // retain records the pins in force against the rows of the last pass and
-// keeps the store to them. A pin first seen is recorded as it is: what was
-// pinned before is unknown. A changed pin keeps the one before it, and the
-// store keeps of the image only the two. A name no longer pinned keeps its
-// last pin's build for unpinGrace from when the unpin was first seen, then
-// loses every version and its row. A project absent from v is
-// remove-project's. Nothing is deleted while infra's main is past v's
-// commit, whose pin may not be in force yet: a sweep that did not run, or
-// failed, runs at a later pass.
-func (i *Imager) retain(ctx context.Context, v policy.Version, now time.Time) error {
+// keeps the store to them and to desired, the key each project's
+// declaration this pass desires of each name. A pin first seen is recorded
+// as it is: what was pinned before is unknown. A changed pin keeps the one
+// before it, and the store keeps of the image only the two. A name no
+// longer pinned keeps its last pin's build for unpinGrace from when the
+// unpin was first seen, then loses every version and its row. A project
+// absent from v is remove-project's, one whose declaration this pass did
+// not read is not swept. A sweep that did not run, or failed, runs at a
+// later pass.
+func (i *Imager) retain(ctx context.Context, v policy.Version, desired map[string]map[string]string, now time.Time) error {
 	rows, err := i.Store.ImagePins(ctx)
 	if err != nil {
 		return err
 	}
-	var head string
 	var a AdminAuth
-	// sweep keeps of r's image only kept's builds; false when it did not
+	// sweep keeps of r's image only kept's builds and the desired key's;
+	// false when it did not
 	sweep := func(r ImagePinRow, kept ...policy.ImagePin) (bool, error) {
-		var err error
-		if head == "" {
-			if head, err = i.Config.Head(ctx); err != nil {
-				return false, err
-			}
-		}
-		if head != v.Commit {
+		keys, read := desired[r.Project]
+		if !read {
 			return false, nil
 		}
 		if a.User == "" {
+			var err error
 			if a, err = adminAuth(ctx, i.OpenBao); err != nil {
 				return false, err
 			}
 		}
-		return i.sweep(ctx, a, v, r.Project, r.Image, kept...)
+		return i.sweep(ctx, a, v, r.Project, r.Image, keys[r.Image], kept...)
 	}
 	var errs []error
 	note := func(r ImagePinRow, err error) {
@@ -306,33 +306,62 @@ func (i *Imager) retain(ctx context.Context, v policy.Version, now time.Time) er
 }
 
 // sweep deletes, with the site admin's login a, every version of project's
-// image in the store but the kept pins': each one's key, the tag
-// sha256-<hex> of cosign's signature, and the manifests the two indexes
-// name, which Forgejo lists as versions named by their digests. It stops
-// before a delete, false, once the version in force is no longer v.
-func (i *Imager) sweep(ctx context.Context, a AdminAuth, v policy.Version, project, image string, kept ...policy.ImagePin) (bool, error) {
+// image in the store but the builds of the kept pins and of the desired
+// key ("" none): each one's key, its digest, the tag sha256-<hex> of
+// cosign's signature, and the manifests the two indexes name, which
+// Forgejo lists as versions named by their digests. A version pushed
+// within dispatchWait may belong to a build in flight and stays. Right
+// before the deletes it reads infra's main, whose head past v's commit
+// may hold a pin not in force yet, and before each delete the version in
+// force: either moved, it stops, false.
+func (i *Imager) sweep(ctx context.Context, a AdminAuth, v policy.Version, project, image, desired string, kept ...policy.ImagePin) (bool, error) {
 	repo := imageRepository(project, image)
 	keep := map[string]bool{}
 	var keys []string
 	var tok string
-	for _, pin := range kept {
-		sig := "sha256-" + strings.TrimPrefix(pin.Digest, "sha256:")
-		keep[pin.Key], keep[pin.Digest], keep[sig] = true, true, true
-		keys = append(keys, pin.Key)
+	// hold keeps the build of key at digest, the digest the registry
+	// answers for key when ""
+	hold := func(key, digest string) error {
+		var err error
 		if tok == "" {
-			var err error
 			if tok, err = i.Registry.Token(ctx); err != nil {
-				return false, err
+				return err
 			}
 		}
-		for _, ref := range []string{pin.Digest, sig} {
-			entries, err := i.Registry.IndexEntries(ctx, tok, repo, ref)
-			if err != nil && !errors.Is(err, ErrNotFound) {
-				return false, err
-			}
-			for _, e := range entries {
-				keep[e] = true
-			}
+		ref := cmp.Or(digest, key)
+		digest, entries, err := i.Registry.IndexEntries(ctx, tok, repo, ref)
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		sig := "sha256-" + strings.TrimPrefix(digest, "sha256:")
+		_, sigEntries, err := i.Registry.IndexEntries(ctx, tok, repo, sig)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		keep[digest], keep[sig] = true, true
+		for _, e := range slices.Concat(entries, sigEntries) {
+			keep[e] = true
+		}
+		return nil
+	}
+	for _, pin := range kept {
+		if pin.Key == "" {
+			continue
+		}
+		keep[pin.Key], keep[pin.Digest], keep["sha256-"+strings.TrimPrefix(pin.Digest, "sha256:")] = true, true, true
+		keys = append(keys, pin.Key)
+		if err := hold(pin.Key, pin.Digest); err != nil {
+			return false, err
+		}
+	}
+	if desired != "" && !keep[desired] {
+		keep[desired] = true
+		keys = append(keys, desired)
+		if err := hold(desired, ""); err != nil {
+			return false, err
 		}
 	}
 	owner, name, _ := strings.Cut(repo, "/")
@@ -340,11 +369,19 @@ func (i *Imager) sweep(ctx context.Context, a AdminAuth, v policy.Version, proje
 	if err != nil {
 		return false, err
 	}
-	n := 0
-	for _, p := range versions {
-		if p.Type != "container" || p.Name != name || keep[p.Version] {
-			continue
+	versions = slices.DeleteFunc(versions, func(p PackageVersion) bool {
+		return p.Type != "container" || p.Name != name || keep[p.Version] || i.Now().Sub(p.CreatedAt) < dispatchWait
+	})
+	if len(versions) > 0 {
+		head, err := i.Config.Head(ctx)
+		if err != nil {
+			return false, err
 		}
+		if head != v.Commit {
+			return false, nil
+		}
+	}
+	for n, p := range versions {
 		if i.Policy().ID != v.ID {
 			log.Printf("imager: the version in force moved past %d while %s was swept, %d versions deleted: a later pass sweeps it", v.ID, repo, n)
 			return false, nil
@@ -352,9 +389,8 @@ func (i *Imager) sweep(ctx context.Context, a AdminAuth, v policy.Version, proje
 		if err := i.Forgejo.AdminDeletePackage(ctx, a, owner, p); err != nil {
 			return false, err
 		}
-		n++
 	}
-	log.Printf("imager: deleted %d versions of %s, kept %s", n, repo, cmp.Or(strings.Join(keys, " and "), "none"))
+	log.Printf("imager: deleted %d versions of %s, kept %s", len(versions), repo, cmp.Or(strings.Join(keys, " and "), "none"))
 	return true, nil
 }
 
@@ -427,15 +463,16 @@ func (i *Imager) removal(ctx context.Context, v policy.Version, repository strin
 // project reconciles the images name declares: a pin at its desired key
 // stays, an image ready at it is pinned, one not built is dispatched, and a
 // pinned name no longer declared leaves. An invalid file changes nothing.
-// It returns the names the file declares, nil when it did not read.
-func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfig, baseDigest string, start time.Time) (map[string]bool, error) {
+// It returns the desired key of each name the file declares, nil when it
+// did not read.
+func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfig, baseDigest string, start time.Time) (map[string]string, error) {
 	file, raw, ok, err := i.declared(ctx, name, c.Repository)
 	if err != nil || !ok {
 		return nil, err
 	}
-	names := map[string]bool{}
-	for n := range file.Images {
-		names[n] = true
+	keys := map[string]string{}
+	for n, spec := range file.Images {
+		keys[n] = imagegen.BuildKey(spec, baseDigest)
 	}
 	pins := map[string]policy.ImagePin{}
 	for n, p := range c.Images {
@@ -444,23 +481,22 @@ func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfi
 		}
 	}
 	for _, n := range slices.Sorted(maps.Keys(file.Images)) {
-		spec := file.Images[n]
-		key := imagegen.BuildKey(spec, baseDigest)
+		spec, key := file.Images[n], keys[n]
 		if err := i.Store.RecordImageRead(ctx, name, n, key, start); err != nil {
-			return names, err
+			return keys, err
 		}
 		if pins[n].Key == key {
 			continue
 		}
 		pin, ready, err := i.build(ctx, name, n, spec, key, raw)
 		if err != nil {
-			return names, fmt.Errorf("image %s: %w", n, err)
+			return keys, fmt.Errorf("image %s: %w", n, err)
 		}
 		if ready {
 			pins[n] = pin
 		}
 	}
-	return names, i.pin(ctx, name, c.Repository, pins, c.Images)
+	return keys, i.pin(ctx, name, c.Repository, pins, c.Images)
 }
 
 // wake signals image_ready to each card parked on an image whose wait is

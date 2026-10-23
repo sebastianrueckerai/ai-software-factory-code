@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 )
 
 // Roadmap 272: remove-project, register's inverse. The removal of
@@ -386,9 +387,10 @@ func count(n int) Change {
 
 // PackageVersion is one version of a package as Forgejo lists it.
 type PackageVersion struct {
-	Type    string `json:"type"`
-	Name    string `json:"name"`
-	Version string `json:"version"`
+	Type      string    `json:"type"`
+	Name      string    `json:"name"`
+	Version   string    `json:"version"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // AdminPackages lists, as the site admin, every version of owner's

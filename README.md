@@ -1191,22 +1191,25 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   `factory/images.yaml` has the file checked at the gated commit; each
   finding goes back to the agent like an anti-cheat finding.
 
-  The imager keeps the store to the pins. Once a pin changes in force,
-  the store keeps of that image only the pinned build and the one pinned
-  before it: each build's tag, cosign's `sha256-<hex>` signature tag and
-  the manifests their indexes name. Every other version of
-  `sf/sandbox-<project>.<image>` goes, through Forgejo's package API with
-  the site admin's login. A name that leaves the pins keeps its last
+  The imager keeps the store to the pins. Once a pin changes in force, the
+  store keeps of that image only the pinned build, the one pinned before
+  it and the build of the key `factory/images.yaml` asks for now, which a
+  pin pull request may carry: each build's tag, cosign's `sha256-<hex>`
+  signature tag and the manifests their indexes name. A version pushed in
+  the last 45 minutes, a build in flight, stays too. Every other version
+  of `sf/sandbox-<project>.<image>` goes, through Forgejo's package API
+  with the site admin's login. A name that leaves the pins keeps its last
   build for 30 days, so pinning it again undoes an unpin by mistake; then
   every version goes. Nothing is deleted while infra's main is past the
-  commit in force, as a pin merged there may not be loaded yet. Once a
-  day, an image other than `default` whose name has been pinned for 30
-  days, and which no card of the project named or ran on in those 30
-  days, gets a removal card on the project's repository (source
-  `image_removal`, small, the cheap rung) that deletes its entry from
-  `factory/images.yaml`. No other is filed while that card is open or
-  within 30 days of its end. `remove-project` deletes the project's
-  `sf/sandbox-<project>.*` packages and its image rows.
+  commit in force, as a pin merged there may not be loaded yet, nor once
+  the version in force moves during a sweep. Once a day, an image other
+  than `default` whose name has been pinned for 30 days, and which no card
+  of the project named or ran on in those 30 days, gets a removal card on
+  the project's repository (source `image_removal`, small, the cheap rung)
+  that deletes its entry from `factory/images.yaml`. No other is filed
+  while that card is open or within 30 days of its end. `remove-project`
+  deletes the project's `sf/sandbox-<project>.*` packages and its image
+  rows.
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

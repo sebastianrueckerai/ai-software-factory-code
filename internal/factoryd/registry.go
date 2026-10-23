@@ -104,26 +104,28 @@ func (r *Registry) LayerBytes(ctx context.Context, token, repository, digest str
 	return n, nil
 }
 
-// IndexEntries are the digests of the manifests repository's index at
-// reference names, none for an image manifest.
-func (r *Registry) IndexEntries(ctx context.Context, token, repository, reference string) ([]string, error) {
+// IndexEntries are the digest of repository's manifest at reference and
+// the digests of the manifests it names, an index's; none for an image
+// manifest.
+func (r *Registry) IndexEntries(ctx context.Context, token, repository, reference string) (string, []string, error) {
 	body, err := r.get(ctx, "/v2/"+repository+"/manifests/"+reference, bearer(token))
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
+	sum := sha256.Sum256(body)
 	var index struct {
 		Manifests []struct {
 			Digest string `json:"digest"`
 		} `json:"manifests"`
 	}
 	if err := json.Unmarshal(body, &index); err != nil {
-		return nil, fmt.Errorf("registry %s:%s: %w", repository, reference, err)
+		return "", nil, fmt.Errorf("registry %s:%s: %w", repository, reference, err)
 	}
 	var out []string
 	for _, m := range index.Manifests {
 		out = append(out, m.Digest)
 	}
-	return out, nil
+	return "sha256:" + hex.EncodeToString(sum[:]), out, nil
 }
 
 // bearer authorizes a read of a manifest or blob with token.

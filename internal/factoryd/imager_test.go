@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -56,13 +57,16 @@ type imagerForgejo struct {
 	refuse     int // Forgejo answers the bot's merge 405 (1) or 409 (2)
 	inForce    policy.Version
 	// packages are sf's container package versions by package name, which
-	// the site admin lists and deletes; lists counts the lists, the next
-	// failLists of which answer 500, and with bumpOnList a list loads a new
-	// version of main's commit
+	// the site admin lists and deletes, created the created_at of a version
+	// by name (none: long ago); lists counts the lists, the next failLists of
+	// which answer 500; with bumpOnList a list loads a new version of main's
+	// commit, with moveOnList a person merges on main
 	packages   map[string][]string
+	created    map[string]string
 	lists      int
 	failLists  int
 	bumpOnList bool
+	moveOnList bool
 	issues     []string // the issues filed on demo-app/demo-app, title and body
 }
 
@@ -133,11 +137,14 @@ func (s *imagerForgejo) server(t *testing.T) *httptest.Server {
 			if s.bumpOnList {
 				s.inForce.ID++
 			}
+			if s.moveOnList {
+				s.main = s.commit(maps.Clone(s.commits[s.main]))
+			}
 			out := []map[string]string{}
 			for _, name := range slices.Sorted(maps.Keys(s.packages)) {
 				if strings.Contains(name, strings.ToLower(q.Get("q"))) {
 					for _, v := range s.packages[name] {
-						out = append(out, map[string]string{"type": "container", "name": name, "version": v})
+						out = append(out, map[string]string{"type": "container", "name": name, "version": v, "created_at": cmp.Or(s.created[v], "2026-01-01T00:00:00Z")})
 					}
 				}
 			}
@@ -1405,9 +1412,10 @@ func TestImagerKeepsAnUnpinnedImagesLastBuildFor30Days(t *testing.T) {
 	}
 }
 
-// A sweep runs only while infra's main is the commit in force: a pin merged
-// there and not loaded yet keeps its build through the retry of a sweep that
-// failed, and once loaded it is the pin the sweep keeps.
+// A sweep deletes only while infra's main is the commit in force: a pin
+// merged there and not loaded yet, whose key the declaration no longer
+// desires, keeps its build through the retry of a sweep that failed, and
+// once loaded it is the pin the sweep keeps.
 func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	r := newImagerRig(t, demoImages, nil)
 	const repo = "sf/sandbox-demo-app.default"
@@ -1433,9 +1441,12 @@ func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	if prs, _, _ := r.fj.state(); len(prs) != 1 || !prs[0].merged {
 		t.Fatalf("pull requests %+v; want the pin of %s merged", prs, keyDefault)
 	}
+	r.fj.mu.Lock()
+	r.fj.images["demo-app/demo-app"] = "images:\n  default:\n    apt: [jq, make]\n"
+	r.fj.mu.Unlock()
 	r.pass(t)
-	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 2 || r.book.pins["demo-app/default"].Retained {
-		t.Fatalf("main past the commit in force: versions %q, %d lists, row %+v; want all, the two failed, the sweep due", got, lists, r.book.pins["demo-app/default"])
+	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 3 || r.book.pins["demo-app/default"].Retained {
+		t.Fatalf("main past the commit in force: versions %q, %d lists, row %+v; want all, the two failed and this pass's, the sweep due", got, lists, r.book.pins["demo-app/default"])
 	}
 	r.fj.load(t)
 	r.pass(t)
@@ -1447,33 +1458,153 @@ func TestImagerSweepsOnlyAtTheCommitInForce(t *testing.T) {
 	}
 }
 
-// A sweep stops before its first delete once the version in force is no
-// longer the one whose pins it keeps; the next pass sweeps again.
-func TestImagerSweepStopsWhenTheVersionMoves(t *testing.T) {
+// A sweep reads main's head and the version in force right before its
+// deletes: once a person merged on main, or the version in force is no
+// longer the one whose pins it keeps, it deletes nothing, and a pass at the
+// commit in force sweeps again.
+func TestImagerSweepStopsWhenMainOrTheVersionMoves(t *testing.T) {
+	for _, moves := range []string{"version", "main"} {
+		t.Run(moves, func(t *testing.T) {
+			r := newImagerRig(t, demoImages, nil)
+			const repo = "sf/sandbox-demo-app.default"
+			_, stale := r.build(repo, "k-"+strings.Repeat("1", 24), r.key, 900)
+			digest, current := r.build(repo, keyDefault, r.key, 1000)
+			r.fj.moveMain(map[string]string{demoProjectFile: r.fj.file("main", demoProjectFile) +
+				"images:\n  default:\n    digest: " + digest + "\n    key: " + keyDefault + "\n    tools: [jq]\n"})
+			r.fj.load(t)
+			r.book.pins["demo-app/default"] = ImagePinRow{Project: "demo-app", Image: "default", Key: keyDefault, Digest: digest,
+				PreviousKey: "k-" + strings.Repeat("3", 24), PreviousDigest: "sha256:" + strings.Repeat("3", 64), Since: *r.now}
+			all := slices.Sorted(slices.Values(slices.Concat(stale, current)))
+			r.fj.mu.Lock()
+			r.fj.packages["sandbox-demo-app.default"] = slices.Clone(all)
+			r.fj.bumpOnList, r.fj.moveOnList = moves == "version", moves == "main"
+			r.fj.mu.Unlock()
+			r.pass(t)
+			if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 1 || r.book.pins["demo-app/default"].Retained {
+				t.Fatalf("versions %q, %d lists, row %+v; want all, one list, the sweep due", got, lists, r.book.pins["demo-app/default"])
+			}
+			r.fj.mu.Lock()
+			r.fj.bumpOnList, r.fj.moveOnList = false, false
+			r.fj.mu.Unlock()
+			if moves == "main" {
+				r.pass(t)
+				if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 2 {
+					t.Fatalf("main past the commit in force: versions %q, %d lists; want all, one list a pass", got, lists)
+				}
+				r.fj.load(t)
+			}
+			r.pass(t)
+			if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, current) || !r.book.pins["demo-app/default"].Retained {
+				t.Fatalf("at the commit in force: versions %q, row %+v; want %q", got, r.book.pins["demo-app/default"], current)
+			}
+		})
+	}
+}
+
+// A sweep keeps the build of each image's desired key, pinned or not: the
+// build an open pin pull request carries survives the sweep of the pins
+// before it, and so does a version pushed within dispatchWait, a build in
+// flight.
+func TestImagerKeepsTheBuildAPinPullRequestCarries(t *testing.T) {
 	r := newImagerRig(t, demoImages, nil)
 	const repo = "sf/sandbox-demo-app.default"
-	_, stale := r.build(repo, "k-"+strings.Repeat("1", 24), r.key, 900)
-	digest, current := r.build(repo, keyDefault, r.key, 1000)
+	keyOld, keyMid := "k-"+strings.Repeat("1", 24), "k-"+strings.Repeat("2", 24)
+	digestOld, old := r.build(repo, keyOld, r.key, 900)
+	digestMid, mid := r.build(repo, keyMid, r.key, 950)
+	_, stale := r.build(repo, "k-"+strings.Repeat("5", 24), r.key, 850)
+	_, current := r.build(repo, keyDefault, r.key, 1000)
 	r.fj.moveMain(map[string]string{demoProjectFile: r.fj.file("main", demoProjectFile) +
-		"images:\n  default:\n    digest: " + digest + "\n    key: " + keyDefault + "\n    tools: [jq]\n"})
+		"images:\n  default:\n    digest: " + digestMid + "\n    key: " + keyMid + "\n    tools: [jq]\n"})
 	r.fj.load(t)
-	r.book.pins["demo-app/default"] = ImagePinRow{Project: "demo-app", Image: "default", Key: keyDefault, Digest: digest,
-		PreviousKey: "k-" + strings.Repeat("3", 24), PreviousDigest: "sha256:" + strings.Repeat("3", 64), Since: *r.now}
-	all := slices.Sorted(slices.Values(slices.Concat(stale, current)))
+	r.book.pins["demo-app/default"] = ImagePinRow{Project: "demo-app", Image: "default", Key: keyMid, Digest: digestMid,
+		PreviousKey: keyOld, PreviousDigest: digestOld, Since: *r.now}
+	inFlight := "sha256:" + strings.Repeat("7", 64)
 	r.fj.mu.Lock()
-	r.fj.packages["sandbox-demo-app.default"] = slices.Clone(all)
-	r.fj.bumpOnList = true
+	r.fj.packages["sandbox-demo-app.default"] = slices.Concat(old, mid, stale, current, []string{inFlight})
+	r.fj.created = map[string]string{inFlight: r.now.Add(-time.Minute).Format(time.RFC3339)}
 	r.fj.mu.Unlock()
 	r.pass(t)
-	if got, lists := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, all) || lists != 1 || r.book.pins["demo-app/default"].Retained {
-		t.Fatalf("the version moved: versions %q, %d lists, row %+v; want all, one list, the sweep due", got, lists, r.book.pins["demo-app/default"])
+	if prs, _, _ := r.fj.state(); len(prs) != 1 || prs[0].state != "open" {
+		t.Fatalf("pull requests %+v; want the pin of %s open", prs, keyDefault)
+	}
+	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, slices.Sorted(slices.Values(slices.Concat(old, mid, current, []string{inFlight})))) {
+		t.Fatalf("versions %q; want the pins', the pull request's and the one in flight", got)
+	}
+	r.pass(t)
+	r.fj.load(t)
+	r.pass(t)
+	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, slices.Sorted(slices.Values(slices.Concat(mid, current, []string{inFlight})))) {
+		t.Fatalf("once the pull request's pin is in force: versions %q", got)
+	}
+}
+
+// pathLog carries requests and records their paths.
+type pathLog struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+func (l *pathLog) RoundTrip(req *http.Request) (*http.Response, error) {
+	l.mu.Lock()
+	l.paths = append(l.paths, req.URL.Path)
+	l.mu.Unlock()
+	return http.DefaultTransport.RoundTrip(req)
+}
+
+// An image unpinned and then pinned again at its last build is pinned
+// anew: its unpin and removal card cleared, its 30 days started again, and
+// the sweep keeps that build, asking the registry of no pin before it, as
+// there was none.
+func TestImagerRepinsAnUnpinnedImage(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	const repo = "sf/sandbox-demo-app.browser"
+	digestBrowser, last := r.build(repo, keyBrowser, r.key, 750)
+	r.fj.moveMain(map[string]string{demoProjectFile: strings.Replace(r.fj.file("main", demoProjectFile), "sha256:"+strings.Repeat("b", 64), digestBrowser, 1)})
+	r.fj.load(t)
+	declare := func(images string) {
+		r.fj.mu.Lock()
+		r.fj.images["demo-app/demo-app"] = images
+		r.fj.mu.Unlock()
 	}
 	r.fj.mu.Lock()
-	r.fj.bumpOnList = false
+	r.fj.packages["sandbox-demo-app.browser"] = slices.Clone(last)
 	r.fj.mu.Unlock()
+	declare(demoImages)
 	r.pass(t)
-	if got, _ := r.fj.versions("sandbox-demo-app.default"); !slices.Equal(got, current) || !r.book.pins["demo-app/default"].Retained {
-		t.Fatalf("the next pass: versions %q, row %+v; want %q", got, r.book.pins["demo-app/default"], current)
+	r.pass(t)
+	r.fj.load(t)
+	r.pass(t)
+	row := r.book.pins["demo-app/browser"]
+	if row.UnpinnedAt.IsZero() {
+		t.Fatalf("row %+v; want the unpin seen", row)
+	}
+	row.RemovalTask = "t-removal"
+	r.book.pins["demo-app/browser"] = row
+	declare(bothImages)
+	r.pass(t)
+	r.pass(t)
+	if prs, _, _ := r.fj.state(); len(prs) != 2 || !prs[1].merged {
+		t.Fatalf("pull requests %+v; want the second, pinning browser again, merged", prs)
+	}
+	r.fj.load(t)
+	reads := &pathLog{}
+	r.im.Registry.HTTP = &http.Client{Transport: reads}
+	*r.now = r.now.Add(time.Hour)
+	r.pass(t)
+	want := ImagePinRow{Project: "demo-app", Image: "browser", Key: keyBrowser, Digest: digestBrowser, Since: *r.now, Retained: true}
+	if got := r.book.pins["demo-app/browser"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("row %+v\nwant %+v", got, want)
+	}
+	if got, _ := r.fj.versions("sandbox-demo-app.browser"); !slices.Equal(got, last) {
+		t.Fatalf("versions %q; want %q", got, last)
+	}
+	for _, p := range reads.paths {
+		if strings.HasSuffix(p, "/manifests/") || strings.HasSuffix(p, "/manifests/sha256-") {
+			t.Fatalf("the sweep asked the registry for %s", p)
+		}
+	}
+	if len(reads.paths) == 0 {
+		t.Fatal("the sweep read no registry")
 	}
 }
 
