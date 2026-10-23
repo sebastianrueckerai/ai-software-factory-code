@@ -682,7 +682,7 @@ type ChatTimer struct {
 // wakeCapped is the refusal of an add past a project's cap of watches
 // and timers: it names the count, so the tool's answer carries it.
 func wakeCapped(n int) error {
-	return fmt.Errorf("%w: it holds %d of %d, end one first.", ErrChatWakeCap, n, WakeTimersMax)
+	return fmt.Errorf("%w: it holds %d of %d, end one first", ErrChatWakeCap, n, WakeTimersMax)
 }
 
 // WatchTakenError names the member whose watch already holds a card:

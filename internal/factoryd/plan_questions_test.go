@@ -60,8 +60,8 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"unknown origin":    {change(func(p *Plan) { p.Questions[0].Origin = "attack" }), []string{`plan: question 1: origin "attack", want self_attack or none`}},
 		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
 	} {
-		if got := ValidatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
-			t.Errorf("%s: ValidatePlan = %q, want %q", name, got, tc.want)
+		if got := validatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: validatePlan = %q, want %q", name, got, tc.want)
 		}
 	}
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'

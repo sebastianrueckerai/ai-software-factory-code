@@ -493,7 +493,7 @@ func TestRunnerWarmBuildReadsTheSourceAtTheCommitsClock(t *testing.T) {
 // One Go builds what ships and what CI and a local run test with: the
 // golang base of every Dockerfile names the same exact version, each pinned
 // by digest, and go.mod's toolchain line names it too. Hand-derived from
-// the four files: go1.26.9, alpine for the gateway's and the sandbox's
+// the four files: go1.26.10, alpine for the gateway's and the sandbox's
 // build stages (the sandbox's twice: its npm-cache fetch stage shares the
 // store's copy), Debian for the runner's toolchain stage.
 func TestDockerfilesBuildWithOneGo(t *testing.T) {
@@ -501,11 +501,11 @@ func TestDockerfilesBuildWithOneGo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if m := regexp.MustCompile(`(?m)^toolchain go(\S+)$`).FindAllStringSubmatch(string(mod), -1); len(m) != 1 || m[0][1] != "1.26.9" {
-		t.Errorf("go.mod: toolchain lines %v, want one at go1.26.9", m)
+	if m := regexp.MustCompile(`(?m)^toolchain go(\S+)$`).FindAllStringSubmatch(string(mod), -1); len(m) != 1 || m[0][1] != "1.26.10" {
+		t.Errorf("go.mod: toolchain lines %v, want one at go1.26.10", m)
 	}
 	from := regexp.MustCompile(`(?m)^FROM \$\{UPSTREAM\}docker\.io/library/golang:([0-9.]+)(-alpine)?@sha256:[0-9a-f]{64}\b`)
-	want := map[string][]string{"Dockerfile": {"1.26.9"}, "Dockerfile.sandbox": {"1.26.9", "1.26.9"}, "Dockerfile.runner": {"1.26.9"}}
+	want := map[string][]string{"Dockerfile": {"1.26.10"}, "Dockerfile.sandbox": {"1.26.10", "1.26.10"}, "Dockerfile.runner": {"1.26.10"}}
 	for file, versions := range want {
 		b, err := os.ReadFile(filepath.Join("..", "..", file))
 		if err != nil {

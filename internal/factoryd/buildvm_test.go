@@ -147,6 +147,7 @@ func TestDNSWireName(t *testing.T) {
 		"nodejs.org":         "|066e6f64656a73036f726700|",
 		"code.forgejo.org":   "|04636f646507666f7267656a6f036f726700|",
 		"www.postgresql.org": "|037777770a706f737467726573716c036f726700|",
+		"vuln.go.dev":        "|0476756c6e02676f0364657600|",
 	} {
 		if got := dnsWireName(host); got != want {
 			t.Errorf("dnsWireName(%s) = %s, want %s", host, got, want)

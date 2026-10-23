@@ -1018,7 +1018,7 @@ func (s *Server) fileVerdict(ctx context.Context, c *toolCaller, in FileVerdictI
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()
-	res, err := s.opts.HoldoutVerdicter.FileVerdict(ctx, c.task.ID, HoldoutVerdictIn{Idx: in.Idx, Verdict: in.Verdict, Reason: in.Reason, Quote: in.Quote, TestCode: in.TestCode})
+	res, err := s.opts.HoldoutVerdicter.FileVerdict(ctx, c.task.ID, HoldoutVerdictIn(in))
 	if err != nil {
 		s.auditTool(c, tool, "error_verdict", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the verdict did not reach factoryd: " + err.Error())

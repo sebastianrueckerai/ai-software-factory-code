@@ -40,6 +40,7 @@ type RoutineRunResult struct {
 func RoutineRunWorkflow(ctx workflow.Context, in RoutineRunInput) error {
 	// a schedule sets the time the run was due on the workflow it starts,
 	// read untyped: the typed read drops a payload without type metadata
+	//lint:ignore SA1019 GetTypedSearchAttributes, its replacement, drops this payload
 	if p, ok := workflow.GetInfo(ctx).SearchAttributes.GetIndexedFields()["TemporalScheduledStartTime"]; ok {
 		if err := converter.GetDefaultDataConverter().FromPayload(p, &in.Due); err != nil {
 			return terminalError("routine %s/%s: the scheduled start time: %v", in.Project, in.Routine, err)

@@ -24,15 +24,13 @@ import (
 // card's workflow reads its state through the same server the intake filed
 // on, so no step of the chain is stubbed away.
 type stubForgejo struct {
-	mu        sync.Mutex
-	base      string // the httptest server's URL; set by server
-	issues    []string
-	num       int64
-	labels    map[int64][]string
-	comments  []string
-	closedPRs []int64
-	tokens    []factoryd.TokenRef
-	nextID    int64
+	mu       sync.Mutex
+	base     string // the httptest server's URL; set by server
+	issues   []string
+	num      int64
+	labels   map[int64][]string
+	comments []string
+	tokens   []factoryd.TokenRef
 }
 
 func (f *stubForgejo) baseURL() string { return f.base }
@@ -159,7 +157,6 @@ type acceptanceStore struct {
 	confirmedCloses map[[2]any]bool
 	sessions        []factoryd.Session
 	queue           []string // the merge queue, oldest first
-	finals          [][2]string
 	deps            map[string][]string
 	approvals       []factoryd.ApprovalRequest
 }
@@ -1099,16 +1096,6 @@ func (s *acceptanceStore) alertRowByFingerprint(fp string) factoryd.Alert {
 		}
 	}
 	return factoryd.Alert{}
-}
-
-func (s *acceptanceStore) finalOf(taskID string) (final, reason string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.tasks[taskID]
-	if !ok || !factoryd.Final(t.Status) {
-		return "", ""
-	}
-	return t.Status, ""
 }
 
 func (s *acceptanceStore) CountBacklog(context.Context, string) (int, error) { return 0, nil }

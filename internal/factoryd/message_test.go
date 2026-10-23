@@ -782,35 +782,3 @@ func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
 		t.Fatalf("supervisor messages = %q, want the check-in bare", texts[2:])
 	}
 }
-
-// The check-in's two deliveries to the pod: the parent session's record
-// on POST /records and the handover on POST /brief, both with the
-// session's bearer as /message's.
-func TestRecordsAndBriefWorker(t *testing.T) {
-	kube := newFakeKube()
-	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}, kube, &fakeObjectStore{})
-	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
-	worker.start(t, runner)
-	kube.CreateNamespace(t.Context(), "ns-t1", nil)
-	if err := kube.CreatePod(t.Context(), "ns-t1", "worker-t1", nil); err != nil {
-		t.Fatal(err)
-	}
-	record := "{\"kind\":\"model_call\"}\n{\"kind\":\"tool_call\"}\n"
-	if err := runner.recordsWorker(t.Context(), "ns-t1", "worker-t1", "bearer-1", "s-6", record); err != nil {
-		t.Fatalf("recordsWorker = %v", err)
-	}
-	if err := runner.briefWorker(t.Context(), "ns-t1", "worker-t1", "bearer-1", "the finding is false; build and test as usual"); err != nil {
-		t.Fatalf("briefWorker = %v", err)
-	}
-	worker.mu.Lock()
-	defer worker.mu.Unlock()
-	want := []string{"POST /records s-6" + record, "POST /brief the finding is false; build and test as usual"}
-	if !slices.Equal(worker.texts, want) {
-		t.Fatalf("worker got %q, want %q", worker.texts, want)
-	}
-	for _, auth := range worker.auth {
-		if auth != "Bearer bearer-1" {
-			t.Fatalf("authorization %q, want the session's bearer", auth)
-		}
-	}
-}

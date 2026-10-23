@@ -4,13 +4,14 @@ ARG NODE_VERSION=24.21.0
 ARG GOSEC_VERSION=2.29.0
 ARG CRANE_VERSION=0.22.1
 ARG COSIGN_VERSION=3.1.3
+ARG GOVULNDB_VERSION=20261021T002729Z
 
 # Every outside image comes from the factory's store by the digest
 # upstream-images.txt pins (roadmap 203). A build with no login to the
 # store (a local one) passes UPSTREAM= and pulls the same digests from
 # their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
-FROM ${UPSTREAM}docker.io/library/golang:1.26.9@sha256:cf7e928cb9edc2ed8b3cc6fe77ee1ee30b9fea28149564c8840097321a7600ea AS go-toolchain
+FROM ${UPSTREAM}docker.io/library/golang:1.26.10@sha256:3eca740eb349175cc59f462d409fc324a8239ab3ffdf73d8e63175a041c08b6b AS go-toolchain
 
 # The archives the image unpacks, and cosign for the stage below, each
 # read from the factory's store (roadmap 203, step 2): the generic
@@ -23,11 +24,13 @@ ARG CRANE_VERSION
 ARG NODE_VERSION
 ARG GOSEC_VERSION
 ARG COSIGN_VERSION
+ARG GOVULNDB_VERSION
 ADD --checksum=sha256:b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v${BUILDKIT_VERSION}/buildkit-v${BUILDKIT_VERSION}.linux-amd64.tar.gz /buildkit.tar.gz
 ADD --checksum=sha256:0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0 https://git.aisoftwarefactory.world/api/packages/upstream/generic/crane/v${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz /crane.tar.gz
 ADD --checksum=sha256:fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6 https://git.aisoftwarefactory.world/api/packages/upstream/generic/node/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-x64.tar.xz /node.tar.xz
 ADD --checksum=sha256:6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095 https://git.aisoftwarefactory.world/api/packages/upstream/generic/gosec/v${GOSEC_VERSION}/gosec_${GOSEC_VERSION}_linux_amd64.tar.gz /gosec.tar.gz
 ADD --checksum=sha256:4629c757b7618056f8ddd7e2625ae9fdd94c0372a65049520bc7d9df9efc7f71 --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/cosign/v${COSIGN_VERSION}/cosign-linux-amd64 /cosign
+ADD --checksum=sha256:c500b9aa3de4098cb284af067c6a9070d0d8fdaae641ed1e7dba1d5ce168560b https://git.aisoftwarefactory.world/api/packages/upstream/generic/govulndb/${GOVULNDB_VERSION}/vulndb.zip /vulndb.zip
 
 # cosign alone, which the image does not carry: main CI's image jobs export
 # it from here to sign what they push (roadmap 46), and the infra
@@ -89,7 +92,7 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
            > /etc/apt/sources.list.d/pgdg.list \
       && apt-get update \
       && apt-get install -y --no-install-recommends \
-           git openssh-client bash curl tar xz-utils ca-certificates gcc libc6-dev \
+           git openssh-client bash curl tar xz-utils unzip ca-certificates gcc libc6-dev \
            postgresql-17=${POSTGRESQL_VERSION} postgresql-client-17=${POSTGRESQL_VERSION} libpq5=${LIBPQ_VERSION} \
            postgresql-common=${POSTGRESQL_COMMON_VERSION} postgresql-client-common=${POSTGRESQL_COMMON_VERSION} \
       && rm -rf /var/lib/apt/lists/* \
@@ -126,10 +129,17 @@ RUN --mount=type=bind,from=downloads,source=/node.tar.xz,target=/tmp/node.tar.xz
       && node --version && npm --version \
       && rm -r /tmp/node-compile-cache
 
-# gosec: pr.yml's static security scan (design decision #6 — chosen over
-# govulncheck so the job's egress allowlist never needs vuln.go.dev).
+# gosec: pr.yml's static security scan (design decision #6).
 RUN --mount=type=bind,from=downloads,source=/gosec.tar.gz,target=/tmp/gosec.tar.gz \
       tar -xzf /tmp/gosec.tar.gz -C /usr/local/bin gosec
+
+# govulncheck's database: the store's copy of vuln.go.dev at
+# GOVULNDB_VERSION, which pr.yml and ci.yml name with -db, so no job's
+# egress needs vuln.go.dev and a commit's verdict holds until the weekly
+# upstream card moves the copy. govulncheck is go.mod's tool, which the
+# warm step below installs.
+RUN --mount=type=bind,from=downloads,source=/vulndb.zip,target=/tmp/vulndb.zip \
+      unzip -q /tmp/vulndb.zip -d /usr/local/share/govulndb
 
 ENV PATH=/usr/local/go/bin:/home/runner/go/bin:$PATH \
     HOME=/home/runner \
@@ -156,7 +166,8 @@ RUN mkdir -p "$HOME/.config/go/telemetry" && printf off > "$HOME/.config/go/tele
 # ci.yml's RUNNER_INPUTS name the same paths. Go keys its index of each
 # package by the files' mtimes, and a checkout dates them by its own
 # clock: the build reads a copy dated at the commit's time and removes
-# it, so no layer holds the source.
+# it, so no layer holds the source. go.mod's tools (govulncheck) install
+# into $GOPATH/bin, on PATH.
 # Each action entry (*-a) ends in the time it was written, in a 20-wide
 # field, and trim.txt holds the last trim's time: both take the commit's
 # clock. Go reads an entry's time only to expire cached test results after
@@ -174,6 +185,7 @@ RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,sou
       export GOPROXY=off GOFLAGS=-mod=mod \
       && cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
       && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
+      && go install -trimpath tool \
       && cd / && rm -r /tmp/warm \
       && cache=$(go env GOCACHE) \
       && find "$cache" -name '*-a' -exec sed -i -E "s/.{20}\$/$(printf '%20d' "${SOURCE_DATE_EPOCH}000000000")/" {} + \

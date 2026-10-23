@@ -151,7 +151,6 @@ type apiserver struct {
 	writes     []string // ns/name of every CNP apply that reached the store
 	patches    []string // ns/name of every CNP PATCH received, in order
 	deletes    []string // namespaces whose DELETE was answered
-	pvs        []factoryd.PersistentVolume
 	pvDeletes  []string
 }
 
@@ -164,14 +163,6 @@ func (a *apiserver) addNamespace(name string, labels map[string]string) {
 	defer a.mu.Unlock()
 	a.namespaces[name] = &apiNamespace{labels: labels, cnps: map[string]map[string]any{},
 		pods: map[string]map[string]any{}, secrets: map[string]map[string]string{}}
-}
-
-// bind puts factoryd's RoleBinding into the namespace, as setupNamespace
-// does before it writes anything there.
-func (a *apiserver) bind(ns string) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.namespaces[ns].bound = true
 }
 
 // putSecret seeds one namespace's secret, as platform applies the pull
@@ -198,12 +189,6 @@ func (a *apiserver) terminate(t *testing.T, ns string) {
 	live.bound = false
 	delete(live.pods, "worker-s1") // the session's pod went with the binding
 	a.deletes = append(a.deletes, ns)
-}
-
-func (a *apiserver) setPVs(pvs []factoryd.PersistentVolume) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.pvs = pvs
 }
 
 func (a *apiserver) egressSpec(t *testing.T, ns string) map[string]any {
@@ -247,15 +232,7 @@ func (a *apiserver) handler(t *testing.T) http.Handler {
 			}
 			writeJSON(w, map[string]any{"items": items})
 		case path == "/api/v1/persistentvolumes" && r.Method == http.MethodGet:
-			var items []any
-			for _, pv := range a.pvs {
-				items = append(items, map[string]any{
-					"metadata": map[string]any{"name": pv.Name},
-					"spec":     map[string]any{"storageClassName": pv.StorageClass},
-					"status":   map[string]any{"phase": pv.Phase},
-				})
-			}
-			writeJSON(w, map[string]any{"items": items})
+			writeJSON(w, map[string]any{"items": []any{}})
 		case strings.HasPrefix(path, "/api/v1/persistentvolumes/") && r.Method == http.MethodDelete:
 			a.pvDeletes = append(a.pvDeletes, strings.TrimPrefix(path, "/api/v1/persistentvolumes/"))
 			w.WriteHeader(http.StatusOK)

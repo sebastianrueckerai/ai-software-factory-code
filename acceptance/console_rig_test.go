@@ -1,4 +1,4 @@
-package console
+package acceptance
 
 import (
 	"context"
@@ -13,22 +13,24 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
+	factorygateway "github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The acceptance harness: a console over stand-in stores — Forgejo, the
 // task state, approvals, events, the chat's store and the operator
-// gateway — so a test outside this package exercises a chat action
-// end-to-end through the HTTP surface. It is the console test rig's shape
-// kept to what one tell of a card reads and writes.
+// gateway — so a test exercises a chat action end-to-end through the
+// console's HTTP surface, as a member does. It is the console test rig's
+// shape kept to what one tell of a card reads and writes.
 
 const accProjectName = "ai-software-factory-" + "code"
 
@@ -36,7 +38,7 @@ const accProjectName = "ai-software-factory-" + "code"
 // stands on, each recording what the actions did.
 type AcceptanceRig struct {
 	t *testing.T
-	c *Console
+	c *console.Console
 
 	mu        sync.Mutex
 	tasks     []factoryd.BoardTask
@@ -52,10 +54,10 @@ type AcceptanceRig struct {
 	tokenN    int
 	challenge string // the PKCE challenge /login sent Forgejo
 	replies   [][]string
-	steered   []string // "task user: text" per SetSteer call
-	fgURL     string   // the rig's Forgejo URL, the documents fake's proxy target
+	steered   []string // "task user: text" per steer call
+	bus       *factoryd.EventBus
 	chat      *policy.ChatConfig
-	// chat is the chat block the policy names once SetDocs seats the
+	// chat is the chat block the policy names when the rig seats the
 	// documents: the project's chat.doc_repo.
 	intake map[string]bool // the repositories' closed intake switches
 }
@@ -74,11 +76,17 @@ type accProposal struct {
 
 // NewAcceptanceRig builds the rig: logged out, with the code project's
 // cards #5 t-m in the backlog, #11 t-r running its session with pull
-// request #9 and #13 t-e waiting on an answer, no steer wired and no
-// event recorded. It answers the rig and the project's chat path.
-func NewAcceptanceRig(t *testing.T) (*AcceptanceRig, string) {
+// request #9 and #13 t-e waiting on an answer, and no event recorded.
+// steer wires the steer stub: every text handed to a task's session is
+// recorded as "task user: text". docs, when not nil, seats the document
+// repository fake (roadmap 277): sf/docs on a Forgejo as its contents API
+// answers, seeded with docs, every landed commit recorded; the policy
+// names it the projects' chat.doc_repo, so the console's document surface
+// reads and writes it. It answers the rig, the fake (nil without docs)
+// and the project's chat path.
+func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*AcceptanceRig, *AccDocs, string) {
 	t.Helper()
-	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}}
+	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus()}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -90,15 +98,14 @@ func NewAcceptanceRig(t *testing.T) (*AcceptanceRig, string) {
 	}
 	fg := httptest.NewServer(http.HandlerFunc(a.serveForgejo))
 	t.Cleanup(fg.Close)
-	a.fgURL = fg.URL
 	gw := httptest.NewServer(http.HandlerFunc(a.serveGateway))
 	t.Cleanup(gw.Close)
 
-	c, err := New(Config{
+	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: a, Tasks: a, Timelines: a, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a,
-		Bus: factoryd.NewEventBus(),
+		Bus: a.bus,
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
 		},
@@ -106,12 +113,38 @@ func NewAcceptanceRig(t *testing.T) (*AcceptanceRig, string) {
 			return repository == "sf/code" && user == "sebastian", nil
 		},
 		Operator: &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
-	})
+	}
+	if steer {
+		cfg.Steer = func(_ context.Context, taskID, user, text string) error {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			a.steered = append(a.steered, taskID+" "+user+": "+text)
+			return nil
+		}
+	}
+	var d *AccDocs
+	if docs != nil {
+		d = &AccDocs{t: t, files: docs,
+			versions: []accVersion{{files: maps.Clone(docs), author: "Sebastian", at: "2026-10-15T14:00:00Z"}}}
+		next, err := url.Parse(fg.URL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := httputil.NewSingleHostReverseProxy(next)
+		const base = "/api/v1/repos/sf/docs/contents"
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			d.serve(w, req, proxy, base)
+		}))
+		t.Cleanup(srv.Close)
+		cfg.ForgejoURL, cfg.DocsToken = srv.URL, "docs-token"
+		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
+	}
+	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.c = c
-	return a, "/projects/" + accProjectName + "/chat"
+	return a, d, "/projects/" + accProjectName + "/chat"
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers
@@ -129,21 +162,23 @@ func (a *AcceptanceRig) Login(t *testing.T) (*http.Cookie, string) {
 	a.mu.Lock()
 	a.challenge = loc.Query().Get("code_challenge")
 	a.mu.Unlock()
-	state := cookieValue(rec, loginCookie)
+	state := cookieValue(rec, "__Host-console-login")
 	if state == "" {
 		t.Fatal("/login set no login cookie")
 	}
 	cb := a.request(http.MethodGet, "/auth/callback?code=the-code&state="+url.QueryEscape(loc.Query().Get("state")), nil,
-		&http.Cookie{Name: loginCookie, Value: state, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}) // #nosec G124 -- test harness cookie stub
-	ck := cookieValue(cb, sessionCookie)
+		&http.Cookie{Name: "__Host-console-login", Value: state, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}) // #nosec G124 -- test harness cookie stub
+	ck := cookieValue(cb, "__Host-console")
 	if cb.Code != http.StatusSeeOther || ck == "" {
 		t.Fatalf("the callback = %d, session cookie set: %v", cb.Code, ck != "")
 	}
-	s, err := a.c.sessionByCookie(t.Context(), ck)
-	if err != nil || s == nil {
-		t.Fatalf("the fresh login's row does not read back: found %v, %v", s != nil, err)
+	session := &http.Cookie{Name: "__Host-console", Value: ck, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode} // #nosec G124 -- test harness cookie stub
+	page := a.request(http.MethodGet, "/", nil, session)
+	m := regexp.MustCompile(`name="csrf" value="([^"]+)"`).FindSubmatch(page.Body.Bytes())
+	if page.Code != http.StatusOK || m == nil {
+		t.Fatalf("the board after the login = %d, a form token on it: %v", page.Code, m != nil)
 	}
-	return &http.Cookie{Name: sessionCookie, Value: ck, HttpOnly: true, Secure: true, SameSite: http.SameSiteLaxMode}, s.csrf // #nosec G124 -- test harness cookie stub
+	return session, string(m[1])
 }
 
 // Handler is the console's HTTP handler, for tests that need a real server
@@ -159,48 +194,11 @@ func (a *AcceptanceRig) Post(path string, ck *http.Cookie, form url.Values) *htt
 	return a.requestRaw(req, ck)
 }
 
-// SetSteer installs the steer stub: every text handed to a task's session
-// is recorded as "task user: text".
-func (a *AcceptanceRig) SetSteer() {
-	a.c.cfg.Steer = func(_ context.Context, taskID, user, text string) error {
-		a.mu.Lock()
-		defer a.mu.Unlock()
-		a.steered = append(a.steered, taskID+" "+user+": "+text)
-		return nil
-	}
-}
-
 // Steered answers the steer calls recorded so far.
 func (a *AcceptanceRig) Steered() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return slices.Clone(a.steered)
-}
-
-// SetDocs seats the document repository fake (roadmap 277): sf/docs on a
-// Forgejo as its contents API answers, seeded with files, every landed
-// commit recorded; the policy names it the projects' chat.doc_repo, so
-// the console's document surface reads and writes it. It answers the
-// fake.
-func (a *AcceptanceRig) SetDocs(files map[string]string) *AccDocs {
-	a.t.Helper()
-	d := &AccDocs{t: a.t, files: files,
-		versions: []accVersion{{files: maps.Clone(files), author: "Sebastian", at: "2026-10-15T14:00:00Z"}}}
-	next, err := url.Parse(a.fgURL)
-	if err != nil {
-		a.t.Fatal(err)
-	}
-	proxy := httputil.NewSingleHostReverseProxy(next)
-	const base = "/api/v1/repos/sf/docs/contents"
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		d.serve(w, req, proxy, base)
-	}))
-	a.t.Cleanup(srv.Close)
-	a.mu.Lock()
-	a.c.cfg.ForgejoURL, a.c.cfg.DocsToken = srv.URL, "docs-token"
-	a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-	a.mu.Unlock()
-	return d
 }
 
 // AccDocs is the document repository sf/docs on a Forgejo as its contents
@@ -408,9 +406,6 @@ func operatorChunk(delta map[string]any) string {
 	return string(b)
 }
 
-// ChatTaskID is project name's chat task for the month of at.
-func ChatTaskID(name string, at time.Time) string { return factoryd.ChatTaskID(name, at) }
-
 // requestRaw runs req on the console with ck added.
 func (a *AcceptanceRig) requestRaw(req *http.Request, ck *http.Cookie) *httptest.ResponseRecorder {
 	if ck != nil {
@@ -454,7 +449,7 @@ func (a *AcceptanceRig) serveGateway(w http.ResponseWriter, r *http.Request) {
 	}
 	// a naming call (roadmap 304) answers nothing and consumes no reply:
 	// today's head stands
-	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeTitle {
+	if r.Header.Get(factorygateway.HeaderFactoryPurpose) == policy.PurposeTitle {
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", operatorChunk(map[string]any{"content": ""}))
 		return
@@ -743,9 +738,8 @@ func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, erro
 		e.At = time.Now()
 	}
 	a.events = append(a.events, e)
-	bus := a.c.cfg.Bus
 	a.mu.Unlock()
-	bus.Publish(e)
+	a.bus.Publish(e)
 	return e.ID, nil
 }
 

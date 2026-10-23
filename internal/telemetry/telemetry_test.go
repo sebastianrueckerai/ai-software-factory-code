@@ -104,7 +104,7 @@ func TestEndpointExportsEverySignalWithTheServiceName(t *testing.T) {
 	_, span := p.Tracer.Tracer("t").Start(ctx, "call")
 	span.End()
 	var rec otellog.Record
-	rec.SetBody(otellog.StringValue("audit"))
+	rec.SetBody(attribute.StringValue("audit"))
 	p.Logger.Logger("t").Emit(ctx, rec)
 	c, err := p.Meter.Meter("t").Int64Counter("c")
 	if err != nil {
@@ -214,7 +214,7 @@ func TestHandlerTracesEveryRequestButTheProbes(t *testing.T) {
 		code := ""
 		for _, a := range s.Attributes() {
 			if a.Key == attribute.Key("http.response.status_code") {
-				code = a.Value.Emit()
+				code = a.Value.String()
 			}
 		}
 		got = append(got, s.Name()+" "+s.SpanKind().String()+" "+code)

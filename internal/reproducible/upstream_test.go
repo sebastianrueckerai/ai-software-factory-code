@@ -114,20 +114,20 @@ func TestOutsideImagesComeFromTheStore(t *testing.T) {
 	}
 	want := map[string][]string{
 		"Dockerfile": {
-			"docker.io/library/golang:1.26.9-alpine",
+			"docker.io/library/golang:1.26.10-alpine",
 			"docker.io/library/debian:bookworm-slim",
 		},
 		"Dockerfile.sandbox": {
-			"docker.io/library/golang:1.26.9-alpine",
+			"docker.io/library/golang:1.26.10-alpine",
 			// twice: the build stage and the stage that fetches the
 			// store's npm cache, the node base image having no
 			// downloader (roadmap 203, step 2)
-			"docker.io/library/golang:1.26.9-alpine",
+			"docker.io/library/golang:1.26.10-alpine",
 			"docker.io/library/node:22-bookworm-slim",
 			"docker.io/library/debian:bookworm-slim",
 		},
 		"Dockerfile.runner": {
-			"docker.io/library/golang:1.26.9",
+			"docker.io/library/golang:1.26.10",
 			"docker.io/library/debian:bookworm-slim",
 		},
 	}

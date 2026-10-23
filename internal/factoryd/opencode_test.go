@@ -904,7 +904,7 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		// cardFacts prints "Directories (guidance, not a boundary)" on every
 		// card's issue, and the brief's repository map heads with it
 		"Keep to the card's directories",
-		// ValidatePlan's findings (TestValidatePlan)
+		// readPlan's findings (TestValidatePlan)
 		"The plan has 2 to",
 		"lowercase letters, digits and dashes",
 		"Exactly one card has role",

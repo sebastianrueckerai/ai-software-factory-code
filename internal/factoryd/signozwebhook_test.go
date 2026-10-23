@@ -316,7 +316,7 @@ func TestAlertIntakeRetryAfterAFailedFilingFilesOneTask(t *testing.T) {
 	}
 	rows := r.store.alertRows()
 	if len(rows) != 1 || rows[0].TaskID == "" {
-		t.Fatalf("after the failed delivery: %d alert rows, first TaskID %q; want 1 row with its task's id", len(rows), rows)
+		t.Fatalf("after the failed delivery: %d alert rows %+v; want 1 row with its task's id", len(rows), rows)
 	}
 	if len(r.store.tasks) != 0 {
 		t.Fatalf("after the failed delivery: %d tasks, want 0", len(r.store.tasks))

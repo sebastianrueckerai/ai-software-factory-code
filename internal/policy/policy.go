@@ -77,6 +77,7 @@ func (d Document) Location() (*time.Location, error) {
 	case "":
 		return time.UTC, nil
 	case "Local":
+		//lint:ignore ST1005 Local is the zone's own name, as the policy spells it
 		return nil, errors.New("Local is the host's zone, which moves with the host")
 	}
 	return time.LoadLocation(d.TimeZone)

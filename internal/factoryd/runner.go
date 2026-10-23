@@ -1848,17 +1848,6 @@ const (
 	maxCarriedAnswers  = 20
 )
 
-// newest is items' newest n, items oldest first when oldestFirst.
-func newest(items []string, n int, oldestFirst bool) []string {
-	switch {
-	case len(items) <= n:
-		return items
-	case oldestFirst:
-		return items[len(items)-n:]
-	}
-	return items[:n]
-}
-
 // envFit fits the worker env's values that grow with their input within
 // envRoom, and keeps factoryd's note on each it shortened: the worker gets
 // them as LEFT_OUT and the brief says them in factoryd's own words,

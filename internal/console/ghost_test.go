@@ -159,7 +159,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 		}
 	}
 
-	body, needs, queued := board("")
+	body, _, queued := board("")
 	if deps := strings.Index(queued, `data-ghost="ai-software-factory-code/dependency-update"`); deps < 0 || strings.Index(queued, `data-ghost="ai-software-factory-code/audit"`) < deps {
 		t.Fatalf("a merge-counted ghost sorts before a dated one:\n%s", queued)
 	}
@@ -168,7 +168,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 		t.Fatal("all hides a ghost or does not show as chosen")
 	}
 
-	body, needs, queued = board("&routines=within&within=2&unit=hours")
+	body, needs, queued := board("&routines=within&within=2&unit=hours")
 	ghostIn(t, queued, "weekly-bump")
 	shown("2 hours", queued, "on-config", "audit")
 	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;routines=all">2 routines hidden</a></p>`) {
@@ -228,7 +228,7 @@ func TestBoardRoutinesFilter(t *testing.T) {
 
 	// the hidden line's link keeps the find and the column's order, and
 	// the find leaves the ghosts standing
-	_, needs, queued = board("&q=455&queued=oldest&routines=within&within=2&unit=hours")
+	_, _, queued = board("&q=455&queued=oldest&routines=within&within=2&unit=hours")
 	ghostIn(t, queued, "weekly-bump")
 	ghostIn(t, queued, "audit")
 	if !strings.Contains(queued, `<p class="ghosts-hidden"><a href="/?project=ai-software-factory-code&amp;q=455&amp;queued=oldest&amp;routines=all">2 routines hidden</a></p>`) {

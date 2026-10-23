@@ -196,7 +196,7 @@ func TestToolCardStartsFromTheAskersImage(t *testing.T) {
 	if obj := store.tasks[q.Park.ToolTask].Objective; !strings.Contains(obj, want) {
 		t.Fatalf("objective %q lacks %q", obj, want)
 	}
-	if !strings.Contains(stack, "      - name: go\n        url: https://go.dev/dl/go1.26.9.linux-amd64.tar.gz\n") {
+	if !strings.Contains(stack, "      - name: go\n        url: https://go.dev/dl/go1.26.10.linux-amd64.tar.gz\n") {
 		t.Fatalf("stack entry = %q", stack)
 	}
 }

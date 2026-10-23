@@ -57,11 +57,11 @@ const (
 // to resolve. Not by address: these hosts share CDN addresses with
 // hosts project builds on the shared VM must reach — nodejs.org and
 // registry.npmjs.org both sit on Cloudflare. Verified on the stock
-// debian-12 image: the matches load, all four hosts refuse within a
-// fifth of a second, while registry.npmjs.org, its tarballs, the store
-// and snapshot.debian.org answer 200.
+// debian-12 image with the first four: the matches load, the hosts refuse
+// within a fifth of a second, while registry.npmjs.org, its tarballs, the
+// store and snapshot.debian.org answer 200.
 var buildVMUpstreamHosts = []string{
-	"github.com", "nodejs.org", "code.forgejo.org", "www.postgresql.org",
+	"github.com", "nodejs.org", "code.forgejo.org", "www.postgresql.org", "vuln.go.dev",
 }
 
 // dnsWireName is host as its bytes stand inside a DNS query — each label

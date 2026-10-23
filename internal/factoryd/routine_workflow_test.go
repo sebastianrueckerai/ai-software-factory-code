@@ -112,6 +112,7 @@ func TestRoutineRunWorkflowTakesTheScheduledTime(t *testing.T) {
 				temporal.NewSearchAttributeKeyTime("TemporalScheduledStartTime").ValueSet(scheduled)))
 		},
 		"without type metadata": func(env *testsuite.TestWorkflowEnvironment) error {
+			//lint:ignore SA1019 the untyped setter is the only way to start without type metadata
 			return env.SetSearchAttributesOnStart(map[string]any{"TemporalScheduledStartTime": scheduled})
 		},
 	} {

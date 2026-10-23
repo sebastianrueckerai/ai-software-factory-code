@@ -160,30 +160,30 @@ func (t *Telemetry) auditRecord(row AuditRow) otellog.Record {
 	r.SetSeverityText("INFO")
 	// the task id (from the verified token) and the decision (a constant)
 	// are the gateway's own, and task.id is the cross-binary join key
-	r.SetBody(otellog.StringValue("audit " + row.Decision))
+	r.SetBody(attribute.StringValue("audit " + row.Decision))
 	str := func(key, v string) {
 		if v != "" {
-			r.AddAttributes(otellog.String(key, t.scrub(v)))
+			r.AddAttributes(attribute.String(key, t.scrub(v)))
 		}
 	}
 	num := func(key string, v *float64) {
 		if v != nil {
-			r.AddAttributes(otellog.Float64(key, *v))
+			r.AddAttributes(attribute.Float64(key, *v))
 		}
 	}
 	if row.TaskID != "" {
-		r.AddAttributes(otellog.String(string(telemetry.TaskID), row.TaskID))
+		r.AddAttributes(attribute.String(string(telemetry.TaskID), row.TaskID))
 	}
-	r.AddAttributes(otellog.String("audit.decision", row.Decision), otellog.String("audit.kind", row.kind()))
+	r.AddAttributes(attribute.String("audit.decision", row.Decision), attribute.String("audit.kind", row.kind()))
 	str("audit.reason", row.Reason)
 	str("audit.model_alias", row.ModelAlias)
 	str("audit.tool", row.Tool)
 	num("audit.spend_eur", row.SpendEUR)
 	if row.PolicyVersion != nil {
-		r.AddAttributes(otellog.Int64("audit.policy_version", *row.PolicyVersion))
+		r.AddAttributes(attribute.Int64("audit.policy_version", *row.PolicyVersion))
 	}
 	if row.OutputLimit != nil {
-		r.AddAttributes(otellog.Int("audit.output_limit", *row.OutputLimit))
+		r.AddAttributes(attribute.Int("audit.output_limit", *row.OutputLimit))
 	}
 	num("audit.hold_eur", row.HoldEUR)
 	str("audit.over_hold", row.OverHold)

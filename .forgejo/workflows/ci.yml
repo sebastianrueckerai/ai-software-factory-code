@@ -87,7 +87,7 @@ jobs:
             -v ci-go-build:/cache/go-build -v ci-go-mod:/modcache \
             -e GOCACHE=/cache/go-build -e GOMODCACHE=/modcache -e GOPATH=/tmp/go \
             --entrypoint /bin/bash ci-runner:test \
-            -c 'mkdir -p /tmp/src && tar -x -C /tmp/src && cd /tmp/src && scripts/pg-test.sh go test -race ./... && go vet ./... && test -z "$(gofmt -l .)" && gosec -quiet ./...'
+            -c 'mkdir -p /tmp/src && tar -x -C /tmp/src && cd /tmp/src && scripts/pg-test.sh go test -race ./... && go vet ./... && test -z "$(gofmt -l .)" && gosec -quiet ./... && govulncheck -db file:///usr/local/share/govulndb ./...'
   image:
     needs: test
     runs-on: ubuntu-latest

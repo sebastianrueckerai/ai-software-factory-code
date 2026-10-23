@@ -941,12 +941,6 @@ type opencodeParser struct {
 
 func (p *opencodeParser) errMessage() string { return p.errMsg }
 
-func (p *opencodeParser) fail(msg string) {
-	if p.errMsg == "" {
-		p.errMsg = msg
-	}
-}
-
 // summary is the agent's last text. A session that went idle without a
 // stop leads with how its last model step finished: a step cut at its
 // output limit ends on "length", often with no text at all.

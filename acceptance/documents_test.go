@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
@@ -34,15 +33,14 @@ const documentsRoadmap = "# The roadmap\n\n" +
 // the document repository sf/docs seated with the roadmap and the two
 // plans it links. It answers the rig, the fake, the project's chat and
 // docs paths, the session cookie and the form token.
-func docsRig(t *testing.T) (*console.AcceptanceRig, *console.AccDocs, string, string, *http.Cookie, string) {
+func docsRig(t *testing.T) (*AcceptanceRig, *AccDocs, string, string, *http.Cookie, string) {
 	t.Helper()
-	r, chatPath := console.NewAcceptanceRig(t)
-	ck, csrf := r.Login(t)
-	docs := r.SetDocs(map[string]string{
+	r, docs, chatPath := NewAcceptanceRig(t, false, map[string]string{
 		"docs/roadmap.md":         documentsRoadmap,
 		"docs/plans/documents.md": "# The documents plan\n\nThe drawer's document mode.\n",
 		"docs/plans/board.md":     "# The board plan\n\nThe board beside the chat.\n",
 	})
+	ck, csrf := r.Login(t)
 	return r, docs, chatPath, strings.TrimSuffix(chatPath, "/chat") + "/docs", ck, csrf
 }
 
@@ -72,9 +70,9 @@ func docProposalToken(t *testing.T, events []string) string {
 // agentWrites runs the chat turn whose write_doc call the member OKs: the
 // message proposes the agent's edit, the Do it lands it. It answers the
 // Do it's stream events.
-func agentWrites(t *testing.T, r *console.AcceptanceRig, chatPath string, ck *http.Cookie, csrf, call, message string) []string {
+func agentWrites(t *testing.T, r *AcceptanceRig, chatPath string, ck *http.Cookie, csrf, call, message string) []string {
 	t.Helper()
-	r.Reply([]string{call}, []string{console.Say("Done.")})
+	r.Reply([]string{call}, []string{Say("Done.")})
 	code, body := postChat(t, r, chatPath, ck, url.Values{"message": {message}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
@@ -89,7 +87,7 @@ func agentWrites(t *testing.T, r *console.AcceptanceRig, chatPath string, ck *ht
 
 // getDoc runs one GET on the console as the member of ck through a real
 // server and answers the status with the body.
-func getDoc(t *testing.T, r *console.AcceptanceRig, ck *http.Cookie, path string) (int, []byte) {
+func getDoc(t *testing.T, r *AcceptanceRig, ck *http.Cookie, path string) (int, []byte) {
 	t.Helper()
 	srv := httptest.NewServer(r.Handler())
 	defer srv.Close()
@@ -135,7 +133,7 @@ type docSaveAnswer struct {
 
 // saveDoc posts the editor's save of path as the member through a real
 // server and answers the status with the answer's JSON.
-func saveDoc(t *testing.T, r *console.AcceptanceRig, docsPath string, ck *http.Cookie, csrf, path string, save docSaveBody) (int, docSaveAnswer) {
+func saveDoc(t *testing.T, r *AcceptanceRig, docsPath string, ck *http.Cookie, csrf, path string, save docSaveBody) (int, docSaveAnswer) {
 	t.Helper()
 	body, err := json.Marshal(save)
 	if err != nil {
@@ -168,7 +166,7 @@ func saveDoc(t *testing.T, r *console.AcceptanceRig, docsPath string, ck *http.C
 
 // docRows answers the event spine's doc_written rows as
 // "actor via path hash commit", and fails on any other row.
-func docRows(t *testing.T, r *console.AcceptanceRig) []string {
+func docRows(t *testing.T, r *AcceptanceRig) []string {
 	t.Helper()
 	var out []string
 	for _, e := range r.Events() {
@@ -231,7 +229,7 @@ func TestDocumentsEndToEnd(t *testing.T) {
 	// The chat's agent edits other lines: the proposal, his Do it, one
 	// commit and its row via chat.
 	theirs := strings.Replace(mine, "Where it stands: in progress.", "Where it stands: in review.", 1)
-	events := agentWrites(t, r, chatPath, ck, csrf, console.Call(1, "write_doc",
+	events := agentWrites(t, r, chatPath, ck, csrf, Call(1, "write_doc",
 		`{"path":"docs/roadmap.md","old":"Where it stands: in progress.","new":"Where it stands: in review.","base_sha256":"`+
 			factoryd.ContentHash(mine)+`"}`), "mark item 7 in review")
 	want := "Committed c0ffee00 to sf/docs@master: docs/roadmap.md, now base_sha256 " + factoryd.ContentHash(theirs) + "."
@@ -275,7 +273,7 @@ func TestDocumentsConflictEndToEnd(t *testing.T) {
 	// The agent edits the same lines he is typing on: one commit, and the
 	// push raised exactly one doc_written.
 	theirs := strings.Replace(documentsRoadmap, "Where it stands: done.", "Where it stands: in review.", 1)
-	events := agentWrites(t, r, chatPath, ck, csrf, console.Call(1, "write_doc",
+	events := agentWrites(t, r, chatPath, ck, csrf, Call(1, "write_doc",
 		`{"path":"docs/roadmap.md","old":"Where it stands: done.","new":"Where it stands: in review.","base_sha256":"`+
 			factoryd.ContentHash(documentsRoadmap)+`"}`), "mark item 8 in review")
 	if !hasToolResult(events, "write_doc",

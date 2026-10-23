@@ -17,12 +17,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// listFlag collects a repeatable flag.
-type listFlag []string
-
-func (l *listFlag) String() string     { return strings.Join(*l, ",") }
-func (l *listFlag) Set(v string) error { *l = append(*l, v); return nil }
-
 // parseRegistration reads register-project's flags: the project's name
 // (its settings are its file's) and --rotate.
 func parseRegistration(args []string) (name string, rotate bool, err error) {

@@ -218,15 +218,6 @@ func ciBuildRows(t *testing.T, reg *cloudres.Memory, owner string) (serverRow, f
 	return serverRow, fwRow
 }
 
-func regRows(t *testing.T, reg *cloudres.Memory) []cloudres.Resource {
-	t.Helper()
-	rows, err := reg.Open(context.Background(), "ci")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return rows
-}
-
 func regState(t *testing.T, reg *cloudres.Memory, id int64) string {
 	t.Helper()
 	r, ok := reg.Get(id)

@@ -174,7 +174,7 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 			// a status row opens a run only where the stage changes: a new
 			// attempt in the same stage is the session's start to open
 			if r == nil || r.Kind != p.kind {
-				r = open(p.kind, p.at)
+				open(p.kind, p.at)
 			}
 		case p.end:
 			if r == nil {

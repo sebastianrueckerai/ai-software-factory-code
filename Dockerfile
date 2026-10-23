@@ -3,7 +3,7 @@
 # store (a local one) passes UPSTREAM= and pulls the same digests from
 # their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
-FROM ${UPSTREAM}docker.io/library/golang:1.26.9-alpine@sha256:397ecc648150dd585f1734dfcd8d1bb4746664e54464191d77ad0ecffaf38bdb AS build
+FROM ${UPSTREAM}docker.io/library/golang:1.26.10-alpine@sha256:d1f3216ef30257c850cc136ba42a359ccd9d3e75f19b2c276e520c0b4ef327ce AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
 # builds the same digest at any wall-clock time. The stage builds offline

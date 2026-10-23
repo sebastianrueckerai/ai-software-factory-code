@@ -13,7 +13,6 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	otellog "go.opentelemetry.io/otel/log"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -46,8 +45,8 @@ func (c *logCapture) attributes() []map[string]string {
 	var out []map[string]string
 	for _, r := range c.recs {
 		m := map[string]string{"body": r.Body().String()}
-		r.WalkAttributes(func(kv otellog.KeyValue) bool {
-			m[kv.Key] = kv.Value.String()
+		r.WalkAttributes(func(kv attribute.KeyValue) bool {
+			m[string(kv.Key)] = kv.Value.String()
 			return true
 		})
 		out = append(out, m)
@@ -110,7 +109,7 @@ func (r telemetryRig) collect(t *testing.T) map[string]map[string]float64 {
 func spanAttrs(s sdktrace.ReadOnlySpan) map[string]string {
 	out := map[string]string{}
 	for _, kv := range s.Attributes() {
-		out[string(kv.Key)] = kv.Value.Emit()
+		out[string(kv.Key)] = kv.Value.String()
 	}
 	return out
 }

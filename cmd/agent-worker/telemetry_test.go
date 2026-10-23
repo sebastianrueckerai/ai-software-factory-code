@@ -175,7 +175,7 @@ func TestSessionTelemetryFromARecordedStream(t *testing.T) {
 func attrs(s sdktrace.ReadOnlySpan) map[string]string {
 	out := map[string]string{}
 	for _, kv := range s.Attributes() {
-		out[string(kv.Key)] = kv.Value.Emit()
+		out[string(kv.Key)] = kv.Value.String()
 	}
 	return out
 }

@@ -278,7 +278,7 @@ func (f *fakeChat) AddChatTimer(_ context.Context, repository, login string, con
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if n := len(f.watches) + len(f.timers); n >= factoryd.WakeTimersMax {
-		return fmt.Errorf("%w: it holds %d of %d, end one first.", factoryd.ErrChatWakeCap, n, factoryd.WakeTimersMax)
+		return fmt.Errorf("%w: it holds %d of %d, end one first", factoryd.ErrChatWakeCap, n, factoryd.WakeTimersMax)
 	}
 	f.timers = append(f.timers, storedTimer{repository, login, note, taskID, conversation, due})
 	return nil

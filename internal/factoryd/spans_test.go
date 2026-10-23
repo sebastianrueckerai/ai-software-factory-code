@@ -60,7 +60,7 @@ func TestActivitySpansCarryTheTaskID(t *testing.T) {
 		}
 		attrs := map[string]string{}
 		for _, kv := range s.Attributes() {
-			attrs[string(kv.Key)] = kv.Value.Emit()
+			attrs[string(kv.Key)] = kv.Value.String()
 		}
 		if attrs["task.id"] != "t1" || attrs["temporal.workflow_id"] != "task-t1" {
 			t.Fatalf("span %s attributes %v", s.Name(), attrs)
@@ -89,7 +89,7 @@ func TestActivitySpansWithoutATaskWorkflow(t *testing.T) {
 	}
 	for _, kv := range ended[0].Attributes() {
 		if kv.Key == "task.id" {
-			t.Fatalf("task.id %q on a non-task activity", kv.Value.Emit())
+			t.Fatalf("task.id %q on a non-task activity", kv.Value.String())
 		}
 	}
 }

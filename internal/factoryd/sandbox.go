@@ -37,7 +37,7 @@ func FactoryStack() policy.ImageSpec {
 	return policy.ImageSpec{
 		Upstream: []policy.UpstreamLine{
 			// go.dev/dl's sha256 of the file (its JSON index, mode=json&include=all)
-			{Name: "go", URL: "https://go.dev/dl/go1.26.9.linux-amd64.tar.gz", SHA256: "42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d",
+			{Name: "go", URL: "https://go.dev/dl/go1.26.10.linux-amd64.tar.gz", SHA256: "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5",
 				To: "/usr/local/go", Strip: 1},
 			{Name: "node", URL: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz", SHA256: "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
 				To: "/usr/local", Strip: 1},

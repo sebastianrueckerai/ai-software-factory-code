@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
@@ -33,11 +32,10 @@ const login = "sebastian"
 // with pull request 12 in review at its approval gate, holding pending
 // merge request 6 at head c0ffee1. It answers the rig, the project's
 // chat path, the session cookie and the form token.
-func tellRig(t *testing.T, objective string) (*console.AcceptanceRig, string, *http.Cookie, string) {
+func tellRig(t *testing.T, objective string) (*AcceptanceRig, string, *http.Cookie, string) {
 	t.Helper()
-	r, path := console.NewAcceptanceRig(t)
+	r, _, path := NewAcceptanceRig(t, true, nil)
 	ck, csrf := r.Login(t)
-	r.SetSteer()
 	if objective != "" {
 		r.TellCard("t-g", 15, 12, 6, objective, "c0ffee1")
 	}
@@ -49,7 +47,7 @@ func tellRig(t *testing.T, objective string) (*console.AcceptanceRig, string, *h
 // http.ResponseController.SetWriteDeadline, which httptest.ResponseRecorder
 // does not implement; a direct call drops every write, so we go through
 // httptest.NewServer like internal/console/chat_test.go's chatPost does.
-func postChat(t *testing.T, r *console.AcceptanceRig, path string, ck *http.Cookie, form url.Values) (int, string) {
+func postChat(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, form url.Values) (int, string) {
 	t.Helper()
 	srv := httptest.NewServer(r.Handler())
 	defer srv.Close()
@@ -127,7 +125,7 @@ func proposalOf(t *testing.T, events []string) (string, string) {
 
 // appliedResult answers the result the applied tell_card call left in the
 // conversation.
-func appliedResult(t *testing.T, r *console.AcceptanceRig) string {
+func appliedResult(t *testing.T, r *AcceptanceRig) string {
 	t.Helper()
 	for _, c := range r.ToolCalls(repository, login) {
 		if c.Name == "tell_card" && !strings.HasPrefix(c.Result, "Proposed to ") {
@@ -140,7 +138,7 @@ func appliedResult(t *testing.T, r *console.AcceptanceRig) string {
 
 // checkEvents answers the event spine's rows to exactly wants: kind,
 // task, issue and detail, each by chat as the member on the code project.
-func checkEvents(t *testing.T, r *console.AcceptanceRig, wants ...factoryd.Event) {
+func checkEvents(t *testing.T, r *AcceptanceRig, wants ...factoryd.Event) {
 	t.Helper()
 	rows := r.Events()
 	if len(rows) != len(wants) {
@@ -180,7 +178,7 @@ func proposalToken(t *testing.T, events []string) string {
 // text on the steer path and records one card_steered row.
 func TestTellCardAtRunningSession(t *testing.T) {
 	r, path, ck, csrf := tellRig(t, "")
-	r.Reply([]string{console.Call(1, "tell_card", `{"task_id":"t-r","text":"Rebase on main first."}`)})
+	r.Reply([]string{Call(1, "tell_card", `{"task_id":"t-r","text":"Rebase on main first."}`)})
 
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"tell card t-r to rebase on main first"}, "csrf": {csrf}})
 	if code != http.StatusOK {
@@ -224,7 +222,7 @@ func TestTellCardAtRunningSession(t *testing.T) {
 // records one merge_denied row.
 func TestTellCardAtApprovalGate(t *testing.T) {
 	r, path, ck, csrf := tellRig(t, "Cache the board.")
-	r.Reply([]string{console.Call(1, "tell_card", `{"task_id":"t-g","text":"Drop the committed binary."}`)})
+	r.Reply([]string{Call(1, "tell_card", `{"task_id":"t-g","text":"Drop the committed binary."}`)})
 
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"tell card t-g to drop the committed binary"}, "csrf": {csrf}})
 	if code != http.StatusOK {

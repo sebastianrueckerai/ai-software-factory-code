@@ -109,17 +109,6 @@ func (r Resource) Holds() bool {
 	return slices.Contains(HeldStates, r.State)
 }
 
-// HeldRows returns the rows that hold a slot.
-func HeldRows(rows []Resource) []Resource {
-	var out []Resource
-	for _, r := range rows {
-		if r.Holds() {
-			out = append(out, r)
-		}
-	}
-	return out
-}
-
 // Registry is the durable record. Postgres in production; Memory in tests.
 type Registry interface {
 	// Insert records r in state requested and returns it with its id and

@@ -58,7 +58,7 @@ func TestSetTimerBoundsAndCap(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set three timers"}})
 	equal(t, "stream", events, []string{
 		`tool {"arguments":{"minutes":30,"note":"No room."},"duration_ms":0,"name":"set_timer",` +
-			`"result":"Refused: this project's watches and timers are full: it holds 16 of 16, end one first."}`,
+			`"result":"Refused: this project's watches and timers are full: it holds 16 of 16, end one first"}`,
 		`tool {"arguments":{"minutes":0,"note":"Too early."},"duration_ms":0,"name":"set_timer",` +
 			`"result":"Refused: The timer is 1 to 1440 minutes from now."}`,
 		`tool {"arguments":{"minutes":30,"note":""},"duration_ms":0,"name":"set_timer",` +

@@ -336,14 +336,6 @@ func (f *rollForgejo) job(p string) bool {
 	return ok || f.unreadable[p]
 }
 
-// mergeCommit is a test's multi-parent (merge) commit: it lists its
-// parents in forkParents under its own name, so /git/commits/{sha} serves
-// them.
-func mergeCommit(parents ...string) map[string][]string {
-	sha := "merge-" + strings.Join(parents, "-")
-	return map[string][]string{sha: parents}
-}
-
 func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

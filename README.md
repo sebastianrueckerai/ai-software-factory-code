@@ -2276,7 +2276,9 @@ ephemeral runner registration are torn down when the pod finishes or its
 namespace label, so a restart or a second poll tick never spawns twice.
 
 The runner image (`Dockerfile.runner`) ships forgejo-runner, git, bash,
-node, the Go toolchain, gosec, PostgreSQL 17's server for
+node, the Go toolchain, gosec, govulncheck (go.mod's tool) with the
+store's copy of its database at `GOVULNDB_VERSION` (CI passes `-db`, so
+no job reaches vuln.go.dev), PostgreSQL 17's server for
 `scripts/pg-test.sh`, `buildctl` and `crane`, and nothing that builds
 images: no rootless BuildKit comes up under gVisor, and a root build pod
 in the cluster was the one exception the admission policy had to make.

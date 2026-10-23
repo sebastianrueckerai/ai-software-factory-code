@@ -265,15 +265,9 @@ func deployOwner(spec string, p Plan) (needed bool, owner string) {
 	return true, ""
 }
 
-// ValidatePlan judges the planner's last message against the process's plan
-// shape, the pinned limits and the project's image pins (nil: none): one
-// line per finding, none for a valid plan.
-func ValidatePlan(text string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) []string {
-	_, findings := readPlan(text, shape, limits, pins)
-	return findings
-}
-
-// readPlan is ValidatePlan with the plan it decoded.
+// readPlan decodes the planner's last message and judges it against the
+// process's plan shape, the pinned limits and the project's image pins
+// (nil: none): the plan, and one line per finding, none for a valid plan.
 func readPlan(text string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
 	blocks := planBlock.FindAllStringSubmatch(text, -1)
 	if len(blocks) == 0 {
@@ -622,7 +616,7 @@ func cardsOf(p Plan, role string) []string {
 // planEdges are each card's dependencies as factoryd files them: the ones
 // the planner listed among the plan's cards, every card's on the
 // foundation card, the integration card's on every other card. Edges
-// ValidatePlan refuses on their own (out of the foundation, into the
+// readPlan refuses on their own (out of the foundation, into the
 // integration card, onto itself or no card) are left out, so a cycle is
 // only ever one of the feature cards.
 func planEdges(p Plan) map[string][]string {
@@ -714,7 +708,7 @@ func planOrder(p Plan, edges map[string][]string) []PlanCard {
 			break
 		}
 		if !progress {
-			panic("planOrder: a cycle ValidatePlan let through")
+			panic("planOrder: a cycle readPlan let through")
 		}
 	}
 	return out
@@ -922,7 +916,7 @@ func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependenc
 // planGuide is the planner's guide: the spec is the issue, the answer a
 // plan filed with the file_plan tool, a card one session of the pinned
 // limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
-// ValidatePlan's findings, not this prose (roadmap 186). pins are the
+// readPlan's findings, not this prose (roadmap 186). pins are the
 // project's images a card may name.
 func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) string {
 	g := "You are the planner. " +

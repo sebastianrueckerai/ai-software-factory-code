@@ -164,7 +164,7 @@ func buildVMsTarball(t *testing.T) (path, sha string) {
 // store from the list, so a download no line names has no store copy to
 // read, and a sha256 that differs pins bytes the line does not name.
 // Hand-derived from the two Dockerfiles and buildvm.go as they stand:
-// eight lines, the runner image's seven downloads (its buildkit tarball
+// nine lines, the runner image's eight downloads (its buildkit tarball
 // also the build VM's) and opencode's; node and the PGDG key serve both
 // images.
 func TestUpstreamFilesNameEveryDownload(t *testing.T) {
@@ -190,8 +190,8 @@ func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 		t.Fatalf("the build VM's %s is pinned at two sha256", path)
 	}
 	want[path] = sha
-	if len(want) != 8 {
-		t.Errorf("the builds download %d files, want the eight of the two Dockerfiles and the build VM", len(want))
+	if len(want) != 9 {
+		t.Errorf("the builds download %d files, want the nine of the two Dockerfiles and the build VM", len(want))
 	}
 	seen := map[string]bool{}
 	for _, l := range listed {
@@ -221,7 +221,7 @@ func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 // hosts upstream-files.txt downloads from — the store's copies answer
 // every read, and a missing one fails the build instead of falling back.
 func TestBuildsNameNoUpstreamFileURL(t *testing.T) {
-	banned := []string{"https://github.com/", "https://nodejs.org/", "https://code.forgejo.org/", "https://www.postgresql.org/"}
+	banned := []string{"https://github.com/", "https://nodejs.org/", "https://code.forgejo.org/", "https://www.postgresql.org/", "https://vuln.go.dev/"}
 	for _, f := range []string{"Dockerfile", "Dockerfile.sandbox", "Dockerfile.runner"} {
 		raw, err := os.ReadFile(filepath.Join("..", "..", f))
 		if err != nil {

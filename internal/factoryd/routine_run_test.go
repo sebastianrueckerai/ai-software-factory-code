@@ -233,7 +233,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
 	bump.Tell = policy.TellQuiet
-	r, store, _, _ = routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
+	r, _, _, _ = routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
 	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: onTime}); err != nil {
 		t.Fatal(err)
 	}
@@ -537,14 +537,14 @@ func TestRoutineRunMissed(t *testing.T) {
 	ctx := context.Background()
 	due := time.Date(2026, 10, 12, 6, 0, 0, 0, berlin) // Mon 06:00, days before the test runs
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: due}
-	r, store, issues, _ := routineRunner(t, routineTree(t))
+	r, _, issues, _ := routineRunner(t, routineTree(t))
 	if res, err := r.RoutineRun(ctx, in); err != nil || res.Outcome != "filed" || len(issues.issues) != 1 {
 		t.Fatalf("file-once: %+v, %v, issues %d", res, err, len(issues.issues))
 	}
 
 	bump, _ := routineTree(t).Routine(codeProject, "weekly-bump")
 	bump.Missed = policy.MissedSkip
-	r, store, issues, _ = routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
+	r, store, issues, _ := routineRunner(t, withRoutines(routineTree(t), codeProject, bump))
 	res, err := r.RoutineRun(ctx, in)
 	if err != nil {
 		t.Fatal(err)

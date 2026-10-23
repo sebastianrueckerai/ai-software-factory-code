@@ -41,10 +41,8 @@ var (
 )
 
 // saDir is where the pod's service-account token lives; a var so a test can
-// point it at a stub token. The acceptance tests (roadmap 188) set
-// FACTORYD_SA_DIR before they run, to drive this production client against
-// their scripted apiserver.
-var saDir = envOr("FACTORYD_SA_DIR", "/var/run/secrets/kubernetes.io/serviceaccount")
+// point it at a stub token.
+var saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 // SaDirForTest points the production client's service-account directory at
 // dir and returns its former path, for an acceptance test that runs
@@ -53,13 +51,6 @@ func SaDirForTest(dir string) string {
 	old := saDir
 	saDir = dir
 	return old
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
 
 // Kube is the slice of the Kubernetes API the runner needs. The production

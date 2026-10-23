@@ -30,6 +30,12 @@ var (
 	testLimits = policy.Limits{AgentTime: 20 * time.Minute, Steps: 200}
 )
 
+// validatePlan is readPlan's findings alone.
+func validatePlan(text string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) []string {
+	_, findings := readPlan(text, shape, limits, pins)
+	return findings
+}
+
 // testPlan is a valid plan of four cards (the foundation, two features
 // with redirects on links-api, and the integration) carrying the spec
 // (piece 5) and its three criteria: two tests and one invariant, every
@@ -98,11 +104,11 @@ func TestSizeLinesDerivesFromTheBound(t *testing.T) {
 func TestValidatePlanTakesEveryCardSize(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Size = "large"
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); len(got) != 0 {
-		t.Fatalf("a large card: ValidatePlan = %q, want no finding", got)
+	if got := validatePlan(fencePlan(p), testShape, testLimits, nil); len(got) != 0 {
+		t.Fatalf("a large card: validatePlan = %q, want no finding", got)
 	}
 	p.Cards[1].Size = "huge"
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); len(got) != 1 ||
+	if got := validatePlan(fencePlan(p), testShape, testLimits, nil); len(got) != 1 ||
 		got[0] != "plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints" {
 		t.Fatalf("a size the ladder does not name = %q, want the taxonomy line", got)
 	}
@@ -199,8 +205,8 @@ func TestValidatePlan(t *testing.T) {
 		"empty item text": {change(func(p *Plan) { p.Cards[1].Acceptance[0].Text = "" }), []string{"plan: card links-api: acceptance test 1 is empty"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := ValidatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
-				t.Fatalf("ValidatePlan = %q\nwant %q", got, tc.want)
+			if got := validatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
+				t.Fatalf("validatePlan = %q\nwant %q", got, tc.want)
 			}
 		})
 	}
@@ -219,14 +225,14 @@ func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 		}
 		return p
 	}
-	if got := ValidatePlan(fencePlan(at(11)), testShape, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
-		t.Fatalf("ValidatePlan's first finding = %q, want the criteria count", got)
+	if got := validatePlan(fencePlan(at(11)), testShape, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want 1 to 10" {
+		t.Fatalf("readPlan's first finding = %q, want the criteria count", got)
 	}
 	p := at(11)
 	p.Cards = p.Cards[:2] // the foundation and links-api, no integration card
 	p.Spec = nil          // a plan this process gives no integration card carries no spec to confirm
-	if got := ValidatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
-		t.Fatalf("ValidatePlan's first finding = %q, want the criteria count", got)
+	if got := validatePlan(fencePlan(p), policy.PlanShape{MaxCards: 3}, testLimits, nil); len(got) == 0 || got[0] != "plan: 11 criteria; want at most 10" {
+		t.Fatalf("readPlan's first finding = %q, want the criteria count", got)
 	}
 }
 
@@ -243,14 +249,14 @@ func TestValidatePlanOneCard(t *testing.T) {
 		return p
 	}
 	min1 := policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}
-	if got := ValidatePlan(fencePlan(one(RoleIntegration)), min1, testLimits, nil); len(got) != 0 {
-		t.Fatalf("ValidatePlan = %q, want no findings", got)
+	if got := validatePlan(fencePlan(one(RoleIntegration)), min1, testLimits, nil); len(got) != 0 {
+		t.Fatalf("validatePlan = %q, want no findings", got)
 	}
-	if got := ValidatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits, nil); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
-		t.Fatalf("ValidatePlan = %q, want the two-card floor", got)
+	if got := validatePlan(fencePlan(one(RoleIntegration)), testShape, testLimits, nil); !slices.Equal(got, []string{"plan: 1 cards; this process allows 2 to 12"}) {
+		t.Fatalf("validatePlan = %q, want the two-card floor", got)
 	}
-	if got := ValidatePlan(fencePlan(one(RoleFoundation)), min1, testLimits, nil); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
-		t.Fatalf("ValidatePlan = %q, want the integration role finding", got)
+	if got := validatePlan(fencePlan(one(RoleFoundation)), min1, testLimits, nil); !slices.Equal(got, []string{"plan: 0 cards with role integration; the process wants exactly one"}) {
+		t.Fatalf("validatePlan = %q, want the integration role finding", got)
 	}
 }
 
@@ -274,17 +280,17 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}
 	p := testPlan()
 	p.Cards[1].Image = "browser"
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits, pins); len(got) != 0 {
+	if got := validatePlan(fencePlan(p), testShape, testLimits, pins); len(got) != 0 {
 		t.Fatalf("a pinned image: %q, want no finding", got)
 	}
 	p.Cards[2].Image = "gpu"
 	want := []string{`plan: card redirects: image "gpu" is not one of this project's pinned images (browser, video)`}
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits, pins); !slices.Equal(got, want) {
+	if got := validatePlan(fencePlan(p), testShape, testLimits, pins); !slices.Equal(got, want) {
 		t.Fatalf("an unknown image: %q, want %q", got, want)
 	}
 	p.Cards[2].Image = "default" // pinned or not: an unpinned default runs the factory's image
 	want = []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}
-	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); !slices.Equal(got, want) {
+	if got := validatePlan(fencePlan(p), testShape, testLimits, nil); !slices.Equal(got, want) {
 		t.Fatalf("no pins: %q, want %q", got, want)
 	}
 	// default is the card that names none: the plan read keeps it as ""
@@ -318,7 +324,7 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 }
 
 // Stage 16 item 3.7: the guide names the three sizes in the json shape
-// and in the field rules. The line figures are ValidatePlan's size
+// and in the field rules. The line figures are readPlan's size
 // findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
 	got := planGuide(testShape, testLimits, nil)
@@ -329,7 +335,7 @@ func TestPlanGuideSizes(t *testing.T) {
 }
 
 // stage12-design 5.2: acceptance items are named tests, not free text
-// ValidatePlan cannot check for. The count bound is ValidatePlan's
+// readPlan cannot check for. The count bound is readPlan's
 // finding, not the prose (roadmap 186). The item cites the criterion it
 // works on (the spec-intake concept, piece 2).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
@@ -697,14 +703,14 @@ func browserInForce(t *testing.T) policy.Version {
 func TestChildrenCarryTheirImage(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Image = "browser"
-	r, store, _, _ := newPlanRunner(t, p)
+	r, _, _, _ := newPlanRunner(t, p)
 	r.cfg.Policy = func() policy.Version { return fixtureVersion(t) }
 	if res := createChildren(t, r); len(res.Issues) != 0 ||
 		!slices.Equal(res.Refused, []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}) {
 		t.Fatalf("no pin: %+v, want the refusal", res)
 	}
 
-	r, store, _, _ = newPlanRunner(t, p)
+	r, store, _, _ := newPlanRunner(t, p)
 	inForce := browserInForce(t)
 	r.cfg.Policy = func() policy.Version { return inForce }
 	if res := createChildren(t, r); len(res.Issues) != 4 || len(res.Refused) != 0 {

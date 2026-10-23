@@ -54,7 +54,7 @@ func TestStallCardAnswers(t *testing.T) {
 	// the drawer offers the three as buttons, the re-run kept off the issue
 	r, _ := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{stallCard()}
-	ck, s := r.loggedIn(t)
+	ck, _ := r.loggedIn(t)
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-stall/drawer?tab=overview", nil), ck).Body.String()
 	for _, want := range []string{
 		`<input type="hidden" name="value" value="rerun_again">` + "\n" + `<button type="submit" aria-label="Re-run again, kept off the issue: the card stays waiting">Re-run again</button>`,
@@ -97,7 +97,7 @@ func TestStallCardAnswers(t *testing.T) {
 		r, ev = newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{stallCard()}
 		r.rerunErr = fmt.Errorf("run 21 of sf/code: %w: %s", factoryd.ErrNoRerun, cause)
-		ck, s = r.loggedIn(t)
+		ck, s := r.loggedIn(t)
 		before = ev.count()
 		var logs bytes.Buffer
 		log.SetOutput(&logs)
@@ -145,7 +145,7 @@ func TestStallCardAnswers(t *testing.T) {
 		r, ev = newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{stallCard()}
 		r.rerunErr, r.dismissErr = tc.err, tc.err
-		ck, s = r.loggedIn(t)
+		ck, s := r.loggedIn(t)
 		before = ev.count()
 		rec := r.do(post("/tasks/t-stall/answer", url.Values{"csrf": {s.csrf}, "value": {tc.value}}), ck)
 		if rec.Code != http.StatusConflict || !strings.HasPrefix(rec.Body.String(), tc.want) {
