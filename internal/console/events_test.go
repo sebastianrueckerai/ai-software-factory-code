@@ -910,7 +910,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	status := func(s string) bool {
 		for _, cell := range []string{`<span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>`,
 			`<span class="cell"><span><b class="n">1</b> working</span></span>`, `<a href="#needs-you" class="cell needs on"><span><b class="n">2</b> need you</span></a>`,
-			`<a href="/costs" class="cell spend" title="spend this UTC month against the project's month cap"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`} {
+			`<span class="cell spend" title="spend this UTC month against the project's month cap"><a href="/costs"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`} {
 			if !strings.Contains(s, cell) {
 				return false
 			}

@@ -222,13 +222,13 @@ func TestStatusLineFigures(t *testing.T) {
 	}
 	const title = `title="spend this UTC month against the project's month cap"`
 	gauge := func(pct int) string {
-		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span><span class="pct">%d%%</span>`, pct, pct, pct)
+		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span>`, pct, pct)
 	}
 	code := `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">2</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">5</b> need you</span></a>
-<a href="/costs" class="cell spend" ` + title + `><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a>
+<span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
 `
 	for _, query := range []string{"", "?view=wide"} {
 		if got := line(query); got != code {
@@ -243,7 +243,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">1</b> need you</span></a>
-<a href="/costs" class="cell spend" `+title+`><span><b class="n">€3.00</b> <span class="of">/ €12.00</span></span>`+gauge(25)+`</a>
+<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€3.00</b> <span class="of">/ €12.00</span></span>`+gauge(25)+`</a><span class="pct">25%</span></span>
 `; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
@@ -251,7 +251,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
-<a href="/costs" class="cell spend" `+title+`><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`+gauge(0)+`</a>
+<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`+gauge(0)+`</a><span class="pct">0%</span></span>
 `; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
 	}
