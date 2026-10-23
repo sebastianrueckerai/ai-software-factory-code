@@ -325,6 +325,32 @@ func TestEscalationHandlerToolRequest(t *testing.T) {
 	}
 }
 
+// A report session's card restarts on no image: its request_tool is
+// refused with a line the agent reads, the session left running and
+// nothing recorded, while its escalate_to_human still reaches it.
+func TestReportSessionRefusesARequestTool(t *testing.T) {
+	runner := &Runner{}
+	esc, unregister := runner.liveSession("t-run", sessionWorker{report: true})
+	defer unregister()
+	took := make(chan AgentAsk, 1)
+	go func() { took <- <-esc }()
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
+	rec := httptest.NewRecorder()
+	EscalationHandler(store, runner).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(
+		`{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":"cut the demo video"}`)))
+	if body := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusUnprocessableEntity ||
+		body != "this session cannot wait for a new image: finish with what the sandbox has" || len(store.intakeEvents) != 0 {
+		t.Fatalf("tool request = %d %q, intake events %+v; want the refusal and nothing recorded", rec.Code, body, store.intakeEvents)
+	}
+	if err := runner.EscalateSession(t.Context(), "t-run", licenseAsk); err != nil {
+		t.Fatalf("escalation from a report session = %v", err)
+	}
+	if e := <-took; !reflect.DeepEqual(e, licenseAsk) {
+		t.Fatalf("took %+v", e)
+	}
+}
+
 // The agent's request_tool ends the session with the outcome missing_tool,
 // the tool, the need and the work in progress, no supervisor call and no
 // trip alert.

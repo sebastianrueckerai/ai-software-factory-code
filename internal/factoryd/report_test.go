@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -42,6 +43,16 @@ func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
+	// its card restarts on no image: a request_tool reaching it is refused
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		err := runner.EscalateSession(context.Background(), "t1", AgentAsk{Kind: AskTool, Tool: "ffmpeg", Need: "cut"})
+		if errors.Is(err, ErrNoImageWait) {
+			break
+		}
+		if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+			t.Fatalf("a report session's request_tool = %v, want ErrNoImageWait", err)
+		}
+	}
 	kube.scriptPods(0, logs)
 	if err := <-done; err != nil {
 		t.Fatalf("RunReport: %v", err)

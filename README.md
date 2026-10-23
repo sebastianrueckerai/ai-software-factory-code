@@ -1164,7 +1164,9 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
 - `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
   required, each one line without control characters): free, through the
   class's tool list (`request_tool: {}`), never a tool card's session; a
-  report session's brief does not name it.
+  report session's brief does not name it, and factoryd refuses it there
+  ("this session cannot wait for a new image: finish with what the
+  sandbox has").
   The agent asks for a tool its sandbox lacks instead of installing it.
   It goes the way of an escalation (an `agent_tool_request` intake event,
   the session stops with outcome `missing_tool`, the work in progress on
@@ -1204,14 +1206,16 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
 
   The imager reads every project's `factory/images.yaml` but the
   configuration repository's. A pin at its desired key whose build the
-  store lacks signed, as after a re-seed, is built again. After three
-  builds of a key leave no signed image, one alert names the builder, and
-  the key is asked for once a day; a dispatch Forgejo refuses for 45
-  minutes raises one alert too. The builder unpacks every upstream file
-  as root in a stage of its own, under `/stage`, and the image takes
-  `/opt` and `/usr/local` from it by `COPY` after its apt step, with
-  nothing run after: a symlink one upstream line plants cannot carry
-  another line's write outside those directories. A merge Forgejo refuses with 405 while
+  store lacks signed, as after a re-seed, is built again; a verified
+  build is read again after an hour, so a store lost while factoryd runs
+  is noticed too. After three builds of a key leave no signed image, one
+  alert names the builder, and the key is asked for once a day; a build
+  that lands forgets the key's failed dispatches. A dispatch Forgejo
+  refuses for 45 minutes raises one alert too. The builder unpacks every
+  upstream file as root in a stage of its own, under `/stage`, and the
+  image takes `/opt` and `/usr/local` from it by `COPY` after its apt
+  step, with nothing run after: a symlink one upstream line plants cannot
+  carry another line's write outside those directories. A merge Forgejo refuses with 405 while
   the head's checks are pending waits; a refusal that repeats, or a
   finding, raises one alert per project and cause.
 

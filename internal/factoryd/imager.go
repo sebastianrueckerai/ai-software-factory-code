@@ -48,6 +48,9 @@ const (
 	// unpinGrace is how long the store keeps the last build of a name no
 	// longer pinned, so an unpin by mistake is undone by pinning it again.
 	unpinGrace = 30 * 24 * time.Hour
+	// verifiedFor is how long a verified digest stays verified, so a store
+	// lost while factoryd runs is built again within it.
+	verifiedFor = time.Hour
 )
 
 // SourceImageRemoval is the source of the card that removes an image no
@@ -99,7 +102,7 @@ type Imager struct {
 	OpenBao SecretReader
 
 	mu       sync.Mutex
-	verified map[string]bool // repository@digest
+	verified map[string]time.Time // when repository@digest verified
 	// refusals is the last pass's merge refusal of each project's pin pull
 	// request, by "<project> <code>": one that repeats raises an alert.
 	refusals map[string]string
@@ -115,6 +118,9 @@ type ImageStore interface {
 	// dispatched and how often it was; zero and 0 when never.
 	ImageDispatches(ctx context.Context, project, image, key string) (time.Time, int, error)
 	RecordImageDispatch(ctx context.Context, project, image, key string, at time.Time) error
+	// ResetImageDispatches forgets the dispatches of a key whose signed
+	// build the store holds.
+	ResetImageDispatches(ctx context.Context, project, image, key string) error
 	RecordImageRead(ctx context.Context, project, image, key string, at time.Time) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	// ImageReadAt is when a pass last read key as the desired key of
@@ -666,6 +672,10 @@ func (i *Imager) build(ctx context.Context, project, name string, spec policy.Im
 	if err != nil {
 		return policy.ImagePin{}, false, 0, err
 	}
+	// a later loss of the store builds the key afresh, no failure counted
+	if err := i.Store.ResetImageDispatches(ctx, project, name, key); err != nil {
+		return policy.ImagePin{}, false, 0, err
+	}
 	return policy.ImagePin{Digest: m.Digest, Key: key, Tools: manifest.Tools, Egress: manifest.Egress}, true, 0, nil
 }
 
@@ -717,13 +727,13 @@ func (i *Imager) dispatch(ctx context.Context, project, name, key string, file [
 }
 
 // verify is nil when repository@digest carries a signature by the images
-// key; a verified digest is remembered for the process's life.
+// key; a verified digest is remembered for verifiedFor.
 func (i *Imager) verify(ctx context.Context, repository, digest string) error {
 	ref := repository + "@" + digest
 	i.mu.Lock()
-	ok := i.verified[ref]
+	at, ok := i.verified[ref]
 	i.mu.Unlock()
-	if ok {
+	if ok && i.Now().Sub(at) < verifiedFor {
 		return nil
 	}
 	tok, err := i.Registry.Token(ctx)
@@ -736,9 +746,9 @@ func (i *Imager) verify(ctx context.Context, repository, digest string) error {
 	i.mu.Lock()
 	defer i.mu.Unlock()
 	if i.verified == nil {
-		i.verified = map[string]bool{}
+		i.verified = map[string]time.Time{}
 	}
-	i.verified[ref] = true
+	i.verified[ref] = i.Now()
 	return nil
 }
 
@@ -1043,6 +1053,13 @@ func (s *PGStore) RecordImageDispatch(ctx context.Context, project, image, key s
 	_, err := s.db.ExecContext(ctx, `INSERT INTO image_builds (project, image, key, dispatched_at, dispatches) VALUES ($1, $2, $3, $4, 1)
 		ON CONFLICT (project, image, key) DO UPDATE SET dispatched_at = EXCLUDED.dispatched_at, dispatches = image_builds.dispatches + 1`,
 		project, image, key, at)
+	return err
+}
+
+// ResetImageDispatches sets the dispatches of key to none.
+func (s *PGStore) ResetImageDispatches(ctx context.Context, project, image, key string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE image_builds SET dispatches = 0 WHERE project = $1 AND image = $2 AND key = $3 AND dispatches <> 0`,
+		project, image, key)
 	return err
 }
 

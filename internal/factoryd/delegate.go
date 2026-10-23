@@ -56,7 +56,7 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 		}
 		const required = "task_id, a title of 1 to 255 characters and a brief are required"
 		in.Title, in.Brief = strings.TrimSpace(in.Title), strings.TrimSpace(in.Brief)
-		if in.TaskID == "" || in.Title == "" || in.Brief == "" {
+		if in.TaskID == "" || in.Title == "" || utf8.RuneCountInString(in.Title) > 255 || in.Brief == "" {
 			http.Error(w, required, http.StatusBadRequest)
 			return
 		}
@@ -77,8 +77,9 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 		}
 		hosts := outboundHosts(tree, d.Forgejo.PublicURL, parent.Repository)
 		in.Title, in.Brief = sanitize.Outbound(in.Title, hosts), sanitize.Outbound(in.Brief, hosts)
-		if utf8.RuneCountInString(in.Title) > 255 {
-			http.Error(w, required, http.StatusBadRequest)
+		if n := utf8.RuneCountInString(in.Title); n > 255 {
+			http.Error(w, fmt.Sprintf("the title is %d characters once its links are defanged (hxxps://host[.]example), past the 255 a title takes: shorten it or drop the links", n),
+				http.StatusBadRequest)
 			return
 		}
 		if parent.Status != "running" {

@@ -170,6 +170,27 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	}
 }
 
+// A card that names image default is filed naming none, from any plan
+// fileChildren files, the delta round's, read by no readPlan, too.
+func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _ := newPlanRunner(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	p := testPlan()
+	p.Cards[1].Image = "default"
+	plan, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider); err != nil {
+		t.Fatal(err)
+	}
+	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
+		t.Fatalf("card %s = %+v, want it filed naming no image", p.Cards[1].Key, got)
+	}
+}
+
 // A card that never started takes the new revision's rung and size with
 // its brief, which states them; a started one keeps its own.
 func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {

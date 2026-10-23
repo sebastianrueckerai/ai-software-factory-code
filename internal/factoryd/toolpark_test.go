@@ -551,7 +551,8 @@ func TestParkForToolJoinsOnlyACardNotStarted(t *testing.T) {
 
 // A park that ends without its image drops the card's dependency on its
 // tool card, in task_deps and on Forgejo, where an open one keeps the
-// card's issue from closing; a second leave changes nothing.
+// card's issue from closing. A Forgejo that fails the drop fails the
+// activity, so its retry drops it; a second leave changes nothing.
 func TestLeaveImagePark(t *testing.T) {
 	r, store, rf, _ := parkRig(t, "", "default")
 	ctx := context.Background()
@@ -562,6 +563,11 @@ func TestLeaveImagePark(t *testing.T) {
 	if !slices.Equal(store.deps["t-asker"], []string{p.Park.ToolTask}) || !slices.Equal(rf.deps, []string{"41 on 31"}) {
 		t.Fatalf("deps %v, issue dependencies %v", store.deps["t-asker"], rf.deps)
 	}
+	rf.depsDown = true
+	if err := r.LeaveImagePark(ctx, "t-asker", p.Park.ToolTask); err == nil || !slices.Equal(rf.deps, []string{"41 on 31"}) {
+		t.Fatalf("leave with Forgejo down = %v, issue dependencies %v; want the error and the dependency kept", err, rf.deps)
+	}
+	rf.depsDown = false
 	for range 2 {
 		if err := r.LeaveImagePark(ctx, "t-asker", p.Park.ToolTask); err != nil {
 			t.Fatal(err)
@@ -868,8 +874,9 @@ func TestWorkflowImageRefusalAtTheWake(t *testing.T) {
 
 // 24 hours without a wake ask a human, naming the tool card and the
 // image; the image's arrival ends that wait too, with no answer, and a
-// human's answer ends the park on the card's image as it is, which leaves
-// the park.
+// human's answer ends the park on the card's image as it is. Every end
+// but the image's arrival leaves the park, a decision within the 24 hours
+// too.
 func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 	ask := "The card has waited 24 h for image ffmpeg, which tool card #50 adds ffmpeg to: is #50 or the image's build stuck?\n" +
 		"Why: the card restarts on image ffmpeg once #50 has merged and the factory has built and pinned the image.\n" +
@@ -917,8 +924,8 @@ func TestWorkflowParkAsksAHumanAfter24Hours(t *testing.T) {
 		if final := h.run(t); final != "closed" {
 			t.Fatalf("final = %q, finals %v", final, h.finals)
 		}
-		if len(h.escalated) != 0 || len(h.sessions) != 1 {
-			t.Fatalf("escalated %q, sessions %d", h.escalated, len(h.sessions))
+		if len(h.escalated) != 0 || len(h.sessions) != 1 || !slices.Equal(h.left, []string{"t-tool"}) {
+			t.Fatalf("escalated %q, sessions %d, left %q", h.escalated, len(h.sessions), h.left)
 		}
 	})
 }

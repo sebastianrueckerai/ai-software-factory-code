@@ -818,6 +818,17 @@ func TestRequestTool(t *testing.T) {
 	if len(e.escalator.asks) != 2 {
 		t.Fatalf("asks = %d, want the two valid ones", len(e.escalator.asks))
 	}
+	// factoryd refuses a report session's ask: the agent reads why, as a refusal
+	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this session cannot wait for a new image: finish with what the sandbox has\n"}
+	text, isErr = e.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "cut"})
+	if want := "refused by the factory policy (refused_session): this session cannot wait for a new image: finish with what the sandbox has. " +
+		"The tool did not run; do not retry this call."; !isErr || text != want {
+		t.Fatalf("a refused ask = %q, want %q", text, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "refused_session" || a.Reason != "this session cannot wait for a new image: finish with what the sandbox has" {
+		t.Fatalf("audit = %+v", a)
+	}
+	e.escalator.err = nil
 	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
 	delete(v.Document.Classes["coder"].Tools, policy.ToolRequestTool)
 	unlisted := newToolEnv(t, running("coder"), v)

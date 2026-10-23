@@ -192,22 +192,34 @@ type liveSession struct {
 }
 
 // sessionWorker is a running session's pod and the bearer of its worker's
-// message endpoint.
-type sessionWorker struct{ session, ns, pod, token string }
+// message endpoint; report marks a report session, whose card restarts on
+// no image.
+type sessionWorker struct {
+	session, ns, pod, token string
+	report                  bool
+}
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
 var ErrNoLiveSession = errors.New("the task has no running session")
 
+// ErrNoImageWait refuses a report session's request_tool: its card
+// restarts on no image.
+var ErrNoImageWait = errors.New("this session cannot wait for a new image: finish with what the sandbox has")
+
 // EscalateSession hands an agent's escalate_to_human to its task's running
 // session, which stops the way a supervisor's escalate stops it. It returns
 // nil only once the session took the escalation; a session that ends or
-// stops first answers ErrNoLiveSession.
+// stops first answers ErrNoLiveSession, and a report session's
+// request_tool ErrNoImageWait.
 func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error {
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
 	r.liveMu.Unlock()
 	if !ok {
 		return ErrNoLiveSession
+	}
+	if ask.Kind == AskTool && ls.worker.report {
+		return ErrNoImageWait
 	}
 	select {
 	case ls.ch <- ask:
@@ -718,7 +730,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
 	// the agent's escalate_to_human reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken})
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != ""})
 	defer unregister()
 	stop := func(trip *Trip) {
 		// a stopping session takes no escalation: the gateway tells the

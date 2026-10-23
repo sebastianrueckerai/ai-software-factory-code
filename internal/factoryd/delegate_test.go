@@ -100,4 +100,12 @@ func TestDelegationNeutralisesTheAgentsText(t *testing.T) {
 	if !slices.Equal(rf.issues, []string{want}) {
 		t.Fatalf("issues %q, want %q", rf.issues, want)
 	}
+	// 255 characters, 257 once the link is defanged: the refusal says why
+	rr = httptest.NewRecorder()
+	h(rr, httptest.NewRequest(http.MethodPost, "/internal/delegations", strings.NewReader(
+		`{"task_id":"t-parent","title":"`+strings.Repeat("a", 235)+` https://evil.test/x","brief":"b"}`)))
+	if body := strings.TrimSpace(rr.Body.String()); rr.Code != http.StatusBadRequest || body != "the title is 257 characters once its links are defanged (hxxps://host[.]example), "+
+		"past the 255 a title takes: shorten it or drop the links" || len(rf.issues) != 1 {
+		t.Fatalf("a title the links push past 255 = %d %q, issues %d", rr.Code, body, len(rf.issues))
+	}
 }

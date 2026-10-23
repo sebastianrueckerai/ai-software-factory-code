@@ -310,6 +310,7 @@ type rollForgejo struct {
 	reported    []string                       // "sha state context" of every status the roller reported
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
+	depsDown    bool                           // Forgejo answers 500 on the issue dependencies
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
 	unreadable  map[string]bool                // a job's target_url whose log Forgejo cannot open
 	closed      []string                       // the number of every issue closed
@@ -397,6 +398,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			json.NewDecoder(r.Body).Decode(&in)
 			f.deps = append(f.deps, strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies")+" on "+fmt.Sprint(in["index"]))
 			w.WriteHeader(http.StatusCreated)
+		case repo == codeRepo && f.depsDown && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
+			http.Error(w, "boom", http.StatusInternalServerError)
 		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
 			issue := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies")
 			out := []map[string]int64{}

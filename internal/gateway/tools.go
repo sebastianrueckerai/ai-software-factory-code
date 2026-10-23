@@ -992,6 +992,12 @@ func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Esc
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()
 	if err := s.opts.Escalator.Escalate(ctx, c.task.ID, e); err != nil {
+		// factoryd refuses what this session cannot ask, as a report
+		// session's request_tool
+		var pe *providerError
+		if errors.As(err, &pe) && pe.status == http.StatusUnprocessableEntity {
+			return s.refuseTool(c, tool, "refused_session", strings.TrimSpace(pe.body))
+		}
 		s.auditTool(c, tool, "error_escalate", err.Error(), &c.task.SpentEUR, nil)
 		return toolError("the escalation did not reach factoryd: " + err.Error())
 	}

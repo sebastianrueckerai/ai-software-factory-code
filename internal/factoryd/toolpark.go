@@ -499,7 +499,8 @@ func (t *taskRun) parkOnImage(tool, need string) (final, why string, answer, not
 // since it asks a human, whose answer ends the park on the card's image as
 // it is, while the image's arrival ends that wait too. asked: a healed
 // run's question of that ask, asked again. A park the imager woke already
-// ends at once. The image's arrival puts the card on it (ImageArrived).
+// ends at once. The image's arrival puts the card on it (ImageArrived);
+// every other end leaves the park (leavePark).
 func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final, why string, answer, notes []string) {
 	ready := &imageReady{park: p}
 	ready.start(t)
@@ -519,6 +520,10 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			sel.Select(t.ctx)
 			if final, why, ok := t.decided(); ok {
 				cancel()
+				// the decision stands; a dependency left behind only says so
+				if err := t.leavePark(p); err != nil {
+					why += "; the issue's dependency on the tool card stays: " + errMessage(err)
+				}
 				return final, why, nil, nil
 			}
 		}
@@ -567,7 +572,8 @@ func (t *taskRun) leavePark(p ImagePark) error {
 
 // LeaveImagePark drops card taskID's dependency on tool card toolTask, in
 // task_deps and on Forgejo, where an open dependency keeps the card's
-// issue from closing.
+// issue from closing; a Forgejo that fails the drop fails the activity,
+// whose retry drops it.
 func (r *Runner) LeaveImagePark(ctx context.Context, taskID, toolTask string) error {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -580,10 +586,7 @@ func (r *Runner) LeaveImagePark(ctx context.Context, taskID, toolTask string) er
 	if err != nil || !ok || t.IssueNumber == 0 || card.IssueNumber == 0 {
 		return err
 	}
-	if err := r.forgejo.SetIssueDependency(ctx, repo, t.IssueNumber, card.IssueNumber, true); err != nil {
-		log.Printf("task %s: drop the issue dependency on #%d: %v", t.ID, card.IssueNumber, err)
-	}
-	return nil
+	return r.forgejo.SetIssueDependency(ctx, repo, t.IssueNumber, card.IssueNumber, true)
 }
 
 // imageReady ends a park's waits on the imager's image_ready of it: its

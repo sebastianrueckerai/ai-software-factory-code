@@ -280,8 +280,11 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		}
 		if err := sessions.EscalateSession(r.Context(), t.ID, ask); err != nil {
 			status := http.StatusServiceUnavailable
-			if errors.Is(err, ErrNoLiveSession) {
+			switch {
+			case errors.Is(err, ErrNoLiveSession):
 				status = http.StatusConflict
+			case errors.Is(err, ErrNoImageWait):
+				status = http.StatusUnprocessableEntity
 			}
 			http.Error(w, err.Error(), status)
 			return

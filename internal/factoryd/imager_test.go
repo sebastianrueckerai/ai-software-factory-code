@@ -542,6 +542,16 @@ func (b *imageBook) RecordImageDispatch(_ context.Context, project, image, key s
 	return nil
 }
 
+func (b *imageBook) ResetImageDispatches(_ context.Context, project, image, key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if r, ok := b.builds[project+"/"+image+"/"+key]; ok {
+		r.dispatches = 0
+		b.builds[project+"/"+image+"/"+key] = r
+	}
+	return nil
+}
+
 func (b *imageBook) RecordImageRead(_ context.Context, project, image, key string, at time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -910,6 +920,52 @@ func TestImagerRebuildsAPinTheStoreLacks(t *testing.T) {
 	r.pass(t)
 	if got := r.fj.file("factory-pins/demo-app", demoProjectFile); !strings.Contains(got, "    digest: "+digestBrowser+"\n    key: "+keyBrowser+"\n") {
 		t.Fatalf("the pin branch's project file:\n%s\nwant browser at %s", got, digestBrowser)
+	}
+}
+
+// A verified digest stays verified for an hour: a store lost while
+// factoryd runs is built again at the first pass past the hour.
+func TestImagerRebuildsAStoreLostWhileRunning(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	t0 := *r.now
+	r.pass(t)
+	clear(r.registry)
+	*r.now = t0.Add(59 * time.Minute)
+	r.pass(t)
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 0 {
+		t.Fatalf("within the hour: dispatches %q, want none", dispatches)
+	}
+	*r.now = t0.Add(time.Hour)
+	r.pass(t)
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 2 {
+		t.Fatalf("after the hour: dispatches %q, want both images built again", dispatches)
+	}
+}
+
+// Once a key's signed build lands, its failed dispatches are forgotten: a
+// later loss of the store builds it again at once, with no alert, however
+// many dispatches it took before.
+func TestImagerForgetsFailedBuildsOnceTheKeyLands(t *testing.T) {
+	r := newImagerRig(t, demoImages, nil)
+	t0 := *r.now
+	for n := range 3 {
+		*r.now = t0.Add(time.Duration(n) * 46 * time.Minute)
+		r.pass(t)
+	}
+	*r.now = t0.Add(3 * 46 * time.Minute)
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	r.pass(t)
+	if got := r.book.builds["demo-app/default/"+keyDefault].dispatches; got != 0 {
+		t.Fatalf("dispatches after the build landed = %d, want 0", got)
+	}
+	r.fj.load(t)
+	clear(r.registry)
+	*r.now = t0.Add(3*46*time.Minute + time.Hour)
+	r.pass(t)
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 4 || len(r.book.alerts) != 0 || r.book.builds["demo-app/default/"+keyDefault].dispatches != 1 {
+		t.Fatalf("after the store's loss: %d dispatches, alerts %+v, row %+v; want the fourth, none, one dispatch counted",
+			len(dispatches), r.book.alerts, r.book.builds["demo-app/default/"+keyDefault])
 	}
 }
 
@@ -1443,6 +1499,16 @@ func TestPGStoreImageBuilds(t *testing.T) {
 	}
 	if at, n, err := s.ImageDispatches(ctx, "demo", "default", "k-2"); err != nil || !at.IsZero() || n != 0 {
 		t.Fatalf("another key: %v %d %v", at, n, err)
+	}
+	// a key whose build landed forgets its dispatches, and keeps when the last was
+	if err := s.ResetImageDispatches(ctx, "demo", "default", "k-1"); err != nil {
+		t.Fatal(err)
+	}
+	if at, n, err := s.ImageDispatches(ctx, "demo", "default", "k-1"); err != nil || !at.Equal(t0.Add(2*time.Minute)) || n != 0 {
+		t.Fatalf("after the reset: %v %d %v, want the last dispatch and none counted", at, n, err)
+	}
+	if err := s.ResetImageDispatches(ctx, "demo", "default", "k-9"); err != nil {
+		t.Fatalf("a reset of a key with no row: %v", err)
 	}
 	for i, fp := range []string{"a", "a", "b"} {
 		id, err := s.InsertAlert(ctx, Alert{Kind: AlertImage, Source: "file", Fingerprint: fp})
