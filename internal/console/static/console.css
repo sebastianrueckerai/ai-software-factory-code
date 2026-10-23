@@ -690,6 +690,10 @@ a.cell:hover { background: var(--bg-hover); }
 a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transparent); }
 .cell.spend { gap: 12px; }
 .cell.spend .of { color: var(--text-muted); font-family: var(--font-mono); font-size: 13px; }
+/* the figures link to the costs page; the rest of the cell stays the strip's
+   toggle, so a click mid-strip opens the status in detail */
+.cell.spend > a { color: inherit; text-decoration: none; }
+.cell.spend > a:hover, .cell.spend > a:focus-visible { text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--text-faint); }
 /* the gauge is a meter: the page's policy allows no inline style, so no
    width attribute; the fill colour is the gauge's --fill */
 .gauge { --fill: var(--accent); position: relative; display: block; overflow: hidden; width: 132px; height: 6px; background: color-mix(in srgb, var(--text-faint) 22%, transparent); }
