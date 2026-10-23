@@ -2707,3 +2707,5 @@ judged under the previous one.
 ## Licence
 
 Source available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Non-commercial use is free as the licence defines it: personal use, research, education, charities and public bodies. Any commercial use, a company's evaluation included, needs a commercial licence: write to mail@sebastianruecker.com. Outside contributions are not accepted yet.
+
+Files copied from other projects keep their own licences: `internal/console/static/htmx.min.js` is htmx, under the Zero-Clause BSD licence.
