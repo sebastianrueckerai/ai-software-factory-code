@@ -2703,3 +2703,7 @@ escalations and review notes, nothing merged); a new gateway serves an
 old factoryd unchanged. The gateway reads the policy version at most
 30 s old, so a call in the first 30 s after a new version can still be
 judged under the previous one.
+
+## Licence
+
+Source available under the [PolyForm Noncommercial License 1.0.0](LICENSE). Non-commercial use is free as the licence defines it: personal use, research, education, charities and public bodies. Any commercial use, a company's evaluation included, needs a commercial licence: write to mail@sebastianruecker.com. Outside contributions are not accepted yet.
