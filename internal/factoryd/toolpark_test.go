@@ -639,7 +639,8 @@ func TestImageArrived(t *testing.T) {
 // it and stamps it, ImagePark reads it with its tool card's issue,
 // OpenToolCard finds the open tool card of a repository's image by the
 // card itself, OpenImageParks the waiting rows of cards that have not
-// ended, and WakeImagePark wakes the park it names only.
+// ended, ProjectImageParks those of one project, and WakeImagePark wakes
+// the park it names only.
 func TestPGStoreImageParks(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -688,6 +689,12 @@ func TestPGStoreImageParks(t *testing.T) {
 	open, err := s.OpenImageParks(ctx)
 	if err != nil || len(open) != 1 || open[0].Task != asker || open[0].ToolIssue != 50 {
 		t.Fatalf("open parks = %+v %v, want the asker's alone", open, err)
+	}
+	if parks, err := s.ProjectImageParks(ctx, "parks"); err != nil || len(parks) != 1 || parks[0].Task != asker || parks[0].Target != "video" || parks[0].ToolIssue != 50 {
+		t.Fatalf("the project's parks = %+v %v, want the asker's alone", parks, err)
+	}
+	if parks, err := s.ProjectImageParks(ctx, "other"); err != nil || len(parks) != 0 {
+		t.Fatalf("another project's parks = %+v %v, want none", parks, err)
 	}
 	// a stale wake names an earlier park: it wakes nothing
 	if err := s.WakeImagePark(ctx, asker, p.CreatedAt.Add(-time.Second), ""); err != nil {
@@ -1125,4 +1132,241 @@ func TestWorkflowHealedParkWaitsTheRest(t *testing.T) {
 			t.Fatalf("escalated %q, arrived %q", h.escalated, h.arrived)
 		}
 	})
+}
+
+// A member's ask in the project chat files the same tool card a session's
+// ask files, with no asking card: no parent, no dependency, no park; the
+// member authors it. The body opens with who asked and why, and says what
+// the image is for once it is pinned.
+func TestRequestImageFilesAToolCard(t *testing.T) {
+	const file = "images:\n  default:\n    apt: [jq]\n"
+	r, store, rf, wf := parkRig(t, file, "default")
+	ctx := context.Background()
+	card, filed, err := r.RequestImage(ctx, codeRepo, "ffmpeg", "cut the demo video to 10 s.", "", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !filed || card.Source != SourceToolRequest || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" || card.Lane != policy.LaneReady ||
+		card.Status != "queued" || card.Priority != 0 || card.IssueNumber != 31 || card.Repository != codeRepo || card.Author != "sebastian" || !card.AuthorWriter {
+		t.Fatalf("tool card = %+v, filed %v", card, filed)
+	}
+	body := "Requested in the project chat by sebastian: cut the demo video to 10 s.\n\n" +
+		"Add ffmpeg to image ffmpeg in factory/images.yaml. After this card merges, the factory builds the image, signs it and pins it, " +
+		"and cards that name image ffmpeg run on it, so it must still build and test this project.\n\n" +
+		"Image default holds jq, sox and reaches no package registry. " +
+		"Image ffmpeg starts as a copy of its entry under the new name; add ffmpeg to it:\n```\nimages:\n  ffmpeg:\n    apt:\n      - jq\n```\n\n" +
+		"factory/images.yaml on main:\n```\n" + file + "```\n\n" +
+		"The file's format, one complete example:\n```\n" + imagesExample + "```\n\n" +
+		toolCardRules +
+		"Acceptance:\n" +
+		"- factory/images.yaml declares image ffmpeg, and ffmpeg is in it.\n" +
+		"- factory/images.yaml passes the factory's check, which the policy gate runs on this pull request.\n\n" +
+		"Size: small\nRung: cheap"
+	if want := "Add ffmpeg to image ffmpeg\n\n" + body; store.tasks[card.ID].Objective != want {
+		t.Fatalf("objective:\n%s\nwant:\n%s", store.tasks[card.ID].Objective, want)
+	}
+	if !slices.Equal(rf.issues, []string{"Add ffmpeg to image ffmpeg\n\n" + body}) {
+		t.Fatalf("issues = %q", rf.issues)
+	}
+	if f := ReadyFindings("", store.tasks[card.ID].Objective, "small", nil); len(f) > 0 {
+		t.Fatalf("the tool card fails the ready check: %q", f)
+	}
+	if !slices.Equal(wf.started, []string{card.ID}) || len(store.deps) != 0 || len(rf.deps) != 0 {
+		t.Fatalf("started %v, deps %v, issue dependencies %v: want the card's workflow and no dependency", wf.started, store.deps, rf.deps)
+	}
+	for _, id := range []string{"t-asker", "t-second"} {
+		if _, ok, _ := store.ImagePark(ctx, id); ok || store.tasks[id].Status != "running" {
+			t.Fatalf("card %s parked or moved: %+v", id, store.tasks[id])
+		}
+	}
+}
+
+// The chat's tool card starts from the target's entry on main where there
+// is one, else from default's, else from the factory image's stack; image
+// default is the image of every card that names none.
+func TestRequestImageStartsFromTheTargetsEntry(t *testing.T) {
+	stack := func(name string) string {
+		t.Helper()
+		e, err := imagesEntry(name, FactoryStack())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return e
+	}
+	for _, tc := range []struct {
+		name, file   string
+		pins         []string
+		tool, image  string
+		start, after string
+		withoutAFile bool
+	}{
+		{name: "the target's entry", file: "images:\n  default:\n    apt: [jq]\n  video:\n    apt: [ffmpeg]\n    egress: [cdn.example.org]\n", pins: []string{"video"},
+			tool: "sox", image: "video",
+			start: "Image video holds ffmpeg and reaches cdn.example.org. Add sox to its entry:\n" +
+				"```\nimages:\n  video:\n    apt:\n      - ffmpeg\n    egress:\n      - cdn.example.org\n```\n\n",
+			after: "and cards that name image video run on it, so it must still build and test this project."},
+		{name: "the target declared, not pinned", file: "images:\n  video:\n    apt: [ffmpeg]\n", tool: "sox", image: "video",
+			start: "Image video has no pin in force. Add sox to its entry:\n```\nimages:\n  video:\n    apt:\n      - ffmpeg\n```\n\n",
+			after: "and cards that name image video run on it, so it must still build and test this project."},
+		{name: "default's entry", file: "images:\n  default:\n    apt: [jq]\n", tool: "ffmpeg",
+			start: "Image default has no pin in force. Image ffmpeg starts as a copy of its entry under the new name; add ffmpeg to it:\n" +
+				"```\nimages:\n  ffmpeg:\n    apt:\n      - jq\n```\n\n",
+			after: "and cards that name image ffmpeg run on it, so it must still build and test this project."},
+		{name: "the factory's stack", tool: "chromium", withoutAFile: true,
+			start: "The factory's image is the sandbox base with Go 1.26 and Node 24 with npm. " +
+				"Image chromium starts from this entry, the same stack; add chromium to it:\n```\n" + stack("chromium") + "```\n\n",
+			after: "and cards that name image chromium run on it, so it must still build and test this project."},
+		{name: "image default", tool: "jq", image: "default", withoutAFile: true,
+			start: "The factory's image is the sandbox base with Go 1.26 and Node 24 with npm. " +
+				"Image default starts from this entry, the same stack; add jq to it:\n```\n" + stack("default") + "```\n\n",
+			after: "and every card that names no image runs on it, so it must still build and test this project."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, store, _, _ := parkRig(t, tc.file, tc.pins...)
+			if len(tc.pins) > 0 {
+				c := r.cfg.Policy().Projects["ai-software-factory-code"]
+				c.Images["video"] = policy.ImagePin{Digest: "sha256:" + strings.Repeat("d", 64), Key: keyDefault, Tools: []string{"ffmpeg"}, Egress: []string{"cdn.example.org"}}
+			}
+			card, _, err := r.RequestImage(context.Background(), codeRepo, tc.tool, "a need", tc.image, "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			obj := store.tasks[card.ID].Objective
+			if !strings.Contains(obj, tc.after+"\n\n"+tc.start) {
+				t.Fatalf("objective %q lacks %q", obj, tc.after+"\n\n"+tc.start)
+			}
+			if tc.withoutAFile && !strings.Contains(obj, tc.start+"factory/images.yaml on main: none yet; create it.\n\n") {
+				t.Fatalf("objective %q lacks the missing file", obj)
+			}
+		})
+	}
+}
+
+// The chat's ask joins the open tool card of its image that no session
+// has started, a session's or the chat's, with a line in its brief and a
+// comment on its issue, each once; the same ask again changes nothing. A
+// session's ask joins the chat's card as it joins any other. A started
+// card is joined no more.
+func TestRequestImageJoinsTheOpenCard(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	ctx := context.Background()
+	for _, id := range []string{"t-asker", "t-second"} {
+		tk := store.tasks[id]
+		tk.Image = "video"
+		store.tasks[id] = tk
+	}
+	first, err := r.ParkForTool(ctx, "t-asker", "ffmpeg", "cut the demo video")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := store.tasks[first.Park.ToolTask].Objective
+	join := "Requested in the project chat by sebastian: sox in image video too: mix the sound."
+	for range 2 {
+		card, filed, err := r.RequestImage(ctx, codeRepo, "sox", "mix the sound", "video", "sebastian")
+		if err != nil || filed || card.ID != first.Park.ToolTask || card.IssueNumber != 31 {
+			t.Fatalf("join = %+v %v %v, want the open card %s", card, filed, err, first.Park.ToolTask)
+		}
+		if got := store.tasks[first.Park.ToolTask].Objective; got != before+"\n\n"+join || !slices.Equal(rf.comments, []string{"31 " + join}) || len(rf.issues) != 1 {
+			t.Fatalf("objective %q, comments %q, issues %d: want the join once", got, rf.comments, len(rf.issues))
+		}
+	}
+	if !slices.Equal(store.deps["t-asker"], []string{first.Park.ToolTask}) || len(store.deps) != 1 {
+		t.Fatalf("deps %v: the chat's ask adds none", store.deps)
+	}
+
+	// the chat files a card of its own for another image; asking again is the card's own ask
+	own, filed, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian")
+	if err != nil || !filed || len(rf.issues) != 2 {
+		t.Fatalf("own card = %+v %v %v, issues %d", own, filed, err, len(rf.issues))
+	}
+	if again, filed, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian"); err != nil || filed || again.ID != own.ID ||
+		store.tasks[own.ID].Objective != own.Objective || len(rf.comments) != 1 {
+		t.Fatalf("the same ask again = %+v %v %v, comments %q; want no change", again, filed, err, rf.comments)
+	}
+	tk := store.tasks["t-second"]
+	tk.Image = "docs"
+	store.tasks["t-second"] = tk
+	p, err := r.ParkForTool(ctx, "t-second", "latex", "typeset")
+	if err != nil || p.Park.ToolTask != own.ID || !strings.HasSuffix(store.tasks[own.ID].Objective, "\n\nCard #42 (t-second) needs latex in image docs too: typeset") {
+		t.Fatalf("a session's join of the chat's card = %+v %v, objective %q", p, err, store.tasks[own.ID].Objective)
+	}
+
+	tool := store.tasks[own.ID]
+	tool.Status = "running"
+	store.tasks[own.ID] = tool
+	if next, filed, err := r.RequestImage(ctx, codeRepo, "pandoc", "render the docs", "docs", "sebastian"); err != nil || !filed || next.ID == own.ID || len(rf.issues) != 3 {
+		t.Fatalf("an ask after the card started = %+v %v %v, issues %d; want a card of its own", next, filed, err, len(rf.issues))
+	}
+}
+
+// The chat's ask is refused where a session's is: a new image past the
+// project's MaxImages names and the configuration repository; and so are
+// arguments out of bounds and a project whose cards run no agent. Each
+// refusal names what to do and files nothing.
+func TestRequestImageRefusals(t *testing.T) {
+	const file = "images:\n  default:\n    apt: [jq]\n  video:\n    apt: [ffmpeg]\n  docs:\n    apt: [pandoc]\n"
+	r, _, rf, _ := parkRig(t, file, "default", "browser")
+	ctx := context.Background()
+	args := "tool (1 to 80 characters) and need (1 to 600 characters) are required, each on one line without control characters"
+	for _, tc := range []struct{ tool, need, image, want string }{
+		{"sox", "mix the sound", "", "The factory refuses: image sox would be new, and project ai-software-factory-code has 4 images already (browser, default, docs, video), " +
+			"the most a project may have. Add the tool to one of them with image, or file a card that removes an image from factory/images.yaml."},
+		{"", "mix", "", args},
+		{"sox", "", "", args},
+		{strings.Repeat("x", 81), "mix", "", args},
+		{"sox", strings.Repeat("é", 601), "", args},
+		{"sox", "mix\nthe sound", "", args},
+		{"sox", "mix", "Video", "image Video: lowercase letters, digits and dashes, at most 32; leave it out for an image named after the tool."},
+	} {
+		_, _, err := r.RequestImage(ctx, codeRepo, tc.tool, tc.need, tc.image, "sebastian")
+		var refused ErrImageRequest
+		if !errors.As(err, &refused) || string(refused) != tc.want {
+			t.Errorf("RequestImage(%q, %q, %q) = %v, want the refusal %q", tc.tool, tc.need, tc.image, err, tc.want)
+		}
+	}
+	if len(rf.issues) != 0 {
+		t.Fatalf("issues %q, want none", rf.issues)
+	}
+	if card, filed, err := r.RequestImage(ctx, codeRepo, "sox", "mix the sound", "video", "sebastian"); err != nil || !filed || len(rf.issues) != 1 {
+		t.Fatalf("an ask into a declared image = %+v %v %v", card, filed, err)
+	}
+
+	r.Imager = &Imager{Config: &ForgejoConfig{Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}}}
+	_, _, err := r.RequestImage(ctx, codeRepo, "sox", "mix", "", "sebastian")
+	var refused ErrImageRequest
+	if want := "The factory refuses: sf/ai-software-factory-code is the factory's configuration repository, which declares no sandbox images."; !errors.As(err, &refused) || string(refused) != want {
+		t.Fatalf("an ask on the configuration repository = %v, want %q", err, want)
+	}
+	r.Imager = nil
+	c := r.cfg.Policy().Projects["ai-software-factory-code"]
+	c.Agents = policy.AgentsNone
+	r.cfg.Policy().Projects["ai-software-factory-code"] = c
+	_, _, err = r.RequestImage(ctx, codeRepo, "sox", "mix", "", "sebastian")
+	if want := "The factory refuses: project ai-software-factory-code runs no agents, so none of its cards runs in a sandbox image."; !errors.As(err, &refused) || string(refused) != want {
+		t.Fatalf("an ask on a project without agents = %v, want %q", err, want)
+	}
+	if len(rf.issues) != 1 {
+		t.Fatalf("issues %q, want the one ask into video", rf.issues)
+	}
+}
+
+// The tool and the need are the chat agent's: the tool card carries them
+// through the outbound sanitiser, as a session's ask does.
+func TestRequestImageNeutralisesTheAgentsText(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	v := r.cfg.Policy()
+	v.Document.LinkHosts = []string{"docs.example.org"}
+	r.cfg.Policy = func() policy.Version { return v }
+	r.forgejo.PublicURL = "https://git.example"
+	card, _, err := r.RequestImage(context.Background(), codeRepo, "ffmpeg @mallory", hostile, "", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Add ffmpeg ＠mallory to image ffmpeg-mallory\n\nRequested in the project chat by sebastian: " + hostileOut + ".\n\n"
+	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], want) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
+		t.Fatalf("issues %q, want the card opening %q", rf.issues, want)
+	}
+	if obj := store.tasks[card.ID].Objective; !strings.HasPrefix(obj, want) {
+		t.Fatalf("objective %q, want it opening %q", obj, want)
+	}
 }

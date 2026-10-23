@@ -149,35 +149,187 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 	case r.Imager != nil && t.Repository == r.Imager.Config.Repo.String():
 		return r.refuse(ctx, t, p, configRepoRefusal, " Go on without the tool, or ask a human with escalate_to_human.")
 	}
-	raw, _, err := r.forgejo.FileContent(ctx, repo.Owner, repo.Name, prBase, imagesPath)
-	if errors.Is(err, ErrNotFound) {
-		raw, err = nil, nil
-	}
+	raw, declared, err := r.imagesOnMain(ctx, repo)
 	if err != nil {
-		return ToolPark{}, fmt.Errorf("read %s: %w", imagesPath, err)
+		return ToolPark{}, err
 	}
-	file, _ := policy.ParseImagesFile(raw)
 	if retry {
-		return r.onToolCard(ctx, t, repo, prev, c.Images, file.Images, raw)
+		return r.onToolCard(ctx, t, repo, prev, c.Images, declared, raw)
 	}
-	if refusal := capRefusal(project, p.Target, c.Images, file.Images); refusal != "" {
+	if refusal := capRefusal(project, p.Target, c.Images, declared); refusal != "" {
 		return r.refuse(ctx, t, p, refusal, " A human must free a name: ask one with escalate_to_human, or go on without the tool.")
 	}
-	card, open, err := r.store.OpenToolCard(ctx, t.Repository, p.Target)
-	switch {
-	case err != nil:
+	if p.ToolTask, err = r.toolCardOf(ctx, t.Repository, p.Target, t.ID); err != nil {
 		return ToolPark{}, err
-	case open && card.ID == t.ID:
-		return ToolPark{}, terminalError("task %s is the open tool card of image %s: it cannot wait for itself", t.ID, p.Target)
-	case open && slices.Contains(notStarted, card.Status):
-		p.ToolTask = card.ID
-	default:
-		p.ToolTask = NewTaskID()
 	}
 	if p, err = r.store.ParkImage(ctx, p, true); err != nil {
 		return ToolPark{}, err
 	}
-	return r.onToolCard(ctx, t, repo, p, c.Images, file.Images, raw)
+	return r.onToolCard(ctx, t, repo, p, c.Images, declared, raw)
+}
+
+// ErrImageRequest refuses a member's ask in the project chat for a tool:
+// why, and what to do instead.
+type ErrImageRequest string
+
+func (e ErrImageRequest) Error() string { return string(e) }
+
+// RequestImage puts the ask of member by in the project chat of
+// repository for tool, for need, on the tool card of image image, else of
+// one named after the tool (toolImage), as a session's ask goes on it
+// (ParkForTool) with no card that waits: it joins the open card of the
+// image no session has started, else files one; filed says which. Bad
+// arguments, an ask on the configuration repository or a project without
+// agents and a new image past the project's MaxImages names are
+// ErrImageRequest.
+func (r *Runner) RequestImage(ctx context.Context, repository, tool, need, image, by string) (card Task, filed bool, err error) {
+	if refusal := policy.ToolAskRefusal(tool, need); refusal != "" {
+		return Task{}, false, ErrImageRequest(refusal)
+	}
+	if image != "" && !policy.IsImageName(image) {
+		return Task{}, false, ErrImageRequest("image " + image + ": lowercase letters, digits and dashes, at most 32; leave it out for an image named after the tool.")
+	}
+	project, c, ok := r.cfg.Policy().ProjectOf(repository)
+	switch {
+	case !ok:
+		return Task{}, false, fmt.Errorf("repository %s is no project's", repository)
+	case r.Imager != nil && repository == r.Imager.Config.Repo.String():
+		return Task{}, false, ErrImageRequest("The factory refuses: " + repository + " is the factory's configuration repository, which declares no sandbox images.")
+	case c.Agents == policy.AgentsNone:
+		return Task{}, false, ErrImageRequest("The factory refuses: project " + project + " runs no agents, so none of its cards runs in a sandbox image.")
+	}
+	repo, err := SplitRepo(repository)
+	if err != nil {
+		return Task{}, false, err
+	}
+	raw, declared, err := r.imagesOnMain(ctx, repo)
+	if err != nil {
+		return Task{}, false, err
+	}
+	p := ImagePark{Project: project, Target: cmp.Or(image, toolImage(tool)), Tool: tool, Need: need}
+	if refusal := capRefusal(project, p.Target, c.Images, declared); refusal != "" {
+		return Task{}, false, ErrImageRequest("The factory refuses: " + refusal + ". Add the tool to one of them with image, or file a card that removes an image from " + imagesPath + ".")
+	}
+	if p.ToolTask, err = r.toolCardOf(ctx, repository, p.Target, ""); err != nil {
+		return Task{}, false, err
+	}
+	return r.putOnToolCard(ctx, toolAsker{repository: repository, by: by}, repo, p, c.Images, declared, raw)
+}
+
+// imagesOnMain is repo's images.yaml on main and the images it declares,
+// nil and none where it has no file.
+func (r *Runner) imagesOnMain(ctx context.Context, repo Repo) ([]byte, map[string]policy.ImageSpec, error) {
+	raw, _, err := r.forgejo.FileContent(ctx, repo.Owner, repo.Name, prBase, imagesPath)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("read %s: %w", imagesPath, err)
+	}
+	file, _ := policy.ParseImagesFile(raw)
+	return raw, file.Images, nil
+}
+
+// toolCardOf is the id of the tool card an ask for image target of
+// repository goes on: the open card of the image while no session has
+// started it, else a new one. The asking card self never waits on itself.
+func (r *Runner) toolCardOf(ctx context.Context, repository, target, self string) (string, error) {
+	card, open, err := r.store.OpenToolCard(ctx, repository, target)
+	switch {
+	case err != nil:
+		return "", err
+	case open && card.ID == self:
+		return "", terminalError("task %s is the open tool card of image %s: it cannot wait for itself", self, target)
+	case open && slices.Contains(notStarted, card.Status):
+		return card.ID, nil
+	}
+	return NewTaskID(), nil
+}
+
+// toolAsker is who asks a tool card for a tool on repository: card, which
+// parks on the image, or, card nil, member by in the project chat.
+type toolAsker struct {
+	repository string
+	card       *Task
+	by         string
+}
+
+// cardAsker is card t as a tool card's asker.
+func cardAsker(t Task) toolAsker { return toolAsker{repository: t.Repository, card: &t} }
+
+// askLine opens the tool card of a's ask p: who needs the tool and why.
+func (a toolAsker) askLine(p ImagePark) string {
+	if a.card == nil {
+		return fmt.Sprintf("Requested in the project chat by %s: %s.", a.by, strings.TrimSuffix(p.Need, "."))
+	}
+	return fmt.Sprintf("Card #%d (%s) needs %s, which its sandbox lacks: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Need)
+}
+
+// joinLine is a's ask p on the open tool card it joins.
+func (a toolAsker) joinLine(p ImagePark) string {
+	if a.card == nil {
+		return fmt.Sprintf("Requested in the project chat by %s: %s in image %s too: %s.", a.by, p.Tool, p.Target, strings.TrimSuffix(p.Need, "."))
+	}
+	return fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", a.card.IssueNumber, a.card.ID, p.Tool, p.Target, p.Need)
+}
+
+// after is what runs on park p's image once it is pinned, which the tool
+// card's brief names with the rule that follows.
+func (a toolAsker) after(p ImagePark) string {
+	switch {
+	case a.card != nil:
+		return fmt.Sprintf("card #%d restarts on image %s from its branch, where it must still build and test this project", a.card.IssueNumber, p.Target)
+	case p.Target == "default":
+		return "every card that names no image runs on it, so it must still build and test this project"
+	}
+	return "cards that name image " + p.Target + " run on it, so it must still build and test this project"
+}
+
+// base is the image whose entry park p's target starts from, "" for the
+// factory image's stack: a card's own image, the factory's where it runs
+// on default and default has no pin; for the chat the target's entry on
+// main (declared), else default's.
+func (a toolAsker) base(p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec) string {
+	if a.card == nil {
+		for _, name := range []string{p.Target, "default"} {
+			if _, ok := declared[name]; ok {
+				return name
+			}
+		}
+		return ""
+	}
+	name := cmp.Or(cardImage(a.card.Image), "default")
+	if _, ok := pinned[name]; !ok && name == "default" {
+		return ""
+	}
+	return name
+}
+
+// holds is the tool card's sentence on what image name holds now, pin
+// where pinned, for a card the image it runs on.
+func (a toolAsker) holds(name string, pin policy.ImagePin, pinned bool) string {
+	what := "has no pin in force"
+	if pinned {
+		reach := "no package registry"
+		if len(pin.Egress) > 0 {
+			reach = strings.Join(pin.Egress, ", ")
+		}
+		what = "holds " + strings.Join(pin.Tools, ", ") + " and reaches " + reach
+	}
+	if a.card == nil {
+		return "Image " + name + " " + what + "."
+	}
+	return fmt.Sprintf("Card #%d runs on image %s now, which %s.", a.card.IssueNumber, name, what)
+}
+
+// onFactory is the tool card's sentence on the factory's image, for a
+// card the image it runs on.
+func (a toolAsker) onFactory() string {
+	stack := strings.Join(factoryTools, " and ")
+	if a.card == nil {
+		return "The factory's image is the sandbox base with " + stack + "."
+	}
+	return fmt.Sprintf("Card #%d runs on the factory's image now: the sandbox base with %s.", a.card.IssueNumber, stack)
 }
 
 // notStarted are the statuses of a tool card no session has read yet,
@@ -253,33 +405,12 @@ func (r *Runner) askAgain(ctx context.Context, t Task, p ImagePark, ask string, 
 }
 
 // onToolCard puts park p of card t, recorded with its tool card's id, on
-// that card: it files it under the id where no card has it, else joins it
-// with t's need, a line of its objective and a comment on its issue, each
-// once; then t depends on it and waits. The tool and the need are the
-// agent's, so what Forgejo shows carries them as r.untrusted does.
-// pinned and declared are the project's images, file its images.yaml on
-// main.
+// that card (putOnToolCard); then t depends on it and waits. pinned and
+// declared are the project's images, file its images.yaml on main.
 func (r *Runner) onToolCard(ctx context.Context, t Task, repo Repo, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (ToolPark, error) {
-	card, ok, err := r.store.Task(ctx, p.ToolTask)
+	card, _, err := r.putOnToolCard(ctx, cardAsker(t), repo, p, pinned, declared, file)
 	if err != nil {
 		return ToolPark{}, err
-	}
-	shown := p
-	shown.Tool, shown.Need = r.untrusted(t, p.Tool), r.untrusted(t, p.Need)
-	if !ok {
-		if card, err = r.fileToolCard(ctx, t, shown, pinned, declared, file); err != nil {
-			return ToolPark{}, err
-		}
-	} else if lines := strings.Split(card.Objective, "\n"); !slices.Contains(lines, askLine(t, shown)) {
-		join := fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", t.IssueNumber, t.ID, shown.Tool, p.Target, shown.Need)
-		if !slices.Contains(lines, join) {
-			if err := r.store.SetObjective(ctx, card.ID, card.Objective+"\n\n"+join); err != nil {
-				return ToolPark{}, err
-			}
-		}
-		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, join); err != nil {
-			return ToolPark{}, err
-		}
 	}
 	p.ToolIssue = card.IssueNumber
 	if err := r.store.AddTaskDeps(ctx, t.ID, []string{card.ID}); err != nil {
@@ -291,6 +422,38 @@ func (r *Runner) onToolCard(ctx context.Context, t Task, repo Repo, p ImagePark,
 		}
 	}
 	return r.parkWaits(ctx, t, p)
+}
+
+// putOnToolCard puts ask p of a, recorded with its tool card's id, on that
+// card: it files it under the id where no card has it, else joins it with
+// a's line in its objective and a comment on its issue, each once; filed
+// says which. The tool and the need are an agent's, so what Forgejo shows
+// carries them as r.untrusted does. pinned and declared are the project's
+// images, file its images.yaml on main.
+func (r *Runner) putOnToolCard(ctx context.Context, a toolAsker, repo Repo, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (Task, bool, error) {
+	card, ok, err := r.store.Task(ctx, p.ToolTask)
+	if err != nil {
+		return Task{}, false, err
+	}
+	shown, on := p, Task{Repository: a.repository}
+	shown.Tool, shown.Need = r.untrusted(on, p.Tool), r.untrusted(on, p.Need)
+	if !ok {
+		card, err = r.fileToolCard(ctx, a, shown, pinned, declared, file)
+		return card, err == nil, err
+	}
+	if lines := strings.Split(card.Objective, "\n"); !slices.Contains(lines, a.askLine(shown)) {
+		join := a.joinLine(shown)
+		if !slices.Contains(lines, join) {
+			card.Objective += "\n\n" + join
+			if err := r.store.SetObjective(ctx, card.ID, card.Objective); err != nil {
+				return Task{}, false, err
+			}
+		}
+		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, join); err != nil {
+			return Task{}, false, err
+		}
+	}
+	return card, false, nil
 }
 
 // parkWaits moves card t, recorded as parked on p, to waiting-image.
@@ -323,50 +486,45 @@ func capRefusal(project, target string, pinned map[string]policy.ImagePin, decla
 		target, project, len(names), strings.Join(slices.Sorted(maps.Keys(names)), ", "))
 }
 
-// fileToolCard files the tool card of park p, asked for by card t, on t's
-// repository under p.ToolTask; pinned and declared are the project's
-// images, file its images.yaml on main (nil for none).
-func (r *Runner) fileToolCard(ctx context.Context, t Task, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (Task, error) {
-	proj, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
+// fileToolCard files the tool card of a's ask p on a's repository under
+// p.ToolTask, a card's child of its priority and author, the chat
+// member's; pinned and declared are the project's images, file its
+// images.yaml on main (nil for none).
+func (r *Runner) fileToolCard(ctx context.Context, a toolAsker, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (Task, error) {
+	proj, ok, err := r.store.ProjectByRepository(ctx, a.repository)
 	if err != nil {
 		return Task{}, err
 	}
 	if !ok {
-		return Task{}, terminalError("task %s: repository %s is no project's", t.ID, t.Repository)
+		return Task{}, terminalError("repository %s is no project's", a.repository)
 	}
-	now, err := imageNow(t, p, pinned, declared)
+	now, err := imageNow(a, p, pinned, declared)
 	if err != nil {
 		return Task{}, err
 	}
-	title, body := "Add "+p.Tool+" to image "+p.Target, toolCardBody(t, p, now, file)
-	card, _, err := FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, proj, title, body, nil, Task{
-		ID: p.ToolTask, Priority: t.Priority, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, proj.Budget, "small", false, 0),
-		Objective: title + "\n\n" + body, Repository: t.Repository, Source: SourceToolRequest, Parent: t.ID,
-		Rung: RungCheap, Size: "small", Author: t.Author, AuthorWriter: true,
-	})
+	title, body := "Add "+p.Tool+" to image "+p.Target, toolCardBody(a, p, now, file)
+	card := Task{ID: p.ToolTask, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, proj.Budget, "small", false, 0),
+		Objective: title + "\n\n" + body, Repository: a.repository, Source: SourceToolRequest,
+		Rung: RungCheap, Size: "small", Author: a.by, AuthorWriter: true}
+	if a.card != nil {
+		card.Parent, card.Priority, card.Author = a.card.ID, a.card.Priority, a.card.Author
+	}
+	card, _, err = FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, proj, title, body, nil, card)
 	return card, err
 }
 
-// imageNow is the tool card's paragraph on what card t's image holds now,
-// as an entry of images.yaml that park p's target starts from: the
-// image's entry on main (declared), the factory image's stack where t runs
-// on the default image and none is pinned.
-func imageNow(t Task, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec) (string, error) {
-	name := cmp.Or(cardImage(t.Image), "default")
-	pin, ok := pinned[name]
-	if !ok && name == "default" {
+// imageNow is the tool card's paragraph on what the image holds now that
+// a's ask p starts from (base), as an entry of images.yaml for p's
+// target: the image's entry on main (declared), or the factory image's
+// stack.
+func imageNow(a toolAsker, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec) (string, error) {
+	name := a.base(p, pinned, declared)
+	if name == "" {
 		entry, err := imagesEntry(p.Target, FactoryStack())
-		return fmt.Sprintf("Card #%d runs on the factory's image now: the sandbox base with %s. Image %s starts from this entry, the same stack; add %s to it:\n%s\n\n",
-			t.IssueNumber, strings.Join(factoryTools, " and "), p.Target, p.Tool, fenced(entry)), err
+		return fmt.Sprintf("%s Image %s starts from this entry, the same stack; add %s to it:\n%s\n\n", a.onFactory(), p.Target, p.Tool, fenced(entry)), err
 	}
-	now := fmt.Sprintf("Card #%d runs on image %s now, which has no pin in force.", t.IssueNumber, name)
-	if ok {
-		reach := "no package registry"
-		if len(pin.Egress) > 0 {
-			reach = strings.Join(pin.Egress, ", ")
-		}
-		now = fmt.Sprintf("Card #%d runs on image %s now, which holds %s and reaches %s.", t.IssueNumber, name, strings.Join(pin.Tools, ", "), reach)
-	}
+	pin, ok := pinned[name]
+	now := a.holds(name, pin, ok)
 	spec, ok := declared[name]
 	if !ok {
 		return now + "\n\n", nil
@@ -389,20 +547,14 @@ func imagesEntry(name string, spec policy.ImageSpec) (string, error) {
 	return b.String(), e.Close()
 }
 
-// askLine opens the tool card of card t's park p: the tool and the need.
-func askLine(t Task, p ImagePark) string {
-	return fmt.Sprintf("Card #%d (%s) needs %s, which its sandbox lacks: %s", t.IssueNumber, t.ID, p.Tool, p.Need)
-}
-
-// toolCardBody is the brief of park p's tool card: the need and the asking
-// card t, what t's image holds now (imageNow), the file on main, its
-// format, the rules that matter and what follows the merge.
-func toolCardBody(t Task, p ImagePark, now string, file []byte) string {
+// toolCardBody is the brief of the tool card of a's ask p: who asks and
+// why, what follows the merge, what the image holds now (imageNow), the
+// file on main, its format and the rules that matter.
+func toolCardBody(a toolAsker, p ImagePark, now string, file []byte) string {
 	var b strings.Builder
-	b.WriteString(askLine(t, p) + "\n\n")
-	fmt.Fprintf(&b, "Add %s to image %s in %s. After this card merges, the factory builds the image, signs it and pins it, "+
-		"and card #%d restarts on image %s from its branch, where it must still build and test this project.\n\n",
-		p.Tool, p.Target, imagesPath, t.IssueNumber, p.Target)
+	b.WriteString(a.askLine(p) + "\n\n")
+	fmt.Fprintf(&b, "Add %s to image %s in %s. After this card merges, the factory builds the image, signs it and pins it, and %s.\n\n",
+		p.Tool, p.Target, imagesPath, a.after(p))
 	b.WriteString(now)
 	if len(file) == 0 {
 		b.WriteString(imagesPath + " on main: none yet; create it.\n\n")
@@ -632,11 +784,18 @@ func (s *PGStore) ImagePark(ctx context.Context, task string) (ImagePark, bool, 
 	return parks[0], true, nil
 }
 
+// openParks selects the parks that wait of cards that have not ended.
+const openParks = `JOIN tasks a ON a.id = p.task WHERE p.woken_at IS NULL AND a.status <> ALL($1) AND a.status <> 'merged' `
+
 // OpenImageParks are the parks that wait of cards that have not ended,
 // the oldest first.
 func (s *PGStore) OpenImageParks(ctx context.Context) ([]ImagePark, error) {
-	return s.imageParks(ctx, `SELECT `+imageParkColumns+`JOIN tasks a ON a.id = p.task
-		WHERE p.woken_at IS NULL AND a.status <> ALL($1) AND a.status <> 'merged' ORDER BY p.created_at, p.task`, FinalStatuses)
+	return s.imageParks(ctx, `SELECT `+imageParkColumns+openParks+`ORDER BY p.created_at, p.task`, FinalStatuses)
+}
+
+// ProjectImageParks are OpenImageParks of project's cards.
+func (s *PGStore) ProjectImageParks(ctx context.Context, project string) ([]ImagePark, error) {
+	return s.imageParks(ctx, `SELECT `+imageParkColumns+openParks+`AND p.project = $2 ORDER BY p.created_at, p.task`, FinalStatuses, project)
 }
 
 func (s *PGStore) imageParks(ctx context.Context, query string, args ...any) ([]ImagePark, error) {

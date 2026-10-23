@@ -14,8 +14,6 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -389,12 +387,6 @@ var escalateSchema = func() *jsonschema.Schema {
 const (
 	maxQuestion       = 4000
 	maxRecommendation = 2000
-)
-
-// maxTool and maxNeed bound request_tool's tool and need, in characters.
-const (
-	maxTool = 80
-	maxNeed = 600
 )
 
 // maxChoices and maxChoicesBytes bound the choices passed on to factoryd,
@@ -839,10 +831,8 @@ func (s *Server) requestTool(ctx context.Context, c *toolCaller, in RequestToolI
 		return r
 	}
 	name, need := strings.TrimSpace(in.Tool), strings.TrimSpace(in.Need)
-	if n, m := utf8.RuneCountInString(name), utf8.RuneCountInString(need); n == 0 || n > maxTool || m == 0 || m > maxNeed ||
-		strings.ContainsFunc(name+need, unicode.IsControl) {
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
-			"tool (1 to %d characters) and need (1 to %d characters) are required, each on one line without control characters", maxTool, maxNeed))
+	if refusal := policy.ToolAskRefusal(name, need); refusal != "" {
+		return s.refuseTool(c, tool, "refused_arguments", refusal)
 	}
 	return s.handOver(ctx, c, tool, Escalation{Kind: KindMissingTool, Tool: name, Need: need}, "tool_requested",
 		"asked for "+name+"; this session will end. Your work in progress is pushed; the card restarts on an image with the tool once it is built, "+

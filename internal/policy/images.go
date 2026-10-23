@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -31,6 +33,28 @@ var (
 	fileRE         = regexp.MustCompile(`^[A-Za-z0-9._+-]+$`)
 	safePathRE     = regexp.MustCompile(`^/[A-Za-z0-9._/+-]*$`)
 )
+
+// IsImageName reports whether name is a valid image name: lowercase
+// letters, digits and dashes, at most 32.
+func IsImageName(name string) bool { return imageNameRE.MatchString(name) }
+
+// MaxToolName and MaxToolNeed bound an ask for a sandbox tool, a session's
+// request_tool and the chat's request_image, in characters.
+const (
+	MaxToolName = 80
+	MaxToolNeed = 600
+)
+
+// ToolAskRefusal is why tool and need make no ask for a sandbox tool, ""
+// when they make one: each 1 to its bound in characters, on one line
+// without control characters.
+func ToolAskRefusal(tool, need string) string {
+	if n, m := utf8.RuneCountInString(tool), utf8.RuneCountInString(need); n == 0 || n > MaxToolName || m == 0 || m > MaxToolNeed ||
+		strings.ContainsFunc(tool+need, unicode.IsControl) {
+		return fmt.Sprintf("tool (1 to %d characters) and need (1 to %d characters) are required, each on one line without control characters", MaxToolName, MaxToolNeed)
+	}
+	return ""
+}
 
 // validate returns one finding per breach of the pin of image name.
 func (p ImagePin) validate(name string) []string {

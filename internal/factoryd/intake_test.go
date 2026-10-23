@@ -2548,6 +2548,38 @@ func TestIntakeReadsAndDerivesTheRung(t *testing.T) {
 	}
 }
 
+// A card's image comes from its body's Image line, the last one, key and
+// name in any case, where the project pins that name in the version in
+// force; default, a name it does not pin and no line leave the card on
+// its project's default image.
+func TestIntakeReadsTheImage(t *testing.T) {
+	for _, tc := range []struct{ body, image string }{
+		{"Build it.\n\nSize: small\nImage: chromium", "chromium"},
+		{"Build it.\nimage: Chromium", "chromium"},
+		{"Build it.\nImage: video\nImage: chromium", "chromium"},
+		{"Build it.\nImage: default", ""},
+		{"Build it.\nImage: browser", ""},
+		{"Image: the screenshot is broken", ""},
+		{"Build it.", ""},
+	} {
+		in, store, _ := newTestIntake(t)
+		p := seedProject("sf/ai-software-factory-code")
+		p.Images = map[string]policy.ImagePin{"chromium": {Tools: []string{"chromium"}}, "video": {Tools: []string{"ffmpeg"}}}
+		store.projects = []Project{p}
+		body := issueOpenedBody(7, "sebastian", []string{"agent"}, "Add X", tc.body)
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%q: status = %d, body = %s", tc.body, rr.Code, rr.Body)
+		}
+		var got Task
+		for _, task := range store.tasks {
+			got = task
+		}
+		if got.Image != tc.image {
+			t.Fatalf("%q: image %q, want %q", tc.body, got.Image, tc.image)
+		}
+	}
+}
+
 // A finished run's webhook nudges the poller with the run's repository,
 // whichever workflow-run event it is; a bad signature nudges nothing.
 func TestAWorkflowRunEventNudgesThePoller(t *testing.T) {

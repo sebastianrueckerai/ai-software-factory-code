@@ -993,11 +993,17 @@ func imagesLine(pins map[string]policy.ImagePin) string {
 	if len(pins) == 0 {
 		return ""
 	}
+	return "Images: " + ImageList(pins) + "; a card that needs one names it in image, any other card runs the default. "
+}
+
+// ImageList is pins as the planner and the project agent read them: each
+// image by name with its tools.
+func ImageList(pins map[string]policy.ImagePin) string {
 	var images []string
 	for _, name := range slices.Sorted(maps.Keys(pins)) {
 		images = append(images, name+" ("+strings.Join(pins[name].Tools, ", ")+")")
 	}
-	return "Images: " + strings.Join(images, ", ") + "; a card that needs one names it in image, any other card runs the default. "
+	return strings.Join(images, ", ")
 }
 
 // sizeLines are the changed lines a card of each size plans at most,

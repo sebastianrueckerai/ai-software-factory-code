@@ -485,6 +485,23 @@ func askedBudget(body string) (size string, eur float64) {
 	return size, eur
 }
 
+// askedImage is the image the issue body's last line "Image: <name>"
+// names, key and name in any case, where pins, the project's in force,
+// hold it; "" for default, an unpinned name or no line: the card runs on
+// its project's default image.
+func askedImage(body string, pins map[string]policy.ImagePin) string {
+	image := ""
+	for l := range strings.Lines(body) {
+		if key, v, _ := strings.Cut(l, ":"); strings.EqualFold(strings.TrimSpace(key), "image") {
+			image = strings.ToLower(strings.TrimSpace(v))
+		}
+	}
+	if _, ok := pins[image]; !ok {
+		return ""
+	}
+	return cardImage(image)
+}
+
 // The model rungs a card starts on (roadmap 222, item 5): the ladder's
 // start, or its stronger alias.
 const (
@@ -951,6 +968,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Author:       poster,
 		AuthorWriter: writer,
 		ReproCommand: ReproCommand(issue.Body),
+		Image:        askedImage(issue.Body, p.Images),
 	}
 	if p.Agents == policy.AgentsNone || IssueLane(names, p.Lanes) == LaneHuman {
 		// no runner ever claims the human lane: it waits on a human from
