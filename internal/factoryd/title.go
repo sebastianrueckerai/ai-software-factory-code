@@ -8,6 +8,15 @@ import (
 
 // CardTitle is the face's title of t: the summary a writer set, the plan
 // key of a planned card, else the objective's first paragraph.
+// titledRef is ref with the card's title, "#1250 - Console: ...", the
+// ref alone when the card has no title to name.
+func TitledRef(ref string, t Task) string {
+	if title := CardTitle(t); title != "" {
+		return ref + " - " + title
+	}
+	return ref
+}
+
 func CardTitle(t Task) string {
 	if t.HumanSummary != "" {
 		return t.HumanSummary

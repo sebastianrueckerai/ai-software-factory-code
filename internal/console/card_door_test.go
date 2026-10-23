@@ -55,7 +55,7 @@ func TestCardDoorOpensBoundThread(t *testing.T) {
 		t.Fatalf("the thread's rows = %+v, want the ask alone", answer.Messages)
 	}
 	m := answer.Messages[0]
-	for _, want := range []string{"#13 needs you: use a replica?", "\nWhy: the shard costs more every month",
+	for _, want := range []string{"#13 - Use a replica? needs you: use a replica?", "\nWhy: the shard costs more every month",
 		"\nInfo: the plan names one store", "\nRecommendation: a replica"} {
 		if !strings.Contains(m.Content, want) {
 			t.Fatalf("the ask's row =\n%s\nwant it to hold %q", m.Content, want)
@@ -125,7 +125,7 @@ func TestCardDoorSeedsTheAskSentence(t *testing.T) {
 	if len(answer.Messages) != 1 {
 		t.Fatalf("the thread's rows = %+v, want the ask alone", answer.Messages)
 	}
-	if want := "#13 needs you: use a replica?"; !strings.Contains(answer.Messages[0].Content, want) {
+	if want := "#13 - Use a replica? needs you: use a replica?"; !strings.Contains(answer.Messages[0].Content, want) {
 		t.Fatalf("the ask's row = %q, want it to hold %q", answer.Messages[0].Content, want)
 	}
 }

@@ -374,7 +374,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 	if len(asked) != 1 || asked[0].TaskID != card.ID || asked[0].Detail["source"] != SourceSchemaCopy {
 		t.Fatalf("question_asked rows %+v, want the card's one", asked)
 	}
-	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 needs you: "+ask) ||
+	if m, ok := pokeOf(asked[0], card); !ok || m.Kind != MessageEscalation || !strings.HasPrefix(m.Content, "#1 - "+CardTitle(card)+" needs you: "+ask) ||
 		deliveryLevel(m) != LevelNeedsYou {
 		t.Fatalf("the poke = %+v, %v; want the card's needs-you", m, ok)
 	}

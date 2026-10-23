@@ -1925,7 +1925,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		// session's opening calls for want of budget (roadmap 243): the same
 		// card, to its project's approvers; a refusal no raise answers
 		// offers none
-		if v.approves(t.Repository) && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
+		if why, err := c.unfundedSession(ctx, t); err != nil {
+			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
+		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
 			k.Fund = &fundForm{CSRF: v.csrf}
 		}
 		// the acceptance close is offered where the card's own trail
@@ -3251,7 +3253,7 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 	case ask.IssueNumber != 0:
 		ref = "#" + strconv.FormatInt(ask.IssueNumber, 10)
 	}
-	content := ref + " needs you: " + question
+	content := factoryd.TitledRef(ref, bt.Task) + " needs you: " + question
 	for _, part := range []struct{ label, key string }{{"Why", "why"}, {"Info", "info"}, {"Recommendation", "recommendation"}} {
 		if s, _ := ask.Detail[part.key].(string); s != "" {
 			content += "\n" + part.label + ": " + s

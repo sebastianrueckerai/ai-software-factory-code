@@ -246,10 +246,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	switch e.Kind {
 	case EventQuestionAsked:
 		m.Kind = MessageEscalation
-		m.Content = ref + " needs you: " + str("question")
+		m.Content = TitledRef(ref, t) + " needs you: " + str("question")
 		m.Decider = str("decider_line")
 		if slices.Contains(budgetSources, str("source")) {
-			m.Content = ref + " is stopped by its budget: " + str("question")
+			m.Content = TitledRef(ref, t) + " is stopped by its budget: " + str("question")
 		}
 		if why := str("why"); why != "" {
 			m.Content += "\nWhy: " + textutil.Truncate(why, 300)

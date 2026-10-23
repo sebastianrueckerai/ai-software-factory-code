@@ -34,11 +34,11 @@ func TestPokeOf(t *testing.T) {
 	}{
 		{"a question", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "source": "agent",
 			"choices": []any{"Postgres", "SQLite"}}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 needs you: Which store?", Choices: []string{"Postgres", "SQLite"}}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#603 - Session store: pick the table's store needs you: Which store?", Choices: []string{"Postgres", "SQLite"}}, true},
 		{"a question with its why", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "why": "both pass", "source": "agent"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 needs you: Which store?\nWhy: both pass"}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#603 - Session store: pick the table's store needs you: Which store?\nWhy: both pass"}, true},
 		{"a budget stop", Event{Kind: EventQuestionAsked, TaskID: "t-1", Detail: map[string]any{"question": "the remaining budget cannot fund a call", "source": "budget"}}, card,
-			ChatMessage{Kind: MessageEscalation, Content: "#603 is stopped by its budget: the remaining budget cannot fund a call"}, true},
+			ChatMessage{Kind: MessageEscalation, Content: "#603 - Session store: pick the table's store is stopped by its budget: the remaining budget cannot fund a call"}, true},
 		// a row after the card's escalation, so the inbox's answer row
 		// offers it no more
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,

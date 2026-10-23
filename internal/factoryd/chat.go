@@ -1038,7 +1038,7 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 	// earlier analysis a new attach replaces; rows of an older ask keep
 	// their own question
 	question, _ := ask.Detail["question"].(string)
-	ref := cardRef(*ask, t)
+	ref := TitledRef(cardRef(*ask, t), t)
 	plain := ref + " needs you: " + question
 	budget := ref + " is stopped by its budget: " + question
 	analysis := "\nAnalysis: " + found

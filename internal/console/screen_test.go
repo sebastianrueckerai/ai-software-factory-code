@@ -660,7 +660,7 @@ func TestDrawerOverview(t *testing.T) {
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
-		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a><h2 tabindex="-1">k4</h2></div>`,
+		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a> - <h2 tabindex="-1">k4</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
 			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,

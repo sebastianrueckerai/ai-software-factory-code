@@ -442,7 +442,7 @@ var chatView = (function () {
   var log = document.getElementById("chat-log");
   var form = document.getElementById("chat-form"), input = document.getElementById("chat-input");
   var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
-  var answerRow = document.getElementById("chat-answer"), pending = null;
+  var answerRow = document.getElementById("chat-answer"), pending = null, sending = false;
   var commandsEl = document.getElementById("chat-commands"), palette = document.getElementById("chat-palette"), pal = {list: null, sel: 0};
   var commands = commandsEl ? JSON.parse(commandsEl.textContent || "null") || [] : [];
   var sum = panel.querySelector(".sw-sum");
@@ -1311,11 +1311,24 @@ var chatView = (function () {
       return;
     }
     var b = e.target.closest("[data-answer]");
-    if (!b || !pending) return;
-    var n = open, m = pending;
-    pending = null;
-    drawAnswer();
-    postThread("/answer", {conversation: n, message: m.id, choice: b.dataset.answer, owner: openOwner}).then(function () { return load(n, openOwner); }).catch(failed);
+    if (!b || !pending || sending) return;
+    var n = open, m = pending, choice = b.dataset.answer;
+    sending = true;
+    answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
+    // a canceled request lost no answer: send it again once, and only a
+    // failure that stays names itself, with the buttons back
+    var send = function (again) {
+      postThread("/answer", {conversation: n, message: m.id, choice: choice, owner: openOwner}).then(function () {
+        sending = false;
+        return load(n, openOwner);
+      }).catch(function (err) {
+        if (!again && (err instanceof TypeError || err.name === "AbortError")) return send(true);
+        sending = false;
+        answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = false; });
+        failed(err);
+      });
+    };
+    send(false);
   });
   head.addEventListener("click", function (e) {
     if (e.target.closest("[data-clear]")) {

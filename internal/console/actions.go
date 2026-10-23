@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -1041,14 +1042,25 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	if text == "" && value != "" && bt.Question != nil {
 		text = bt.Question.ChoiceLabel(value)
 	}
+	if value == factoryd.AnswerFund || strings.HasPrefix(value, factoryd.AnswerFund+":") {
+		if why, err := c.unfundedSession(ctx, t); err != nil {
+			return "", unreadBudget()
+		} else if factoryd.BudgetRefusal(why) {
+			eur := fundAmountOf(value)
+			if eur == 0 {
+				eur = cmp.Or(factoryd.FundRaise(why), factoryd.FundRaise(bt.Escalation))
+			}
+			if eur == 0 {
+				return "", refuse(http.StatusConflict, "this budget refusal names no amount: use the Fund form on the card, where you name it")
+			}
+			if text == "" {
+				text = fmt.Sprintf("Fund %.2f EUR and go on.", eur)
+			}
+			return c.fundWithinBounds(ctx, a, id, eur, text)
+		}
+	}
 	if err := answerFits(text); err != nil {
 		return "", err
-	}
-	if value == factoryd.AnswerFund && factoryd.BudgetRefusal(c.unfundedSession(ctx, t)) {
-		if need := factoryd.BudgetNeed(bt.Escalation); need > 0 {
-			return c.fundWithinBounds(ctx, a, id, need, text)
-		}
-		return "", refuse(http.StatusConflict, "this answer needs the Fund form on the card: name the amount")
 	}
 	switch value {
 	case factoryd.AnswerPark, factoryd.AnswerKeepWaiting:
@@ -1067,7 +1079,9 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	if a.via == factoryd.ViaButton && bt.Question != nil && text != "" && value == "" && c.cfg.Chat != nil && c.cfg.Operator != nil {
 		return answerInChat(c, ctx, a, t, text)
 	}
-	if why := c.unfundedAnswer(ctx, t); why != "" {
+	if why, err := c.unfundedAnswer(ctx, t); err != nil {
+		return "", unreadBudget()
+	} else if why != "" {
 		return "", refuse(http.StatusConflict, why)
 	}
 	if err := c.answerCardValue(ctx, a, t, text, value); err != nil {
@@ -1209,7 +1223,9 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 	if f := c.capFactsOf(ctx, t); !f.capped || t.IssueNumber == 0 {
 		return "", wrongState(t, f, "a card at its session cap")
 	}
-	if why := c.unfundedAnswer(ctx, t); why != "" {
+	if why, err := c.unfundedAnswer(ctx, t); err != nil {
+		return "", unreadBudget()
+	} else if why != "" {
 		return "", refuse(http.StatusConflict, why)
 	}
 	var posted int64
@@ -1248,29 +1264,50 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 // unfundedAnswer is the answer path's floor: the refusal a card's remaining
 // budget owes an answer, the session it would start being unfunded
 // (SessionFunded), "" when one can run. A card with no session yet (no model
-// to price) and a failed read answer as before: the workflow's floor refuses
-// the session anyway. An answer at the day cap is taken: its session waits
+// to price) answers as before: the workflow's floor refuses the session
+// anyway; a failed read refuses the answer with a verdict of its own, so the
+// answer never dies mid-request. An answer at the day cap is taken: its
+// session waits
 // for the day on its own.
-func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) string {
-	if why := c.unfundedSession(ctx, t); !factoryd.DayCapped(why) {
-		return why
+func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) (string, error) {
+	why, err := c.unfundedSession(ctx, t)
+	if err != nil {
+		return "", err
 	}
-	return ""
+	if factoryd.DayCapped(why) {
+		return "", nil
+	}
+	return why, nil
 }
 
 // unfundedSession is the refusal a card's remaining budget owes a session's
 // opening calls (SessionFunded), "" when they can run or the card cannot be
-// judged.
-func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) string {
+// judged; the error is the failed read the caller answers with a verdict.
+func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string, error) {
 	if c.cfg.SessionFunded == nil || t.ModelAlias == "" {
-		return ""
+		return "", nil
 	}
-	why, err := c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
-	if err != nil {
-		log.Printf("console: task %s's remaining budget: %v", t.ID, err)
-		return ""
+	return c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
+}
+
+// unreadBudget is the verdict of a budget read that failed: the answer
+// names the state and the fitting action instead of dying mid-request.
+func unreadBudget() error {
+	return refuse(http.StatusServiceUnavailable, "The card's budget could not be read; the answer was not posted. Try again.")
+}
+
+// fundAmountOf reads the EUR a fund choice's value carries ("fund:0.73");
+// 0 when it carries none.
+func fundAmountOf(value string) float64 {
+	s, ok := strings.CutPrefix(value, factoryd.AnswerFund+":")
+	if !ok {
+		return 0
 	}
-	return why
+	eur, err := strconv.ParseFloat(s, 64)
+	if err != nil || math.IsNaN(eur) || math.IsInf(eur, 0) || !(eur > 0) {
+		return 0
+	}
+	return eur
 }
 
 // doFund raises card id's budget by eur, an approver's funding of a card
@@ -1300,7 +1337,12 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
 	}
-	switch why := c.unfundedSession(ctx, t); {
+	why, ferr := c.unfundedSession(ctx, t)
+	if ferr != nil {
+		log.Printf("console: %s funds %s, reading the budget: %v", a.s.user, t.ID, ferr)
+		return "", unreadBudget()
+	}
+	switch {
 	case why == "":
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a session's opening calls: it needs no raise; answer it (answer).", t.IssueNumber))
 	case !factoryd.BudgetRefusal(why):
@@ -1322,7 +1364,11 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 		return "", refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
 	}
 	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, note)
-	short := c.unfundedSession(ctx, t)
+	short, serr := c.unfundedSession(ctx, t)
+	if serr != nil {
+		log.Printf("console: %s funded %s, re-reading the budget: %v", a.s.user, t.ID, serr)
+		short = ""
+	}
 	if err := c.answerCard(ctx, a, t, note); err != nil {
 		log.Printf("console: %s funded %s, the answer failed: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f, but Forgejo refused the note as the answer; answer the card on the board.", t.IssueNumber, eur, to))

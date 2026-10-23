@@ -44,7 +44,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		"budget too low": {
 			reason: budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR",
 			askHas: []string{"€0.100 of its €2.000 budget", "factory/small needs €0.300000"},
-			values: []string{AnswerFund, AnswerClose},
+			values: []string{FundChoiceValue(0.2), FundChoiceValue(2), AnswerPark},
 		},
 		"month cap": {
 			reason: monthCapReached + "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR",
@@ -167,6 +167,53 @@ func TestBudgetNeed(t *testing.T) {
 		if got := BudgetNeed(reason); got != 0 {
 			t.Errorf("BudgetNeed(%q) = %v, want 0", reason, got)
 		}
+	}
+}
+
+// The budget refusal's numbers parse wherever its state puts its own
+// numbers between the headroom and the need (holds among them), and the
+// raise covers the shortfall to the need in whole cents.
+func TestBudgetNumbersSurviveTheHoldsDetail(t *testing.T) {
+	reason := "the remaining budget cannot fund a call: raise it.\n" +
+		"0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.100000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would end before it could push."
+	if got := BudgetNeed(reason); got != 0.3 {
+		t.Errorf("BudgetNeed = %v, want 0.3", got)
+	}
+	if got := BudgetRemains(reason); got != 0.17 {
+		t.Errorf("BudgetRemains = %v, want 0.17", got)
+	}
+	if got := FundRaise(reason); got != 0.13 {
+		t.Errorf("FundRaise = %v, want 0.13, the shortfall in whole cents", got)
+	}
+}
+
+// The budget question's buttons are the one-click fund amounts: the
+// shortfall, the policy's session floor, a round 2.00 EUR, and park;
+// a reason with no amount offers the floor and the round raise alone.
+func TestBudgetQuestionButtons(t *testing.T) {
+	reason := budgetRefused + ": 0.170 EUR of the 5.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); it cannot start."
+	q := ShapedQuestion(reason, QuestionFacts{FloorEUR: 0.3}, nil)
+	want := []QuestionChoice{
+		{FundChoiceValue(0.13), "Fund 0.13 EUR and go on"},
+		{FundChoiceValue(0.3), "Fund 0.30 EUR and go on"},
+		{FundChoiceValue(2), "Fund 2.00 EUR and go on"},
+		{AnswerPark, "Park it"},
+	}
+	if !slices.Equal(q.Choices, want) {
+		t.Errorf("choices = %v, want %v", q.Choices, want)
+	}
+	if want := "The card has €0.170 of its €5.000 budget left, and one more session on factory/small needs €0.300000. Fund it, or park it?"; q.Ask != want {
+		t.Errorf("ask = %q, want %q", q.Ask, want)
+	}
+	// the floor the reason itself names stands in when the facts carry none
+	q = ShapedQuestion(reason, QuestionFacts{}, nil)
+	if q.Choices[1].Value != FundChoiceValue(0.3) {
+		t.Errorf("choices = %v, want the refusal's own floor as the second amount", q.Choices)
+	}
+	// no amount at all: the round raise and park alone
+	q = ShapedQuestion(budgetRefused+": the cheapest call needs more. Raise the budget and answer.", QuestionFacts{}, nil)
+	if want := []QuestionChoice{{FundChoiceValue(2), "Fund 2.00 EUR and go on"}, {AnswerPark, "Park it"}}; !slices.Equal(q.Choices, want) {
+		t.Errorf("choices = %v, want %v", q.Choices, want)
 	}
 }
 

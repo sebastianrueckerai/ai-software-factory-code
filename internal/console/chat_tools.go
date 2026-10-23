@@ -1859,9 +1859,17 @@ func (t *turn) fund(in toolInput) (string, error) {
 // fundWithinBounds is every chat door to a raise: the fund tool's and the
 // chat answer's fund value. A raise the agent decides unconfirmed meets the
 // agent's limits; a raise the member decides (a confirmed proposal, their
-// own click) is their money and meets none.
+// own click) is their money, an approver's as the Fund form's, and meets no
+// pool bound.
 func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur float64, text string) (string, error) {
 	if a.decider != "agent" {
+		t, err := c.cardIn(ctx, a, id)
+		if err != nil {
+			return "", err
+		}
+		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+id); err != nil {
+			return "", err
+		}
 		return c.doFund(ctx, a, id, eur, text, nil)
 	}
 	p, ok, err := c.projectAt(ctx, a.repository)

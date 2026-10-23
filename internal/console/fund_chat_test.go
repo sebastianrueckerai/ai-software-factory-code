@@ -227,14 +227,14 @@ func TestChatAnswerFundWithinTheBoundsRaisesAndRecordsOnce(t *testing.T) {
 	if _, err := answerFund(t, r, factoryd.ViaChat, "agent"); err != nil {
 		t.Fatalf("answer fund: %v", err)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.9 {
-		t.Errorf("budget_eur = %v, want 2.9", task.BudgetEUR)
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.73 {
+		t.Errorf("budget_eur = %v, want 2.73", task.BudgetEUR)
 	}
 	funded := 0
 	for _, e := range r.events.rows {
 		if e.Kind == factoryd.EventCardFunded {
 			funded++
-			if e.Via != factoryd.ViaChat || e.Detail["amount_eur"] != 0.9 {
+			if e.Via != factoryd.ViaChat || e.Detail["amount_eur"] != 0.73 {
 				t.Errorf("the card_funded row = %+v", e)
 			}
 		}
@@ -287,21 +287,53 @@ func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
 		return needRefusal, nil
 	}
 	r.tasks.fundedEUR = 3
-	r.tasks.tasks[0].Question = factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{}, nil)
+	buttons := factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{}, nil)
+	r.tasks.tasks[0].Question = buttons
 	ck, s := r.loggedIn(t)
 	inbox, _ := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
-		Content: "#13 needs you: fund?", Choices: []string{"Fund one more session"}, TaskID: "t-e", Conversation: inbox}); err != nil {
+		Content: "#13 needs you: fund?", Choices: buttons.Labels(), TaskID: "t-e", Conversation: inbox}); err != nil {
 		t.Fatal(err)
 	}
 	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
-		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {"Fund one more session"}})
+		"message": {strconv.FormatInt(chat.next, 10)}, "choice": {buttons.Choices[0].Label}})
 	if code != http.StatusNoContent {
 		t.Fatalf("the answer = %d %q", code, body)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.9 {
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.73 {
 		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", inbox, 50)
-		t.Errorf("budget_eur = %v, want 2.9 raised past a project with no pool; the thread: %+v", task.BudgetEUR, rows)
+		t.Errorf("budget_eur = %v, want 2.73 raised past a project with no pool; the thread: %+v", task.BudgetEUR, rows)
+	}
+}
+
+// A premade fund button answers the card alone: its value carries the
+// amount, the click needs no note — the label is the note posted — and a
+// member who is no approver of the project meets the Fund form's refusal.
+func TestOneClickFundChoiceRaisesAndAnswersWithoutANote(t *testing.T) {
+	r := needRig(t)
+	_, s := r.loggedIn(t)
+	note, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73))
+	if err != nil || note != "Raised #13's budget by 0.73 EUR to 2.73 and posted your note as the answer; the card resumes." {
+		t.Fatalf("the one-click fund = %q, %v", note, err)
+	}
+	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "Fund 0.73 EUR and go on." {
+		t.Fatalf("the note posted = %q", got)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.73 {
+		t.Errorf("budget_eur = %v, want 2.73", task.BudgetEUR)
+	}
+
+	r = needRig(t)
+	r.writers.users = []string{"sebastian", "morgan"}
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "morgan") // writes sf/code, yet not an approver
+	ck, ms := memberLogin(t, r, "morgan")
+	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {ms.csrf}, "project": {"ai-software-factory-code"},
+		"value": {factoryd.FundChoiceValue(0.5)}}), ck)
+	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project ai-software-factory-code may fund a card." {
+		t.Fatalf("a non-approver's one-click fund = %d: %s", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
+		t.Errorf("a refused one-click fund moved budget_eur to %v", task.BudgetEUR)
 	}
 }
 

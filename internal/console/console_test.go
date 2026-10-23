@@ -1880,12 +1880,16 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	if len(r.fg.comments) != 0 {
 		t.Fatal("the refusal was commented to the issue: no answer reaches the card")
 	}
-	// a failed read is no refusal: the workflow's grant still guards the attempt
+	// a failed read refuses the answer with its own verdict: the answer
+	// never dies mid-request, and nothing reaches the card
 	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
 		return "", errors.New("the price book is down")
 	}
-	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther {
+	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "The card's budget could not be read; the answer was not posted. Try again.") {
 		t.Fatalf("answer on a failed read = %d: %s", rec.Code, rec.Body)
+	}
+	if len(r.fg.comments) != 0 {
+		t.Fatal("the refused answer was posted")
 	}
 }
 
