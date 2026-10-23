@@ -795,15 +795,20 @@ func (r *Runner) untrusted(t Task, s string) string {
 }
 
 // linkHosts are the hosts a link in text factoryd posts on t's repository
-// may point at: the policy's link_hosts, the Forgejo host and the
-// project's environment hosts.
+// may point at (outboundHosts).
 func (r *Runner) linkHosts(t Task) []string {
-	v := r.cfg.Policy()
+	return outboundHosts(r.cfg.Policy().Tree, r.forgejo.PublicURL, t.Repository)
+}
+
+// outboundHosts are the hosts a link in text factoryd posts on repository
+// may point at: v's link_hosts, the host of Forgejo's publicURL and the
+// project's environment hosts.
+func outboundHosts(v policy.Tree, publicURL, repository string) []string {
 	hosts := slices.Clone(v.Document.LinkHosts)
-	if u, err := url.Parse(r.forgejo.PublicURL); err == nil && u.Hostname() != "" {
+	if u, err := url.Parse(publicURL); err == nil && u.Hostname() != "" {
 		hosts = append(hosts, u.Hostname())
 	}
-	if _, p, ok := v.ProjectOf(t.Repository); ok {
+	if _, p, ok := v.ProjectOf(repository); ok {
 		for _, e := range p.Environments {
 			if e.Hostname != "" {
 				hosts = append(hosts, e.Hostname)

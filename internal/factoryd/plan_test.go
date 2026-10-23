@@ -287,6 +287,11 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 	if got := ValidatePlan(fencePlan(p), testShape, testLimits, nil); !slices.Equal(got, want) {
 		t.Fatalf("no pins: %q, want %q", got, want)
 	}
+	// default is the card that names none: the plan read keeps it as ""
+	read, findings := readPlan(fencePlan(p), testShape, testLimits, pins)
+	if len(findings) != 0 || read.Cards[2].Image != "" || read.Cards[1].Image != "browser" {
+		t.Fatalf("read plan's images %q, %q (%q); want \"\" for default, browser kept", read.Cards[2].Image, read.Cards[1].Image, findings)
+	}
 }
 
 // The guide shows a card's image in the json shape and, when the project

@@ -576,8 +576,9 @@ type imagerRig struct {
 
 // newImagerRig is sf/ai-software-factory-infra with main's factory/ the
 // policy fixture, edited by edit, in force, demo-app/demo-app's
-// factory/images.yaml images (none for ""), an empty registry and the
-// imager as factoryd wires it.
+// factory/images.yaml images (none for ""), a registry holding the
+// images key's signature of every digest main pins and the imager as
+// factoryd wires it.
 func newImagerRig(t *testing.T, images string, edit func(main map[string]string)) *imagerRig {
 	t.Helper()
 	fixture, err := policy.ReadDir("../policy/testdata/tree")
@@ -605,6 +606,11 @@ func newImagerRig(t *testing.T, images string, edit func(main map[string]string)
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	for project, c := range fj.inForce.Projects {
+		for image, pin := range c.Images {
+			maps.Copy(entries, cosignSigned(key, imageRepository(project, image), pin.Digest))
+		}
 	}
 	now := time.Date(2026, 10, 22, 12, 0, 0, 0, time.UTC)
 	book := &imageBook{builds: map[string]imageBuild{}, tasks: map[string]Task{}, pins: map[string]ImagePinRow{}, used: map[string]bool{}}
@@ -889,6 +895,49 @@ func TestImagerWaitsForTheMergedKey(t *testing.T) {
 	r.pass(t)
 	if len(r.signals.got) != 0 || r.book.parks[0].WokenAt != nil {
 		t.Fatalf("signals %q, park %+v: want none while the pin is at the old key", r.signals.got, r.book.parks[0])
+	}
+}
+
+// A pin at its desired key whose build the store lacks, as after a re-seed,
+// is built again: the pass dispatches it, and once the store holds the key
+// signed, pins the digest the build made.
+func TestImagerRebuildsAPinTheStoreLacks(t *testing.T) {
+	r := newImagerRig(t, bothImages, demoBothPinned)
+	clear(r.registry)
+	r.pass(t)
+	_, dispatches, writes := r.fj.state()
+	if len(dispatches) != 2 || !strings.Contains(dispatches[0], `"key":"`+keyBrowser+`"`) || !strings.Contains(dispatches[1], `"key":"`+keyDefault+`"`) || len(writes) != 2 {
+		t.Fatalf("dispatches %q, writes %q; want both images built again", dispatches, writes)
+	}
+	digestBrowser := r.publish("sf/sandbox-demo-app.browser", keyBrowser, r.key, 5000)
+	r.publish("sf/sandbox-demo-app.default", keyDefault, r.key, 1000)
+	r.pass(t)
+	if got := r.fj.file("factory-pins/demo-app", demoProjectFile); !strings.Contains(got, "    digest: "+digestBrowser+"\n    key: "+keyBrowser+"\n") {
+		t.Fatalf("the pin branch's project file:\n%s\nwant browser at %s", got, digestBrowser)
+	}
+}
+
+// A tool card that merged an image whose builds fail wakes its parked card
+// with the refusal once buildTries builds left no signed image, not
+// before: the card goes on to a human with the cause.
+func TestImagerWakesAParkWhoseImageNeverBuilds(t *testing.T) {
+	r := newImagerRig(t, bothImages, nil)
+	t0 := *r.now
+	merged := t0.Add(-time.Minute)
+	r.book.tasks["t-tool"] = Task{ID: "t-tool", Status: "merged", IssueNumber: 60, FinishedAt: &merged}
+	r.book.parks = []ImagePark{{Task: "t-a", Project: "demo-app", Target: "browser", Tool: "chromium", ToolTask: "t-tool", ToolIssue: 60, CreatedAt: merged.Add(-time.Hour)}}
+	for n := range 3 {
+		*r.now = t0.Add(time.Duration(n) * 46 * time.Minute)
+		r.pass(t)
+		if len(r.signals.got) != 0 {
+			t.Fatalf("pass %d: signals %q, want none while builds may land", n+1, r.signals.got)
+		}
+	}
+	*r.now = t0.Add(3 * 46 * time.Minute)
+	r.pass(t)
+	refusal := "#60 merged, but image browser's build failed 3 times; the builder's run shows why"
+	if want := []string{"t-a image_ready browser: " + refusal}; !reflect.DeepEqual(r.signals.got, want) || r.book.parks[0].Refused != refusal {
+		t.Fatalf("signals %q, park %+v; want %q", r.signals.got, r.book.parks[0], want)
 	}
 }
 
@@ -1181,7 +1230,7 @@ func TestImagerLeavesAPullRequestIntoAnotherBase(t *testing.T) {
 
 // After buildTries dispatches of one key leave no signed image, the pass
 // raises one alert naming the project, image and key and that the builder
-// failed, and keeps asking.
+// failed, and asks again once a day from the last dispatch.
 func TestImagerAlertsABuildThatNeverLands(t *testing.T) {
 	r := newImagerRig(t, demoImages, nil)
 	t0 := *r.now
@@ -1189,11 +1238,22 @@ func TestImagerAlertsABuildThatNeverLands(t *testing.T) {
 		*r.now = t0.Add(time.Duration(n) * 46 * time.Minute)
 		r.pass(t)
 		if got := len(r.book.alerts); got != 0 && n < 3 || got != 1 && n >= 3 {
-			t.Fatalf("dispatch %d: alerts %+v", n+1, r.book.alerts)
+			t.Fatalf("pass %d: alerts %+v", n+1, r.book.alerts)
 		}
 	}
-	if _, dispatches, _ := r.fj.state(); len(dispatches) != 5 {
-		t.Fatalf("%d dispatches, want 5", len(dispatches))
+	if _, dispatches, _ := r.fj.state(); len(dispatches) != 3 {
+		t.Fatalf("%d dispatches, want 3: none for a day after the third", len(dispatches))
+	}
+	third := t0.Add(2 * 46 * time.Minute)
+	for _, c := range []struct {
+		at   time.Duration
+		want int
+	}{{24*time.Hour - time.Minute, 3}, {24 * time.Hour, 4}, {24*time.Hour + 46*time.Minute, 4}} {
+		*r.now = third.Add(c.at)
+		r.pass(t)
+		if _, dispatches, _ := r.fj.state(); len(dispatches) != c.want {
+			t.Fatalf("%v after the third: %d dispatches, want %d", c.at, len(dispatches), c.want)
+		}
 	}
 	want := []Alert{{Kind: AlertImage, Source: "build", Fingerprint: "build sf/sandbox-demo-app.default:" + keyDefault, Detail: map[string]any{
 		"project": "demo-app", "image": "default", "key": keyDefault, "dispatches": 3,

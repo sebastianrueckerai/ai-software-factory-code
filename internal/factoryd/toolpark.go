@@ -111,10 +111,11 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 	if !ok {
 		return ToolPark{}, terminalError("task %s: repository %s is no project's", t.ID, t.Repository)
 	}
-	if tool == "" && t.Image == "" {
+	own := cardImage(t.Image)
+	if tool == "" && own == "" {
 		return ToolPark{}, terminalError("task %s runs on its project's default image: there is no image to wait for", t.ID)
 	}
-	p := ImagePark{Task: t.ID, Project: project, Target: cmp.Or(t.Image, toolImage(tool)), Tool: tool, Need: need}
+	p := ImagePark{Task: t.ID, Project: project, Target: cmp.Or(own, toolImage(tool)), Tool: tool, Need: need}
 	prev, had, err := r.store.ImagePark(ctx, t.ID)
 	if err != nil {
 		return ToolPark{}, err
@@ -132,7 +133,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 		return r.askAgain(ctx, t, p, toolAskedAgain+fmt.Sprintf("%s on image %s, after the factory refused its last ask (%s on image %s): %s\nWhy: %s\n"+
 			"Recommendation: %s; or answer how the card goes on without the tool, or close this issue to end the card.",
 			tool, p.Target, prev.Tool, prev.Target, prev.Refused, need, refusalAdvice(prev.Refused)), true)
-	case had && prev.WokenAt != nil && prev.Refused == "" && prev.ToolTask != "" && prev.Target == p.Target && strings.EqualFold(prev.Tool, tool) && t.Image != prev.Target:
+	case had && prev.WokenAt != nil && prev.Refused == "" && prev.ToolTask != "" && prev.Target == p.Target && strings.EqualFold(prev.Tool, tool) && cmp.Or(own, "default") != prev.Target:
 		return ToolPark{Park: prev}, nil
 	case had && prev.WokenAt != nil && prev.Refused == "" && prev.ToolTask != "" && prev.Target == p.Target && strings.EqualFold(prev.Tool, tool):
 		with := ""
@@ -180,11 +181,21 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 const toolCardRefusal = "this card declares tools in " + imagesPath + ", and its own sandbox never gets them"
 
 // The refusals of a park at the imager's wake: its tool card closed
-// unmerged, or merged without declaring the image.
+// unmerged, merged without declaring the image, or merged with an image
+// whose builds failed (the image and how many builds).
 const (
-	closedUnmerged   = " closed without a merge"
-	mergedUndeclared = " merged without declaring image "
+	closedUnmerged    = " closed without a merge"
+	mergedUndeclared  = " merged without declaring image "
+	mergedBuildFailed = " merged, but image %s's build failed %d times; the builder's run shows why"
 )
+
+// cardImage is the image name a card keeps: "" for default.
+func cardImage(name string) string {
+	if name == "default" {
+		return ""
+	}
+	return name
+}
 
 // refusalAdvice is what a human does about refusal before answering.
 func refusalAdvice(refusal string) string {
@@ -194,6 +205,8 @@ func refusalAdvice(refusal string) string {
 		return "see why " + card + " closed, and reopen it or file the tool's card again, then answer"
 	case strings.HasPrefix(" "+rest, mergedUndeclared):
 		return "make " + imagesPath + " declare image " + strings.TrimPrefix(" "+rest, mergedUndeclared) + " with the tool, then answer"
+	case strings.HasPrefix(" "+rest, " merged, but image "):
+		return "read the builder's run, correct the image's entry in " + imagesPath + ", then answer"
 	case refusal == toolCardRefusal:
 		return "answer that the card declares the tool and finishes without it"
 	}
@@ -229,7 +242,8 @@ func (r *Runner) askAgain(ctx context.Context, t Task, p ImagePark, ask string, 
 // onToolCard puts park p of card t, recorded with its tool card's id, on
 // that card: it files it under the id where no card has it, else joins it
 // with t's need, a line of its objective and a comment on its issue, each
-// once; then t depends on it and waits.
+// once; then t depends on it and waits. The tool and the need are the
+// agent's, so what Forgejo shows carries them as r.untrusted does.
 // pinned and declared are the project's images, file its images.yaml on
 // main.
 func (r *Runner) onToolCard(ctx context.Context, t Task, repo Repo, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec, file []byte) (ToolPark, error) {
@@ -237,12 +251,14 @@ func (r *Runner) onToolCard(ctx context.Context, t Task, repo Repo, p ImagePark,
 	if err != nil {
 		return ToolPark{}, err
 	}
+	shown := p
+	shown.Tool, shown.Need = r.untrusted(t, p.Tool), r.untrusted(t, p.Need)
 	if !ok {
-		if card, err = r.fileToolCard(ctx, t, p, pinned, declared, file); err != nil {
+		if card, err = r.fileToolCard(ctx, t, shown, pinned, declared, file); err != nil {
 			return ToolPark{}, err
 		}
-	} else if lines := strings.Split(card.Objective, "\n"); !slices.Contains(lines, askLine(t, p)) {
-		join := fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", t.IssueNumber, t.ID, p.Tool, p.Target, p.Need)
+	} else if lines := strings.Split(card.Objective, "\n"); !slices.Contains(lines, askLine(t, shown)) {
+		join := fmt.Sprintf("Card #%d (%s) needs %s in image %s too: %s", t.IssueNumber, t.ID, shown.Tool, p.Target, shown.Need)
 		if !slices.Contains(lines, join) {
 			if err := r.store.SetObjective(ctx, card.ID, card.Objective+"\n\n"+join); err != nil {
 				return ToolPark{}, err
@@ -323,9 +339,9 @@ func (r *Runner) fileToolCard(ctx context.Context, t Task, p ImagePark, pinned m
 // image's entry on main (declared), the factory image's stack where t runs
 // on the default image and none is pinned.
 func imageNow(t Task, p ImagePark, pinned map[string]policy.ImagePin, declared map[string]policy.ImageSpec) (string, error) {
-	name := cmp.Or(t.Image, "default")
+	name := cmp.Or(cardImage(t.Image), "default")
 	pin, ok := pinned[name]
-	if !ok && t.Image == "" {
+	if !ok && name == "default" {
 		entry, err := imagesEntry(p.Target, FactoryStack())
 		return fmt.Sprintf("Card #%d runs on the factory's image now: the sandbox base with %s. Image %s starts from this entry, the same stack; add %s to it:\n%s\n\n",
 			t.IssueNumber, strings.Join(factoryTools, " and "), p.Target, p.Tool, fenced(entry)), err
@@ -388,7 +404,8 @@ func toolCardBody(t Task, p ImagePark, now string, file []byte) string {
 	fmt.Fprintf(&b, "Rules:\n- Every image is built FROM the sandbox base, which has only %s. "+
 		"Every image declares this project's own stack too: the cards that run on it build and test this project.\n"+
 		"- A project has at most %d images. default is the image of every card that names none.\n"+
-		"- An upstream line needs the real sha256 of its file, as its publisher lists it.\n"+
+		"- Prefer apt packages. Add an upstream line only for a file whose sha256 this card can verify, such as from a checksum file it reads; "+
+		"the factory's build checks every sha256 and fails on a wrong one.\n"+
 		"- egress names only the hosts the image's tools must reach.\n"+
 		"- This card runs on the project's default image and never gets the tools it declares: declare them and finish; "+
 		"the factory's build and the check of %s on this pull request test the file.\n\n", strings.Join(base, ", "), policy.MaxImages, imagesPath)
@@ -406,7 +423,7 @@ func (r *Runner) ImageArrived(ctx context.Context, taskID, image, tool string) (
 	if err != nil {
 		return "", err
 	}
-	if err := r.store.SetTaskImageName(ctx, t.ID, image); err != nil {
+	if err := r.store.SetTaskImageName(ctx, t.ID, cardImage(image)); err != nil {
 		return "", err
 	}
 	if tool == "" {

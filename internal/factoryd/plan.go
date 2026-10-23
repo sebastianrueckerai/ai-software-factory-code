@@ -341,6 +341,9 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, pins ma
 				cmp.Or(strings.Join(slices.Sorted(maps.Keys(pins)), ", "), "none"))
 		}
 	}
+	for i := range p.Cards {
+		p.Cards[i].Image = cardImage(p.Cards[i].Image)
+	}
 	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
 	return p, append(out, questionFindings(p.Questions)...)

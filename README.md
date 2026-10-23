@@ -1169,21 +1169,25 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   the session stops with outcome `missing_tool`, the work in progress on
   the branch); from change id `tool-park` on the workflow's `ParkForTool`
   parks the card on an image: the card's own, else one named after the
-  tool. A tool card on the project's repository (source `tool_request`,
-  small, the cheap rung, a child the asking card depends on) adds the tool
-  to `factory/images.yaml`, starting from the asking card's image as an
+  tool; a card naming image `default` names none. A tool card on the
+  project's repository (source `tool_request`, small, the cheap rung, a
+  child the asking card depends on) adds the tool to
+  `factory/images.yaml`, starting from the asking card's image as an
   entry (its own on main, or `FactoryStack`, the factory image's Go and
   Node, where it runs on the factory's image); a second ask for the same
-  image joins the open card with a comment. The park's row names the tool
-  card before it is filed, so a retry files it once. The card waits in
-  `waiting-image` (no work slot) until the imager's `image_ready`: once
-  the tool card merged and the pin in force carries the key a pass after
-  the merge read, the next session runs on the image from the branch, its
-  findings naming the tool's arrival. A tool card closed unmerged, or
-  merged without declaring the image, reaches the next session as why the
-  tool did not come; so do, at once, a new image past the project's four
-  and, as a backstop, a tool card's own ask (it declares tools it never
-  gets). Any ask after a refused park goes to a human, and so does an ask
+  image joins the open card with a comment. The tool and the need reach
+  Forgejo through the outbound sanitiser, as an escalation's text does.
+  The park's row names the tool card before it is filed, so a retry files
+  it once. The card waits in `waiting-image` (no work slot) until the
+  imager's `image_ready`: once the tool card merged and the pin in force
+  carries the key a pass after the merge read, the next session runs on
+  the image from the branch, its findings naming the tool's arrival. A
+  tool card closed unmerged, merged without declaring the image, or
+  merged with an image whose three builds left no signed image, reaches
+  the next session as why the tool did not come; so do, at once, a new
+  image past the project's four and, as a backstop, a tool card's own ask
+  (it declares tools it never gets). Any ask after a refused park goes to
+  a human, and so does an ask
   for the tool whose image arrived from a card on that image; a card not
   on it takes it at once. After 24 hours without a wake the card asks a human; the
   image's arrival ends that wait too. The asking session takes no number
@@ -1191,6 +1195,11 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   parks the same way, with no tool card. A pull request that changes
   `factory/images.yaml` has the file checked at the gated commit; each
   finding goes back to the agent like an anti-cheat finding.
+
+  A pin at its desired key whose build the store lacks signed, as after a
+  re-seed, is built again. After three builds of a key leave no signed
+  image, one alert names the builder, and the key is asked for once a
+  day.
 
   The imager keeps the store to the pins. Once a pin changes in force, the
   store keeps of that image only the pinned build, the one pinned before

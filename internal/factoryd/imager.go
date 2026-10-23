@@ -37,8 +37,10 @@ const (
 	pinBranchPrefix = "factory-pins/"
 	pinRole         = "image-pin"
 	// buildTries is how many dispatches of one key may leave no signed
-	// image before the pass raises that the builder fails.
-	buildTries = 3
+	// image before the pass raises that the builder fails; then it asks
+	// once a buildBackoff.
+	buildTries   = 3
+	buildBackoff = 24 * time.Hour
 	// unusedFor is how long an image but default stays pinned with no card
 	// on it before a card removes it; the check runs once a day.
 	unusedFor   = 30 * 24 * time.Hour
@@ -187,18 +189,15 @@ func (i *Imager) pass(ctx context.Context) error {
 	start := i.Now()
 	v := i.Policy()
 	var errs []error
-	declared, desired := map[string]map[string]bool{}, map[string]map[string]string{}
+	desired, failed := map[string]map[string]string{}, map[string]map[string]int{}
 	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
 		c := v.Projects[name]
 		if c.Agents == policy.AgentsNone {
 			continue
 		}
-		keys, err := i.project(ctx, name, c, baseDigest, start)
+		keys, broken, err := i.project(ctx, name, c, baseDigest, start)
 		if keys != nil {
-			desired[name], declared[name] = keys, map[string]bool{}
-			for n := range keys {
-				declared[name][n] = true
-			}
+			desired[name], failed[name] = keys, broken
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
@@ -207,7 +206,7 @@ func (i *Imager) pass(ctx context.Context) error {
 	if err := i.retain(ctx, v, desired, start); err != nil {
 		errs = append(errs, fmt.Errorf("retention: %w", err))
 	}
-	if err := i.wake(ctx, v, declared, start); err != nil {
+	if err := i.wake(ctx, v, desired, failed, start); err != nil {
 		errs = append(errs, fmt.Errorf("wake: %w", err))
 	}
 	if err := i.unused(ctx, v, start); err != nil {
@@ -461,14 +460,15 @@ func (i *Imager) removal(ctx context.Context, v policy.Version, repository strin
 }
 
 // project reconciles the images name declares: a pin at its desired key
-// stays, an image ready at it is pinned, one not built is dispatched, and a
-// pinned name no longer declared leaves. An invalid file changes nothing.
-// It returns the desired key of each name the file declares, nil when it
-// did not read.
-func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfig, baseDigest string, start time.Time) (map[string]string, error) {
+// whose build the store holds signed stays, an image ready at it is
+// pinned, one not built is dispatched, and a pinned name no longer
+// declared leaves. An invalid file changes nothing. It returns the desired
+// key of each name the file declares, nil when it did not read, and how
+// many builds failed of each name whose builds failed (dispatch).
+func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfig, baseDigest string, start time.Time) (map[string]string, map[string]int, error) {
 	file, raw, ok, err := i.declared(ctx, name, c.Repository)
 	if err != nil || !ok {
-		return nil, err
+		return nil, nil, err
 	}
 	keys := map[string]string{}
 	for n, spec := range file.Images {
@@ -480,38 +480,51 @@ func (i *Imager) project(ctx context.Context, name string, c policy.ProjectConfi
 			pins[n] = p
 		}
 	}
+	failed := map[string]int{}
 	for _, n := range slices.Sorted(maps.Keys(file.Images)) {
 		spec, key := file.Images[n], keys[n]
 		if err := i.Store.RecordImageRead(ctx, name, n, key, start); err != nil {
-			return keys, err
+			return keys, failed, err
 		}
 		if pins[n].Key == key {
-			continue
+			// a re-seed or a lost store leaves the pin on a digest it lacks
+			err := i.verify(ctx, imageRepository(name, n), pins[n].Digest)
+			var unsigned ErrUnsigned
+			if err == nil {
+				continue
+			}
+			if !errors.Is(err, ErrNotFound) && !errors.As(err, &unsigned) {
+				return keys, failed, fmt.Errorf("image %s: %w", n, err)
+			}
+			log.Printf("imager: the pinned build %s@%s is not in the store signed (%v): it builds again", imageRepository(name, n), pins[n].Digest, err)
 		}
-		pin, ready, err := i.build(ctx, name, n, spec, key, raw)
+		pin, ready, tries, err := i.build(ctx, name, n, spec, key, raw)
 		if err != nil {
-			return keys, fmt.Errorf("image %s: %w", n, err)
+			return keys, failed, fmt.Errorf("image %s: %w", n, err)
 		}
 		if ready {
 			pins[n] = pin
 		}
+		if tries > 0 {
+			failed[n] = tries
+		}
 	}
-	return keys, i.pin(ctx, name, c.Repository, pins, c.Images)
+	return keys, failed, i.pin(ctx, name, c.Repository, pins, c.Images)
 }
 
 // wake signals image_ready to each card parked on an image whose wait is
 // over, at the end of the pass begun at start under v, whose reads found
-// declared, each project's declared names (none where its file did not
-// read), and wakes its park; a refused card's dependency on its tool card
-// goes.
-func (i *Imager) wake(ctx context.Context, v policy.Version, declared map[string]map[string]bool, start time.Time) error {
+// desired, the desired key of each project's declared names (none where
+// its file did not read), and failed, the names whose builds failed, and
+// wakes its park; a refused card's dependency on its tool card goes.
+func (i *Imager) wake(ctx context.Context, v policy.Version, desired map[string]map[string]string, failed map[string]map[string]int, start time.Time) error {
 	parks, err := i.Store.OpenImageParks(ctx)
 	if err != nil {
 		return err
 	}
 	var errs []error
 	for _, p := range parks {
-		refusal, ready, err := i.woken(ctx, v, declared, start, p)
+		refusal, ready, err := i.woken(ctx, v, desired, failed, start, p)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("task %s: %w", p.Task, err))
 			continue
@@ -539,13 +552,13 @@ func (i *Imager) wake(ctx context.Context, v policy.Version, declared map[string
 }
 
 // woken is whether park p's wait is over at the end of the pass begun at
-// start under v, which read declared, and the refusal it ends with. A park
-// with a tool card is over once the card merged and the pin in force
-// carries the desired key a pass begun after the merge read; with a
-// refusal once it closed unmerged, or once a pass begun after its merge
-// read a file that does not declare the image. One without a tool card is
-// over once its image is pinned.
-func (i *Imager) woken(ctx context.Context, v policy.Version, declared map[string]map[string]bool, start time.Time, p ImagePark) (refusal string, over bool, err error) {
+// start under v, which read desired and failed, and the refusal it ends
+// with. A park with a tool card is over once the card merged and the pin
+// in force carries the desired key a pass begun after the merge read; with
+// a refusal once it closed unmerged, or once a pass begun after its merge
+// read a file that does not declare the image or found the image's builds
+// failed. One without a tool card is over once its image is pinned.
+func (i *Imager) woken(ctx context.Context, v policy.Version, desired map[string]map[string]string, failed map[string]map[string]int, start time.Time, p ImagePark) (refusal string, over bool, err error) {
 	pin, pinned := v.Projects[p.Project].Images[p.Target]
 	if p.ToolTask == "" {
 		return "", pinned, nil
@@ -561,12 +574,15 @@ func (i *Imager) woken(ctx context.Context, v policy.Version, declared map[strin
 	default:
 		return "", false, nil
 	}
-	names, read := declared[p.Project]
+	names, read := desired[p.Project]
 	if card.FinishedAt == nil || !start.After(*card.FinishedAt) || !read {
 		return "", false, nil
 	}
-	if !names[p.Target] {
+	if _, ok := names[p.Target]; !ok {
 		return fmt.Sprintf("#%d"+mergedUndeclared+"%s", card.IssueNumber, p.Target), true, nil
+	}
+	if n := failed[p.Project][p.Target]; n > 0 {
+		return fmt.Sprintf("#%d"+mergedBuildFailed, card.IssueNumber, p.Target, n), true, nil
 	}
 	if !pinned {
 		return "", false, nil
@@ -605,12 +621,13 @@ func (i *Imager) declared(ctx context.Context, project, repository string) (poli
 
 // build is project's image name at key: ready when the store holds the tag
 // key signed by the images key, at most policy.MaxImageBytes compressed
-// (an alert and never ready above); else its build is dispatched.
-func (i *Imager) build(ctx context.Context, project, name string, spec policy.ImageSpec, key string, file []byte) (policy.ImagePin, bool, error) {
+// (an alert and never ready above); else its build is dispatched, and how
+// many builds failed is dispatch's.
+func (i *Imager) build(ctx context.Context, project, name string, spec policy.ImageSpec, key string, file []byte) (policy.ImagePin, bool, int, error) {
 	repo := imageRepository(project, name)
 	tok, err := i.Registry.Token(ctx)
 	if err != nil {
-		return policy.ImagePin{}, false, err
+		return policy.ImagePin{}, false, 0, err
 	}
 	m, err := i.Registry.Resolve(ctx, tok, repo, key)
 	if err == nil {
@@ -619,48 +636,58 @@ func (i *Imager) build(ctx context.Context, project, name string, spec policy.Im
 	var unsigned ErrUnsigned
 	switch {
 	case errors.Is(err, ErrNotFound) || errors.As(err, &unsigned):
-		return policy.ImagePin{}, false, i.dispatch(ctx, project, name, key, file)
+		failed, err := i.dispatch(ctx, project, name, key, file)
+		return policy.ImagePin{}, false, failed, err
 	case err != nil:
-		return policy.ImagePin{}, false, err
+		return policy.ImagePin{}, false, 0, err
 	}
 	size, err := i.Registry.LayerBytes(ctx, tok, repo, m.Platform)
 	if err != nil {
-		return policy.ImagePin{}, false, err
+		return policy.ImagePin{}, false, 0, err
 	}
 	if size > policy.MaxImageBytes {
 		i.alert(ctx, Alert{Kind: AlertImage, Source: "size", Fingerprint: repo + "@" + m.Digest, Detail: map[string]any{
 			"project": project, "image": name, "digest": m.Digest, "bytes": size, "max": int64(policy.MaxImageBytes)}})
-		return policy.ImagePin{}, false, nil
+		return policy.ImagePin{}, false, 0, nil
 	}
 	_, _, manifest, err := imagegen.Render(spec, i.Base)
 	if err != nil {
-		return policy.ImagePin{}, false, err
+		return policy.ImagePin{}, false, 0, err
 	}
-	return policy.ImagePin{Digest: m.Digest, Key: key, Tools: manifest.Tools, Egress: manifest.Egress}, true, nil
+	return policy.ImagePin{Digest: m.Digest, Key: key, Tools: manifest.Tools, Egress: manifest.Egress}, true, 0, nil
 }
 
 // dispatch asks the builder for project's image name at key, built from
-// file, unless it was asked within dispatchWait. A key buildTries builds
-// left unsigned raises one alert, and is asked for again.
-func (i *Imager) dispatch(ctx context.Context, project, name, key string, file []byte) error {
+// file, unless it was asked within dispatchWait. Once buildTries builds,
+// the last dispatchWait ago, left no signed image, the key's builds failed:
+// dispatch raises one alert, answers how many failed, and asks once a
+// buildBackoff.
+func (i *Imager) dispatch(ctx context.Context, project, name, key string, file []byte) (int, error) {
 	now := i.Now()
 	at, n, err := i.Store.ImageDispatches(ctx, project, name, key)
-	if err != nil || !at.IsZero() && now.Sub(at) < dispatchWait {
-		return err
+	if err != nil {
+		return 0, err
 	}
+	repo, failed, wait := imageRepository(project, name), 0, dispatchWait
 	if n >= buildTries {
-		repo := imageRepository(project, name)
-		i.alert(ctx, Alert{Kind: AlertImage, Source: "build", Fingerprint: "build " + repo + ":" + key, Detail: map[string]any{
-			"project": project, "image": name, "key": key, "dispatches": n,
-			"reason": fmt.Sprintf("%d builds of %s:%s left no image signed by the images key: the builder %s of %s failed, its runs say why",
-				n, repo, key, imageWorkflow, i.Builder)}})
+		wait = buildBackoff
+		if now.Sub(at) >= dispatchWait {
+			failed = n
+			i.alert(ctx, Alert{Kind: AlertImage, Source: "build", Fingerprint: "build " + repo + ":" + key, Detail: map[string]any{
+				"project": project, "image": name, "key": key, "dispatches": n,
+				"reason": fmt.Sprintf("%d builds of %s:%s left no image signed by the images key: the builder %s of %s failed, its runs say why",
+					n, repo, key, imageWorkflow, i.Builder)}})
+		}
+	}
+	if !at.IsZero() && now.Sub(at) < wait {
+		return failed, nil
 	}
 	if err := i.Forgejo.DispatchWorkflow(ctx, i.BuildToken, i.Builder, imageWorkflow, "main", map[string]string{
 		"project": project, "image": name, "file": base64.StdEncoding.EncodeToString(file), "base": i.Base, "key": key}); err != nil {
-		return err
+		return failed, err
 	}
-	log.Printf("imager: dispatched the build of %s:%s", imageRepository(project, name), key)
-	return i.Store.RecordImageDispatch(ctx, project, name, key, now)
+	log.Printf("imager: dispatched the build of %s:%s", repo, key)
+	return failed, i.Store.RecordImageDispatch(ctx, project, name, key, now)
 }
 
 // verify is nil when repository@digest carries a signature by the images

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 )
 
 // SourceDelegate is the source of a card a running agent filed with the
@@ -53,9 +54,10 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 			http.Error(w, "body: "+err.Error(), http.StatusBadRequest)
 			return
 		}
+		const required = "task_id, a title of 1 to 255 characters and a brief are required"
 		in.Title, in.Brief = strings.TrimSpace(in.Title), strings.TrimSpace(in.Brief)
-		if in.TaskID == "" || in.Title == "" || utf8.RuneCountInString(in.Title) > 255 || in.Brief == "" {
-			http.Error(w, "task_id, a title of 1 to 255 characters and a brief are required", http.StatusBadRequest)
+		if in.TaskID == "" || in.Title == "" || in.Brief == "" {
+			http.Error(w, required, http.StatusBadRequest)
 			return
 		}
 		ctx := r.Context()
@@ -66,6 +68,17 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 		}
 		if !ok {
 			http.Error(w, "no task "+in.TaskID, http.StatusNotFound)
+			return
+		}
+		// the agent's text as factoryd posts it on Forgejo
+		var tree policy.Tree
+		if d.Policy != nil {
+			tree = d.Policy()
+		}
+		hosts := outboundHosts(tree, d.Forgejo.PublicURL, parent.Repository)
+		in.Title, in.Brief = sanitize.Outbound(in.Title, hosts), sanitize.Outbound(in.Brief, hosts)
+		if utf8.RuneCountInString(in.Title) > 255 {
+			http.Error(w, required, http.StatusBadRequest)
 			return
 		}
 		if parent.Status != "running" {
