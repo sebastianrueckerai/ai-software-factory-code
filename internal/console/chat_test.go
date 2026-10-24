@@ -258,6 +258,9 @@ func (f *fakeChat) AddChatWatch(_ context.Context, repository, login string, con
 			return nil
 		}
 	}
+	if n := len(f.watches) + len(f.timers); n >= factoryd.WakeTimersMax {
+		return fmt.Errorf("%w: it holds %d of %d, end one first", factoryd.ErrChatWakeCap, n, factoryd.WakeTimersMax)
+	}
 	f.watches = append(f.watches, storedWatch{repository, login, taskID, conversation})
 	return nil
 }

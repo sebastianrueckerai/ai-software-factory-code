@@ -36,6 +36,9 @@ func (t *turn) watchCard(in toolInput) (string, error) {
 		if errors.As(err, &taken) {
 			return name + " is already watched by " + taken.Login + "'s thread: its moves wake that thread, which you can read.", nil
 		}
+		if errors.Is(err, factoryd.ErrChatWakeCap) {
+			return "", refuse(http.StatusConflict, err.Error())
+		}
 		return "", refuse(http.StatusInternalServerError, "cannot watch the card")
 	}
 	return "Watching " + name + ": its moves wake this thread.", nil

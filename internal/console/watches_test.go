@@ -53,10 +53,12 @@ func TestSetTimerBoundsAndCap(t *testing.T) {
 		f.watches = append(f.watches, storedWatch{repository: "sf/code", login: s.user, taskID: fmt.Sprintf("t-cap-%d", i)})
 	}
 	f.mu.Unlock()
-	g.replies = [][]string{{call(1, "set_timer", `{"minutes":30,"note":"No room."}`,
+	g.replies = [][]string{{call(1, "watch_card", `{"task_id":"t-m"}`, "set_timer", `{"minutes":30,"note":"No room."}`,
 		"set_timer", `{"minutes":0,"note":"Too early."}`, "set_timer", `{"minutes":30,"note":""}`)}, {say("None set.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set three timers"}})
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"watch the cache card and set three timers"}})
 	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"watch_card",` +
+			`"result":"Refused: this project's watches and timers are full: it holds 16 of 16, end one first"}`,
 		`tool {"arguments":{"minutes":30,"note":"No room."},"duration_ms":0,"name":"set_timer",` +
 			`"result":"Refused: this project's watches and timers are full: it holds 16 of 16, end one first"}`,
 		`tool {"arguments":{"minutes":0,"note":"Too early."},"duration_ms":0,"name":"set_timer",` +
