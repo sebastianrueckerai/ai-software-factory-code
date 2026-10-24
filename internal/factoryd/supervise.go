@@ -729,6 +729,21 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 	if strings.TrimSpace(out) == "" {
 		return nil
 	}
+	// a git refusal the sandbox's identity cannot pass: no edit can fix it,
+	// so every refusal counts toward one shared run whatever the command
+	// (a supply-blocked session varies its probes) and no file change is
+	// asked between them. An indented log line — code under test printing
+	// git's words — is no refusal.
+	if hasExit && exit != 0 && gitAuthRefusal.MatchString(out) {
+		run := d.runs[gitRefusalKey]
+		run.n++
+		d.runs[gitRefusalKey] = run
+		if run.n >= d.cfg.SameFailure {
+			return &Trip{Kind: TripSameFailure, key: gitRefusalKey,
+				Detail: fmt.Sprintf("%d git commands were refused authentication (last: `%s`): the sandbox holds no git credential, so no edit can fix this — a card that carries an existing pull request names it on its issue (Carries line), which puts its head in the clone", run.n, CommandLine(cmd))}
+		}
+		return nil
+	}
 	code := "?"
 	if hasExit {
 		code = strconv.Itoa(exit)
@@ -851,6 +866,15 @@ func ErrorSignature(command, output string) string {
 // adapter's tail is cut by bytes, so its first lines vary with the
 // length of what came before.
 const signatureLines = 20
+
+// gitAuthRefusal is a git command's own fatal line of a refusal the
+// sandbox's identity cannot pass: authentication failed, no credential to
+// offer, or the server's 401 or 403. It begins the line, so a test's log
+// that embeds the words indented is no refusal.
+var gitAuthRefusal = regexp.MustCompile(`(?m)^fatal: .*(?:Authentication failed|could not read Username|returned error: 40[13])`)
+
+// gitRefusalKey keys the run every git auth refusal shares.
+const gitRefusalKey = "git auth refusal"
 
 var volatile = []struct {
 	re   *regexp.Regexp

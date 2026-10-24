@@ -328,6 +328,26 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	}
 }
 
+// The Carries line: a card that carries an existing pull request's
+// commits names it, and the intake puts its number on the task, where
+// the session's clone reads it.
+func TestIntakeIssueCarriesLineSetsCarryPR(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	body := issueOpenedBody(11, "sebastian", []string{"agent"}, "Carry the work", "carry pull request #9's commits to green checks\n\nCarries: #9")
+	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(store.tasks))
+	}
+	for _, task := range store.tasks {
+		if task.CarryPR != 9 {
+			t.Fatalf("CarryPR = %d, want 9", task.CarryPR)
+		}
+	}
+}
+
 func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	in, store, requests := newTestIntake(t)
 	body := issueOpenedBody(9, "sebastian", []string{"human"}, "Needs a decision", "please look")

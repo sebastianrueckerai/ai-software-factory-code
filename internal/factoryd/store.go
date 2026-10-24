@@ -46,7 +46,12 @@ type Task struct {
 	Source string
 	// PRNumber is the pull request the task's workflow opened; 0 = none yet.
 	PRNumber int64
-	Usage    TaskUsage
+	// CarryPR is the pull request whose head a carry card's clone supplies
+	// as branch pull/<n> (its issue's "Carries: #<pr>" line): the sandbox
+	// holds no git credential, so the head must be in the clone before the
+	// agent runs; 0 = the card carries none.
+	CarryPR int64
+	Usage   TaskUsage
 	// ReproCommand is the task's reproduction (the issue's fenced block
 	// labelled repro, or the API's repro_command): GateReproduction runs it
 	// against the pull request head and it must pass. Empty = none.
@@ -797,17 +802,17 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, ships_ruling, ships_clauses, image, finished_at)
+		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
-         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $28, $29::jsonb, $30,
+         NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
          CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image)
+		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR)
 	return err
 }
 
@@ -867,7 +872,7 @@ func defaultKind(kind string) string {
 }
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
-	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number,
+	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
@@ -878,7 +883,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
-		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber,
+		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,

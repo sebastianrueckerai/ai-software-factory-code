@@ -341,13 +341,14 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 // with the lane's label (backlog, plan or agent, or human for the human
 // lane) and priority when given, its body ending, after a blank line,
 // with the field lines the intake reads, each when given: "Size: <size>",
-// "Rung: <rung>, <reason>" and "Image: <name>", an image the project
-// pins; the webhook or the heal pass makes it a task. It
-// answers the repository and the issue's number. In a wake the chat bot
-// posts the issue, and the card_filed row that names the member is
+// "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
+// and "Carries: #<n>", the pull request whose head the card's clone
+// supplies as its pull branch; the webhook or the heal pass makes it a
+// task. It answers the repository and the issue's number. In a wake the
+// chat bot posts the issue, and the card_filed row that names the member is
 // written before the answer: an unrecorded filing closes its issue and
 // refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason, image string) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason, image string, carry int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -391,6 +392,10 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if image != "" {
 		fields = append(fields, "Image: "+image)
 		detail["image"] = image
+	}
+	if carry > 0 {
+		fields = append(fields, fmt.Sprintf("Carries: #%d", carry))
+		detail["carry"] = carry
 	}
 	if len(fields) > 0 {
 		body += "\n\n" + strings.Join(fields, "\n")

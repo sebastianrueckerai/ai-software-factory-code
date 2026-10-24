@@ -11,6 +11,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -54,6 +55,7 @@ type toolInput struct {
 	Size        string   `json:"size,omitempty"`
 	Rung        string   `json:"rung,omitempty"`
 	RungReason  string   `json:"rung_reason,omitempty"`
+	CarryPR     int64    `json:"carry_pr,omitempty"`
 	Acceptance  []string `json:"acceptance,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
 	By          string   `json:"by,omitempty"`
@@ -317,6 +319,25 @@ func (t *turn) byTaskID(in *toolInput) error {
 	return nil
 }
 
+// carryAsk matches a brief that asks the sandbox to obtain an existing
+// pull request's commits: refs/pull at all, or a supply verb before PR or
+// pull request in one sentence. A dependency ("depends on #21") and a
+// brief that names a pull request only to discuss it ask for no commits,
+// and "Carries: #9", the line that already supplies a carry, is no ask.
+var carryAsk = regexp.MustCompile(`(?i)refs/pull|(?:carry|fetch|get|restore|re-?apply|rebase|cherry.?pick)\b[^.!?\n]{0,80}\b(?:pr|pull requests?)\b`)
+
+// refuseCarry refuses a new_card whose brief asks the sandbox to obtain an
+// existing pull request's commits without carry_pr: the sandbox holds no
+// git credential, so the head must reach the clone before the session
+// starts, which carry_pr does. The proposal judges the brief, so the agent
+// corrects it before Do it.
+func refuseCarry(title, body string, carry int64) error {
+	if carry > 0 || !carryAsk.MatchString(title+"\n"+body) {
+		return nil
+	}
+	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
+}
+
 // describe is one line saying what a proposal of tool with in would do,
 // in pinned to the plan revision an accept_plan names, an approve_merge's
 // with its warning; a card of another project refuses it, and so do an
@@ -333,6 +354,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	}
 	if tool.name == "new_card" {
 		if _, err := pinnedImage(t.p, in.Image); err != nil {
+			return "", err
+		}
+		if err := refuseCarry(in.Title, in.Body, in.CarryPR); err != nil {
 			return "", err
 		}
 	}
@@ -371,6 +395,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if in.CarryPR > 0 {
+		parts = append(parts, fmt.Sprintf("carries #%d", in.CarryPR))
 	}
 	if len(in.Attachments) > 0 {
 		parts = append(parts, "attachments "+strings.Join(in.Attachments, ", "))
@@ -1193,6 +1220,7 @@ var tools = []chatTool{
 			"rung":        enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
 			"rung_reason": str("why that rung, one line"),
 			"image":       str("a pinned sandbox image to run on, none for the default"),
+			"carry_pr":    map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
 			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 				"description": "the thread's images to attach (img1, as their rows show)"}},
 		required: []string{"title"},
@@ -1213,7 +1241,10 @@ var tools = []chatTool{
 			if flags := filingFlags(in.Title, body); len(flags) > 0 {
 				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason, in.Image)
+			if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
+				return "", nil, err
+			}
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)
 			if err != nil {
 				return "", nil, err
 			}

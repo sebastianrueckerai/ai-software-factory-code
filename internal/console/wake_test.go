@@ -328,7 +328,7 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
-		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.", "backlog", "", "", "", "", "")
+		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.", "backlog", "", "", "", "", "", 0)
 		return n, err
 	}
 	t.Run("recorded", func(t *testing.T) {
