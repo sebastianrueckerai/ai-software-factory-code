@@ -407,6 +407,12 @@ var chatView = (function () {
       "so no decision and no merged card goes with it.</p><div class=\"acts\"><button type=\"button\" class=\"danger\" data-dlg=\"delete\">Delete the thread</button>" +
       "<button type=\"button\" data-dlg=\"keep\">Keep it</button></div></div></div>";
   }
+  // zoomHTML is the full-size view of a thumbnail the member clicked:
+  // the screen dims behind the image; a click on it or Escape closes
+  function zoomHTML(src, alt) {
+    return "<div id=\"img-zoom\" class=\"overlay imgbox\" role=\"dialog\" aria-modal=\"true\" " +
+      "aria-label=\"the image full size; click or Escape closes\"><img src=\"" + esc(src) + "\" alt=\"" + esc(alt || "an image") + "\"></div>";
+  }
   function eventStream(contentType) {
     return /^text\/event-stream/.test(contentType || "");
   }
@@ -433,7 +439,7 @@ var chatView = (function () {
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
-    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML};
+    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, zoomHTML: zoomHTML};
 })();
 
 (function () {
@@ -1272,6 +1278,33 @@ var chatView = (function () {
     if (e.key === "Escape" && document.getElementById("thread-dialog")) {
       e.stopPropagation();
       closeDialog();
+    }
+  }, true);
+  // a thumbnail's click opens its image full size over a dimmed page —
+  // the serving route a plain link opens answers as a download — and a
+  // click on the dim, the image, or Escape closes it. The link itself
+  // stays, so opening in a new tab still works
+  function closeZoom() {
+    var z = document.getElementById("img-zoom");
+    if (z) z.remove();
+  }
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest("a.thumb");
+    if (a && log.contains(a)) {
+      var img = a.querySelector("img");
+      e.preventDefault();
+      e.stopPropagation();
+      closeZoom();
+      document.body.insertAdjacentHTML("beforeend", chatView.zoomHTML(a.href, img ? img.alt : ""));
+      return;
+    }
+    var z = document.getElementById("img-zoom");
+    if (z && z.contains(e.target)) closeZoom();
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && document.getElementById("img-zoom")) {
+      e.stopPropagation();
+      closeZoom();
     }
   }, true);
   form.addEventListener("click", function (e) {
