@@ -27,6 +27,10 @@ func tellRig(t *testing.T) (*rig, *chatGateway, int) {
 		Gate: factoryd.GateApproval, Lane: policy.LaneReady, Process: "maintenance", Repository: "sf/code", IssueNumber: 15,
 		PRNumber: 12, Objective: "Cache the board."}})
 	r.tasks.mu.Unlock()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-x", Kind: "agent", Status: "done",
+		Repository: "sf/code", IssueNumber: 9, Objective: "Done work."}})
+	r.tasks.mu.Unlock()
 	r.approvals.mu.Lock()
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-g",
 		Project: "sf/code", PRNumber: 12, Status: "pending", Spec: json.RawMessage(`{"head_sha":"c0ffee1","risk_class":"low"}`)})
@@ -152,18 +156,26 @@ func TestTellCardWaitingHuman(t *testing.T) {
 			Detail: postedDetail(1)})
 }
 
-// A tell at a card in no telling state — here the backlog — is refused
-// 409 naming the states the routing knows; nothing is written.
+// A tell at a card in no telling state is refused 409 naming the states
+// the routing knows and the action that fits the card's state; nothing
+// is written.
 func TestTellCardWrongState(t *testing.T) {
-	r, _, before := tellRig(t)
-	out, status, msg := toldRefused(t, r, toolInput{TaskID: "t-m", Text: "Start now."})
-	if out != "" || status != http.StatusConflict {
-		t.Fatalf("a tell at a backlog card = %q, %d %q, want a 409 refusal", out, status, msg)
+	for _, tc := range []struct{ name, task, want string }{
+		{"backlog", "t-m", "Card #5 t-m is backlog (waits in the backlog until a member moves it into a lane), not " +
+			"a card running a session, at its approval gate or waiting on a human: move_card starts it."},
+		{"done", "t-x", "Card #9 t-x is done (is done), not " +
+			"a card running a session, at its approval gate or waiting on a human: the card is final: a new card continues the work."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, before := tellRig(t)
+			out, status, msg := toldRefused(t, r, toolInput{TaskID: tc.task, Text: "Start now."})
+			if out != "" || status != http.StatusConflict {
+				t.Fatalf("a tell at a %s card = %q, %d %q, want a 409 refusal", tc.name, out, status, msg)
+			}
+			equal(t, "the refusal", msg, tc.want)
+			chatRows(t, r.events, before, "sebastian")
+		})
 	}
-	want := "Card #5 t-m is backlog (waits in the backlog until a member moves it into a lane), not " +
-		"a card running a session, at its approval gate or waiting on a human: move_card starts it."
-	equal(t, "the refusal", msg, want)
-	chatRows(t, r.events, before, "sebastian")
 }
 
 // A card in review whose gates still run holds no pending merge request,
