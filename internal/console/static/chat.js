@@ -502,7 +502,6 @@ var chatView = (function () {
   if (form && input) {
     var bar = document.createElement("div");
     bar.className = "growbar";
-    bar.setAttribute("data-tip", "Drag to size the input; double-click resets it");
     bar.setAttribute("role", "separator");
     bar.setAttribute("aria-orientation", "horizontal");
     bar.setAttribute("tabindex", "0");
