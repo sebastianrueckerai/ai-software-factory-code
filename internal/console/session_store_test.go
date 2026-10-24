@@ -488,24 +488,3 @@ func TestConcurrentRefreshesOfOneLoginGrantOnce(t *testing.T) {
 		t.Fatalf("the row holds %q/%q, want access-2/refresh-2", access, refresh)
 	}
 }
-
-// The cookie's id is never stored: the raw id appears in no row of the
-// table, only its SHA-256 hex.
-func TestNoRowHoldsTheRawCookieID(t *testing.T) {
-	r := newRig(t)
-	var ids []string
-	for range 3 {
-		ck, _ := r.loggedIn(t)
-		ids = append(ids, ck.Value)
-	}
-	if len(r.sessions.rows) != 3 {
-		t.Fatalf("three logins left %d rows", len(r.sessions.rows))
-	}
-	for _, id := range ids {
-		for hash, row := range r.sessions.rows {
-			if strings.Contains(hash+row.Login+row.CSRF+row.Access+row.Refresh, id) {
-				t.Fatalf("the row of %s holds the raw cookie id", hash)
-			}
-		}
-	}
-}

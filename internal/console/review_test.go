@@ -72,9 +72,8 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 // whose content could be tested; its figures are covered by
 // TestBoardPageCarriesTheFiguresOfTheStatusPanel and, under a find, by
 // TestFindNarrowsTheColumns. What needs holding is the shape the ruling
-// leaves, in both views: the panel carries only its Spend, Provider,
-// GitHub, configuration and Dependencies sections (the last unknown until
-// the prober writes, roadmap 299), and the columns list the cards the
+// leaves, in both views: the panel carries only its Spend and Factory
+// sections, and the columns list the cards the
 // lists once named — the human task as a plain card, with no escalation
 // article of its own.
 func TestStatusPanelListsNoCards(t *testing.T) {

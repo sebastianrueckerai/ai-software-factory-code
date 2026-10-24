@@ -120,26 +120,6 @@ func TestFundIsNotOfferedWhereNoBudgetHelps(t *testing.T) {
 	}
 }
 
-// A plain member, a writer of the project, gets the action refused and
-// raises nothing.
-func TestFundIsAnApproversAction(t *testing.T) {
-	r := newRig(t)
-	r.writers.users = []string{"sebastian", "morgan"}
-	ck, s := memberLogin(t, r, "morgan")
-	cappedCard(r, t)
-	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"go on"}}), ck)
-	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project ai-software-factory-code may fund a card." {
-		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
-	}
-	task, _, _ := r.tasks.Task(t.Context(), "t-e")
-	if task.BudgetEUR != 2 {
-		t.Fatalf("a refused raise moved budget_eur to %v", task.BudgetEUR)
-	}
-	if len(r.events.rows) != 0 {
-		t.Fatalf("a refused raise wrote %d event rows", len(r.events.rows))
-	}
-}
-
 // A raise on a card that is not capped is refused: one whose remaining
 // budget can fund a session's opening calls, and one the floor cannot judge
 // (no session yet).

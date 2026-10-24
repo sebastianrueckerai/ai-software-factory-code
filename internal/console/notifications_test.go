@@ -186,13 +186,11 @@ func TestNotificationsPanel(t *testing.T) {
 	if rec.Code != http.StatusNotFound || fm.levels["sf/code"] != "" {
 		t.Fatalf("the level post for an unread project = %d, level %q", rec.Code, fm.levels["sf/code"])
 	}
-	for _, form := range []url.Values{
-		{"csrf": {bs.csrf}, "project": {"demo"}, "level": {"daily"}},
-		{"csrf": {bs.csrf}, "project": {"ghost"}, "level": {factoryd.LevelOff}},
-	} {
-		if rec = send(c, "/notifications/level", form); rec.Code != http.StatusBadRequest && rec.Code != http.StatusNotFound {
-			t.Fatalf("the refused level post %v = %d", form, rec.Code)
-		}
+	if rec = send(c, "/notifications/level", url.Values{"csrf": {bs.csrf}, "project": {"demo"}, "level": {"daily"}}); rec.Code != http.StatusBadRequest {
+		t.Fatalf("an unknown level = %d", rec.Code)
+	}
+	if rec = send(c, "/notifications/level", url.Values{"csrf": {bs.csrf}, "project": {"ghost"}, "level": {factoryd.LevelOff}}); rec.Code != http.StatusNotFound {
+		t.Fatalf("the level post for an unknown project = %d", rec.Code)
 	}
 
 	// the instrument panel (C19): one row per venue the console carries or

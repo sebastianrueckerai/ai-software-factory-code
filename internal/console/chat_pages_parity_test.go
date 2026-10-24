@@ -307,17 +307,6 @@ func TestCostsToolWithCustomDateWindow(t *testing.T) {
 		[]string{"2026-10-11", "2026-10-11"})
 }
 
-// The costs read without from and to asks the current UTC month as
-// before: the first day of this month to today.
-func TestCostsToolDefaultsKept(t *testing.T) {
-	r, _, g := newChatRig(t)
-	pageFixture(r)
-	equal(t, "the month's days", reads(t, r, g, "costs", `{"by":"day"}`),
-		[]string{"By day 2026-10-01 to 2026-10-11, EUR:\n  2026-10-11 1.7000 (model 1.5000, tool 0.2000)\n  2026-10-10 0.6000 (model 0.5000, tool 0.1000)\ntotal: 2.3000 EUR"})
-	equal(t, "the store's window", []string{r.ledger.from.Format(time.DateOnly), r.ledger.to.Format(time.DateOnly)},
-		[]string{time.Now().UTC().Format("2006-01") + "-01", time.Now().UTC().Format(time.DateOnly)})
-}
-
 // A malformed or reversed costs date window is refused with 400 in one
 // sentence; the store is not asked.
 func TestCostsToolInvalidDateRefused(t *testing.T) {

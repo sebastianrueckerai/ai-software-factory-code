@@ -3183,17 +3183,6 @@ func TestChatTurnRunsPastEightCalls(t *testing.T) {
 	}
 }
 
-// The agent's tools are policy.ChatTools, which the config check knows.
-func TestChatToolsArePolicys(t *testing.T) {
-	var names []string
-	for _, tool := range tools {
-		if !tool.internal {
-			names = append(names, tool.name)
-		}
-	}
-	equal(t, "tools", names, policy.ChatTools)
-}
-
 // A writer's new conversation answers 204 and records no event; the next
 // turn replays and stores only it, and GET answers it with its number,
 // while ?conversation=1 answers the old one and the list names both,

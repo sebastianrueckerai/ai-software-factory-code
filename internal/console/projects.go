@@ -791,7 +791,7 @@ func (c *Console) mergeInfra(ctx context.Context, s *session, number int64) erro
 	err := c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
 	for attempts := 0; apiStatus(err) == http.StatusMethodNotAllowed && attempts < mergeRetryTries && ctx.Err() == nil; attempts++ {
 		log.Printf("console: Forgejo refused %s's merge of %s#%d with 405; retry %d/%d", s.user, c.cfg.InfraRepo, number, attempts+1, mergeRetryTries)
-		time.Sleep(c.mergeRetryPause())
+		time.Sleep(time.Second)
 		err = c.as(ctx, s, http.MethodPost, path, body, http.StatusOK, nil)
 	}
 	return err
@@ -799,13 +799,6 @@ func (c *Console) mergeInfra(ctx context.Context, s *session, number int64) erro
 
 // mergeRetryTries are the retries of a merge Forgejo refused with 405.
 const mergeRetryTries = 3
-
-func (c *Console) mergeRetryPause() time.Duration {
-	if c.cfg.MergeRetryPause != nil {
-		return *c.cfg.MergeRetryPause
-	}
-	return time.Second
-}
 
 func apiStatus(err error) int {
 	if ae := (*apiError)(nil); errors.As(err, &ae) {

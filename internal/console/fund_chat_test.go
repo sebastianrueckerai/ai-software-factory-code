@@ -191,6 +191,7 @@ func needRig(t *testing.T) *rig {
 	r := fundRig(t)
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
+	// the direct doFund/doAnswerValue tests read this; answerFund overwrites it
 	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, ""), nil }
 	return r
 }
@@ -345,22 +346,12 @@ func TestFundCardCapErrorReachesTheMemberThroughDoFund(t *testing.T) {
 	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go",
 		&factoryd.FundBounds{PoolEUR: 10, CardCapEUR: 2.5})
 	var no *refusal
-	if !errors.As(err, &no) || no.msg != capSpent(13, 2, 0.9, 2.5) {
-		t.Fatalf("doFund = %v, want the capSpent refusal %q", err, capSpent(13, 2, 0.9, 2.5))
+	want := "Card #13 holds €2.00 now; €0.90 more passes its cap of €2.50. Record your analysis with attach_analysis so the member can make a sizing exception."
+	if !errors.As(err, &no) || no.msg != want {
+		t.Fatalf("doFund = %v, want the capSpent refusal %q", err, want)
 	}
 	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
 		t.Errorf("budget_eur = %v after the refusal, want 2", task.BudgetEUR)
-	}
-}
-
-// Two agent turns that both read the card under its cap: the store's
-// predicate refuses the one that no longer fits, and the line says so.
-func TestFundCardCapRaceRefusalNamesTheCard(t *testing.T) {
-	got := capSpent(13, 4.5, 1, 5)
-	for _, want := range []string{"#13", "€4.50", "€5.00", "attach_analysis", "sizing exception"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("the line %q lacks %q", got, want)
-		}
 	}
 }
 

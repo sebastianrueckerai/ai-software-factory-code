@@ -878,6 +878,23 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 		}
 	}
 
+	// the why renders as markup when it is markup, its raw text behind the fold
+	question.Why = "## Why the card stopped\n- the cap counts `4` calls\n\n```go\nfmt.Println(4)\n```"
+	drawer = page(bt, "/cards/t-q/drawer?tab=overview")
+	for _, want := range []string{
+		`<div class="why"><h2>Why the card stopped</h2>`,
+		`<li>the cap counts <code>4</code> calls</li>`,
+		`<pre><code class="language-go">fmt.Println(4)`,
+		`<details class="fold"><summary>The raw text, for copying</summary><pre class="reason detail">## Why the card stopped`,
+	} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %q:\n%s", want, drawer)
+		}
+	}
+	if strings.Contains(drawer, "&lt;h2&gt;") || strings.Contains(drawer, "&lt;code&gt;") {
+		t.Errorf("the drawer renders the markup as text:\n%s", drawer)
+	}
+
 	bt.AnswersPending = 2
 	esc = escalationOf(t, page(bt, "/?project=ai-software-factory-code"), "t-q")
 	if !strings.Contains(esc, `<p class="liveness" role="status">This card holds answers its run has not taken`) {

@@ -292,10 +292,7 @@ type Config struct {
 	// (factoryd's InClusterKube.KustomizationState); factoryd.ErrNotFound
 	// when there is none. nil shows no environment's deploy state.
 	Kustomization func(ctx context.Context, namespace, name string) (factoryd.FluxState, error)
-	// MergeRetryPause is the wait before a retry of a merge Forgejo refused
-	// with 405 while it re-checks mergeability (nil = 1 s).
-	MergeRetryPause *time.Duration
-	HTTP            *http.Client // nil = 15 s timeout
+	HTTP          *http.Client // nil = 15 s timeout
 	// Metrics counts the verdict clicks (factory.human.intervention); nil
 	// counts none.
 	Metrics *telemetry.Metrics

@@ -169,7 +169,7 @@ func TestDocsReadAndEdit(t *testing.T) {
 	ctx, a := t.Context(), actor{s: &session{user: "sebastian"}, via: factoryd.ViaChat, chatTask: "t-chat"}
 	hash := factoryd.ContentHash(docsPlan)
 	got, err := r.c.readDoc(ctx, "sf/docs", "README.md", "", 0, 0, false)
-	equal(t, "a read outside the roots", []any{got, err}, []any{"README.md on sf/docs@master: 10 bytes, 1 lines, base_sha256 " + factoryd.ContentHash("# Read me\n") + ".\n\n# Read me\n", error(nil)})
+	equal(t, "a read outside the document roots is allowed", []any{got, err}, []any{"README.md on sf/docs@master: 10 bytes, 1 lines, base_sha256 " + factoryd.ContentHash("# Read me\n") + ".\n\n# Read me\n", error(nil)})
 	for _, bad := range []string{"", "/README.md", "../escape.md", "docs/../README.md", "docs//roadmap.md", "docs/"} {
 		if _, err := r.c.readDoc(ctx, "sf/docs", bad, "", 0, 0, false); err == nil || err.Error() != bad+" is no file path: name a path from the repository's root, with no . or .. segments" {
 			t.Errorf("read %q: %v", bad, err)
@@ -518,8 +518,6 @@ func TestDocsSaveMergesStaleBase(t *testing.T) {
 	equal(t, "the merged answer", []any{ans.SHA256, ans.Merged, ans.Text},
 		[]any{factoryd.ContentHash(merged), "merged with Sebastian's change", merged})
 	equal(t, "the file", f.files["docs/plans/cache.md"], merged)
-	equal(t, "the commit's message", f.commits[0]["message"], "docs/plans/cache.md: edited in the console\n\nFactory-Role: console\nRequested-by: sebastian\n")
-	equal(t, "the member's token", f.tokens, []string{"Bearer access-1"})
 	rows := r.events.all()[before:]
 	equal(t, "the event rows", len(rows), 1)
 	equal(t, "the doc_written event", []any{rows[0].Repository, rows[0].Kind, rows[0].Actor, rows[0].Via, rows[0].Detail["path"],

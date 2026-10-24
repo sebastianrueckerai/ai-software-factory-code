@@ -25,6 +25,7 @@ import (
 func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	members(r)
+	r.routines.views = []factoryd.RoutineView{weeklyBump()}
 	bk, bs := memberLogin(t, r, "bob")
 	ak, as := memberLogin(t, r, "alice")
 
@@ -57,7 +58,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	changes := func() []int {
 		return []int{r.events.count(), len(r.fg.calls), len(r.retried), len(r.closed), len(r.invited),
-			len(r.synced), len(r.issueDeps), len(r.alerts.verdicts), len(r.resources.calls)}
+			len(r.synced), len(r.issueDeps), len(r.alerts.verdicts), len(r.resources.calls),
+			len(r.routines.skips), len(r.routines.ran), len(r.routines.needsMe)}
 	}
 	before := changes()
 

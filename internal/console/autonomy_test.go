@@ -216,6 +216,10 @@ func TestRoadmapFindings(t *testing.T) {
 	if len(f) != 1 || f[0] != "item 1 lost its Sources line" {
 		t.Errorf("a sourceless item: findings %v, want the Sources line", f)
 	}
+	f = roadmapFindings(item(1, true, false))
+	if len(f) != 1 || f[0] != "item 1 lost its Where-it-stands line" {
+		t.Errorf("a standless item: findings %v, want the Where-it-stands line", f)
+	}
 	f = roadmapFindings("no items at all\n")
 	if len(f) != 1 || f[0] != "the roadmap holds no numbered items" {
 		t.Errorf("an empty roadmap: findings %v, want the no-items line", f)

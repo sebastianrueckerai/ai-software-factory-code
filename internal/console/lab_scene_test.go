@@ -167,35 +167,34 @@ func (j labSceneJSON) check(now time.Time) error {
 }
 
 func TestLabSceneJSON(t *testing.T) {
-	r := newRig(t)
 	now := time.Now()
-	body := fmt.Sprintf(`{"Project":{"Name":"nord-booking","Repository":"nord/booking","Login":"sebastian"},
+	for _, tc := range []struct {
+		name   string
+		body   string
+		status string
+	}{
+		{"a running card at its session gate", fmt.Sprintf(`{"Project":{"Name":"nord-booking","Repository":"nord/booking","Login":"sebastian"},
 	 "Tasks":[{"ID":"t-1","Kind":"agent","Status":"running","Lane":"ready","Repository":"nord/booking","IssueNumber":12,
 	   "Objective":"Waitlist","CreatedAt":%q,"Gate":"session"}],
-	 "Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(-time.Hour).Format(time.RFC3339))
-	var j labSceneJSON
-	dec := json.NewDecoder(strings.NewReader(body))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&j); err != nil {
-		t.Fatal(err)
-	}
-	if err := j.check(now); err != nil {
-		t.Fatal(err)
-	}
-	r.seedScene(j.scene())
-	if got := r.tasks.tasks[0].Status; got != "running" {
-		t.Fatalf("status %q", got)
-	}
-}
-
-func TestLabSceneJSONWaitingDeps(t *testing.T) {
-	var j labSceneJSON
-	body := `{"Tasks":[{"ID":"t-1","Status":"waiting-deps","Lane":"ready","Gate":"dependencies","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`
-	if err := json.Unmarshal([]byte(body), &j); err != nil {
-		t.Fatal(err)
-	}
-	if err := j.check(time.Now()); err != nil {
-		t.Fatal(err)
+	 "Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(-time.Hour).Format(time.RFC3339)), "running"},
+		{"a card waiting on its dependencies", `{"Tasks":[{"ID":"t-1","Kind":"agent","Status":"waiting-deps","Lane":"ready","Gate":"dependencies","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, "waiting-deps"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			var j labSceneJSON
+			dec := json.NewDecoder(strings.NewReader(tc.body))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&j); err != nil {
+				t.Fatal(err)
+			}
+			if err := j.check(now); err != nil {
+				t.Fatal(err)
+			}
+			r.seedScene(j.scene())
+			if got := r.tasks.tasks[0].Status; got != tc.status {
+				t.Fatalf("status %q, want %q", got, tc.status)
+			}
+		})
 	}
 }
 

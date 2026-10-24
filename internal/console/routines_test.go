@@ -215,6 +215,12 @@ func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
 	if r.events.count() != before {
 		t.Fatal("an unknown routine left an event")
 	}
+	if rec = r.do(htmxPost("/routines/nowhere/weekly-bump/skip", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusNotFound {
+		t.Fatalf("a missing project = %d %s", rec.Code, rec.Body)
+	}
+	if r.events.count() != before {
+		t.Fatal("a missing project left an event")
+	}
 }
 
 // The live toggle: a human or agent routine's ghost names the side in
@@ -381,26 +387,5 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	}
 	if r.events.count() != before || len(r.routines.ran) != 8 {
 		t.Fatal("an unknown routine ran or left an event")
-	}
-}
-
-// Every act takes a writer of the routine's project: a writer of another
-// project gets 403 in the writer's words, and nothing reaches the port.
-func TestRoutineRoutesNeedTheProjectsWriter(t *testing.T) {
-	r := newRig(t)
-	members(r)
-	r.routines.views = []factoryd.RoutineView{weeklyBump()}
-	bk, bs := memberLogin(t, r, "bob")
-	for _, act := range []string{"skip", "run", "needs-me"} {
-		rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/"+act, url.Values{"csrf": {bs.csrf}}), bk)
-		if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "you write no project of ai-software-factory-code" {
-			t.Errorf("%s as bob = %d %q", act, rec.Code, rec.Body)
-		}
-	}
-	if len(r.routines.skips) != 0 || len(r.routines.ran) != 0 || len(r.routines.needsMe) != 0 || r.events.count() != 0 {
-		t.Fatalf("a refused act acted: skips %v, ran %v, needs %v, %d events", r.routines.skips, r.routines.ran, r.routines.needsMe, r.events.count())
-	}
-	if rec := r.do(htmxPost("/routines/nowhere/weekly-bump/skip", url.Values{"csrf": {bs.csrf}}), bk); rec.Code != http.StatusNotFound {
-		t.Fatalf("a missing project = %d", rec.Code)
 	}
 }

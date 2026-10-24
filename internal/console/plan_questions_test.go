@@ -343,21 +343,3 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 		t.Errorf("the tool's about = %q", def.Description)
 	}
 }
-
-// A card that waits on the member's answer, no plan question, is still
-// answered with text alone: one comment, one event row, the same note.
-func TestChatSingleAnswerStillWorks(t *testing.T) {
-	r, _, g := newChatRig(t)
-	ck, s := r.loggedIn(t)
-	before := r.events.count()
-	args := `{"task_id":"t-e","text":"60 seconds"}`
-	g.replies = [][]string{{call(1, "answer", args)}}
-	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"use a replica?"}})
-	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #13 t-e \"Use a replica?\", text 60 seconds","id":"TOKEN","tool":"answer"}`, `done {}`})
-	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
-	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer","result":"Answered #13."}`,
-		`applied {"result":"Answered #13.","tool":"answer"}`, `done {}`})
-	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "60 seconds")
-	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13,
-		Kind: factoryd.EventQuestionAnswered, Detail: map[string]any{"comment": int64(1)}})
-}

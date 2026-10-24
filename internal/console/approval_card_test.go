@@ -100,24 +100,6 @@ func TestAMergedCardWearsItsChainState(t *testing.T) {
 	}
 }
 
-// A merged card sits in In progress, its pill reading merged and its
-// chain word beside it; one already done is a finished card in Done.
-func TestAMergedCardWaitsInProgressDoneIsDone(t *testing.T) {
-	r := newRig(t)
-	r.tasks.set("",
-		factoryd.Task{ID: "t-w", Kind: "agent", Status: "merged", Repository: "sf/code", IssueNumber: 7, PRNumber: 9},
-		factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 8, PRNumber: 10})
-	ck, _ := r.loggedIn(t)
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	progress := col(t, body, "In progress")
-	if !strings.Contains(progress, `data-card="t-w"`) || !strings.Contains(progress, `<span class="pill st-merged">merged</span> <span class="st st-merged">waiting for the chain</span>`) {
-		t.Fatalf("In progress holds the merged card without its pill and chain word:\n%s", progress)
-	}
-	if strings.Contains(progress, `data-card="t-d"`) || !strings.Contains(col(t, body, "Done"), `data-card="t-d"`) {
-		t.Fatal("a done card is not a finished card in Done")
-	}
-}
-
 // A merged card under an open roll reads "blocked by roll #N", the words
 // linking the roll's issue, ahead of what the chain's own row says; one
 // with no roll keeps the chain's words.

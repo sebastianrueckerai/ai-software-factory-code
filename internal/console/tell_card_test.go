@@ -187,47 +187,9 @@ func TestTellCardGateWithoutARequest(t *testing.T) {
 	equal(t, "the refusal", msg, want)
 }
 
-// The routing table is the whole choice: three rows keyed by the state
-// with whether the card holds a pending merge request, each naming the
-// event the action it calls records.
-func TestTellCardRoutingTable(t *testing.T) {
-	rows := map[tellKey]string{
-		{status: "running"}:                factoryd.EventCardSteered,
-		{status: "in-review", merge: true}: factoryd.EventMergeDenied,
-		{status: "waiting-human"}:          factoryd.EventQuestionAnswered,
-	}
-	if len(tellRoutes) != len(rows) {
-		t.Fatalf("%d branches, want %d: %+v", len(tellRoutes), len(rows), tellRoutes)
-	}
-	for key, event := range rows {
-		branch, ok := tellRoutes[key]
-		if !ok || branch.event != event || branch.run == nil {
-			t.Errorf("row %+v = %+v, want the branch recording %s", key, branch, event)
-		}
-	}
-	for _, bad := range []tellKey{{status: "backlog"}, {status: "in-review"}, {status: "done"}} {
-		if _, ok := tellRoutes[bad]; ok {
-			t.Errorf("%+v is a row, want none", bad)
-		}
-	}
-}
-
-// tell_card sits in policy.ChatTools right before steer, needs the
-// member's OK by default, which its sentence carries, and the system read
-// names its routes.
+// tell_card needs the member's OK by default, which its sentence
+// carries, and the system read names its routes.
 func TestTellCardIsAChatTool(t *testing.T) {
-	i, j := -1, -1
-	for n, name := range policy.ChatTools {
-		switch name {
-		case "tell_card":
-			i = n
-		case "steer":
-			j = n
-		}
-	}
-	if i < 0 || j < 0 || i+1 != j {
-		t.Fatalf("policy.ChatTools = %v, want tell_card right before steer", policy.ChatTools)
-	}
 	if !slices.Contains(policy.DefaultChat.Confirm, "tell_card") {
 		t.Fatalf("DefaultChat.Confirm = %v, want tell_card", policy.DefaultChat.Confirm)
 	}

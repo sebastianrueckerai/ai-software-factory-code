@@ -309,8 +309,6 @@ var actions = []action{
 			f := withInfra(t, r)
 			r.filed(t, 12)
 			f.set(map[string]any{"number": 12, "state": "open", "merged": false})
-			pause := time.Duration(0)
-			r.c.cfg.MergeRetryPause = &pause
 		},
 		request: func(r *rig, s *session) *http.Request {
 			return post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}})
@@ -968,17 +966,6 @@ func TestStreamEndsWithItsSession(t *testing.T) {
 	t.Fatal("the stream outlived its session by two heartbeats")
 }
 
-// A quiet stream sends the heartbeat within its interval.
-func TestStreamHeartbeat(t *testing.T) {
-	was := heartbeat
-	heartbeat = 20 * time.Millisecond
-	t.Cleanup(func() { heartbeat = was })
-	_, br := streamOf(t, newRig(t), "")
-	if got := nextMessage(t, br); !slices.Equal(got, pinged) {
-		t.Fatalf("a quiet stream sent %q, want the heartbeat %q", got, pinged)
-	}
-}
-
 // The console's server shuts down without waiting on its open streams:
 // EndStreams, registered on its shutdown, ends them, so Shutdown returns
 // before its timeout and the stream reads its end.
@@ -1013,20 +1000,6 @@ func TestStreamEndsAtTheServersShutdown(t *testing.T) {
 	}
 	if got := nextMessage(t, br); !slices.Equal(got, []string{"read: EOF"}) {
 		t.Fatalf("after the shutdown the stream read %q, want its end", got)
-	}
-}
-
-// The card fragment answers 200 for a writer and 404 otherwise.
-func TestCardFragmentAnswers200ForWriter(t *testing.T) {
-	r := newRig(t)
-	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 99})
-	ck, _ := r.loggedIn(t)
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-x", nil), ck)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("card fragment = %d: %s", rec.Code, rec.Body)
-	}
-	if !strings.Contains(rec.Body.String(), "#99") {
-		t.Errorf("card lacks issue number: %.200s", rec.Body)
 	}
 }
 

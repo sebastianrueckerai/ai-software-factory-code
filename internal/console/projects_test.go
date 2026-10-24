@@ -686,12 +686,6 @@ func (r *rig) filed(t *testing.T, number int64) {
 	}
 }
 
-// Each merge attempt waits MergeRetryPause on a 405; zero keeps tests fast.
-func (s *statusRig) noMergePause() {
-	pause := time.Duration(0)
-	s.rig.c.cfg.MergeRetryPause = &pause
-}
-
 func (s *statusRig) row(p factoryd.Project) {
 	s.projects.rows = append(projectRows(), p)
 }
@@ -994,7 +988,6 @@ func TestFilingRefreshesTheSessionFirst(t *testing.T) {
 // project-linkshort, which may be the first filing's.
 func TestMergeActsOnTheLastFiling(t *testing.T) {
 	s := newStatusRig(t)
-	s.noMergePause()
 	s.filed(t, 13)
 	s.infra.set(map[string]any{"number": 13, "state": "open", "merged": false, "html_url": "https://git.example/sf/infra/pulls/13",
 		"user": map[string]any{"login": "sebastian"}})
@@ -1016,7 +1009,6 @@ func TestMergeActsOnTheLastFiling(t *testing.T) {
 // gets a non-2xx status instead of a 303 that shows nothing.
 func TestMergeAsHumanShowsRefusal(t *testing.T) {
 	s := newStatusRig(t)
-	s.noMergePause()
 	s.infra.set(openPull)
 	s.infra.mergeStatus, s.infra.mergeBody = http.StatusUnprocessableEntity, `{"message":"Does not have enough approvals","url":"x"}`
 	req := post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}})
@@ -1048,47 +1040,42 @@ func TestMergeAsHumanShowsRefusal(t *testing.T) {
 	}
 }
 
-// A plain POST whose merge Forgejo refuses every time answers 409 with the
-// refusal text, after the 405 retries ran out.
-func TestMergeRefusalPlainPostGets409(t *testing.T) {
-	s := newStatusRig(t)
-	s.noMergePause()
-	s.infra.set(openPull)
-	s.infra.mergeStatus, s.infra.mergeBody = http.StatusMethodNotAllowed, `{"message":"Please try again later.","url":"x"}`
-	rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Forgejo refused the merge: Please try again later.") {
-		t.Fatalf("a plain POST's refused merge = %d:\n%s", rec.Code, rec.Body.String())
-	}
-	s.infra.mu.Lock()
-	attempts := len(s.infra.merges)
-	s.infra.mu.Unlock()
-	if attempts != mergeRetryTries+1 {
-		t.Errorf("%d merge calls, want %d with the 405 retries", attempts, mergeRetryTries+1)
-	}
-	if run := s.c.runs["linkshort"]; run == nil || run.merge != "Please try again later." {
-		t.Errorf("the refusal was not kept for the panel: %+v", run)
-	}
-}
-
-// A 405 while Forgejo re-checks mergeability becomes a merge on a retry.
+// A 405 while Forgejo re-checks mergeability becomes a merge on the
+// retry; a plain POST whose merge Forgejo refuses every time answers
+// 409 with the refusal text, after the 405 retries ran out.
 func TestMergeRetriesAfter405(t *testing.T) {
-	s := newStatusRig(t)
-	s.noMergePause()
-	s.infra.set(openPull)
-	s.infra.mergeStatuses = []int{http.StatusMethodNotAllowed, http.StatusOK}
-	s.infra.mergeBody = `{"message":"Please try again later.","url":"x"}`
-	rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("merge after a 405 = %d:\n%s", rec.Code, rec.Body.String())
-	}
-	s.infra.mu.Lock()
-	attempts := len(s.infra.merges)
-	s.infra.mu.Unlock()
-	if attempts != 2 {
-		t.Errorf("%d merge calls, want the 405 and the retry", attempts)
-	}
-	if run := s.c.runs["linkshort"]; run == nil || run.merge != "" {
-		t.Errorf("a merged project keeps a refusal: %+v", run)
+	for _, tc := range []struct {
+		name      string
+		statuses  []int
+		code      int
+		body      string
+		attempts  int
+		keptMerge string
+	}{
+		{"a 405 becomes a merge on the retry", []int{http.StatusMethodNotAllowed, http.StatusOK},
+			http.StatusSeeOther, "", 2, ""},
+		{"a merge refused every time answers 409 with the refusal", nil,
+			http.StatusConflict, "Forgejo refused the merge: Please try again later.", mergeRetryTries + 1, "Please try again later."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newStatusRig(t)
+			s.infra.set(openPull)
+			s.infra.mergeStatuses = tc.statuses
+			s.infra.mergeStatus, s.infra.mergeBody = http.StatusMethodNotAllowed, `{"message":"Please try again later.","url":"x"}`
+			rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck)
+			if rec.Code != tc.code || (tc.body != "" && !strings.Contains(rec.Body.String(), tc.body)) {
+				t.Fatalf("%s = %d:\n%s", tc.name, rec.Code, rec.Body)
+			}
+			s.infra.mu.Lock()
+			attempts := len(s.infra.merges)
+			s.infra.mu.Unlock()
+			if attempts != tc.attempts {
+				t.Errorf("%s: %d merge calls, want %d", tc.name, attempts, tc.attempts)
+			}
+			if run := s.c.runs["linkshort"]; run == nil || run.merge != tc.keptMerge {
+				t.Errorf("%s: the panel's kept refusal = %+v", tc.name, run)
+			}
+		})
 	}
 }
 

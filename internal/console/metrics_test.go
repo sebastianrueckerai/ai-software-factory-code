@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -123,6 +124,18 @@ func TestProjectMetricsWindowAndRefusals(t *testing.T) {
 	}
 }
 
+// A figures read that fails answers 500: the page and the JSON share
+// the one refusal.
+func TestProjectMetricsAnswers500WhenTheFiguresRefuse(t *testing.T) {
+	r := newRig(t)
+	r.figures.fail = errors.New("figures down")
+	ck, _ := r.loggedIn(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck)
+	if rec.Code != http.StatusInternalServerError || strings.TrimSpace(rec.Body.String()) != "cannot read the figures" {
+		t.Fatalf("metrics = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 func TestProjectMetricsAnswers403ForNonWriter(t *testing.T) {
 	r := newRig(t)
 	r.repoWriters["sf/code"] = []string{"someone-else"}
@@ -134,7 +147,7 @@ func TestProjectMetricsAnswers403ForNonWriter(t *testing.T) {
 }
 
 // TestProjectMetricsPage pins the page's structure: the deck's five
-// sections and 18 row names, the window control, the measure, the open
+// sections and 22 row names, the window control, the measure, the open
 // page's word, and one figure rendered from the report.
 func TestProjectMetricsPage(t *testing.T) {
 	r := newRig(t)
