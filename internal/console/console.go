@@ -569,7 +569,10 @@ func (c *Console) EndStreams() { c.ending.Do(func() { close(c.ended) }) }
 
 func (c *Console) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h := w.Header()
-	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; "+
+	// blob: images: the chat's optimistic previews are object URLs the
+	// page itself makes of the pictures a member just picked or pasted,
+	// before the message that stores them is sent.
+	h.Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' blob:; "+
 		"form-action 'self'; frame-ancestors 'none'; base-uri 'none'")
 	h.Set("X-Content-Type-Options", "nosniff")
 	h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")

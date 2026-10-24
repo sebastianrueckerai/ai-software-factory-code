@@ -593,6 +593,9 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 
 /* the keys list */
 .overlay { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 70%, transparent); }
+/* the thumbnail's full-size view: the dimmed page behind it, a click or Escape over it */
+.imgbox { cursor: zoom-out; }
+.imgbox img { max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); border: 1px solid var(--line-strong); border-radius: 4px; box-shadow: 0 24px 64px rgba(0, 0, 0, .45); }
 .overlay-box { width: min(480px, calc(100vw - 32px)); padding: 18px 20px 20px; background: var(--bg-raised); border: 1px solid var(--line-strong); box-shadow: 0 24px 64px rgba(0, 0, 0, .45); }
 .overlay-box h2 { margin: 0 0 12px; font-size: 15px; }
 .overlay-box dl { display: grid; grid-template-columns: max-content 1fr; gap: 8px 16px; margin: 0 0 16px; }
@@ -835,7 +838,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .chat-images .queued-remove, .chat-docs .queued-remove { width: 20px; height: 20px; padding: 0; }
 .chat-thumbs { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
 .chat-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 6px 0 0; }
-.chat-thumbs a { display: block; }
+.chat-thumbs a { display: block; cursor: zoom-in; }
 .chat-thumbs img { width: 96px; height: 96px; object-fit: cover; border-radius: 4px; border: 1px solid var(--btn-line); display: block; }
 /* the drawer docks at the right edge of the main area, over the board
    and never over the chat */
