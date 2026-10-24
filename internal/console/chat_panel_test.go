@@ -184,6 +184,9 @@ console.log(JSON.stringify({
     {role: "assistant", content: "All green.", at: "2026-10-11T09:30:04Z"}], "sebastian", []),
   queuedRow: chatView.userHTML("sebastian", "also this", "2026-10-11T09:30:05Z", true),
   readRow: chatView.readHTML,
+  imgRow: chatView.userHTML("sebastian", "look at the run", "2026-10-11T09:30:01Z", false,
+    [{id: 901, content_type: "image/png", name: "img1", url: "/projects/ai-software-factory-code/chat/attachments/901"}], []),
+  zoom: chatView.zoomHTML("/projects/ai-software-factory-code/chat/attachments/901", "img1"),
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
     chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)])
 }));`
@@ -278,6 +281,12 @@ console.log(JSON.stringify({
 			`<div class="said"><p>All green.</p></div></div>`},
 		{"queuedRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
 			`<p class="said">also this</p><p class="meta chat-queued">not read yet: the agent reads it after its current step</p></div>`},
+		{"imgRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
+			`<p class="said">look at the run</p><div class="chat-thumbs">` +
+			`<a class="thumb" href="/projects/ai-software-factory-code/chat/attachments/901" target="_blank" rel="noopener">` +
+			`<img loading="lazy" src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></a></div></div>`},
+		{"zoom", `<div id="img-zoom" class="overlay imgbox" role="dialog" aria-modal="true" aria-label="the image full size; click or Escape closes">` +
+			`<img src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></div>`},
 		{"readRow", `<p class="meta chat-read">✓ read by the agent</p>`},
 		{"share", `[384,384,720,500.25]`},
 	} {
@@ -403,5 +412,103 @@ Promise.resolve().then(drain).then(function () {
 	}
 	if !got.HiddenTick {
 		t.Error("the ten-second tick skips a hidden tab")
+	}
+}
+
+// A thumbnail's click opens its image full size over the page instead
+// of leaving the screen for the serving route — which answers as a
+// download — and a click on the dimmed page, the image or Escape closes
+// it again. The link itself stays, so opening it in a new tab works.
+func TestChatPanelZoomsThumbs(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = {}, zoom = null, zoomHTML = "";
+function el() {
+  return {textContent: "", innerHTML: "", hidden: false, className: "", value: "",
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    addEventListener: function () {}, setAttribute: function () {}, focus: function () {},
+    insertBefore: function () {}, firstChild: null,
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+}
+var log = el();
+log.contains = function () { return true; };
+var thumb = {href: "/projects/p/chat/attachments/901",
+  querySelector: function () { return {alt: "img1"}; },
+  closest: function (sel) { return sel === "a.thumb" ? thumb : null; }};
+var document = {title: "Factory console", hidden: false,
+  createElement: function () { return el(); },
+  getElementById: function (id) {
+    if (id === "img-zoom") return zoom;
+    if (id === "chat-log") return log;
+    if (id === "thread-dialog") return null;
+    return (id === "screen" || id === "chat-divider") ? null : el();
+  },
+  addEventListener: function (kind, fn) { (listeners[kind] = listeners[kind] || []).push(fn); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el(),
+  body: {insertAdjacentHTML: function (where, html) {
+    zoom = el();
+    zoom.contains = function (t) { return t === zoom; };
+    zoom.closest = function () { return null; };
+    zoom.remove = function () { zoom = null; };
+    zoomHTML = html;
+  }}};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url) { return Promise.resolve({ok: true, json: function () {
+    return Promise.resolve(String(url).endsWith("/conversations") ? [] : {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active"}}); }}); },
+  setInterval: function () { return 0; }, setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var fire = function (kind, e) { (listeners[kind] || []).forEach(function (fn) { fn(e); }); };
+var click = function (target) {
+  var prevented = false;
+  fire("click", {target: target, preventDefault: function () { prevented = true; }, stopPropagation: function () {}});
+  return prevented;
+};
+var out = {};
+Promise.resolve().then(function () {
+  out.keptHref = !click(thumb);
+  out.opened = !!zoom && zoomHTML.indexOf('src="/projects/p/chat/attachments/901"') !== -1 && zoomHTML.indexOf('alt="img1"') !== -1;
+}).then(function () {
+  out.closedClick = !click(zoom) && !zoom;
+}).then(function () {
+  click(thumb);
+  fire("keydown", {key: "Escape", stopPropagation: function () {}});
+  out.closedEscape = !zoom;
+}).then(function () {
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		Opened, ClosedClick, ClosedEscape, KeptHref bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if !got.Opened {
+		t.Error("a thumbnail's click does not open its image full size over the page")
+	}
+	if !got.ClosedClick {
+		t.Error("a click on the zoomed image does not close it")
+	}
+	if !got.ClosedEscape {
+		t.Error("Escape does not close the zoomed image")
+	}
+	if got.KeptHref {
+		t.Error("the thumbnail's click follows its link instead of staying in the page")
 	}
 }

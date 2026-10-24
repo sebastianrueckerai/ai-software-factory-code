@@ -1988,6 +1988,12 @@ func TestTimelinePageAndStaticAssets(t *testing.T) {
 	if csp := r.do(httptest.NewRequest(http.MethodGet, "/login", nil)).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "script-src 'self'") {
 		t.Errorf("CSP %q", csp)
 	}
+	// img-src carries blob: beside 'self': the chat's previews of the
+	// images a member has picked or pasted are object URLs the page
+	// itself makes, before the message that stores them is sent
+	if csp := r.do(httptest.NewRequest(http.MethodGet, "/login", nil)).Header().Get("Content-Security-Policy"); !strings.Contains(csp, "img-src 'self' blob:") {
+		t.Errorf("CSP %q: the chat's blob previews stay broken", csp)
+	}
 }
 
 func TestCostsShowTheLastFourteenDaysAndTodayAgainstTheCap(t *testing.T) {
