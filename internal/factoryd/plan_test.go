@@ -1623,6 +1623,29 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	}
 }
 
+// A carry card: its issue's Carries line names a pull request whose head
+// the clone container supplies as branch pull/<n>, and its spec says so
+// and why — the sandbox holds no git credential, so the agent cannot
+// fetch the head itself.
+func TestCarryCardCloneSuppliesThePullRef(t *testing.T) {
+	card := Task{ID: "t-carry", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 12, Source: "webhook", Author: "sebastian", AuthorWriter: true, CarryPR: 9,
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Carry pull request #9 to green checks"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, card, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t-carry", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
+		t.Fatal(err)
+	}
+	env := podEnv(kube.podAt(0))
+	clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
+	if clone["PULL"] != "9" || env["PULL"] != "" {
+		t.Fatalf("clone PULL %q, worker PULL %q, want 9 and none", clone["PULL"], env["PULL"])
+	}
+	if !strings.Contains(env["SPEC"], "This card carries pull request #9") || !strings.Contains(env["SPEC"], "branch pull/9") {
+		t.Fatalf("SPEC %q, want the carry sentence", env["SPEC"])
+	}
+}
+
 // When the last of an accepted plan's cards turns done, the plan records
 // all_children_done and says so on its issue, once.
 func TestAllChildrenDoneEvent(t *testing.T) {

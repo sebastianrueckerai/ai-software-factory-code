@@ -325,6 +325,58 @@ func TestChatNewCardLaneDefaultsToBacklog(t *testing.T) {
 		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "thread": int64(1)}})
 }
 
+// new_card carries a pull request: carry_pr files the issue with its body
+// ending in the Carries line that puts the head in the agent's clone. A
+// brief that asks the sandbox to obtain a pull request's commits without
+// carry_pr is refused at the proposal, so the agent corrects it before
+// Do it, and the run refuses it too.
+func TestChatNewCardCarriesAPullRequest(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"title":"Re-land the feed fix","body":"Carry pull request #9 to green checks.","lane":"backlog","carry_pr":9}`
+	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
+	equal(t, "proposal", proposed, []string{
+		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., lane backlog, carries #9","id":"TOKEN","tool":"new_card"}`,
+		`done {}`})
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Carry pull request #9 to green checks.\n\nCarries: #9")
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
+		Detail: map[string]any{"lane": "backlog", "title": "Re-land the feed fix", "carry": int64(9), "thread": int64(1)}})
+
+	for _, brief := range []string{
+		"Carry pull request #9 to green checks.",
+		"Get PR #1257's original diff and reapply it.",
+		"Cherry-pick the commits of pull request #9.",
+		"Rebase the PR onto main.",
+		"Fetch refs/pull/1257/head.",
+	} {
+		if !carryAsk.MatchString(brief) {
+			t.Errorf("%q asks the sandbox to obtain a pull request's commits", brief)
+		}
+	}
+	for _, brief := range []string{
+		"Ship the API. Depends on #21.",
+		"Cherry-pick the last commit on main.",
+		"Read the PR's description and fix the cache.",
+		"Carries: #9",
+	} {
+		if carryAsk.MatchString(brief) {
+			t.Errorf("%q does not ask the sandbox to obtain a pull request's commits", brief)
+		}
+	}
+
+	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone."
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Body: "Carry pull request #9 to green checks.", Lane: policy.LaneBacklog})
+	equal(t, "a carry brief without carry_pr", []any{code, msg}, []any{http.StatusBadRequest, refusal})
+	// the proposal judges the brief, so the agent corrects it before Do it
+	ck, s := r.loggedIn(t)
+	args = `{"body":"Carry pull request #9 to green checks.","lane":"backlog","title":"Re-land the feed fix"}`
+	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"re-land the feed fix"}})
+	equal(t, "the proposal of a carry brief without carry_pr", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + refusal + `"}`, `text {"text":"Refused."}`, `done {}`})
+}
+
 // set_autonomy without a backlog cap keeps the project's: its proposal
 // names the cap that stays, 5 from the project file, and carries none;
 // with a cap it names the new one.
@@ -348,7 +400,7 @@ func TestChatNewCardRung(t *testing.T) {
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane ready."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
-	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", "", ""); err == nil {
+	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", "", "", 0); err == nil {
 		t.Fatal("a rung without a reason was filed")
 	}
 }

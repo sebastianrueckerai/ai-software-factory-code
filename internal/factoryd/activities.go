@@ -649,6 +649,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.spec, s.cardRole, s.directories, s.pull, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, named("plan card", err)
 	}
+	// a carry card's pull request: its head reaches the clone as branch
+	// pull/<n> (the plan's split supplies its own), and the spec says so,
+	// because the sandbox holds no git credential to fetch it mid-session
+	if s.pull == 0 && t.CarryPR != 0 {
+		s.pull = t.CarryPR
+		s.spec += fmt.Sprintf("\n\nThis card carries pull request #%[1]d: its head is in your clone as branch pull/%[1]d. The sandbox holds no git credential and cannot fetch it, so work from that branch.", t.CarryPR)
+	}
 	// a plan card's first session pins the revision it runs against
 	// (piece 10); the merge refuses a card the plan has since passed
 	if t.Source == SourcePlan && t.Parent != "" && t.PlanRevision == 0 {

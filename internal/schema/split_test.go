@@ -127,6 +127,21 @@ func TestEveryMigrationFileSplitsIntoRealStatements(t *testing.T) {
 	}
 }
 
+// The carry column (the pull request whose head a card's clone supplies)
+// is additive: one column, nothing else.
+func TestTaskCarryMigrationOnlyAddsColumns(t *testing.T) {
+	text, err := files.ReadFile("migrations/factoryd/20261101000000_task_carry_pr.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"ALTER TABLE tasks ADD COLUMN IF NOT EXISTS carry_pr bigint NOT NULL DEFAULT 0",
+	}
+	if got := splitStatements(string(text)); !slices.Equal(got, want) {
+		t.Fatalf("statements = %#v, want %#v", got, want)
+	}
+}
+
 // The console's summary and accent (stage 15, phase 3a) are additive:
 // two nullable columns, nothing else.
 func TestTaskSummaryAccentMigrationOnlyAddsColumns(t *testing.T) {

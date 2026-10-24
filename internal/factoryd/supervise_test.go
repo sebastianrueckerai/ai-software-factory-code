@@ -285,6 +285,44 @@ func TestSameFailureSeesThroughAnEchoedExitCode(t *testing.T) {
 	}
 }
 
+// A git command the sandbox's identity cannot authenticate: no edit can
+// fix it, so the refusals share one run whatever command produced them
+// (a supply-blocked session varies its probes) and trip without file
+// changes in between — a blocked fetch reads as blocked, not as slow work.
+func TestSameFailureGitAuthRefusalsShareOneRun(t *testing.T) {
+	d := newTraces()
+	refuse := func(url string) harness.Event {
+		return cmdEvent("git fetch "+url, 128, "fatal: Authentication failed for '"+url+"'\n")
+	}
+	if trip := d.observe(refuse("http://forgejo/sf/r.git")); trip != nil {
+		t.Fatalf("first refusal tripped: %+v", trip)
+	}
+	if trip := d.observe(refuse("http://github.com/x/r.git")); trip != nil {
+		t.Fatalf("second refusal tripped: %+v", trip)
+	}
+	trip := d.observe(cmdEvent("git fetch http://forgejo/fork.git", 128,
+		"remote: Forbidden\nfatal: unable to access 'http://forgejo/fork.git': The requested URL returned error: 403\n"))
+	if trip == nil || trip.Kind != TripSameFailure {
+		t.Fatalf("third refusal: trip = %+v, want same_failure", trip)
+	}
+	if !strings.Contains(trip.Detail, "refused authentication") || !strings.Contains(trip.Detail, "git credential") {
+		t.Fatalf("detail = %q, want the supply refusal named", trip.Detail)
+	}
+}
+
+// A test's own log can embed git's refusal words, indented: that is code
+// under test failing, not the sandbox refused, and never trips the shared
+// refusal run.
+func TestSameFailureIndentedAuthTextIsNoRefusal(t *testing.T) {
+	d := newTraces()
+	fail := cmdEvent("go test ./...", 1, "    auth_test.go:20: fatal: Authentication failed for 'http://x'\nFAIL")
+	for i := 0; i < 4; i++ {
+		if trip := d.observe(fail); trip != nil {
+			t.Fatalf("indented auth text tripped: %+v", trip)
+		}
+	}
+}
+
 func TestSameFailureNonTrips(t *testing.T) {
 	edit := 0
 	step := func(d *traceDetectors, ev harness.Event) *Trip {

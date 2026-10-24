@@ -601,6 +601,25 @@ func askedShips(body string) (ruling string, clauses []int) {
 	return ruling, clauses
 }
 
+// askedCarry is the issue body's line "Carries: #<pr>" (the # optional),
+// key in any case, the last one winning: the pull request whose head the
+// card's clone supplies as branch pull/<n> — the sandbox holds no git
+// credential, so a card that carries an existing pull request's commits
+// names it here; 0 without one.
+func askedCarry(body string) int64 {
+	var pr int64
+	for l := range strings.Lines(body) {
+		key, v, _ := strings.Cut(l, ":")
+		if !strings.EqualFold(strings.TrimSpace(key), "carries") {
+			continue
+		}
+		if n, err := strconv.ParseInt(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "#")), 10, 64); err == nil && n > 0 {
+			pr = n
+		}
+	}
+	return pr
+}
+
 // isRulingID: a design decision's C-entry id, "C20" in any case.
 func isRulingID(s string) bool {
 	if len(s) < 2 || (s[0] != 'C' && s[0] != 'c') {
@@ -616,9 +635,9 @@ func isRulingID(s string) bool {
 
 // briefObjective is objective as a model's brief carries it: its body
 // without the lines the intake reads into the card's fields (Size,
-// Budget, Rung, Ships), and when mapped, without the card's directories
-// line, which the brief's repository map lists (roadmap 201). Every
-// other line stands as its author wrote it.
+// Budget, Rung, Ships, Carries), and when mapped, without the card's
+// directories line, which the brief's repository map lists (roadmap 201).
+// Every other line stands as its author wrote it.
 func briefObjective(objective string, mapped bool) string {
 	title, body, ok := strings.Cut(objective, "\n\n")
 	if !ok {
@@ -631,7 +650,7 @@ func briefObjective(objective string, mapped bool) string {
 		ruling, _ := askedShips(l)
 		key, _, _ := strings.Cut(l, ":")
 		dirs := strings.EqualFold(strings.TrimSpace(key), "directories") || strings.TrimSpace(key) == cardDirectories
-		if size == "" && eur == 0 && rung == "" && ruling == "" && (!mapped || !dirs) {
+		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && (!mapped || !dirs) {
 			kept.WriteString(l)
 		}
 	}
@@ -960,6 +979,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		Rung:         rung,
 		ShipsRuling:  shipsRuling,
 		ShipsClauses: shipsClauses,
+		CarryPR:      askedCarry(issue.Body),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",

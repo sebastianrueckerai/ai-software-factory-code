@@ -2947,7 +2947,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Lane, form.Priority, form.Size, "", "", "")
+	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Lane, form.Priority, form.Size, "", "", "", 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return

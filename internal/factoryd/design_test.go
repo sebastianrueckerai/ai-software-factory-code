@@ -87,12 +87,45 @@ func TestAskedShips(t *testing.T) {
 	}
 }
 
+// The Carries line: the pull request whose head a carry card's clone
+// supplies, as branch pull/<n>; 0 without one.
+func TestAskedCarry(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want int64
+	}{
+		"hash":         {"Carry the branch\n\nCarries: #9\n", 9},
+		"bare number":  {"Carries: 9", 9},
+		"any case":     {"carries: #41", 41},
+		"last wins":    {"Carries: #9\nCarries: #41", 41},
+		"no line":      {"No carry.", 0},
+		"not a number": {"Carries: nine", 0},
+		"zero":         {"Carries: #0", 0},
+		"negative":     {"Carries: #-1", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := askedCarry(tc.body); got != tc.want {
+				t.Fatalf("askedCarry = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 // The Ships line is card data, not brief prose: every model brief drops
 // it with the other intake lines.
 func TestBriefObjectiveDropsTheShipsLine(t *testing.T) {
 	got := briefObjective("The band goes\n\nThe screen.\n\nShips: C20 clauses 1, 3\nSize: small", false)
 	if got != "The band goes\n\nThe screen." {
 		t.Fatalf("brief = %q, want it without the Ships and Size lines", got)
+	}
+}
+
+// The Carries line is card data too: the brief drops it with the others,
+// and the carry sentence says what the clone holds.
+func TestBriefObjectiveDropsTheCarriesLine(t *testing.T) {
+	got := briefObjective("The band goes\n\nThe screen.\n\nCarries: #9", false)
+	if got != "The band goes\n\nThe screen." {
+		t.Fatalf("brief = %q, want it without the Carries line", got)
 	}
 }
 
