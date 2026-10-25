@@ -239,7 +239,7 @@ func TestTimerCapRefuses(t *testing.T) {
 // One project's failing pass holds only that project back: the sweep
 // logs its error and the other projects' timers still fire.
 func TestWakerPassIsolatesProjects(t *testing.T) {
-	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
 		"one": {Repository: "sf/one", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
 		"two": {Repository: "sf/two", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
 	})
@@ -248,7 +248,7 @@ func TestWakerPassIsolatesProjects(t *testing.T) {
 		if _, err := s.NewConversation(t.Context(), repository, "sebastian"); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.AddChatTimer(t.Context(), repository, "sebastian", 1, time.Now().Add(-time.Minute), "Check.", ""); err != nil {
+		if err := s.AddChatTimer(t.Context(), repository, "sebastian", 1, clock.Add(-time.Minute), "Check.", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
