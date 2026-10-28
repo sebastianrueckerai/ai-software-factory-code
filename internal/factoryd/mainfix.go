@@ -17,11 +17,14 @@ import (
 // run of main pauses the project's merge queue, files the fix-forward
 // card, and, when no fix lands within mainRedBound, files the revert of
 // the red commit as a factory-PR card. A run whose every failed job lost
-// its runner (killed, shut down, or its docker daemon restarted) files a
-// human card to re-run them instead, and no revert: the commit is not at
-// fault. The next green run of main ends the pause, wakes the queue's
-// heads and ends the pause's card, unless the card's own merge made main
-// green.
+// its runner (killed, shut down, or its docker daemon restarted) is no
+// commit's fault and reverts nothing: factoryd re-runs it once through
+// Forgejo's rerun API and pauses with no card. The human card to re-run
+// it comes at once when the re-run fails or Forgejo offers none, and when
+// the re-run's jobs lost their runner too; a re-run red in a step files
+// the fix-forward card. The next green run of main ends the pause, wakes the
+// queue's heads and ends the pause's card, unless the card's own merge
+// made main green.
 const (
 	SourceMainFix = "mainfix"
 	SourceRerun   = "rerun"
@@ -30,27 +33,34 @@ const (
 )
 
 // QueuePause is a project's paused merge queue: main is red since the run.
+// RerunAt is factoryd's one re-run of the run, zero without one; a pause
+// on a re-run has no card until the re-run is red again.
 type QueuePause struct {
 	Project             string
 	RunID               int64
 	SHA                 string
-	Since               time.Time
+	Since, RerunAt      time.Time
 	FixTask, RevertTask string
 }
 
+// PauseQueue writes the project's pause; a pause that stands, a re-run's,
+// takes p's run and card.
 func (s *PGStore) PauseQueue(ctx context.Context, p QueuePause) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task) VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (project) DO NOTHING`, p.Project, p.RunID, p.SHA, p.Since, p.FixTask)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at`,
+		p.Project, p.RunID, p.SHA, p.Since, p.FixTask, nullTime(p.RerunAt))
 	return err
 }
 
 func (s *PGStore) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
 	var p QueuePause
-	err := s.db.QueryRowContext(ctx, `SELECT project, run_id, sha, since, fix_task, revert_task FROM queue_pauses WHERE project = $1`, project).
-		Scan(&p.Project, &p.RunID, &p.SHA, &p.Since, &p.FixTask, &p.RevertTask)
+	var rerun sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT project, run_id, sha, since, rerun_at, fix_task, revert_task FROM queue_pauses WHERE project = $1`, project).
+		Scan(&p.Project, &p.RunID, &p.SHA, &p.Since, &rerun, &p.FixTask, &p.RevertTask)
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueuePause{}, false, nil
 	}
+	p.RerunAt = rerun.Time
 	return p, err == nil, err
 }
 
@@ -66,10 +76,12 @@ func (s *PGStore) ClearQueuePause(ctx context.Context, project string) error {
 
 // mainState reads main's newest push run: a red one pauses the queue and
 // files its card, a green one ends a pause, and a pause past the bound
-// with no revert yet files it. While the newest runs or waits (a red
-// one's re-run too), or ended neither green nor red, nothing changes: an
-// older run says nothing of main's head. runs are the poll's, newest
-// first by id.
+// with no revert yet files it. A red one on a pause with no card, a
+// re-run's, is judged again: the re-run's own red files its card, a newer
+// run's red is judged as a first one.
+// While the newest runs or waits (a red one's re-run too), or ended
+// neither green nor red, nothing changes: an older run says nothing of
+// main's head. runs are the poll's, newest first by id.
 func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	newest := newestMain(runs)
 	if newest == nil || (newest.Status != "success" && newest.Status != "failure") {
@@ -91,8 +103,12 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 			log.Printf("roller: end the pause's card %s: %v", pause.FixTask, err)
 		}
 		return nil
-	case newest.Status == "failure" && !paused:
-		return r.pause(ctx, *newest)
+	case newest.Status == "failure" && (!paused || pause.FixTask == ""):
+		var rerunAt time.Time
+		if pause.RunID == newest.ID {
+			rerunAt = pause.RerunAt
+		}
+		return r.pause(ctx, *newest, rerunAt)
 	case paused && pause.RevertTask == "" && time.Since(pause.Since) >= mainRedBound:
 		return r.revert(ctx, pause)
 	}
@@ -110,11 +126,13 @@ func newestMain(runs []ActionRun) *ActionRun {
 	return newest
 }
 
-// pause pauses the queue on the red run and files the fix-forward card,
-// or the human card to re-run the jobs when every failed job lost its
-// runner (lostRunners): the card first, so a crash between the two leaves
-// no pause without it.
-func (r *Roller) pause(ctx context.Context, run ActionRun) error {
+// pause pauses the queue on the red run and files the fix-forward card.
+// When every failed job lost its runner (lostRunners), it re-runs the run
+// and pauses with no card; once rerunAt holds that one re-run, the human
+// card to re-run the jobs follows, as it does when the re-run fails. The
+// card or the re-run first, so a crash between the two leaves no pause
+// without it.
+func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) error {
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
 		return err
@@ -141,8 +159,25 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	var t Task
 	card := "fix-forward card"
 	if lost != nil {
+		why := "factoryd re-ran it once, and the re-run's jobs lost their runner too: the runner or its node is at fault, not the code. " +
+			"Check the forgejo-runner pod in namespace forgejo (its restarts, its dind container, its node), then re-run the run from its page."
+		if rerunAt.IsZero() {
+			err := r.Forgejo.RerunActionRun(ctx, r.Forgejo.Access(p).Actions, r.Repo.Owner, r.Repo.Name, run.ID)
+			if err == nil {
+				if err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: time.Now()}); err != nil {
+					return err
+				}
+				log.Printf("roller: main is red at %s (run %d), every failed job lost its runner: the merge queue of %s pauses while factoryd re-runs the run", run.CommitSHA, run.ID, p.Repository)
+				return nil
+			}
+			log.Printf("roller: re-run main's run %d: %v: the re-run card at once", run.ID, err)
+			why = fmt.Sprintf("factoryd re-runs such a run once itself, but its re-run failed (%v).", err)
+			if errors.Is(err, ErrNoRerun) {
+				why = "factoryd re-runs such a run once itself, but Forgejo offered no re-run: it has no rerun API (that came with Forgejo 17), or the project's Actions token lacks the right."
+			}
+		}
 		card = "re-run card"
-		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost), "factoryd", Task{
+		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost, why), "factoryd", Task{
 			SHA: run.CommitSHA, Source: SourceRerun,
 		})
 	} else {
@@ -159,7 +194,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	if err != nil {
 		return err
 	}
-	if err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), FixTask: t.ID}); err != nil {
+	if err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: rerunAt, FixTask: t.ID}); err != nil {
 		return err
 	}
 	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)
@@ -171,7 +206,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 // factoryd's own (issueClosed). The re-run card's human finishes, and a
 // fix-forward card still open stops its session: the red it was filed for
 // is gone. A fix card that merged made main green itself and is left as
-// it is, as is one that ended or is ending.
+// it is, as is one that ended or is ending; a re-run's pause has none.
 func (r *Roller) endPauseCard(ctx context.Context, pause QueuePause, run ActionRun) error {
 	t, ok, err := r.Store.Task(ctx, pause.FixTask)
 	if err != nil || !ok {
@@ -327,11 +362,12 @@ var revertBranch = func(ctx context.Context, f *Forgejo, repo Repo, sha, branch 
 // revert files the revert of the pause's red commit: a branch on the
 // bot's fork, its pull request, and a factory-PR card the gates and the
 // approval take like a roll's, exempt from the pause. A pause on a
-// re-run card, its jobs having lost their runner, reverts nothing.
+// re-run or on a re-run card, its jobs having lost their runner, reverts
+// nothing.
 func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	if fix, ok, err := r.Store.Task(ctx, pause.FixTask); err != nil {
 		return err
-	} else if ok && fix.Source == SourceRerun {
+	} else if pause.FixTask == "" || ok && fix.Source == SourceRerun {
 		return nil
 	}
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())

@@ -541,12 +541,13 @@ func rollRefusedQuestion(short string, names, lines []string, runURL string) Hum
 
 // rerunQuestion is the card of a red main whose push run index of commit
 // sha failed only in jobs that lost their runner: failed names the jobs,
-// lost holds their records.
-func rerunQuestion(index int64, sha, failed string, lost []string) HumanQuestion {
+// lost holds their records, why says why factoryd's own re-run did not
+// end it.
+func rerunQuestion(index int64, sha, failed string, lost []string, why string) HumanQuestion {
 	return HumanQuestion{
 		Ask: askOf(fmt.Sprintf("main is red at %s: re-run %s", sha[:min(7, len(sha))], failed), ", its runner was lost."),
 		Why: fmt.Sprintf("Main CI's push run %d of %s failed, but none of its steps did: each failed job lost its runner while it ran "+
-			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card.", index, sha),
+			"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. %s", index, sha, why),
 		Info: strings.Join(lost, "\n\n") + "\n\n" +
 			"Re-run each job from its page. The project's merge queue is paused until a push run of main is green: the re-run's green " +
 			"result ends the pause, and factoryd closes this issue.",

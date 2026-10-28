@@ -205,7 +205,10 @@ human: its approval request is withdrawn (an approval sent meanwhile
 finds none open) and it takes its turn again. A red main pauses the
 queue and files a fix-forward card. The green run that ends the pause
 also ends that card, with a comment naming the run, unless the card's own
-merge made main green. So that turn comes once a fix made main green; main is merged in,
+merge made main green. A red run whose failed jobs all lost their runner
+pauses with no card while factoryd re-runs it once (Forgejo 17's rerun
+API); the human card to re-run it comes when the re-run fails, Forgejo
+offers none, or the re-run lost its runner too. So that turn comes once main is green again; main is merged in,
 and a head that moved runs its checks. With nothing new from main the
 head's own checks are waited on and the red ones run again on an empty
 commit (`RerunChecks`); red checks that pass there, on the same tree, are

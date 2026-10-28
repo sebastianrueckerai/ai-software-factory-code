@@ -314,6 +314,8 @@ type rollForgejo struct {
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
 	unreadable  map[string]bool                // a job's target_url whose log Forgejo cannot open
 	closed      []string                       // the number of every issue closed
+	rerun       int                            // the status a re-run answers; 0 is 204
+	reruns      []string                       // "token run" of every re-run asked
 
 	// the roll branch's writes: what each contents commit changed on it,
 	// the pull request updates (its rebases), and the pull requests the
@@ -408,6 +410,9 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			json.NewDecoder(r.Body).Decode(&in)
 			dep := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies") + " on " + fmt.Sprint(in["index"])
 			f.deps = slices.DeleteFunc(f.deps, func(d string) bool { return d == dep })
+		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
+			f.reruns = append(f.reruns, strings.TrimPrefix(r.Header.Get("Authorization"), "token ")+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/rerun"))
+			w.WriteHeader(cmp.Or(f.rerun, http.StatusNoContent))
 		case repo == codeRepo && p == "/actions/runs":
 			if q.Get("event") != "push" {
 				t.Errorf("runs query %v", q)
