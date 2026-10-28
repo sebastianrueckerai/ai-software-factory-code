@@ -184,8 +184,10 @@ func TestDeploymentHealthTextIsCapped(t *testing.T) {
 }
 
 type fakeHealth struct {
-	byNS  map[string]error
-	calls []string
+	byNS    map[string]error
+	deps    map[string][]string
+	listErr error
+	calls   []string
 }
 
 func (f *fakeHealth) DeploymentHealth(_ context.Context, ns, name string, _ time.Time) (DeploymentHealth, error) {
@@ -196,12 +198,31 @@ func (f *fakeHealth) DeploymentHealth(_ context.Context, ns, name string, _ time
 	return DeploymentHealth{Namespace: ns, Name: name, Desired: 1, Ready: 1, Updated: 1, Available: 1}, nil
 }
 
+func (f *fakeHealth) Deployments(_ context.Context, ns string) ([]DeploymentState, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	var ds []DeploymentState
+	for _, n := range f.deps[ns] {
+		ds = append(ds, DeploymentState{Name: n})
+	}
+	return ds, nil
+}
+
 func TestDeploymentHealthTextScopesToTheProject(t *testing.T) {
 	p := Project{Name: "infra", Namespaces: []string{"platform", "forgejo"}}
+	deps := map[string][]string{"platform": {"web", "api"}, "forgejo": {"web", "runner"}, "factory": {"factoryd"}}
+	var many []string
+	for i := 22; i >= 0; i-- {
+		many = append(many, fmt.Sprintf("d%02d", i))
+	}
+	notFound := map[string]error{"platform": ErrNotFound, "forgejo": ErrNotFound}
 	const reads = "Deployment forgejo in namespace %s: 1 of 1 ready (1 updated, 1 available)\nReplicaSets: none\nPods: none\nEvents of the last hour: none"
 	for _, c := range []struct {
 		name, deployment, namespace string
 		byNS                        map[string]error
+		deps                        map[string][]string
+		listErr                     error
 		text, err                   string
 		status                      int
 		calls                       []string
@@ -211,8 +232,22 @@ func TestDeploymentHealthTextScopesToTheProject(t *testing.T) {
 		{name: "the second namespace", deployment: "forgejo", byNS: map[string]error{"platform": ErrNotFound},
 			text: fmt.Sprintf(reads, "forgejo"), calls: []string{"platform/forgejo", "forgejo/forgejo"}},
 		{name: "a given namespace", deployment: "forgejo", namespace: "forgejo", text: fmt.Sprintf(reads, "forgejo"), calls: []string{"forgejo/forgejo"}},
-		{name: "found nowhere", deployment: "forgejo", byNS: map[string]error{"platform": ErrNotFound, "forgejo": ErrNotFound}, status: 404,
-			err: "no Deployment forgejo in namespace platform or forgejo of project infra: check the name", calls: []string{"platform/forgejo", "forgejo/forgejo"}},
+		{name: "found nowhere", deployment: "forgejo", byNS: notFound, deps: deps, status: 404,
+			err:   "no Deployment forgejo in namespace platform or forgejo of project infra; its Deployments: api, runner, web; factoryd reads only the project's namespaces",
+			calls: []string{"platform/forgejo", "forgejo/forgejo"}},
+		{name: "not in a given namespace", deployment: "forgejo", namespace: "forgejo", byNS: notFound, deps: deps, status: 404,
+			err:   "no Deployment forgejo in namespace forgejo of project infra; its Deployments: runner, web; factoryd reads only the project's namespaces",
+			calls: []string{"forgejo/forgejo"}},
+		{name: "found nowhere, no Deployment there", deployment: "forgejo", byNS: notFound, status: 404,
+			err:   "no Deployment forgejo in namespace platform or forgejo of project infra; it has no Deployment; factoryd reads only the project's namespaces",
+			calls: []string{"platform/forgejo", "forgejo/forgejo"}},
+		{name: "found nowhere, many Deployments there", deployment: "forgejo", namespace: "platform", byNS: notFound, deps: map[string][]string{"platform": many}, status: 404,
+			err: "no Deployment forgejo in namespace platform of project infra; its Deployments: d00, d01, d02, d03, d04, d05, d06, d07, d08, d09, " +
+				"d10, d11, d12, d13, d14, d15, d16, d17, d18, d19 and 3 more; factoryd reads only the project's namespaces",
+			calls: []string{"platform/forgejo"}},
+		{name: "found nowhere, the list fails", deployment: "forgejo", byNS: notFound, deps: deps, listErr: errors.New("boom"), status: 404,
+			err:   "no Deployment forgejo in namespace platform or forgejo of project infra; check the name; factoryd reads only the project's namespaces",
+			calls: []string{"platform/forgejo", "forgejo/forgejo"}},
 		{name: "forbidden", deployment: "forgejo", namespace: "platform", byNS: map[string]error{"platform": fmt.Errorf("%w: GET", ErrForbidden)}, status: 403,
 			err: "factoryd may not read pods and events in namespace platform: bind ClusterRole factoryd-health to ServiceAccount factory/factoryd there", calls: []string{"platform/forgejo"}},
 		{name: "forbidden in the first, found in the second", deployment: "forgejo", byNS: map[string]error{"platform": fmt.Errorf("%w: GET", ErrForbidden)},
@@ -227,7 +262,7 @@ func TestDeploymentHealthTextScopesToTheProject(t *testing.T) {
 			err: "deployment must be a Deployment's name (lower-case letters, digits, '-' and '.', at most 253 characters): give the name as the cluster lists it"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			f := &fakeHealth{byNS: c.byNS}
+			f := &fakeHealth{byNS: c.byNS, deps: c.deps, listErr: c.listErr}
 			text, err := DeploymentHealthText(context.Background(), f, p, c.deployment, c.namespace, healthNow)
 			if c.err == "" {
 				if err != nil || text != c.text {
@@ -300,7 +335,7 @@ func TestDeploymentHealthEndpoint(t *testing.T) {
 	f.byNS["platform"] = ErrNotFound
 	rr := httptest.NewRecorder()
 	h(rr, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"task_id":"t1","deployment":"forgejo"}`)))
-	if rr.Code != 404 || rr.Body.String() != "no Deployment forgejo in namespace platform of project infra: check the name\n" {
+	if rr.Code != 404 || rr.Body.String() != "no Deployment forgejo in namespace platform of project infra; it has no Deployment; factoryd reads only the project's namespaces\n" {
 		t.Fatalf("%d %q", rr.Code, rr.Body)
 	}
 	f.byNS["platform"] = errors.New("boom")

@@ -24,6 +24,7 @@ const (
 	healthTextMax     = 12 << 10
 	healthEventPage   = 500
 	healthEventPages  = 20
+	healthNamesMax    = 20
 )
 
 // DeploymentHealth is what factoryd reads of one Deployment: its
@@ -419,9 +420,10 @@ type HealthRefusal struct {
 
 func (e *HealthRefusal) Error() string { return e.Msg }
 
-// DeploymentHealthReader is the Kubernetes read DeploymentHealthText needs.
+// DeploymentHealthReader is the Kubernetes reads DeploymentHealthText needs.
 type DeploymentHealthReader interface {
 	DeploymentHealth(ctx context.Context, namespace, name string, now time.Time) (DeploymentHealth, error)
+	Deployments(ctx context.Context, namespace string) ([]DeploymentState, error)
 }
 
 var dnsSubdomain = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$`)
@@ -469,7 +471,33 @@ func DeploymentHealthText(ctx context.Context, r DeploymentHealthReader, p Proje
 	if failed != nil {
 		return "", failed
 	}
-	return "", refuse(http.StatusNotFound, "no Deployment %s in namespace %s of project %s: check the name", deployment, strings.Join(search, " or "), p.Name)
+	return "", refuse(http.StatusNotFound, "no Deployment %s in namespace %s of project %s; %s; factoryd reads only the project's namespaces",
+		deployment, strings.Join(search, " or "), p.Name, deploymentNames(ctx, r, search))
+}
+
+// deploymentNames names the Deployments of namespaces for a refusal, sorted
+// and at most healthNamesMax of them.
+func deploymentNames(ctx context.Context, r DeploymentHealthReader, namespaces []string) string {
+	var names []string
+	for _, ns := range namespaces {
+		ds, err := r.Deployments(ctx, ns)
+		if err != nil {
+			log.Printf("deployment health: list the Deployments of %s: %v", ns, err)
+			return "check the name"
+		}
+		for _, d := range ds {
+			names = append(names, d.Name)
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	switch {
+	case len(names) == 0:
+		return "it has no Deployment"
+	case len(names) > healthNamesMax:
+		return fmt.Sprintf("its Deployments: %s and %d more", strings.Join(names[:healthNamesMax], ", "), len(names)-healthNamesMax)
+	}
+	return "its Deployments: " + strings.Join(names, ", ")
 }
 
 // HealthStore is what the health hand-over reads: the task and its project.

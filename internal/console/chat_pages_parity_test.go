@@ -370,6 +370,10 @@ func (healthStub) DeploymentHealth(_ context.Context, ns, name string, _ time.Ti
 	return factoryd.DeploymentHealth{Namespace: ns, Name: name, Desired: 1, Ready: 1, Updated: 1, Available: 1}, nil
 }
 
+func (healthStub) Deployments(context.Context, string) ([]factoryd.DeploymentState, error) {
+	return nil, nil
+}
+
 // deployment_health reads in the turn's project's namespaces and refuses
 // another project's, naming the project's own.
 func TestDeploymentHealthIsScopedToTheTurnsProject(t *testing.T) {

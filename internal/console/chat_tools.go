@@ -1162,7 +1162,7 @@ var tools = []chatTool{
 	{name: "deployment_health", title: "Read a Deployment",
 		params:   map[string]any{"deployment": str("the Deployment's name"), "namespace": str("a project namespace (default: the first that holds it)")},
 		required: []string{"deployment"},
-		about:    "A Deployment's pods, restarts, last terminations and last hour of events, without logs or Secrets.",
+		about:    "A Deployment in the project's namespaces only: its pods, restarts, terminations and events, no logs.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.c.deploymentHealthText(t.r.Context(), t.p, in.Deployment, in.Namespace)
 			return s, nil, err
