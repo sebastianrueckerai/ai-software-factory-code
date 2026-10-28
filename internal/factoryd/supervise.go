@@ -189,9 +189,10 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if ev.Kind == harness.EventPushed {
 		s.pushed = true
 	}
+	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
 	switch {
 	case ev.Kind == harness.EventToolCall, ev.Kind == harness.EventCommand:
-		if !detailBool(ev, "subagent") {
+		if !subagentCall {
 			s.sinceChange++
 		}
 		if ev.Kind == harness.EventCommand {
@@ -207,8 +208,13 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 			s.nudges = nil
 		}
 	}
-	// every detector sees every event, whichever trips
-	traced := s.traces.observe(ev)
+	// every detector sees every event, whichever trips, but a subagent's
+	// call: a nudge or trip about it would reach the main agent, which did
+	// not make it
+	var traced *Trip
+	if !subagentCall {
+		traced = s.traces.observe(ev)
+	}
 	if !at.Before(s.deadline) {
 		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 	}

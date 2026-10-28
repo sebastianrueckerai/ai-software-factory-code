@@ -1244,6 +1244,44 @@ func TestSubagentCallsCountOnce(t *testing.T) {
 	}
 }
 
+// A nudge or trip about a subagent's call would reach the main agent, which
+// did not make it: six identical subagent reads, past the nudge (3 in a row)
+// and same_call (4), leave no trace; six identical own reads after them get
+// the nudge at the third and the trip at the sixth.
+func TestSubagentCallsFeedNoTraceDetector(t *testing.T) {
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	t0 := time.Unix(0, 0)
+	args := map[string]any{"filePath": "/w/a.go"}
+	for i := range 6 {
+		if trip := s.Event(subagentEvent("read", args), t0); trip != nil {
+			t.Fatalf("subagent read %d tripped: %+v", i, trip)
+		}
+		if n := s.TakeNudge(); n != nil {
+			t.Fatalf("subagent read %d nudged: %+v", i, n)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		if trip := s.Event(toolEvent("read", args), t0); trip != nil {
+			t.Fatalf("own read %d tripped: %+v", i, trip)
+		}
+		n := s.TakeNudge()
+		if i != 3 {
+			if n != nil {
+				t.Fatalf("own read %d nudged: %+v", i, n)
+			}
+			continue
+		}
+		if n == nil || n.Tool != "read" || n.Count != 3 {
+			t.Fatalf("nudge = %+v, want read after 3", n)
+		}
+		s.NudgeSent(*n)
+	}
+	trip := s.Event(toolEvent("read", args), t0)
+	if trip == nil || trip.Kind != TripSameCall || trip.Detail != "read: the same call 3 times in a row after 1 nudge" {
+		t.Fatalf("the sixth own read: trip = %+v, want same_call", trip)
+	}
+}
+
 // Silence after a message is no circle: a command running over 5 minutes
 // trips no_progress, which the supervisor is asked about (review I2).
 func TestNoProgressAfterMessageAsks(t *testing.T) {

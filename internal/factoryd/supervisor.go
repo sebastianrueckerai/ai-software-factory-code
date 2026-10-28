@@ -71,12 +71,12 @@ func decodeAnswer(content string, v any) error {
 // commands with their outcomes over time, the files touched with edit
 // counts, the last error signatures and the diff so far.
 type ProgressDigest struct {
-	Commands      []DigestCommand `json:"commands"`
-	Files         map[string]int  `json:"files_edited"`
-	ToolCalls     int             `json:"other_tool_calls"`
-	SubagentCalls int             `json:"subagent_calls"` // the commands and tool calls subagents made
-	Errors        []DigestError   `json:"last_error_signatures"`
-	Diff          DigestDiff      `json:"diff"`
+	Commands          []DigestCommand `json:"commands"`
+	Files             map[string]int  `json:"files_edited"`
+	ToolCalls         int             `json:"other_tool_calls"`
+	SubagentToolCalls int             `json:"subagent_tool_calls"` // the part of ToolCalls subagents made
+	Errors            []DigestError   `json:"last_error_signatures"`
+	Diff              DigestDiff      `json:"diff"`
 }
 
 type DigestCommand struct {
@@ -119,9 +119,6 @@ func newDigestBuilder(start time.Time) *digestBuilder {
 }
 
 func (b *digestBuilder) add(ev harness.Event, at time.Time) {
-	if (ev.Kind == harness.EventCommand || ev.Kind == harness.EventToolCall) && detailBool(ev, "subagent") {
-		b.g.SubagentCalls++
-	}
 	switch ev.Kind {
 	case harness.EventCommand:
 		cmd := detailString(ev, "command")
@@ -148,6 +145,9 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 		}
 	case harness.EventToolCall:
 		b.g.ToolCalls++
+		if detailBool(ev, "subagent") {
+			b.g.SubagentToolCalls++
+		}
 	case harness.EventCheckpoint:
 		diff, ok := ev.Detail["diff"].(map[string]any)
 		if !ok {
@@ -200,8 +200,8 @@ func (g ProgressDigest) Summary() string {
 		edits += n
 	}
 	calls := fmt.Sprintf("%d other tool calls", g.ToolCalls)
-	if g.SubagentCalls > 0 {
-		calls += fmt.Sprintf(" (%d by subagents)", g.SubagentCalls)
+	if g.SubagentToolCalls > 0 {
+		calls += fmt.Sprintf(" (%d by subagents)", g.SubagentToolCalls)
 	}
 	s := fmt.Sprintf("%d commands (%d failed), %d files changed %d times, %s, diff %d files +%d/-%d",
 		len(g.Commands), failed, len(g.Files), edits, calls, g.Diff.Files, g.Diff.Insertions, g.Diff.Deletions)
