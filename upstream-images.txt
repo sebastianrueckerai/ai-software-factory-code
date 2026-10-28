@@ -86,7 +86,7 @@ quay.io/cilium/cilium-envoy:v1.37.5-1782911245-7cffc778c923f68a77954a53b1a98d6b5
 quay.io/cilium/operator-generic:v1.20.0@sha256:79e630e3f5e2344a2c352d341a619c1cb7fbe874cadcfe244edf032d62d037c2 bootstrap
 
 # Forgejo's path, referenced at the upstream
-code.forgejo.org/forgejo/forgejo:15.0.9-rootless@sha256:e0950cca25a2344f0f519b9aff894bcfa80b53601b24f07066d6625033597b55 bootstrap
+code.forgejo.org/forgejo/forgejo:17.0.1-rootless@sha256:b76f32add7267b2a791ea04014a441cf9d086050e7c0250feec9fb7066e9828f bootstrap
 ghcr.io/cloudnative-pg/cloudnative-pg:1.30.1@sha256:b0f9805bd5f98592e7320b5ea624dd10a7a6ef8e477df5650655c94f0b242497 bootstrap
 ghcr.io/cloudnative-pg/postgresql:18.6-system-trixie@sha256:4c43fe40a7315223ff869fe6519520c4776fce5097b54e0bc6e0eb2c79c702b6 bootstrap
 ghcr.io/cloudnative-pg/plugin-barman-cloud:v0.15.0@sha256:fe3bad8f38ef45e53e18b8b85fd0427b8b25c09bcd4e2068a04f3ff493ce1afc bootstrap
