@@ -40,7 +40,8 @@ type forgejoState struct {
 	team          []string // ci team members; nil: no team
 	fork          map[string]any
 	hooks         []map[string]any
-	lastEvents    []string // the events of the last hook edit
+	nextHook      int64
+	hookCalls     []string // each hook write: POST, or DELETE and the id
 	version       string   // the server's answer to /version; "": 15.0.9, "error": a 500
 	hookSecret    string
 	collabs       map[string]string
@@ -299,19 +300,22 @@ func (s *forgejoState) server(t *testing.T) *httptest.Server {
 			}
 			list(s.hooks)
 		case p == repo+"/hooks" && r.Method == http.MethodPost:
-			body["id"] = 1
+			s.nextHook++
+			body["id"] = s.nextHook
 			s.hookSecret = body["config"].(map[string]any)["secret"].(string)
 			delete(body["config"].(map[string]any), "secret")
 			s.hooks = append(s.hooks, body)
+			s.hookCalls = append(s.hookCalls, "POST")
 			w.WriteHeader(http.StatusCreated)
-		case p == repo+"/hooks/1" && r.Method == http.MethodPatch:
-			s.lastEvents = nil
-			for _, e := range body["events"].([]any) {
-				s.lastEvents = append(s.lastEvents, e.(string))
+		case strings.HasPrefix(p, repo+"/hooks/") && r.Method == http.MethodDelete:
+			id := strings.TrimPrefix(p, repo+"/hooks/")
+			s.hookCalls = append(s.hookCalls, "DELETE "+id)
+			n := len(s.hooks)
+			if s.hooks = slices.DeleteFunc(s.hooks, func(h map[string]any) bool { return fmt.Sprint(h["id"]) == id }); len(s.hooks) == n {
+				http.NotFound(w, r)
+				return
 			}
-			s.hookSecret = body["config"].(map[string]any)["secret"].(string)
-			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, `{}`)
+			w.WriteHeader(http.StatusNoContent)
 		case strings.HasPrefix(p, repo+"/collaborators/") && strings.HasSuffix(p, "/permission"):
 			user := strings.TrimSuffix(strings.TrimPrefix(p, repo+"/collaborators/"), "/permission")
 			perm := s.collabs[user]
@@ -2088,22 +2092,25 @@ func TestTheHookSubscribesToRunEventsOnlyOnForgejo17(t *testing.T) {
 		t.Fatalf("15 server: events %v, want today's list", hookEvents(rig))
 	}
 
+	// Forgejo's hook edit ignores the run events: the hook is made again
 	rig.fj.version = "17.0.1+gitea-1.22.0"
-	rig.fj.hooks[0]["active"] = true
-	rig.fj.hooks[0]["config"].(map[string]any)["content_type"] = "json"
-	rig.fj.hooks[0]["events"] = anyStrings(ProjectHookEvents)
+	rig.fj.hookCalls, rig.fj.hookSecret = nil, ""
 	p.HookSecretHash = HashToken("hook-secret")
 	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Updated {
 		t.Fatalf("17 server: %v, %v; want the existing hook updated", c, err)
 	}
 	want := slices.Concat(ProjectHookEvents, RunHookEvents)
-	if got := rig.fj.lastEvents; !slices.Equal(got, want) {
-		t.Fatalf("17 server: patched events %v, want %v", got, want)
+	if len(rig.fj.hooks) != 1 || !slices.Equal(hookEvents(rig), want) || rig.fj.hookSecret != "hook-secret" ||
+		!slices.Equal(rig.fj.hookCalls, []string{"DELETE 1", "POST"}) {
+		t.Fatalf("17 server: hooks %v, secret %q, calls %q; want hook 1 deleted and made again with %v",
+			rig.fj.hooks, rig.fj.hookSecret, rig.fj.hookCalls, want)
 	}
 
-	rig.fj.hooks[0]["events"] = anyStrings(want)
-	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged {
-		t.Fatalf("17 server, subscribed: %v, %v; want unchanged", c, err)
+	// Forgejo lists the events in its own order: still the same hook
+	rig.fj.hookCalls = nil
+	rig.fj.hooks[0]["events"] = anyStrings(slices.Sorted(slices.Values(want)))
+	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged || rig.fj.hookCalls != nil {
+		t.Fatalf("17 server, subscribed: %v, %v, calls %q; want unchanged", c, err, rig.fj.hookCalls)
 	}
 
 	// a version read error leaves the subscription as it is, logged once
@@ -2120,6 +2127,34 @@ func TestTheHookSubscribesToRunEventsOnlyOnForgejo17(t *testing.T) {
 	rig.fj.hooks[0]["events"] = anyStrings(ProjectHookEvents)
 	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged {
 		t.Fatalf("version error, hook on 15's list: %v, %v; want unchanged", c, err)
+	}
+}
+
+// A hook whose secret differs is deleted and made again with the wanted
+// events and the new secret, for Forgejo's hook edit ignores the secret;
+// a hook that matches is left alone.
+func TestAHookThatDiffersIsMadeAgain(t *testing.T) {
+	ctx := context.Background()
+	p := demoProject()
+	rig := newRegisterRig(t)
+	rig.fj.hooks = []map[string]any{{"id": 7, "type": "forgejo", "active": true, "events": anyStrings(ProjectHookEvents),
+		"config": map[string]any{"url": rig.reg.WebhookURL, "content_type": "json"}}}
+	rig.fj.nextHook = 7
+	p.HookSecretHash = HashToken("hook-secret")
+	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Unchanged || rig.fj.hookCalls != nil {
+		t.Fatalf("matching hook: %v, %v, calls %q; want it untouched", c, err, rig.fj.hookCalls)
+	}
+
+	rig.reg.WebhookSecret = "re-seeded"
+	if c, err := (&reconcileRun{r: rig.reg, p: p}).webhook(ctx); err != nil || c != Updated {
+		t.Fatalf("new secret: %v, %v; want the hook updated", c, err)
+	}
+	if !slices.Equal(rig.fj.hookCalls, []string{"DELETE 7", "POST"}) || len(rig.fj.hooks) != 1 || rig.fj.hookSecret != "re-seeded" ||
+		!reflect.DeepEqual(rig.fj.hooks[0]["events"], anyStrings(ProjectHookEvents)) || rig.fj.hooks[0]["config"].(map[string]any)["url"] != rig.reg.WebhookURL {
+		t.Fatalf("new secret: calls %q, hooks %v, secret %q; want hook 7 deleted and made again", rig.fj.hookCalls, rig.fj.hooks, rig.fj.hookSecret)
+	}
+	if rig.store.m[p.Name].HookSecretHash != HashToken("re-seeded") {
+		t.Error("the new hook secret's hash was not stored")
 	}
 }
 

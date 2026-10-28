@@ -95,16 +95,20 @@ func (f *Forgejo) Hooks(ctx context.Context, repo Repo, token string) ([]Hook, e
 	return GetPages[Hook](ctx, f.tokenCall(token), "/api/v1/repos/"+repo.String()+"/hooks?")
 }
 
-// SaveProjectHook creates the webhook (id 0) or edits hook id to it.
+// SaveProjectHook creates the webhook, after deleting hook id (0: none).
+// Forgejo's hook edit ignores the secret and the package, action run and
+// workflow events, so a hook that differs is made again: a delivery
+// between the delete and the create is lost.
 func (f *Forgejo) SaveProjectHook(ctx context.Context, repo Repo, id int64, hookURL, secret string, events []string) error {
-	opt := map[string]any{"active": true, "branch_filter": "*", "events": events,
-		"config": map[string]string{"url": hookURL, "content_type": "json", "secret": secret}}
-	if id == 0 {
-		opt["type"] = "forgejo"
-		_, err := f.projectsCall(ctx, http.MethodPost, "/api/v1/repos/"+repo.String()+"/hooks", mustJSON(opt), http.StatusCreated)
-		return err
+	if id != 0 {
+		_, err := f.projectsCall(ctx, http.MethodDelete, fmt.Sprintf("/api/v1/repos/%s/hooks/%d", repo, id), nil, http.StatusNoContent)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
 	}
-	_, err := f.projectsCall(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/hooks/%d", repo, id), mustJSON(opt), http.StatusOK)
+	opt := map[string]any{"type": "forgejo", "active": true, "branch_filter": "*", "events": events,
+		"config": map[string]string{"url": hookURL, "content_type": "json", "secret": secret}}
+	_, err := f.projectsCall(ctx, http.MethodPost, "/api/v1/repos/"+repo.String()+"/hooks", mustJSON(opt), http.StatusCreated)
 	return err
 }
 
