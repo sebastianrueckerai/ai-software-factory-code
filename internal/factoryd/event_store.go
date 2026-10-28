@@ -114,10 +114,13 @@ const EventAnalysisAttached = "analysis_attached"
 // detail {"question", "comment", "reason"}.
 const EventQuestionWithdrawn = "question_withdrawn"
 
-// EventChatBudgetSpent is factoryd's record of a project's chat task
-// reaching its monthly budget, which stands the chat until a raise (the
-// console's Fund the chat) or the month's turn: detail {"budget_eur"}.
-// The poke it raises asks at the needs-you level.
+// EventChatBudgetSpent is factoryd's record, on a project's chat task of
+// the month, of the gateway refusing a chat call for that task's own
+// budget (refused_budget): detail {"budget_eur", "spent_eur",
+// "suggest_eur"}, the budget it stopped at, the spend then and the fund
+// the chat offers. The chat stands while the task's budget is not above
+// budget_eur, until a fund or the policy's raise or the month's turn. The
+// poke it raises asks at the needs-you level.
 const EventChatBudgetSpent = "chat_budget_spent"
 
 // The pulse's own events, historical kinds: the pulse band the console

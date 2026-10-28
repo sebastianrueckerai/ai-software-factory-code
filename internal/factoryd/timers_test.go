@@ -293,56 +293,6 @@ func TestWatchOnePerCard(t *testing.T) {
 	}
 }
 
-// A due timer on a dead chat budget files the month-cap card once, not a
-// wake; the row waits, and a raised cap lets it fire.
-func TestDeadBudgetTimerAsksForMoney(t *testing.T) {
-	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
-		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
-	})
-	task, err := s.EnsureChatTask(t.Context(), "wake-proj", "sf/wake", policy.DefaultChat.MonthlyEUR, *clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddChatTimer(t.Context(), "sf/wake", "sebastian", conv, clock.Add(-time.Minute), "Check the build.", ""); err != nil {
-		t.Fatal(err)
-	}
-	humanCards := func() int {
-		var n int
-		if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks WHERE kind = 'human'`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	for i := range 2 {
-		if err := w.Pass(t.Context()); err != nil {
-			t.Fatalf("Pass: %v", err)
-		}
-		if n := humanCards(); n != 1 {
-			t.Fatalf("pass %d: %d month-cap cards, want 1", i+1, n)
-		}
-		if calls := starter.recorded(); len(calls) != 0 {
-			t.Fatalf("pass %d: %d wakes on a dead budget, want 0", i+1, len(calls))
-		}
-	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET budget_eur = budget_eur + 5 WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	calls := starter.recorded()
-	if len(calls) != 1 || calls[0].birth != "wake_timer" {
-		t.Fatalf("%d wakes after the cap rose, want the timer's: %+v", len(calls), calls)
-	}
-}
-
 // A project at autonomous with no event, timer or watch is never woken,
 // however many hours pass.
 func TestNoWakeWithoutAnEventOrTimer(t *testing.T) {

@@ -27,13 +27,17 @@ type WakeStarter interface {
 // row instead of holding a cooldown.
 var ErrWakeVenueGone = errors.New("the wake's thread is gone")
 
-// WakeStore is the Waker's rows: the chat task, the inbox, the events and
-// the wake cursor and marks.
+// ErrChatUnfunded marks a wake refused because the project's chat stands
+// at its budget: the chat_budget_spent event recorded the stop, and no
+// fund or raise of the policy lifted it since. The Waker holds the wake as
+// it holds any refused one, the cooldown marked and the cursor or the
+// timer kept, so its cause wakes the turn once the chat is funded.
+var ErrChatUnfunded = errors.New("the chat's budget is used up")
+
+// WakeStore is the Waker's rows: the cards, the inbox, the events and the
+// wake cursor and marks.
 type WakeStore interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
-	CreateTask(ctx context.Context, t Task) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error)
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
 	DueChatTimers(ctx context.Context, repository string, now time.Time) ([]ChatTimer, error)
 	DeleteChatTimer(ctx context.Context, repository string, id int64) error
@@ -57,11 +61,7 @@ type Waker struct {
 	Store   WakeStore
 	Current func() policy.Version
 	Start   WakeStarter
-	// Forgejo and Timeline file the month-cap card when the chat task's
-	// budget is dead.
-	Forgejo  *Forgejo
-	Timeline *Timeline
-	Now      func() time.Time
+	Now     func() time.Time
 }
 
 const (
@@ -123,11 +123,12 @@ type pendingAsk struct {
 
 // passProject wakes one project: a due timer fires on its own thread,
 // then the new events wake the watched cards and the asks. A batch
-// nothing new wakes from only moves the cursor. The turn mark, the
-// cooldown and a dead chat budget each hold a wake and the cursor back,
-// so their cause stays and a later pass takes it.
+// nothing new wakes from only moves the cursor. The turn mark and the
+// cooldown each hold a wake and the cursor back, and a refused wake (a
+// stopped chat's ErrChatUnfunded among them) marks the cooldown, so its
+// cause stays and a later pass takes it.
 func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
-	if err := w.fireTimer(ctx, v, name, p, now); err != nil {
+	if err := w.fireTimer(ctx, name, p, now); err != nil {
 		return err
 	}
 	after, err := w.Store.WakeCursor(ctx, p.Repository)
@@ -195,13 +196,6 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	} else if held {
 		return nil
 	}
-	task, live, err := w.chatTask(ctx, v, name, p, now)
-	if err != nil {
-		return err
-	}
-	if !live {
-		return w.askBudget(ctx, p.Repository, task, now) // a raised cap lets the next pass wake
-	}
 	if len(watched) > 0 {
 		c := watched[0]
 		if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
@@ -262,9 +256,9 @@ type pendingCard struct {
 
 // fireTimer wakes the oldest due timer's own thread with its note, then
 // the row is gone: one timer at a time, never combined with anything. A
-// held turn or cooldown, and a dead chat budget, each leave the row for a
-// later pass.
-func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
+// held turn or cooldown, and a refused wake (a stopped chat's among them),
+// each leave the row for a later pass.
+func (w *Waker) fireTimer(ctx context.Context, name string, p policy.ProjectConfig, now time.Time) error {
 	due, err := w.Store.DueChatTimers(ctx, p.Repository, now)
 	if err != nil || len(due) == 0 {
 		return err
@@ -274,11 +268,6 @@ func (w *Waker) fireTimer(ctx context.Context, v policy.Version, name string, p 
 		return err
 	} else if held {
 		return nil
-	}
-	if task, live, err := w.chatTask(ctx, v, name, p, now); err != nil {
-		return err
-	} else if !live {
-		return w.askBudget(ctx, p.Repository, task, now) // the row waits; a raised cap lets it fire
 	}
 	if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
 		if errors.Is(err, ErrWakeVenueGone) {
@@ -310,17 +299,6 @@ func (w *Waker) held(ctx context.Context, repository string, now time.Time) (boo
 	return false, nil
 }
 
-// chatTask is the project's chat task, live when its budget is not
-// spent.
-func (w *Waker) chatTask(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) (Task, bool, error) {
-	chat := v.Document.ChatOf(p)
-	task, err := w.Store.EnsureChatTask(ctx, name, p.Repository, chat.MonthlyEUR, now)
-	if err != nil {
-		return task, false, err
-	}
-	return task, task.SpentEUR < task.BudgetEUR, nil
-}
-
 // timerText is the timer's wake: its note, then what the turn does with
 // it.
 func timerText(t ChatTimer) string {
@@ -331,27 +309,6 @@ func timerText(t ChatTimer) string {
 func (w *Waker) cardText(ctx context.Context, e Event) string {
 	t, _, _ := w.Store.Task(ctx, e.TaskID)
 	return fmt.Sprintf("The watched card %s moved: read the card and act on where it stands.", cardRef(e, t))
-}
-
-// askBudget files the month-cap card once for the month of a dead chat
-// budget and leaves the cursor behind: a raised cap lets the next pass
-// wake.
-func (w *Waker) askBudget(ctx context.Context, repository string, task Task, now time.Time) error {
-	key := "budget:" + now.Format("2006-01")
-	if _, done, err := w.Store.WakeMarkAt(ctx, repository, key); err != nil {
-		return err
-	} else if done {
-		return nil
-	}
-	repo, err := SplitRepo(repository)
-	if err != nil {
-		return err
-	}
-	reason := monthCapReached + fmt.Sprintf("the chat task %s spent %.2f of its %.2f EUR", task.ID, task.SpentEUR, task.BudgetEUR)
-	if _, err := EscalateToHuman(ctx, w.Store, w.Forgejo, w.Timeline, repo, *monthCapQuestion(reason), "the waker", Task{Source: SourceMonthCap}); err != nil {
-		return err
-	}
-	return w.Store.WakeMark(ctx, repository, key, now)
 }
 
 // askText is the wake's text: every ask of the batch with its card ref,

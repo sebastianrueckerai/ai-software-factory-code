@@ -17,7 +17,7 @@ import (
 
 // The Waker wakes the project agent's turn on the events the agent itself
 // did not cause. These tests run on the store: the cursor, the marks and
-// the budget death are all rows.
+// the timers are all rows.
 
 // fakeWakeStarter records the wake turns the Waker starts.
 type fakeWakeStarter struct {
@@ -73,13 +73,11 @@ func newWakeRig(t *testing.T, projects map[string]policy.ProjectConfig) (*Waker,
 	}
 	now := time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)
 	clock := &now
-	f, _ := fileStub(t)
 	starter := &fakeWakeStarter{}
 	w := &Waker{
-		Store: s, Start: starter, Forgejo: f,
-		Timeline: &Timeline{Store: s, Events: s},
-		Now:      func() time.Time { return *clock },
-		Current:  func() policy.Version { return policy.Version{Tree: policy.Tree{Projects: projects}} },
+		Store: s, Start: starter,
+		Now:     func() time.Time { return *clock },
+		Current: func() policy.Version { return policy.Version{Tree: policy.Tree{Projects: projects}} },
 	}
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("the seeding pass: %v", err)
@@ -264,66 +262,80 @@ func TestWakerTurnRateCaps(t *testing.T) {
 	}
 }
 
-// A chat task spent to its cap wakes nobody and files one month-cap card;
-// a second pass files none, and a raised cap lets the next pass wake.
-func TestWakerBudgetDeathAsksOnce(t *testing.T) {
-	w, s, starter, clock := newWakeRig(t, nil)
-	task, err := s.EnsureChatTask(t.Context(), "wake-proj", "sf/wake", policy.DefaultChat.MonthlyEUR, *clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	humanCards := func() int {
-		var n int
-		if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks WHERE kind = 'human'`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	if calls := starter.recorded(); len(calls) != 0 {
-		t.Fatalf("%d wakes on a dead budget, want 0", len(calls))
-	}
-	if n := humanCards(); n != 1 {
-		t.Fatalf("%d month-cap cards, want 1", n)
-	}
-	// the card is factoryd's, never the chat agent's, and its ask is a
-	// month cap's: it wakes nobody, the agent's budget being what is spent
-	var source, objective, via, asked string
-	if err := s.db.QueryRowContext(t.Context(), `SELECT t.source, t.objective, e.via, e.detail->>'source' FROM tasks t
-		JOIN events e ON e.task_id = t.id AND e.kind = $1 WHERE t.kind = 'human'`, EventQuestionAsked).Scan(&source, &objective, &via, &asked); err != nil {
-		t.Fatal(err)
-	}
-	if source != SourceMonthCap || via != ViaFactoryd || asked != SourceMonthCap ||
-		strings.Contains(objective, "agent asked") || !strings.Contains(objective, "factoryd asks (the waker)") {
-		t.Fatalf("the card: source %q, via %q, asked %q, objective %q; want factoryd's month-cap ask", source, via, asked, objective)
-	}
-	if !slices.Contains(wakeStateKeys(t, s, "sf/wake"), "budget:"+clock.Format("2006-01")) {
-		t.Fatalf("no budget mark for %s", clock.Format("2006-01"))
-	}
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if n := humanCards(); n != 1 {
-		t.Fatalf("%d month-cap cards after the second pass, want 1", n)
-	}
-	if calls := starter.recorded(); len(calls) != 0 {
-		t.Fatalf("%d wakes on the still dead budget, want 0", len(calls))
-	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET budget_eur = budget_eur + 5 WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Pass(t.Context()); err != nil {
-		t.Fatalf("Pass: %v", err)
-	}
-	if calls := starter.recorded(); len(calls) != 1 || !strings.Contains(calls[0].text, "Raise the month cap?") ||
-		strings.Contains(calls[0].text, "The month cap is reached") {
-		t.Fatalf("wakes after the cap rose %+v, want one on t-1's ask alone", calls)
+// A wake the console refuses because the chat stands at its budget
+// (ErrChatUnfunded) is held as a refused one, whatever woke it: no card is
+// filed, the cooldown is marked, and the cause stays (the cursor behind
+// the ask or the move, the timer's row), so once the chat is funded the
+// pass after the cooldown wakes the same turn.
+func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
+	for _, tc := range []struct {
+		name, birth, text string
+		cause             func(t *testing.T, s *PGStore, at time.Time) int64
+	}{
+		{"an ask", "wake_ask", "Use a replica?", func(t *testing.T, s *PGStore, _ time.Time) int64 {
+			return wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
+		}},
+		{"a watched card", "wake_card", "The watched card t-1 moved", func(t *testing.T, s *PGStore, _ time.Time) int64 {
+			conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AddChatWatch(t.Context(), "sf/wake", "sebastian", conv, "t-1"); err != nil {
+				t.Fatal(err)
+			}
+			return wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false)
+		}},
+		{"a timer", "wake_timer", "Timer: Check the build.", func(t *testing.T, s *PGStore, at time.Time) int64 {
+			conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.AddChatTimer(t.Context(), "sf/wake", "sebastian", conv, at.Add(-time.Minute), "Check the build.", ""); err != nil {
+				t.Fatal(err)
+			}
+			return 0
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
+				"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}},
+			})
+			starter.err = fmt.Errorf("the chat of wake-proj stands at its budget of 15.00 EUR: %w", ErrChatUnfunded)
+			id := tc.cause(t, s, *clock)
+			due := func() int {
+				timers, err := s.DueChatTimers(t.Context(), "sf/wake", *clock)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return len(timers)
+			}
+			timers := due()
+			for i := range 2 {
+				if err := w.Pass(t.Context()); err != nil {
+					t.Fatalf("pass %d: %v", i+1, err)
+				}
+				var cards int
+				if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks`).Scan(&cards); err != nil {
+					t.Fatal(err)
+				}
+				if calls := starter.recorded(); len(calls) != 1 || cards != 0 || due() != timers ||
+					!slices.Contains(wakeStateKeys(t, s, "sf/wake"), "cooldown") || id > 0 && wakeCursorOf(t, s, "sf/wake") >= id {
+					t.Fatalf("pass %d: wakes %+v, %d cards, %d due timers of %d, marks %v, cursor %d of the cause %d; want the one refused wake, "+
+						"no card, the timer kept, the cooldown and the cursor behind", i+1, calls, cards, due(), timers,
+						wakeStateKeys(t, s, "sf/wake"), wakeCursorOf(t, s, "sf/wake"), id)
+				}
+			}
+			*clock = clock.Add(61 * time.Second)
+			starter.err = nil
+			if err := w.Pass(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if calls := starter.recorded(); len(calls) != 2 || calls[1].birth != tc.birth || !strings.Contains(calls[1].text, tc.text) ||
+				due() != 0 || wakeCursorOf(t, s, "sf/wake") < id {
+				t.Fatalf("the funded chat's pass: wakes %+v, %d due timers, cursor %d; want the %s wake, no timer, the cursor past %d",
+					calls, due(), wakeCursorOf(t, s, "sf/wake"), tc.birth, id)
+			}
+		})
 	}
 }
 
@@ -444,7 +456,7 @@ func TestWakerMarksSurviveRestart(t *testing.T) {
 		t.Fatalf("%d wakes, want the one before the restart", len(calls))
 	}
 	starter2 := &fakeWakeStarter{}
-	w2 := &Waker{Store: s, Start: starter2, Forgejo: w1.Forgejo, Timeline: w1.Timeline,
+	w2 := &Waker{Store: s, Start: starter2,
 		Now:     func() time.Time { return *clock },
 		Current: w1.Current}
 	*clock = clock.Add(11 * time.Second)
@@ -513,51 +525,6 @@ func TestVenueGoneDropsItsTimer(t *testing.T) {
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1 (the refused timer wake, never retried): %+v", len(calls), calls)
-	}
-}
-
-// A watched card's move on a dead chat budget files the month-cap card
-// once, not a wake: every wake path that finds the budget spent asks for
-// money.
-func TestDeadBudgetWatchedCardAsksForMoney(t *testing.T) {
-	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
-		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAssisted, Notify: []string{"sebastian"}},
-	})
-	task, err := s.EnsureChatTask(t.Context(), "wake-proj", "sf/wake", policy.DefaultChat.MonthlyEUR, *clock)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(t.Context(), `UPDATE tasks SET spent_eur = budget_eur WHERE id = $1`, task.ID); err != nil {
-		t.Fatal(err)
-	}
-	conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AddChatWatch(t.Context(), "sf/wake", "sebastian", conv, "t-1"); err != nil {
-		t.Fatal(err)
-	}
-	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false)
-	humanCards := func() int {
-		var n int
-		if err := s.db.QueryRowContext(t.Context(), `SELECT count(*) FROM tasks WHERE kind = 'human'`).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	for i := range 2 {
-		if err := w.Pass(t.Context()); err != nil {
-			t.Fatalf("Pass: %v", err)
-		}
-		if n := humanCards(); n != 1 {
-			t.Fatalf("pass %d: %d month-cap cards, want 1", i+1, n)
-		}
-		if calls := starter.recorded(); len(calls) != 0 {
-			t.Fatalf("pass %d: %d wakes on a dead budget, want 0", i+1, len(calls))
-		}
-	}
-	if !slices.Contains(wakeStateKeys(t, s, "sf/wake"), "budget:"+clock.Format("2006-01")) {
-		t.Fatalf("no budget mark for %s", clock.Format("2006-01"))
 	}
 }
 

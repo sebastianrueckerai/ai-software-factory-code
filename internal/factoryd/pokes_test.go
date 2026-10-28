@@ -72,8 +72,9 @@ func TestPokeOf(t *testing.T) {
 		{"a plan done", Event{Kind: EventAllChildrenDone, TaskID: "t-plan", Detail: map[string]any{"cards": float64(6)}}, plan,
 			ChatMessage{Kind: MessagePoke, Content: "Plan #558 is done: all 6 cards."}, true},
 		{"a chat budget spent", Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"budget_eur": float64(5)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
-			ChatMessage{Kind: MessagePoke, Content: "The chat's monthly budget of €5.00 is spent: the chat stands until it is raised (Fund the chat on the board) or the month turns."}, true},
+			Detail: map[string]any{"budget_eur": float64(15), "spent_eur": 14.96, "suggest_eur": float64(3)}}, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat},
+			ChatMessage{Kind: MessagePoke, Content: "The chat's budget for this month is used up: €14.96 of €15.00 spent, and its turns stand until it is funded or the month turns. " +
+				"Fund it from this row or the board's status panel, and the stopped turns go on."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
 			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask."}, true},
 		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "backlog_cap": float64(5)}}, Task{},
@@ -98,7 +99,7 @@ func TestPokeOf(t *testing.T) {
 			}
 			tt.want.Role = "assistant"
 			tt.want.BirthKind = tt.e.Kind
-			if tt.e.Kind != EventAutonomyChanged {
+			if tt.e.Kind != EventAutonomyChanged && tt.e.Kind != EventChatBudgetSpent {
 				tt.want.TaskID = tt.e.TaskID
 			}
 			if !reflect.DeepEqual(got, tt.want) {
@@ -161,8 +162,7 @@ func TestDonePokeSaysLive(t *testing.T) {
 
 // A chat budget's poke asks at the needs-you level: the messenger's copy
 // goes to every member whose plan carries the level, an inform though it
-// is, for the chat task's row settles an escalation the moment it is
-// read.
+// is, for the chat stands until someone funds it.
 func TestChatBudgetPokeDeliversAtNeedsYou(t *testing.T) {
 	e := Event{Kind: EventChatBudgetSpent, TaskID: "t-chat-linkshort-2000-01", Detail: map[string]any{"budget_eur": float64(5)}}
 	m, ok := pokeOf(e, Task{ID: "t-chat-linkshort-2000-01", Kind: KindChat})

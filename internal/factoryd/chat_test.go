@@ -220,6 +220,70 @@ func TestPGStoreProjectMonthSpend(t *testing.T) {
 	}
 }
 
+// A task's spend since a time sums its ledger rows booked from that time
+// on: an earlier row of the task and another task's row stay out.
+func TestPGStoreTaskSpendSince(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	since := time.Date(2026, 10, 21, 22, 0, 0, 0, time.UTC)
+	for _, row := range []struct {
+		task string
+		at   time.Time
+		eur  float64
+	}{
+		{"t-chat-code-2026-10", since.Add(-time.Second), 4}, {"t-chat-code-2026-10", since, 0.25},
+		{"t-chat-code-2026-10", since.Add(6 * 24 * time.Hour), 0.5}, {"t-card", since.Add(time.Hour), 8},
+	} {
+		if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, created_at) VALUES ($1, 'model', 'x', $2, $3)`,
+			row.task, row.eur, row.at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := s.TaskSpendSince(ctx, "t-chat-code-2026-10", since); err != nil || got != 0.75 {
+		t.Fatalf("the spend since %s = %v, %v; want 0.75", since, got, err)
+	}
+}
+
+// The threads a fund resumes are those whose newest row is the chat
+// budget's stop: a thread answered after its stop, a stop row of a factory
+// cap, an archived thread and another project's thread are not.
+func TestPGStoreBudgetStoppedThreads(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	stop := ChatMessage{Role: "assistant", Kind: MessageBudget, BirthKind: EventChatBudgetSpent, Content: "The chat's budget is used up."}
+	for _, m := range []struct {
+		repo, login string
+		m           ChatMessage
+	}{
+		{"sf/code", "anna", ChatMessage{Role: "user", Content: "what is open?", Conversation: 1}},
+		{"sf/code", "anna", withConversation(stop, 1)},
+		{"sf/code", "anna", withConversation(stop, 2)},
+		{"sf/code", "anna", ChatMessage{Role: "user", Content: "go on", Conversation: 2}},
+		{"sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessageBudget, Content: "The factory's month cap is used up.", Conversation: 3}},
+		{"sf/code", "anna", withConversation(stop, 4)},
+		{"sf/code", "bob", withConversation(stop, 1)},
+		{"linkshort/linkshort", "anna", withConversation(stop, 1)},
+	} {
+		if _, err := s.AddChatMessage(ctx, m.repo, m.login, m.m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.ArchiveConversation(ctx, "sf/code", "anna", 4, true); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.BudgetStoppedThreads(ctx, "sf/code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []ChatConversation{{Login: "anna", Number: 1}, {Login: "bob", Number: 1}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the stopped threads = %+v, want %+v", got, want)
+	}
+}
+
+// withConversation is m in thread n.
+func withConversation(m ChatMessage, n int64) ChatMessage {
+	m.Conversation = n
+	return m
+}
+
 // A card's history is its own events, newest first, at most limit.
 func TestPGStoreTaskEvents(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()

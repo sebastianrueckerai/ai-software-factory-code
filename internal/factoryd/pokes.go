@@ -27,10 +27,14 @@ import (
 const (
 	// MessagePoke is a poke's kind; MessageEscalation a poke about a card
 	// that waits for a person, which the chat marks "needs you";
-	// MessageAsk the chat's own question to the thread's member.
+	// MessageAsk the chat's own question to the thread's member;
+	// MessageBudget the row a turn ends on when the gateway refuses its
+	// call for money, the chat task's budget (birth kind
+	// EventChatBudgetSpent, which a fund resumes) or a factory cap.
 	MessagePoke       = "poke"
 	MessageEscalation = "escalation"
 	MessageAsk        = "ask"
+	MessageBudget     = "budget"
 )
 
 // ChoiceRerun is the inbox's answer that runs a factory pull request's red
@@ -316,8 +320,12 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	case EventAllChildrenDone:
 		m.Content = fmt.Sprintf("Plan %s is done: all %d cards.", ref, num("cards"))
 	case EventChatBudgetSpent:
+		// the chat's own task is no card
+		m.TaskID = ""
 		budget, _ := e.Detail["budget_eur"].(float64)
-		m.Content = fmt.Sprintf("The chat's monthly budget of €%.2f is spent: the chat stands until it is raised (Fund the chat on the board) or the month turns.", budget)
+		spent, _ := e.Detail["spent_eur"].(float64)
+		m.Content = fmt.Sprintf("The chat's budget for this month is used up: €%.2f of €%.2f spent, and its turns stand until it is funded or the month turns. "+
+			"Fund it from this row or the board's status panel, and the stopped turns go on.", spent, budget)
 	case EventRoutineRan:
 		if str("poke") == "" {
 			return m, false

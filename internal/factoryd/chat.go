@@ -989,6 +989,32 @@ func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]Cha
 	return out, rows.Err()
 }
 
+// BudgetStoppedThreads are repository's threads, the archived aside,
+// whose newest row is the chat budget's stop (MessageBudget of birth kind
+// EventChatBudgetSpent), the turns a fund resumes: each one's owner and
+// number.
+func (s *PGStore) BudgetStoppedThreads(ctx context.Context, repository string) ([]ChatConversation, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT n.login, n.conversation FROM (
+			SELECT DISTINCT ON (login, conversation) login, conversation, kind, birth_kind FROM chat_messages
+			WHERE repository = $1 ORDER BY login, conversation, id DESC) n
+		JOIN chat_conversations c ON c.repository = $1 AND c.login = n.login AND c.conversation = n.conversation
+		WHERE n.kind = $2 AND n.birth_kind = $3 AND c.state <> $4 ORDER BY n.login, n.conversation`,
+		repository, MessageBudget, EventChatBudgetSpent, ThreadArchived)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatConversation
+	for rows.Next() {
+		var c ChatConversation
+		if err := rows.Scan(&c.Login, &c.Number); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
 // ErrNoAsk says a card has no ask row in the chat: nothing waits on a
 // person there for an analysis to enrich.
 var ErrNoAsk = errors.New("the card asks nothing")
@@ -1169,6 +1195,14 @@ func (s *PGStore) ProjectMonthSpend(ctx context.Context, repository string, at t
 		AND l.day < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month')::date`,
 		repository, at, KindChat).Scan(&p.EUR, &p.ChatEUR)
 	return p, err
+}
+
+// TaskSpendSince is task id's ledger spend booked at or after since.
+func (s *PGStore) TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error) {
+	var eur float64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE task_id = $1 AND created_at >= $2`,
+		id, since).Scan(&eur)
+	return eur, err
 }
 
 // ChatProposal is a proposal of the project agent waiting for its

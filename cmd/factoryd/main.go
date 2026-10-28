@@ -656,8 +656,7 @@ func main() {
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
 	// the wake: an ask the project agent did not file wakes one turn of
 	// its own on the venue member's inbox
-	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler,
-		Forgejo: forgejo, Timeline: runner.Timeline()}).Loop(ctx, 5*time.Second)
+	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
 	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken)}).Loop(ctx, 5*time.Second)
