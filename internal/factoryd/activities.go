@@ -1841,7 +1841,7 @@ func (r *Runner) jobLogOf(ctx context.Context, t Task, repo Repo) func(target st
 func pendingCheckFindings(sha string, cs CombinedStatus) []string {
 	var out []string
 	for _, s := range cs.Statuses {
-		if s.State != "success" && s.State != "warning" {
+		if s.State != "success" && s.State != "warning" && s.State != "skipped" {
 			finding := fmt.Sprintf("check %q is still %s on %s", s.Context, cmp.Or(s.State, "pending"), sha)
 			if s.Description != "" {
 				finding += " (" + s.Description + ")"
@@ -1941,7 +1941,7 @@ func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string
 		return ChecksResult{}
 	}
 	switch cs.State {
-	case "success", "warning":
+	case "success", "warning", "skipped":
 		return ChecksResult{State: ChecksSuccess}
 	case "failure", "error":
 		res := ChecksResult{State: ChecksFailure}

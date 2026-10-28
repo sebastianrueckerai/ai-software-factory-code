@@ -652,6 +652,7 @@ func statusBody(state string, statuses ...[4]string) string {
 
 func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 	test := [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"}
+	skipped := [4]string{"skipped", "pr / image-build", "", "Has been skipped"}
 	for name, tc := range map[string]struct {
 		statuses []string
 		want     ChecksState
@@ -662,6 +663,10 @@ func TestWaitChecksMapsCombinedStatus(t *testing.T) {
 		"a failed job settles it while others run": {[]string{statusBody("failure", test, [4]string{"pending", "pr / image-build", "", ""})}, ChecksFailure, 1},
 		"error counts as failure":                  {[]string{statusBody("error", [4]string{"error", "pr / vet", "", "boom"})}, ChecksFailure, 1},
 		"warning passes":                           {[]string{statusBody("warning", [4]string{"warning", "pr / vet", "", ""})}, ChecksSuccess, 0},
+		// Forgejo 16 on: a skipped job reports skipped, which ranks above success
+		"a skipped job beside a green one passes": {[]string{statusBody("success", [4]string{"success", "pr / test", "", ""}, skipped)}, ChecksSuccess, 0},
+		"all skipped passes":                      {[]string{statusBody("skipped", skipped, [4]string{"skipped", "pr / vet", "", ""})}, ChecksSuccess, 0},
+		"a skipped job beside a failed one fails": {[]string{statusBody("failure", test, skipped)}, ChecksFailure, 1},
 	} {
 		fj := &prForgejo{statuses: tc.statuses}
 		r, _, _ := newActivityRunner(t, prTask, fj)
@@ -745,6 +750,22 @@ func TestHeadChecksReadsTheHeadOnce(t *testing.T) {
 	}
 	if fj.polls != 1 || fj.pollsBySHA["c1"]+fj.pollsBySHA["m1"]+fj.pollsBySHA["p1"] != 3 {
 		t.Fatalf("polls = %d %+v: each head read once, no polling", fj.polls, fj.pollsBySHA)
+	}
+}
+
+// A skipped check beside a running one is not pending itself: the head
+// pends on the running check alone.
+func TestASkippedCheckBesideAPendingOnePends(t *testing.T) {
+	cs := CombinedStatus{State: "pending", Statuses: []CommitStatus{
+		{State: "skipped", Context: "pr / image-build", Description: "Has been skipped"},
+		{State: "pending", Context: "pr / test", Description: "Has started running"},
+	}}
+	if res := checksResult(cs, "", nil); res.State != "" {
+		t.Fatalf("checksResult = %+v, want still pending", res)
+	}
+	want := []string{`check "pr / test" is still pending on p1 (Has started running)`}
+	if got := pendingCheckFindings("p1", cs); !slices.Equal(got, want) {
+		t.Fatalf("findings = %q, want %q", got, want)
 	}
 }
 

@@ -2859,6 +2859,33 @@ func TestAGreenRunWithAPendingRequiredStatusStaysPending(t *testing.T) {
 	}
 }
 
+// A required context a skipped job reports (skipped from Forgejo 16 on,
+// success before) passes as success does; beside it the other context
+// decides the head.
+func TestASkippedRequiredContextPasses(t *testing.T) {
+	repo, _ := SplitRepo(demoRepo)
+	cfg := policy.ChainConfig{Requires: []string{"ci / test (push)", "ci / image (push)"}}
+	seen := []ActionRun{{ID: 21, CommitSHA: demoCommit, Status: "success"}}
+	for name, tc := range map[string]struct{ test, image, want string }{
+		"success and skipped": {"success", "skipped", "success"},
+		"all skipped":         {"skipped", "skipped", "success"},
+		"failure and skipped": {"failure", "skipped", "failure"},
+		"pending and skipped": {"pending", "skipped", "pending"},
+	} {
+		f := &chainForgejo{statuses: map[string]map[string][]map[string]string{demoRepo: {demoCommit: {
+			{"status": tc.test, "context": "ci / test (push)"}, {"status": tc.image, "context": "ci / image (push)"},
+		}}}}
+		p, _ := newTestPoller(t, f)
+		verdict, findings, _, err := p.headVerdict(context.Background(), repo, cfg, seen, demoCommit)
+		if err != nil || verdict != tc.want {
+			t.Fatalf("%s: verdict %q %q, %v; want %q", name, verdict, findings, err, tc.want)
+		}
+		if tc.want != "success" && !slices.Equal(findings, []string{"required context ci / test (push): " + tc.test}) {
+			t.Fatalf("%s: findings %q, want the test context alone", name, findings)
+		}
+	}
+}
+
 // The settle's success on the commit turns every row of it green on one
 // tick, and every merged card it carried ends then.
 func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {

@@ -1210,8 +1210,9 @@ func (f *Forgejo) FindPullRequestByHead(ctx context.Context, owner, repo, base s
 
 // CommitStatus is one check reported against a commit (most often a
 // Forgejo Actions job): State is one of "pending", "success", "error",
-// "failure" or "warning". Created is when Forgejo recorded it; a finished
-// job's, when Forgejo learned the job ended.
+// "failure", "warning" or, from Forgejo 16 on, "skipped" (a skipped job
+// reported success before). Created is when Forgejo recorded it; a
+// finished job's, when Forgejo learned the job ended.
 type CommitStatus struct {
 	State       string    `json:"status"`
 	Context     string    `json:"context"`

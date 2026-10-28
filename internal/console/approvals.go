@@ -360,7 +360,7 @@ func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalReques
 // asked for — fails closed as unread instead of following the nil
 // session: a member session is not required to paint a card. Green
 // mirrors factoryd's checksResult: a head that reports no statuses
-// is still pending, and warning counts as green.
+// is still pending, and warning and skipped count as green.
 func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha string) (bool, error) {
 	if a.s == nil {
 		return false, &forgejoRefusal{"read the head's checks", errors.New("the actor carries no session, so the head's current checks were not read")}
@@ -374,7 +374,7 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &cs); err != nil {
 		return false, &forgejoRefusal{"read the head's checks", err}
 	}
-	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning"), nil
+	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning" || cs.State == "skipped"), nil
 }
 
 // mergeHeadGreen reads whether a red-flagged merge request's pull request

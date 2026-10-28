@@ -996,8 +996,9 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 // skipped (the change never ran on the commit), a run cancelled by the
 // next push's superseding run (the common transient: it advances the
 // head), a required context missing from the commit or still pending —
-// holds it pending; only all green is success. The cancelled and skipped
-// cases are the stall ladder's, not repair's. findings name each red run
+// holds it pending; only all green is success, where a skipped context
+// counts green as Forgejo ranks it. The cancelled and skipped runs are
+// the stall ladder's, not repair's. findings name each red run
 // and context of a red head, each pending one of a pending head, a
 // pending run with its link; stuck are the runs on the commit still
 // running or cancelled, what a re-run moves: a skipped run concluded.
@@ -1036,7 +1037,7 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 		}
 		for _, want := range cfg.Requires {
 			switch reported[want] {
-			case "success":
+			case "success", "skipped":
 			case "failure", "error":
 				red = append(red, "required context "+want+": "+reported[want])
 			case "":

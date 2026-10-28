@@ -2362,6 +2362,28 @@ func TestApproveOnRedChecksOnceTheHeadTurnedGreen(t *testing.T) {
 	}
 }
 
+// A head's skipped checks count green as Forgejo ranks them (16 on: a
+// skipped job reports skipped, not success); the worst check decides.
+func TestHeadChecksGreenCountsSkippedAsGreen(t *testing.T) {
+	r := newRig(t)
+	_, s := r.loggedIn(t)
+	for _, tc := range []struct {
+		combined, test string
+		green          bool
+	}{
+		{"success", "success", true},
+		{"skipped", "skipped", true},
+		{"failure", "failure", false},
+		{"pending", "pending", false},
+	} {
+		r.fg.statuses = map[string]string{"abc123": fmt.Sprintf(`{"state":%q,"statuses":[{"context":"ci / test","status":%q},{"context":"ci / image-build","status":"skipped"}]}`, tc.combined, tc.test)}
+		green, err := r.c.headChecksGreen(context.Background(), actor{s: s}, "sf/code", "abc123")
+		if err != nil || green != tc.green {
+			t.Fatalf("test %s beside a skipped job: green %t, %v; want %t", tc.test, green, err, tc.green)
+		}
+	}
+}
+
 // The card of a red-checks merge request whose head's checks turned green
 // says so and offers the Approve again; still red keeps what fits a red
 // head, the return and the close.
