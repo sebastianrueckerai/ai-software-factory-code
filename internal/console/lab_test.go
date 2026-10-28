@@ -1468,8 +1468,8 @@ func TestLabMetricsScene(t *testing.T) {
 	if m.Repository != "sf/code" {
 		t.Fatalf("repository = %q, want sf/code", m.Repository)
 	}
-	if d := m.To.Sub(m.From).Hours()/24 + 1; d != 28 {
-		t.Errorf("window = %d days, want 28", int(d))
+	if !m.From.AddDate(0, 0, 27).Equal(m.To) {
+		t.Errorf("window %s to %s, want 28 days", m.From, m.To)
 	}
 	for _, c := range []struct {
 		name        string
