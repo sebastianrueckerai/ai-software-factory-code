@@ -936,6 +936,30 @@ func (a *AcceptanceRig) ProjectMonthSpend(context.Context, string, time.Time) (f
 	return factoryd.ProjectSpend{}, nil
 }
 
+func (a *AcceptanceRig) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
+// BudgetStoppedThreads are the members of repository whose one thread
+// ends on the chat budget's stop, as the store's query reads them.
+func (a *AcceptanceRig) BudgetStoppedThreads(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	newest := map[string]factoryd.ChatMessage{}
+	for _, m := range a.msgs {
+		if m.Repository == repository {
+			newest[m.Login] = m.ChatMessage
+		}
+	}
+	var out []factoryd.ChatConversation
+	for _, login := range slices.Sorted(maps.Keys(newest)) {
+		if m := newest[login]; m.Kind == factoryd.MessageBudget && m.BirthKind == factoryd.EventChatBudgetSpent {
+			out = append(out, factoryd.ChatConversation{Login: login, Number: 1})
+		}
+	}
+	return out, nil
+}
+
 func (a *AcceptanceRig) PutProposal(_ context.Context, p factoryd.ChatProposal) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -697,6 +697,44 @@ func (f *fakeChat) ProjectMonthSpend(_ context.Context, repository string, at ti
 	return s, nil
 }
 
+// TaskSpendSince sums the chat rows of chat task id's repository booked
+// at or after since: the fake's chat rows are its chat task's.
+func (f *fakeChat) TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error) {
+	t, _, err := f.tasks.Task(ctx, id)
+	var eur float64
+	for _, row := range f.spend {
+		if row.chat && row.repository == t.Repository && !row.day.Before(since) {
+			eur += row.eur
+		}
+	}
+	return eur, err
+}
+
+// BudgetStoppedThreads are, as the store's query reads them, the threads
+// of repository but the archived whose newest row is the chat budget's
+// stop, by owner and number.
+func (f *fakeChat) BudgetStoppedThreads(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatConversation
+	for _, k := range slices.Sorted(maps.Keys(f.msgs)) {
+		login, ok := strings.CutPrefix(k, repository+" ")
+		if !ok {
+			continue
+		}
+		newest := map[int64]factoryd.ChatMessage{}
+		for _, m := range f.msgs[k] {
+			newest[m.Conversation] = m
+		}
+		for _, n := range slices.Sorted(maps.Keys(newest)) {
+			if m := newest[n]; m.Kind == factoryd.MessageBudget && m.BirthKind == factoryd.EventChatBudgetSpent && !f.archived[fmt.Sprint(k, " ", n)] {
+				out = append(out, factoryd.ChatConversation{Login: login, Number: n})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -780,6 +818,10 @@ type chatGateway struct {
 // prompt past its window.
 const refuseContext = "REFUSE_CONTEXT"
 
+// refuseFor scripts an operator call the gateway's headroom refuses with
+// decision and reason, as its 402 answers.
+func refuseFor(decision, reason string) string { return "REFUSE " + decision + " " + reason }
+
 func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeTitle {
 		g.serveTitle(w, r)
@@ -857,6 +899,14 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusBadRequest)
 		fmt.Fprint(w, `{"error":{"message":"the prompt is past the model's context window: maximum context length is 131072 tokens","type":"context_length_exceeded"}}`)
+		return
+	}
+	if refused, ok := strings.CutPrefix(reply[0], "REFUSE "); ok && len(reply) == 1 {
+		decision, reason, _ := strings.Cut(refused, " ")
+		w.Header().Set(gateway.HeaderDecision, decision)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusPaymentRequired)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": reason, "type": "budget_exceeded"}})
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -3083,79 +3133,21 @@ func TestChatAnswersWithAChoice(t *testing.T) {
 		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered, Detail: postedDetail(1)})
 }
 
-// A month whose chat budget is spent ends the turn with one line, before
-// any model call; a gateway that fails ends it with an error event and no
-// done.
-func TestChatBudgetSpentAndGatewayFailure(t *testing.T) {
-	r, chat, g := newChatRig(t)
+// A gateway that fails ends the turn in an error event and no done, and
+// the conversation keeps the message alone.
+func TestChatGatewayFailure(t *testing.T) {
+	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	if _, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 5, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	id := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
-	r.tasks.mu.Lock()
-	r.tasks.tasks[len(r.tasks.tasks)-1].SpentEUR = 5
-	r.tasks.mu.Unlock()
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
-	equal(t, "spent", events, []string{`text {"text":"The chat's budget of €5.00 for this month is spent."}`, `done {}`})
-	if len(g.calls()) != 0 {
-		t.Fatalf("model calls with the budget spent = %d", len(g.calls()))
-	}
-	r.tasks.mu.Lock()
-	r.tasks.tasks[len(r.tasks.tasks)-1].SpentEUR = 1
-	r.tasks.mu.Unlock()
 	g.replies = [][]string{nil}
-	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello again"}})
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello again"}})
 	equal(t, "gateway down", events, []string{`error {"message":"The model could not be reached; try again."}`})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	var answer chatGetAnswer
-	json.Unmarshal(rec.Body.Bytes(), &answer)
-	got := answer.Messages
-	if len(got) != 2 || got[0].Role != "user" || got[1].Content != "hello again" {
-		t.Fatalf("conversation = %+v, want the two messages only (task %s)", got, id)
-	}
-}
-
-// A turn on a spent chat budget asks the inbox of it (chatAsk) once an
-// hour: the event the Poker turns into the needs-you row the Fund the
-// chat form answers. Repeats within the hour write no second row; an
-// hour past the ask, one turn writes one.
-func TestChatAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
-	r, chat, _ := newChatRig(t)
-	ck, s := r.loggedIn(t)
-	if _, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 5, time.Now()); err != nil {
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
 		t.Fatal(err)
 	}
-	id := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
-	r.tasks.mu.Lock()
-	r.tasks.tasks[len(r.tasks.tasks)-1].SpentEUR = 5
-	r.tasks.mu.Unlock()
-	asks := func() []factoryd.Event {
-		var rows []factoryd.Event
-		for _, e := range r.events.all() {
-			if e.Kind == factoryd.EventChatBudgetSpent {
-				rows = append(rows, e)
-			}
-		}
-		return rows
-	}
-	for _, message := range []string{"hello", "again"} {
-		if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}}); len(events) == 0 {
-			t.Fatalf("the turn %q made no stream", message)
-		}
-	}
-	if rows := asks(); len(rows) != 1 || rows[0].Repository != "sf/code" || rows[0].Actor != factoryd.FactoryDecider ||
-		rows[0].Via != factoryd.ViaFactoryd || !reflect.DeepEqual(rows[0].Detail, map[string]any{"budget_eur": float64(5)}) {
-		t.Fatalf("the spent budget's asks: %+v, want the one row of the ask", rows)
-	}
-	r.c.chatAsksMu.Lock()
-	r.c.chatAsks[id] = time.Now().Add(-chatAskWait - time.Second)
-	r.c.chatAsksMu.Unlock()
-	if _, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"once more"}}); len(events) == 0 {
-		t.Fatal("the turn past the hour made no stream")
-	}
-	if rows := asks(); len(rows) != 2 {
-		t.Fatalf("an hour past the ask: %d rows, want 2", len(rows))
+	if got := answer.Messages; len(got) != 1 || got[0].Role != "user" || got[0].Content != "hello again" {
+		t.Fatalf("conversation = %+v, want the message alone", got)
 	}
 }
 

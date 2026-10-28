@@ -369,11 +369,6 @@ type Console struct {
 	// Forgejo invalidates refresh tokens on use (INVALIDATE_REFRESH_TOKENS
 	// default true), and the second gets 400, which deletes the row.
 	refreshMu sync.Mutex
-	// chatAsks is when each chat task's budget-spent ask last went out
-	// (chatAsk): repeats wait for chatAskWait, so a turn on a spent
-	// budget counts on the inbox's row instead of writing it anew.
-	chatAsks   map[string]time.Time
-	chatAsksMu sync.Mutex
 	// ended closes as the console's server shuts down (EndStreams)
 	ended  chan struct{}
 	ending sync.Once
@@ -513,6 +508,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/chat/delete", http.HandlerFunc(c.chatDelete), nil},
 		{"POST /projects/{name}/chat/answer", http.HandlerFunc(c.chatAnswer), nil},
 		{"POST /projects/{name}/chat/fund", http.HandlerFunc(c.chatFund), nil},
+		{"POST /projects/{name}/chat/budget", http.HandlerFunc(c.chatFundAndGo), nil},
 		{"POST /projects/{name}/docs/{path...}", http.HandlerFunc(c.docWrite), nil},
 		{"POST /projects/{name}/chat/proposals/{id}", http.HandlerFunc(c.chatProposal), nil},
 		{"POST /projects/{name}/chat/undo/{token}", http.HandlerFunc(c.chatUndo), nil},

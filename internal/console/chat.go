@@ -49,9 +49,6 @@ const (
 	// chatWindow bounds each write of a chat stream: longer than a model
 	// call, during which the stream writes nothing.
 	chatWindow = 3 * time.Minute
-	// chatAskWait is how long a chat budget's ask stands before it may
-	// repeat (chatAsk).
-	chatAskWait = time.Hour
 )
 
 // keep stores a proposal (kind proposal) or an applied action's undo
@@ -183,32 +180,36 @@ func (t *turn) fail(msg string) {
 }
 
 // save appends m to the thread's conversation, even once the member
-// left; false once the turn failed.
-func (t *turn) save(m factoryd.ChatMessage) bool {
+// left, and answers its id; false once the turn failed.
+func (t *turn) save(m factoryd.ChatMessage) (int64, bool) {
 	ctx := context.WithoutCancel(t.r.Context())
 	m.Conversation = t.conv
-	if _, err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, m); err != nil {
+	id, err := t.c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, m)
+	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
 		t.fail("The conversation could not be stored.")
-		return false
+		return 0, false
 	}
-	return true
+	return id, true
 }
 
 // chatGetAnswer is GET /chat's JSON body: the conversation read, its
-// thread, its messages and the state of each proposal among them.
+// thread, its messages and the state of each proposal among them, and
+// the fund state while the chat's budget stops it.
 type chatGetAnswer struct {
 	Conversation int64                     `json:"conversation"`
 	Thread       factoryd.ChatConversation `json:"thread"`
 	Messages     []factoryd.ChatMessage    `json:"messages"`
 	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
+	Budget       *chatBudget               `json:"budget,omitempty"`
 }
 
 // chatGet answers GET /projects/{name}/chat: the member's current
 // conversation on the project, or the one ?conversation names, which
 // becomes their current one while it is active; its last chatHistory
 // messages, oldest first, and each proposal's state among them, pending,
-// used or expired, as JSON. Reading it marks it seen.
+// used or expired, and while the chat's budget stops it the fund state,
+// as JSON. Reading it marks it seen.
 func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -234,16 +235,20 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t.attachRows(ctx, msgs)
-	t.settleRows(ctx, msgs, th.SeenUpto)
+	stop, err := c.chatStopNow(ctx, t.p)
+	if err != nil {
+		log.Printf("console: the chat stop of %s: %v", repo, err)
+	}
+	t.settleRows(ctx, msgs, th.SeenUpto, stop)
 	// the owner's Clear old swept the rows up to their marker from view;
-	// an open ask stays whatever the marker says, and the record keeps
-	// every row. Past the summary's fold the answer carries no summary
-	// either: no summary card over rows the member swept, while the
-	// stored thread keeps its summary for the turns.
+	// an open ask or fund row stays whatever the marker says, and the
+	// record keeps every row. Past the summary's fold the answer carries
+	// no summary either: no summary card over rows the member swept, while
+	// the stored thread keeps its summary for the turns.
 	if th.ClearedUpto > 0 {
 		kept := make([]factoryd.ChatMessage, 0, len(msgs))
 		for _, m := range msgs {
-			if m.ID <= th.ClearedUpto && !(factoryd.AskFamily(m) != "" && !m.Settled) {
+			if m.ID <= th.ClearedUpto && !((factoryd.AskFamily(m) != "" || fundRow(m)) && !m.Settled) {
 				th.Cleared++
 				continue
 			}
@@ -276,7 +281,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	if th.Tokens, th.CostEUR, err = c.cfg.Chat.ThreadTotals(ctx, t.threadRef()); err != nil {
 		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
 	}
-	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs}
+	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
 	if len(tokens) > 0 {
 		states, err := c.cfg.Chat.ProposalStates(ctx, repo, owner, tokens, time.Now())
 		if err != nil {
@@ -381,10 +386,11 @@ func (t *turn) attachRows(ctx context.Context, msgs []factoryd.ChatMessage) {
 
 // settleRows stamps each poke row's derived state onto the log (the
 // notification-settling concept): an ask past its settling event or its
-// wait facts gets its reason line, a poke the member has read recedes.
-// Nothing is written; the state derives at read, seenUpto the thread's
-// seen marker before this read.
-func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seenUpto int64) {
+// wait facts gets its reason line, a poke the member has read recedes,
+// and a fund row settles by the chat's stop. Nothing is written; the
+// state derives at read, seenUpto the thread's seen marker before this
+// read.
+func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seenUpto int64, stop chatStop) {
 	pending, err := t.c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	if err != nil {
 		log.Printf("console: the approval requests: %v", err)
@@ -405,6 +411,10 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 	}
 	for i, m := range msgs {
+		if fundRow(m) {
+			msgs[i].Settled, msgs[i].Reason = fundSettle(m, stop)
+			continue
+		}
 		if m.Kind == factoryd.MessageAsk {
 			// an ask stands open while it is the thread's newest row: any
 			// row after it, the member's press or reply or another turn's,
@@ -740,8 +750,8 @@ func scrubTokens(text string) (string, bool) {
 // then model calls on chat task id, each ending its tool calls, until an
 // answer calls none or proposes one and no message came meanwhile. A
 // message the member sends while it runs joins it and the next call
-// reads it; one still unread when the turn fails lands unanswered. Each
-// call first checks the task's budget.
+// reads it; one still unread when the turn fails lands unanswered. A call
+// the gateway refuses for money ends the turn on a stop row (stop).
 func (t *turn) run(id, notice string) {
 	t.task = id
 	ctx := t.r.Context()
@@ -763,7 +773,7 @@ func (t *turn) run(id, notice string) {
 		return
 	}
 	if notice != "" {
-		if !t.save(factoryd.ChatMessage{Role: "assistant", Content: notice}) {
+		if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", Content: notice}); !ok {
 			return
 		}
 		t.send("text", map[string]string{"text": notice + "\n\n"})
@@ -771,18 +781,6 @@ func (t *turn) run(id, notice string) {
 	defs := t.offered()
 	forced := 0
 	for {
-		task, ok, err := t.c.cfg.Tasks.Task(ctx, id)
-		if err != nil || !ok {
-			log.Printf("console: chat task %s: found %v, %v", id, ok, err)
-			t.fail("The chat's task could not be read.")
-			return
-		}
-		if task.BudgetEUR-task.SpentEUR <= 0 {
-			t.send("text", map[string]string{"text": fmt.Sprintf("The chat's budget of €%.2f for this month is spent.", task.BudgetEUR)})
-			t.send("done", struct{}{})
-			t.c.chatAsk(ctx, t.p, task)
-			return
-		}
 		out := &unstamper{send: func(s string) { t.send("text", map[string]string{"text": s}) }}
 		answer, err := t.c.cfg.Operator.Stream(ctx, id, t.cfg.Model, t.threadRef(), msgs, defs, out.write)
 		if err != nil {
@@ -804,6 +802,9 @@ func (t *turn) run(id, notice string) {
 				t.fail("The thread is past the model's context window even after compacting it (" + gateway.RefusedContext + "): start a new thread to go on.")
 				return
 			}
+			if errors.As(err, &refusal) && t.stop(refusal) {
+				return
+			}
 			if errors.As(err, &refusal) {
 				t.fail("The gateway refused the call: " + refusal.Reason)
 				return
@@ -817,7 +818,7 @@ func (t *turn) run(id, notice string) {
 			// the model spent its output on reasoning: say so instead of an
 			// empty row
 			cut := fmt.Sprintf("The answer stopped at the model's output limit of %d tokens before it wrote anything; send a message to try again.", factoryd.OperatorTokens)
-			if t.save(factoryd.ChatMessage{Role: "assistant", Content: cut}) {
+			if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", Content: cut}); ok {
 				t.send("text", map[string]string{"text": cut})
 				t.send("done", struct{}{})
 			}
@@ -839,7 +840,7 @@ func (t *turn) run(id, notice string) {
 			row.Kind, row.Content, row.Choices = t.ask.Kind, t.ask.Content, t.ask.Choices
 			t.ask = nil
 		}
-		if !t.save(row) {
+		if _, ok := t.save(row); !ok {
 			return
 		}
 		ended := len(answer.ToolCalls) == 0 || proposed || row.Kind == factoryd.MessageAsk
@@ -1048,9 +1049,9 @@ func (t *turn) apply(p factoryd.ChatProposal) {
 		result = t.runTool(tool, string(p.Args), in)
 	}
 	t.freshRead = time.Now()
-	if !t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
+	if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
 		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result, At: start,
-			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead}}}) {
+			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead}}}); !ok {
 		return
 	}
 	if !strings.HasPrefix(result, "Refused: ") {
@@ -1109,7 +1110,7 @@ func (c *Console) chatUndo(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		t.send("applied", map[string]string{"tool": u.Description, "result": out})
 	}
-	if t.save(factoryd.ChatMessage{Role: "assistant", Content: "Undo of " + u.Description + ": " + result}) {
+	if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", Content: "Undo of " + u.Description + ": " + result}); ok {
 		t.send("done", struct{}{})
 	}
 }
@@ -1165,11 +1166,13 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 // is left out for when it was read and the call that reads the present,
 // so neither stands as the project now; a write's result, the record of
 // an action, stays whole. An assistant row with no tool calls whose
-// content claims an action is dropped.
+// content claims an action is dropped, and so is a budget row, the
+// factory's stop: a resumed turn goes on from the message or the tool
+// results it stopped at.
 func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 	var msgs []factoryd.OperatorMessage
 	for _, m := range rows {
-		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) {
+		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) || m.Kind == factoryd.MessageBudget {
 			continue
 		}
 		earlier := m.ID <= t.upto
@@ -1556,30 +1559,6 @@ func (c *Console) spendLine(ctx context.Context, p factoryd.Project) (string, er
 	}
 	v, _ := c.inForce(ctx)
 	return spendWords(s, monthCap(v, p.Repository)), nil
-}
-
-// chatAsk asks the inbox that chat task t spent its monthly budget,
-// which stands the chat until a raise (the Fund the chat form) or the
-// month's turn: the event the Poker turns into the inbox's row,
-// delivered at the needs-you level. Within chatAskWait the ask stands,
-// its repeats counting on the row (74's rule) instead of writing it
-// anew, so a restart's single repeat is the worst it costs.
-func (c *Console) chatAsk(ctx context.Context, p factoryd.Project, t factoryd.Task) {
-	now := time.Now()
-	c.chatAsksMu.Lock()
-	if at, ok := c.chatAsks[t.ID]; ok && now.Sub(at) < chatAskWait {
-		c.chatAsksMu.Unlock()
-		return
-	}
-	if c.chatAsks == nil {
-		c.chatAsks = map[string]time.Time{}
-	}
-	c.chatAsks[t.ID] = now
-	c.chatAsksMu.Unlock()
-	if _, err := c.cfg.Events.Record(ctx, factoryd.Event{Repository: p.Repository, Kind: factoryd.EventChatBudgetSpent,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"budget_eur": t.BudgetEUR}}); err != nil {
-		log.Printf("console: the chat ask of %s: %v", p.Repository, err)
-	}
 }
 
 // objectArgs is a tool call's arguments as the conversation keeps and

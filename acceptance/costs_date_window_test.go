@@ -872,6 +872,34 @@ func (f *acceptChat) ProposalStates(_ context.Context, repository, login string,
 	return out, nil
 }
 
+func (f *acceptChat) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
+// BudgetStoppedThreads are the threads of repository whose newest row is
+// the chat budget's stop, as the store's query reads them.
+func (f *acceptChat) BudgetStoppedThreads(_ context.Context, repository string) ([]factoryd.ChatConversation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.ChatConversation
+	for k, msgs := range f.msgs {
+		login, ok := strings.CutPrefix(k, repository+" ")
+		if !ok {
+			continue
+		}
+		newest := map[int64]factoryd.ChatMessage{}
+		for _, m := range msgs {
+			newest[m.Conversation] = m
+		}
+		for n, m := range newest {
+			if m.Kind == factoryd.MessageBudget && m.BirthKind == factoryd.EventChatBudgetSpent {
+				out = append(out, factoryd.ChatConversation{Login: login, Number: n})
+			}
+		}
+	}
+	return out, nil
+}
+
 func (f *acceptChat) ProjectMonthSpend(_ context.Context, _ string, _ time.Time) (factoryd.ProjectSpend, error) {
 	return factoryd.ProjectSpend{}, nil
 }

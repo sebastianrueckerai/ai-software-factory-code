@@ -1024,6 +1024,16 @@ func (f *accBatchChat) ProposalStates(_ context.Context, _, _ string, tokens []s
 	return out, nil
 }
 
+func (f *accBatchChat) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
+// BudgetStoppedThreads finds none: the rig stores its rows without their
+// owners.
+func (f *accBatchChat) BudgetStoppedThreads(context.Context, string) ([]factoryd.ChatConversation, error) {
+	return nil, nil
+}
+
 func (f *accBatchChat) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
 	return factoryd.ProjectSpend{}, nil
 }

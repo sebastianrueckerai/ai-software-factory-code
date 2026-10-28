@@ -88,10 +88,12 @@ var chatView = (function () {
   }
   // factoryHTML is a row factoryd wrote itself (C14): a poke or an
   // escalation by "the factory", its choices as buttons, its decider line
-  // when the agent acted alone; a summary turn after /compact. A settled
+  // when the agent acted alone; a summary turn after /compact; a budget
+  // row, where a turn stopped for money. fund, the stopped chat's fund
+  // state on its newest open fund row, adds the fund control. A settled
   // row folds to one line — its reason, then the first words of what it
   // said — and opens on a click to the full quiet row (round 06's pick)
-  function factoryHTML(m) {
+  function factoryHTML(m, fund) {
     if (m.kind === "summary") {
       return "<div class=\"msg sum\"><span class=\"av\" aria-hidden=\"true\">≡</span>" + whoHTML("summary", m.at) + saidHTML(m.content) + "</div>";
     }
@@ -107,6 +109,7 @@ var chatView = (function () {
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
         return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
+    if (fund) body += fundHTML(fund);
     var fold = "";
     if (m.settled) fold = "<p class=\"fold\" role=\"button\" tabindex=\"0\" aria-expanded=\"false\" data-fold>" +
       "<span class=\"visually-hidden\">Settled: </span><span class=\"fw\">" + esc(m.reason || "seen") + "</span>" +
@@ -114,6 +117,20 @@ var chatView = (function () {
     return "<div class=\"msg agent poke" + (esc1 ? " esc" : "") + (m.settled ? " settled" : "") + "\"" +
       (m.task_id ? " data-card=\"" + esc(m.task_id) + "\"" : "") + " data-message=\"" + esc(m.id) + "\"><span class=\"av\" aria-hidden=\"true\"></span>" + meta +
       (esc1 ? "<div class=\"esc-b\">" + body + "</div>" : body) + fold + "</div>";
+  }
+  // fundHTML is the fund control of a stopped chat (b, GET /chat's
+  // budget): the amount, prefilled with the suggested one, and one click
+  // that funds and lets the stopped turns go on; a member who may not fund
+  // reads who may
+  function fundHTML(b) {
+    if (!b.can_fund) return "<p class=\"settled-why\">Only an approver of the project funds the chat.</p>";
+    return "<form class=\"choices fund\" data-fund><label>Raise the chat's budget by, EUR <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" " +
+      "required value=\"" + esc(b.suggest_eur) + "\"></label> <button type=\"submit\">Fund and go on</button></form>";
+  }
+  // fundRow says m asks for the chat's fund: the stop row, or the inbox's
+  // poke of it
+  function fundRow(m) {
+    return m.birth_kind === "chat_budget_spent" && (m.kind === "budget" || m.kind === "poke");
   }
   function agentHTML(at, parts) {
     return "<div class=\"msg agent\"><span class=\"av\" aria-hidden=\"true\"></span>" + whoHTML("project agent", at) + parts + "</div>";
@@ -169,10 +186,12 @@ var chatView = (function () {
   // the factory started itself is one row of its own, folded to its first
   // line (the main agent concept). A proposed call whose state in
   // proposals is pending offers its Do it as the stream's does; a used or
-  // expired one says so under its block.
-  function historyHTML(msgs, login, proposals) {
-    var states = {};
+  // expired one says so under its block. While budget, the stopped chat's
+  // fund state, stands, the newest open fund row offers the fund.
+  function historyHTML(msgs, login, proposals, budget) {
+    var states = {}, fundAt = -1;
     (proposals || []).forEach(function (p) { states[p.token] = p.state; });
+    if (budget) msgs.forEach(function (m, i) { if (fundRow(m) && !m.settled) fundAt = i; });
     var out = [], parts = null, at, wake = null;
     function close() {
       if (wake) out.push(wakeHTML(wake));
@@ -180,12 +199,12 @@ var chatView = (function () {
       if (parts) out.push(agentHTML(at, callsHTML(parts)));
       parts = null;
     }
-    msgs.forEach(function (m) {
+    msgs.forEach(function (m, i) {
       // a row the factory wrote itself renders as its own whatever its
       // role: a card thread's first row is the ask, seeded as a user row
-      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary") {
+      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary" || m.kind === "budget") {
         close();
-        out.push(factoryHTML(m));
+        out.push(factoryHTML(m, i === fundAt ? budget : null));
         return;
       }
       if (m.role === "user") {
@@ -235,17 +254,17 @@ var chatView = (function () {
   // threadHTML is a thread's log: the rows Clear old swept from view name
   // their count in one line at the top; after a compaction its rows up to
   // the summary fold behind one line, the summary turn follows, then the
-  // rows after it (C14)
-  function threadHTML(msgs, login, proposals, thread) {
+  // rows after it (C14); budget is the stopped chat's fund state
+  function threadHTML(msgs, login, proposals, thread, budget) {
     var swept = thread && thread.cleared ? "<p class=\"meta chat-cleared\">cleared: " + thread.cleared + " older " +
       (thread.cleared === 1 ? "message" : "messages") + " out of view</p>" : "";
     var upto = thread && thread.summary ? thread.summary_upto || 0 : 0;
-    if (!upto) return swept + historyHTML(msgs, login, proposals);
+    if (!upto) return swept + historyHTML(msgs, login, proposals, budget);
     var old = msgs.filter(function (m) { return m.id <= upto; }), rest = msgs.filter(function (m) { return m.id > upto; });
     var at = old.length ? old[old.length - 1].at : (rest[0] || {}).at;
     return swept + (old.length ? "<details class=\"compacted\"><summary>" + old.length + " earlier " + (old.length === 1 ? "message" : "messages") +
       ", compacted</summary>" + historyHTML(old, login, proposals) + "</details>" : "") +
-      factoryHTML({kind: "summary", content: thread.summary, at: at}) + historyHTML(rest, login, proposals);
+      factoryHTML({kind: "summary", content: thread.summary, at: at}) + historyHTML(rest, login, proposals, budget);
   }
   // paletteOf is the commands the box's value names: those whose /name
   // starts with it while it is a slash and one word; null otherwise
@@ -755,6 +774,15 @@ var chatView = (function () {
       else if (ev.event === "proposal") add(into, chatView.proposalHTML(d));
       else if (ev.event === "applied") add(into, chatView.appliedHTML(d, into.classList.contains("undoing")));
       else if (ev.event === "view") document.dispatchEvent(new CustomEvent("view", {detail: d}));
+      else if (ev.event === "budget") {
+        // the stop row lands under the turn, the only fund control on it;
+        // a turn that said nothing before it leaves no empty message
+        log.querySelectorAll("[data-fund]").forEach(function (f) { f.remove(); });
+        var host = into.closest(".msg") || into;
+        host.insertAdjacentHTML("afterend", chatView.factoryHTML(d.message, d.budget || null));
+        if (host === into && !into.querySelector(":scope > :not(.av):not(.who):not(.thinking)")) into.remove();
+        scrollEnd();
+      }
       else if (ev.event === "error") add(into, "<p class=\"chat-error\">" + chatView.esc(d.message) + "</p>");
       ended = ended || ev.event === "done" || ev.event === "error";
     }
@@ -1136,6 +1164,21 @@ var chatView = (function () {
       run(open, openOwner, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
   });
+  // Fund and go on: the stopped chat's budget rises by the amount, and the
+  // thread's own stopped turn goes on under it, streamed; the thread read
+  // again settles the stop
+  log.addEventListener("submit", function (e) {
+    var f = e.target.closest("[data-fund]");
+    if (!f) return;
+    e.preventDefault();
+    if (busy(openRef())) return;
+    var n = open, owner = openOwner, eur = f.elements.eur.value;
+    f.remove();
+    var into = add(log, chatView.agentHTML(new Date(), ""));
+    run(n, owner, base + "/budget", new URLSearchParams({eur: eur, conversation: n, owner: owner}).toString(), into).then(function () {
+      if (n === open && owner === openOwner) return load(n, owner, true);
+    });
+  });
   // a settled row's or a wake row's fold line opens the row it stands for
   function toggleFold(el) {
     var row = el.closest(".msg");
@@ -1172,7 +1215,7 @@ var chatView = (function () {
       // panel's base lives; the optimistic ones carry their object URL
       data.messages.forEach(function (m) { (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; }); });
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
-      log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread) : intro;
+      log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread, data.budget) : intro;
       if (form) {
         // an archived thread's composer is one line with restore (C14);
         // another member's archived thread has no restore to offer

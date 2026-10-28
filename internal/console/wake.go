@@ -14,8 +14,11 @@ import (
 // StartWake runs one turn the factory's Waker starts (the concept's
 // wake): the member's turn without their request, on conversation, its
 // user row carrying birth as the birth kind, its Forgejo calls the project
-// agent's own (wakeSession). The turn queues behind one already running on
-// the thread, and StartWake ends when the turn does.
+// agent's own (wakeTurn). A chat its budget stopped refuses the wake
+// before any row, factoryd.ErrChatUnfunded. The turn queues behind one
+// already running on the thread, and StartWake ends when the turn does;
+// a turn the budget stops on its way is delivered, its thread ending on
+// the stop row a fund resumes.
 func (c *Console) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
 	if c.cfg.Chat == nil || c.cfg.Operator == nil {
 		return errors.New("the console has no chat")
@@ -27,7 +30,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	if !ok {
 		return fmt.Errorf("there is no project %s", project)
 	}
-	s, err := c.wakeSession(p, login)
+	t, err := c.wakeTurn(ctx, p, login, conversation)
 	if err != nil {
 		return err
 	}
@@ -41,17 +44,14 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	if th.State == factoryd.ThreadArchived {
 		return fmt.Errorf("conversation %d is archived: %w", conversation, factoryd.ErrWakeVenueGone)
 	}
-	v, _ := c.inForce(ctx)
-	t := &turn{c: c, p: p, conv: conversation, owner: login, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
-		a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat, wake: true, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
-	if pc, ok := v.Projects[p.Name]; ok {
-		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
-	}
-	t.a.thread = conversation
-	t.r = wakeRequest(ctx, t.a.s)
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
 		return fmt.Errorf("the chat's task: %w", err)
+	}
+	if stop, err := c.chatStopOf(ctx, task); err != nil {
+		return fmt.Errorf("the chat's stop: %w", err)
+	} else if stop.stopped {
+		return fmt.Errorf("the chat of %s stands at its budget of €%.2f: %w", p.Name, task.BudgetEUR, factoryd.ErrChatUnfunded)
 	}
 	pos, wait := c.turns.enter(t.key())
 	defer c.turns.leave(t.key())
@@ -144,6 +144,26 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 		tu.run(task.ID, notice)
 	}()
 	return answerInChatNote, nil
+}
+
+// wakeTurn is a turn on login's thread conversation of project p without
+// the member's request, a wake's or a fund's resume: its rows the
+// member's, its Forgejo calls the project agent's own on p's chat token
+// (wakeSession), the member never having asked.
+func (c *Console) wakeTurn(ctx context.Context, p factoryd.Project, login string, conversation int64) (*turn, error) {
+	s, err := c.wakeSession(p, login)
+	if err != nil {
+		return nil, err
+	}
+	v, _ := c.inForce(ctx)
+	t := &turn{c: c, p: p, conv: conversation, owner: login, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
+		a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat, wake: true, chatTask: factoryd.ChatTaskID(p.Name, time.Now()),
+			thread: conversation}}
+	if pc, ok := v.Projects[p.Name]; ok {
+		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
+	}
+	t.r = wakeRequest(ctx, s)
+	return t, nil
 }
 
 // wakeSession is the session a wake on p runs on: the woken member's

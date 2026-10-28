@@ -1209,10 +1209,10 @@ type statusLine struct {
 	// ("↻ bump in 20 min"), "" for none.
 	RoutineCell string
 	RoutineHeld bool
-	// ChatSpent: the project's chat task spent its monthly budget, which
-	// stands the chat until a raise (the Fund the chat form) or the
-	// month's turn; ChatTask is its task id. Approver: the viewer may
-	// fund it.
+	// ChatSpent: the chat's budget stopped it this month (chatStop),
+	// which stands the chat until a raise (the Fund the chat form or the
+	// chat's own) or the month's turn; ChatTask is its task id. Approver:
+	// the viewer may fund it.
 	ChatSpent bool
 	ChatTask  string
 	Approver  bool
@@ -2482,11 +2482,11 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		d.Problems = append(d.Problems, "the spend today could not be read")
 	}
 	s.Approver = v.approves(p.Repository)
-	if t, ok, err := c.cfg.Tasks.Task(ctx, factoryd.ChatTaskID(p.Name, time.Now())); err != nil {
-		log.Printf("console: the chat task of %s: %v", p.Repository, err)
+	if stop, err := c.chatStopNow(ctx, p); err != nil {
+		log.Printf("console: the chat stop of %s: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the chat's budget could not be read")
-	} else if ok && t.Kind == factoryd.KindChat && t.Status == "running" && t.SpentEUR >= t.BudgetEUR {
-		s.ChatSpent, s.ChatTask = true, t.ID
+	} else if stop.stopped {
+		s.ChatSpent, s.ChatTask = true, stop.task.ID
 	}
 	if c.cfg.Mirrors == nil {
 		return
@@ -2992,14 +2992,14 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
-// the approver's answer to the spent-chat-budget ask.
+// the approver's answer to the chat's budget stop.
 func (c *Console) chatFund(w http.ResponseWriter, r *http.Request) {
 	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
 	if err != nil {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	if err := c.doChatFund(r.Context(), button(r), r.PathValue("name"), eur, r.PostFormValue("reason")); err != nil {
+	if _, _, err := c.doChatFund(r.Context(), button(r), r.PathValue("name"), eur, r.PostFormValue("reason"), ""); err != nil {
 		c.fail(w, r, err)
 		return
 	}

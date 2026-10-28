@@ -97,6 +97,35 @@ func TestStartWakeQueuesBehindALiveTurn(t *testing.T) {
 	}
 }
 
+// A wake on a chat its budget stopped is refused before any row or model
+// call, with the sentinel the Waker holds the wake on; once a fund lifts
+// the stop, the same wake runs.
+func TestStartWakeRefusesAStoppedChat(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	task := stoppedChat(t, r)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Wake: 1 ask waits.")
+	if !errors.Is(err, factoryd.ErrChatUnfunded) {
+		t.Fatalf("StartWake on the stopped chat = %v, want ErrChatUnfunded", err)
+	}
+	if rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10); len(rows) != 0 || len(g.calls()) != 0 {
+		t.Fatalf("the refused wake left rows %+v and %d model calls", rows, len(g.calls()))
+	}
+	if _, _, err := r.tasks.RaiseTaskBudget(t.Context(), task.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say("I looked.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Wake: 1 ask waits."); err != nil {
+		t.Fatalf("StartWake after the fund: %v", err)
+	}
+	if rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10); len(rows) != 2 || rows[1].Content != "I looked." {
+		t.Fatalf("the wake after the fund = %+v", rows)
+	}
+}
+
 // waitFor polls cond until it holds or the deadline passes.
 func waitFor(t *testing.T, within time.Duration, cond func() bool) bool {
 	t.Helper()

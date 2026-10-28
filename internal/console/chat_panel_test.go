@@ -121,7 +121,10 @@ func TestChatPanel(t *testing.T) {
 // conversations offers the current one and each other, and is empty when
 // there is no other. A run of tool calls shows its newest, the earlier
 // ones folded behind one line, a single call stays as it is; a member's
-// row the agent has not read yet says so, and says read once it has. Run
+// row the agent has not read yet says so, and says read once it has. A
+// budget row renders as the factory's, and while the chat stands stopped
+// its newest open fund row alone offers the fund, prefilled with the
+// suggestion, or to a member who may not fund the line of who may. Run
 // under node, which the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -188,7 +191,22 @@ console.log(JSON.stringify({
     [{id: 901, content_type: "image/png", name: "img1", url: "/projects/ai-software-factory-code/chat/attachments/901"}], []),
   zoom: chatView.zoomHTML("/projects/ai-software-factory-code/chat/attachments/901", "img1"),
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
-    chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)])
+    chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)]),
+  budgetRow: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
+    content: "The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\nfree headroom 0.038793 EUR"},
+    {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: true}),
+  budgetRowWriter: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
+    content: "The chat's budget is used up."}, {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: false}),
+  fundOnNewest: (function () {
+    var rows = [{id: 1, role: "user", content: "what is open?", at: "2026-10-28T22:19:00Z"},
+      {id: 2, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", content: "first stop", at: "2026-10-28T22:20:00Z"},
+      {id: 3, role: "user", content: "and now?", at: "2026-10-28T22:21:00Z"},
+      {id: 4, role: "assistant", kind: "poke", birth_kind: "chat_budget_spent", content: "second stop", at: "2026-10-28T22:22:00Z"},
+      {id: 5, role: "assistant", kind: "budget", content: "the month cap", at: "2026-10-28T22:23:00Z"}];
+    var stopped = chatView.historyHTML(rows, "sebastian", [], {budget_eur: 15, spent_eur: 14.96, suggest_eur: 3, can_fund: true});
+    var funded = chatView.historyHTML(rows, "sebastian", []);
+    return JSON.stringify([stopped.split("data-fund").length - 1, stopped.indexOf("data-fund") > stopped.indexOf("second stop"), funded.indexOf("data-fund")]);
+  })()
 }));`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
 	cmd.Env = append(os.Environ(), "TZ=UTC")
@@ -289,6 +307,13 @@ console.log(JSON.stringify({
 			`<img src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></div>`},
 		{"readRow", `<p class="meta chat-read">✓ read by the agent</p>`},
 		{"share", `[384,384,720,500.25]`},
+		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
+			`<div class="said"><p>The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.<br>free headroom 0.038793 EUR</p></div>` +
+			`<form class="choices fund" data-fund><label>Raise the chat's budget by, EUR <input type="number" name="eur" step="0.01" min="0.01" required value="3"></label> ` +
+			`<button type="submit">Fund and go on</button></form></div>`},
+		{"budgetRowWriter", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
+			`<div class="said"><p>The chat's budget is used up.</p></div><p class="settled-why">Only an approver of the project funds the chat.</p></div>`},
+		{"fundOnNewest", `[1,true,-1]`},
 	} {
 		if got[c.name] != c.want {
 			t.Errorf("%s =\n%s\nwant\n%s", c.name, got[c.name], c.want)
