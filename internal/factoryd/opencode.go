@@ -429,8 +429,12 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 		return served{}
 	}
 	pr := ev.Properties
-	runLine := func(typ string, key string, v json.RawMessage) served {
-		line, _ := json.Marshal(map[string]any{"type": typ, "timestamp": at.UnixMilli(), "sessionID": m.session, key: v})
+	runLine := func(typ string, key string, v json.RawMessage, subagent bool) served {
+		fields := map[string]any{"type": typ, "timestamp": at.UnixMilli(), "sessionID": m.session, key: v}
+		if subagent {
+			fields["subagent"] = true
+		}
+		line, _ := json.Marshal(fields)
 		return served{line: line}
 	}
 	switch ev.Type {
@@ -453,26 +457,27 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 			return served{}
 		}
 		if part.SessionID != m.session {
-			// a subagent's tool calls count as the session's work: its
-			// writes keep the supervisor's write clock (roadmap 222, item 6)
+			// a subagent's tool calls reach the supervisor marked: its writes
+			// keep the write clock (roadmap 222, item 6), its run counts once
+			// for repetition, as the session's task call
 			if m.sessions[part.SessionID] && part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error") {
-				return runLine("tool_use", "part", pr.Part)
+				return runLine("tool_use", "part", pr.Part, true)
 			}
 			return served{}
 		}
 		switch {
 		case part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error"):
-			return runLine("tool_use", "part", pr.Part)
+			return runLine("tool_use", "part", pr.Part, false)
 		case part.Type == "step-start":
-			return runLine("step_start", "part", pr.Part)
+			return runLine("step_start", "part", pr.Part, false)
 		case part.Type == "step-finish":
-			return runLine("step_finish", "part", pr.Part)
+			return runLine("step_finish", "part", pr.Part, false)
 		case part.Type == "text" && part.Time.End != 0:
-			return runLine("text", "part", pr.Part)
+			return runLine("text", "part", pr.Part, false)
 		}
 	case "session.error":
 		if pr.SessionID == m.session && len(pr.Error) > 0 && string(pr.Error) != "null" {
-			return runLine("error", "error", pr.Error)
+			return runLine("error", "error", pr.Error, false)
 		}
 	case "session.status":
 		if pr.SessionID == m.session && pr.Status.Type == "idle" {
@@ -968,6 +973,7 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 		Timestamp int64           `json:"timestamp"`
 		Part      json.RawMessage `json:"part"`
 		Error     json.RawMessage `json:"error"`
+		Subagent  bool            `json:"subagent"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		p.errMsg = fmt.Sprintf("unparseable opencode line: %s", b)
@@ -981,7 +987,7 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 	case "step_start":
 		emit(harness.Event{Time: at, Kind: harness.EventCheckpoint})
 	case "tool_use":
-		p.toolUse(raw.Part, at, emit)
+		p.toolUse(raw.Part, at, raw.Subagent, emit)
 	case "text":
 		var part struct {
 			Text string `json:"text"`
@@ -1007,7 +1013,14 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 	}
 }
 
-func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, emit func(harness.Event)) {
+func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, emit func(harness.Event)) {
+	if subagent {
+		next := emit
+		emit = func(ev harness.Event) {
+			ev.Detail["subagent"] = true
+			next(ev)
+		}
+	}
 	var part struct {
 		Tool  string `json:"tool"`
 		State struct {

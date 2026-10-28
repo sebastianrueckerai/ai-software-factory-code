@@ -1205,6 +1205,45 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 	}
 }
 
+func subagentEvent(tool string, args map[string]any) harness.Event {
+	ev := toolEvent(tool, args)
+	ev.Detail["subagent"] = true
+	return ev
+}
+
+// A subagent's run counts once for repetition, as the session's task call:
+// its reads add nothing, its writes still reset the count.
+func TestSubagentCallsCountOnce(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 3, NoWriteAfter: time.Hour}
+	read := func(path string) harness.Event { return toolEvent("read", map[string]any{"filePath": path}) }
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	for i := range 5 {
+		if trip := s.Event(subagentEvent("read", map[string]any{"filePath": fmt.Sprintf("s%d.go", i)}), minute(1)); trip != nil {
+			t.Fatalf("subagent read %d tripped: %+v", i, trip)
+		}
+	}
+	if trip := s.Event(read("a.go"), minute(2)); trip != nil {
+		t.Fatalf("the first own read tripped: %+v", trip)
+	}
+	s.Event(read("b.go"), minute(2))
+	trip := s.Event(read("c.go"), minute(2))
+	if trip == nil || trip.Kind != TripRepetition || trip.Detail != "3 tool calls and commands without a file change" {
+		t.Fatalf("trip = %+v, want repetition at the third own call", trip)
+	}
+
+	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s2.Event(read("a.go"), minute(1))
+	s2.Event(read("b.go"), minute(1))
+	write := fileEvent("a.go", "h1")
+	write.Detail["subagent"] = true
+	s2.Event(write, minute(2))
+	for _, path := range []string{"c.go", "d.go"} {
+		if trip := s2.Event(read(path), minute(3)); trip != nil {
+			t.Fatalf("a read after the subagent's write tripped: %+v", trip)
+		}
+	}
+}
+
 // Silence after a message is no circle: a command running over 5 minutes
 // trips no_progress, which the supervisor is asked about (review I2).
 func TestNoProgressAfterMessageAsks(t *testing.T) {

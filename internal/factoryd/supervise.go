@@ -191,7 +191,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	}
 	switch {
 	case ev.Kind == harness.EventToolCall, ev.Kind == harness.EventCommand:
-		s.sinceChange++
+		if !detailBool(ev, "subagent") {
+			s.sinceChange++
+		}
 		if ev.Kind == harness.EventCommand {
 			// the command's running time is the machine's, not the agent's
 			s.noWriteFrom = s.noWriteFrom.Add(commandDuration(ev))
@@ -932,6 +934,11 @@ func diffSize(ev harness.Event) (int, bool) {
 func detailString(ev harness.Event, key string) string {
 	s, _ := ev.Detail[key].(string)
 	return s
+}
+
+func detailBool(ev harness.Event, key string) bool {
+	b, _ := ev.Detail[key].(bool)
+	return b
 }
 
 func detailInt(ev harness.Event, key string) (int, bool) {
