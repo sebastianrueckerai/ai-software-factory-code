@@ -812,15 +812,18 @@ func (a *AcceptanceRig) NewestTaskEvents(_ context.Context, tasks []string) (map
 
 // Chat: the conversations, proposals and spend in memory.
 
-func (a *AcceptanceRig) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
+func (a *AcceptanceRig) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
 	id := factoryd.ChatTaskID(name, at)
-	if t, ok, _ := a.Task(ctx, id); ok {
-		return t, nil
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.tasks {
+		if a.tasks[i].ID == id {
+			a.tasks[i].BudgetEUR = max(a.tasks[i].BudgetEUR, budget)
+			return a.tasks[i].Task, nil
+		}
 	}
 	t := factoryd.Task{ID: id, Kind: factoryd.KindChat, Status: "running", BudgetEUR: budget, Repository: repository}
-	a.mu.Lock()
 	a.tasks = append(a.tasks, factoryd.BoardTask{Task: t})
-	a.mu.Unlock()
 	return t, nil
 }
 

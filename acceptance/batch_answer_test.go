@@ -837,15 +837,18 @@ type accBatchProposal struct {
 	used time.Time
 }
 
-func (f *accBatchChat) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
+func (f *accBatchChat) EnsureChatTask(_ context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error) {
 	id := factoryd.ChatTaskID(name, at)
-	if t, ok, _ := f.tasks.Task(ctx, id); ok {
-		return t, nil
+	f.tasks.mu.Lock()
+	defer f.tasks.mu.Unlock()
+	for i := range f.tasks.tasks {
+		if f.tasks.tasks[i].ID == id {
+			f.tasks.tasks[i].BudgetEUR = max(f.tasks.tasks[i].BudgetEUR, budget)
+			return f.tasks.tasks[i].Task, nil
+		}
 	}
 	t := factoryd.Task{ID: id, Kind: factoryd.KindChat, Status: "running", BudgetEUR: budget, Repository: repository}
-	f.tasks.mu.Lock()
 	f.tasks.tasks = append(f.tasks.tasks, factoryd.BoardTask{Task: t})
-	f.tasks.mu.Unlock()
 	return t, nil
 }
 

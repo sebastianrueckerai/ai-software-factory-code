@@ -117,15 +117,16 @@ func StampReadAt(calls []ChatToolCall, now time.Time) []ChatToolCall {
 }
 
 // EnsureChatTask is project name's chat task for the month of at, filed
-// running with budget the first time: a later call that month changes
-// nothing. An earlier month's task still running closes (finished now),
-// so the settlement pass settles it and the gateway takes no more of its
-// calls.
+// running with budget the first time: a later call that month raises the
+// task's budget to budget when the policy's rose, and never lowers it, so
+// a fund above the policy stays. An earlier month's task still running
+// closes (finished now), so the settlement pass settles it and the
+// gateway takes no more of its calls.
 func (s *PGStore) EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (Task, error) {
 	t := Task{ID: ChatTaskID(name, at), Kind: KindChat, Status: "running", BudgetEUR: budget, Repository: repository,
 		RequiredCapabilities: []string{policy.ClassChat},
 		Objective:            "the project agent's chat of " + name + " in " + at.UTC().Format("2006-01"), Source: "chat"}
-	if err := s.insertTask(ctx, t, `ON CONFLICT (id) DO NOTHING`); err != nil {
+	if err := s.insertTask(ctx, t, `ON CONFLICT (id) DO UPDATE SET budget_eur = EXCLUDED.budget_eur WHERE tasks.budget_eur < EXCLUDED.budget_eur`); err != nil {
 		return Task{}, err
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'closed', finished_at = now()

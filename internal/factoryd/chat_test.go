@@ -78,6 +78,29 @@ func TestPGStoreChatTaskPerMonth(t *testing.T) {
 	}
 }
 
+// A raise of the policy's monthly chat budget reaches the month's running
+// chat task at its next ensure, and a policy below a funded budget leaves
+// the fund standing: the budget never falls.
+func TestPGStoreChatTaskTakesAPolicyRaise(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	oct := time.Date(2026, 10, 28, 22, 0, 0, 0, time.UTC)
+	if got, err := s.EnsureChatTask(ctx, "code", "sf/code", 15, oct); err != nil || got.BudgetEUR != 15 {
+		t.Fatalf("the first ensure = %+v, %v: want budget 15", got, err)
+	}
+	if got, err := s.EnsureChatTask(ctx, "code", "sf/code", 30, oct.Add(time.Hour)); err != nil || got.BudgetEUR != 30 {
+		t.Fatalf("the ensure under a policy of 30 = %+v, %v: want budget 30", got, err)
+	}
+	if _, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 15, oct); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.RaiseTaskBudget(ctx, "t-chat-linkshort-2026-10", 3); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, oct.Add(time.Hour)); err != nil || got.BudgetEUR != 18 {
+		t.Fatalf("the ensure under a policy of 5 after a fund to 18 = %+v, %v: want budget 18", got, err)
+	}
+}
+
 // A conversation is one member's on one project: its newest messages,
 // oldest first, the tool calls with their results as stored.
 func TestPGStoreChatMessages(t *testing.T) {
