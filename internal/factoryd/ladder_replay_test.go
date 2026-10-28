@@ -414,6 +414,7 @@ type liveGateHarness struct {
 	*gateHarness
 	runner        *Runner
 	worker        *fakeWorkerEndpoint
+	hub           *forgejoHub
 	chat          *scriptedChat
 	objects       *fakeObjectStore
 	store         *fakeStore
@@ -426,7 +427,7 @@ func newLiveGateHarness(t *testing.T) *liveGateHarness {
 	t.Helper()
 	l := &liveGateHarness{gateHarness: newGateHarness(t, func(g *gateHarness) { g.taskConfig = askTaskConfig() })}
 	l.objects = &fakeObjectStore{}
-	l.runner, _, l.store = newTestRunner(t, supervisedTask("t1"), newFakeKube(), l.objects)
+	l.runner, l.hub, l.store = newTestRunner(t, supervisedTask("t1"), newFakeKube(), l.objects)
 	l.worker = &fakeWorkerEndpoint{status: http.StatusNoContent}
 	l.worker.start(t, l.runner)
 	l.chat = &scriptedChat{}
@@ -460,19 +461,21 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 	// (flip_flop), and after the delivered message the circle goes on
 	// without growing the diff (churn).
 	//
-	// The ledger: two sessions; two detector trips in the first, each
-	// asked: flip_flop answered message with the correction, delivered
-	// through the worker's /message; churn after it, stuck, its statement
-	// carrying the correction and the stuck line, answered handover; the
-	// workflow wrote the checkin and handover steps and put the note in the
-	// next session's brief, the stuck line first in its findings; that
-	// session pushed c1; one merge, no escalation.
+	// The ledger: one session; two detector trips, each asked: flip_flop
+	// answered message with the correction, delivered through the worker's
+	// /message; churn after it, stuck, its statement carrying the
+	// correction and the stuck line, answered handover, which on a stuck
+	// trip is the stuck rule's climb; the climb in place put model_switched
+	// on the timeline and the judge's note in the worker's message; the
+	// climbed session itself pushed c1; one merge, no escalation.
 	//
-	// Reshape against the letter: the letter's second trip climbs by the
-	// stuck rule with no second conversation. A stuck trip now goes to the
-	// check-in like any trip, and the check-in has no climb to answer, so
-	// the second conversation hands over and the retried session is the
-	// next one: no climb in place.
+	// Reshape against the letter: the letter's stuck trip climbs with no
+	// second conversation; here the second conversation says the session is
+	// stuck and code climbs, so the guidance is in the second ask, as the
+	// letter's assert wants. And the letter's "retried session pushes" is
+	// the same session: a climb needs canClimb, and the climb in place
+	// (roadmap 222) is what records the letter's "the climb in the
+	// timeline"; a stop without it records no climb step at all.
 	t.Run("churn_round_in_session", func(t *testing.T) {
 		correction := "the flip is the test's own clock: stub it and do not wait"
 		note := "the circle on a.go went on after the correction; stub the clock in a.go first and leave f0.go to f11.go alone"
@@ -489,62 +492,46 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		for i := range 12 {
 			logs += "\n" + envLine(fileEvent(fmt.Sprintf("f%d.go", i), fmt.Sprintf("k%d", i)))
 		}
-		l.sessionBodies = [][]string{
-			{logs + "\n" + resultLine(false, "stopped")},
-			{pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t1 at c1")},
-		}
+		l.sessionBodies = [][]string{{logs + "\n" + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t1 at c1")}}
 		l.onChecks(ChecksResult{State: ChecksSuccess})
 		l.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
 		if final := l.run(t); final != "done" {
 			t.Fatalf("final = %q, escalations = %q", final, l.escalated)
 		}
-		if len(l.sessions) != 2 || l.chat.calls != 2 {
-			t.Fatalf("sessions = %d, conversations = %d; want the churn session and the note's, one conversation per trip", len(l.sessions), l.chat.calls)
+		if len(l.sessions) != 1 || l.chat.calls != 2 {
+			t.Fatalf("sessions = %d, conversations = %d; want the one session the climb kept, one conversation per trip", len(l.sessions), l.chat.calls)
 		}
-		// 15 file changes, the default churn: a.go three times, f0.go to f11.go
-		stuck := "stuck after the supervisor's message: churn: 15 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes"
-		res := l.results[0]
-		if res.Outcome != OutcomeNoPush || res.Trip != string(TripChurn) || res.Summary != "check-in: handover after churn" ||
-			len(res.Findings) == 0 || res.Findings[0] != stuck {
-			t.Fatalf("the churn session's result = %+v, want the handover stop with the stuck line first", res)
-		}
-		if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Handover != note ||
-			res.CheckIn.Record == nil || res.CheckIn.Record.Moment != CheckInSession {
-			t.Fatalf("the riding check-in = %+v, want the note and the session moment's record", res.CheckIn)
+		if res := l.results[0]; res.Outcome != OutcomePushed || res.Commit != "c1" || res.Model != "factory/big" ||
+			res.Summary != "pushed branch factory/t1 at c1" {
+			t.Fatalf("the session's result = %+v, want the climbed session's own push", res)
 		}
 		if !strings.Contains(l.chat.gots[0].Input, "flip_flop") || strings.Contains(l.chat.gots[0].Input, "stuck rule:") {
 			t.Fatalf("the first ask's statement = %.80s, want the flip_flop trip named, not stuck", l.chat.gots[0].Input)
 		}
+		// 15 file changes, the default churn: a.go three times, f0.go to f11.go
+		stuck := "stuck after the supervisor's message: churn: 15 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes"
 		if !strings.Contains(l.chat.gots[1].Input, "Guidance delivered to the agent this session:\n- "+correction+"\n- stuck rule: "+stuck+"\n") {
 			t.Fatalf("the second ask's statement = %s, want the correction and the stuck line", l.chat.gots[1].Input)
 		}
-		if in := l.sessions[1]; in.Handover != note || in.ParentSessionID != res.SessionID || len(in.Findings) == 0 || in.Findings[0] != stuck {
-			t.Fatalf("the next session's input = %+v, want the note handed over and the stuck line first", in)
-		}
 		l.worker.mu.Lock()
 		defer l.worker.mu.Unlock()
+		climb := "POST /message factoryd: this session continues on the stronger model, big: " + note + ". Carry on from where you are."
 		if len(l.worker.texts) != 3 || l.worker.texts[0] != "POST /brief " ||
-			l.worker.texts[1] != "POST /message "+correction ||
-			!strings.HasPrefix(l.worker.texts[2], "POST /brief ") || !strings.Contains(l.worker.texts[2], note) {
-			t.Fatalf("worker got %q, want the brief, the correction, the next session's brief with the note", l.worker.texts)
+			l.worker.texts[1] != "POST /message "+correction || l.worker.texts[2] != climb {
+			t.Fatalf("worker got %q, want the brief, the correction, the climb with the judge's note", l.worker.texts)
 		}
 		tl := string(objGet(l.objects, "sessions/t1/timeline.jsonl"))
-		if !strings.Contains(tl, `"guidance":"`+correction+`"`) || strings.Contains(tl, `"step":"model_switched"`) {
-			t.Fatalf("timeline = %s, want the first ask's correction on its checkin step and no climb", tl)
+		if !strings.Contains(tl, `"step":"model_switched"`) || !strings.Contains(tl, `"to":"big"`) ||
+			!strings.Contains(tl, `"trip":"churn"`) {
+			t.Fatalf("timeline = %s, want the climb in place", tl)
 		}
-		var checkin, handover *recordedStep
-		for i := range l.recorded {
-			switch l.recorded[i].step {
-			case "checkin":
-				checkin = &l.recorded[i]
-			case "handover":
-				handover = &l.recorded[i]
-			}
+		if !strings.Contains(tl, `"guidance":"`+correction+`"`) {
+			t.Fatalf("timeline = %s, want the first ask's correction on its checkin step", tl)
 		}
-		if checkin == nil || checkin.detail["decision"] != CheckHandover || handover == nil ||
-			handover.detail["handover"] != note || handover.detail["session"] != res.SessionID {
-			t.Fatalf("recorded = %+v, want the checkin and handover steps carrying the note", l.recorded)
+		step := timelineStep(t, l.objects, "t1", "checkin")
+		if step["decision"] != CheckHandover || step["detector"] != "churn" || step["called"] != true || step["reason"] != note {
+			t.Fatalf("last checkin step = %v, want the judge's handover on churn", step)
 		}
 		if len(l.merges) != 1 || len(l.escalated) != 0 {
 			t.Fatalf("merges %d, escalations %q; want the card merged, nothing asked of the human", len(l.merges), l.escalated)
@@ -692,6 +679,13 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		if dead.Outcome != OutcomeRetryStronger || dead.Trip != string(TripCheapCap) || dead.CheckIn != nil ||
 			dead.Commit != "" || dead.Summary != stop {
 			t.Fatalf("the dead session = %+v, want the cheap cap's stop with no check-in", dead)
+		}
+		failed := "The switch to the stronger model failed (the harness takes no message into a running session): the session stopped, and the next one starts on it."
+		l.hub.mu.Lock()
+		comments := slices.Clone(l.hub.comments)
+		l.hub.mu.Unlock()
+		if !slices.ContainsFunc(comments, func(c string) bool { return strings.Contains(c, failed) }) {
+			t.Fatalf("comments = %q, want the cheap cap's stop explained: %q", comments, failed)
 		}
 		ask := l.sessions[1].CheckInAsk
 		if ask == nil || ask.Moment != CheckInDead || ask.ParentSession != dead.SessionID || ask.Stop != stop {

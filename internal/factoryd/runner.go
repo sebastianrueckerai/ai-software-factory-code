@@ -826,6 +826,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			d = *trip.decided
 			ck, ride = nil, false
 		}
+		// the judge says whether the session is stuck, code picks the model
+		// (rulings 216, 224): a stuck trip's handover is the stuck rule's climb
+		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
+			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck)}, false
+		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
 		note := ""
@@ -869,6 +874,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		default:
 			out.decision = &d
 			stop(trip)
+			if d.Action == ActionRetryStronger {
+				note = fmt.Sprintf("The session stopped on %s: %s. The next session resumes on the stronger model from the work in progress.", trip.Kind, d.Reason)
+			}
 		}
 		// a session that finished and pushed during the conversation goes to
 		// verification: its answer is superseded, its record is kept

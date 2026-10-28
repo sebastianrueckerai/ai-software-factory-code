@@ -341,11 +341,13 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 
 // After a delivered message, 24 commands without a write trip repetition,
 // stuck: the check-in is asked again with the stuck line after the
-// delivered guidance, its handover stops the session, and the stuck line
-// leads the findings the next session starts from.
+// delivered guidance. Its handover is the stuck rule's retry_stronger; off
+// the start rung ("m") there is no climb in place, so the session stops,
+// the issue says why, and the stuck line leads the findings the next
+// session starts from. Both check-in steps are on the timeline.
 func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	objects := &fakeObjectStore{}
-	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
 	note := "the agent listed the tree again after the message; start from c-wip and call the store's New"
 	chat := &scriptedChat{answers: []CheckinResponse{
 		{Text: `{"decision":"message","guidance":"use the store's New"}`},
@@ -357,9 +359,9 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 
 	logs := commands(0, 24) + commands(24, 24) + pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripRepetition) || res.Commit != "c-wip" ||
-		res.Summary != "check-in: handover after repetition" || res.CheckIn == nil || res.CheckIn.Handover != note {
-		t.Fatalf("result = (%+v, %v), want the check-in's handover on repetition with c-wip", res, err)
+	if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || res.Commit != "c-wip" ||
+		res.Summary != "check-in: retry_stronger after repetition: 24 tool calls and commands without a file change" || res.CheckIn != nil {
+		t.Fatalf("result = (%+v, %v), want retry_stronger on repetition with c-wip, no riding check-in", res, err)
 	}
 	if chat.calls != 2 {
 		t.Fatalf("check-in conversations = %d, want 2: the stuck trip asks too", chat.calls)
@@ -374,6 +376,62 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	tl := string(objGet(objects, "sessions/t2/timeline.jsonl"))
 	if !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"guidance":"use the store's New"`) {
 		t.Fatalf("timeline = %s, want the message's step with its guidance", tl)
+	}
+	step := timelineStep(t, objects, "t2", "checkin")
+	if step["decision"] != CheckHandover || step["called"] != true || step["reason"] != note || step["detector"] != "repetition" {
+		t.Fatalf("last check-in step = %v, want the judge's handover with its note", step)
+	}
+	stopped := "The session stopped on repetition: " + note + ". The next session resumes on the stronger model from the work in progress."
+	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") || !strings.Contains(hub.comments[1], stopped) {
+		t.Fatalf("comments = %q, want the message and the stop with %q", hub.comments, stopped)
+	}
+}
+
+// A stuck trip's handover climbs in place on the start rung: the judge
+// says the session is stuck, code picks the model (rulings 216, 224). The
+// worker gets the judge's note with the stronger model, and the session
+// goes on to push. TestRunSessionCheckinMessageArmsStuckRule is the stop
+// where no climb is possible.
+func TestStuckTripHandoverClimbs(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, hub, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
+	}}
+	runner.checkin = chat
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := commands(0, 24) + commands(24, 24) + pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" || res.Model != "factory/big" || res.CheckIn != nil {
+		t.Fatalf("result = (%+v, %v), want c1 pushed on the stronger model", res, err)
+	}
+	if chat.calls != 2 {
+		t.Fatalf("check-in conversations = %d, want 2", chat.calls)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	want := []string{"POST /brief ", "POST /message use the store's New",
+		"POST /message factoryd: this session continues on the stronger model, big: switch to the edit. Carry on from where you are."}
+	if !slices.Equal(texts, want) {
+		t.Fatalf("worker got %q, want %q", texts, want)
+	}
+	if store.tasks["t2"].ModelAlias != "big" {
+		t.Fatalf("model_alias = %q, want the stronger alias for the gateway", store.tasks["t2"].ModelAlias)
+	}
+	step := timelineStep(t, objects, "t2", "model_switched")
+	if step["from"] != "small" || step["to"] != "big" || step["trip"] != "repetition" || step["reason"] != "switch to the edit" {
+		t.Fatalf("model_switched step = %v", step)
+	}
+	if step := timelineStep(t, objects, "t2", "checkin"); step["decision"] != CheckHandover || step["called"] != true {
+		t.Fatalf("last check-in step = %v, want the judge's handover", step)
+	}
+	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") ||
+		!strings.Contains(hub.comments[1], "The session continues on the stronger model from here, without a new session.") {
+		t.Fatalf("comments = %q, want the message and the climb", hub.comments)
 	}
 }
 
@@ -438,8 +496,9 @@ func TestNoHalfWay(t *testing.T) {
 
 // A stuck trip asks the check-in like any trip: its statement lists every
 // message delivered this session and the stuck line after them; a second
-// conversation sees the session's earlier message (review minor 4). The
-// handover rides the result, so the issue holds the two messages only.
+// conversation sees the session's earlier message (review minor 4). Its
+// handover stops the session off the start rung, and the issue holds the
+// two messages and the stop.
 func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{
@@ -455,8 +514,8 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
 		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeNoPush || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || chat.calls != 3 {
-		t.Fatalf("result = (%+v, %v) after %d conversations, want the check-in's handover after 3", res, err, chat.calls)
+	if err != nil || res.Outcome != OutcomeRetryStronger || chat.calls != 3 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want retry_stronger after 3", res, err, chat.calls)
 	}
 	if strings.Contains(chat.gots[0].Input, "use the store's New") {
 		t.Fatal("the first conversation already saw the message")
@@ -469,8 +528,9 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 	if !strings.Contains(chat.gots[2].Input, want) {
 		t.Fatalf("third statement = %q, want both messages and the stuck line", chat.gots[2].Input)
 	}
-	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[0], "**message**") || !strings.Contains(hub.comments[1], "**message**") {
-		t.Fatalf("comments = %q, want the two messages", hub.comments)
+	if n := len(hub.comments); n != 3 || !strings.Contains(hub.comments[0], "**message**") || !strings.Contains(hub.comments[1], "**message**") ||
+		!strings.Contains(hub.comments[2], "The session stopped on repetition: two messages did not stop the listing; start from the test's setup. The next session resumes") {
+		t.Fatalf("comments = %q, want the two messages and the stop", hub.comments)
 	}
 }
 
