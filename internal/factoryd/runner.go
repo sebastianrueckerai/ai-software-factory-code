@@ -870,9 +870,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.decision = &d
 			stop(trip)
 		}
-		if trip.decided != nil && d.Action == ActionRetryStronger {
-			note = "The agent is stuck after the supervisor's message: the session ends without a check-in, and a new session resumes from the work in progress."
-		}
 		// a session that finished and pushed during the conversation goes to
 		// verification: its answer is superseded, its record is kept
 		if out.result != nil && out.result.Success && out.commit != "" {
@@ -1040,7 +1037,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return Decision{Action: ActionContinue, Reason: "no model under the check-in's purpose"}, nil, false
 	}
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
-		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail}, Messages: messages, Gates: s.lastGates}
+		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck}, Messages: messages, Gates: s.lastGates}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,

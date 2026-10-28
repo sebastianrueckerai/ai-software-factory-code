@@ -339,39 +339,41 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	}
 }
 
-// After a delivered message, 24 commands without a write trip repetition:
-// the stuck rule ends the session as retry_stronger without a second
-// conversation, and both check-in steps are on the timeline.
+// After a delivered message, 24 commands without a write trip repetition,
+// stuck: the check-in is asked again with the stuck line after the
+// delivered guidance, its handover stops the session, and the stuck line
+// leads the findings the next session starts from.
 func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"message","guidance":"use the store's New"}`}}}
+	note := "the agent listed the tree again after the message; start from c-wip and call the store's New"
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"handover","handover":"` + note + `"}`},
+	}}
 	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 
 	logs := commands(0, 24) + commands(24, 24) + pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || res.Commit != "c-wip" {
-		t.Fatalf("result = (%+v, %v), want retry_stronger on repetition with c-wip", res, err)
+	if err != nil || res.Outcome != OutcomeNoPush || res.Trip != string(TripRepetition) || res.Commit != "c-wip" ||
+		res.Summary != "check-in: handover after repetition" || res.CheckIn == nil || res.CheckIn.Handover != note {
+		t.Fatalf("result = (%+v, %v), want the check-in's handover on repetition with c-wip", res, err)
 	}
-	if chat.calls != 1 {
-		t.Fatalf("check-in conversations = %d, want still 1: the stuck rule decides in code", chat.calls)
+	if chat.calls != 2 {
+		t.Fatalf("check-in conversations = %d, want 2: the stuck trip asks too", chat.calls)
 	}
-	found := false
-	for _, l := range res.Findings {
-		found = found || strings.HasPrefix(l, "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change")
+	stuck := "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change"
+	if !strings.Contains(chat.gots[1].Input, "Guidance delivered to the agent this session:\n- use the store's New\n- stuck rule: "+stuck+"\n") {
+		t.Fatalf("second statement misses the guidance and the stuck line:\n%s", chat.gots[1].Input)
 	}
-	if !found {
-		t.Fatalf("findings = %q", res.Findings)
+	if len(res.Findings) == 0 || res.Findings[0] != stuck {
+		t.Fatalf("findings = %q, want the stuck line first", res.Findings)
 	}
 	tl := string(objGet(objects, "sessions/t2/timeline.jsonl"))
 	if !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"guidance":"use the store's New"`) {
 		t.Fatalf("timeline = %s, want the message's step with its guidance", tl)
-	}
-	step := timelineStep(t, objects, "t2", "checkin")
-	if step["decision"] != "retry_stronger" || !strings.Contains(fmt.Sprint(step["reason"]), "stuck after the supervisor's message") {
-		t.Fatalf("last check-in step = %v, want the stuck end decided in code", step)
 	}
 }
 
@@ -434,14 +436,16 @@ func TestNoHalfWay(t *testing.T) {
 	}
 }
 
-// A stuck end is commented on the issue with the stuck finding (review
-// minor 2); a second conversation sees the session's earlier message
-// (minor 4).
-func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
+// A stuck trip asks the check-in like any trip: its statement lists every
+// message delivered this session and the stuck line after them; a second
+// conversation sees the session's earlier message (review minor 4). The
+// handover rides the result, so the issue holds the two messages only.
+func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 	runner, hub, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
 	chat := &scriptedChat{answers: []CheckinResponse{
 		{Text: `{"decision":"message","guidance":"use the store's New"}`},
-		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"message","guidance":"call New once in the test's setup"}`},
+		{Text: `{"decision":"handover","handover":"two messages did not stop the listing; start from the test's setup"}`},
 	}}
 	runner.checkin = chat
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
@@ -451,18 +455,22 @@ func TestStuckEndCommentedAndEarlierMessagesShown(t *testing.T) {
 		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
 		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil || res.Outcome != OutcomeRetryStronger || chat.calls != 2 {
-		t.Fatalf("result = (%+v, %v) after %d conversations, want retry_stronger after 2", res, err, chat.calls)
-	}
-	if !strings.Contains(chat.gots[1].Input, "use the store's New") {
-		t.Fatalf("second statement = %q, want the first message carried", chat.gots[1].Input)
+	if err != nil || res.Outcome != OutcomeNoPush || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || chat.calls != 3 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the check-in's handover after 3", res, err, chat.calls)
 	}
 	if strings.Contains(chat.gots[0].Input, "use the store's New") {
 		t.Fatal("the first conversation already saw the message")
 	}
-	if n := len(hub.comments); n != 3 || !strings.Contains(hub.comments[2], "**retry_stronger**") ||
-		!strings.Contains(hub.comments[2], "stuck after the supervisor's message: repetition") {
-		t.Fatalf("comments = %q, want two messages and the stuck end", hub.comments)
+	if !strings.Contains(chat.gots[1].Input, "use the store's New") || strings.Contains(chat.gots[1].Input, "stuck rule:") {
+		t.Fatalf("second statement = %q, want the first message carried and no stuck line after the write", chat.gots[1].Input)
+	}
+	want := "Guidance delivered to the agent this session:\n- use the store's New\n- call New once in the test's setup\n" +
+		"- stuck rule: stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change\n"
+	if !strings.Contains(chat.gots[2].Input, want) {
+		t.Fatalf("third statement = %q, want both messages and the stuck line", chat.gots[2].Input)
+	}
+	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[0], "**message**") || !strings.Contains(hub.comments[1], "**message**") {
+		t.Fatalf("comments = %q, want the two messages", hub.comments)
 	}
 }
 

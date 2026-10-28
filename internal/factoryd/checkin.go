@@ -204,10 +204,13 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString("- message: guidance carries the exact instruction the agent should take next.\n")
 		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
 		b.WriteString("- human: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
-		if len(ask.Messages) > 0 {
+		if len(ask.Messages) > 0 || ask.Trip.Stuck != "" {
 			b.WriteString("Guidance delivered to the agent this session:\n")
 			for _, m := range ask.Messages {
 				fmt.Fprintf(&b, "- %s\n", m)
+			}
+			if ask.Trip.Stuck != "" {
+				fmt.Fprintf(&b, "- stuck rule: %s\n", ask.Trip.Stuck)
 			}
 		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")

@@ -49,7 +49,7 @@ type Trip struct {
 	Kind     TripKind
 	Findings []string
 	Detail   string // what the detector saw, for the supervisor and the record
-	Stuck    string // the stuck rule's line, "" when it did not end the session
+	Stuck    string // the stuck rule's line, "" when the rule did not hold
 	key      string // which evidence tripped, so a continue resets only that
 	decided  *Decision
 }
@@ -125,7 +125,7 @@ type Supervisor struct {
 	findings    []string
 	tripped     *Trip
 	// messaged: a supervisor's message was delivered and no file written
-	// since; the next detector trip ends the session (the stuck rule).
+	// since; the next detector trip is stuck (the stuck rule).
 	// messagedOnce: a message was delivered in this session.
 	messaged, messagedOnce bool
 	// nudges are the nudges delivered since the last new file content;
@@ -390,9 +390,9 @@ func (s *Supervisor) Resume(now time.Time) {
 // and arms the stuck rule until the next write. The command detectors
 // start afresh at the message; the alternation memory (contents, churn)
 // does not, so a circle of writes that spans messages still trips
-// flip_flop or churn and ends the session (ruling 224: circles of writes
-// are not progress; round 2's drill 4 looped for 38 minutes on the
-// cleared memory).
+// flip_flop or churn, stuck (ruling 224: circles of writes are not
+// progress; round 2's drill 4 looped for 38 minutes on the cleared
+// memory).
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
 	s.sinceChange = 0
@@ -424,7 +424,6 @@ func (s *Supervisor) trip(t *Trip) *Trip {
 	if t.decided == nil && s.stuck(t) {
 		stuck := fmt.Sprintf("stuck after the supervisor's message: %s: %s", t.Kind, t.Detail)
 		t.Findings, t.Stuck = append(t.Findings, stuck), stuck
-		t.decided = &Decision{Action: ActionRetryStronger, Reason: stuck}
 	}
 	s.tripped = t
 	return t

@@ -460,25 +460,27 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 	// (flip_flop), and after the delivered message the circle goes on
 	// without growing the diff (churn).
 	//
-	// The ledger: one session; two detector trips; one conversation, asked
-	// once on flip_flop, answered message with the correction, delivered
-	// through the worker's /message; the second trip decided by the stuck
-	// rule in code, no second conversation; the climb in place put
-	// model_switched on the timeline; the climbed session itself pushed c1;
-	// one merge, no escalation.
+	// The ledger: two sessions; two detector trips in the first, each
+	// asked: flip_flop answered message with the correction, delivered
+	// through the worker's /message; churn after it, stuck, its statement
+	// carrying the correction and the stuck line, answered handover; the
+	// workflow wrote the checkin and handover steps and put the note in the
+	// next session's brief, the stuck line first in its findings; that
+	// session pushed c1; one merge, no escalation.
 	//
-	// Reshape against the letter: the letter's "guidance in the second ask"
-	// has no second ask to carry it — the stuck rule's second trip is
-	// decided without a conversation, which is the letter's own "no second
-	// conversation" — so the guidance is read on the first ask's timeline
-	// step. And the letter's "retried session pushes" is the same session:
-	// a climb needs canClimb, and the climb in place (roadmap 222) is what
-	// records the letter's "the climb in the timeline"; a stop without it
-	// records no climb step at all.
+	// Reshape against the letter: the letter's second trip climbs by the
+	// stuck rule with no second conversation. A stuck trip now goes to the
+	// check-in like any trip, and the check-in has no climb to answer, so
+	// the second conversation hands over and the retried session is the
+	// next one: no climb in place.
 	t.Run("churn_round_in_session", func(t *testing.T) {
 		correction := "the flip is the test's own clock: stub it and do not wait"
+		note := "the circle on a.go went on after the correction; stub the clock in a.go first and leave f0.go to f11.go alone"
 		l := newLiveGateHarness(t)
-		l.chat.answers = []CheckinResponse{{Text: `{"decision":"message","guidance":"` + correction + `"}`}}
+		l.chat.answers = []CheckinResponse{
+			{Text: `{"decision":"message","guidance":"` + correction + `"}`},
+			{Text: `{"decision":"handover","handover":"` + note + `"}`},
+		}
 		logs := envLine(fileEvent("a.go", "h1")) + "\n" +
 			envLine(cmdEvent("go test ./...", 1, "FAIL: TestLinks")) + "\n" +
 			envLine(fileEvent("a.go", "h2")) + "\n" +
@@ -487,43 +489,62 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		for i := range 12 {
 			logs += "\n" + envLine(fileEvent(fmt.Sprintf("f%d.go", i), fmt.Sprintf("k%d", i)))
 		}
-		l.sessionBodies = [][]string{{logs + "\n" + pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t1 at c1")}}
+		l.sessionBodies = [][]string{
+			{logs + "\n" + resultLine(false, "stopped")},
+			{pushedLine("c1") + "\n" + resultLine(true, "pushed branch factory/t1 at c1")},
+		}
 		l.onChecks(ChecksResult{State: ChecksSuccess})
 		l.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
 		if final := l.run(t); final != "done" {
 			t.Fatalf("final = %q, escalations = %q", final, l.escalated)
 		}
-		if len(l.sessions) != 1 || l.chat.calls != 1 {
-			t.Fatalf("sessions = %d, conversations = %d; want the one session the climb kept, its one conversation", len(l.sessions), l.chat.calls)
+		if len(l.sessions) != 2 || l.chat.calls != 2 {
+			t.Fatalf("sessions = %d, conversations = %d; want the churn session and the note's, one conversation per trip", len(l.sessions), l.chat.calls)
 		}
-		if res := l.results[0]; res.Outcome != OutcomePushed || res.Commit != "c1" ||
-			res.Summary != "pushed branch factory/t1 at c1" {
-			t.Fatalf("the session's result = %+v, want the climbed session's own push", res)
+		// 15 file changes, the default churn: a.go three times, f0.go to f11.go
+		stuck := "stuck after the supervisor's message: churn: 15 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes"
+		res := l.results[0]
+		if res.Outcome != OutcomeNoPush || res.Trip != string(TripChurn) || res.Summary != "check-in: handover after churn" ||
+			len(res.Findings) == 0 || res.Findings[0] != stuck {
+			t.Fatalf("the churn session's result = %+v, want the handover stop with the stuck line first", res)
 		}
-		if !strings.Contains(l.chat.gots[0].Input, "flip_flop") {
-			t.Fatalf("the ask's statement = %.80s, want the flip_flop trip named", l.chat.gots[0].Input)
+		if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover || res.CheckIn.Handover != note ||
+			res.CheckIn.Record == nil || res.CheckIn.Record.Moment != CheckInSession {
+			t.Fatalf("the riding check-in = %+v, want the note and the session moment's record", res.CheckIn)
+		}
+		if !strings.Contains(l.chat.gots[0].Input, "flip_flop") || strings.Contains(l.chat.gots[0].Input, "stuck rule:") {
+			t.Fatalf("the first ask's statement = %.80s, want the flip_flop trip named, not stuck", l.chat.gots[0].Input)
+		}
+		if !strings.Contains(l.chat.gots[1].Input, "Guidance delivered to the agent this session:\n- "+correction+"\n- stuck rule: "+stuck+"\n") {
+			t.Fatalf("the second ask's statement = %s, want the correction and the stuck line", l.chat.gots[1].Input)
+		}
+		if in := l.sessions[1]; in.Handover != note || in.ParentSessionID != res.SessionID || len(in.Findings) == 0 || in.Findings[0] != stuck {
+			t.Fatalf("the next session's input = %+v, want the note handed over and the stuck line first", in)
 		}
 		l.worker.mu.Lock()
 		defer l.worker.mu.Unlock()
 		if len(l.worker.texts) != 3 || l.worker.texts[0] != "POST /brief " ||
-			l.worker.texts[1] != "POST /message "+correction {
-			t.Fatalf("worker got %q, want the brief, the correction, the climb", l.worker.texts)
-		}
-		if !strings.Contains(l.worker.texts[2], "continues on the stronger model") || !strings.Contains(l.worker.texts[2], "churn") {
-			t.Fatalf("climb message = %.120s, want the stuck rule's climb on churn", l.worker.texts[2])
+			l.worker.texts[1] != "POST /message "+correction ||
+			!strings.HasPrefix(l.worker.texts[2], "POST /brief ") || !strings.Contains(l.worker.texts[2], note) {
+			t.Fatalf("worker got %q, want the brief, the correction, the next session's brief with the note", l.worker.texts)
 		}
 		tl := string(objGet(l.objects, "sessions/t1/timeline.jsonl"))
-		if !strings.Contains(tl, `"step":"model_switched"`) || !strings.Contains(tl, `"to":"big"`) ||
-			!strings.Contains(tl, `"trip":"churn"`) {
-			t.Fatalf("timeline = %s, want the climb in place", tl)
+		if !strings.Contains(tl, `"guidance":"`+correction+`"`) || strings.Contains(tl, `"step":"model_switched"`) {
+			t.Fatalf("timeline = %s, want the first ask's correction on its checkin step and no climb", tl)
 		}
-		if !strings.Contains(tl, `"guidance":"`+correction+`"`) {
-			t.Fatalf("timeline = %s, want the first ask's correction on its checkin step", tl)
+		var checkin, handover *recordedStep
+		for i := range l.recorded {
+			switch l.recorded[i].step {
+			case "checkin":
+				checkin = &l.recorded[i]
+			case "handover":
+				handover = &l.recorded[i]
+			}
 		}
-		step := timelineStep(t, l.objects, "t1", "checkin")
-		if step["decision"] != "retry_stronger" || step["detector"] != "churn" || step["called"] != false {
-			t.Fatalf("last checkin step = %v, want the stuck end decided in code", step)
+		if checkin == nil || checkin.detail["decision"] != CheckHandover || handover == nil ||
+			handover.detail["handover"] != note || handover.detail["session"] != res.SessionID {
+			t.Fatalf("recorded = %+v, want the checkin and handover steps carrying the note", l.recorded)
 		}
 		if len(l.merges) != 1 || len(l.escalated) != 0 {
 			t.Fatalf("merges %d, escalations %q; want the card merged, nothing asked of the human", len(l.merges), l.escalated)

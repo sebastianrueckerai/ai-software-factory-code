@@ -21,9 +21,8 @@ import (
 // Supervision (architecture 6.6) answers a detector trip in code first:
 // a message into the session, a redirect when a message or nudge cannot
 // be delivered or the session loops, retry_stronger (the workflow's next
-// ladder rung) for a session stuck after a message. What code cannot
-// answer, the check-in conversation decides; the actions below are the
-// shared vocabulary.
+// ladder rung) at the cheap cap. What code cannot answer, the check-in
+// conversation decides; the actions below are the shared vocabulary.
 type SupervisorAction string
 
 const (
@@ -215,6 +214,7 @@ func (g ProgressDigest) Summary() string {
 type TripReport struct {
 	Detector TripKind `json:"detector"`
 	Detail   string   `json:"detail"`
+	Stuck    string   `json:"stuck,omitempty"`
 }
 
 // SupervisorModel is factoryd's model client: every call it makes (the
