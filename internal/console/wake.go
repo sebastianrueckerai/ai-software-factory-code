@@ -61,7 +61,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 		return fmt.Errorf("store the wake's message: %w", err)
 	}
 	t.detach()
-	t.stream(func(string) error { return nil }, nil)
+	t.quiet()
 	t.takeTurn(pos, wait)
 	if pos > 0 {
 		if err := c.cfg.Chat.StartQueued(ctx, p.Repository, login, id); err != nil {
@@ -131,7 +131,7 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 	go func() {
 		defer c.turns.leave(tu.key())
 		tu.detach()
-		tu.stream(func(string) error { return nil }, nil)
+		tu.quiet()
 		tu.takeTurn(pos, wait)
 		if pos > 0 {
 			if err := c.cfg.Chat.StartQueued(tu.r.Context(), p.Repository, a.s.user, id); err != nil {

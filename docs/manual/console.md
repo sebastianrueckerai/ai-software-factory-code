@@ -213,7 +213,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   another member's). A wake, the turn the Waker starts on a member's
   thread with no member behind it, makes every Forgejo call as
   `factory-chat` with the project's chat token (`Forgejo.Access`'s
-  `Chat`): it needs no login of the member and reads none. Its chat rows
+  `Chat`): it needs no login of the member and reads none. A wake's turn
+  that fails, as a fund's resume or a card answer in words that fails,
+  leaves `This turn failed: <why>` in its thread, since no member reads
+  its stream. Its chat rows
   and events stay the woken member's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no

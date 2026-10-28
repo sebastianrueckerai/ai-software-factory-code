@@ -296,7 +296,7 @@ func (c *Console) resume(ctx context.Context, p factoryd.Project, login string, 
 	}
 	pos, wait := c.turns.enter(t.key())
 	defer c.turns.leave(t.key())
-	t.stream(func(string) error { return nil }, nil)
+	t.quiet()
 	t.takeTurn(pos, wait)
 	if !t.stopRow() {
 		return

@@ -131,6 +131,8 @@ type turn struct {
 	pageQuery string
 	present   map[string]bool
 	viewEvent map[string]any
+	// unread: no member's stream reads the turn (quiet)
+	unread bool
 }
 
 // chatTurn is the request's turn on the project's chat; false once a
@@ -174,9 +176,25 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 	}
 }
 
-// fail ends the turn's stream with an error event: no done follows.
+// fail ends the turn's stream with an error event: no done follows. A
+// quiet turn, whose stream no member reads, leaves the failure in its
+// thread as a row too, so it never ends unseen.
 func (t *turn) fail(msg string) {
 	t.send("error", map[string]string{"message": msg})
+	if !t.unread {
+		return
+	}
+	m := factoryd.ChatMessage{Role: "assistant", Content: "This turn failed: " + msg, Conversation: t.conv}
+	if _, err := t.c.cfg.Chat.AddChatMessage(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, m); err != nil {
+		log.Printf("console: the failure of thread %d of %s on %s: %v", t.conv, t.owner, t.p.Repository, err)
+	}
+}
+
+// quiet streams the turn to no member: a wake's, a fund's resume or a
+// card answer's in words, whose failure fail keeps in the thread.
+func (t *turn) quiet() {
+	t.stream(func(string) error { return nil }, nil)
+	t.unread = true
 }
 
 // save appends m to the thread's conversation, even once the member

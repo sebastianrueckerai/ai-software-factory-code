@@ -41,6 +41,29 @@ func TestStartWakeRunsATurnWithoutHTTP(t *testing.T) {
 	}
 }
 
+// A wake whose model cannot be reached ends in a row that says so, under
+// the wake's own: no member reads its stream, so the thread keeps the
+// failure.
+func TestAWakesFailureStaysInItsThread(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{nil}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Wake: 1 ask waits for a human."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].BirthKind != "wake_ask" ||
+		rows[1].Role != "assistant" || rows[1].Content != "This turn failed: The model could not be reached; try again." {
+		t.Fatalf("the wake's rows = %+v", rows)
+	}
+}
+
 // A wake on a thread whose turn runs waits for it: its user row lands
 // queued while the member's turn holds the thread, and its turn starts
 // only after theirs ends.
