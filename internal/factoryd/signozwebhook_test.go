@@ -1318,6 +1318,29 @@ func TestProjectEnvironmentRolloutHoldsItsOwnNamespace(t *testing.T) {
 	}
 }
 
+// An event is not held by a rollout's window: inside demo-staging's
+// deploy window the Job failed alert files its card at once, while the
+// 5xx firing of the same minute is still held.
+func TestEventAlertInsideARolloutFilesAtOnce(t *testing.T) {
+	r := newAlertRig(t)
+	api := &fluxAPI{kustomizations: []string{`{"metadata":{"namespace":"demo-staging","name":"demo-app","labels":{"factory/project":"demo-app"}},
+		"spec":{"interval":"1m"},"status":{"history":[{"firstReconciled":"2026-10-15T12:00:00Z","lastReconciled":"2026-10-15T12:03:00Z"},
+		{"firstReconciled":"2026-10-14T09:00:00Z","lastReconciled":"2026-10-15T11:59:00Z"}]}}`}}
+	r.in.Flux = api.kube(t)
+	plain, _ := r.alert("5xx rate above 5 %", "fp-5xx", "demo-staging", "2026-10-15T12:03:00Z")
+	event, _ := r.alert("Job failed", "fp-job", "demo-staging", "2026-10-15T12:03:00Z", "event", "true", "k8s.object.name", "backup-29885910")
+	for _, a := range []map[string]any{plain, event} {
+		if rr := r.post(t, "signoz", "hook-pw", a); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	rows := r.store.alertRows()
+	if len(rows) != 2 || !held(rows[0]) || rows[0].Detail["roll_window"] != "Kustomization demo-staging/demo-app" ||
+		held(rows[1]) || len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], "alert: Job failed in demo-staging\n\n") || len(r.flows.started) != 1 {
+		t.Fatalf("rows %+v, issues %q, started %v; want the 5xx firing held, the Job failed filed and started", rows, r.fj.issues, r.flows.started)
+	}
+}
+
 func TestRestartWindowAlertNameMatchesTheRule(t *testing.T) {
 	data, err := os.ReadFile("../../k8s/alerts/5xx-rate.json")
 	if err != nil {
@@ -1762,6 +1785,57 @@ func TestAClearedAlertSkipsARowWhoseTaskIsMissing(t *testing.T) {
 	}
 	if row := r.store.alertRows()[0]; row.Verdict != "" || len(r.fj.closed) != 0 {
 		t.Fatalf("row %+v, closed %v: nothing should change", row, r.fj.closed)
+	}
+}
+
+// The incident of 2026-10-28: the backup Job forgejo-dump-29885910 failed,
+// the rule Job failed fired, and its resolve 15 minutes later closed the
+// untouched card, so nobody learned of it. A rule labelled event marks a
+// failure that happened: its resolve is recorded, the row no longer
+// fires, but it posts no comment, and the card waits for a person and
+// offers only the close. A later firing for the same Job comments on that
+// card and files no second one. A plain alert's resolve still closes its
+// untouched card (TestAClearedAlertClosesItsUntouchedHumanCard).
+func TestAnEventAlertKeepsItsCardPastTheResolve(t *testing.T) {
+	r := newAlertRig(t)
+	demo := r.in.Projects.(*memProjects).m["demo-app"]
+	demo.Agents = "none"
+	r.in.Projects.(*memProjects).m["demo-app"] = demo
+	r.in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: r.store, Store: r.store}
+	fired, _ := r.alert("Job failed", "fp-job", "demo-staging", "2026-10-28T16:34:31Z", "event", "true", "k8s.object.name", "forgejo-dump-29885910")
+	resolved := maps.Clone(fired)
+	resolved["status"], resolved["endsAt"] = "resolved", "2026-10-28T16:49:37Z"
+	for _, a := range []map[string]any{fired, resolved} {
+		if rr := r.post(t, "signoz", "hook-pw", a); rr.Code != http.StatusOK {
+			t.Fatalf("status %d: %s", rr.Code, rr.Body)
+		}
+	}
+	ask := "SigNoz fired the alert Job failed in demo-staging of demo-app at 2026-10-28T16:34:31Z: handle it, then close."
+	info := "Info: The Job `forgejo-dump-29885910` in namespace `demo-staging` failed: read its pods' logs " +
+		"(`kubectl -n demo-staging logs job/forgejo-dump-29885910 --all-containers`). " +
+		"The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it.\n\n" +
+		"factoryd: SigNoz fires the alert Job failed in namespace demo-staging of project demo-app."
+	if len(r.fj.issues) != 1 || !strings.HasPrefix(r.fj.issues[0], ask+"\n\n") || !strings.Contains(r.fj.issues[0], info) ||
+		!strings.Contains(r.fj.issues[0], "\n\nChoices:\n- Handled, close\n\nfactoryd asks") {
+		t.Fatalf("issues %q, want one opening %q, with %q and the one choice Handled, close", r.fj.issues, ask, info)
+	}
+	if err := r.in.CloseCleared(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	row := r.store.alertRows()[0]
+	task := r.store.tasks[row.TaskID]
+	if _, firing := firingSince(row); firing || row.Detail["resolved_at"] != "2026-10-28T16:49:37Z" || row.Verdict != "" ||
+		task.Status != "waiting-human" || len(r.fj.comments) != 0 || len(r.fj.closed) != 0 {
+		t.Fatalf("after the resolve and the pass: row %+v, task %s, comments %q, closed %v; want the resolve recorded, no comment, the card waiting",
+			row, task.Status, r.fj.comments, r.fj.closed)
+	}
+	again, _ := r.alert("Job failed", "fp-job", "demo-staging", "2026-10-28T17:10:00Z", "event", "true", "k8s.object.name", "forgejo-dump-29885910")
+	if rr := r.post(t, "signoz", "hook-pw", again); rr.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rr.Code, rr.Body)
+	}
+	want := []string{"#1 factoryd: the alert fired again at 2026-10-28T17:10:00Z.\n\n```\nvalue=14.29\n```"}
+	if len(r.fj.issues) != 1 || len(r.store.tasks) != 1 || !slices.Equal(r.fj.comments, want) {
+		t.Fatalf("the same Job again: %d issues, %d tasks, comments %q; want the one card and %q", len(r.fj.issues), len(r.store.tasks), r.fj.comments, want)
 	}
 }
 

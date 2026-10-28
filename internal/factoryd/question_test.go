@@ -251,6 +251,9 @@ func TestHumanCardQuestions(t *testing.T) {
 		"flux alert": {alertQuestion(SigNozAlert{Fingerprint: "rollout/x", Labels: map[string]string{"alertname": "stuck"}, StartsAt: alert.StartsAt}, "shop", "prod", "w", "b"),
 			"Flux fires the alert stuck in prod of shop since 2026-10-01T08:00:00Z: handle it, or wait for it to clear?",
 			[]QuestionChoice{{AnswerPark, "Wait for it to clear"}, {AnswerClose, "Handled, close"}}},
+		"event alert": {alertQuestion(SigNozAlert{Fingerprint: "fp", Labels: map[string]string{"alertname": "Job failed", "event": "true"}, StartsAt: alert.StartsAt}, "infra", "forgejo", "w", "b"),
+			"SigNoz fired the alert Job failed in forgejo of infra at 2026-10-01T08:00:00Z: handle it, then close.",
+			[]QuestionChoice{{AnswerClose, "Handled, close"}}},
 		"roll refused": {rollRefusedQuestion("abc1234", []string{"gateway", "worker"}, []string{"gateway: x", "worker: y"}, "https://git/run/1"),
 			"roll abc1234 refused: gateway, worker not signed with the factory's key. Fix the signing, then close.",
 			[]QuestionChoice{{AnswerClose, "Fixed, close"}}},
@@ -289,6 +292,22 @@ func TestHumanCardQuestions(t *testing.T) {
 		"(the runner killed or shut down, or its docker daemon restarted). No change to the code fixes that, so no agent works on this card. factoryd re-ran it once."
 	if why := rerunQuestion(1208, "abc1234def5678", "ci / test", nil, "factoryd re-ran it once.").Why; why != lostWhy {
 		t.Errorf("rerun why = %q, want %q", why, lostWhy)
+	}
+}
+
+// An event's card names the failed Job its labels carry, and only a name
+// Kubernetes could have given: anything else leaves the Job out.
+func TestEventAlertCardNamesTheJob(t *testing.T) {
+	const note = "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it.\n\nbody"
+	a := SigNozAlert{Labels: map[string]string{"alertname": "Job failed", "event": "true", "k8s.object.name": "forgejo-dump-29885910"}}
+	want := "The Job `forgejo-dump-29885910` in namespace `forgejo` failed: read its pods' logs " +
+		"(`kubectl -n forgejo logs job/forgejo-dump-29885910 --all-containers`). " + note
+	if got := alertQuestion(a, "infra", "forgejo", "w", "body").Info; got != want {
+		t.Errorf("info = %q, want %q", got, want)
+	}
+	a.Labels["k8s.object.name"] = "dump`; rm -rf /"
+	if got := alertQuestion(a, "infra", "forgejo", "w", "body").Info; got != note {
+		t.Errorf("info with a name no Job carries = %q, want %q", got, note)
 	}
 }
 

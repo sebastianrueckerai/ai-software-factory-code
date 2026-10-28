@@ -30,6 +30,12 @@ const SourceAlert = "alert"
 // the same start is filed once more: the merged fix did not fix it.
 const refileAfter = 30 * time.Minute
 
+// eventLabel, "true" on a rule, marks its firing as an event that
+// happened, a Job's failure, not a state that holds: SigNoz's resolve only
+// says the rule's window moved on, so it neither comments on nor ends the
+// card.
+const eventLabel = "event"
+
 // restartWindowAlert is the only rule a roll of the factory's own
 // Deployments holds (ruling 237): k8s/alerts/5xx-rate.json's "alert". The
 // restarts and roll-not-live rules are what a broken roll trips, so they
@@ -313,7 +319,8 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 	if a.Status == "resolved" {
 		// the row is resolved even when its filing failed, so it no longer
 		// fires; its issue, if its project still owns one, hears of it,
-		// unless a sweep found the resolve after the task ended
+		// unless a sweep found the resolve after the task ended or the
+		// alert is an event
 		at := stamp(a.EndsAt)
 		if !seen || row.Detail["resolved_at"] == at {
 			return nil
@@ -322,7 +329,7 @@ func (in *AlertIntake) take(ctx context.Context, a SigNozAlert, now time.Time) e
 			// it ended before a window let it file: the rollout's own
 			return in.Store.ResolveAlert(ctx, row.ID, AlertSigNoz, VerdictNoise, "factoryd", map[string]any{"resolved_at": at})
 		}
-		if filed && ok && !(a.swept && Final(t.Status)) {
+		if filed && ok && !(a.swept && Final(t.Status)) && row.Detail["event"] != true {
 			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, "factoryd: resolved at "+at); err != nil {
 				return err
 			}
@@ -513,8 +520,9 @@ func (in *AlertIntake) SweepSigNoz(ctx context.Context, now time.Time) error {
 // its issue, so the issue-closed webhook finds it final and judges
 // nothing. A card an agent works, a row still firing or judged, a card
 // that left waiting-human, and a card a person commented on, labelled
-// noise, answered or parked are left as they are. A touch is marked on
-// the row, so a touched card is never read again.
+// noise, answered or parked are left as they are, and so is an event's
+// card (eventLabel): no resolve clears it. A touch is marked on the row,
+// so a touched card is never read again.
 func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 	in.mu.Lock()
 	defer in.mu.Unlock()
@@ -525,7 +533,7 @@ func (in *AlertIntake) CloseCleared(ctx context.Context) error {
 	var errs []error
 	for _, row := range rows {
 		at, _ := row.Detail["resolved_at"].(string)
-		if _, firing := firingSince(row); row.Verdict != "" || at == "" || firing || row.Detail["touched"] == true {
+		if _, firing := firingSince(row); row.Verdict != "" || at == "" || firing || row.Detail["touched"] == true || row.Detail["event"] == true {
 			continue
 		}
 		if err := in.closeCleared(ctx, row, at); err != nil {
@@ -652,8 +660,12 @@ func held(row Alert) bool {
 // task id it would file under but no task, and the firing waits. Take,
 // reached by every redelivery and by the sweep while SigNoz lists it,
 // files it once no window holds; a resolve before that judges it the
-// rollout's noise.
+// rollout's noise. An event (eventLabel) files at once: a Job that failed
+// during a rollout still failed.
 func (in *AlertIntake) fileUnlessHeld(ctx context.Context, a SigNozAlert, p Project, ns, at, name string) error {
+	if a.Labels[eventLabel] == "true" {
+		return in.file(ctx, a, p, ns, at, false)
+	}
 	r, hold, err := in.rolloutAt(ctx, a.StartsAt, name, ns)
 	if err != nil {
 		return err
@@ -738,7 +750,7 @@ func alertRow(a SigNozAlert, p Project, ns, at string, refiled bool) Alert {
 	}
 	return Alert{Kind: AlertSigNoz, Source: oneLine(a.Labels["alertname"]), TaskID: NewTaskID(), Fingerprint: a.Fingerprint,
 		Detail: map[string]any{"project": p.Name, "namespace": ns, "repository": p.Repo().String(),
-			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled,
+			"starts_at": at, "link": link, "labels": a.Labels, "refiled": refiled, "event": a.Labels[eventLabel] == "true",
 			"summary": oneLine(cmp.Or(a.Annotations["summary"], a.Annotations["description"], a.Annotations["value"]))}}
 }
 

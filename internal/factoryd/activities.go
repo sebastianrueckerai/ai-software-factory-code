@@ -2133,8 +2133,10 @@ func (r *Runner) PullRequestMerged(ctx context.Context, taskID string, number in
 // by the resolve deliveries, FluxPass and SweepSigNoz), and reports whether
 // it still fires: no resolve after its start. An alert that no longer
 // fires was a transient burst: the card closes itself without spending on
-// a model call. No fingerprint, or no row of this card, says it still
-// fires: the check never stops a card on its own absence.
+// a model call. An event (eventLabel) still fires: it happened, and its
+// resolve only says the rule's window moved on. No fingerprint, or no row
+// of this card, says it still fires: the check never stops a card on its
+// own absence.
 func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error) {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -2151,7 +2153,7 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 		return true, nil
 	}
 	_, firing := firingSince(row)
-	return firing, nil
+	return firing || row.Detail["event"] == true, nil
 }
 
 // Finish is the terminal step. A failed or closed task's open pull request

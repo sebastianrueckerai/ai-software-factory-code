@@ -654,7 +654,10 @@ still running hears of such a resolve, so stale rows of finished cards
 resolve quietly; a list whose active alerts carry no fingerprint
 resolves nothing. An alert card's pre-check
 before its first model call reads the card's alerts row: a resolve after
-its start closes the card. Each issue is an alerts row of kind `alert` with the
+its start closes the card. A rule labelled `event: "true"` (`Job failed`)
+marks a failure that happened: its resolve is recorded without a comment
+and closes no card, neither through the pre-check nor as a cleared
+alert. Each issue is an alerts row of kind `alert` with the
 fingerprint, judged
 when its task ends: `real` on a merge, `noise` when a human closed the
 issue without one. A human-lane alert issue is judged by its close: `noise`

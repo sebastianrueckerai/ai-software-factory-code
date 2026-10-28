@@ -2625,6 +2625,27 @@ func TestAlertPreCheckReadsTheAlertsRow(t *testing.T) {
 	}
 }
 
+// An event's card (eventLabel) passes its pre-check past the resolve: the
+// failure happened, and the resolve only says the rule's window moved on.
+// The same resolved row without the label closes its card.
+func TestAlertPreCheckPassesAnEventPastItsResolve(t *testing.T) {
+	for _, event := range []bool{false, true} {
+		task := prTask
+		task.Source, task.AlertFingerprint = SourceAlert, "fp-job"
+		r, store, _ := newActivityRunner(t, task, &prForgejo{})
+		store.InsertAlert(context.Background(), Alert{Kind: AlertSigNoz, Source: "Job failed", TaskID: "t1", Fingerprint: "fp-job",
+			Detail: map[string]any{"starts_at": "2026-10-28T16:34:31Z", "resolved_at": "2026-10-28T16:49:37Z", "event": event}})
+		val, err := execActivity(t, r, ActivityAlertPreCheck, "t1")
+		var got bool
+		if err != nil || val.Get(&got) != nil {
+			t.Fatalf("AlertPreCheck: %v", err)
+		}
+		if got != event {
+			t.Errorf("event %v, resolved: pre-check = %v, want %v", event, got, event)
+		}
+	}
+}
+
 // stubPrices is a Pricer answering one price for every alias.
 type stubPrices struct {
 	price policy.Price

@@ -510,9 +510,24 @@ func askOf(head, tail string) string {
 }
 
 // alertQuestion is the human card of alert a on project in namespace ns:
-// why says why no agent takes it, body is the alert's write-up.
+// why says why no agent takes it, body is the alert's write-up. An event's
+// card (eventLabel) offers only the close, since no resolve clears it, and
+// names the failed Job its labels carry.
 func alertQuestion(a SigNozAlert, project, ns, why, body string) HumanQuestion {
 	name, on, source := alertParts(a)
+	if a.Labels[eventLabel] == "true" {
+		info := "The alert is an event, not a state: SigNoz's resolve only means the rule's window moved on, so this card stays open until a person closes it."
+		if job := a.Labels["k8s.object.name"]; dnsLabel.MatchString(job) {
+			info = fmt.Sprintf("The Job `%s` in namespace `%s` failed: read its pods' logs (`kubectl -n %s logs job/%s --all-containers`). ", job, ns, ns, job) + info
+		}
+		return HumanQuestion{
+			Ask: askOf(fmt.Sprintf("%s fired the alert %s%s in %s of %s at %s",
+				source, name, on, ns, project, stamp(a.StartsAt)), ": handle it, then close."),
+			Why:     why,
+			Info:    info + "\n\n" + body,
+			Choices: []QuestionChoice{{AnswerClose, "Handled, close"}},
+		}
+	}
 	return HumanQuestion{
 		Ask: askOf(fmt.Sprintf("%s fires the alert %s%s in %s of %s since %s",
 			source, name, on, ns, project, stamp(a.StartsAt)), ": handle it, or wait for it to clear?"),
