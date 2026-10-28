@@ -31,11 +31,12 @@ type OperatorModel struct {
 	HTTP       *http.Client // nil = http.DefaultClient
 }
 
-// operatorTimeout bounds one call, its stream included; operatorTokens
-// is the answer's max_tokens, which the gateway may clamp further.
+// operatorTimeout bounds one call, its stream included; OperatorTokens
+// is the answer's max_tokens, which the gateway may clamp further to the
+// task's headroom.
 const (
 	operatorTimeout = 2 * time.Minute
-	operatorTokens  = 4096
+	OperatorTokens  = 16384
 )
 
 // OperatorMessage is one message of the conversation, in the OpenAI chat
@@ -46,6 +47,9 @@ type OperatorMessage struct {
 	Content    string         `json:"content"`
 	ToolCalls  []OperatorCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+	// Cut says an answer stopped at its max_tokens (finish_reason
+	// length); a request never carries it.
+	Cut bool `json:"-"`
 }
 
 // OperatorCall is one tool call of an answer; Arguments is its JSON text.
@@ -78,7 +82,7 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 // [DONE] is an error.
 // The call names the chat thread it serves, which its audit row keeps.
 func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
-	return m.stream(ctx, policy.PurposeOperator, operatorTokens, taskID, alias, thread, messages, tools, text)
+	return m.stream(ctx, policy.PurposeOperator, OperatorTokens, taskID, alias, thread, messages, tools, text)
 }
 
 // compactTokens bounds a compaction's summary (roadmap 239).
@@ -100,7 +104,7 @@ func (m *OperatorModel) Vision(ctx context.Context, taskID, alias, thread, ask s
 	parts := []map[string]any{{"type": "text", "text": cmp.Or(ask, "Describe this image.")},
 		{"type": "image_url", "image_url": map[string]any{"url": "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image)}}}
 	answer, err := m.call(ctx, policy.PurposeVision, taskID, thread, map[string]any{
-		"model": alias, "stream": true, "max_tokens": operatorTokens,
+		"model": alias, "stream": true, "max_tokens": OperatorTokens,
 		"messages": []map[string]any{{"role": "user", "content": parts}}}, func(string) {})
 	return answer.Content, err
 }
@@ -194,7 +198,8 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 		}
 		var chunk struct {
 			Choices []struct {
-				Delta struct {
+				FinishReason string `json:"finish_reason"`
+				Delta        struct {
 					Content   string `json:"content"`
 					ToolCalls []struct {
 						Index    int    `json:"index"`
@@ -217,6 +222,7 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 			return answer, errors.New("the stream failed: " + chunk.Error.Message)
 		}
 		for _, ch := range chunk.Choices {
+			answer.Cut = answer.Cut || ch.FinishReason == "length"
 			if d := ch.Delta.Content; d != "" {
 				answer.Content += d
 				text(d)

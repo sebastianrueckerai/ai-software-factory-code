@@ -89,7 +89,7 @@ func TestOperatorStreamsTextAndParallelToolCalls(t *testing.T) {
 		t.Fatalf("headers = %v", g.headers)
 	}
 	b, _ := json.Marshal(g.request)
-	wantBody := `{"max_tokens":4096,"messages":[{"content":"rules","role":"system"},` +
+	wantBody := `{"max_tokens":16384,"messages":[{"content":"rules","role":"system"},` +
 		`{"content":"","role":"assistant","tool_calls":[{"function":{"arguments":"{}","name":"costs"},"id":"call_0","type":"function"}]},` +
 		`{"content":"EUR 1.20","role":"tool","tool_call_id":"call_0"},{"content":"what is open?","role":"user"}],` +
 		`"model":"operator","stream":true,"tools":[{"function":{"description":"the board","name":"board","parameters":{"type":"object"}},"type":"function"}]}`
@@ -141,6 +141,31 @@ func TestOperatorReadsLiteLLMsToolCallChunks(t *testing.T) {
 	}
 }
 
+// An answer the model's output limit cut (finish_reason length) comes back
+// marked cut, here one that spent its tokens on reasoning and wrote no text
+// and no tool call; an answer that finished on its own is not.
+func TestOperatorMarksACutAnswer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		finish string
+		want   OperatorMessage
+	}{
+		"cut":      {"length", OperatorMessage{Role: "assistant", Cut: true}},
+		"finished": {"stop", OperatorMessage{Role: "assistant"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := &operatorGateway{chunks: []string{
+				`{"choices":[{"index":0,"delta":{"content":"","reasoning_content":"Let me think about the board."}}]}`,
+				`{"choices":[{"index":0,"delta":{},"finish_reason":"` + tc.finish + `"}]}`,
+				`[DONE]`,
+			}}
+			answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", "", []OperatorMessage{{Role: "user", Content: "what is open?"}}, nil, func(string) {})
+			if err != nil || !reflect.DeepEqual(answer, tc.want) {
+				t.Fatalf("answer = %+v, %v; want %+v", answer, err, tc.want)
+			}
+		})
+	}
+}
+
 // A refusal comes back as the gateway's decision, any other status, a
 // failed stream or one cut before [DONE] as an error naming it.
 func TestOperatorStreamFailures(t *testing.T) {
@@ -185,7 +210,7 @@ func TestOperatorVisionLook(t *testing.T) {
 		t.Fatalf("headers = %v", g.headers)
 	}
 	url := "data:image/png;base64," + base64.StdEncoding.EncodeToString(image)
-	want := `{"max_tokens":4096,"messages":[{"content":[{"text":"what stands out?","type":"text"},` +
+	want := `{"max_tokens":16384,"messages":[{"content":[{"text":"what stands out?","type":"text"},` +
 		`{"image_url":{"url":"` + url + `"},"type":"image_url"}],"role":"user"}],"model":"vision","stream":true}`
 	b, _ := json.Marshal(g.request)
 	if string(b) != want {

@@ -833,7 +833,7 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.requests = append(g.requests, body)
 	if (r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
 		r.Header.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || r.Header.Get(gateway.HeaderFactoryTask) != task ||
-		body["model"] != policy.Big || body["stream"] != true || body["max_tokens"] != float64(4096)) && !g.lenient {
+		body["model"] != policy.Big || body["stream"] != true || body["max_tokens"] != float64(16384)) && !g.lenient {
 		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias big, streamed",
 			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task)
 	}
@@ -3156,6 +3156,26 @@ func TestChatAsksOnceAnHourOfASpentChatBudget(t *testing.T) {
 	}
 	if rows := asks(); len(rows) != 2 {
 		t.Fatalf("an hour past the ask: %d rows, want 2", len(rows))
+	}
+}
+
+// An answer the model's output limit cut before it wrote a word or a call
+// ends the turn on a row that says so, never on an empty one.
+func TestChatTurnSaysACutAnswer(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{`{"choices":[{"index":0,"delta":{"content":"","reasoning_content":"The board first."}}]}`,
+		`{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`}}
+	const cut = "The answer stopped at the model's output limit of 16384 tokens before it wrote anything; send a message to try again."
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	equal(t, "the cut turn", events, []string{`text {"text":"` + cut + `"}`, `done {}`})
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if got := answer.Messages; len(got) != 2 || got[1].Role != "assistant" || got[1].Content != cut {
+		t.Fatalf("conversation = %+v, want the message and the cut's row", got)
 	}
 }
 

@@ -813,6 +813,16 @@ func (t *turn) run(id, notice string) {
 		}
 		out.flush()
 		answer.Content = unstamp(answer.Content)
+		if answer.Cut && strings.TrimSpace(answer.Content) == "" && len(answer.ToolCalls) == 0 {
+			// the model spent its output on reasoning: say so instead of an
+			// empty row
+			cut := fmt.Sprintf("The answer stopped at the model's output limit of %d tokens before it wrote anything; send a message to try again.", factoryd.OperatorTokens)
+			if t.save(factoryd.ChatMessage{Role: "assistant", Content: cut}) {
+				t.send("text", map[string]string{"text": cut})
+				t.send("done", struct{}{})
+			}
+			return
+		}
 		row := factoryd.ChatMessage{Role: "assistant", Content: answer.Content}
 		proposed := false
 		var results []factoryd.OperatorMessage
