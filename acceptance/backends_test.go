@@ -582,14 +582,11 @@ func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.
 	return nil
 }
 
-func (s *acceptanceStore) SetTaskSize(_ context.Context, id, size string, heldCents int64, budgetEUR float64) error {
+func (s *acceptanceStore) SetTaskSize(_ context.Context, id, size string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
 	t.Size = size
-	if factoryd.Cents(t.BudgetEUR) == heldCents {
-		t.BudgetEUR = budgetEUR
-	}
 	s.tasks[id] = t
 	return nil
 }

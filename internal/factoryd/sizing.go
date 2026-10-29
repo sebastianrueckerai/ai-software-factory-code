@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -36,12 +35,11 @@ func sizedSwitch(size, reason string, files []string) *PlanSwitch {
 }
 
 // SizeCard sizes card taskID before its first session. A card that
-// carries a pull request is not sized: its work exists. A filer's medium
-// or large goes to the planner without a session. Otherwise the sizing
-// report task sizes it; the filer's small, or none, is a floor no size
-// goes under. A sized card that holds its filing's budget gets its new
-// size's. A sizing with no size keeps the card as filed. The sizing step
-// is recorded once and first; the size write follows from it, and a call
+// carries a pull request is not sized: its work exists. A filed medium or
+// large goes to the planner without a session. Otherwise the sizing
+// report task sizes it, and a sizing with no size keeps the card as filed.
+// The sizing sets the size and leaves the budget. The sizing step is
+// recorded once and first; the size write follows from it, and a call
 // that finds the step completes that write and answers from it.
 func (r *Runner) SizeCard(ctx context.Context, taskID string) (SizeResult, error) {
 	defer beatUntilDone(ctx, "sizing")()
@@ -87,8 +85,8 @@ func (r *Runner) sizingStep(ctx context.Context, taskID string) (map[string]any,
 	return lastStep(tl, StepSizing), nil
 }
 
-// sizing is card t's sizing step, its gate's end included. A sized step
-// that changes the card carries held_cents, the budget its decision read.
+// sizing is card t's sizing step, its gate's end included. Only a step
+// whose session answered a size carries it as sized.
 func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if t.CarryPR > 0 {
 		return gateEnd(t, GateSizing, map[string]any{"skipped": fmt.Sprintf("the card carries pull request #%d, whose work exists", t.CarryPR)}), nil
@@ -98,10 +96,6 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	}
 	child, err := r.reportOf(ctx, t, SourceSizing)
 	if err != nil {
-		return nil, err
-	}
-	// a raise may have come during the session
-	if t, _, err = r.task(ctx, t.ID); err != nil {
 		return nil, err
 	}
 	var v sizeVerdict
@@ -114,44 +108,29 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if !ok {
 		return gateEnd(t, GateSizing, map[string]any{"size": t.Size, "filed": t.Size, "reason": reason, "report": child.ID, "plan": false}), nil
 	}
-	p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
-	if err != nil {
-		return nil, err
-	}
-	b, strong := r.cfg.Policy().Document.Budget, t.Rung == RungFrontier
-	_, eur := askedBudget(t.Objective)
-	budget := t.BudgetEUR
-	if Cents(t.BudgetEUR) == Cents(policy.CardBudget(b, p.Budget, t.Size, strong, eur)) {
-		budget = policy.CardBudget(b, p.Budget, v.Size, strong, eur)
-	}
-	detail := map[string]any{"size": v.Size, "filed": t.Size, "sized": v.Size, "reason": v.Reason, "files": v.Files, "report": child.ID, "plan": v.Size != "small"}
-	if Cents(budget) != Cents(t.BudgetEUR) {
-		detail["budget_eur"] = budget
-	}
-	if v.Size != t.Size || Cents(budget) != Cents(t.BudgetEUR) {
-		detail["held_cents"] = Cents(t.BudgetEUR)
-	}
-	return gateEnd(t, GateSizing, detail), nil
+	return gateEnd(t, GateSizing, map[string]any{"size": v.Size, "filed": t.Size, "sized": v.Size, "reason": v.Reason, "files": v.Files,
+		"report": child.ID, "plan": v.Size != "small"}), nil
 }
 
-// sized completes the size write card taskID's sizing step names and
-// answers from the step. Only a sized step that changes the card carries
-// held_cents and writes; a budget that moved since its decision read it
-// stays.
+// sized completes the size write of card taskID's sizing step, when the
+// card does not hold the size the step's session answered, and answers
+// from the step.
 func (r *Runner) sized(ctx context.Context, taskID string, step map[string]any) (SizeResult, error) {
-	size, _ := step["size"].(string)
-	if held, ok := step["held_cents"].(float64); ok {
-		budget, ok := step["budget_eur"].(float64)
-		if !ok {
-			budget = held / 100
-		}
-		if err := r.store.SetTaskSize(ctx, taskID, size, int64(held), budget); err != nil {
+	if sized, _ := step["sized"].(string); sized != "" {
+		t, _, err := r.task(ctx, taskID)
+		if err != nil {
 			return SizeResult{}, err
+		}
+		if t.Size != sized {
+			if err := r.store.SetTaskSize(ctx, taskID, sized); err != nil {
+				return SizeResult{}, err
+			}
 		}
 	}
 	if plan, _ := step["plan"].(bool); !plan {
 		return SizeResult{}, nil
 	}
+	size, _ := step["size"].(string)
 	reason, _ := step["reason"].(string)
 	var files []string
 	listed, _ := step["files"].([]any)

@@ -690,7 +690,7 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 	return nil
 }
 
-func (s *fakeStore) SetTaskSize(ctx context.Context, id, size string, heldCents int64, budgetEUR float64) error {
+func (s *fakeStore) SetTaskSize(ctx context.Context, id, size string) error {
 	if s.sizeFails > 0 {
 		s.sizeFails--
 		return errors.New("the database is down")
@@ -700,9 +700,6 @@ func (s *fakeStore) SetTaskSize(ctx context.Context, id, size string, heldCents 
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Size = size
-	if Cents(t.BudgetEUR) == heldCents {
-		t.BudgetEUR = budgetEUR
-	}
 	s.tasks[id] = t
 	return nil
 }
@@ -1605,21 +1602,14 @@ func TestPGStore(t *testing.T) {
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
 	}
-	// t1 holds 10 EUR: the write that read 1000 cents lands, one that read
-	// 200 sets the size and leaves the budget as it is
-	if err := s.SetTaskSize(ctx, "t1", "medium", 1000, 5); err != nil {
+	// t1 holds 10 EUR, and the size write leaves it
+	if err := s.SetTaskSize(ctx, "t1", "medium"); err != nil {
 		t.Fatal(err)
 	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Size != "medium" || got.BudgetEUR != 5 {
-		t.Fatalf("size %q, budget %v, want medium and 5", got.Size, got.BudgetEUR)
+	if got, _, _ := s.Task(ctx, "t1"); got.Size != "medium" || got.BudgetEUR != 10 {
+		t.Fatalf("size %q, budget %v, want medium and 10", got.Size, got.BudgetEUR)
 	}
-	if err := s.SetTaskSize(ctx, "t1", "large", 200, 10); err != nil {
-		t.Fatal(err)
-	}
-	if got, _, _ := s.Task(ctx, "t1"); got.Size != "large" || got.BudgetEUR != 5 {
-		t.Fatalf("size %q, budget %v, want large and the moved budget 5 kept", got.Size, got.BudgetEUR)
-	}
-	if err := s.SetTaskSize(ctx, "nope", "small", 200, 2); !errors.Is(err, ErrNotFound) {
+	if err := s.SetTaskSize(ctx, "nope", "small"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskSize unknown task = %v, want ErrNotFound", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 0 WHERE id = 't1'`); err != nil {

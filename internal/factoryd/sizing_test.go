@@ -83,7 +83,7 @@ func TestSizeCardKeepsASmallCardDirect(t *testing.T) {
 		t.Fatalf("sizing task = %+v", child)
 	}
 	wantSizingStep(t, objects, map[string]any{"size": "small", "filed": "", "sized": "small", "reason": "one handler and its test",
-		"files": []any{"internal/x/h.go", "internal/x/h_test.go"}, "report": child.ID, "plan": false, "held_cents": 200.0})
+		"files": []any{"internal/x/h.go", "internal/x/h_test.go"}, "report": child.ID, "plan": false})
 	if step := timelineStep(t, objects, "t1", StepSizing); step["started"] == nil {
 		t.Fatalf("sizing step %v, want the gate's start", step)
 	}
@@ -98,49 +98,11 @@ func TestSizeCardSendsAMediumCardToThePlanner(t *testing.T) {
 	if res.ToPlan == nil || *res.ToPlan != want {
 		t.Fatalf("to plan = %+v, want %+v", res.ToPlan, want)
 	}
-	if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 5 {
-		t.Fatalf("card size %q, budget %v, want medium and 5", card.Size, card.BudgetEUR)
+	if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 2 {
+		t.Fatalf("card size %q, budget %v, want medium and the filing's 2", card.Size, card.BudgetEUR)
 	}
 	wantSizingStep(t, objects, map[string]any{"size": "medium", "filed": "", "sized": "medium", "reason": "touches the scheduler and the store",
-		"files": []any{"a.go", "b.go"}, "report": wf.started[0], "plan": true, "budget_eur": 5.0, "held_cents": 200.0})
-}
-
-// A card that holds its filing's budget gets its size's; a budget it was
-// funded to or asked for stays.
-func TestSizeCardBudget(t *testing.T) {
-	const medium = `{"size": "medium", "reason": "r", "files": []}`
-	for name, tc := range map[string]struct {
-		held      float64
-		objective string
-		answer    string
-		want      float64
-	}{
-		"the filing's default": {2, "Fix the cache\n\nCount hits.", medium, 5},
-		"funded":               {4, "Fix the cache\n\nCount hits.", medium, 4},
-		"asked for":            {3, "Fix the cache\n\nCount hits.\nBudget: 3 EUR", medium, 3},
-		"small":                {2, "Fix the cache\n\nCount hits.", `{"size": "small", "reason": "r"}`, 2},
-	} {
-		t.Run(name, func(t *testing.T) {
-			card := sizingCard()
-			card.BudgetEUR, card.Objective = tc.held, tc.objective
-			r, store, objects, _ := sizingRig(t, card, "done", tc.answer)
-			sizeCard(t, r)
-			if got := store.tasks["t1"].BudgetEUR; got != tc.want {
-				t.Fatalf("budget = %v, want %v", got, tc.want)
-			}
-			steps := sizingSteps(t, objects)
-			if len(steps) != 1 {
-				t.Fatalf("sizing steps = %v", steps)
-			}
-			got, recorded := steps[0]["budget_eur"]
-			if changed := tc.want != tc.held; recorded != changed || changed && got != tc.want {
-				t.Fatalf("step budget_eur = %v (recorded %v), want %v recorded only when it changed", got, recorded, tc.want)
-			}
-			if got := steps[0]["held_cents"]; got != tc.held*100 {
-				t.Fatalf("step held_cents = %v, want %v", got, tc.held*100)
-			}
-		})
-	}
+		"files": []any{"a.go", "b.go"}, "report": wf.started[0], "plan": true})
 }
 
 func TestSizeCardTakesTheFilersSizeAsAFloor(t *testing.T) {
@@ -198,7 +160,10 @@ func TestSizeCardSkipsACardThatCarriesAPullRequest(t *testing.T) {
 
 func TestSizeCardIsRetrySafe(t *testing.T) {
 	r, store, objects, _ := sizingRig(t, sizingCard(), "done", `{"size": "medium", "reason": "two packages", "files": ["a.go"]}`)
-	first, again := sizeCard(t, r), sizeCard(t, r)
+	first := sizeCard(t, r)
+	// the size is stored: a call that finds the step writes nothing
+	store.sizeFails = 1
+	again := sizeCard(t, r)
 	if first.ToPlan == nil || again.ToPlan == nil || *first.ToPlan != *again.ToPlan {
 		t.Fatalf("first %+v, again %+v, want the same switch", first.ToPlan, again.ToPlan)
 	}
@@ -251,8 +216,8 @@ func TestSizeCardCompletesAFailedWriteOnTheRetry(t *testing.T) {
 	if res.ToPlan == nil || *res.ToPlan != want {
 		t.Fatalf("to plan = %+v, want %+v", res.ToPlan, want)
 	}
-	if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 5 {
-		t.Fatalf("card size %q, budget %v, want medium and 5", card.Size, card.BudgetEUR)
+	if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 2 {
+		t.Fatalf("card size %q, budget %v, want medium and the filing's 2", card.Size, card.BudgetEUR)
 	}
 	if steps := sizingSteps(t, objects); len(wf.started) != 1 || len(steps) != 1 {
 		t.Fatalf("started %v, steps %v, want one of each", wf.started, steps)
@@ -276,44 +241,22 @@ func TestSizeCardRetriesAFailedRecord(t *testing.T) {
 	if res.ToPlan == nil || *res.ToPlan != want {
 		t.Fatalf("to plan = %+v, want %+v", res.ToPlan, want)
 	}
-	if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 5 {
-		t.Fatalf("card size %q, budget %v, want medium and 5", card.Size, card.BudgetEUR)
+	if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 2 {
+		t.Fatalf("card size %q, budget %v, want medium and the filing's 2", card.Size, card.BudgetEUR)
 	}
 	if steps := sizingSteps(t, objects); len(wf.started) != 1 || len(steps) != 1 {
 		t.Fatalf("started %v, steps %v, want one sizing task and one step", wf.started, steps)
 	}
 }
 
-// A raise is the card's: a sizing never undoes it, whether it lands
-// during the sizing's session or after its step.
-func TestSizeCardKeepsARaise(t *testing.T) {
-	const medium = `{"size": "medium", "reason": "two packages", "files": ["a.go"]}`
-	raise := func(store *fakeStore) {
-		card := store.tasks["t1"]
-		card.BudgetEUR = 9
-		store.tasks["t1"] = card
+// The sizing sets the size and leaves the budget: a card that holds 5 EUR
+// and is sized small still holds 5.
+func TestSizeCardLeavesTheBudget(t *testing.T) {
+	card := sizingCard()
+	card.BudgetEUR = 5
+	r, store, _, _ := sizingRig(t, card, "done", `{"size": "small", "reason": "one handler"}`)
+	sizeCard(t, r)
+	if card := store.tasks["t1"]; card.Size != "small" || card.BudgetEUR != 5 {
+		t.Fatalf("card size %q, budget %v, want small and 5", card.Size, card.BudgetEUR)
 	}
-	t.Run("during the session", func(t *testing.T) {
-		r, store, objects, wf := sizingRig(t, sizingCard(), "done", medium)
-		start := wf.onStart
-		wf.onStart = func(id string) {
-			start(id)
-			raise(store)
-		}
-		sizeCard(t, r)
-		if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 9 {
-			t.Fatalf("card size %q, budget %v, want medium and the raise's 9", card.Size, card.BudgetEUR)
-		}
-		wantSizingStep(t, objects, map[string]any{"size": "medium", "filed": "", "sized": "medium", "reason": "two packages",
-			"files": []any{"a.go"}, "report": wf.started[0], "plan": true, "held_cents": 900.0})
-	})
-	t.Run("after the step", func(t *testing.T) {
-		r, store, _, _ := sizingRig(t, sizingCard(), "done", medium)
-		sizeCard(t, r)
-		raise(store)
-		sizeCard(t, r)
-		if card := store.tasks["t1"]; card.Size != "medium" || card.BudgetEUR != 9 {
-			t.Fatalf("card size %q, budget %v, want medium and the raise's 9", card.Size, card.BudgetEUR)
-		}
-	})
 }
