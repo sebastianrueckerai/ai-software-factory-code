@@ -35,12 +35,13 @@ func sizedSwitch(size, reason string, files []string) *PlanSwitch {
 }
 
 // SizeCard sizes card taskID before its first session. A card that
-// carries a pull request is not sized: its work exists. A filed medium or
-// large goes to the planner without a session. Otherwise the sizing
-// report task sizes it, and a sizing with no size keeps the card as filed.
-// The sizing sets the size and leaves the budget. The sizing step is
-// recorded once and first; the size write follows from it, and a call
-// that finds the step completes that write and answers from it.
+// carries a pull request is not sized: its work exists. A writer's filed
+// medium or large goes to the planner without a session; an outsider's
+// filed size is no floor. Otherwise the sizing report task sizes it, and
+// a sizing with no size keeps the card as filed. The sizing sets the size
+// and leaves the budget. The sizing step is recorded once and first; the
+// size write follows from it, and a call that finds the step completes
+// that write and answers from it.
 func (r *Runner) SizeCard(ctx context.Context, taskID string) (SizeResult, error) {
 	defer beatUntilDone(ctx, "sizing")()
 	step, err := r.sizingStep(ctx, taskID)
@@ -91,7 +92,7 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if t.CarryPR > 0 {
 		return gateEnd(t, GateSizing, map[string]any{"skipped": fmt.Sprintf("the card carries pull request #%d, whose work exists", t.CarryPR)}), nil
 	}
-	if t.Size == "medium" || t.Size == "large" {
+	if t.AuthorWriter && (t.Size == "medium" || t.Size == "large") {
 		return gateEnd(t, GateSizing, map[string]any{"size": t.Size, "filed": t.Size, "reason": "its filer sized it " + t.Size, "plan": true}), nil
 	}
 	child, err := r.reportOf(ctx, t, SourceSizing)

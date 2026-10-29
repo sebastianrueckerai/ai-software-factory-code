@@ -128,6 +128,21 @@ func TestSizeCardTakesTheFilersSizeAsAFloor(t *testing.T) {
 	}
 }
 
+// An outsider's filed size is no floor: the session sizes the card.
+func TestSizeCardSizesAnOutsidersCard(t *testing.T) {
+	card := sizingCard()
+	card.Author, card.AuthorWriter, card.Size = "mallory", false, "large"
+	r, store, objects, wf := sizingRig(t, card, "done", `{"size": "small", "reason": "one handler", "files": ["h.go"]}`)
+	if res := sizeCard(t, r); res != (SizeResult{}) || len(wf.started) != 1 {
+		t.Fatalf("result %+v, started %v, want one sizing and the card to stay direct", res, wf.started)
+	}
+	if got := store.tasks["t1"].Size; got != "small" {
+		t.Fatalf("size = %q, want small", got)
+	}
+	wantSizingStep(t, objects, map[string]any{"size": "small", "filed": "large", "sized": "small", "reason": "one handler",
+		"files": []any{"h.go"}, "report": wf.started[0], "plan": false})
+}
+
 func TestSizeCardWithoutAVerdictKeepsTheCardAsFiled(t *testing.T) {
 	// reason "": the failed sizing task's own line
 	for name, tc := range map[string]struct{ status, answer, reason string }{
