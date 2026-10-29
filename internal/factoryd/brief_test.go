@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -262,5 +263,49 @@ func TestBriefFactsNameTheCardShape(t *testing.T) {
 				t.Fatalf("facts carry buttons %v, want %q", facts.(map[string]any)["buttons"], acts)
 			}
 		})
+	}
+}
+
+// The brief rides its own purpose, so the gateway takes it on a card that
+// waits on a person; a refusal of the card's own budget marks the row as
+// one a raise answers, and no other failure does.
+func TestBriefWriterMarksABudgetRefusal(t *testing.T) {
+	for _, tt := range []struct {
+		decision, message, mark string
+		unfunded                bool
+	}{
+		{policy.RefusedBudget, "free headroom 0.000100 EUR fits 2 output tokens", "refused_budget: free headroom 0.000100 EUR fits 2 output tokens", true},
+		{policy.RefusedMonthCap, "the month cap is spent", "refused_month_cap: the month cap is spent", false},
+		{"refused_task_status", "task t1 is done", "refused_task_status: task t1 is done", false},
+	} {
+		var purpose string
+		gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			purpose = r.Header.Get(gateway.HeaderFactoryPurpose)
+			w.Header().Set(gateway.HeaderDecision, tt.decision)
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(`{"error":{"message":"` + tt.message + `"}}`))
+		}))
+		store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
+			rows:  []ApprovalRequest{{ID: 9, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Status: "pending", Spec: json.RawMessage(`{"revision":2}`)}},
+			brief: map[int64][2]string{}, failed: map[int64]string{}}
+		w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		gw.Close()
+		if purpose != policy.PurposeBrief {
+			t.Errorf("%s: the call's purpose is %q, want %q", tt.decision, purpose, policy.PurposeBrief)
+		}
+		if store.failed[9] != tt.mark {
+			t.Errorf("%s: mark %q, want %q", tt.decision, store.failed[9], tt.mark)
+		}
+		row := store.rows[0]
+		row.BriefError = store.failed[9]
+		if BriefUnfunded(row) != tt.unfunded {
+			t.Errorf("%s: unfunded %v, want %v", tt.decision, !tt.unfunded, tt.unfunded)
+		}
+	}
+	if BriefUnfunded(ApprovalRequest{Status: "approved", BriefError: "refused_budget: spent"}) {
+		t.Error("a decided request asks for a raise")
 	}
 }

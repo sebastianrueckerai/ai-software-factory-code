@@ -887,6 +887,39 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 }
 
+// A card that waits on a person takes factoryd's brief call (ruling 116)
+// and nothing else: not factoryd's other purposes, not a sandbox's call
+// under the same ref, and no other waiting or finished status.
+func TestHoldsForTheBriefOfAWaitingCard(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES
+		('wait', 1, 0, 'waiting-human'), ('done', 1, 0, 'done'), ('queued', 1, 0, 'queued')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		task, ref, session string
+		held               bool
+	}{
+		{"wait", "brief/small", "", true},
+		{"wait", "supervisor/small", "", false},
+		{"wait", "brief/small", "s-1", false},
+		{"done", "brief/small", "", false},
+		{"queued", "brief/small", "", false},
+	} {
+		_, err := TakeHold(ctx, db, HoldRequest{TaskID: c.task, Kind: KindModel, Ref: c.ref, Session: c.session, Bytes: 10, Price: testPrice,
+			DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
+		var r *Refusal
+		if c.held && err != nil || !c.held && (!errors.As(err, &r) || r.Decision != "refused_task_status") {
+			t.Errorf("%s %s %q: err = %v", c.task, c.ref, c.session, err)
+		}
+	}
+	var n int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM holds WHERE task_id = 'wait' AND ref = 'brief/small'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("brief holds = %d (%v), want 1", n, err)
+	}
+}
+
 // A call cut by a restart never releases its hold: the sweep books it and
 // writes the call's audit row, decision swept, so every booked call has
 // one (#276's security-audit call, cut by the roll of 0de8a61 at 23:18:15Z,

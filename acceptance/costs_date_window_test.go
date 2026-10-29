@@ -515,6 +515,8 @@ func (a *acceptApprovals) DecideApproval(_ context.Context, _ int64, _, _, _, _ 
 	return factoryd.ErrNotFound
 }
 
+func (a *acceptApprovals) RetryApprovalBrief(context.Context, int64) error { return nil }
+
 type acceptProjects struct{ rows []factoryd.Project }
 
 func (p *acceptProjects) Projects(context.Context) ([]factoryd.Project, error) { return p.rows, nil }

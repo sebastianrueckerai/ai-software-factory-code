@@ -131,8 +131,8 @@ and files the issue, and the new one loads the head at boot.
 The gateway checks a model call in this order: the caller (a sandbox's
 JWT, or factoryd's `gateway-factoryd` token with its `X-Factory-*`
 headers, which are read only behind that token), the task status (an
-agent's task running; factoryd's running or in review, checked with the
-hold), the alias (an agent's must be in its classes' `models`, factoryd's
+agent's task running; factoryd's running or in review, or waiting on a
+person for a card's brief, checked with the hold), the alias (an agent's must be in its classes' `models`, factoryd's
 must be the class's alias for the purpose; else 403 `refused_capability`),
 the task headroom (else 402 `refused_budget`), the day headroom (else
 402 `refused_day_cap`), the month headroom (else 402
@@ -491,8 +491,10 @@ hold (a provider billing past the bounded arguments) is booked in full
 and flagged `COST OVER HOLD` with both figures in the log and the audit
 row's `over_hold`; the caps then refuse the next call from
 the true headroom (ruling 117). A hold is only taken for a task that is
-`running` or `in-review` (the gates' model review): `TakeHold` refuses
-any other status with `refused_task_status` in its own transaction. Prices not in any API
+`running` or `in-review` (the gates' model review), and for factoryd's
+`brief` call on a `waiting-human` task, the one text its card's person
+reads first: `TakeHold` refuses any other status with
+`refused_task_status` in its own transaction. Prices not in any API
 response live in the policy's `prices`. A refusal (`refused_capability`,
 `refused_task_status`, `refused_arguments`, `refused_price`,
 `refused_tool_requests`, `refused_tool_eur`, `refused_budget`,

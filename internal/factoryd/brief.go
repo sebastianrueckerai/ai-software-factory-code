@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -22,7 +23,9 @@ import (
 // filed them (factoryd a merge or a plan, the gateway's commissioning a
 // resource) — so filing never blocks on the writer: a failed or timed-out
 // call marks the row, the card keeps today's text and no brief, and the
-// failure is visible in telemetry (EventBriefFailed).
+// failure is visible in telemetry (EventBriefFailed). A call the card's own
+// budget refuses asks for the money on the card (BriefUnfunded): a raise
+// there clears the mark, and the next pass writes the brief.
 
 // briefBatch bounds the rows one pass takes.
 const briefBatch = 20
@@ -43,7 +46,8 @@ type BriefStore interface {
 	// SetApprovalBrief files a request's brief and detail.
 	SetApprovalBrief(ctx context.Context, id int64, brief, detail string) error
 	// SetApprovalBriefError marks a request whose writer failed: it keeps
-	// today's text and no brief, and the pass does not retry it.
+	// today's text and no brief, and the pass does not retry it until a
+	// raise clears the mark (RetryApprovalBrief).
 	SetApprovalBriefError(ctx context.Context, id int64, e string) error
 	Record(ctx context.Context, e Event) (int64, error)
 }
@@ -95,16 +99,22 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 		return err
 	}
 	// the version in force names the alias, as every factoryd call site
-	alias := b.Current().Document.FactoryModel(t.RequiredCapabilities, policy.PurposeSupervisor)
+	alias := b.Current().Document.FactoryModel(t.RequiredCapabilities, policy.PurposeBrief)
 	brief, detail, err := b.ask(ctx, a, t, alias)
 	switch {
 	case err != nil:
 		log.Printf("briefs: approval %d of %s: %v", a.ID, a.TaskID, err)
-		if markErr := b.Store.SetApprovalBriefError(context.WithoutCancel(ctx), a.ID, textutil.Truncate(err.Error(), 500)); markErr != nil {
+		mark := err.Error()
+		var refusal *policy.Refusal
+		if errors.As(err, &refusal) {
+			mark = refusal.Decision + ": " + refusal.Reason
+		}
+		mark = textutil.Truncate(mark, 500)
+		if markErr := b.Store.SetApprovalBriefError(context.WithoutCancel(ctx), a.ID, mark); markErr != nil {
 			return markErr
 		}
 		_, err := b.Store.Record(context.WithoutCancel(ctx), Event{Repository: t.Repository, TaskID: t.ID, Kind: EventBriefFailed,
-			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"approval": a.ID, "error": textutil.Truncate(err.Error(), 500)}})
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"approval": a.ID, "error": mark}})
 		return err
 	default:
 		return b.Store.SetApprovalBrief(ctx, a.ID, brief, detail)
@@ -118,7 +128,7 @@ func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t Task, alias 
 	if err != nil {
 		return "", "", err
 	}
-	content, _, err := b.Model.Chat(ctx, t.ID, alias, policy.PurposeSupervisor, b.Current().Document.Limits.SupervisorTimeout, briefPrompt(a.Kind, acts), facts)
+	content, _, err := b.Model.Chat(ctx, t.ID, alias, policy.PurposeBrief, b.Current().Document.Limits.SupervisorTimeout, briefPrompt(a.Kind, acts), facts)
 	if err != nil {
 		return "", "", err
 	}
@@ -242,6 +252,12 @@ func lines(s string) string {
 // the card keeps today's text and no brief.
 const EventBriefFailed = "brief_failed"
 
+// BriefUnfunded: the card's own budget refused a's brief, which a raise
+// of the card's budget answers.
+func BriefUnfunded(a ApprovalRequest) bool {
+	return a.Status == "pending" && a.Brief == "" && strings.HasPrefix(a.BriefError, policy.RefusedBudget+": ")
+}
+
 func (s *PGStore) BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
@@ -275,5 +291,13 @@ func (s *PGStore) SetApprovalBrief(ctx context.Context, id int64, brief, detail 
 func (s *PGStore) SetApprovalBriefError(ctx context.Context, id int64, e string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE approval_requests SET brief_error = $2 WHERE id = $1`, id, e)
+	return err
+}
+
+// RetryApprovalBrief clears a pending briefless request's mark, so the
+// next pass writes its brief.
+func (s *PGStore) RetryApprovalBrief(ctx context.Context, id int64) error {
+	_, err := s.db.ExecContext(ctx,
+		`UPDATE approval_requests SET brief_error = '' WHERE id = $1 AND status = 'pending' AND brief = ''`, id)
 	return err
 }

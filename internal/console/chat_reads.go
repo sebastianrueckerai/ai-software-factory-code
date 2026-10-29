@@ -117,6 +117,9 @@ func (t *turn) cardText(in toolInput) (string, error) {
 			continue
 		}
 		fmt.Fprintf(&b, "\n%s request %d pending", q.Kind, q.ID)
+		if factoryd.BriefUnfunded(q) {
+			b.WriteString("; its brief is unwritten: the card's budget cannot pay for it, and a fund queues it again")
+		}
 		var plan factoryd.PlanSpec
 		if q.Kind == factoryd.ApprovalPlan && json.Unmarshal(q.Spec, &plan) == nil && plan.Revision > 0 {
 			fmt.Fprintf(&b, " for revision %d", plan.Revision)

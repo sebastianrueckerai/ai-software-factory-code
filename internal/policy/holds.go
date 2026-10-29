@@ -8,6 +8,7 @@ import (
 	"log"
 	"math"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -18,7 +19,8 @@ import (
 const MinCallTokens = 1024
 
 // holdStatuses are the task statuses that spend: running (the agent, its
-// supervisor) and in-review (the gates' model review).
+// supervisor) and in-review (the gates' model review). A task waiting on
+// a person takes one hold besides: factoryd's call that writes its brief.
 var holdStatuses = []string{"running", "in-review"}
 
 // HoldTTL bounds a hold a crashed caller never released; SweepHolds books
@@ -469,14 +471,16 @@ var now = time.Now
 // FreeHeadroom reads r's task's, the UTC day's, the UTC calendar month's
 // and the task's project's month headroom inside tx (under LockHeadroom),
 // as ReadFree does. A task that is neither running nor in review is
-// refused: settlement relies on a finished task taking no new hold.
+// refused, but for a waiting-human task's brief: settlement relies on a
+// finished task taking no new hold.
 func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) {
 	t, f, err := ReadFree(ctx, tx, r)
 	if err != nil {
 		return Free{}, err
 	}
-	if !slices.Contains(holdStatuses, t.Status) {
-		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold", r.TaskID, t.Status)}
+	brief := t.Status == "waiting-human" && r.Session == "" && strings.HasPrefix(r.Ref, PurposeBrief+"/")
+	if !slices.Contains(holdStatuses, t.Status) && !brief {
+		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold, and a task waiting on a person its brief's alone", r.TaskID, t.Status)}
 	}
 	return f, nil
 }

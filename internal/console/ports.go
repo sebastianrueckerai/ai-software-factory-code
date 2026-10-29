@@ -19,6 +19,9 @@ type Approvals interface {
 	// DecideApproval decides one pending request of kind as by;
 	// factoryd.ErrNotFound when it is no longer pending.
 	DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error
+	// RetryApprovalBrief clears a pending request's failed brief, so the
+	// brief writer's next pass writes it.
+	RetryApprovalBrief(ctx context.Context, id int64) error
 }
 
 // MergeApprover signals a task's workflow that approver approved its pull

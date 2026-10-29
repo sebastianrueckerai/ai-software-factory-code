@@ -98,7 +98,12 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the
   human, which resumes the task through the human-comment path.
-- Approval cards in the human lane, from `approval_requests`. A resource
+- Approval cards in the human lane, from `approval_requests`. Each opens
+  with its brief, one factoryd call (purpose `brief`) a moment after the
+  request files. A brief the card's own budget refuses (`refused_budget`)
+  says so in its place, and an approver's Fund there (`POST
+  /tasks/{id}/fund`) raises the card's budget and queues the brief again,
+  without answering the card. A resource
   request shows its type, purpose, lease, monthly cost, project and task;
   approve for the task or the project, or deny with a reason (`decided_by`,
   `decided_at`, `decision_note`). A merge request shows the pull request,
