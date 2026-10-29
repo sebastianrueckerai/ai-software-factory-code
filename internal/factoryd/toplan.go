@@ -13,6 +13,17 @@ import (
 // one line for the card's record, Work the caller's text for the planner.
 type PlanSwitch struct{ Reason, Work string }
 
+// and is sw with more's reason and work after its own.
+func (sw PlanSwitch) and(more PlanSwitch) PlanSwitch {
+	join := func(sep, a, b string) string {
+		if a == "" || b == "" {
+			return a + b
+		}
+		return a + sep + b
+	}
+	return PlanSwitch{Reason: join("; ", sw.Reason, more.Reason), Work: join("\n", sw.Work, more.Work)}
+}
+
 // PlanSwitchResult is BecomePlan's answer: the card is plan-track
 // (Switched), or Refused names its state and the fitting action.
 type PlanSwitchResult struct {

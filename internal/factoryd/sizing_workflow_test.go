@@ -150,10 +150,11 @@ func TestSizingFailureLetsTheCardRunAsFiled(t *testing.T) {
 	if final := g.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, g.finals)
 	}
+	// every activity before the sizing takes no time on the test clock
 	if !slices.ContainsFunc(g.recorded, func(s recordedStep) bool {
-		return s.step == StepSizing && s.detail["reason"] == "the sizing step failed: boom"
+		return s.step == StepSizing && s.detail["reason"] == "the sizing step failed: boom" && s.detail["started"] == rfc3339(g.started)
 	}) {
-		t.Fatalf("steps %+v, want %s with the failure", g.recorded, StepSizing)
+		t.Fatalf("steps %+v, want %s with the failure, started %s", g.recorded, StepSizing, rfc3339(g.started))
 	}
 	if len(g.sessions) != 1 {
 		t.Fatalf("sessions %d, want 1", len(g.sessions))
@@ -205,5 +206,26 @@ func TestSizingSkipsCardsItDoesNotSize(t *testing.T) {
 				t.Fatalf("SizeCard calls %d, want %d", len(*sized), tc.want)
 			}
 		})
+	}
+}
+
+// A person's to_plan that came during the sizing joins the sizing's
+// switch: one BecomePlan, with the person's reason and work after the
+// sizing's.
+func TestSizingTakesAPersonsSwitchIntoItsOwn(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.taskConfig, h.state.Source = sizedConfig(), "webhook"
+	h.env.OnActivity(ActivitySizeCard, mock.Anything, "t1").After(10*time.Minute).Return(SizeResult{ToPlan: &sizedMedium}, nil)
+	h.toPlanAfter(time.Minute, PlanSwitch{Reason: "a person asks for a plan", Work: "split the store work"})
+
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	joined := PlanSwitch{Reason: "medium, not small: touches the store; a person asks for a plan", Work: "w\nsplit the store work"}
+	if want := []becomePlanCall{{"t1", joined, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.sessions) != 0 || len(h.plans) != 1 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 0, 1", len(h.sessions), len(h.plans))
 	}
 }

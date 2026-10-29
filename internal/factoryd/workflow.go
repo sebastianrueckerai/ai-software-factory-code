@@ -1680,7 +1680,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 					return t.finish("failed", "set running: "+errMessage(err))
 				}
-				if final, switched, err := t.switchToPlan(*toPlan); switched {
+				sw := *toPlan
+				var asked PlanSwitch
+				if workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&asked) {
+					sw = sw.and(asked)
+				}
+				if final, switched, err := t.switchToPlan(sw); switched {
 					return final, err
 				}
 			}

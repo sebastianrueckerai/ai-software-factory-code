@@ -1155,12 +1155,13 @@ func (t *taskRun) screen() (final, why string, findings []string) {
 // not small. A sizing that fails is recorded, and the card runs as filed.
 func (t *taskRun) size() (final, why string, findings []string, toPlan *PlanSwitch) {
 	var res SizeResult
+	began := workflow.Now(t.ctx)
 	v, decided, err := t.gateActivity(true, screenOptions(t.cfg.WallClockCap), &res, ActivitySizeCard, t.taskID)
 	if decided {
 		return v.final, v.reason, v.findings, nil
 	}
 	if err != nil {
-		detail := map[string]any{"reason": "the sizing step failed: " + errMessage(err)}
+		detail := map[string]any{"reason": "the sizing step failed: " + errMessage(err), "started": rfc3339(began)}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, StepSizing, detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record "+StepSizing, "task", t.taskID, "error", err)
 		}
