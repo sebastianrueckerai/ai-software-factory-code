@@ -219,7 +219,7 @@ func TestResultLineComesAfterTheSessionSpan(t *testing.T) {
 		}
 		return len(p), nil
 	})
-	writeResult(w, harness.Result{Success: true}, func() { tel.end("pushed") })
+	(&session{closeTelemetry: func() { tel.end("pushed") }}).writeResult(w, harness.Result{Success: true})
 	if !sessionEndedFirst {
 		t.Fatal("the result line was written before the session span ended")
 	}

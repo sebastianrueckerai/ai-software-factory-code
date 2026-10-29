@@ -77,3 +77,13 @@ func TestStringRemovesKeys(t *testing.T) {
 		}
 	}
 }
+
+// Values masks the configured secrets alone: a key shape and a hash stay
+// for the full scrub, and a value under 8 characters is no secret.
+func TestValuesMasksOnlyTheConfiguredSecrets(t *testing.T) {
+	hash := "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+	got := New("hunter2-master", "short").Values("key hunter2-master, hash " + hash + ", sk-abcdefghijklmnop1234, short")
+	if want := "key [redacted], hash " + hash + ", sk-abcdefghijklmnop1234, short"; got != want {
+		t.Fatalf("Values = %q, want %q", got, want)
+	}
+}

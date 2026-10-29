@@ -21,6 +21,9 @@ import (
 	"testing"
 	"time"
 
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
@@ -1972,5 +1975,38 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 				t.Fatalf("diff = %v, card_diff = %v; want %v, %v", ev.Detail["diff"], ev.Detail["card_diff"], tc.wantDiff, tc.wantCard)
 			}
 		})
+	}
+}
+
+// The session's own tokens never leave the worker: an event that holds the
+// read token, one that holds the push token after factoryd sent it, and
+// the result go out with [redacted]. Only the values go: a content hash
+// stays.
+func TestSessionLinesMaskTheSessionsOwnTokens(t *testing.T) {
+	const read, push = "0123456789abcdef0123456789abcdef01234567", "fedcba9876543210fedcba9876543210fedcba98"
+	hash := strings.Repeat("ab", 32)
+	tel, err := newSessionTelemetry(sdktrace.NewTracerProvider(), sdkmetric.NewMeterProvider(), "t1", "s-1", "factory/small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &session{env: workerEnv{repoToken: read}, gate: newPushGate(), tel: tel, closeTelemetry: func() {}}
+	var out bytes.Buffer
+	emit := s.emitter(&out)
+	emit(harness.Event{Kind: harness.EventCommand, Detail: map[string]any{"command": "git fetch", "output": "auth " + read + " refused"}})
+	s.gate.asking = true
+	if !s.gate.take(push) {
+		t.Fatal("the gate took no token")
+	}
+	emit(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go", "sha256": hash, "note": "token " + push}})
+	s.writeResult(&out, harness.Result{Summary: "push failed: auth " + push + " refused"})
+
+	got := out.String()
+	if strings.Contains(got, read) || strings.Contains(got, push) {
+		t.Fatalf("a session token left the worker:\n%s", got)
+	}
+	for _, want := range []string{`"output":"auth [redacted] refused"`, `"note":"token [redacted]"`, `"sha256":"` + hash + `"`, `"summary":"push failed: auth [redacted] refused"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("lines lack %s:\n%s", want, got)
+		}
 	}
 }

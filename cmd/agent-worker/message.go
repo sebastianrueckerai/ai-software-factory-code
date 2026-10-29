@@ -103,6 +103,7 @@ type pushGate struct {
 	mu     sync.Mutex
 	asking bool
 	token  chan string
+	taken  string // the token handed over, for the session's scrub
 }
 
 func newPushGate() *pushGate { return &pushGate{token: make(chan string, 1)} }
@@ -120,8 +121,16 @@ func (g *pushGate) take(token string) bool {
 		return false
 	}
 	g.asking = false
+	g.taken = token
 	g.token <- token
 	return true
+}
+
+// sent is the push token factoryd sent, "" before it arrived.
+func (g *pushGate) sent() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.taken
 }
 
 // ask writes the push request for commit on w, the stdout factoryd reads,

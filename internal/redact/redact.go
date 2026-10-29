@@ -49,10 +49,7 @@ func New(secrets ...string) *Scrubber {
 
 // String is v with every rule applied.
 func (s *Scrubber) String(v string) string {
-	v = pemBlock.ReplaceAllString(v, "[pem redacted]")
-	for _, secret := range s.secrets {
-		v = strings.ReplaceAll(v, secret, "[redacted]")
-	}
+	v = s.Values(pemBlock.ReplaceAllString(v, "[pem redacted]"))
 	v = userinfo.ReplaceAllString(v, "${1}[redacted]@")
 	v = credential.ReplaceAllStringFunc(v, func(m string) string {
 		p := credential.FindStringSubmatch(m)
@@ -77,6 +74,16 @@ func (s *Scrubber) String(v string) string {
 		}
 		return "[redacted]"
 	})
+}
+
+// Values is v with the configured secrets masked and no other rule
+// applied: for text that a full scrub judges later, whose hashes must stay
+// until then.
+func (s *Scrubber) Values(v string) string {
+	for _, secret := range s.secrets {
+		v = strings.ReplaceAll(v, secret, "[redacted]")
+	}
+	return v
 }
 
 // repoPath is a run that is a lowercase path, every long segment of it

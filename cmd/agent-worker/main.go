@@ -110,23 +110,13 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	defer s.stopMessages()
 	if err != nil {
 		log("%v", err)
-		writeResult(stdout, startFailed(err), s.closeTelemetry)
+		s.writeResult(stdout, startFailed(err))
 		return 1
 	}
 	if s.env.report != "" {
 		return runReport(ctx, s, stdout, log)
 	}
-	var emitMu sync.Mutex
-	emit := func(ev harness.Event) {
-		s.tel.observe(ev)
-		line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev})
-		if err != nil {
-			return
-		}
-		emitMu.Lock()
-		defer emitMu.Unlock()
-		fmt.Fprintln(stdout, string(line))
-	}
+	emit := s.emitter(stdout)
 	ckCtx, stopCheckpoints := context.WithCancel(ctx)
 	ckDone := make(chan struct{})
 	go func() {
@@ -163,7 +153,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 		return commit, pushErr
 	}, s.env.branch, emit)
 	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
-	writeResult(stdout, res, s.closeTelemetry)
+	s.writeResult(stdout, res)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1
@@ -318,12 +308,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 // or pushed, and its last message is the result's summary, which factoryd
 // posts on the issue. A stopped session reports what it has.
 func runReport(ctx context.Context, s *session, stdout io.Writer, log func(string, ...any)) int {
-	emit := func(ev harness.Event) {
-		s.tel.observe(ev)
-		if line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev}); err == nil {
-			fmt.Fprintln(stdout, string(line))
-		}
-	}
+	emit := s.emitter(stdout)
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
 	endRun := s.tel.phase("run")
@@ -337,7 +322,7 @@ func runReport(ctx context.Context, s *session, stdout io.Writer, log func(strin
 	} else {
 		endRun(errors.New("the agent did not finish"))
 	}
-	writeResult(stdout, res, s.closeTelemetry)
+	s.writeResult(stdout, res)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1
@@ -345,11 +330,40 @@ func runReport(ctx context.Context, s *session, stdout io.Writer, log func(strin
 	return 0
 }
 
-// writeResult runs before, then writes the result envelope.
-func writeResult(w io.Writer, res harness.Result, before func()) {
-	before()
+// scrub masks the session's own tokens in a line for factoryd: its read
+// token, and its push token once factoryd sent it. Only the values go:
+// factoryd's record scrub judges the rest and keeps the content hashes.
+func (s *session) scrub(line string) string {
+	push := ""
+	if s.gate != nil {
+		push = s.gate.sent()
+	}
+	return redact.New(s.env.repoToken, push).Values(line)
+}
+
+// emitter writes each event on w as one line, after the session's
+// telemetry observes it, the session's own tokens masked.
+func (s *session) emitter(w io.Writer) func(harness.Event) {
+	var mu sync.Mutex
+	return func(ev harness.Event) {
+		s.tel.observe(ev)
+		line, err := json.Marshal(harness.WorkerEnvelope{Type: "event", Event: &ev})
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		fmt.Fprintln(w, s.scrub(string(line)))
+	}
+}
+
+// writeResult ends the session's telemetry, then writes the result
+// envelope, the session's own tokens masked: factoryd deletes the pod once
+// it reads that line.
+func (s *session) writeResult(w io.Writer, res harness.Result) {
+	s.closeTelemetry()
 	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &res})
-	fmt.Fprintln(w, string(line))
+	fmt.Fprintln(w, s.scrub(string(line)))
 }
 
 // sessionOutcome is the session's outcome for its duration metric.
