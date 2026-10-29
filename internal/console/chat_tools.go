@@ -351,22 +351,26 @@ func refuseCarry(title, body string, carry int64) error {
 	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
 }
 
-// refuseDocLinks refuses a new_card whose body links, relatively, to no
-// path or to several of the document repository's tree at HEAD: the
-// agent's pod resolves each link against its docs clone and writes the
-// path into the brief, so the link must name one.
-func (c *Console) refuseDocLinks(ctx context.Context, docRepo, body string) error {
-	links := doclinks.Links(body)
+// refuseDocLinks refuses a card whose text, its title and body, links
+// relatively to no path or to several of the document repository's whole
+// tree at HEAD. The agent's pod resolves the same links against its docs
+// clone, which holds only the text files, so a link to an image passes
+// here and the pod's brief names it not among the text files. Without the
+// document repository, its token or its tree there is no check: the check
+// helps the agent correct a link, a docs outage must not block filing.
+func (c *Console) refuseDocLinks(ctx context.Context, docRepo, text string) error {
+	links := doclinks.Links(text)
 	if docRepo == "" || c.cfg.DocsToken == "" || len(links) == 0 {
 		return nil
 	}
 	repo, err := factoryd.SplitRepo(docRepo)
-	if err != nil {
-		return refuse(http.StatusConflict, "the document repository is no owner/name")
+	var tree []string
+	if err == nil {
+		tree, err = c.docTree(ctx, repo)
 	}
-	tree, err := c.docTree(ctx, repo)
 	if err != nil {
-		return err
+		log.Printf("console: check the card's document links against %s: %v", docRepo, err)
+		return nil
 	}
 	for _, l := range links {
 		switch m := doclinks.Resolve(l, tree); len(m) {
@@ -379,6 +383,19 @@ func (c *Console) refuseDocLinks(ctx context.Context, docRepo, body string) erro
 		}
 	}
 	return nil
+}
+
+// refuseCard is new_card's judgement of the card with in's title and
+// body, at the proposal and at the run: the filing flags, a carry ask
+// without carry_pr and a link to no document.
+func (t *turn) refuseCard(in toolInput, body string) error {
+	if flags := filingFlags(in.Title, body); len(flags) > 0 {
+		return refuse(http.StatusBadRequest, flaggedCard(flags))
+	}
+	if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
+		return err
+	}
+	return t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, factoryd.IssueObjective(in.Title, body))
 }
 
 // cardBody is the issue body new_card files from in, before its
@@ -414,11 +431,8 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if _, err := pinnedImage(t.p, in.Image); err != nil {
 			return "", err
 		}
-		body := cardBody(*in)
-		if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
-			return "", err
-		}
-		if err := t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, body); err != nil {
+		// the run's text but for the attachments line, which the console writes
+		if err := t.refuseCard(*in, cardBody(*in)); err != nil {
 			return "", err
 		}
 	}
@@ -1269,13 +1283,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			body = withAssets(body, ups)
-			if flags := filingFlags(in.Title, body); len(flags) > 0 {
-				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
-			}
-			if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
-				return "", nil, err
-			}
-			if err := t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, body); err != nil {
+			if err := t.refuseCard(in, body); err != nil {
 				return "", nil, err
 			}
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)

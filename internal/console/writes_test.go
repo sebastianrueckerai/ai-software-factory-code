@@ -403,23 +403,30 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + refusal + `"}`, `text {"text":"Refused."}`, `done {}`})
 }
 
-// A brief's relative link resolves against the document repository's
-// tree at HEAD as the agent's pod resolves it: a link to a plan files, a
-// link to no file, or to several, is refused at the run and at the
-// proposal. Without a document repository or the docs token nothing is
-// checked.
+// A card's relative link, in its title or its body, resolves against the
+// document repository's whole tree at HEAD, read page by page at the sha
+// the first page answers: a link to a plan files, a link to no file, or
+// to several, is refused at the run and at the proposal. Without a
+// document repository or the docs token nothing is checked, and a docs
+// outage files the card.
 func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
+	// five entries, three pages of two: README.md, docs, docs/README.md,
+	// docs/plans, then the plan alone on page 3
 	docs := map[string]string{"docs/plans/2026-10-14-lane-collapse.md": "# Lane collapse\n", "README.md": "# Read me\n", "docs/README.md": "# Docs\n"}
 	r, g := newWritesRig(t)
 	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-	withDocs(t, r, docs)
+	f := withDocs(t, r, docs)
 	args := `{"title":"Collapse the lanes","body":"Builds [the plan](../plans/2026-10-14-lane-collapse.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "a link to the plan", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 
+	f.treeRefs = nil
 	none := "the link ../plans/2026-10-15-none.md resolves to no file in the document repository sf/docs: name the path from the repository's root"
 	code, msg := refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Body: "Builds [the plan](../plans/2026-10-15-none.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to no file", []any{code, msg}, []any{http.StatusBadRequest, none})
+	equal(t, "the tree's pages, after the first at its sha", f.treeRefs, []string{"HEAD page 1", "c0ffee page 2", "c0ffee page 3"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes by [the plan](../plans/2026-10-15-none.md)", Body: "Collapse.", Track: policy.TrackDirect, TrackReason: "the plan is written"})
+	equal(t, "a link to no file in the title", []any{code, msg}, []any{http.StatusBadRequest, none})
 	code, msg = refused(t, r, "new_card", toolInput{Title: "Collapse the lanes", Body: "Read [the readme](README.md).", Track: policy.TrackDirect, TrackReason: "the plan is written"})
 	equal(t, "a link to two files", []any{code, msg}, []any{http.StatusBadRequest,
 		"the link README.md matches 2 files in the document repository sf/docs (README.md, docs/README.md): name one path from the repository's root"})
@@ -435,20 +442,29 @@ func TestChatNewCardRefusesALinkToNoDocument(t *testing.T) {
 
 	args = `{"title":"Collapse the lanes","body":"Builds [the plan](../plans/2026-10-15-none.md).","acceptance":["The board shows no lanes"],"track":"direct","track_reason":"the plan is written","size":"small"}`
 	for _, tt := range []struct {
-		name string
-		seat func(r *rig)
+		name  string
+		seat  func(r *rig) *docsFake
+		reads []string
 	}{
-		{"a project without a document repository", func(r *rig) { withDocs(t, r, docs) }},
-		{"a console without the docs token", func(r *rig) {
+		{"a project without a document repository", func(r *rig) *docsFake { return withDocs(t, r, docs) }, nil},
+		{"a console without the docs token", func(r *rig) *docsFake {
 			r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
-			withDocs(t, r, docs)
+			f := withDocs(t, r, docs)
 			r.c.cfg.DocsToken = ""
-		}},
+			return f
+		}, nil},
+		// the proposal's read and the run's, each refused
+		{"a docs outage", func(r *rig) *docsFake {
+			r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
+			f := withDocs(t, r, docs)
+			f.failTree = true
+			return f
+		}, []string{"HEAD page 1", "HEAD page 1"}},
 	} {
 		r, g := newWritesRig(t)
-		tt.seat(r)
+		f := tt.seat(r)
 		_, done, _ := proposeAndDo(t, r, g, "new_card", args)
-		equal(t, tt.name, done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+		equal(t, tt.name, []any{done, f.treeRefs}, []any{ran("new_card", args, "Filed sf/code#41 on track direct."), tt.reads})
 	}
 }
 

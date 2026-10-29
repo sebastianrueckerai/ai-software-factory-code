@@ -441,27 +441,33 @@ func (c *Console) docFileAt(ctx context.Context, repo factoryd.Repo, path, ref s
 
 // docTree is every path of repo's tree at HEAD, files and directories.
 // The listing is paged by total_count, as Forgejo.WorkflowTreeEntries
-// reads it.
+// reads it, and pages after the first ask for the commit the first
+// answered, so a commit between pages cannot drop or repeat a path.
 func (c *Console) docTree(ctx context.Context, repo factoryd.Repo) ([]string, error) {
 	var paths []string
+	ref := "HEAD"
 	for page := 1; ; page++ {
 		var res struct {
-			TotalCount int `json:"total_count"`
+			SHA        string `json:"sha"`
+			TotalCount int    `json:"total_count"`
 			Tree       []struct {
 				Path string `json:"path"`
 			} `json:"tree"`
 		}
-		if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet, fmt.Sprintf("%s/git/trees/HEAD?recursive=true&per_page=1000&page=%d", docAPI(repo), page), nil, http.StatusOK, &res); err != nil {
-			return nil, &forgejoRefusal{"read the document repository's tree", err}
+		if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet, fmt.Sprintf("%s/git/trees/%s?recursive=true&per_page=1000&page=%d", docAPI(repo), url.PathEscape(ref), page), nil, http.StatusOK, &res); err != nil {
+			return nil, err
 		}
 		for _, e := range res.Tree {
 			paths = append(paths, e.Path)
 		}
+		if page == 1 {
+			ref = res.SHA
+		}
 		if len(paths) >= res.TotalCount {
 			return paths, nil
 		}
-		if len(res.Tree) == 0 {
-			return nil, &forgejoRefusal{"read the document repository's tree", fmt.Errorf("pages ended at %d of %d entries", len(paths), res.TotalCount)}
+		if len(res.Tree) == 0 || ref == "" {
+			return nil, fmt.Errorf("the tree %q ended at %d of %d entries", ref, len(paths), res.TotalCount)
 		}
 	}
 }

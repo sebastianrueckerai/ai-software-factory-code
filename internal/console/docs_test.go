@@ -11,6 +11,8 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"path"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +44,10 @@ type docsFake struct {
 	// failReads, when set, is Forgejo refusing the file's head-commit
 	// read: a save whose commit landed whose facts then do not read.
 	failReads bool
+	// treeRefs are the tree reads, "<ref> page <n>" each, in order;
+	// failTree, when set, is Forgejo answering every tree read 500.
+	treeRefs []string
+	failTree bool
 }
 
 // docVersion is the fake's head as of one version. The author is the
@@ -67,8 +73,8 @@ func (f *docsFake) outside(path, text, author, at string) {
 
 // docsOver is the document repository sf/docs on the Forgejo at next: a
 // proxy in front of it that answers the contents API of master's files by
-// path with a blob sha per version, the head commit, and a commit on a
-// write answered 201.
+// path with a blob sha per version, the head commit, the tree of HEAD or
+// of a version, and a commit on a write answered 201.
 func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *httptest.Server) {
 	t.Helper()
 	f := &docsFake{files: files, versions: []docVersion{{files: maps.Clone(files), at: "2026-10-15T14:00:00Z"}}}
@@ -77,7 +83,7 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 		t.Fatal(err)
 	}
 	proxy := httputil.NewSingleHostReverseProxy(up)
-	const base = "/api/v1/repos/sf/docs/contents"
+	const base, trees = "/api/v1/repos/sf/docs/contents", "/api/v1/repos/sf/docs/git/trees/"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
@@ -104,23 +110,52 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": factoryd.ContentHash(text)[:12]})
-		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/git/trees/HEAD":
-			// master's files and their directories in one page; without
-			// recursive the top level only, as Forgejo answers
+		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, trees):
+			// the tree of HEAD, master's, or of a version's sha: its files
+			// and their directories by path, paged as Forgejo pages it with
+			// DEFAULT_GIT_TREES_PER_PAGE at 2; without recursive the top
+			// level only
+			q, ref := req.URL.Query(), strings.TrimPrefix(req.URL.Path, trees)
+			f.treeRefs = append(f.treeRefs, ref+" page "+q.Get("page"))
+			if f.failTree {
+				http.Error(w, `{"message":"Forgejo is down"}`, http.StatusInternalServerError)
+				return
+			}
+			at, sha := f.files, versionSHA(f.version)
+			if ref != "HEAD" {
+				at = nil
+				for i, v := range f.versions {
+					if ref == versionSHA(i) {
+						at, sha = v.files, ref
+					}
+				}
+				if at == nil {
+					http.Error(w, `{"message":"object does not exist"}`, http.StatusNotFound)
+					return
+				}
+			}
 			kinds := map[string]string{}
-			for p := range f.files {
+			for p := range at {
 				kinds[p] = "blob"
 				for d := path.Dir(p); d != "."; d = path.Dir(d) {
 					kinds[d] = "tree"
 				}
 			}
 			tree := []map[string]string{}
-			for p, kind := range kinds {
-				if req.URL.Query().Get("recursive") == "true" || !strings.Contains(p, "/") {
-					tree = append(tree, map[string]string{"path": p, "type": kind})
+			for _, p := range slices.Sorted(maps.Keys(kinds)) {
+				if q.Get("recursive") == "true" || !strings.Contains(p, "/") {
+					tree = append(tree, map[string]string{"path": p, "type": kinds[p]})
 				}
 			}
-			json.NewEncoder(w).Encode(map[string]any{"sha": versionSHA(f.version), "tree": tree, "truncated": false, "page": 1, "total_count": len(tree)})
+			per, _ := strconv.Atoi(q.Get("per_page"))
+			if per <= 0 || per > 2 {
+				per = 2
+			}
+			page, _ := strconv.Atoi(q.Get("page"))
+			page = max(page, 1)
+			from := min((page-1)*per, len(tree))
+			to := min(from+per, len(tree))
+			json.NewEncoder(w).Encode(map[string]any{"sha": sha, "tree": tree[from:to], "truncated": to < len(tree), "page": page, "total_count": len(tree)})
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/commits" && req.URL.Query().Get("path") != "" &&
 			req.URL.Query().Get("sha") == "master":
 			if f.failReads {
