@@ -795,6 +795,22 @@ func TestBriefOpensWithTheHandover(t *testing.T) {
 	}
 }
 
+// The card's document links, resolved by the worker, follow the line on
+// the document repository in factoryd's own words, outside the issue's
+// markers; a brief without them has no such section.
+func TestBriefListsTheDocumentLinks(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o", Docs: true, DocLinks: []string{"../plans/x.md is /workspace/docs/docs/plans/x.md"}}, "T")
+	want := "is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n" +
+		"Documents the issue links:\n- ../plans/x.md is /workspace/docs/docs/plans/x.md\n\n" +
+		"The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>."
+	if !strings.Contains(got, want) {
+		t.Fatalf("brief =\n%s\nwant it to hold\n%s", got, want)
+	}
+	if got := briefText(harness.TaskBrief{Objective: "o", Docs: true}, "T"); strings.Contains(got, "Documents the issue links") {
+		t.Fatalf("brief without links = %q", got)
+	}
+}
+
 // A card's repository map is its own section after the findings; a
 // brief without one has none.
 func TestBriefCarriesTheRepositoryMap(t *testing.T) {
