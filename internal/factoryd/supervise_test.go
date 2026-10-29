@@ -1308,6 +1308,79 @@ func TestAWriteBeforeTheMessageIsStillAWrite(t *testing.T) {
 	}
 }
 
+// A check that newly passes during the check-in is progress like a write:
+// it resets churn and proves a pending return held; a subagent's command
+// stays no evidence. A checkpoint made then still sets the diff's baseline.
+func TestProgressBeforeTheAnswerCounts(t *testing.T) {
+	const check = "go test ./..."
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour, Churn: 3}
+	read := func(m float64, path string) harness.Event { return podAt(m, readEvent(path)) }
+	failing := func() *Supervisor {
+		s, _ := NewSupervisor(cfg, minute(0), minute(0))
+		s.Event(podAt(1, fileEvent("a.go", "h1")), minute(1))
+		s.Event(podAt(1, fileEvent("a.go", "h2")), minute(1))
+		s.Event(podAt(2, cmdEvent(check, 1, "FAIL: TestLinks")), minute(2))
+		if trip := s.Event(read(2, "a"), minute(2)); trip == nil || trip.Kind != TripRepetition {
+			t.Fatalf("trip = %+v, want repetition", trip)
+		}
+		s.Resume(minute(5))
+		return s
+	}
+
+	s := failing()
+	s.Event(podAt(4, cmdEvent(check, 0, "ok")), minute(5.1))
+	if trip := s.Event(podAt(6, fileEvent("a.go", "h3")), minute(6)); trip != nil {
+		t.Fatalf("write after a pass made during the conversation = %+v, want none", trip)
+	}
+
+	sub := failing()
+	pass := podAt(4, cmdEvent(check, 0, "ok"))
+	pass.Detail["subagent"] = true
+	sub.Event(pass, minute(5.1))
+	trip := sub.Event(podAt(6, fileEvent("a.go", "h3")), minute(6))
+	if trip == nil || trip.Kind != TripChurn ||
+		trip.Detail != "3 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes" {
+		t.Fatalf("write after a subagent's pass = %+v, want churn", trip)
+	}
+
+	// h1, h2, a failing check, h1 again: a return; the check passes during
+	// the conversation, so failing twice after the message is no circle
+	ffCfg := cfg
+	ffCfg.RepetitionEvents, ffCfg.Churn = 3, 1000
+	ff, _ := NewSupervisor(ffCfg, minute(0), minute(0))
+	ff.Event(podAt(0.5, fileEvent("a.go", "h1")), minute(0.5))
+	ff.Event(podAt(0.6, fileEvent("a.go", "h2")), minute(0.6))
+	ff.Event(podAt(0.7, cmdEvent(check, 1, "FAIL: TestLinks")), minute(0.7))
+	ff.Event(podAt(0.8, fileEvent("a.go", "h1")), minute(0.8))
+	ff.Event(read(1, "a"), minute(1))
+	ff.Event(read(1, "b"), minute(1))
+	if trip := ff.Event(read(1, "c"), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
+	}
+	ff.Messaged(minute(2))
+	ff.Event(podAt(1.5, cmdEvent(check, 0, "ok")), minute(2.1))
+	ff.Event(podAt(3, cmdEvent(check, 1, "FAIL: TestLinks")), minute(3))
+	if trip := ff.Event(podAt(4, cmdEvent(check, 1, "FAIL: TestLinks")), minute(4)); trip != nil {
+		t.Fatalf("a failure after the held return = %+v, want none", trip)
+	}
+
+	// no checkpoint before the answer: the one made during the conversation
+	// is the baseline, no write, and the next moved diff is a write
+	b, _ := NewSupervisor(cfg, minute(0), minute(0))
+	b.Event(read(1, "a"), minute(1))
+	if trip := b.Event(read(1, "b"), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
+	}
+	b.Resume(minute(2))
+	if trip := b.Event(podAt(1.5, diffEvent(3, 0)), minute(2.1)); trip != nil || !b.noWriteFrom.Equal(minute(0)) {
+		t.Fatalf("stale baseline: trip %+v, no_write anchor %s; want none and minute 0", trip, b.noWriteFrom)
+	}
+	b.Event(read(2.5, "c"), minute(2.5))
+	if trip := b.Event(podAt(3, diffEvent(5, 0)), minute(3)); trip != nil || b.sinceChange != 0 || !b.noWriteFrom.Equal(minute(3)) {
+		t.Fatalf("moved diff after the stale baseline: trip %+v, count %d, no_write anchor %s; want none, 0 and minute 3", trip, b.sinceChange, b.noWriteFrom)
+	}
+}
+
 // A message starts every progress detector afresh: a detector that did
 // not trip keeps no count from before the message (review I1).
 func TestMessageStartsTheDetectorsAfresh(t *testing.T) {

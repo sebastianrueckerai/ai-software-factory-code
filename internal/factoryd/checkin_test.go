@@ -553,6 +553,26 @@ func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	}
 }
 
+// At the session moment a handover with no note is the shape of a refused
+// call: the repair round asks again, and the handover with its note stands.
+func TestCheckinSessionHandoverNeedsItsNote(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripChurn}}
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"handover","reason":"the agent circles"}`},
+		{Text: `{"decision":"handover","reason":"the agent circles","handover":"start from the failing test"}`},
+	}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+	if out.Decision != CheckHandover || out.Handover != "start from the failing test" {
+		t.Fatalf("outcome = %+v, want the second answer's handover", out)
+	}
+	if chat.calls != 2 {
+		t.Fatalf("calls = %d, want one repair round", chat.calls)
+	}
+	if !strings.Contains(chat.gots[1].Input, "Your last answer was unreadable: a handover needs the note to the next session") {
+		t.Errorf("the repair round does not name the missing note:\n%s", chat.gots[1].Input)
+	}
+}
+
 // runnerTools answers the transcript and card questions itself and runs
 // the workspace tools through the worker's /tool endpoint: the local
 // answers, the posted ones with their bearer, a non-200 the model sees,
@@ -795,6 +815,11 @@ func TestParseCheckinAnswerMoments(t *testing.T) {
 	a, err = parseCheckinAnswer(`{"decision":"handover","handover":"the state is on the branch"}`, session)
 	if err != nil || len(a.Findings) != 0 {
 		t.Fatalf("handover = (%+v, %v), want it to parse with no findings", a, err)
+	}
+	for _, text := range []string{`{"decision":"handover","reason":"stuck"}`, `{"decision":"handover","handover":" "}`} {
+		if _, err := parseCheckinAnswer(text, session); err == nil || err.Error() != "a handover needs the note to the next session" {
+			t.Errorf("the session ask's %s = %v, want the missing note named", text, err)
+		}
 	}
 	for _, text := range []string{
 		`{"decision":"dropped_all"}`,

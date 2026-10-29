@@ -844,8 +844,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			rode = true
 			stop(trip)
 		case d.Action == ActionContinue:
-			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
+			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			return false, nil
 		case d.Action == ActionRetryStronger && r.canClimb(s):
 			// the climb in place (roadmap 222, item 5): the session goes on

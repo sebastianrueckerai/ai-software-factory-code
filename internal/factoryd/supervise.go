@@ -197,8 +197,17 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	write := ev.Kind == harness.EventFileChange || s.traces.diffMoved(ev)
 	// the pod runs on during a check-in and its lines wait in the stream:
 	// what it did before the answer, by its own clock, counts for no
-	// detector, but a write is progress whenever it was made
+	// detector, but a write or a passing check is progress whenever it was
+	// made, and a checkpoint still sets the diff's baseline
 	if podBefore(ev, s.answeredAt) && !write {
+		switch {
+		case ev.Kind == harness.EventCheckpoint:
+			s.traces.checkpoint(ev)
+		case ev.Kind == harness.EventCommand && !detailBool(ev, "subagent"):
+			if exit, ok := detailInt(ev, "exit"); ok && exit == 0 {
+				s.traces.passed(detailString(ev, "command"))
+			}
+		}
 		return s.limits(at)
 	}
 	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
@@ -676,17 +685,25 @@ func (d *traceDetectors) detect(ev harness.Event) *Trip {
 	case harness.EventFileChange:
 		return d.fileChange(ev)
 	case harness.EventCheckpoint:
-		if size, ok := diffSize(ev); ok {
-			if size > d.maxDiff {
-				d.maxDiff, d.churn = size, 0
-			}
-			if d.diffMoved(ev) {
-				d.changed()
-			}
-			d.lastDiff = fmt.Sprint(ev.Detail["diff"])
-		}
+		d.checkpoint(ev)
 	}
 	return nil
+}
+
+// checkpoint notes a checkpoint's diff: a grown diff resets churn, a moved
+// one is a file change for the output runs, and the first is the baseline.
+func (d *traceDetectors) checkpoint(ev harness.Event) {
+	size, ok := diffSize(ev)
+	if !ok {
+		return
+	}
+	if size > d.maxDiff {
+		d.maxDiff, d.churn = size, 0
+	}
+	if d.diffMoved(ev) {
+		d.changed()
+	}
+	d.lastDiff = fmt.Sprint(ev.Detail["diff"])
 }
 
 // diffMoved: ev is a checkpoint whose diff differs from the last one's,
@@ -738,13 +755,7 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 	cmd := detailString(ev, "command")
 	exit, hasExit := detailInt(ev, "exit")
 	if hasExit && exit == 0 {
-		if d.failed[cmd] {
-			d.churn = 0 // newly passing
-		}
-		delete(d.failed, cmd)
-		d.disarm(cmd)
-		if !masksExitStatus(cmd) {
-			delete(d.runs, cmd)
+		if d.passed(cmd) {
 			return nil
 		}
 	} else if hasExit {
@@ -795,6 +806,22 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 			Detail: fmt.Sprintf("`%s` gave the same output %d times, with file changes in between (exit %s, signature %s)", CommandLine(cmd), run.n, code, sig)}
 	}
 	return nil
+}
+
+// passed notes cmd's exit 0: a failing check that passes resets churn and
+// proves the returns it was failing at held. It reports whether the pass
+// ends cmd's run, which it does not when cmd masks its exit status.
+func (d *traceDetectors) passed(cmd string) bool {
+	if d.failed[cmd] {
+		d.churn = 0 // newly passing
+	}
+	delete(d.failed, cmd)
+	d.disarm(cmd)
+	if masksExitStatus(cmd) {
+		return false
+	}
+	delete(d.runs, cmd)
+	return true
 }
 
 // toolCall counts the call for same_call, which observe judges with the

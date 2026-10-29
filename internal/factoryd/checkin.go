@@ -496,8 +496,12 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		default:
 			return a, fmt.Errorf("unknown decision %q", a.Decision)
 		}
-		if a.Decision == "message" && a.Guidance == "" {
+		if a.Decision == "message" && strings.TrimSpace(a.Guidance) == "" {
 			return a, fmt.Errorf("a message needs its guidance")
+		}
+		// a note-less handover is the shape of a refused call (checkinLive)
+		if a.Decision == CheckHandover && strings.TrimSpace(a.Handover) == "" {
+			return a, fmt.Errorf("a handover needs the note to the next session")
 		}
 	case CheckInDead:
 		switch a.Decision {
