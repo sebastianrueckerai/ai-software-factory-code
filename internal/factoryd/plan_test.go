@@ -486,6 +486,8 @@ type planForgejo struct {
 	failCall  string            // the call answered failStatus once
 	// failStatus is failCall's answer, 500 when 0
 	failStatus int
+	// onIssue runs as an issue is created, with its title
+	onIssue func(title string)
 }
 
 type planIssue struct {
@@ -519,6 +521,9 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 		}
 		switch {
 		case r.Method == "POST" && rest == "issues":
+			if f.onIssue != nil {
+				f.onIssue(body["title"].(string))
+			}
 			f.next++
 			f.issues[f.next] = &planIssue{title: body["title"].(string), body: body["body"].(string), poster: "factory-agent"}
 			w.WriteHeader(http.StatusCreated)
@@ -2574,5 +2579,32 @@ func TestPlanLoopBeforePlannerRetryFailsAtTheLimit(t *testing.T) {
 	h.env.OnGetVersion("planner-retry", workflow.DefaultVersion, versionPlannerRetry).Return(workflow.DefaultVersion)
 	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 {
 		t.Fatalf("final %q, finals %v, plans %q", final, h.finals, h.plans)
+	}
+}
+
+// A plan card's dependencies are stored before its issue exists: the
+// issue's label event can start the card through intake, and a start
+// that found no dependency would run it ahead of them.
+func TestPlanCardsHoldTheirDependenciesBeforeTheirIssues(t *testing.T) {
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	atIssue := map[string][]string{}
+	fj.onIssue = func(title string) {
+		for id, c := range store.tasks {
+			if c.Parent == "t-plan" && strings.HasPrefix(c.Objective, title+"\n") {
+				atIssue[c.PlanKey] = slices.Clone(store.deps[id])
+			}
+		}
+	}
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("ref = %+v", ref)
+	}
+	for key, c := range cardsByKey(t, store) {
+		got, ok := atIssue[key]
+		if want := store.deps[c.ID]; !ok || !slices.Equal(got, want) {
+			t.Errorf("%s: dependencies at its issue %v, want its own %v", key, got, want)
+		}
+	}
+	if n := len(store.deps); n == 0 {
+		t.Fatal("the plan filed no dependency")
 	}
 }

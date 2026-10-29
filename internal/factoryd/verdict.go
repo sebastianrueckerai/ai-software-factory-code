@@ -139,7 +139,7 @@ var ErrNoCriterion = errors.New("the plan holds no such criterion")
 // review owns.
 var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's to record")
 
-// planOfStore is acceptedPlan without the Runner: the newest plan revision
+// planOfStore is filedPlan without the Runner: the newest plan revision
 // of plan task id, and its number.
 func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, int, error) {
 	rev, ok, err := store.PlanRevision(ctx, parent, 0)

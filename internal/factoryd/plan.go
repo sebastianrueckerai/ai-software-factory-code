@@ -2391,6 +2391,17 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		if err != nil {
 			return nil, err
 		}
+		// the card's dependencies are stored before its issue exists: the
+		// issue's label event can start it, and the start must find them
+		if len(deps) > 0 {
+			ids := make([]string, len(deps))
+			for j, d := range deps {
+				ids[j] = d.TaskID
+			}
+			if err := r.store.AddTaskDeps(ctx, card.ID, ids); err != nil {
+				return nil, err
+			}
+		}
 		if card.IssueNumber == 0 {
 			marker := cardMarker(t.ID, c.Key)
 			if open == nil {
@@ -2429,18 +2440,12 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		if err != nil {
 			return nil, err
 		}
-		var ids []string
 		for _, d := range dependsOn(order, edges, c.Key) {
-			dep := cards[d]
-			ids = append(ids, dep.ID)
-			if !slices.Contains(have, dep.IssueNumber) {
+			if dep := cards[d]; !slices.Contains(have, dep.IssueNumber) {
 				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.IssueNumber); err != nil {
 					return nil, err
 				}
 			}
-		}
-		if err := r.store.AddTaskDeps(ctx, child.ID, ids); err != nil {
-			return nil, err
 		}
 	}
 	out := make([]Task, len(order))
