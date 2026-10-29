@@ -17,11 +17,16 @@ import (
 // #11 and #13: #14 t-cap waiting at its session cap (three sessions of
 // the policy's three), #7 t-done done, #31 t-f failed, and #21 t-a and
 // #22 t-b in the backlog of process spec, which has the dependencies
-// block.
+// block. #21, #22 and #5 t-m are cards of plan t-pl; withPlan adds it.
 func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 	r, _, g := newChatRig(t)
 	r.tasks.mu.Lock()
 	defer r.tasks.mu.Unlock()
+	for i, bt := range r.tasks.tasks {
+		if bt.ID == "t-m" {
+			r.tasks.tasks[i].Source, r.tasks.tasks[i].Parent = factoryd.SourcePlan, "t-pl"
+		}
+	}
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14,
 			Objective: "Trim the logs.", Usage: factoryd.TaskUsage{Attempts: 3}},
@@ -31,12 +36,29 @@ func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 31,
 			Objective: "Add the cache."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
-			Repository: "sf/code", IssueNumber: 21, Objective: "Add the API."}},
+			Repository: "sf/code", IssueNumber: 21, Objective: "Add the API.", Source: factoryd.SourcePlan, Parent: "t-pl"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
-			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI."}},
+			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI.", Source: factoryd.SourcePlan, Parent: "t-pl"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, Process: "spec",
 			Repository: "sf/code", IssueNumber: 40, Objective: "Plan the shortener."}})
 	return r, g
+}
+
+// withPlan adds plan #30 t-pl, whose cards are also #31 t-k1 and #32
+// t-k2, and #33 t-d, a direct card of no plan. They sit apart from the
+// rig so the queue holds no more cards than the cards it already counts.
+func withPlan(r *rig) {
+	r.tasks.mu.Lock()
+	defer r.tasks.mu.Unlock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-pl", Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, Process: "spec",
+			Repository: "sf/code", IssueNumber: 30, Objective: "Plan the links."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-k1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
+			Repository: "sf/code", IssueNumber: 31, Objective: "Add the first link.", Source: factoryd.SourcePlan, Parent: "t-pl"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-k2", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
+			Repository: "sf/code", IssueNumber: 32, Objective: "Add the second link.", Source: factoryd.SourcePlan, Parent: "t-pl"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-d", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
+			Repository: "sf/code", IssueNumber: 33, Objective: "Add the lone card."}})
 }
 
 // proposeAndDo has the agent call tool with args, which proposes, and the
@@ -238,6 +260,7 @@ func TestChatAnswerTextsBoundedAtMaxAnswer(t *testing.T) {
 // undo puts it back.
 func TestChatSetDependency(t *testing.T) {
 	r, g := newWritesRig(t)
+	withPlan(r)
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
 	args := `{"task_id":"t-b","depends_on":"t-a"}`
@@ -270,6 +293,10 @@ func TestChatSetDependency(t *testing.T) {
 			"Card #7 is done, not a card that is not final: the card is final: a new card continues the work."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
+		{toolInput{TaskID: "t-k1", DependsOn: "t-d"}, http.StatusConflict,
+			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only. Wait for #33 to finish and file #31 after it, or ask for #31 in the plan of #33."},
+		{toolInput{TaskID: "t-d", DependsOn: "t-k1"}, http.StatusConflict,
+			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only. Wait for #31 to finish and file #33 after it, or ask for #33 in the plan of #31."},
 	} {
 		code, msg := refused(t, r, "set_dependency", tc.in)
 		equal(t, "set_dependency "+tc.in.TaskID+" on "+tc.in.DependsOn, []any{code, msg}, []any{tc.code, tc.want})
@@ -293,6 +320,25 @@ func TestChatSetDependency(t *testing.T) {
 	equal(t, "the stored edges", r.tasks.deps, map[string][]string{"t-b": {"t-a"}})
 	equal(t, "the issue dependencies", r.issueDeps, []string{"sf/code#22 on #21"})
 	chatRows(t, r.events, before, "sebastian", row(false), row(true), row(false))
+}
+
+// set_dependency between two cards of one plan succeeds, and an edge
+// across groups already in the store can still be removed.
+func TestChatSetDependencyInsideAPlan(t *testing.T) {
+	r, g := newWritesRig(t)
+	withPlan(r)
+	args := `{"task_id":"t-k2","depends_on":"t-k1"}`
+	_, done, _ := proposeAndDo(t, r, g, "set_dependency", args)
+	set := "#32 depends on #31 now."
+	equal(t, "Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + set + `"}`,
+		`applied {"result":"` + set + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
+
+	r.tasks.deps = map[string][]string{"t-k1": {"t-d"}}
+	args = `{"task_id":"t-k1","depends_on":"t-d","remove":true}`
+	_, done, _ = proposeAndDo(t, r, g, "set_dependency", args)
+	gone := "#31 no longer depends on #33."
+	equal(t, "removal", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + gone + `"}`,
+		`applied {"result":"` + gone + `","tool":"set_dependency","undo":"TOKEN"}`, `done {}`})
 }
 
 // new_card takes a track with its one-line reason, and a size: the

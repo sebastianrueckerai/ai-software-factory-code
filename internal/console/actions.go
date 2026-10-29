@@ -1463,6 +1463,11 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		return "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
 	if !remove {
+		if ga, gb := factoryd.GroupOf(t), factoryd.GroupOf(d); ga != gb {
+			return "", refuse(http.StatusConflict, fmt.Sprintf(
+				"#%d is in %s and #%d is in %s. A dependency joins cards of one plan only. Wait for #%d to finish and file #%d after it, or ask for #%d in the plan of #%d.",
+				t.IssueNumber, c.groupLabel(ctx, ga), d.IssueNumber, c.groupLabel(ctx, gb), d.IssueNumber, t.IssueNumber, t.IssueNumber, d.IssueNumber))
+		}
 		name, err := c.processOfCard(ctx, t)
 		if err != nil {
 			return "", err
@@ -1515,6 +1520,15 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		return fmt.Sprintf("#%d no longer depends on #%d.", t.IssueNumber, d.IssueNumber), nil
 	}
 	return fmt.Sprintf("#%d depends on #%d now.", t.IssueNumber, d.IssueNumber), nil
+}
+
+// groupLabel names a group by its plan card's issue, or "no plan" when
+// the group is a card of its own.
+func (c *Console) groupLabel(ctx context.Context, groupID string) string {
+	if p, ok, err := c.cfg.Tasks.Task(ctx, groupID); err == nil && ok && p.Track == policy.TrackPlan && p.IssueNumber != 0 {
+		return fmt.Sprintf("plan #%d", p.IssueNumber)
+	}
+	return "no plan"
 }
 
 // reaches: card from depends on card to, through dependencies not done.
