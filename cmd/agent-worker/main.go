@@ -685,11 +685,10 @@ func docsState(ws, docsDir string) (cloned bool, failed string) {
 }
 
 // resolveDocLinks sets the brief's DocLinks from the clone at docsDir
-// when the brief has one and a writer wrote the card: the lines stand
-// outside the issue's markers, where no untrusted author's text may
-// stand. A clone it cannot walk leaves them nil.
+// when the brief has one (factoryd.InboundBrief drops them for an
+// untrusted author's card). A clone it cannot walk leaves them nil.
 func resolveDocLinks(log func(string, ...any), brief *harness.TaskBrief, docsDir string) {
-	if !brief.Docs || brief.AuthorStanding != harness.StandingWriter {
+	if !brief.Docs {
 		return
 	}
 	var tree []string
@@ -699,7 +698,7 @@ func resolveDocLinks(log func(string, ...any), brief *harness.TaskBrief, docsDir
 			return err
 		case d.IsDir() && d.Name() == ".git":
 			return filepath.SkipDir
-		case p == docsDir:
+		case p == docsDir, d.Type()&fs.ModeSymlink != 0:
 			return nil
 		}
 		rel, err := filepath.Rel(docsDir, p)

@@ -17,6 +17,7 @@ func TestLinks(t *testing.T) {
 		{"title", `[a](x.md "the title") and [b](y.md 'other')`, []string{"x.md", "y.md"}},
 		{"query", "[a](a.md?raw=1) [b](?only) [m](mailto:h@h) [r](roadmap.md)", []string{"a.md", "roadmap.md"}},
 		{"none", "no links, [just brackets] (and parens)", nil},
+		{"long", "[300](" + strings.Repeat("a", 297) + ".md) [301](" + strings.Repeat("b", 298) + ".md)", []string{strings.Repeat("a", 297) + ".md"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			if got := Links(c.text); !slices.Equal(got, c.want) {
@@ -65,11 +66,11 @@ func TestLines(t *testing.T) {
 		want []string
 	}{
 		{"[plan](../plans/x.md)", plans, []string{"../plans/x.md is /workspace/docs/docs/plans/x.md"}},
-		{"[gone](gone.md)", plans, []string{"gone.md is not in the document repository"}},
+		{"[gone](gone.md)", plans, []string{"gone.md is not among the text files at /workspace/docs"}},
 		{"[x](x.md)", []string{"a/x.md", "b/x.md"}, []string{"x.md matches 2 files: a/x.md, b/x.md"}},
 		{"[r](r.md)", []string{"d/r.md", "c/r.md", "b/r.md", "a/r.md"}, []string{"r.md matches 4 files: a/r.md, b/r.md, c/r.md"}},
 		{"[plan](../plans/x.md) then [gone](gone.md)", plans,
-			[]string{"../plans/x.md is /workspace/docs/docs/plans/x.md", "gone.md is not in the document repository"}},
+			[]string{"../plans/x.md is /workspace/docs/docs/plans/x.md", "gone.md is not among the text files at /workspace/docs"}},
 		{"no links", plans, nil},
 	} {
 		if got := Lines(c.text, c.tree, "/workspace/docs"); !slices.Equal(got, c.want) {

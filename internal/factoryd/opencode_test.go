@@ -811,6 +811,20 @@ func TestBriefListsTheDocumentLinks(t *testing.T) {
 	}
 }
 
+// The document links repeat the author's link targets outside the
+// issue's markers, so only a writer's brief carries them.
+func TestBriefListsTheDocumentLinksOfAWritersCardOnly(t *testing.T) {
+	for standing, want := range map[string]bool{
+		harness.StandingWriter: true, harness.StandingOutside: false, harness.StandingTelemetry: false, "": false,
+	} {
+		got := objectiveText(harness.TaskBrief{Objective: "o", Author: "a", AuthorStanding: standing, Docs: true,
+			DocLinks: []string{"../plans/x.md is /workspace/docs/docs/plans/x.md"}})
+		if strings.Contains(got, "Documents the issue links:\n- ../plans/x.md is") != want {
+			t.Errorf("standing %q: brief =\n%s\nwant the document links: %v", standing, got, want)
+		}
+	}
+}
+
 // A card's repository map is its own section after the findings; a
 // brief without one has none.
 func TestBriefCarriesTheRepositoryMap(t *testing.T) {

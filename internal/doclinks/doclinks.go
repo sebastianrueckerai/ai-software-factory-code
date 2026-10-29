@@ -12,7 +12,10 @@ import (
 	"strings"
 )
 
-const maxLinks = 20
+const (
+	maxLinks  = 20
+	maxTarget = 300
+)
 
 var (
 	link   = regexp.MustCompile(`\]\(\s*([^\s)]+)[^)]*\)`)
@@ -20,12 +23,12 @@ var (
 )
 
 // Links are the text's relative link targets in order, each once, without
-// fragment or query, at most 20.
+// fragment or query, at most 20; a target over 300 bytes is skipped.
 func Links(text string) []string {
 	var out []string
 	for _, m := range link.FindAllStringSubmatch(text, -1) {
 		t := m[1]
-		if scheme.MatchString(t) || strings.HasPrefix(t, "/") || strings.HasPrefix(t, "#") {
+		if len(t) > maxTarget || scheme.MatchString(t) || strings.HasPrefix(t, "/") || strings.HasPrefix(t, "#") {
 			continue
 		}
 		if i := strings.IndexAny(t, "#?"); i >= 0 {
@@ -65,7 +68,7 @@ func Lines(text string, tree []string, root string) []string {
 	for _, l := range Links(text) {
 		switch m := Resolve(l, tree); len(m) {
 		case 0:
-			out = append(out, l+" is not in the document repository")
+			out = append(out, l+" is not among the text files at "+root)
 		case 1:
 			out = append(out, l+" is "+path.Join(root, m[0]))
 		default:

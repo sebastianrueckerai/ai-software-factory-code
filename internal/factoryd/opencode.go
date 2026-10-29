@@ -608,11 +608,13 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 // supervisor's) or the gate supervisor's bundle (ruling 152, item 48). The
 // spec (a writer's plan issue), the human's answers (writers answer
 // escalations) and the findings (factoryd's, the reviewer's, CI's lines)
-// pass as written.
+// pass as written. The document links repeat the author's link targets
+// outside the markers, so an untrusted brief has none.
 func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
 	if b.AuthorStanding == harness.StandingWriter {
 		return b
 	}
+	b.DocLinks = nil
 	b.Objective = sanitize.Inbound(b.Objective)
 	b.PosterInfo = slices.Clone(b.PosterInfo)
 	for i, s := range b.PosterInfo {

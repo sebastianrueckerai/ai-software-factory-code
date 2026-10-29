@@ -57,8 +57,7 @@ type TaskBrief struct {
 	Docs       bool   `json:"docs,omitempty"`
 	DocsFailed string `json:"docs_failed,omitempty"`
 	// DocLinks say where each relative link of the objective is in the
-	// document repository's clone (doclinks.Lines); nil without a clone
-	// or for a card no writer wrote.
+	// document repository's clone (doclinks.Lines); nil without a clone.
 	DocLinks []string `json:"doc_links,omitempty"`
 	// Handover is the check-in agent's note on the findings this session
 	// starts from, pushed before the conversation began; "" when no
