@@ -520,6 +520,93 @@ func TestCloneModeClones(t *testing.T) {
 	})
 }
 
+// A replan's planner clones the old cards' branches from the fork with
+// the read token, each under its local name: a branch the fork does not
+// hold is logged and left out, and the clone goes on. An entry that is
+// not two plain branch names is refused before anything is cloned.
+func TestCloneFetchesTheOldBranches(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	root, seed := t.TempDir(), t.TempDir()
+	remote, fork := filepath.Join(root, "repo.git"), filepath.Join(root, "fork.git")
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	head := run("-C", seed, "rev-parse", "HEAD")
+	run("-C", seed, "checkout", "-q", "-b", "factory/t-ui")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "the ui so far")
+	run("-C", seed, "push", "-q", fork, "factory/t-ui")
+	c7 := run("-C", seed, "rev-parse", "HEAD")
+
+	var refused int
+	git := &cgi.Handler{Path: filepath.Join(run("--exec-path"), "git-http-backend"), Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Basic auth for x-access-token:r3ad-tok, base64 derived by hand
+		if r.Header.Get("Authorization") != "Basic eC1hY2Nlc3MtdG9rZW46cjNhZC10b2s=" {
+			refused++
+			w.Header().Set("WWW-Authenticate", `Basic realm="git"`)
+			http.Error(w, "no token", http.StatusUnauthorized)
+			return
+		}
+		git.ServeHTTP(w, r)
+	}))
+	defer srv.Close()
+	clone := func(branches string) (string, []string) {
+		t.Helper()
+		for k, v := range map[string]string{"MODE": "clone", "REPO_URL": srv.URL + "/repo.git", "PUSH_URL": srv.URL + "/fork.git",
+			"REPO_SHA": head, "BRANCH": "factory/t-plan", "REPO_TOKEN": "r3ad-tok", "BRANCHES": branches} {
+			t.Setenv(k, v)
+		}
+		ws := t.TempDir()
+		var logged []string
+		if code := runClone(func(format string, args ...any) { logged = append(logged, fmt.Sprintf(format, args...)) }, ws); code != 0 {
+			t.Fatalf("clone exit %d", code)
+		}
+		return ws, logged
+	}
+
+	ws, logged := clone("factory/t-ui:card/31 factory/gone:card/32")
+	if err := fetched(ws); err != nil {
+		t.Fatalf("the clone failed: %v", err)
+	}
+	repo := filepath.Join(ws, "repo")
+	if got := run("-C", repo, "rev-parse", "card/31"); got != c7 {
+		t.Fatalf("card/31 = %s, want the fork's factory/t-ui at %s", got, c7)
+	}
+	if out, err := exec.Command("git", "-C", repo, "rev-parse", "--verify", "-q", "refs/heads/card/32").CombinedOutput(); err == nil {
+		t.Fatalf("card/32 is in the clone at %s, want none: the fork holds no factory/gone", out)
+	}
+	if len(logged) != 1 || !strings.HasPrefix(logged[0], "branch factory/gone is not on the fork: ") || strings.Contains(logged[0], "r3ad-tok") {
+		t.Fatalf("logged %q, want the missing branch named once, without the token", logged)
+	}
+	if got := run("-C", repo, "rev-parse", "HEAD"); got != head {
+		t.Fatalf("HEAD = %s, want the base %s", got, head)
+	}
+	if refused != 0 {
+		t.Fatalf("%d requests without the read token", refused)
+	}
+
+	for _, bad := range []string{"a:../b", "a", "a:b:c", "factory/t-ui:card/31 a:b;c"} {
+		ws, _ := clone(bad)
+		err := fetched(ws)
+		if err == nil || !strings.Contains(err.Error(), "BRANCHES") {
+			t.Fatalf("BRANCHES=%q: the clone's failure is %v, want one naming BRANCHES", bad, err)
+		}
+		if _, err := os.Stat(filepath.Join(ws, "repo")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("BRANCHES=%q: a clone exists (%v), want none", bad, err)
+		}
+	}
+}
+
 // The clone init container tries once and leaves its failure for the
 // session's start: one on the way to Forgejo, a 5xx or a network error, is
 // transient, which the session activity's retry answers; a repository,

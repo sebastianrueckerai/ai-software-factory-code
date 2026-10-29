@@ -608,6 +608,10 @@ func (s *acceptanceStore) Session(context.Context, string) (factoryd.Session, bo
 	return factoryd.Session{}, false, nil
 }
 
+func (s *acceptanceStore) RecentSessions(context.Context, string, int) ([]factoryd.Session, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) UpdateSession(context.Context, string, []string, []byte) error { return nil }
 
 func (s *acceptanceStore) SetTaskRisk(_ context.Context, id, class string) error {

@@ -457,6 +457,9 @@ type Store interface {
 	PruneDeliveries(ctx context.Context, age time.Duration) error
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
+	// RecentSessions are task taskID's newest n sessions, newest first by
+	// created_at.
+	RecentSessions(ctx context.Context, taskID string, n int) ([]Session, error)
 	UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error
 	// SetTaskRisk records the risk class GatePolicy gave the task's pull
 	// request.
@@ -1706,24 +1709,48 @@ func (s *PGStore) InsertSession(ctx context.Context, sess Session) error {
 	return err
 }
 
-func (s *PGStore) Session(ctx context.Context, id string) (Session, bool, error) {
+const sessionColumns = `id, task_id, parent_session_id, findings, restart_state, created_at`
+
+func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var sess Session
 	var findings, restart []byte
-	err := s.db.QueryRowContext(ctx,
-		`SELECT id, task_id, parent_session_id, findings, restart_state, created_at
-		 FROM sessions WHERE id = $1`, id,
-	).Scan(&sess.ID, &sess.TaskID, &sess.ParentSessionID, &findings, &restart, &sess.CreatedAt)
+	if err := row.Scan(&sess.ID, &sess.TaskID, &sess.ParentSessionID, &findings, &restart, &sess.CreatedAt); err != nil {
+		return Session{}, err
+	}
+	var err error
+	if sess.Findings, err = fromJSON(findings); err != nil {
+		return Session{}, fmt.Errorf("findings: %w", err)
+	}
+	sess.RestartState = restart
+	return sess, nil
+}
+
+func (s *PGStore) Session(ctx context.Context, id string) (Session, bool, error) {
+	sess, err := scanSession(s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, false, nil
 	}
 	if err != nil {
 		return Session{}, false, err
 	}
-	if sess.Findings, err = fromJSON(findings); err != nil {
-		return Session{}, false, fmt.Errorf("findings: %w", err)
-	}
-	sess.RestartState = restart
 	return sess, true, nil
+}
+
+func (s *PGStore) RecentSessions(ctx context.Context, taskID string, n int) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, taskID, n)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Session
+	for rows.Next() {
+		sess, err := scanSession(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, sess)
+	}
+	return out, rows.Err()
 }
 
 func (s *PGStore) UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error {

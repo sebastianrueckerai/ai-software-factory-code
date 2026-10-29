@@ -865,6 +865,17 @@ func (s *fakeStore) Session(ctx context.Context, id string) (Session, bool, erro
 	return sess, ok, nil
 }
 
+func (s *fakeStore) RecentSessions(ctx context.Context, taskID string, n int) ([]Session, error) {
+	var out []Session
+	for _, sess := range s.sessions {
+		if sess.TaskID == taskID {
+			out = append(out, sess)
+		}
+	}
+	slices.SortFunc(out, func(a, b Session) int { return b.CreatedAt.Compare(a.CreatedAt) })
+	return out[:min(n, len(out))], nil
+}
+
 func (s *fakeStore) UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error {
 	sess, ok := s.sessions[id]
 	if !ok {
@@ -3773,5 +3784,54 @@ func TestPGStoreScreeningLetRun(t *testing.T) {
 		if got, err := s.ScreeningLetRun(ctx, id); err != nil || got != want {
 			t.Fatalf("ScreeningLetRun(%s) = %v, %v; want %v", id, got, err, want)
 		}
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A task's
+// recent sessions are its newest rows by created_at, newest first, n at
+// most; another task's rows are not its own, and a task with none has
+// none.
+func TestRecentSessions(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_recent_sessions"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, id := range []string{"t1", "t2", "t3"} {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", Repository: "sf/r", Kind: "agent", Track: "direct", BudgetEUR: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+	for _, sess := range []Session{
+		{ID: "s-b", TaskID: "t1", CreatedAt: at.Add(time.Minute)},
+		{ID: "s-c", TaskID: "t1", CreatedAt: at.Add(2 * time.Minute)},
+		{ID: "s-a", TaskID: "t1", ParentSessionID: "s-0", CreatedAt: at},
+		{ID: "s-x", TaskID: "t2", CreatedAt: at.Add(time.Hour)},
+	} {
+		if err := s.InsertSession(ctx, sess); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.RecentSessions(ctx, "t1", 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, sess := range got {
+		ids = append(ids, sess.ID)
+		if sess.TaskID != "t1" {
+			t.Fatalf("session %s of task %q, want t1", sess.ID, sess.TaskID)
+		}
+	}
+	if !slices.Equal(ids, []string{"s-c", "s-b"}) || !got[0].CreatedAt.Equal(at.Add(2*time.Minute)) {
+		t.Fatalf("RecentSessions(t1, 2) = %+v, want s-c then s-b", got)
+	}
+	if got, err := s.RecentSessions(ctx, "t1", 5); err != nil || len(got) != 3 || got[2].ID != "s-a" || got[2].ParentSessionID != "s-0" {
+		t.Fatalf("RecentSessions(t1, 5) = %+v, %v; want all three, s-a last with its parent", got, err)
+	}
+	if got, err := s.RecentSessions(ctx, "t3", 2); err != nil || len(got) != 0 {
+		t.Fatalf("RecentSessions of a task without sessions = %+v, %v; want none", got, err)
 	}
 }

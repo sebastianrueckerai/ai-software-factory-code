@@ -24,6 +24,7 @@ import (
 
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -2082,18 +2083,13 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
-	tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	extra, findings, err := r.planRecord(ctx, t, findings)
 	if err != nil {
-		return PlanResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
-	}
-	// last: the session's fit leaves out the oldest findings first
-	if step := lastStep(tl, stepToPlan); step != nil {
-		work, _ := step["work_so_far"].(string)
-		findings = append(slices.Clone(findings), workSoFarFinding+work)
+		return PlanResult{}, err
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository)), findings, answers)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository)), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -2130,6 +2126,41 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		res.NotStarted = why
 	}
 	return res, nil
+}
+
+// planRecord is what plan t's planner session gets of the work before
+// it. A pending replan's findings go after findings, since the session's
+// fit drops the oldest first, and its old cards' branches go to the
+// clone. The agent's words, the cut's opener and the work so far of a
+// card that ran direct, stand in the brief's fence beside the old cards'
+// files, and in no finding.
+func (r *Runner) planRecord(ctx context.Context, t Task, findings []string) (reportExtra, []string, error) {
+	rec, replan, err := r.replanRecord(ctx, t)
+	if err != nil {
+		return reportExtra{}, nil, err
+	}
+	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
+	if err != nil {
+		return reportExtra{}, nil, fmt.Errorf("the timeline of %s: %w", t.ID, err)
+	}
+	var extra reportExtra
+	var fenced []string
+	prior := harness.PriorState{Session: "replan", Heading: "The work so far on this card, as factoryd copied it when this session started."}
+	if replan {
+		findings = append(slices.Clone(findings), rec.findings...)
+		extra.branches = rec.branches
+		prior.Heading = "The records of the plan's old cards, as factoryd copied them when this session started."
+		fenced = append([]string{"One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session."}, rec.work...)
+	}
+	if step := lastStep(tl, stepToPlan); step != nil {
+		work, _ := step["work_so_far"].(string)
+		fenced = append(fenced, workSoFarHead+sanitize.Inbound(work))
+	}
+	if len(fenced) > 0 {
+		prior.Body = strings.Join(fenced, "\n\n")
+		extra.record = &carryState{Prior: prior, Files: rec.files}
+	}
+	return extra, findings, nil
 }
 
 // readsFinding tells the next planner session what the last one read.

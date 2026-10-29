@@ -656,6 +656,9 @@ func (s *accBatchStore) InsertSession(ctx context.Context, sess factoryd.Session
 func (s *accBatchStore) Session(ctx context.Context, id string) (factoryd.Session, bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) RecentSessions(ctx context.Context, taskID string, n int) ([]factoryd.Session, error) {
+	panic("unused")
+}
 func (s *accBatchStore) UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error {
 	panic("unused")
 }

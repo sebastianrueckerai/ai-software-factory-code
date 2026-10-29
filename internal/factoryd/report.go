@@ -80,7 +80,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 			}
 			guide = sizingGuide(sizeLines(doc.Risk.LargeLines))
 		}
-		end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil)
+		end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil, reportExtra{})
 		if err != nil {
 			return ReportResult{}, err
 		}
@@ -120,13 +120,22 @@ type reportEnd struct {
 	reads                 []string
 }
 
-// reportSession runs one worker in report mode, with guide, findings and
-// a human's answers, in the task's own sandbox: the read token on the
-// repository and the project's document repository, no push token, no
-// fork.
-func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string) (end reportEnd, err error) {
+// reportExtra is what a replan's planner session gets beyond a report
+// session's: the fork's branches its clone fetches and the record its
+// brief carries.
+type reportExtra struct {
+	branches []string
+	record   *carryState
+}
+
+// reportSession runs one worker in report mode, with guide, findings, a
+// human's answers and extra, in the task's own sandbox: the read token on
+// the repository and the project's document repository, and on the bot's
+// fork when extra has branches to fetch; no push token.
+func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, standing string, planner bool, pin int64, guide string, findings, answers []string, extra reportExtra) (end reportEnd, err error) {
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, planner: planner}
+	s := sessionSpec{id: newID("s-"), model: model, repo: repo, startRef: t.SHA, report: guide, standing: standing, findings: findings, answers: answers, planner: planner,
+		branches: extra.branches, record: extra.record}
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err
 	}
@@ -151,7 +160,11 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 			log.Printf("task %s: revoke report session %s credentials: %v", t.ID, s.id, err)
 		}
 	}()
-	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", s.readable())
+	readable := s.readable()
+	if len(s.branches) > 0 {
+		readable = s.readable(r.forgejo.Fork(repo))
+	}
+	base, err := r.forgejo.MintToken(ctx, BaseTokenName(t.ID), "read:repository", readable)
 	if err != nil {
 		return reportEnd{}, err
 	}

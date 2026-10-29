@@ -38,11 +38,15 @@ type carryFrom struct {
 
 type carryTask struct{ desc, result string }
 
-// priorState is the working state s continues from, copied from its
-// parent's record, which record returns. nil without a parent, for a
+// priorState is the record s is handed: its own (s.record, a planner's)
+// when it has one, else the working state it continues from, copied from
+// its parent's record, which record returns. nil without a parent, for a
 // report or plan session, after a parent that pushed (it finished its
 // work), and when the record cannot be read or holds no state.
 func priorState(s sessionSpec, record func() ([]byte, error)) *carryState {
+	if s.record != nil {
+		return s.record
+	}
 	if s.parent == "" || s.report != "" || s.planner || s.parentOutcome == OutcomePushed {
 		return nil
 	}
@@ -132,7 +136,7 @@ func workingState(record []byte, from carryFrom) *carryState {
 	}
 
 	var sections []string
-	if stop := textutil.Truncate(strings.Join(strings.Fields(sanitize.Inbound(from.Stop)), " "), carryStopBytes); stop != "" {
+	if stop := stopLine(from.Stop); stop != "" {
 		sections = append(sections, "Stop reason: "+stop)
 	}
 	if len(todos) > 0 {
@@ -180,6 +184,12 @@ func workingState(record []byte, from carryFrom) *carryState {
 		Prior: harness.PriorState{Session: from.Session, Heading: heading, Body: strings.Join(sections, "\n\n")},
 		Files: reportFiles,
 	}
+}
+
+// stopLine is a stop reason, often the agent's own words, sanitised on
+// one line and cut at carryStopBytes.
+func stopLine(s string) string {
+	return textutil.Truncate(strings.Join(strings.Fields(sanitize.Inbound(s)), " "), carryStopBytes)
 }
 
 // reportText strips the task tool's wrapper from a subagent's result: a

@@ -532,7 +532,7 @@ func (r *Runner) auditHoldout(ctx context.Context, t Task, repo Repo, pin int64,
 	}
 	r.startAudit(t.ID, ho.Idx)
 	defer r.endAudit(t.ID)
-	end, err := r.reportSession(ctx, t, repo, t.ModelAlias, t.Standing(), false, pin, auditGuide(p, ho, evidence), nil, nil)
+	end, err := r.reportSession(ctx, t, repo, t.ModelAlias, t.Standing(), false, pin, auditGuide(p, ho, evidence), nil, nil, reportExtra{})
 	if err != nil {
 		return holdoutAudit{}, err
 	}

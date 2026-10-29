@@ -2165,35 +2165,50 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 }
 
 // A planner session of a card that ran direct first gets the to_plan
-// step's work so far as its last finding, which the session's fit drops
-// last: past the carried cap the oldest findings go and the block stays.
-// A card plan-track from its filing gets none.
-func TestRunPlanCarriesTheWorkSoFar(t *testing.T) {
-	block := "work so far on this card, which ran as a direct card before it came to you:\nBranch head: c7\nsplit by the check-in\nReason for the switch: too big"
+// step's work so far, sanitised, in its brief's fence: the agent's words
+// stand as a record, not as a finding, and take no finding's place. A
+// direct card's cut adds the cut's record before it. A card plan-track
+// from its filing gets none.
+func TestRunPlanFencesTheWorkSoFar(t *testing.T) {
+	const work = "work so far on this card, which ran as a direct card before it came to you:\nBranch head: c7\nsplit by the check-in\nReason for the switch: too big"
 	var sixty []string
 	for i := 1; i <= 60; i++ {
 		sixty = append(sixty, fmt.Sprintf("finding %d", i))
 	}
+	cut := map[string]any{"origin": ReplanCut, "card": "t-plan", "work": "the rest<!-- hidden -->"}
 	for name, tc := range map[string]struct {
 		switched bool
+		replan   map[string]any
 		findings []string
 		want     []string
+		prior    *harness.PriorState
 	}{
-		"switched":                   {true, []string{"an earlier finding"}, []string{"an earlier finding", block}},
-		"switched, past the cap":     {true, sixty, append(slices.Clone(sixty[1:]), block)},
-		"plan-track from its filing": {false, []string{"an earlier finding"}, []string{"an earlier finding"}},
+		"switched": {true, nil, []string{"an earlier finding"}, []string{"an earlier finding"},
+			&harness.PriorState{Session: "replan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
+		"switched, sixty findings": {true, nil, sixty, sixty,
+			&harness.PriorState{Session: "replan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
+		"a direct card's cut": {true, cut, []string{"an earlier finding"}, []string{"an earlier finding", "#1 (this card, no key): its work on branch card/1; its record is card-1.md"},
+			&harness.PriorState{Session: "replan", Heading: "The records of the plan's old cards, as factoryd copied them when this session started.",
+				Body: "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n\n" +
+					"This is the cut of #1 at session 2, 1.50 EUR spent: the rest\n\n" + work}},
+		"plan-track from its filing": {false, nil, []string{"an earlier finding"}, []string{"an earlier finding"}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
-			plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
-				SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
-				Objective: "Link shortener\n\nBuild a link shortener."}
 			kube := newFakeKube()
-			runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+			runner, hub, _ := newTestRunner(t, recordPlanTask(), kube, &fakeObjectStore{})
+			hub.branches = map[string]string{"factory/t-plan": "c7"}
 			pinned := fixtureVersion(t)
 			runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+			worker.start(t, runner)
 			if tc.switched {
 				if err := runner.Timeline().Append(context.Background(), "t-plan", "to_plan", map[string]any{"reason": "too big",
-					"work_so_far": "Branch head: c7\nsplit by the check-in\nReason for the switch: too big"}); err != nil {
+					"work_so_far": "Branch head: c7\nsplit by the check-in<!-- hidden -->\nReason for the switch: too big", "session": 2, "spent": 1.5}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.replan != nil {
+				if err := runner.Timeline().Append(context.Background(), "t-plan", stepReplan, tc.replan); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -2211,7 +2226,51 @@ func TestRunPlanCarriesTheWorkSoFar(t *testing.T) {
 			if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || !slices.Equal(got, tc.want) {
 				t.Fatalf("FINDINGS %q (%v), want %q", got, err, tc.want)
 			}
+			b := onlyBrief(t, worker)
+			if (b.Prior == nil) != (tc.prior == nil) || b.Prior != nil && (b.Prior.Session != tc.prior.Session || b.Prior.Heading != tc.prior.Heading || b.Prior.Body != tc.prior.Body) {
+				t.Fatalf("prior %+v, want %+v", b.Prior, tc.prior)
+			}
 		})
+	}
+}
+
+// A replan's planner session gets the record: the findings it came with,
+// its last plan, then the opener and one line per old card, the old
+// cards' branches for its clone, and their files under the record's
+// heading with its brief.
+func TestRunPlanCarriesTheRecord(t *testing.T) {
+	runner, _, kube, _, raw := oldCardsRig(t, personReplan)
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(true, "no plan"))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	want := slices.Concat([]string{"an earlier finding",
+		"your last plan, revision 1: answer the whole plan again, changed as the findings ask:\n```json\n" + raw + "\n```",
+		"This is a replan of plan #1, asked by ana: the ui is too wide"}, oldCardLines)
+	var got []string
+	if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("FINDINGS\n%q (%v)\nwant\n%q", got, err, want)
+	}
+	if clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone")); clone["BRANCHES"] != "factory/t-ui:card/31" {
+		t.Fatalf("clone env %v, want ui's branch to fetch", clone)
+	}
+	b := onlyBrief(t, worker)
+	var names []string
+	for _, f := range b.Files {
+		names = append(names, f.Name)
+	}
+	if b.Prior == nil || b.Prior.Session != "replan" || b.Prior.Heading != "The records of the plan's old cards, as factoryd copied them when this session started." ||
+		b.Prior.Body != "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session." ||
+		!slices.Equal(names, []string{"card-30.md", "card-33.md", "card-32.md", "card-31.md"}) {
+		t.Fatalf("brief prior %+v, files %q", b.Prior, names)
 	}
 }
 

@@ -565,6 +565,9 @@ type forgejoHub struct {
 	// a number with its status instead
 	pulls      map[int64]string
 	pullStatus map[int64]int
+	// branches are the heads of the fork's branches by name, which answer
+	// before branchHead
+	branches map[string]string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -631,6 +634,11 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 				return
 			}
 			// task branches live on the fork only
+			_, name, _ := strings.Cut(r.URL.Path, "/branches/")
+			if head, ok := h.branches[name]; ok && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") {
+				fmt.Fprintf(w, `{"commit":{"id":%q}}`, head)
+				return
+			}
 			if h.branchHead == "" || !strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") {
 				w.WriteHeader(http.StatusNotFound)
 				return
@@ -4313,6 +4321,72 @@ func TestRunnerToolsLiveRefuseRun(t *testing.T) {
 	worker.mu.Unlock()
 	if out, _, err := tools.Tool(t.Context(), "read_file", map[string]any{"path": "x.go"}); out != "read_file x.go" || err != nil {
 		t.Fatalf("read_file = (%q, %v), want the post answered", out, err)
+	}
+}
+
+// A replan's planner session reads the old cards' branches: its read
+// token covers the bot's fork beside the repository and the document
+// repository, its clone container alone gets the fork's URL and the
+// branches to fetch, and its brief carries the record's files. A planner
+// session with no branch to fetch reads the repository and the document
+// repository only.
+func TestPlannerSessionClonesTheOldBranches(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		step                  map[string]any
+		reads, branches, push string
+		files                 []string
+	}{
+		{"a replan", personReplan, "mint task-t-plan-base read:repository linkshort/linkshort,factory-agent/linkshort,sf/ai-software-factory",
+			"factory/t-ui:card/31", "http://forgejo-http.forgejo.svc.cluster.local:3000/factory-agent/linkshort.git",
+			[]string{"card-30.md", "card-33.md", "card-32.md", "card-31.md"}},
+		{"no replan", nil, "mint task-t-plan-base read:repository linkshort/linkshort,sf/ai-software-factory", "", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner, _, kube, hub, _ := oldCardsRig(t, tc.step)
+			v := fixtureVersion(t)
+			project := v.Projects["linkshort"]
+			project.Chat = &policy.ChatConfig{DocRepo: "sf/ai-software-factory"}
+			v.Projects["linkshort"] = project
+			runner.cfg.Policy = func() policy.Version { return v }
+			runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return v, id == 7, nil }
+			worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+			worker.start(t, runner)
+			done := make(chan error)
+			go func() {
+				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+				done <- err
+			}()
+			awaitPod(t, kube, done)
+			kube.scriptPods(0, resultLine(true, "no plan"))
+			if err := <-done; err != nil {
+				t.Fatalf("RunPlan: %v", err)
+			}
+			var mints []string
+			for _, c := range hub.calls {
+				if strings.HasPrefix(c, "mint ") {
+					mints = append(mints, c)
+				}
+			}
+			if !slices.Equal(mints, []string{tc.reads}) {
+				t.Fatalf("mints %q, want %q", mints, tc.reads)
+			}
+			clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
+			if clone["PUSH_URL"] != tc.push || clone["BRANCHES"] != tc.branches {
+				t.Fatalf("clone env PUSH_URL %q, BRANCHES %q; want %q and %q", clone["PUSH_URL"], clone["BRANCHES"], tc.push, tc.branches)
+			}
+			if env := podEnv(kube.podAt(0)); env["PUSH_URL"] != "" || env["BRANCHES"] != "" {
+				t.Fatalf("the agent's container env has PUSH_URL %q, BRANCHES %q; want neither", env["PUSH_URL"], env["BRANCHES"])
+			}
+			b := onlyBrief(t, worker)
+			var names []string
+			for _, f := range b.Files {
+				names = append(names, f.Name)
+			}
+			if tc.files == nil && b.Prior != nil || tc.files != nil && (b.Prior == nil || b.Prior.Session != "replan") || !slices.Equal(names, tc.files) {
+				t.Fatalf("brief prior %+v, files %q; want files %q", b.Prior, names, tc.files)
+			}
+		})
 	}
 }
 

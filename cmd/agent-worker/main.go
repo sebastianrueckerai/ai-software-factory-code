@@ -513,6 +513,9 @@ type workerEnv struct {
 	// taskPR is the task's own pull request (TASK_PR): a closed one's head
 	// stays on the task's repository after its branch left the fork
 	taskPR string
+	// branches (BRANCHES) are the fork's branches a replan's planner
+	// clones, each <fork branch>:<local branch>
+	branches []string
 	// docsDir (DOCS_DIR) is where the clone put the project's document
 	// repository; "" when the project has none
 	docsDir string
@@ -642,14 +645,49 @@ func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 // for the brief and does not fail the session.
 func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
+	var branches []string
 	if err == nil {
-		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR"), docsURL: os.Getenv("DOCS_URL")}
-		err = cloneBase(e, filepath.Join(ws, "repo"))
+		branches, err = branchPairs(os.Getenv("BRANCHES"))
+	}
+	if err == nil {
+		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR"), docsURL: os.Getenv("DOCS_URL"), branches: branches}
+		repoDir := filepath.Join(ws, "repo")
+		err = cloneBase(e, repoDir)
+		if err == nil {
+			fetchBranches(log, e, repoDir)
+		}
 		if err == nil && e.docsURL != "" {
 			recordDocs(log, ws, cloneDocs(e, filepath.Join(ws, "docs")))
 		}
 	}
 	return recordFetch(log, ws, err)
+}
+
+// branchPair is one BRANCHES entry: two plain branch names.
+var branchPair = regexp.MustCompile(`^[A-Za-z0-9._/-]+:[A-Za-z0-9._/-]+$`)
+
+// branchPairs reads BRANCHES, space-separated <fork branch>:<local branch>
+// pairs.
+func branchPairs(raw string) ([]string, error) {
+	pairs := strings.Fields(raw)
+	for _, p := range pairs {
+		if !branchPair.MatchString(p) || strings.Contains(p, "..") {
+			return nil, fmt.Errorf("BRANCHES: %q is not <fork branch>:<local branch> of two plain branch names", p)
+		}
+	}
+	return pairs, nil
+}
+
+// fetchBranches fetches each of e's branch pairs from the fork into the
+// clone at repoDir with the read token. A branch the fork does not hold
+// is logged and left out.
+func fetchBranches(log func(string, ...any), e workerEnv, repoDir string) {
+	for _, p := range e.branches {
+		src, dst, _ := strings.Cut(p, ":")
+		if err := e.gitAuth(e.repoToken, repoDir, "fetch", "-q", e.pushURL, "+refs/heads/"+src+":refs/heads/"+dst); err != nil {
+			log("branch %s is not on the fork: %v", src, err)
+		}
+	}
 }
 
 // docPatterns are the files the document clone keeps: text, for reading.

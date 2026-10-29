@@ -521,6 +521,13 @@ type sessionSpec struct {
 	// handover is the note the workflow hands the session as its brief's
 	// first section (a mid-session handover); "" when none
 	handover string
+	// branches are the fork's branches a replan's planner clones, each
+	// <fork branch>:<local branch>
+	branches []string
+	// record is what a planner session is handed in its brief's fence in
+	// place of a parent's working state: the old cards' records, the work
+	// so far; nil for none
+	record *carryState
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -2029,6 +2036,10 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	if s.report != "" {
 		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.report, "the report's guide")})
+		if len(s.branches) > 0 {
+			cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))},
+				map[string]any{"name": "BRANCHES", "value": strings.Join(s.branches, " ")})
+		}
 	} else {
 		fork := r.repoURL(r.forgejo.Fork(s.repo))
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": fork})

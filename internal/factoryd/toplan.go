@@ -32,12 +32,12 @@ type PlanSwitchResult struct {
 }
 
 // stepToPlan is the timeline step of a card's switch to the plan track;
-// its work_so_far is the planner's input block (RunPlan).
+// its work_so_far is the planner's input block (planRecord).
 const stepToPlan = "to_plan"
 
-// workSoFarFinding opens the finding that carries a switched card's
-// work_so_far to its planner.
-const workSoFarFinding = "work so far on this card, which ran as a direct card before it came to you:\n"
+// workSoFarHead opens the block of the planner's record that carries a
+// switched card's work_so_far (planRecord).
+const workSoFarHead = "work so far on this card, which ran as a direct card before it came to you:\n"
 
 // switchableStatuses are the statuses a direct card may turn plan-track in.
 var switchableStatuses = []string{"queued", "waiting-deps", "running"}
