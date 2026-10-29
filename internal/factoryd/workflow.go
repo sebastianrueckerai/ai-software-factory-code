@@ -301,11 +301,13 @@ type SessionInput struct {
 	PosterInfo      []string
 	StartRef        string
 	ParentSessionID string
-	// ParentStop and ParentOutcome are how the parent session ended (its
-	// SessionResult's Summary and Outcome); the working state copied from
-	// its record names the stop. Both "" for a first session.
+	// ParentStop, ParentOutcome and ParentTrip are how the parent session
+	// ended: its SessionResult's Summary cut at carryStopBytes, its Outcome
+	// and its Trip; the working state copied from its record names them.
+	// All "" for a first session.
 	ParentStop    string         `json:",omitempty"`
 	ParentOutcome SessionOutcome `json:",omitempty"`
+	ParentTrip    string         `json:",omitempty"`
 	// PolicyVersion is WorkflowConfig.PolicyVersion: the session reads
 	// its limits from it; 0 (a workflow from before the pin) reads the
 	// version in force.
@@ -1318,10 +1320,10 @@ func (t *taskRun) lifecycle() (string, error) {
 	addFindings := func(fs []string, from string) {
 		findings, sources = append(findings, fs...), append(sources, slices.Repeat([]string{from}, len(fs))...)
 	}
-	// parent is the last session that left a record; parentStop and
-	// parentOutcome say how it ended, for its working state's heading
+	// parent is the last session that left a record; parentStop,
+	// parentOutcome and parentTrip say how it ended, for its working state
 	startRef, parent := "", ""
-	var parentStop string
+	var parentStop, parentTrip string
 	var parentOutcome SessionOutcome
 	var u TaskUsage
 	reason := "no session produced a result"
@@ -1744,7 +1746,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
-			ParentStop: parentStop, ParentOutcome: parentOutcome,
+			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
@@ -1847,7 +1849,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		if !res.StartFailed && res.Outcome != OutcomeCheckinHuman && res.Outcome != OutcomeCheckinDropped {
-			parent, parentStop, parentOutcome = res.SessionID, res.Summary, res.Outcome
+			parent, parentStop, parentOutcome, parentTrip = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip
 		}
 		if res.Model != "" {
 			model = res.Model

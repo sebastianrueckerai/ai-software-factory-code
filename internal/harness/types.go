@@ -74,8 +74,8 @@ type TaskBrief struct {
 // PriorState is the previous session's working state as factoryd copied it.
 type PriorState struct {
 	Session string   `json:"session"`
-	Heading string   `json:"heading"`           // factoryd's words: the date, the reason, the commit
-	Body    string   `json:"body"`              // agent-written content: todo list, report excerpts, files
+	Heading string   `json:"heading"`           // factoryd's words: the time, the outcome and the trip, the commit
+	Body    string   `json:"body"`              // copied content: the stop reason, todo list, report excerpts, files
 	Dir     string   `json:"dir,omitempty"`     // set by the worker: where the full reports sit
 	Reports []string `json:"reports,omitempty"` // their file names, set by the worker
 }

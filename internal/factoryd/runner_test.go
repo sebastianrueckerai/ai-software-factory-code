@@ -4149,7 +4149,7 @@ func onlyBrief(t *testing.T, w *fakeWorkerEndpoint) harness.BriefPush {
 func TestRunSessionDeliversThePriorStateWithTheBrief(t *testing.T) {
 	runner, worker := prevRig(t, "")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
-		ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeWallClock, StartRef: "0123456789abcdef"}, nil,
+		ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeWallClock, ParentTrip: "wall_clock", StartRef: "0123456789abcdef"}, nil,
 		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.Outcome != OutcomePushed {
 		t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
@@ -4158,10 +4158,10 @@ func TestRunSessionDeliversThePriorStateWithTheBrief(t *testing.T) {
 	if b.Prior == nil {
 		t.Fatal("the brief has no prior state")
 	}
-	if want := "From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
+	if want := "From session s-prev, stopped at 23:03 UTC with outcome wall_clock after the wall_clock trip, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
 		t.Errorf("heading = %q, want %q", b.Prior.Heading, want)
 	}
-	if want := "Todo list at the stop:\n- [in_progress] fix the gate\n\nFiles the session changed:\n- g.go"; b.Prior.Body != want {
+	if want := "Stop reason: supervision trip: wall_clock\n\nTodo list at the stop:\n- [in_progress] fix the gate\n\nFiles the session changed:\n- g.go"; b.Prior.Body != want {
 		t.Errorf("body = %q, want %q", b.Prior.Body, want)
 	}
 }
@@ -4172,27 +4172,30 @@ func TestRunSessionDeliversThePriorStateWithTheBrief(t *testing.T) {
 // event left no record: the input's parent's state comes instead.
 func TestRunSessionDeliversTheDeadSessionsState(t *testing.T) {
 	cases := map[string]struct {
-		in   SessionInput
-		dead sessionProgress
-		want string
+		in         SessionInput
+		dead       sessionProgress
+		want, stop string
 	}{
 		"ran 12 events": {
 			SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-0",
 				ParentStop: "pushed branch factory/t2 at c0", ParentOutcome: OutcomePushed, StartRef: "0123456789abcdef"},
 			sessionProgress{SessionID: "s-prev", Running: true, Events: 12},
-			"From session s-prev, stopped at 23:03 UTC because factoryd's run of it ended without an outcome after at least 12 events, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+			"From session s-prev, stopped at 23:03 UTC, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+			"Stop reason: factoryd's run of it ended without an outcome after at least 12 events\n\n",
 		},
 		"ran no event": {
 			SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
-				ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef"},
+				ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, ParentTrip: "wall_clock", StartRef: "0123456789abcdef"},
 			sessionProgress{SessionID: "s-dead", Running: true},
-			"From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+			"From session s-prev, stopped at 23:03 UTC with outcome no_push after the wall_clock trip, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+			"Stop reason: supervision trip: wall_clock\n\n",
 		},
 		"never ran": {
 			SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
-				ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef"},
+				ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, ParentTrip: "wall_clock", StartRef: "0123456789abcdef"},
 			sessionProgress{SessionID: "s-dead"},
-			"From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+			"From session s-prev, stopped at 23:03 UTC with outcome no_push after the wall_clock trip, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+			"Stop reason: supervision trip: wall_clock\n\n",
 		},
 	}
 	for name, tc := range cases {
@@ -4208,6 +4211,9 @@ func TestRunSessionDeliversTheDeadSessionsState(t *testing.T) {
 			}
 			if b.Prior.Heading != tc.want {
 				t.Errorf("heading = %q, want %q", b.Prior.Heading, tc.want)
+			}
+			if !strings.HasPrefix(b.Prior.Body, tc.stop) {
+				t.Errorf("body = %q, want it to start %q", b.Prior.Body, tc.stop)
 			}
 		})
 	}
@@ -4232,7 +4238,7 @@ func TestRunSessionLabelsADeadEndsState(t *testing.T) {
 			if want := "The check-in judged this approach wrong; the todo list below is the dead end's, not a plan to follow."; !strings.HasSuffix(b.Prior.Heading, want) {
 				t.Errorf("heading = %q, want it to end %q", b.Prior.Heading, want)
 			}
-			if want := "Todo list at the stop (the dead end's):\n- [in_progress] fix the gate"; !strings.HasPrefix(b.Prior.Body, want) {
+			if want := "Stop reason: check-in: wrong approach\n\nTodo list at the stop (the dead end's):\n- [in_progress] fix the gate"; !strings.HasPrefix(b.Prior.Body, want) {
 				t.Errorf("body = %q, want it to start %q", b.Prior.Body, want)
 			}
 		})
@@ -4320,7 +4326,7 @@ func TestRunSessionCarriesThePriorStateWithoutACheckinModel(t *testing.T) {
 	if b.Handover != "" || b.Prior == nil {
 		t.Fatalf("brief = %+v, want no handover and s-prev's state", b)
 	}
-	if want := "From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
+	if want := "From session s-prev, stopped at 23:03 UTC with outcome no_push, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
 		t.Errorf("heading = %q, want %q", b.Prior.Heading, want)
 	}
 }

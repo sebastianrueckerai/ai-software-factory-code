@@ -432,11 +432,13 @@ func (s sessionSpec) readable(extra ...Repo) []Repo {
 type sessionSpec struct {
 	id     string
 	parent string
-	// parentStop and parentOutcome are how the parent ended: its stop
-	// reason, which the copied working state names, and its outcome, which
-	// decides whether one is copied
+	// parentStop, parentOutcome and parentTrip are how the parent ended:
+	// its stop reason and its trip, which the copied working state names,
+	// and its outcome, which it names too and which decides whether one is
+	// copied
 	parentStop    string
 	parentOutcome SessionOutcome
+	parentTrip    string
 	findings      []string
 	answers       []string
 	posterInfo    []string

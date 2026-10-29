@@ -641,7 +641,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("task", err)
 	}
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome,
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
 		lastGates: in.LastGates, handover: in.Handover}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
@@ -694,7 +694,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
 		if dead.Events > 0 {
 			// the dead session left a record, which every event extends
-			s.parent, s.parentOutcome = dead.SessionID, ""
+			s.parent, s.parentOutcome, s.parentTrip = dead.SessionID, "", ""
 			s.parentStop = fmt.Sprintf("factoryd's run of it ended without an outcome after at least %d events", dead.Events)
 		}
 		if dead.Running {
@@ -711,7 +711,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	} else if ok {
 		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending") {
 			live = &l
-			s.id, s.parent, s.parentStop, s.parentOutcome, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.Findings
+			s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
 			return SessionResult{}, named("live session", err)
 		}
