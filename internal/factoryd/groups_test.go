@@ -114,6 +114,7 @@ const planClosedBackfill = "factoryd/20261104100000_plan_closed_backfill.sql"
 // #1301 (a failed card), #1302 (a merged card waiting for its chain),
 // #1303 (no card yet), #1304 (its newest revision holds criteria) and the
 // direct card d-1 with its delegated card done. A second run adds nothing.
+// A row says it closed when the plan's newest card finished.
 func TestPlanClosedBackfill(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_closed_backfill"))
@@ -124,14 +125,14 @@ func TestPlanClosedBackfill(t *testing.T) {
 	for _, q := range []string{
 		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, parent_task, track, plan_key, issue_number, finished_at) VALUES
 			('t-509', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 509, now()),
-			('c-509a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-509', 'direct', 'a', 600, now()),
-			('c-509b', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-509', 'direct', 'b', 601, now()),
+			('c-509a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-509', 'direct', 'a', 600, '2026-09-01 10:00+00'),
+			('c-509b', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-509', 'direct', 'b', 601, '2026-09-03 12:00+00'),
 			('t-558', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 558, now()),
-			('c-558a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-558', 'direct', 'a', 602, now()),
-			('c-558b', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 't-558', 'direct', 'b', 603, now()),
+			('c-558a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-558', 'direct', 'a', 602, '2026-09-02 08:00+00'),
+			('c-558b', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 't-558', 'direct', 'b', 603, '2026-09-05 08:00+00'),
 			('t-852', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 852, now()),
-			('c-852old', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 't-852', 'direct', NULL, 604, now()),
-			('c-852a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-852', 'direct', 'a', 605, now()),
+			('c-852old', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 't-852', 'direct', NULL, 604, '2026-08-01 09:00+00'),
+			('c-852a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-852', 'direct', 'a', 605, '2026-08-02 09:00+00'),
 			('t-1293', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1293, now()),
 			('c-1293a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1293', 'direct', 'a', 1294, now()),
 			('t-1300', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1300, now()),
@@ -193,6 +194,12 @@ func TestPlanClosedBackfill(t *testing.T) {
 		rows.Close()
 		if !slices.Equal(got, want) {
 			t.Fatalf("run %d: plan_closed rows\n%s\nwant\n%s", run, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+		for plan, at := range map[string]string{"t-509": "2026-09-03 12:00:00", "t-558": "2026-09-05 08:00:00", "t-852": "2026-08-02 09:00:00"} {
+			var got string
+			if err := s.db.QueryRowContext(ctx, `SELECT to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD HH24:MI:SS') FROM events WHERE task_id = $1 AND kind = 'plan_closed'`, plan).Scan(&got); err != nil || got != at {
+				t.Errorf("run %d: %s closed at %q, %v; want its newest card's finish %q", run, plan, got, err, at)
+			}
 		}
 	}
 }

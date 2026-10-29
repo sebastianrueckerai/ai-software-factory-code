@@ -2,9 +2,11 @@
 -- could close (roadmap 336): each plan card whose newest revision holds no
 -- criteria and whose cards (source plan, holding a key) are all done or
 -- closed gets its close row, quietly, with no issue comment. The open
--- groups read the row, so an old plan holds nothing.
-INSERT INTO events (repository, task_id, issue_number, kind, actor, via, detail)
-SELECT p.repository, p.id, NULLIF(p.issue_number, 0), 'plan_closed', 'factoryd', 'factoryd', '{"criteria": 0, "backfill": true}'::jsonb
+-- groups read the row, so an old plan holds nothing. The row is dated by
+-- the newest finish among the plan's cards.
+INSERT INTO events (repository, task_id, issue_number, kind, actor, via, detail, at)
+SELECT p.repository, p.id, NULLIF(p.issue_number, 0), 'plan_closed', 'factoryd', 'factoryd', '{"criteria": 0, "backfill": true}'::jsonb,
+	COALESCE((SELECT max(c.finished_at) FROM tasks c WHERE c.parent_task = p.id AND c.source = 'plan' AND c.plan_key IS NOT NULL), now())
 FROM tasks p
 WHERE p.track = 'plan'
 	AND EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task = p.id AND c.source = 'plan' AND c.plan_key IS NOT NULL)
