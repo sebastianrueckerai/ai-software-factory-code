@@ -1109,7 +1109,7 @@ func TestCheckinLimits(t *testing.T) {
 		wantHandover int
 		wantSessions int
 	}{
-		{"checkin defaults", Limits{}, 12, 0.5, 24576, 2000, 1},
+		{"checkin defaults", Limits{}, 20, 0.5, 24576, 2000, 1},
 		{"checkin set", Limits{CheckinCalls: 20, CheckinShare: 25, CheckinTailKiB: 32, CheckinHandoverChars: 4000, CheckinSessions: 2}, 20, 1.25, 32768, 4000, 2},
 	} {
 		if got := tc.limits.CheckinCallCap(); got != tc.wantCap {

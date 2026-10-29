@@ -103,21 +103,21 @@ func atReproStart(escalation string) bool {
 // budget asks (checkinBlock in the runner).
 const checkinSpendAsk = "check-in: " + CheckSpend + ": "
 
-// checkinCallCapStop is the reason a check-in stopped at its call cap,
-// the one stop whose answer buys the card a wider cap.
+// checkinCallCapStop is the reason a check-in gave no answer within its
+// calls.
 const checkinCallCapStop = "check-in call cap reached"
 
-// atCheckinSpend: escalation is a check-in stopped at its spent budget,
-// its call cap or the budget's share: the answer verifies the head again,
-// no session, for one would stop at the same cap before any model call.
+// atCheckinSpend: escalation is a check-in stopped under spend, at its
+// call cap or on the budget's share. The share stop's answer verifies the
+// head again, no session, for one would stop at the same share before any
+// model call; the call cap's answer buys the session (atCheckinCallCap).
 func atCheckinSpend(escalation string) bool {
 	return strings.HasPrefix(escalation, checkinSpendAsk)
 }
 
 // atCheckinCallCap: escalation is a check-in stopped at its call cap,
-// not the budget's share (versionCheckinRaise): the answer buys the card
-// one more turn of the cap, for the session it buys would stop at the
-// same cap before any model call.
+// not the budget's share (versionCheckinRaise): the answer buys the
+// session, whose check-in runs with the policy's calls.
 func atCheckinCallCap(escalation string) bool {
 	return atCheckinSpend(escalation) && strings.Contains(escalation, checkinCallCapStop)
 }

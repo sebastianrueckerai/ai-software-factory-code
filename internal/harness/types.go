@@ -56,6 +56,9 @@ type TaskBrief struct {
 	// failed. Both empty for a project without a document repository.
 	Docs       bool   `json:"docs,omitempty"`
 	DocsFailed string `json:"docs_failed,omitempty"`
+	// DocLinks say where each relative link of the objective is in the
+	// document repository's clone (doclinks.Lines); nil without a clone.
+	DocLinks []string `json:"doc_links,omitempty"`
 	// Handover is the check-in agent's note on the findings this session
 	// starts from, pushed before the conversation began; "" when no
 	// check-in ran.

@@ -49,7 +49,7 @@ type Trip struct {
 	Kind     TripKind
 	Findings []string
 	Detail   string // what the detector saw, for the supervisor and the record
-	Stuck    string // the stuck rule's line, "" when it did not end the session
+	Stuck    string // the stuck rule's line, "" when the rule did not hold
 	key      string // which evidence tripped, so a continue resets only that
 	decided  *Decision
 }
@@ -124,10 +124,14 @@ type Supervisor struct {
 	traces      *traceDetectors
 	findings    []string
 	tripped     *Trip
-	// messaged: a supervisor's message was delivered and no file written
-	// since; the next detector trip ends the session (the stuck rule).
-	// messagedOnce: a message was delivered in this session.
+	// messaged: a supervisor's message was delivered (at messagedAt) and
+	// no file written since; the next detector trip is stuck (the stuck
+	// rule). messagedOnce: a message was delivered in this session.
 	messaged, messagedOnce bool
+	messagedAt             time.Time
+	// answeredAt is the supervisor's last answer (a message, a continue, a
+	// climb): it covers what the pod did before it
+	answeredAt time.Time
 	// nudges are the nudges delivered since the last new file content;
 	// seen is the content the session wrote, by newContent's key
 	nudges []Nudge
@@ -189,28 +193,51 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if ev.Kind == harness.EventPushed {
 		s.pushed = true
 	}
+	// a file written through a shell shows only as a changed diff
+	write := ev.Kind == harness.EventFileChange || s.traces.diffMoved(ev)
+	// the pod runs on during a check-in and its lines wait in the stream:
+	// what it did before the answer, by its own clock, counts for no
+	// detector, but a write or a passing check is progress whenever it was
+	// made, and a checkpoint still sets the diff's baseline
+	if podBefore(ev, s.answeredAt) && !write {
+		switch {
+		case ev.Kind == harness.EventCheckpoint:
+			s.traces.checkpoint(ev)
+		case ev.Kind == harness.EventCommand && !detailBool(ev, "subagent"):
+			if exit, ok := detailInt(ev, "exit"); ok && exit == 0 {
+				s.traces.passed(detailString(ev, "command"))
+			}
+		}
+		return s.limits(at)
+	}
+	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
 	switch {
 	case ev.Kind == harness.EventToolCall, ev.Kind == harness.EventCommand:
-		s.sinceChange++
+		if !subagentCall {
+			s.sinceChange++
+		}
 		if ev.Kind == harness.EventCommand {
 			// the command's running time is the machine's, not the agent's
 			s.noWriteFrom = s.noWriteFrom.Add(commandDuration(ev))
 		}
-	case ev.Kind == harness.EventFileChange, s.traces.diffMoved(ev):
-		// a file written through a shell shows only as a changed diff
+	case write:
 		s.sinceChange = 0
 		s.noWriteFrom = at
-		s.messaged = false
+		if !podBefore(ev, s.messagedAt) {
+			s.messaged = false // the stuck rule wants a write after the delivery
+		}
 		if s.newContent(ev) {
 			s.nudges = nil
 		}
 	}
-	// every detector sees every event, whichever trips
-	traced := s.traces.observe(ev)
-	if !at.Before(s.deadline) {
-		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
+	// every detector sees every event, whichever trips, but a subagent's
+	// call: a nudge or trip about it would reach the main agent, which did
+	// not make it
+	var traced *Trip
+	if !subagentCall {
+		traced = s.traces.observe(ev)
 	}
-	if trip := s.cheapCap(at); trip != nil {
+	if trip := s.limits(at); trip != nil {
 		return trip
 	}
 	if traced != nil {
@@ -258,10 +285,7 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	if !now.Before(s.deadline) {
-		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
-	}
-	if trip := s.cheapCap(now); trip != nil {
+	if trip := s.limits(now); trip != nil {
 		return trip
 	}
 	if trip := s.checkIn(now); trip != nil {
@@ -271,6 +295,15 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 		return s.trip(&Trip{Kind: TripNoProgress, Detail: fmt.Sprintf("no harness events for %s", silent.Round(time.Second))})
 	}
 	return nil
+}
+
+// limits are the caps every event and tick checks: the task's wall clock,
+// then the cheap rung's.
+func (s *Supervisor) limits(at time.Time) *Trip {
+	if !at.Before(s.deadline) {
+		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
+	}
+	return s.cheapCap(at)
 }
 
 // cheapCap trips once the start rung's first attempt ran CheapCap without
@@ -363,8 +396,15 @@ func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
 	return s.trip(t)
 }
 
-// Resume clears the trip after the supervisor answered continue and resets
-// the detector that tripped; the time the supervisor took is not silence.
+// podBefore: the pod stamped ev before t (neither zero).
+func podBefore(ev harness.Event, t time.Time) bool {
+	return !t.IsZero() && !ev.Time.IsZero() && ev.Time.Before(t)
+}
+
+// Resume clears the trip after the supervisor answered (a continue, a
+// climb, a message) and resets the detector that tripped; the time the
+// supervisor took is not silence, and the calls the pod made before the
+// answer count for no detector.
 func (s *Supervisor) Resume(now time.Time) {
 	switch s.tripped.Kind {
 	case TripRepetition:
@@ -374,7 +414,7 @@ func (s *Supervisor) Resume(now time.Time) {
 	default:
 		s.traces.reset(s.tripped)
 	}
-	s.lastSeen = now
+	s.lastSeen, s.answeredAt = now, now
 	s.tripped = nil
 }
 
@@ -382,9 +422,9 @@ func (s *Supervisor) Resume(now time.Time) {
 // and arms the stuck rule until the next write. The command detectors
 // start afresh at the message; the alternation memory (contents, churn)
 // does not, so a circle of writes that spans messages still trips
-// flip_flop or churn and ends the session (ruling 224: circles of writes
-// are not progress; round 2's drill 4 looped for 38 minutes on the
-// cleared memory).
+// flip_flop or churn, stuck (ruling 224: circles of writes are not
+// progress; round 2's drill 4 looped for 38 minutes on the cleared
+// memory).
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
 	s.sinceChange = 0
@@ -394,7 +434,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 	clear(d.failed)
 	clear(d.calls)
 	d.streakKey, d.streak = "", 0
-	s.messaged, s.messagedOnce = true, true
+	s.messaged, s.messagedOnce, s.messagedAt = true, true, now
 }
 
 // stuck is the stuck rule: after a delivered message, a detector trip with
@@ -416,7 +456,6 @@ func (s *Supervisor) trip(t *Trip) *Trip {
 	if t.decided == nil && s.stuck(t) {
 		stuck := fmt.Sprintf("stuck after the supervisor's message: %s: %s", t.Kind, t.Detail)
 		t.Findings, t.Stuck = append(t.Findings, stuck), stuck
-		t.decided = &Decision{Action: ActionRetryStronger, Reason: stuck}
 	}
 	s.tripped = t
 	return t
@@ -646,17 +685,25 @@ func (d *traceDetectors) detect(ev harness.Event) *Trip {
 	case harness.EventFileChange:
 		return d.fileChange(ev)
 	case harness.EventCheckpoint:
-		if size, ok := diffSize(ev); ok {
-			if size > d.maxDiff {
-				d.maxDiff, d.churn = size, 0
-			}
-			if d.diffMoved(ev) {
-				d.changed()
-			}
-			d.lastDiff = fmt.Sprint(ev.Detail["diff"])
-		}
+		d.checkpoint(ev)
 	}
 	return nil
+}
+
+// checkpoint notes a checkpoint's diff: a grown diff resets churn, a moved
+// one is a file change for the output runs, and the first is the baseline.
+func (d *traceDetectors) checkpoint(ev harness.Event) {
+	size, ok := diffSize(ev)
+	if !ok {
+		return
+	}
+	if size > d.maxDiff {
+		d.maxDiff, d.churn = size, 0
+	}
+	if d.diffMoved(ev) {
+		d.changed()
+	}
+	d.lastDiff = fmt.Sprint(ev.Detail["diff"])
 }
 
 // diffMoved: ev is a checkpoint whose diff differs from the last one's,
@@ -708,13 +755,7 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 	cmd := detailString(ev, "command")
 	exit, hasExit := detailInt(ev, "exit")
 	if hasExit && exit == 0 {
-		if d.failed[cmd] {
-			d.churn = 0 // newly passing
-		}
-		delete(d.failed, cmd)
-		d.disarm(cmd)
-		if !masksExitStatus(cmd) {
-			delete(d.runs, cmd)
+		if d.passed(cmd) {
 			return nil
 		}
 	} else if hasExit {
@@ -765,6 +806,22 @@ func (d *traceDetectors) command(ev harness.Event) *Trip {
 			Detail: fmt.Sprintf("`%s` gave the same output %d times, with file changes in between (exit %s, signature %s)", CommandLine(cmd), run.n, code, sig)}
 	}
 	return nil
+}
+
+// passed notes cmd's exit 0: a failing check that passes resets churn and
+// proves the returns it was failing at held. It reports whether the pass
+// ends cmd's run, which it does not when cmd masks its exit status.
+func (d *traceDetectors) passed(cmd string) bool {
+	if d.failed[cmd] {
+		d.churn = 0 // newly passing
+	}
+	delete(d.failed, cmd)
+	d.disarm(cmd)
+	if masksExitStatus(cmd) {
+		return false
+	}
+	delete(d.runs, cmd)
+	return true
 }
 
 // toolCall counts the call for same_call, which observe judges with the
@@ -932,6 +989,11 @@ func diffSize(ev harness.Event) (int, bool) {
 func detailString(ev harness.Event, key string) string {
 	s, _ := ev.Detail[key].(string)
 	return s
+}
+
+func detailBool(ev harness.Event, key string) bool {
+	b, _ := ev.Detail[key].(bool)
+	return b
 }
 
 func detailInt(ev harness.Event, key string) (int, bool) {

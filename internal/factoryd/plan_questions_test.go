@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"testing"
@@ -692,5 +693,32 @@ func TestIntakeKnowsAWakesPlanAnswerByTheChatBot(t *testing.T) {
 	}
 	if ev := store.intakeEvents; len(ev) != 2 || !ev[0].Signalled || ev[0].Author != ChatUser || ev[1].Signalled {
 		t.Fatalf("intake events %+v: want factory-chat's echo recorded as signalled, bob's not", ev)
+	}
+}
+
+// The round's hold-outs are drafted before a question is stored: the
+// review model's proposal call finds no question of the revision yet, so
+// the questions, the confirmation and the zone reach Needs you together,
+// as the plan waits for their answers, and no answer comes too early.
+func TestRequestPlanDraftsTheHoldoutsBeforeItAsks(t *testing.T) {
+	r, store, _, _ := newPlanRunner(t, questionPlan())
+	plan := store.tasks["t-plan"]
+	plan.RequiredCapabilities = []string{policy.ClassCoder}
+	store.tasks["t-plan"] = plan
+	var seen []int
+	model := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		seen = append(seen, len(store.questions["t-plan 1"]))
+		http.Error(w, "refused", http.StatusBadRequest)
+	}))
+	t.Cleanup(model.Close)
+	r.supervisor = testSupervisorModel(model.URL)
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7)); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(seen, []int{0}) {
+		t.Fatalf("questions stored at the hold-out proposal: %v, want one call before any", seen)
+	}
+	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 3 {
+		t.Fatalf("questions %+v, want the planner's two and the confirmation", qs)
 	}
 }

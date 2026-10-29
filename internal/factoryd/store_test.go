@@ -78,9 +78,7 @@ type fakeStore struct {
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
-	// checkinCalls and checkinSpent are CheckinCalls' and CheckinSpent's
-	// answers by task
-	checkinCalls map[string]int
+	// checkinSpent is CheckinSpent's answer by task
 	checkinSpent map[string]float64
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
@@ -986,10 +984,6 @@ func (s *fakeStore) CheckinSpent(ctx context.Context, taskID string) (float64, e
 	return s.checkinSpent[taskID], nil
 }
 
-func (s *fakeStore) CheckinCalls(ctx context.Context, taskID string) (int, error) {
-	return s.checkinCalls[taskID], nil
-}
-
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
@@ -1513,7 +1507,7 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.PRNumber != 12 {
 		t.Fatalf("pr_number = %d, want 12", got.PRNumber)
 	}
-	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckin: 1, ExtraCheckinShare: 2}
+	usage := TaskUsage{AgentTime: 90 * time.Second, Attempts: 2, ExtraTime: time.Minute, RetryTime: 2 * time.Minute, ExtraAttempts: 1, PosterAttempts: 1, LastUncounted: true, ExtraCheckinShare: 2}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
 		t.Fatal(err)
 	}
@@ -3002,13 +2996,13 @@ func TestPGStoreModelAnswered(t *testing.T) {
 	}
 }
 
-// The check-in's spend and calls on a card: every purpose checkin row of
-// the task counts its calls, a tool's call among the calls but costing
-// nothing (the gateway books the task's running spend into spend_eur and
-// the call's own cost into call_cost_eur, so the share counts only
-// call_cost_eur); other kinds and other tasks count not. Hand-derived:
-// 0.02 + 0 + 0.03 = 0.05, not the running totals 0.20 + 0.20 + 0.25.
-func TestCheckinSpentAndCalls(t *testing.T) {
+// The check-in's spend on a card: every purpose checkin row of the task
+// counts its call's cost, a tool's call costing nothing (the gateway books
+// the task's running spend into spend_eur and the call's own cost into
+// call_cost_eur, so the share counts only call_cost_eur); other kinds and
+// other tasks count not. Hand-derived: 0.02 + 0 + 0.03 = 0.05, not the
+// running totals 0.20 + 0.20 + 0.25.
+func TestCheckinSpent(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_checkin"))
 	if err != nil {
@@ -3027,10 +3021,6 @@ func TestCheckinSpentAndCalls(t *testing.T) {
 	eur, err := s.CheckinSpent(ctx, "a")
 	if err != nil || eur != 0.05 {
 		t.Errorf("CheckinSpent(a) = (%v, %v), want (0.05, nil)", eur, err)
-	}
-	n, err := s.CheckinCalls(ctx, "a")
-	if err != nil || n != 3 {
-		t.Errorf("CheckinCalls(a) = (%v, %v), want (3, nil)", n, err)
 	}
 }
 

@@ -256,35 +256,34 @@ written through the shell) or the session's start (the policy's
 tick or the worker's checkpoint never trips it, silence is the stall's.
 The check-in (ruling 216) trips at every `check_in` of the task's agent
 time (`policy.Time`), counted from the task's start, so it continues
-across sessions; its detail is "scheduled check-in, no detector
-tripped", and it is not counted against `limits.supervisor_calls`;
-none comes in a session's first 10 minutes. The
-wall-clock cap ends the session. Every other trip asks the supervisor, the `supervisor_model` of
-the task's class, through the gateway on the task's account (purpose
-`supervisor`): its answer limit is clamped to the free headroom, the
-worst case is held, its cost is booked as a `model` ledger row with ref
-`supervisor/<alias>`, and it has an audit row of kind `supervisor`; a
-call the gateway refuses escalates.
-It reads the brief, the trip, a progress digest and the session record's
-tail, and answers one of `continue` (the detector resets, the session
-runs on), `message` (its guidance goes into the running session through
-the nudge's path, the detector resets, the session runs on) or
-`escalate`; an invalid answer or a failed call escalates. A message the
-worker cannot take (501, network) stops the session with the guidance as
-the next session's finding (`redirect`). A delivered message starts
-every progress detector afresh (the diff's baseline and the nudges
-stay), and the next call reads the session's earlier messages. The stuck
-rule: after a delivered message, the next detector trip with no file
-written since, or a flip_flop or churn trip at all (circles of writes,
-ruling 224), ends the session without a call as `retry_stronger` (the
-next rung; the same model at the top), with the finding `stuck after the
-supervisor's message: <kind>: <detail>`, and an issue comment says so.
-The stall (`no_progress`: a long command is silence) and the clock are
-no evidence and ask the supervisor as before. At most
-`limits.supervisor_calls` (3) calls per session, each bounded by
-`limits.supervisor_timeout` (6 min); the next trip escalates
-without one. Nothing it answers changes a cap, a budget or the ladder. A
-stopping session's pod is deleted with a 60 s grace period (a log stream
+across sessions. Its detail is "scheduled check-in, no detector
+tripped", and none comes in a session's first 10 minutes. The wall
+clock, the cheap cap, a loop (three nudges) and the agent's own asks
+decide in code. Every other trip asks the check-in, the class's
+`checkin_model` (purpose `checkin`) with read tools on the live
+workspace. It reads the trip, the guidance already delivered, the gates
+and the transcript's tail, and answers `continue` (the detector resets),
+`message` (its guidance goes into the running session through the
+nudge's path), `handover` (the session stops, and its note opens the
+next brief) or `human`. An unreadable answer, a note-less handover too,
+gets one repair round, then a human. A message the worker cannot take
+(501, network) stops the session with the guidance as a finding
+(`redirect`). A delivered message starts every progress detector afresh
+(the diff's baseline and the nudges stay). The stuck rule (rulings 224,
+327): after a delivered message, the next detector trip with no file
+written since, or a flip_flop or churn trip, is stuck, with the finding
+`stuck after the supervisor's message: <kind>: <detail>` and a line in
+the statement. A handover on it is `retry_stronger` with the note: the
+session climbs in place when it can, else the next session starts on the
+stronger rung (the same model at the top) from the note. A check-in that
+cannot answer (a refused call, no model) gives `retry_stronger` on a
+stuck trip and `continue` on any other. The stall, the clock and
+`spend_no_push` are never stuck. A conversation gets
+`limits.checkin_calls` (20) calls, the last without tools, then a human.
+`limits.checkin_share` (10 percent of the card's budget) caps all the
+card's conversations, checked before each, and a trip past it asks a
+human with no call. Nothing the check-in answers changes a cap or a
+budget. A stopping session's pod is deleted with a 60 s grace period (a log stream
 that breaks meanwhile, or at any time while the pod runs, is reopened
 and the lines already read are skipped): the worker ends the agent,
 commits and pushes its work in progress through the same clean push
@@ -345,7 +344,7 @@ through `internal/redact` with the task's git tokens, the factory's one
 scrubber (the gateway's audit records and the worker's git errors use it
 too); its 32-character rule also takes long URL paths and commit ids.
 The reads have a minute. The `supervisor_model` answers through the gateway
-like the session supervisor, on the task's account (purpose
+on the task's account (purpose
 `gate-supervisor`): `wait` (the attempt's bound is extended once by its
 own length, and at least half a bound after the answer; not offered for
 a session, whose start-to-close ends first), `retry` (the attempt is
@@ -353,7 +352,7 @@ stopped with the retryable error `gate_supervisor_retry`, so the
 activity's retry policy runs it again; not offered on its last allowed
 attempt), `cancel` (the workflow cancels the activity and fails the task
 with the diagnosis) or `escalate` (the workflow cancels it and escalates
-like the session supervisor, the diagnosis and the recommendation in the
+like a session's check-in, the diagnosis and the recommendation in the
 reason; the human's wait is no agent time). A human's answer to a
 session's escalation buys the next session; to a gate's, it runs the
 gate again with the same arguments (a merge keeps its approval), and a

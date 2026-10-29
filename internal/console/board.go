@@ -2620,7 +2620,14 @@ func entry(m map[string]any) timelineEntry {
 	e.Step, _ = m["step"].(string)
 	e.Reason, _ = m["reason"].(string)
 	switch e.Step {
-	case "supervisor":
+	case "supervisor", "checkin":
+		// a check-in joins the column only when the runner wrote it beside
+		// a detector or guidance; a review check-in keeps its plain row
+		_, detected := m["detector"]
+		_, guided := m["guidance"]
+		if e.Step == "checkin" && !detected && !guided {
+			break
+		}
 		why, _ := m["reason"].(string)
 		guidance, _ := m["guidance"].(string)
 		e.Supervisor = supervisedBy(m["decision"], cmp.Or(why, guidance), nil)

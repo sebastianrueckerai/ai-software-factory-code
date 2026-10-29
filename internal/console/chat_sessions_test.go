@@ -16,13 +16,14 @@ import (
 )
 
 // sessionsTimeline is t-r's timeline with two sessions: s1 on
-// small, nudged, tripped and messaged, which ended without a push,
-// and s2 on big, which pushed abc123.
+// small, nudged, tripped, messaged and checked in, which ended
+// without a push, and s2 on big, which pushed abc123.
 const sessionsTimeline = `{"step":"session_start","time":"2026-10-11T10:00:00Z","session":"s1","parent":"","model":"small","attempt":1,"start_ref":"0a1b2c3"}
 {"step":"nudge","time":"2026-10-11T10:04:00Z","session":"s1","tool":"read","count":3}
 {"step":"supervisor","time":"2026-10-11T10:05:00Z","session":"s1","detector":"repetition","trip":"read a.go 3 times","digest":"","decision":"guide","guidance":"change approach","reason":"","called":true}
 {"step":"message","time":"2026-10-11T10:05:01Z","session":"s1"}
 {"step":"message","time":"2026-10-11T10:06:00Z","session":"s1","from":"sebastian"}
+{"step":"checkin","time":"2026-10-11T10:07:00Z","session":"s1","detector":"no_write","trip":"no write in 8 min","digest":"","decision":"redirect","guidance":"run the failing acceptance test","reason":"","called":true}
 {"step":"session_end","time":"2026-10-11T10:12:30Z","session":"s1","parent":"","model":"small","attempt":1,"outcome":"no_push","summary":"stopped without a push","started":"2026-10-11T10:00:00Z"}
 {"step":"session_start","time":"2026-10-11T10:13:00Z","session":"s2","parent":"s1","model":"big","attempt":2,"start_ref":"0a1b2c3"}
 {"step":"session_end","time":"2026-10-11T10:40:00Z","session":"s2","parent":"s1","model":"big","attempt":2,"outcome":"pushed","summary":"added the p95","started":"2026-10-11T10:13:00Z","commit":"abc123"}
@@ -82,6 +83,7 @@ const (
 		"started 2026-10-11 10:00 UTC, took 12 min\n" +
 		"summary: stopped without a push\nsupervisor and messages:\n  4:00 nudged after 3 identical read calls\n" +
 		"  5:00 repetition tripped: change approach\n  5:01 the supervisor's message\n  6:00 message from sebastian\n" +
+		"  7:00 no_write tripped: run the failing acceptance test\n" +
 		"cost: small, 3 calls, prompt tokens per call median 46,651 max 52,000, 94% cached, 0.0009 EUR per call\n"
 	s1Steps = "1 0:05 model call, 1,400 prompt tokens (71% cached)\n" +
 		`2 0:10 read 120 ms: {"path":"a.go"}` + "\n" +

@@ -6,8 +6,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
 // With DOCS_URL set the clone container also clones the document
@@ -105,4 +108,57 @@ func TestCloneModeClonesTheDocuments(t *testing.T) {
 			t.Fatalf("docsState = %v, %q, want nothing for a project without documents", cloned, failed)
 		}
 	})
+}
+
+// A card's relative document links resolve against the clone, so the
+// agent reads the linked file instead of searching for it; neither .git
+// nor a symlink is a document. A session without a cloned document
+// repository has no links.
+func TestBriefResolvesTheIssuesDocumentLinks(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"docs/plans/2026-10-14-lane-collapse.md", ".git/HEAD"} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("plans/2026-10-14-lane-collapse.md", filepath.Join(dir, "docs/link.md")); err != nil {
+		t.Fatal(err)
+	}
+	const objective = "Read [the plan](../plans/2026-10-14-lane-collapse.md) and [the gone one](../plans/none.md)."
+
+	brief := harness.TaskBrief{Objective: objective, AuthorStanding: harness.StandingWriter, Docs: true}
+	resolveDocLinks(nolog, &brief, dir)
+	want := []string{
+		"../plans/2026-10-14-lane-collapse.md is " + dir + "/docs/plans/2026-10-14-lane-collapse.md",
+		"../plans/none.md is not among the text files at " + dir,
+	}
+	if !slices.Equal(brief.DocLinks, want) {
+		t.Fatalf("DocLinks =\n%q\nwant\n%q", brief.DocLinks, want)
+	}
+
+	brief = harness.TaskBrief{Objective: "[head](HEAD) [plans](../plans/) [link](link.md)", Docs: true}
+	resolveDocLinks(nolog, &brief, dir)
+	want = []string{"HEAD is not among the text files at " + dir, "../plans/ is " + dir + "/docs/plans", "link.md is not among the text files at " + dir}
+	if !slices.Equal(brief.DocLinks, want) {
+		t.Fatalf("DocLinks =\n%q\nwant\n%q", brief.DocLinks, want)
+	}
+
+	for name, b := range map[string]harness.TaskBrief{
+		"failed": {Objective: objective, DocsFailed: "git clone: repository not found"},
+		"none":   {Objective: objective},
+	} {
+		resolveDocLinks(nolog, &b, dir)
+		if b.DocLinks != nil {
+			t.Errorf("%s: DocLinks = %q, want nil", name, b.DocLinks)
+		}
+	}
+	brief = harness.TaskBrief{Objective: objective, Docs: true}
+	resolveDocLinks(nolog, &brief, filepath.Join(dir, "missing"))
+	if brief.DocLinks != nil {
+		t.Fatalf("DocLinks of an unreadable clone = %q, want nil", brief.DocLinks)
+	}
 }

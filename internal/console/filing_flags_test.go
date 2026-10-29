@@ -224,3 +224,18 @@ func TestNewTaskAnsweredFormEscapesText(t *testing.T) {
 		t.Fatalf("the first submit filed %v", r.fg.issues)
 	}
 }
+
+// The proposal of a new_card judges the filing flags as its run does, so
+// the agent rewrites the text before Do it.
+func TestChatNewCardProposalRefusesFlaggedText(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	bad := `{"body":"Count hits.\nThis fixes #12.","title":"Cache metrics","track":"direct","track_reason":"one count"}`
+	g.replies = [][]string{{call(1, "new_card", bad)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
+	said, _ := json.Marshal("Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +
+		`description, line 2: "fixes #12" a closing keyword before an issue reference; the sanitiser neutralises it as "(fixes) #12" so nothing closes` +
+		". Rewrite those and file the card again.")
+	equal(t, "the proposal", events, []string{
+		`tool {"arguments":` + bad + `,"duration_ms":0,"name":"new_card","result":` + string(said) + `}`, `text {"text":"Refused."}`, `done {}`})
+}

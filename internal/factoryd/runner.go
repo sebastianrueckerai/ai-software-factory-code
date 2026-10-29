@@ -826,6 +826,11 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			d = *trip.decided
 			ck, ride = nil, false
 		}
+		// the judge says whether the session is stuck, code picks the model
+		// (rulings 216, 224): a stuck trip's handover is the stuck rule's climb
+		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
+			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover}, false
+		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
 		note := ""
@@ -839,8 +844,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			rode = true
 			stop(trip)
 		case d.Action == ActionContinue:
-			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			sup.Resume(time.Now())
+			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 			return false, nil
 		case d.Action == ActionRetryStronger && r.canClimb(s):
 			// the climb in place (roadmap 222, item 5): the session goes on
@@ -858,8 +863,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case d.Action == ActionMessage:
 			err := r.message(ctx, t, s, ns, podName, d.Guidance)
 			if err == nil || errors.Is(err, harness.ErrNotRunning) {
-				r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 				sup.Messaged(time.Now())
+				r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 				messages = append(messages, d.Guidance)
 				return false, nil
 			}
@@ -869,9 +874,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		default:
 			out.decision = &d
 			stop(trip)
-		}
-		if trip.decided != nil && d.Action == ActionRetryStronger {
-			note = "The agent is stuck after the supervisor's message: the session ends without a check-in, and a new session resumes from the work in progress."
+			if d.Action == ActionRetryStronger {
+				note = fmt.Sprintf("The session stopped on %s: %s. The next session resumes on the stronger model from the work in progress.", trip.Kind, cmp.Or(trip.Stuck, d.Reason))
+			}
 		}
 		// a session that finished and pushed during the conversation goes to
 		// verification: its answer is superseded, its record is kept
@@ -952,13 +957,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 }
 
-// checkinCap is the card's check-in call cap: the policy's, widened by
-// one turn per answer a human gave at the cap (TaskUsage.ExtraCheckin,
-// versionCheckinRaise).
-func checkinCap(t Task, limits policy.Limits) int {
-	return limits.CheckinCallCap() * (1 + t.Usage.ExtraCheckin)
-}
-
 // checkinBlock runs the check-in the workflow asked of the session's
 // start, inside the session's own pod and before its coding conversation:
 // the limits are read before anything is bought, the parent session's
@@ -972,16 +970,11 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note)
 	}
-	callCap := checkinCap(t, limits)
-	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
-	if calls >= callCap || eurLeft <= 0 {
-		reason := CheckinShareSpent
-		if calls >= callCap {
-			reason = checkinCallCapStop
-		}
+	eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	if eurLeft <= 0 {
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
-			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason}
-		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}, true
+			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
+		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: rec}, true
 	}
 	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
 		var parent []byte
@@ -999,7 +992,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			callCap-calls, eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
 		if out.Record != nil {
 			out.Record.Session = s.id
 		}
@@ -1023,28 +1016,25 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 // says the outcome stops the session and rides SessionResult.CheckIn.
 func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
-	callCap := checkinCap(t, limits)
-	calls, eurLeft, _ := r.checkinBudget(ctx, t, limits)
-	if calls >= callCap || eurLeft <= 0 {
-		reason := CheckinShareSpent
-		if calls >= callCap {
-			reason = checkinCallCapStop
-		}
+	eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	if eurLeft <= 0 {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
-			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason}
-		return Decision{Action: ActionEscalate, Reason: reason}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: record}, true
+			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
+		return Decision{Action: ActionEscalate, Reason: CheckinShareSpent}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: record}, true
 	}
 	alias := r.callModel(t, policy.PurposeCheckin)
 	if alias == "" {
-		log.Printf("task %s: no model under the check-in's purpose: the session runs on over %s", t.ID, trip.Kind)
-		return Decision{Action: ActionContinue, Reason: "no model under the check-in's purpose"}, nil, false
+		d := unjudged(trip, "no model under the check-in's purpose")
+		log.Printf("task %s: no model under the check-in's purpose: %s over %s", t.ID, d.Action, trip.Kind)
+		return d, nil, false
 	}
+	climbs := r.cfg.Models.Stronger != "" && s.model != r.cfg.Models.Stronger
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
-		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail}, Messages: messages, Gates: s.lastGates}
+		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
-		callCap-calls, eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
+		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
 	out.Record.Session = s.id
 	switch out.Decision {
 	case "continue":
@@ -1054,27 +1044,32 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	case CheckHandover:
 		if out.Handover == "" && len(out.Verdicts) == 0 {
 			// the refusal shape: the round runs as if no check-in existed
-			return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
+			return unjudged(trip, out.Reason), &out, false
 		}
 	}
 	return Decision{Action: ActionEscalate, Reason: cmp.Or(out.Handover, out.Reason)}, &out, true
 }
 
-// checkinBudget is the card's check-in budget: the calls the card has
-// made and what is left of the check-in's share of its budget — the
-// policy's share widened by every share a human's answer to its spend
-// stop granted (TaskUsage.ExtraCheckinShare; versionCheckinGrant). A read error is logged and
-// reads as zero, as the check-in proceeds on it.
-func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (int, float64, error) {
-	calls, err := r.store.CheckinCalls(ctx, t.ID)
-	if err != nil {
-		log.Printf("task %s: read the check-in calls: %v", t.ID, err)
+// unjudged is a trip's decision when the check-in gives no answer: the
+// session runs on, but a stuck trip takes the stuck rule's climb.
+func unjudged(trip *Trip, reason string) Decision {
+	if trip.Stuck != "" {
+		return Decision{Action: ActionRetryStronger, Reason: trip.Stuck}
 	}
+	return Decision{Action: ActionContinue, Reason: reason}
+}
+
+// checkinBudget is what is left of the card's check-in share of its
+// budget: the policy's share widened by every share a human's answer to
+// its spend stop granted (TaskUsage.ExtraCheckinShare;
+// versionCheckinGrant). A read error is logged and reads as zero spent,
+// as the check-in proceeds on it.
+func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (eurLeft float64, err error) {
 	spent, err := r.store.CheckinSpent(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	}
-	return calls, limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
+	return limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
 }
 
 // pushBrief delivers the session's brief: a check-in's handover note, or
@@ -1356,7 +1351,7 @@ func (r *Runner) commentDecision(ctx context.Context, t Task, s sessionSpec, tri
 	if d.Guidance != "" {
 		body += "\nGuidance: " + d.Guidance
 	}
-	if d.Reason != "" {
+	if d.Reason != "" && d.Reason != d.Guidance {
 		body += "\nReason: " + d.Reason
 	}
 	if note != "" {

@@ -271,7 +271,7 @@ func TestDecideHoldout(t *testing.T) {
 	t.Run("no plan waiting", func(t *testing.T) {
 		store := newFakeStore()
 		store.tasks["t-plan"] = Task{ID: "t-plan"}
-		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); err == nil || err.Error() != "task t-plan has no plan waiting for acceptance" {
+		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); err == nil || err.Error() != "task t-plan has no plan waiting for answers" {
 			t.Fatalf("no approval: %v", err)
 		}
 	})
