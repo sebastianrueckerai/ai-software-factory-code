@@ -1065,15 +1065,15 @@ func TestActionRunsForAnEventDropsRunsAnotherTriggerStarted(t *testing.T) {
 	}
 }
 
-// An answer longer than the read limit is an error that says so, not a
-// cut body a decoder fails on.
+// An answer longer than the read limit is an error that says so and names
+// that limit, not a cut body a decoder fails on.
 func TestForgejoRefusesAnAnswerPastItsReadLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, `{"workflow_runs":[`+strings.Repeat(" ", 1<<20)+`]}`)
 	}))
 	defer srv.Close()
 	f := &Forgejo{BaseURL: srv.URL}
-	if _, err := f.ActionRuns(context.Background(), "tok", "sf", "r", url.Values{"page": {"1"}}); err == nil || !strings.Contains(err.Error(), "longer than 1 MiB") {
+	if _, err := f.ActionRuns(context.Background(), "tok", "sf", "r", url.Values{"page": {"1"}}); !errors.Is(err, ErrAnswerTooLong) || !strings.HasSuffix(err.Error(), ": the answer is longer than its read limit of 1048576 bytes") {
 		t.Fatalf("err %v", err)
 	}
 }

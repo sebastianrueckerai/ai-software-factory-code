@@ -2489,7 +2489,7 @@ func (t *taskRun) gate(commit string) verdict {
 	var review Review
 	g.Pin = t.cfg.PolicyVersion
 	if t.v8 >= versionGatesPinned {
-		v, decided, err := t.gateActivity(true, reviewOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
+		v, decided, err := t.gateActivity(true, fanOutOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g)
 		if decided {
 			return v
 		}
@@ -2497,7 +2497,7 @@ func (t *taskRun) gate(commit string) verdict {
 			review = Review{Note: "model review failed: " + errMessage(err)}
 		}
 	} else {
-		reviewCtx := workflow.WithActivityOptions(t.ctx, reviewOptions())
+		reviewCtx := workflow.WithActivityOptions(t.ctx, fanOutOptions())
 		if err := workflow.ExecuteActivity(reviewCtx, ActivityModelReview, t.taskID, t.pr, commit, g).Get(t.ctx, &review); err != nil {
 			review = Review{Note: "model review failed: " + errMessage(err)}
 		}
@@ -2865,16 +2865,26 @@ func holdoutOptions() workflow.ActivityOptions {
 
 // reviewActivityMax bounds one attempt of a review or audit, whatever the
 // parts of its diff: the heartbeat finds a lost worker and a cancel reaches
-// the calls; the gate watch alerts at the parts' bound (boundByParts).
+// the calls; the gate watch alerts at the parts' bound (boundByParts),
+// fanOutTripMargin before it at the latest.
 const reviewActivityMax = 6 * time.Hour
 
-// reviewOptions: one review or audit makes a call for each part of its
+// fanOutOptions: one review or audit makes a call for each part of its
 // diff; it heartbeats.
+func fanOutOptions() workflow.ActivityOptions {
+	o := reviewOptions()
+	o.StartToCloseTimeout, o.ScheduleToCloseTimeout = reviewActivityMax, 3*reviewActivityMax
+	return o
+}
+
+// reviewOptions: the gate supervisor's call and a screening answer's,
+// bounded as a review of policy.ReviewParts calls of the longest
+// supervisor_timeout was; they heartbeat, so a cancel reaches the call.
 func reviewOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
-		StartToCloseTimeout:    reviewActivityMax,
-		ScheduleToCloseTimeout: 3 * reviewActivityMax,
+		StartToCloseTimeout:    policy.ReviewParts*policy.MaxSupervisorTimeout + 2*time.Minute,
+		ScheduleToCloseTimeout: 3*policy.ReviewParts*policy.MaxSupervisorTimeout + 10*time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,
 			MaximumAttempts:        3,

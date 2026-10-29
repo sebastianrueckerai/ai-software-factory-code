@@ -250,18 +250,21 @@ func (f *Forgejo) orgCall(ctx context.Context, method, path string, payload []by
 	})
 }
 
-// ErrAnswerTooLong is an answer past its read limit: an error for every
-// caller.
-var ErrAnswerTooLong = errors.New("the answer is longer than 1 MiB")
+// ErrAnswerTooLong is an answer past its read limit, which the error that
+// wraps it names: an error for every caller.
+var ErrAnswerTooLong = errors.New("the answer is longer than its read limit")
 
 // maxForgejoAnswer bounds a Forgejo answer factoryd reads.
 const maxForgejoAnswer = 1 << 20
+
+// forgejoTimeout bounds a Forgejo call but the diff read (diffReadTimeout).
+const forgejoTimeout = 15 * time.Second
 
 // anySuccess as do's wantStatus admits every 2xx answer.
 const anySuccess = 0
 
 func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request)) ([]byte, error) {
-	return f.doLimit(ctx, method, path, payload, wantStatus, auth, maxForgejoAnswer, 15*time.Second)
+	return f.doLimit(ctx, method, path, payload, wantStatus, auth, maxForgejoAnswer, forgejoTimeout)
 }
 
 // doLimit is do with an answer of at most limit bytes: a longer one is cut
@@ -295,7 +298,7 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 	}
 	var tooLong error
 	if len(body) > limit {
-		body, tooLong = body[:limit], fmt.Errorf("forgejo %s %s: %w", method, path, ErrAnswerTooLong)
+		body, tooLong = body[:limit], fmt.Errorf("forgejo %s %s: %w of %d bytes", method, path, ErrAnswerTooLong, limit)
 	}
 	if res.StatusCode != wantStatus && (wantStatus != anySuccess || res.StatusCode/100 != 2) {
 		switch res.StatusCode {
@@ -1242,7 +1245,7 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 		return nil, fmt.Errorf("forgejo job log %s: %w", targetURL, err)
 	}
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: forgejoTimeout,
 		// Production's ROOT_URL is https, so Forgejo marks the session
 		// cookie Secure; cookiejar withholds a Secure cookie from a plain
 		// http request, and BaseURL is always http (the in-cluster
@@ -1448,7 +1451,7 @@ func (f *Forgejo) IssueAssets(ctx context.Context, owner, repo string, number in
 // download route, which takes the API's credentials. A larger one is
 // ErrAnswerTooLong.
 func (f *Forgejo) Attachment(ctx context.Context, uuid string, limit int) ([]byte, error) {
-	return f.doLimit(ctx, http.MethodGet, "/attachments/"+url.PathEscape(uuid), nil, http.StatusOK, f.callAuth(), limit, 15*time.Second)
+	return f.doLimit(ctx, http.MethodGet, "/attachments/"+url.PathEscape(uuid), nil, http.StatusOK, f.callAuth(), limit, forgejoTimeout)
 }
 
 // CommentOnce posts body on issue number unless a comment of exactly that

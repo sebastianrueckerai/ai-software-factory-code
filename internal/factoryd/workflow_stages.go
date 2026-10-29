@@ -728,7 +728,7 @@ func (t *taskRun) scheduleBeside(head string, g *GateResults) {
 	runs := func(stage int) bool { return stage > checks && t.skipReason(t.cfg.Stages[stage]) == "" }
 	start := func(stage, activity string, args ...any) {
 		t.beside = append(t.beside, &besideRun{stage: stage, head: head, since: workflow.Now(t.ctx),
-			gateRun: t.startGate(reviewOptions(), activity, args...)})
+			gateRun: t.startGate(fanOutOptions(), activity, args...)})
 	}
 	gates := *g
 	gates.Beside = true
@@ -784,7 +784,7 @@ func (t *taskRun) besideGate(stage, gate, head string, out any, activity string,
 			}
 		}
 	}
-	return t.gateActivity(true, reviewOptions(), out, activity, args...)
+	return t.gateActivity(true, fanOutOptions(), out, activity, args...)
 }
 
 // askBeside asks the human at once what the gate supervisor's escalation

@@ -3088,11 +3088,19 @@ func TestWorkflowShortActivitiesRetryForADay(t *testing.T) {
 }
 
 // The review and the audit make as many calls as their diff has parts, so
-// the activity carries no cap of its own beyond a day's quarter: the
-// heartbeat finds a lost worker, and the gate bound raises the alert.
-func TestReviewOptionsHaveNoPartCap(t *testing.T) {
-	opts := reviewOptions()
+// the activity carries no cap of its own beyond 6 hours: the heartbeat
+// finds a lost worker, and the gate bound raises the alert. The gate
+// supervisor's and the screening answer's one call keep the bound a
+// review had before it fanned out: 3 calls of 15 minutes and 2, 47
+// minutes, within 3 x 45 + 10, 2 h 25.
+func TestFanOutOptionsHaveNoPartCap(t *testing.T) {
+	opts := fanOutOptions()
 	if opts.StartToCloseTimeout != 6*time.Hour || opts.ScheduleToCloseTimeout != 18*time.Hour ||
+		opts.HeartbeatTimeout != 2*time.Minute || opts.RetryPolicy.MaximumAttempts != 3 {
+		t.Fatalf("fan-out options = %+v", opts)
+	}
+	opts = reviewOptions()
+	if opts.StartToCloseTimeout != 47*time.Minute || opts.ScheduleToCloseTimeout != 2*time.Hour+25*time.Minute ||
 		opts.HeartbeatTimeout != 2*time.Minute || opts.RetryPolicy.MaximumAttempts != 3 {
 		t.Fatalf("review options = %+v", opts)
 	}
