@@ -482,6 +482,42 @@ func TestIntegrationReviewBudgetRefusalIsANote(t *testing.T) {
 	}
 }
 
+// A criterion whose one call answers absent is stored unmet, a finding on
+// the card: absent never reaches a row.
+func TestIntegrationReviewAbsentIsUnmet(t *testing.T) {
+	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		if callOf(user) == "c1" {
+			return `{"verdict":"absent","evidence":"no test of a","fix":"card"}`
+		}
+		return featureAnswer(user)
+	}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	evidence := "no part of the diff holds the criterion's work: no test of a"
+	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "unmet", Evidence: evidence, Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "unmet", Evidence: "b.go never registers its route", Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+	}
+	if fmt.Sprint(rows) != fmt.Sprint(want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
+	}
+	if !slices.Contains(rv.Findings, "criterion c1 not met (unmet): "+evidence) {
+		t.Fatalf("findings = %q, want c1's", rv.Findings)
+	}
+}
+
+// The criterion prompt offers absent and says what met and absent mean.
+func TestCriterionPromptOffersAbsent(t *testing.T) {
+	for _, want := range []string{`"verdict": "met|partial|unmet|absent"`, "met when it shows work that meets the criterion", "absent when it holds none of the criterion's work"} {
+		if !strings.Contains(reviewCriterionPrompt, want) {
+			t.Errorf("the criterion prompt lacks %q", want)
+		}
+	}
+}
+
 func TestCitingListsCardsByAcceptance(t *testing.T) {
 	p := featurePlan()
 	for id, want := range map[string][]string{"c1": {"A", "I"}, "c2": {"B", "I"}, "c9": nil} {
@@ -497,10 +533,26 @@ func TestCombineCriterion(t *testing.T) {
 		parts []CriterionVerdict
 		want  CriterionVerdict
 	}{
+		// a met part's evidence and fix count only when the result is met
 		"met, partial": {[]CriterionVerdict{{Verdict: "met", Evidence: "x"}, {Verdict: "partial", Evidence: "y"}},
-			CriterionVerdict{Criterion: "c1", Verdict: "partial", Evidence: "x | y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "partial", Evidence: "y"}},
 		"met, unmet, partial": {[]CriterionVerdict{{Verdict: "met", Evidence: "x"}, {Verdict: "unmet", Evidence: "y"}, {Verdict: "partial", Evidence: "z"}},
-			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "x | y | z"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "y | z"}},
+		"met, unmet": {[]CriterionVerdict{{Verdict: "met", Evidence: "x"}, {Verdict: "unmet", Evidence: "y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "y"}},
+		"met planner, unmet card": {[]CriterionVerdict{{Verdict: "met", Fix: "planner", Evidence: "x"}, {Verdict: "unmet", Fix: "card", Evidence: "y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Fix: "card", Evidence: "y"}},
+		// absent is no work in a part: work elsewhere stands, none anywhere is unmet
+		"absent, absent": {[]CriterionVerdict{{Verdict: "absent"}, {Verdict: "absent"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "no part of the diff holds the criterion's work"}},
+		"absent with evidence": {[]CriterionVerdict{{Verdict: "absent", Fix: "card", Evidence: "p"}, {Verdict: "absent", Evidence: "q"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Fix: "card", Evidence: "no part of the diff holds the criterion's work: p | q"}},
+		"one part absent": {[]CriterionVerdict{{Verdict: "absent", Evidence: "p"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "no part of the diff holds the criterion's work: p"}},
+		"absent, met": {[]CriterionVerdict{{Verdict: "absent", Fix: "planner", Evidence: "p"}, {Verdict: "met", Evidence: "x"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "met", Evidence: "x"}},
+		"absent, partial": {[]CriterionVerdict{{Verdict: "absent", Evidence: "p"}, {Verdict: "partial", Fix: "card", Evidence: "y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "partial", Fix: "card", Evidence: "y"}},
 		"card, planner": {[]CriterionVerdict{{Verdict: "unmet", Fix: "card", Evidence: "x"}, {Verdict: "partial", Fix: "planner", Evidence: "y"}},
 			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Fix: "planner", Evidence: "x | y"}},
 		"planner, card": {[]CriterionVerdict{{Verdict: "unmet", Fix: "planner", Evidence: "x"}, {Verdict: "unmet", Fix: "card", Evidence: "y"}},
@@ -528,6 +580,8 @@ func TestParseCriterionAnswer(t *testing.T) {
 			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "TestA fails on empty input", Fix: "planner"}, ""},
 		"fenced": {test, "```json\n{\"verdict\":\"met\",\"evidence\":\"TestA passes\",\"fix\":\"card\"}\n```",
 			CriterionVerdict{Criterion: "c1", Verdict: "met", Evidence: "TestA passes", Fix: "card"}, ""},
+		"absent": {test, `{"verdict":"absent","evidence":"this part adds no handler","fix":"card"}`,
+			CriterionVerdict{Criterion: "c1", Verdict: "absent", Evidence: "this part adds no handler", Fix: "card"}, ""},
 		"unknown verdict": {test, `{"verdict":"done","evidence":"x","fix":"card"}`, CriterionVerdict{}, `unknown verdict "done"`},
 		"no verdict":      {test, `{"evidence":"x"}`, CriterionVerdict{}, `unknown verdict ""`},
 		"not json":        {test, "LGTM", CriterionVerdict{}, "invalid character"},
