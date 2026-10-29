@@ -57,6 +57,8 @@ type fakeStore struct {
 	approvals       []ApprovalRequest
 	gates           []string // "task gate since", in order
 	projects        []Project
+	// projectReadFails fails that many ProjectByRepository calls
+	projectReadFails int
 	// projectSpend is each repository's month spend, as ProjectMonthSpend
 	// reads it
 	projectSpend   map[string]float64
@@ -669,6 +671,10 @@ func seedProject(repository string) Project {
 // ProjectByRepository: with no projects set, every repository is a seed
 // project agents work on, as the code repository is.
 func (s *fakeStore) ProjectByRepository(ctx context.Context, repository string) (Project, bool, error) {
+	if s.projectReadFails > 0 {
+		s.projectReadFails--
+		return Project{}, false, errors.New("the database is gone")
+	}
 	if s.projects == nil {
 		return seedProject(repository), true, nil
 	}

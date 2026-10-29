@@ -3841,6 +3841,34 @@ func TestRunSessionOfACardWithoutAPlanTrackOffersNoReplan(t *testing.T) {
 	}
 }
 
+// The project read only decides whether replan is offered: when it fails,
+// the session runs, and its check-in is offered no replan.
+func TestRunSessionRunsWhenTheProjectReadFails(t *testing.T) {
+	runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
+	project := seedProject("sf/repo")
+	project.Process, project.Tracks = "spec", specTracks
+	store.projects = []Project{project}
+	store.projectReadFails = 1 // the session start's read, the first
+	tk := store.tasks["t2"]
+	tk.Size = "small"
+	store.tasks["t2"] = tk
+	version := testPolicyVersion()
+	version.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil,
+		cardDiffLine(250, 100)+"\n"+pushedLine("c0ffee")+"\n"+resultLine(true, "done"))
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c0ffee" {
+		t.Fatalf("result = (%+v, %v), want the session run to its push", res, err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("chat = %d calls %+v, want the size trip's check-in", chat.calls, chat.gots)
+	}
+	if got := chat.gots[0]; strings.Contains(got.System, "|replan") || strings.Contains(got.Input, "- replan:") || strings.Contains(got.Input, "Answer replan") {
+		t.Fatalf("the check-in is offered replan without the project:\n%s\n%s", got.System, got.Input)
+	}
+}
+
 // Only a bound agent card's coding session can be cut, and only where a
 // planner can take its rest: a plan's child, or a direct card whose
 // project's process has a plan track.

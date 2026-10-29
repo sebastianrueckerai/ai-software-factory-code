@@ -646,11 +646,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
 	}
-	project, _, err := r.store.ProjectByRepository(ctx, t.Repository)
-	if err != nil {
-		return SessionResult{}, named("project", err)
+	// the project only decides whether replan is offered: a read error
+	// offers none, and the session runs
+	if project, _, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
+		log.Printf("task %s: read the project of %s, so replan is not offered: %v", t.ID, t.Repository, err)
+	} else {
+		_, s.planTrack = trackClass(project, policy.TrackPlan)
 	}
-	_, s.planTrack = trackClass(project, policy.TrackPlan)
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
