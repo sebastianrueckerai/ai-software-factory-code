@@ -1380,6 +1380,30 @@ func (s *PGStore) SetTaskIssue(ctx context.Context, id string, issue int64) erro
 	return oneRow(res, err, "task "+id)
 }
 
+// switchToPlan sends a direct card's work to the planner
+// (versionDirectToPlan): BecomePlan turns it plan-track and the program
+// runs again, which TaskConfig now gives session mode plan. A refusal is
+// recorded on the timeline and the direct lifecycle goes on (switched
+// false).
+func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err error) {
+	if t.directToPlan < versionDirectToPlan {
+		return "", false, nil
+	}
+	var res PlanSwitchResult
+	if err := workflow.ExecuteActivity(t.short, ActivityBecomePlan, t.taskID, sw).Get(t.ctx, &res); err != nil {
+		final, err := t.finish("failed", "become plan: "+errMessage(err))
+		return final, true, err
+	}
+	if !res.Switched {
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "to_plan_refused", map[string]any{"reason": res.Refused}).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record to_plan_refused", "task", t.taskID, "error", err)
+		}
+		return "", false, nil
+	}
+	final, err = t.program()
+	return final, true, err
+}
+
 // planLoop is the program of a task of session mode plan: planner sessions
 // until one answers a valid plan, which RequestPlan files when it asks no
 // question (a refusal sends the planner back) and which otherwise waits for

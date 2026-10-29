@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/converter"
+	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -1174,6 +1175,87 @@ func TestPlanLoopCleanRevisionFilesInTheSameStep(t *testing.T) {
 	if got := h.finishAt.Sub(start); got != planSession || len(h.escalated) != 0 ||
 		slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "signal" }) {
 		t.Fatalf("finished %s after the start, escalated %q, steps %+v; want the session's %s, no wait, no signal", got, h.escalated, h.recorded, planSession)
+	}
+}
+
+type becomePlanCall struct {
+	taskID string
+	sw     PlanSwitch
+}
+
+// toPlanHarness is the plan harness on a direct coding card whose first
+// session pushes and whose pull request merges an hour in. Reconcile takes
+// a minute, and to_plan with sw arrives half-way through it, before the
+// lifecycle's loop top. BecomePlan records its calls and answers become; a
+// switch turns TaskConfig to the plan card's.
+func toPlanHarness(t *testing.T, sw PlanSwitch, become func() (PlanSwitchResult, error)) (*planHarness, *[]becomePlanCall) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
+	plan := h.taskConfig
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone}
+	h.reconcileAfter = time.Minute
+	var calls []becomePlanCall
+	h.env.OnActivity(ActivityBecomePlan, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
+			calls = append(calls, becomePlanCall{taskID, sw})
+			res, err := become()
+			if res.Switched {
+				h.taskConfig = plan
+			}
+			return res, err
+		})
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(SignalToPlan, sw) }, 30*time.Second)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	return h, &calls
+}
+
+// A direct card that gets to_plan before its first session turns
+// plan-track and runs the plan loop: no coding session, one planner
+// session, whose clean revision files its cards.
+func TestDirectCardSwitchesToThePlanLoopOnTheSignal(t *testing.T) {
+	sw := PlanSwitch{Reason: "too big", Work: "w"}
+	h, calls := toPlanHarness(t, sw, func() (PlanSwitchResult, error) { return PlanSwitchResult{Switched: true}, nil })
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(*calls, []becomePlanCall{{"t1", sw}}) {
+		t.Fatalf("BecomePlan calls %+v, want one for t1 with %+v", *calls, sw)
+	}
+	if len(h.sessions) != 0 || len(h.plans) != 1 || len(h.configPins) != 2 {
+		t.Fatalf("coding sessions %d, planner sessions %d, TaskConfig reads %d; want 0, 1, 2", len(h.sessions), len(h.plans), len(h.configPins))
+	}
+}
+
+// A refused switch is recorded with its reason and the direct card runs on:
+// its session, its pull request, its merge.
+func TestDirectCardKeepsRunningWhenTheSwitchIsRefused(t *testing.T) {
+	refused := "Card #1 has an open pull request, so its work cannot go back to the planner: close the pull request first."
+	h, calls := toPlanHarness(t, PlanSwitch{Reason: "too big", Work: "w"},
+		func() (PlanSwitchResult, error) { return PlanSwitchResult{Refused: refused}, nil })
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "to_plan_refused" && s.detail["reason"] == refused }) {
+		t.Fatalf("steps %+v, want to_plan_refused with %q", h.recorded, refused)
+	}
+	if len(*calls) != 1 || len(h.sessions) != 1 || len(h.plans) != 0 {
+		t.Fatalf("BecomePlan calls %d, coding sessions %d, planner sessions %d; want 1, 1, 0", len(*calls), len(h.sessions), len(h.plans))
+	}
+}
+
+// A BecomePlan that fails for good ends the task failed with its error.
+func TestSwitchToPlanFailsTheTaskWhenTheActivityFails(t *testing.T) {
+	h, _ := toPlanHarness(t, PlanSwitch{Reason: "too big", Work: "w"}, func() (PlanSwitchResult, error) {
+		return PlanSwitchResult{}, temporal.NewNonRetryableApplicationError("card t1 not found", errTerminal, nil)
+	})
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "become plan: card t1 not found" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.sessions) != 0 || len(h.plans) != 0 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want none", len(h.sessions), len(h.plans))
 	}
 }
 

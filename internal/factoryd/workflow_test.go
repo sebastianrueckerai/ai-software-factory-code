@@ -87,6 +87,8 @@ type workflowHarness struct {
 	// taskConfig answers TaskConfig when set; configPins are its calls' pins
 	taskConfig *TaskConfig
 	configPins []int64
+	// reconcileAfter is how long Reconcile takes on the workflow's clock
+	reconcileAfter time.Duration
 	// branchHead answers BranchHead; branchReads counts its calls
 	branchHead  string
 	branchReads int
@@ -240,6 +242,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityParkForTool:    func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
 		ActivityImageArrived:   func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
 		ActivityLeaveImagePark: func(ctx context.Context, taskID, toolTask string) error { return nil },
+		ActivityBecomePlan: func(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
+			return PlanSwitchResult{}, nil
+		},
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -261,7 +266,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		})
 	h.env.OnActivity(ActivityBranchHead, mock.Anything, "t1").Return(
 		func(ctx context.Context, taskID string) (string, error) { h.branchReads++; return h.branchHead, nil })
-	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").Return(
+	h.env.OnActivity(ActivityReconcile, mock.Anything, "t1").AfterFn(func() time.Duration { return h.reconcileAfter }).Return(
 		func(ctx context.Context, taskID string) (RunState, error) { return h.state, nil })
 	h.env.OnActivity(ActivitySetState, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, state string) error { h.states = append(h.states, state); return nil })

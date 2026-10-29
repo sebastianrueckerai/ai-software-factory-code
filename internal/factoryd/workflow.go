@@ -62,6 +62,10 @@ const (
 	// (versionToolPark): TaskSignal's Image, Refusal and At, the park's
 	// created_at, which tells its own park from an earlier one.
 	SignalImageReady = "image_ready"
+	// SignalToPlan asks a running direct card to go to the planner, its
+	// payload a PlanSwitch: the lifecycle takes it before its next session
+	// (versionDirectToPlan).
+	SignalToPlan = "to_plan"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -554,6 +558,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
 	// its value is unused; the call stays until no running history carries the marker
 	workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
+	run.directToPlan = workflow.GetVersion(ctx, "direct-to-plan", workflow.DefaultVersion, versionDirectToPlan)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -600,7 +605,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalImageReady} {
+		SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalImageReady, SignalToPlan} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1110,6 +1115,12 @@ const (
 	// commit pushed after checks passed) and the merge's kept the approval
 	// waiting. maxHeadHolds bounds the adoptions.
 	versionHeadHolds workflow.Version = 1
+	// versionDirectToPlan (change id "direct-to-plan", roadmap 336): a
+	// direct card's lifecycle takes SignalToPlan before its next session
+	// (switchToPlan): BecomePlan turns the card plan-track and the plan
+	// loop runs on; a refusal is recorded and the card runs on as it was.
+	// A run from before the change leaves the signal unread.
+	versionDirectToPlan workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1219,6 +1230,7 @@ type taskRun struct {
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
+	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1688,6 +1700,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				if t.v4 < versionReconcileFindings || !slices.Contains(findings, f) {
 					addFindings([]string{f}, "changes")
 					t.gateFindings = true
+				}
+			}
+			var sw PlanSwitch
+			if t.directToPlan >= versionDirectToPlan && workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&sw) {
+				if final, switched, err := t.switchToPlan(sw); switched {
+					return final, err
 				}
 			}
 		}
