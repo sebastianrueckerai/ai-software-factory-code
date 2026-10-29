@@ -189,7 +189,7 @@ func (c *Console) runNote(ctx context.Context, a actor, run factoryd.RoutineRun)
 	case run.Outcome == "filed" && run.Issue > 0:
 		note := fmt.Sprintf("Filed #%d", run.Issue)
 		if t, ok, err := c.cfg.Tasks.Task(ctx, run.TaskID); err == nil && ok {
-			if col := fiveColumn(t, a.s.user); col >= 0 {
+			if col := fiveColumn(t); col >= 0 {
 				note += " in " + columnTitles[col]
 			}
 		}

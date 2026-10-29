@@ -25,7 +25,7 @@ const hostileOut = "＠mallory (fixes) #1, see hxxps://evil[.]test/x, https://gi
 // factoryd's own mentions and closing keyword stay.
 func TestPostedTextIsSanitised(t *testing.T) {
 	t.Run("information request", func(t *testing.T) {
-		task := Task{ID: "t1", Status: "running", Objective: "the slug breaks", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Author: "visitor"}
+		task := Task{ID: "t1", Status: "running", Objective: "the slug breaks", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Author: "visitor", Track: "direct"}
 		r, _, _ := newActivityRunner(t, task, &prForgejo{})
 		fj := &requestInfoForgejo{}
 		r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}

@@ -197,7 +197,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": "no plan filed"}))
 		return CriteriaResult{Skipped: "no plan filed"}, nil
 	}
-	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	p, err := r.filedPlan(ctx, t.Parent, t.ID)
 	if err != nil {
 		return CriteriaResult{}, err
 	}

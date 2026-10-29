@@ -250,7 +250,7 @@ footer#live:empty { display: none; }
 .st-merged { color: var(--st-merged); }
 .st-done { color: var(--st-done); }
 .st-failed { color: var(--st-failed); }
-.st-closed, .st-queued, .st-backlog, .st-plan, .st-other { color: var(--st-closed); }
+.st-closed, .st-queued, .st-other { color: var(--st-closed); }
 .pill.hollow { color: var(--st-waiting); }
 .pill.hollow::before { background: none; border: 1px solid currentColor; }
 .pill.st-stale { color: var(--need-text); }
@@ -276,7 +276,7 @@ footer#live:empty { display: none; }
 .chip.waiting { height: auto; min-height: 18px; padding: 1px 6px; white-space: normal; }
 .chip, .badge, .pill.fine { display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--text-muted); font: 11px/1 var(--font-mono); white-space: nowrap; background: none; }
 .pill.fine::before { content: none; }
-.pill.fine, .badge.plan, .chip.waiting { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
+.pill.fine, .chip.waiting { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
 .chip.blocked { color: var(--st-failed); border-color: color-mix(in srgb, var(--st-failed) 55%, transparent); }
 .chip.plan, .chip.rollup { color: var(--st-running); border-color: color-mix(in srgb, var(--st-running) 45%, transparent); }
 .chip.model { color: var(--text-faint); }
@@ -347,8 +347,6 @@ footer#live:empty { display: none; }
 .column.fold > h3 { cursor: pointer; }
 form.inline { display: inline; }
 form.inline button { margin: 0; }
-form.move button { padding: 0 6px; }
-.card[draggable=true] { cursor: grab; }
 .children { margin: 4px 0; padding-left: 16px; font-size: 12px; }
 .edit-form { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
 .edit-form label { display: contents; }

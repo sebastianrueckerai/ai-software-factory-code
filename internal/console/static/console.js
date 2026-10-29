@@ -41,9 +41,9 @@ document.addEventListener("htmx:configRequest", function (e) {
   });
 });
 
-// A refused board action (a move the lane does not take from you) answers
-// one sentence; htmx swaps nothing on an error, so show it. Every answer of
-// the console carries its Content-Security-Policy: a 502 to 504 without
+// A refused board action answers one sentence; htmx swaps nothing on an
+// error, so show it. Every answer of the console carries its
+// Content-Security-Policy: a 502 to 504 without
 // it, or no answer at all, is the router's while the console's pod rolls,
 // and says so in place of the router's text. The board's own reads flash
 // nothing: the stream reads the board again once it is back.
@@ -88,41 +88,18 @@ document.addEventListener("htmx:beforeRequest", function (e) {
   if (flash && e.detail.elt.id !== "board") flash.hidden = true;
 });
 
-// Drag a backlog card onto a lane column: submits the card's own move form
-// for that lane, the same request as its button. Cards without a form for
-// the lane are not dropped there.
-document.addEventListener("dragstart", function (e) {
-  var card = e.target.closest && e.target.closest("[data-card][draggable]");
-  if (card) e.dataTransfer.setData("text/plain", card.dataset.card);
-});
-function moveForm(e) {
-  var column = e.target.closest && e.target.closest("[data-lane]");
-  if (!column) return null;
-  var card = document.querySelector("[data-card=\"" + CSS.escape(e.dataTransfer.getData("text/plain")) + "\"][data-place]");
-  return card && card.querySelector("form[data-move=\"" + CSS.escape(column.dataset.lane) + "\"]");
-}
-document.addEventListener("dragover", function (e) {
-  if (e.target.closest && e.target.closest("[data-lane]")) e.preventDefault();
-});
-document.addEventListener("drop", function (e) {
-  var form = moveForm(e);
-  if (!form) return;
-  e.preventDefault();
-  form.requestSubmit();
-});
-
-// The new-task form offers the lanes of the chosen project's process only.
-function offerLanes() {
-  var project = document.getElementById("project"), lane = document.getElementById("lane");
-  if (!project || !lane) return;
-  for (var i = 0; i < lane.options.length; i++) {
-    var o = lane.options[i];
+// The new-task form offers the tracks of the chosen project's process only.
+function offerTracks() {
+  var project = document.getElementById("project"), track = document.getElementById("track");
+  if (!project || !track) return;
+  for (var i = 0; i < track.options.length; i++) {
+    var o = track.options[i];
     o.disabled = o.dataset.projects !== undefined && o.dataset.projects.split(" ").indexOf(project.value) < 0;
   }
-  if (lane.selectedOptions[0] && lane.selectedOptions[0].disabled) lane.value = "ready";
+  if (track.selectedOptions[0] && track.selectedOptions[0].disabled) track.value = "direct";
 }
 document.addEventListener("change", function (e) {
-  if (e.target.id === "project") offerLanes();
+  if (e.target.id === "project") offerTracks();
   // a setting applies at once, with no button to press: the board's
   // project, a column's order and show, the routines shown, a card's
   // accent; a change of the routines' period chooses within
@@ -132,7 +109,7 @@ document.addEventListener("change", function (e) {
   if (el.within && (e.target === el.within || e.target === el.unit)) el.routines.value = "within";
   f.requestSubmit();
 });
-document.addEventListener("DOMContentLoaded", offerLanes);
+document.addEventListener("DOMContentLoaded", offerTracks);
 
 // The find narrows the board as you type: its form swaps the board around
 // itself, which it outlives (hx-preserve). Its answer, as a menu's, lands
@@ -571,9 +548,8 @@ document.addEventListener("click", function (e) {
 });
 
 // A card's press acts at once (C31): the card moves to the column that
-// holds the status its form's data-to names, or a lane move's lane column,
-// sliding there, and leaves the board when no column holds it; a form
-// without one moves nothing. From the press on the card is locked: its
+// holds the status its form's data-to names, sliding there, and leaves
+// the board when no column holds it; a form without one moves nothing. From the press on the card is locked: its
 // buttons, on the board and in the drawer, take no press, and a second
 // action on it is dropped, so one press registers. The move holds across
 // the board's swaps until the factory's board shows the card out of the
@@ -687,9 +663,7 @@ document.addEventListener("click", function (e) {
       return;
     }
     var a = acts[id] = {id: id, xhr: e.detail.xhr, to: "", from: [], moved: [], off: [], busy: []};
-    var lane = f.dataset.move;
     if (f.dataset.to) a.to = "[data-holds~=\"" + CSS.escape(f.dataset.to) + "\"]";
-    else if (lane && document.querySelector("#board .column[data-lane=\"" + CSS.escape(lane) + "\"]")) a.to = "[data-lane=\"" + CSS.escape(lane) + "\"]";
     if (a.to) {
       var to = document.querySelector("#board .column" + a.to), cols = onBoard(id).map(colOf);
       a.from = cols.filter(function (c, i) { return cols.indexOf(c) === i && (!to || c !== to.getAttribute("aria-labelledby")); });

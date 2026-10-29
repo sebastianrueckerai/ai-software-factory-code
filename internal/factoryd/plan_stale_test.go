@@ -73,11 +73,11 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 // and leaves a started card and a final one alone.
 func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, fj := newPlanRunner(t, testPlan())
+	r, store, _, fj, _ := fileRig(t, testPlan())
 	pinned := fixtureVersion(t)
 	r.cfg.Policy = func() policy.Version { return pinned }
-	if res := createChildren(t, r); len(res.Refused) != 0 || !slices.Equal(res.Issues, []int64{2, 3, 4, 5}) {
-		t.Fatalf("the children: %+v", res)
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) {
+		t.Fatalf("the children: %+v", ref)
 	}
 	runPlanTask(store)
 	cards := cardsByKey(t, store)
@@ -111,7 +111,7 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	}
 
 	cards = cardsByKey(t, store)
-	if c := cards["foundation"]; c.Status != "backlog" || !strings.Contains(c.Objective, "Foundation: layout, contract, schema, migrations.") {
+	if c := cards["foundation"]; c.Status != "queued" || !strings.Contains(c.Objective, "Foundation: layout, contract, schema, migrations.") {
 		t.Fatalf("the never-started card kept its old brief:\n%s", c.Objective)
 	}
 	if c := cards["links-api"]; c.Objective != oldStarted || c.PlanRevision != 1 {
@@ -142,14 +142,14 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 // brief; a started one keeps the image it runs on.
 func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _ := newPlanRunner(t, testPlan())
+	r, store, _, _, _ := fileRig(t, testPlan())
 	pinned := fixtureVersion(t)
 	name, c, _ := pinned.ProjectOf("linkshort/linkshort")
 	c.Images = map[string]policy.ImagePin{"browser": {Digest: "sha256:" + strings.Repeat("b", 64), Key: keyBrowser, Tools: []string{"chromium"}}}
 	pinned.Projects[name] = c
 	r.cfg.Policy = func() policy.Version { return pinned }
-	if res := createChildren(t, r); len(res.Refused) != 0 {
-		t.Fatalf("the children: %+v", res)
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
 	}
 	runPlanTask(store)
 	started := cardsByKey(t, store)["redirects"]
@@ -183,7 +183,7 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1"); err != nil {
 		t.Fatal(err)
 	}
 	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
@@ -195,11 +195,11 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 // its brief, which states them; a started one keeps its own.
 func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _ := newPlanRunner(t, testPlan())
+	r, store, _, _, _ := fileRig(t, testPlan())
 	pinned := fixtureVersion(t)
 	r.cfg.Policy = func() policy.Version { return pinned }
-	if res := createChildren(t, r); len(res.Refused) != 0 {
-		t.Fatalf("the children: %+v", res)
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
 	}
 	runPlanTask(store)
 	started := cardsByKey(t, store)["redirects"]
@@ -240,10 +240,10 @@ func TestRunSessionStampsThePlanRevision(t *testing.T) {
 	plan := testPlan()
 	card := Task{ID: "t-card", Kind: "agent", Status: "running", Process: "spec", Repository: "sf/r",
 		SHA: "abc123", IssueNumber: 3, Author: "alice", Parent: "t-plan", Source: SourcePlan, PlanKey: "links-api",
-		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Links API"}
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Links API", Track: "direct"}
 	kube, objects := newFakeKube(), &fakeObjectStore{}
 	runner, _, store := newTestRunner(t, card, kube, objects)
-	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "done", Lane: policy.LanePlan, Process: "spec",
+	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
 		Repository: "sf/r", IssueNumber: 1, Author: "alice", AuthorWriter: true, Objective: "Link shortener"}
 	pinned := fixtureVersion(t)
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }

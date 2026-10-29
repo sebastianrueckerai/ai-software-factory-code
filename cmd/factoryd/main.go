@@ -538,6 +538,7 @@ func main() {
 		Sessions:         store,
 		Tasks:            store,
 		Writers:          lists,
+		Writes:           webhookIntake.Writes,
 		Timelines:        objects,
 		Policies:         store,
 		Costs:            store,
@@ -552,7 +553,6 @@ func main() {
 		CloseFactoryPR: func(ctx context.Context, taskID string, pr int64, by, words string) error {
 			return factoryd.CloseFactoryPR(ctx, store, workflows, taskID, pr, by, words)
 		},
-		MayMove:   webhookIntake.MayMove,
 		CloseCard: webhookIntake.CloseCard,
 		CloseCardDone: func(ctx context.Context, taskID, by, evidence string) error {
 			return runner.CloseCardDone(ctx, taskID, by, evidence)
@@ -562,9 +562,6 @@ func main() {
 		},
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
-		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
-			return factoryd.AcceptPlan(ctx, store, workflows, taskID, revision, sha, decider, author)
 		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
@@ -583,9 +580,6 @@ func main() {
 		},
 		RecordHumanCriteria: func(ctx context.Context, taskID, approver string) (int, error) {
 			return factoryd.RecordHumanCriteria(ctx, store, taskID, approver)
-		},
-		RejectPlan: func(ctx context.Context, taskID, by, why string) error {
-			return factoryd.RejectPlan(ctx, store, workflows, taskID, by, why)
 		},
 		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryPlanCard(ctx, taskID, by)

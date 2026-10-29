@@ -286,9 +286,10 @@ type ProjectConfig struct {
 	// work itself, autonomous runs the chat within the always-confirm
 	// set. Absent: manual.
 	Autonomy string `yaml:"autonomy,omitempty" json:"autonomy,omitempty"`
-	// BacklogCap bounds how many of the project's cards hold no admission
-	// stamp (backlog and queued); a filing at the cap refuses. Absent: 8.
-	BacklogCap int `yaml:"backlog_cap,omitempty" json:"backlog_cap,omitempty"`
+	// QueueCap bounds how many of the project's cards hold no admission
+	// stamp, the queued cards a slot has not taken yet; a filing at the
+	// cap refuses. Absent: 8.
+	QueueCap int `yaml:"queue_cap,omitempty" json:"queue_cap,omitempty"`
 	// Routines are the project's recurring work, each run filing a card on
 	// its schedule.
 	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
@@ -312,13 +313,13 @@ func (p ProjectConfig) AutonomyState() string {
 	return cmp.Or(p.Autonomy, AutonomyManual)
 }
 
-// BacklogCapOf is how many of repository's cards may wait unstarted: its
-// project file's backlog_cap, else the default.
-func (t Tree) BacklogCapOf(repository string) int {
-	if _, p, ok := t.ProjectOf(repository); ok && p.BacklogCap > 0 {
-		return p.BacklogCap
+// QueueCapOf is how many of repository's cards may wait unstarted: its
+// project file's queue_cap, else the default.
+func (t Tree) QueueCapOf(repository string) int {
+	if _, p, ok := t.ProjectOf(repository); ok && p.QueueCap > 0 {
+		return p.QueueCap
 	}
-	return DefaultBacklogCap
+	return DefaultQueueCap
 }
 
 // ChainConfig is a project file's chain block: how the CI chain of its
@@ -583,8 +584,8 @@ func (p ProjectConfig) Validate(name string) error {
 	if p.Autonomy != "" && !slices.Contains(AutonomyValues, p.Autonomy) {
 		bad("autonomy %q: want one of %v", p.Autonomy, AutonomyValues)
 	}
-	if p.BacklogCap < 0 {
-		bad("backlog_cap %d: a count of cards", p.BacklogCap)
+	if p.QueueCap < 0 {
+		bad("queue_cap %d: a count of cards", p.QueueCap)
 	}
 	if err := p.Chat.validate(); err != nil {
 		bad("%v", err)

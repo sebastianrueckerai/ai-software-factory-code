@@ -215,9 +215,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
 		},
-		ActivityRequestPlan: func(ctx context.Context, taskID string, revision int) (PlanRef, error) { return PlanRef{}, nil },
-		ActivityCreateChildren: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
-			return ChildrenResult{}, nil
+		ActivityRequestPlan: func(ctx context.Context, taskID string, revision int, pin int64) (PlanRef, error) {
+			return PlanRef{}, nil
 		},
 		ActivityOpenPlanQuestions: func(ctx context.Context, taskID string, revision int) (int, error) { return 0, nil },
 		ActivityAwaitSessionGap:   func(ctx context.Context, taskID string) error { return nil },
@@ -253,10 +252,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			if h.taskConfig != nil {
 				return *h.taskConfig, nil
 			}
-			tc := TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+			tc := TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: w.Config().Stages, Queue: policy.QueueNone}
 			if h.state.Report {
-				tc.Lane, tc.Class, tc.Session = "", policy.ClassAnalyzer, policy.SessionReport
+				tc.Class, tc.Session = policy.ClassAnalyzer, policy.SessionReport
 			}
 			return tc, nil
 		})
@@ -389,7 +388,7 @@ func checkinStopped(session string, outcome SessionOutcome, ck *CheckInOutcome) 
 // askTaskConfig is the harness's default TaskConfig with the check-in
 // bought on.
 func askTaskConfig() *TaskConfig {
-	return &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+	return &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: policy.QueueNone, CheckIn: time.Minute}
 }
 
@@ -414,7 +413,7 @@ func TestWorkflowHappyPathToMerged(t *testing.T) {
 // its coding card's first session on Models.Stronger, not Models.Start.
 func TestStrongerProjectStartsOnTheStrongerRung(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.taskConfig = &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: policy.QueueNone, Stronger: true}
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -461,7 +460,7 @@ func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 // this red.
 func TestWorkflowSessionCarriesTheTasksOwnAgentTimeAndCheckIn(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.taskConfig = &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: policy.QueueNone, AgentTime: 2 * time.Hour, CheckIn: 45 * time.Minute}
 	var deadlines []time.Duration
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
@@ -2861,7 +2860,7 @@ func TestWorkflowPodNeverStartedBeforeTheChange(t *testing.T) {
 // fails as before.
 func TestWorkflowReportRunsAgainWhenItsPodNeverStarted(t *testing.T) {
 	waited := ReportResult{NotStarted: podPendingWhy("s1")}
-	h, began, _ := reportHarness(t, waited, ReportResult{Comment: 77})
+	h, began, _ := reportHarness(t, waited, ReportResult{})
 	if final := h.run(t); final != "done" || len(h.escalated) != 0 || len(*began) != 2 || !(*began)[1].Equal((*began)[0]) {
 		t.Fatalf("final %q, escalations %q, sessions at %v; want done after a second session at once", final, h.escalated, *began)
 	}
@@ -2890,14 +2889,14 @@ func reportHarness(t *testing.T, results ...ReportResult) (h *workflowHarness, b
 // runs again; at a month's it waits on a human. A run from before the
 // change fails as before.
 func TestWorkflowReportWaitsOnACap(t *testing.T) {
-	h, began, _ := reportHarness(t, ReportResult{Capped: &dayRefusal}, ReportResult{Comment: 77})
+	h, began, _ := reportHarness(t, ReportResult{Capped: &dayRefusal}, ReportResult{})
 	h.env.SetStartTime(oct(14, 20, 43))
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || len(*began) != 2 || !(*began)[1].Equal(oct(15, 0, 0)) {
 		t.Fatalf("final %q, escalations %q, sessions at %v; want done after the second session at 00:00", final, h.escalated, *began)
 	}
 
 	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
-	h, began, _ = reportHarness(t, ReportResult{Capped: &month}, ReportResult{Comment: 77})
+	h, began, _ = reportHarness(t, ReportResult{Capped: &month}, ReportResult{})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "raised", Comment: 700})
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) || len(*began) != 2 {
 		t.Fatalf("final %q, escalations %q, %d sessions; want done after a human's answer", final, h.escalated, len(*began))
@@ -2915,9 +2914,9 @@ var refusedReport = ReportResult{Refused: ProviderWait{Status: 429, Reason: refu
 // A report session the provider refused fails no report task (roadmap
 // 155, 170): it waits 2 minutes, then 4, and runs the session again.
 func TestWorkflowReportWaitsOnTheProvider(t *testing.T) {
-	h, began, backoffs := reportHarness(t, refusedReport, refusedReport, ReportResult{Comment: 77})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "report posted as issue comment 77" {
-		t.Fatalf("finals %v, want done with comment 77", h.finals)
+	h, began, backoffs := reportHarness(t, refusedReport, refusedReport, ReportResult{})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "report kept on the task, no issue comment" {
+		t.Fatalf("finals %v, want done, the report kept", h.finals)
 	}
 	if b := *began; len(b) != 3 || b[1].Sub(b[0]) != 2*time.Minute || b[2].Sub(b[1]) != 4*time.Minute {
 		t.Fatalf("sessions began %v, want three, 2 and 4 minutes apart", b)
@@ -2953,7 +2952,7 @@ func TestWorkflowReportProviderWaitEndsOnTheClose(t *testing.T) {
 // A report run from before versionSessionRefusals fails on a refusal as
 // it failed on the session without a report.
 func TestWorkflowReportRefusalBeforeTheChange(t *testing.T) {
-	h, began, backoffs := reportHarness(t, refusedReport, ReportResult{Comment: 77})
+	h, began, backoffs := reportHarness(t, refusedReport, ReportResult{})
 	h.env.OnGetVersion("provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals).Return(workflow.DefaultVersion)
 	want := "report session: the report session ended without a report: " + refusedSession.Reason
 	if final := h.run(t); final != "failed" || h.finals[0][1] != want || len(*began) != 1 || len(*backoffs) != 0 {

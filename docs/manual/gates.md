@@ -119,9 +119,8 @@ that task and pull request is required), which signals `approved` with
 signal-with-start like the webhook path. An approval the project agent
 decides (in a wake, or unconfirmed in a member's turn at full auto) is the
 factory's own, whoever is online: the console posts no review and meets
-no human criterion, and every approval request, plan decision and signal
-it decides names `factory-chat` (the cards of a plan it accepts stay the
-member's). `Merge` treats approver `factory-chat` as the merge gate's own
+no human criterion, and every approval request, plan answer and signal
+it decides names `factory-chat`. `Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
 with `factoryd: the project agent approved <head> on the project's merge
 rule auto`; on any other rule, or without a gate token, it refuses as
@@ -387,20 +386,20 @@ replays histories recorded on the cluster (`internal/factoryd/testdata`).
 
 The events (`internal/factoryd/events.go`) are timeline lines of step
 `event` on the task they concern: `card_created` (intake's new row,
-`FileAgentTask`'s card), `card_entered_lane` with `lane` and `by` (at
-creation, a label's move, the heal pass's move; the same function then
-starts the lane's task or the backlog's write-up), `task_ended` with
-`state` (`Finish`, the heal pass's failure of a malformed task, a closed
-backlog card, a closed human-lane issue),
+`FileAgentTask`'s card, a plan's cards) with `track` and `by`,
+`task_ended` with `state` (`Finish`, the heal pass's failure of a
+malformed task, a closed human-lane issue),
 `pull_request_merged` with `pr` and `by` (`Merge` for factory-merge's
 merges, intake for a human's merge in Forgejo) and `all_children_done`
 with `cards` on the plan task when the last of its cards turns done,
 which also comments on the plan's issue.
 
 The dependency wait (`internal/factoryd/deps.go`, change id `dep-wait`):
-a card of a process with the `dependencies` block asks, before its first
-session, for the cards it depends on (`task_deps`, which `CreateChildren`
-fills). None open: it starts. One ended `failed` or `closed`: the card
+a card of a process with the `dependencies` block waits in the queue,
+holding no work slot, while a card it depends on (`task_deps`, which the
+plan's filing fills) is open: the admission starts it once every one is
+done or one ended closed. Its workflow asks again before its first
+session. None open: it starts. One ended `failed` or `closed`: the card
 waits for a human (`dependency #3 (links-api) ended failed: close this
 card, or answer to start it anyway`); an answer starts it with that
 line as a finding and is kept on the timeline (`dependencies_started`,
@@ -412,8 +411,8 @@ waiting on the task, or 10 minutes, then asks again. The heal pass starts
 every waiting card's workflow and signals `dep_ended` to each whose wait
 would end.
 
-The planner (`internal/factoryd/plan.go`, change id `plan`): a card in
-lane plan runs report-mode sessions of its class (the `planner`) on the
+The planner (`internal/factoryd/plan.go`, change id `plan`): a card on
+the plan track runs report-mode sessions of its class (the `planner`) on the
 stronger rung with the plan guide: the issue is the spec, the answer one
 fenced json block (a summary and `min_cards` to `max_cards` cards, each with key,
 role, title, brief, directories, depends_on, acceptance and size), a card
@@ -422,30 +421,36 @@ it (one line per finding); factoryd adds every card's edge to the
 foundation card and the integration card's to every other, and refuses
 a cycle. An invalid
 plan goes back to the planner as its findings. A valid one is the task's
-next revision (`plan_revisions`, timeline `plan_revision`), posted once
-on the issue under `<!-- factoryd plan <task> revision <n> -->`
-(sanitised: summary, a table of the cards, each brief in a details
-block), with an approval request of kind `plan` (`{"revision",
-"sha256"}`, superseding an earlier revision's); the task waits in
-`waiting-human`. A writer's comment (one made while a session ran
-included) sends the planner back with it and the last plan; a planner
-that stops to ask a human (its `escalate_to_human`, the gate supervisor)
-puts the question on the card, and the answer goes to the next session;
-a session without a plan passes its last message on with the findings; `plan_accepted` (the console's `AcceptPlan`, approvers;
-a revision that is no longer the newest is refused: `the plan changed to
-revision <m>; reload`) runs `CreateChildren`; `plan_rejected` (`RejectPlan`)
-ends the task `failed`, a closed issue `closed`. Every session counts
-against `limits.sessions`; at the cap the card waits with the findings
-and a writer's comment buys one more. `CreateChildren` judges the
-revision again (a finding refuses the acceptance, comments `accepting
-revision <n> was refused: ...` and goes to the planner), then files each
-card in topological order, once however often it runs: a backlog task
-row (source `plan`, the plan's process, `plan_key`, the approver as
-author) and a bot issue labelled `backlog` and `state/backlog` under
-`<!-- factoryd plan <task> card <key> -->` (found by that marker on a
-retry), `card_created` per card; the edges as Forgejo issue dependencies
-and `task_deps`; the issues in the plan's comment; the plan task ends
-`done` (`plan revision <n> accepted: <k> cards filed`). A card's sessions
+next revision (`plan_revisions`, timeline `plan_revision`), and
+`RequestPlan` asks its questions (and the confirmation of its spec and
+criteria, once). A revision with no question files its cards in the same
+step and no click (roadmap 225): `fileRevision` judges it again (a
+finding files nothing, comments `revision <n> files no cards: ...` once
+and goes to the planner), then files each card in topological order,
+once however often it runs: a task row queued on the direct track at
+main's head (source `plan`, the plan's process, `plan_key`, the plan
+card's author as author) and a bot issue labelled `agent` and
+`state/queued` under `<!-- factoryd plan <task> card <key> -->` (found by
+that marker on a retry), `card_created` per card; the edges as Forgejo
+issue dependencies and `task_deps`; then starts each card under the work
+bound, where it waits for its dependencies; the issues in the plan's
+comment under `<!-- factoryd plan <task> revision <n> -->` (sanitised:
+summary, a table of the cards, each brief in a details block); the plan
+task ends `done` (`plan revision <n> filed <k> cards`). Plans do not
+nest: a plan files direct cards only. A revision with open questions is
+posted with no cards, an approval request of kind `plan` (`{"revision",
+"sha256"}`) records what waits, and the task waits in `waiting-human`
+(Needs you), its work slot freed. The answer that leaves no question
+open sends the planner back with the answers; a writer's comment (one
+made while a session ran included) sends it back with the comment and the
+last plan; an answer to a revision that is no longer the newest is
+refused (`the plan changed to revision <m>; reload`); a closed issue ends
+the task `closed`. A planner that stops to ask a human (its
+`escalate_to_human`, the gate supervisor) puts the question on the card,
+and the answer goes to the next session; a session without a plan passes
+its last message on with the findings. Every session counts against
+`limits.sessions`; at the cap the card waits with the findings and a
+writer's comment buys one more. A card's sessions
 get the section "The spec and the plan" (the plan's issue and summary,
 the pod's `SPEC`) and the feature guide instead of the work guide
 (`CARD_ROLE`; the integration card's adds the `acceptance/` tests).

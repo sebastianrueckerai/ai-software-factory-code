@@ -43,13 +43,14 @@ func (r run) Costs() bool { return r.Kind == "building" || r.Kind == "planning" 
 
 var runClasses = map[string]string{"queued": "st-closed", "planning": "st-running", "building": "st-running", "verifying": "st-review", "waiting on you": "st-waiting"}
 
-// runKind is the stage a status puts a card in, "" for a final one.
-func runKind(status, lane string) string {
+// runKind is the stage a status puts a card on track in, "" for a final
+// one: a running plan-track card plans, any other builds.
+func runKind(status, track string) string {
 	switch status {
-	case "backlog", "queued", "waiting-deps", "waiting-image":
+	case "queued", "waiting-deps", "waiting-image":
 		return "queued"
 	case "running", "closing":
-		if lane == policy.LanePlan {
+		if track == policy.TrackPlan {
 			return "planning"
 		}
 		return "building"
@@ -88,7 +89,7 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 		switch e.Kind {
 		case factoryd.EventTaskStatus:
 			status, _ := e.Detail["status"].(string)
-			if k := runKind(status, t.Lane); k != "" {
+			if k := runKind(status, t.Track); k != "" {
 				pts = append(pts, point{at: e.At, order: 1, kind: k, start: true})
 			}
 		case factoryd.EventQuestionAsked:
@@ -104,11 +105,7 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 		at := stepTime(m)
 		switch m["step"] {
 		case "session_start":
-			k := "building"
-			if t.Lane == policy.LanePlan {
-				k = "planning"
-			}
-			pts = append(pts, point{at: at, order: 2, kind: k, start: true, calls: int(numAt(m, "attempt")), model: textAt(m, "model")})
+			pts = append(pts, point{at: at, order: 2, kind: runKind("running", t.Track), start: true, calls: int(numAt(m, "attempt")), model: textAt(m, "model")})
 		case "session_end":
 			// the end names the attempt and the outcome; the model is the run's
 			pts = append(pts, point{at: at, end: true, calls: int(numAt(m, "attempt")), model: textAt(m, "model"), note: textAt(m, "outcome")})

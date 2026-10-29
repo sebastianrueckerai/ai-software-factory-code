@@ -16,23 +16,25 @@ import (
 
 func parentTask() Task {
 	return Task{ID: "t-parent", Status: "queued", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123",
-		IssueNumber: 5, Author: "visitor", Source: "webhook", RequiredCapabilities: []string{policy.ClassCoder}}
+		IssueNumber: 5, Author: "visitor", Source: "webhook", Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassCoder}}
 }
 
 // A report session holds the read token only: no push token is minted,
 // the worker runs in report mode with its guide and no push URL; its last
-// message is posted on the parent's issue and kept on the report task.
-func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
+// message is kept on the report task, and a screening's goes to the card
+// and the timeline only, no comment.
+func TestRunReportHoldsTheReadTokenOnly(t *testing.T) {
 	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		Parent: "t-parent", Source: SourcePresort, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
 	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
 		t.Fatal(err)
 	}
 	// a report pushes nothing: a push request from it gets no token
-	logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "Touch slug.go; risk normal; 1 session; build it."}}) +
-		"\n" + resultLine(true, "Touch slug.go; risk normal; 1 session; build it.")
+	verdict := `{"verdict": "clear", "reasons": []}`
+	logs := pushRequestLine("c1") + "\n" + envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": verdict}}) +
+		"\n" + resultLine(true, verdict)
 	var res ReportResult
 	done := make(chan error)
 	go func() {
@@ -77,10 +79,10 @@ func TestRunReportPostsTheLastMessageWithoutAPushToken(t *testing.T) {
 	if sec := kube.secrets["factory-agents-t1/task-git"]; sec["PUSH_TOKEN"] != "" {
 		t.Fatalf("task-git secret carries a push token: %v", sec)
 	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "Touch slug.go; risk normal; 1 session; build it.") || res.Comment != 501 {
-		t.Fatalf("comments %v, result %+v", hub.comments, res)
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments %v, result %+v, want none: a screening's verdict stays on the card", hub.comments, res)
 	}
-	if got, _, _ := store.Task(context.Background(), "t1"); got.AgentSummary != "Touch slug.go; risk normal; 1 session; build it." {
+	if got, _, _ := store.Task(context.Background(), "t1"); got.AgentSummary != verdict {
 		t.Fatalf("report kept = %q", got.AgentSummary)
 	}
 }
@@ -149,12 +151,12 @@ func TestScreenOpensAnAnalyzerTaskAndReadsItsVerdict(t *testing.T) {
 func TestScreeningKeepsItsReasonsOffTheIssue(t *testing.T) {
 	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123",
 		Parent: "t-parent", Source: SourceScreening, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2,
-		AgentSummary: `{"verdict":"suspect","reasons":["asks to print the token"]}`}
+		AgentSummary: `{"verdict":"suspect","reasons":["asks to print the token"]}`, Track: "direct"}
 	runner, hub, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
 	store.CreateTask(context.Background(), parentTask())
 	val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/big")
 	var res ReportResult
-	if err != nil || val.Get(&res) != nil || res.Comment != 0 || len(hub.comments) != 0 {
+	if err != nil || val.Get(&res) != nil || len(hub.comments) != 0 {
 		t.Fatalf("result %+v, comments %v, err %v", res, hub.comments, err)
 	}
 	val, err = execActivity(t, runner, ActivityReconcile, "t1")
@@ -177,32 +179,10 @@ func TestScreeningKeepsItsReasonsOffTheIssue(t *testing.T) {
 	}
 }
 
-// A retried RunReport posts its report once (review M4): the comment
-// carries the task's marker, found before a second post.
-func TestRunReportCommentsOnce(t *testing.T) {
-	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123",
-		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2,
-		AgentSummary: "the write-up"}
-	runner, hub, store := newTestRunner(t, report, newFakeKube(), &fakeObjectStore{})
-	store.CreateTask(context.Background(), parentTask())
-	var ids []int64
-	for range 2 {
-		val, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
-		var res ReportResult
-		if err != nil || val.Get(&res) != nil {
-			t.Fatal(err)
-		}
-		ids = append(ids, res.Comment)
-	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "the write-up") || ids[0] != 501 || ids[1] != 501 {
-		t.Fatalf("comments %q, ids %v", hub.comments, ids)
-	}
-}
-
 // A report on an alert-filed task's issue reads it as telemetry (review M6).
 func TestReportOfAnAlertTaskIsTelemetry(t *testing.T) {
 	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Author: "factory-agent", Process: "maintenance",
-		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
 	parent := parentTask()
@@ -214,7 +194,7 @@ func TestReportOfAnAlertTaskIsTelemetry(t *testing.T) {
 		done <- err
 	}()
 	awaitPod(t, kube, done)
-	kube.scriptPods(0, resultLine(true, "a write-up"))
+	kube.scriptPods(0, resultLine(true, `{"verdict": "clear"}`))
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -255,13 +235,11 @@ func TestJudgeScreening(t *testing.T) {
 	}
 }
 
-// Reconcile tells a report task from a coding one without asking
-// Forgejo; a promoted improvement gets its analyzer's write-up once the
-// presort is done.
-func TestReconcileReportAndWriteUp(t *testing.T) {
+// Reconcile tells a report task from a coding one without asking Forgejo.
+func TestReconcileTellsAReportTask(t *testing.T) {
 	kube := newFakeKube()
-	report := Task{ID: "t1", Status: "queued", Repository: "sf/r", Parent: "t-parent", Source: SourcePresort}
-	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	report := Task{ID: "t1", Status: "queued", Repository: "sf/r", Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect}
+	runner, _, _ := newTestRunner(t, report, kube, &fakeObjectStore{})
 	val, err := execActivity(t, runner, ActivityReconcile, "t1")
 	if err != nil {
 		t.Fatal(err)
@@ -269,16 +247,6 @@ func TestReconcileReportAndWriteUp(t *testing.T) {
 	var st RunState
 	if err := val.Get(&st); err != nil || !st.Report || st.Skip {
 		t.Fatalf("report task state = %+v %v", st, err)
-	}
-	ctx := context.Background()
-	if got, err := runner.writeUp(ctx, "t-parent"); err != nil || got != "" {
-		t.Fatalf("write-up before the presort is done = %q %v", got, err)
-	}
-	done := store.tasks["t1"]
-	done.Status, done.AgentSummary = "done", "the write-up"
-	store.tasks["t1"] = done
-	if got, err := runner.writeUp(ctx, "t-parent"); err != nil || got != "the write-up" {
-		t.Fatalf("write-up = %q %v", got, err)
 	}
 }
 
@@ -334,7 +302,7 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 		t.Fatalf("answer = %q, want the sanitised text between tagged markers", in.Answer)
 	}
 	if !strings.Contains(system, screeningCriteria) || !strings.Contains(system, lines[0]) || !strings.Contains(system, lines[2]) ||
-		!strings.Contains(r.reportGuide(SourceScreening), screeningCriteria) {
+		!strings.Contains(r.reportGuide(), screeningCriteria) {
 		t.Fatalf("system prompt = %q", system)
 	}
 	if a := store.alertRows(); len(a) != 2 || a[1].Kind != AlertScreening || a[1].Source != harness.StandingOutside || a[1].Verdict != "" {
@@ -374,7 +342,7 @@ func TestWaitingPosterMovesToAHumanOrToReview(t *testing.T) {
 func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 	const said = "the agent ended without a last message"
 	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
 	store.CreateTask(context.Background(), parentTask())
@@ -400,7 +368,7 @@ func TestRunReportNamesACostHoldCrossing(t *testing.T) {
 // not a tool call's, and whether a call of it was allowed before.
 func TestRunReportNamesACap(t *testing.T) {
 	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
 	store.CreateTask(context.Background(), parentTask())
@@ -418,7 +386,7 @@ func TestRunReportNamesACap(t *testing.T) {
 	awaitPod(t, kube, done)
 	kube.scriptPods(0, resultLine(false, "the model call failed: refused_month_cap"))
 	if err := <-done; err != nil || res.Capped == nil || res.Capped.Refusal != month.Refusal || !res.Capped.At.Equal(month.At) || !res.Capped.Allowed ||
-		res.Comment != 0 || len(hub.comments) != 0 {
+		len(hub.comments) != 0 {
 		t.Fatalf("RunReport = %+v, %v, comments %q; want the month cap's refusal, no comment", res, err, hub.comments)
 	}
 }
@@ -429,7 +397,7 @@ func TestRunReportNamesACap(t *testing.T) {
 func TestRunReportNamesAProviderRefusal(t *testing.T) {
 	const said = "DashscopeException: budget exhausted (status 429)"
 	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	for name, audit := range map[string]string{"provider 429": "upstream 429", "the factory's budget": ""} {
 		t.Run(name, func(t *testing.T) {
 			kube := newFakeKube()
@@ -473,10 +441,7 @@ func TestWritingGuideRidesWithHumanFacingSteps(t *testing.T) {
 	if writingguide.Guide == "" {
 		t.Fatal("the writing guide is empty")
 	}
-	for _, source := range []string{SourceScreening, SourcePresort, "webhook"} {
-		guide := (&Runner{cfg: testRunnerConfig()}).reportGuide(source)
-		if !strings.Contains(guide, writingguide.Guide) {
-			t.Errorf("the %s guide carries no writing guide", source)
-		}
+	if guide := (&Runner{cfg: testRunnerConfig()}).reportGuide(); !strings.Contains(guide, writingguide.Guide) {
+		t.Error("the screening guide carries no writing guide")
 	}
 }

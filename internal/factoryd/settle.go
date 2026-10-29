@@ -13,7 +13,7 @@ import (
 // venue, or factoryd's withdrawal of the question. The first one after
 // the escalation wins.
 var answerKinds = []string{EventQuestionAnswered, EventSessionGranted, EventMergeApproved, EventMergeDenied,
-	EventPlanAccepted, EventPlanChangesRequested, EventPlanRejected, EventCardClosed, EventQuestionWithdrawn}
+	EventPlanChangesRequested, EventCardClosed, EventQuestionWithdrawn}
 
 // PokeSettle is an ask row's derived state: open, or settled with the
 // word, actor and time of the event that settled it (the
@@ -58,8 +58,8 @@ func settles(kind, family string) bool {
 var settleWords = map[string]string{
 	EventQuestionAnswered: "answered", EventSessionGranted: "answered", EventCardClosed: "answered",
 	EventQuestionWithdrawn: "withdrawn",
-	EventMergeApproved:     "approved", EventPlanAccepted: "approved",
-	EventMergeDenied: "rejected", EventPlanRejected: "rejected", EventPlanChangesRequested: "rejected",
+	EventMergeApproved:     "approved",
+	EventMergeDenied:       "rejected", EventPlanChangesRequested: "rejected",
 	EventTaskEnded: "moved on", EventApprovalRequested: "superseded",
 }
 

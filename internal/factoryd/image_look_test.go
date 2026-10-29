@@ -122,10 +122,10 @@ func newLookEnv(t *testing.T) *lookEnv {
 	kube.pods["factory-agents-x/p1"] = &fakePod{ns: "factory-agents-x", name: "p1", phase: "Running"}
 	ctx := context.Background()
 	for _, task := range []Task{
-		{ID: "t-1", Repository: "sf/app", IssueNumber: 12, Status: "running", RequiredCapabilities: []string{"coder"}},
-		{ID: "t-2", Repository: "sf/app", IssueNumber: 13, Status: "running", RequiredCapabilities: []string{"coder"}, Parent: "t-1"},
-		{ID: "t-3", Repository: "sf/app", IssueNumber: 14, Status: "running", RequiredCapabilities: []string{"coder"}},
-		{ID: "t-4", Repository: "sf/app", IssueNumber: 15, Status: "running", RequiredCapabilities: []string{"coder"}},
+		{ID: "t-1", Repository: "sf/app", IssueNumber: 12, Status: "running", RequiredCapabilities: []string{"coder"}, Track: "direct"},
+		{ID: "t-2", Repository: "sf/app", IssueNumber: 13, Status: "running", RequiredCapabilities: []string{"coder"}, Parent: "t-1", Track: "direct"},
+		{ID: "t-3", Repository: "sf/app", IssueNumber: 14, Status: "running", RequiredCapabilities: []string{"coder"}, Track: "direct"},
+		{ID: "t-4", Repository: "sf/app", IssueNumber: 15, Status: "running", RequiredCapabilities: []string{"coder"}, Track: "direct"},
 	} {
 		if err := e.store.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)

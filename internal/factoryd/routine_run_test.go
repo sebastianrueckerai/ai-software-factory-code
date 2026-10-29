@@ -95,7 +95,7 @@ func routineRunner(t *testing.T, tree policy.Tree) (*Runner, *fakeStore, *codeIs
 	issues := &codeIssues{labels: map[int64][]string{}}
 	store, wf := newFakeStore(), &fakeWorkflows{}
 	store.projects = []Project{{Name: codeProject, Repository: "sf/ai-software-factory-code", File: true, Objects: policy.ObjectsSeed,
-		Process: "maintenance", Lanes: maintenanceLanes}}
+		Process: "maintenance", Tracks: maintenanceTracks}}
 	v := policy.Version{Tree: tree}
 	r := &Runner{store: store, forgejo: issues.srv(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: &fakeEventRecorder{}, Store: store},
 		cfg: RunnerConfig{Policy: func() policy.Version { return v }, Workflows: wf}, Routines: store}
@@ -274,7 +274,7 @@ func TestGoHandsTheCardOver(t *testing.T) {
 			n = c
 		}
 	}
-	if n.Kind != "agent" || n.Status != "queued" || n.Lane != policy.LaneReady || n.Process != "maintenance" || n.Source != SourceRoutine ||
+	if n.Kind != "agent" || n.Status != "queued" || n.Track != policy.TrackDirect || n.Process != "maintenance" || n.Source != SourceRoutine ||
 		n.RiskClass != "standard" || n.BudgetEUR != 2 || n.IssueNumber != 72 || n.Author != "" ||
 		n.Repository != "sf/ai-software-factory-code" || !slices.Equal(n.RequiredCapabilities, []string{"coder"}) {
 		t.Fatalf("the hand-over = %+v", n)
@@ -362,7 +362,7 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 	if issues.issues[1] != n.Objective {
 		t.Fatalf("the issue %q, want the objective", issues.issues[1])
 	}
-	if err := store.CreateTask(ctx, Task{ID: "t-one", Kind: "human", Status: "backlog", Repository: "sf/ai-software-factory-code",
+	if err := store.CreateTask(ctx, Task{ID: "t-one", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
 		IssueNumber: 9, Source: "webhook", RiskClass: "standard", BudgetEUR: 1, Objective: "Tidy the docs"}); err != nil {
 		t.Fatal(err)
 	}
@@ -381,17 +381,17 @@ func TestGoJoinsTheHandOverWithoutBlankLines(t *testing.T) {
 }
 
 // Go refuses a card that is no human card waiting on a person and files
-// nothing; a human card in the backlog goes too, on its own words, with
-// no routine's label.
-func TestGoRefusedAndBacklog(t *testing.T) {
+// nothing; a person's card no routine filed goes too, on its own words,
+// with no routine's label.
+func TestGoRefusedAndAPlainCard(t *testing.T) {
 	ctx := context.Background()
 	r, store, issues, wf := routineRunner(t, routineTree(t))
-	if err := store.CreateTask(ctx, Task{ID: "t-agent", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "maintenance",
+	if err := store.CreateTask(ctx, Task{ID: "t-agent", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 		Repository: "sf/ai-software-factory-code", IssueNumber: 5, Source: SourceRoutine, RiskClass: "standard", BudgetEUR: 2,
 		Objective: "Audit\n\nRun the skill audit."}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "backlog", Repository: "sf/ai-software-factory-code",
+	if err := store.CreateTask(ctx, Task{ID: "t-back", Kind: "human", Status: "waiting-human", Repository: "sf/ai-software-factory-code",
 		IssueNumber: 6, Source: "webhook", RiskClass: "standard", Objective: "Tidy the docs\n\nTidy the console's docs."}); err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +400,7 @@ func TestGoRefusedAndBacklog(t *testing.T) {
 	}
 	issue, err := r.Go(ctx, "t-back", "sebastian")
 	if err != nil || issue != 71 {
-		t.Fatalf("the go of the backlog card = %d, %v; want #71", issue, err)
+		t.Fatalf("the go of the plain card = %d, %v; want #71", issue, err)
 	}
 	if len(store.tasks) != 3 {
 		t.Fatalf("%d tasks, want the two cards and the hand-over", len(store.tasks))
@@ -562,7 +562,7 @@ func TestRoutineRunMissed(t *testing.T) {
 }
 
 // The audit at its twentieth merge: an agent card through the intake
-// every agent card the factory files takes, in the project's ready lane,
+// every agent card the factory files takes, on the project's direct track,
 // queued and started, labelled routine, a label every repository carries.
 // Its objective is the routine's title, the skill to run and the brief,
 // its budget the policy's default (2 EUR in the fixture), and its issue
@@ -580,7 +580,7 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := onlyTask(t, store)
-	if card.Kind != "agent" || card.Status != "queued" || card.Lane != policy.LaneReady || card.Process != "maintenance" || card.Source != SourceRoutine ||
+	if card.Kind != "agent" || card.Status != "queued" || card.Track != policy.TrackDirect || card.Process != "maintenance" || card.Source != SourceRoutine ||
 		card.BudgetEUR != 2 || card.RiskClass != "standard" || card.IssueNumber != 71 || card.Author != "" ||
 		card.Objective != "Audit: bug hunt and architecture review\n\nRun the skill audit.\n\nHunt bugs in the code changed since the last audit." {
 		t.Fatalf("card %+v", card)
@@ -632,7 +632,7 @@ func TestRoutineRunNeedsMeToggle(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := onlyTask(t, store)
-	if card.Kind != "agent" || card.Status != "queued" || card.Lane != policy.LaneReady || card.Source != SourceRoutine || card.BudgetEUR != 2 || card.IssueNumber != 71 || card.Author != "" {
+	if card.Kind != "agent" || card.Status != "queued" || card.Track != policy.TrackDirect || card.Source != SourceRoutine || card.BudgetEUR != 2 || card.IssueNumber != 71 || card.Author != "" {
 		t.Fatalf("the flipped bump's card %+v", card)
 	}
 	if obj := card.Objective; !strings.HasPrefix(obj, "Weekly bump of the pinned outside inputs\n\nThe factory pins") ||

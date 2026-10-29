@@ -300,9 +300,9 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 	if card.PRNumber != 1 || card.IssueNumber != 1 {
 		t.Fatalf("card = %+v, want pull request #1 and its issue linked", card)
 	}
-	if card.Status != "queued" || card.Kind != "agent" || card.Lane != "" || card.Process != "" ||
+	if card.Status != "queued" || card.Kind != "agent" || card.Track != policy.TrackDirect || card.Process != "" ||
 		!slices.Equal(card.RequiredCapabilities, []string{policy.ClassCoder}) {
-		t.Fatalf("card = %+v, want a queued no-lane card of ready's class, like a roll", card)
+		t.Fatalf("card = %+v, want a queued card of the direct track's class with no process, like a roll", card)
 	}
 	if card.BudgetEUR != 2 || card.RiskClass != "standard" {
 		t.Fatalf("card = %+v, want the policy's task default of 2 EUR", card)

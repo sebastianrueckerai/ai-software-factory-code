@@ -41,9 +41,9 @@ func assetRig(t *testing.T) (r *rig, g *chatGateway, jpg []byte, post func(args 
 // names, in the order given, in the form field attachment.
 func TestChatNewCardUploadsTheThreadsImages(t *testing.T) {
 	r, _, jpg, post := assetRig(t)
-	args := `{"title":"Fix the button","body":"It is red.","lane":"ready","size":"small","acceptance":["The button is blue"],"attachments":["img2","img1"]}`
+	args := `{"title":"Fix the button","body":"It is red.","track":"direct","track_reason":"one fix","size":"small","acceptance":["The button is blue"],"attachments":["img2","img1"]}`
 	events := post(call(1, "new_card", args))
-	filed := "Filed sf/code#41 in lane ready."
+	filed := "Filed sf/code#41 on track direct."
 	if len(events) != 4 || !strings.Contains(events[0], `"result":"`+filed+`"`) {
 		t.Fatalf("the stream = %v, want the filing alone", events)
 	}
@@ -59,7 +59,7 @@ func TestChatNewCardUploadsTheThreadsImages(t *testing.T) {
 // session's look ask which one.
 func TestChatNewCardAttachesARepeatedNameOnce(t *testing.T) {
 	r, _, _, post := assetRig(t)
-	post(call(1, "new_card", `{"title":"Fix the button","lane":"ready","size":"small","acceptance":["x"],"attachments":["img1","img1"]}`))
+	post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img1"]}`))
 	if len(r.fg.issues) != 1 || !strings.Contains(r.fg.issues[0]["body"].(string), "\n\nAttachments: img1.png\n\n") {
 		t.Fatalf("the issues = %v, want one naming img1.png once", r.fg.issues)
 	}
@@ -71,7 +71,7 @@ func TestChatNewCardAttachesARepeatedNameOnce(t *testing.T) {
 // naming the images there are.
 func TestChatNewCardUnknownAttachmentFilesNothing(t *testing.T) {
 	r, _, _, post := assetRig(t)
-	events := post(call(1, "new_card", `{"title":"Fix the button","lane":"ready","size":"small","acceptance":["x"],"attachments":["img1","img7"]}`))
+	events := post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img7"]}`))
 	if len(events) != 3 || !strings.Contains(events[0], `"result":"Refused: no image \"img7\": the conversation's images are img2, img1"`) {
 		t.Fatalf("the stream = %v", events)
 	}
@@ -85,8 +85,8 @@ func TestChatNewCardUnknownAttachmentFilesNothing(t *testing.T) {
 func TestChatNewCardUploadFailureStillAnswersTheFiling(t *testing.T) {
 	r, _, _, post := assetRig(t)
 	r.fg.failAssets = true
-	events := post(call(1, "new_card", `{"title":"Fix the button","lane":"ready","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
-	want := `Filed sf/code#41 in lane ready. Forgejo did not take img1, img2: attach them again with comment's attachments.`
+	events := post(call(1, "new_card", `{"title":"Fix the button","track":"direct","track_reason":"one fix","size":"small","acceptance":["x"],"attachments":["img1","img2"]}`))
+	want := `Filed sf/code#41 on track direct. Forgejo did not take img1, img2: attach them again with comment's attachments.`
 	if len(events) != 4 || !strings.Contains(events[0], `"result":"`+want+`"`) {
 		t.Fatalf("the stream = %v, want the filing and the failed names", events)
 	}

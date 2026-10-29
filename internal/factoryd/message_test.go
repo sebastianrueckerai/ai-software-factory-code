@@ -488,7 +488,7 @@ func writeMints(h *forgejoHub) []string {
 // process in the pod is dead, not at the session's start: write on the
 // bot's fork, posted to the worker's POST /push with the session's bearer.
 func TestPushTokenMintedAtThePushRequest(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	var atStart, atPost []string
@@ -523,7 +523,7 @@ func TestPushTokenMintedAtThePushRequest(t *testing.T) {
 // worker a re-ask, not the push: the tap answers every ask, and only the
 // answered one posts a token.
 func TestPushTokenOneFailedAnswerThenASuccess(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	hub.failWrites = 1
@@ -548,7 +548,7 @@ func TestPushTokenOneFailedAnswerThenASuccess(t *testing.T) {
 // token: the container's env takes no secret, and task-git holds the clone
 // init container's read token only.
 func TestWorkerContainerCarriesNoForgejoToken(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil,
@@ -621,7 +621,7 @@ func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 
 // The wall clock stops the session the same way.
 func TestWallClockStopAnswersThePushRequest(t *testing.T) {
-	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
+	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}

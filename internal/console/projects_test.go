@@ -41,12 +41,12 @@ func (f *fakeProjects) Projects(context.Context) ([]factoryd.Project, error) {
 func projectRows() []factoryd.Project {
 	return []factoryd.Project{
 		{Name: "ai-software-factory-code", Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", File: true,
-			Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes,
+			Process: "maintenance", Tracks: testProcesses()["maintenance"].Tracks,
 			Namespaces: []string{"factory"}, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}},
 		{Name: "ai-software-factory-infra", Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none", File: true,
 			Tokens: policy.SeedTokens{Read: policy.SecretConfig}},
 		{Name: "demo-app", Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", File: true,
-			Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes,
+			Process: "maintenance", Tracks: testProcesses()["maintenance"].Tracks,
 			Namespaces:   []string{"demo-staging", "demo-prod"},
 			Environments: []factoryd.Environment{{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.aisoftwarefactory.world"}},
 			Quota:        policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"}, ReadTokenHash: "h", GitToken: "secret-git-token", MergeToken: "secret-merge-token", GateToken: "secret-gate-token",
@@ -618,7 +618,8 @@ func TestNewProjectOpensPullRequestAsHuman(t *testing.T) {
 		t.Error("a non-approver's file was checked")
 		return nil, nil
 	}
-	other.fg.user, other.writers.users = "alice", []string{"sebastian", "alice"}
+	other.fg.user, other.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	other.forgetWriters()
 	ock, os := other.loggedIn(t)
 	if rec := other.do(post("/projects", linkshortForm(os.csrf)), ock); rec.Code != http.StatusForbidden {
 		t.Errorf("POST /projects by a non-approver = %d, want 403", rec.Code)

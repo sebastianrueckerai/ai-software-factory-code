@@ -32,7 +32,7 @@ func TestNeedWaiting(t *testing.T) {
 
 // A card's stage without any time to count from has a word and no age.
 func TestStageWithoutATime(t *testing.T) {
-	word, age := stage(factoryd.Task{Status: "running", Lane: policy.LaneReady}, time.Now())
+	word, age := stage(factoryd.Task{Status: "running", Track: policy.TrackDirect}, time.Now())
 	if word != "building" || age != "" {
 		t.Errorf("stage = %q, %q; want building and no age", word, age)
 	}
@@ -48,7 +48,7 @@ func TestStageWithoutATime(t *testing.T) {
 func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	admitted := time.Now().Add(-3 * time.Hour)
-	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "run again",
+	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "run again",
 		CreatedAt: admitted.Add(-time.Hour), AdmittedAt: &admitted})
 	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventTaskStatus, Actor: factoryd.FactoryDecider,
 		Via: factoryd.ViaFactoryd, At: time.Now().Add(-20 * time.Minute), Detail: map[string]any{"status": "running", "gate": ""}}); err != nil {
@@ -78,7 +78,7 @@ func TestStageAgeFromTheNewestStatusRow(t *testing.T) {
 // article of its own.
 func TestStatusPanelListsNoCards(t *testing.T) {
 	r := newRig(t)
-	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
+	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "working", CreatedAt: time.Now().Add(-time.Hour)},
 		factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human", Repository: "sf/code", Objective: "rotate the key", IssueNumber: 16})
 	ck, _ := r.loggedIn(t)
 	for _, page := range []string{"/", "/?view=wide"} {
@@ -117,8 +117,8 @@ func TestStatusPanelListsNoCards(t *testing.T) {
 // speaks only on a card in progress or waiting.
 func TestAQueuedCardDoesNotSpeak(t *testing.T) {
 	r, ev := newRigWithEvents(t)
-	r.tasks.set("", factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Repository: "sf/code", Objective: "queued", CreatedAt: time.Now()})
-	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-q", Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton, At: time.Now()}); err != nil {
+	r.tasks.set("", factoryd.Task{ID: "t-q", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code", Objective: "queued", CreatedAt: time.Now()})
+	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-q", Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
 	ck, _ := r.loggedIn(t)
@@ -133,7 +133,7 @@ func TestAQueuedCardDoesNotSpeak(t *testing.T) {
 // dropped, and the gauge it drew stayed empty.
 func TestNoInlineStyle(t *testing.T) {
 	r := newRig(t)
-	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Repository: "sf/code", Objective: "spends", BudgetEUR: 10, SpentEUR: 5.1})
+	r.tasks.set("", factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Repository: "sf/code", Objective: "spends", BudgetEUR: 10, SpentEUR: 5.1})
 	ck, _ := r.loggedIn(t)
 	for _, page := range []string{"/", "/?view=wide", "/cards/t-run/drawer?tab=overview", "/costs", "/tasks/t-run/timeline"} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()

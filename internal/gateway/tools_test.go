@@ -1299,7 +1299,7 @@ func TestManualTool(t *testing.T) {
 	e := newToolEnv(t, running("coder"), v)
 	text, isErr := e.call(t, "manual", nil)
 	if isErr || !strings.Contains(text, "Signals and members file cards") ||
-		!strings.Contains(text, "backlog: waits in the backlog") ||
+		!strings.Contains(text, "queued: waits for a free work slot, in filing order") ||
 		!strings.Contains(text, "approval: a human approves the merge") {
 		t.Fatalf("manual = %q", text)
 	}

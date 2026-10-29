@@ -90,7 +90,7 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{}}
 	r := &Runner{cfg: cfg, kube: kube, store: store, forgejo: &Forgejo{BotUser: "factory-agent"}}
-	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
+	task := Task{ID: "t1", Repository: "linkshort/linkshort", Track: "direct"}
 	store.CreateTask(context.Background(), task)
 	cache, _, err := r.setupNamespace(context.Background(), &task, ForgejoToken{})
 	if err != nil {

@@ -16,16 +16,12 @@ import (
 // with their card. These tests run on the store beside the wake tests'
 // rig.
 
-// wakeMove records a card move of task on repository, its status change
-// when status is true, via chat when the agent itself did it, and
-// returns the event's id.
-func wakeMove(t *testing.T, s *PGStore, repository, task, via string, status bool) int64 {
+// wakeMove records a card's move, its status change, of task on
+// repository, via chat when the agent itself did it, and returns the
+// event's id.
+func wakeMove(t *testing.T, s *PGStore, repository, task, via string) int64 {
 	t.Helper()
-	kind := EventCardMoved
-	if status {
-		kind = EventTaskStatus
-	}
-	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: kind, Via: via})
+	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: EventTaskStatus, Via: via})
 	if err != nil {
 		t.Fatalf("record the move: %v", err)
 	}
@@ -56,7 +52,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 	if err := s.AddChatWatch(t.Context(), "sf/manual", "sebastian", manualConv, "t-9"); err != nil {
 		t.Fatal(err)
 	}
-	idManual := wakeMove(t, s, "sf/manual", "t-9", ViaFactoryd, false)
+	idManual := wakeMove(t, s, "sf/manual", "t-9", ViaFactoryd)
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -66,7 +62,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 	if got := wakeCursorOf(t, s, "sf/manual"); got < idManual {
 		t.Fatalf("the manual cursor %d stayed behind its event %d", got, idManual)
 	}
-	id1 := wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false)
+	id1 := wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -82,7 +78,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 	if got := wakeCursorOf(t, s, "sf/wake"); got < id1 {
 		t.Fatalf("the cursor %d stayed behind the event %d", got, id1)
 	}
-	id2 := wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false)
+	id2 := wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -93,7 +89,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 		t.Fatalf("the cursor %d stayed behind the second event %d", got, id2)
 	}
 	*clock = clock.Add(61 * time.Second)
-	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, true)
+	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -140,7 +136,7 @@ func TestTimerFiresOnceOnItsThread(t *testing.T) {
 		t.Fatalf("%d wakes after the row is gone, want 1: %+v", len(calls), calls)
 	}
 	*clock = clock.Add(30 * time.Minute)
-	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false) // a move is not the timer's thread
+	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd) // a move is not the timer's thread
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
@@ -194,7 +190,7 @@ func TestWatchesDieWithTheCard(t *testing.T) {
 	if len(due) != 1 || due[0].Note != "free" {
 		t.Fatalf("the timers after the end = %+v, want only the unbound one", due)
 	}
-	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false)
+	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}

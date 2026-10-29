@@ -100,7 +100,7 @@ func TestUpdateBranchAsBotOnFork(t *testing.T) {
 
 	// the activity on the same pull request: main moves again
 	store := newFakeStore()
-	store.CreateTask(ctx, Task{ID: "q1", Status: "in-review", Repository: up.String(), PRNumber: pr.Number})
+	store.CreateTask(ctx, Task{ID: "q1", Status: "in-review", Repository: up.String(), PRNumber: pr.Number, Track: "direct"})
 	r, err := NewRunner(testRunnerConfig(), store, newFakeKube(), bot, &Completion{Store: store, Forgejo: bot}, &fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
 	if err != nil {
 		t.Fatal(err)

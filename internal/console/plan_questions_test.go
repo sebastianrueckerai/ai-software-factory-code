@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // askedQuestions are a plan revision's two open questions, of 3 and 2
@@ -31,8 +30,8 @@ func questionsRig(r *rig) {
 }
 
 // Ruling 264: the plan card asks the plan's open questions above its
-// accept form, one button per choice and a text box each, the accept
-// button disabled while any is open; an answer posts "Answer <n>:
+// Request changes, one button per choice and a text box each, its meta
+// line counting the open ones, and offers no Accept; an answer posts "Answer <n>:
 // <answer>" on the issue as the member, signals factoryd and shows on the
 // card; a second answer to it, one to a stale revision or to no question,
 // and an empty or long one are refused.
@@ -47,15 +46,16 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	for _, want := range []string{"<legend>1. How often does the checker probe a site?</legend>", "<legend>2. How long are the results kept?</legend>",
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
 		`<button type="submit" name="answer" value="60 seconds">60 seconds</button>`,
-		`<input type="text" id="answer-20-2" name="answer" maxlength="1000" required>`, `<p class="meta">2 questions open</p>`, ` disabled>Accept plan</button>`,
+		`<input type="text" id="answer-20-2" name="answer" maxlength="1000" required>`, `<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
 		}
 	}
 	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 7 || strings.Count(card, `<button type="submit" name="answer"`) != 5 ||
-		strings.Count(card, `<input type="text"`) != 2 || strings.Index(card, "<legend>2.") > strings.Index(card, `action="/tasks/t-plan/plan/accept"`) {
-		t.Errorf("want 7 answer forms, 5 choice buttons and 2 text boxes above the accept form:\n%s", card)
+		strings.Count(card, `<input type="text"`) != 2 || strings.Index(card, "<legend>2.") > strings.Index(card, `action="/tasks/t-plan/plan/changes"`) ||
+		strings.Contains(card, "Accept plan") {
+		t.Errorf("want 7 answer forms, 5 choice buttons and 2 text boxes above Request changes, and no Accept:\n%s", card)
 	}
 	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
 	answer := func(revision, index, text string) *httptest.ResponseRecorder {
@@ -68,7 +68,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		t.Fatalf("answer: %d to %q %s; comment %q, calls %v", rec.Code, rec.Header().Get("Location"), rec.Body, r.fg.comments[comments], r.fg.calls)
 	}
 	if card := board(); !strings.Contains(card, `<p class="answered">How often does the checker probe a site?: 60 seconds (sebastian)</p>`) ||
-		!strings.Contains(card, `<p class="meta">1 question open</p>`) || strings.Count(card, `<button type="submit" name="answer"`) != 2 {
+		!strings.Contains(card, `<p class="meta">1 question open. The answers go to the planner`) || strings.Count(card, `<button type="submit" name="answer"`) != 2 {
 		t.Errorf("the card after one answer:\n%s", card)
 	}
 	r.fg.calls = nil
@@ -91,7 +91,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	if rec := answer("2", "2", " 30\n days "); rec.Code != http.StatusSeeOther || r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Fatalf("the second answer: %d, comment %q", rec.Code, r.fg.comments[comments])
 	}
-	if card := board(); strings.Contains(card, " open</p>") || strings.Contains(card, " disabled>Accept plan") ||
+	if card := board(); strings.Contains(card, " open. ") || !strings.Contains(card, `<p class="meta">The answers go to the planner;`) ||
 		!strings.Contains(card, `<p class="answered">How long are the results kept?: 30 days (sebastian)</p>`) {
 		t.Errorf("the card once answered:\n%s", card)
 	}
@@ -105,30 +105,6 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 		r.fg.comments[comments] != "Answer 2: 30 days" {
 		t.Errorf("an unsignalled answer: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[comments])
 	}
-}
-
-// factoryd's refusal of a revision with open questions is the member's
-// sentence: the button answers it with 409, the chat's Do it as its
-// refusal.
-func TestAcceptPlanOpenQuestions(t *testing.T) {
-	r, _, g := newChatRig(t)
-	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
-		Lane: policy.LanePlan, Process: "maintenance", Objective: "Uptime", Repository: "sf/code", IssueNumber: 20}})
-	r.c.cfg.AcceptPlan = func(context.Context, string, int, string, string, string) error {
-		return factoryd.ErrOpenQuestions{Issue: 20, Revision: 1, Open: 1}
-	}
-	refused := "plan #20 revision 1 has 1 unanswered questions; answer them first"
-	ck, s := r.loggedIn(t)
-	if rec := r.do(post("/tasks/t-plan/plan/accept", url.Values{"csrf": {s.csrf}, "revision": {"1"}, "sha256": {"sha-1"}}), ck); rec.Code != http.StatusConflict ||
-		rec.Body.String() != refused+"\n" || len(r.fg.comments) != 0 {
-		t.Fatalf("the button: %d %q, comments %v", rec.Code, rec.Body, r.fg.comments)
-	}
-	g.replies = [][]string{{call(1, "accept_plan", `{"task_id":"t-plan","revision":1,"sha256":"sha-1"}`)}, {say("I will answer them first.")}}
-	_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"accept the plan"}})
-	_, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
-	equal(t, "Do it", events, []string{
-		`tool {"arguments":{"task_id":"t-plan","revision":1,"sha256":"sha-1"},"duration_ms":0,"name":"accept_plan","result":"Refused: ` + refused + `"}`,
-		`text {"text":"I will answer them first."}`, `done {}`})
 }
 
 // The project agent reads plan t-p #20's open questions on its card,
@@ -180,7 +156,7 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	r.tasks.answer("t-p", 1, 2, "30 days", "sebastian")
 	status, msg := refused(t, r, "answer", toolInput{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"})
 	equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
-		"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: accept_plan, request_changes or reject_plan decide the plan."})
+		"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."})
 }
 
 // batchAnswerRig is the reads rig with plan t-p #20 waiting on a human at

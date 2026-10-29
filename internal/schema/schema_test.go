@@ -97,14 +97,14 @@ func TestSpendRepairMigration(t *testing.T) {
 		// in beside the finished check of roadmap 271's migration, which
 		// is restored once this migration stamped them
 		`ALTER TABLE tasks DROP CONSTRAINT tasks_final_finished_at`,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, finished_at, settled_at, created_at) VALUES
-			('doubled', 1, 0.02595072, 'done', '2026-09-26 20:53:41Z', '2026-09-29 20:38:20Z', '2026-09-28 16:56:56Z'),
-			('noise', 1, 0.031115548, 'done', '2026-09-27 22:55:14Z', '2026-09-30 00:55:40Z', '2026-09-28 16:56:56Z'),
-			('equal', 1, 0.5, 'failed', '2026-09-29 21:00:00Z', '2026-09-29 23:01:00Z', '2026-09-29 20:40:00Z'),
-			('stage4-audit', 1, 0.01017076, 'done', NULL, NULL, '2026-09-28 16:56:56Z'),
-			('stage4-session', 1, 0, 'failed', NULL, NULL, '2026-09-28 16:56:56Z'),
-			('stage4-none', 1, 0, 'failed', NULL, NULL, '2026-09-28 16:56:56Z'),
-			('running', 1, 0, 'running', NULL, NULL, '2026-09-30 09:00:00Z')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, finished_at, settled_at, created_at, track) VALUES
+			('doubled', 1, 0.02595072, 'done', '2026-09-26 20:53:41Z', '2026-09-29 20:38:20Z', '2026-09-28 16:56:56Z', 'direct'),
+			('noise', 1, 0.031115548, 'done', '2026-09-27 22:55:14Z', '2026-09-30 00:55:40Z', '2026-09-28 16:56:56Z', 'direct'),
+			('equal', 1, 0.5, 'failed', '2026-09-29 21:00:00Z', '2026-09-29 23:01:00Z', '2026-09-29 20:40:00Z', 'direct'),
+			('stage4-audit', 1, 0.01017076, 'done', NULL, NULL, '2026-09-28 16:56:56Z', 'direct'),
+			('stage4-session', 1, 0, 'failed', NULL, NULL, '2026-09-28 16:56:56Z', 'direct'),
+			('stage4-none', 1, 0, 'failed', NULL, NULL, '2026-09-28 16:56:56Z', 'direct'),
+			('running', 1, 0, 'running', NULL, NULL, '2026-09-30 09:00:00Z', 'direct')`,
 		`INSERT INTO ledger (task_id, kind, ref, eur) VALUES
 			('doubled', 'settlement', 'litellm-final', 0.01297536),
 			('noise', 'model', 'small', 0.00277194799999999999), ('noise', 'settlement', 'litellm', 0.0283436),
@@ -176,10 +176,10 @@ func TestFinalFinishedAtMigration(t *testing.T) {
 	}
 	for _, stmt := range []string{
 		`ALTER TABLE tasks DROP CONSTRAINT tasks_final_finished_at`,
-		`INSERT INTO tasks (id, budget_eur, status, gate_since, created_at) VALUES
-		 ('gated', 1, 'done', '2026-10-13 09:15:00Z', '2026-10-12 08:00:00Z'),
-		 ('filed', 1, 'failed', NULL, '2026-10-12 09:30:00Z'),
-		 ('live', 1, 'running', NULL, '2026-10-14 09:30:00Z')`,
+		`INSERT INTO tasks (id, budget_eur, status, gate_since, created_at, track) VALUES
+		 ('gated', 1, 'done', '2026-10-13 09:15:00Z', '2026-10-12 08:00:00Z', 'direct'),
+		 ('filed', 1, 'failed', NULL, '2026-10-12 09:30:00Z', 'direct'),
+		 ('live', 1, 'running', NULL, '2026-10-14 09:30:00Z', 'direct')`,
 		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261015180000_final_finished_at.sql'`,
 	} {
 		if _, err := db.ExecContext(ctx, stmt); err != nil {
@@ -288,7 +288,7 @@ func TestFactoryCloseConfirmedMigration(t *testing.T) {
 	}
 	for _, stmt := range []string{
 		`ALTER TABLE intake_events DROP COLUMN confirmed_at`,
-		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur) VALUES ('t-fc', 'running', 'o', 'sf/r', 'agent', 1)`,
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur, track) VALUES ('t-fc', 'running', 'o', 'sf/r', 'agent', 1, 'direct')`,
 		`INSERT INTO intake_events (id, task_id, kind, author, body, comment_id, created_at) VALUES
 		 (1, 't-fc', 'factory_closed', 'factoryd', 'c', 9, '2026-10-01T10:00:00Z'),
 		 (2, 't-fc', 'issue_comment', 'sebastian', 'c', 11, '2026-10-01T11:00:00Z')`,
@@ -332,11 +332,11 @@ func TestAlertUnjudgedOnEndMigration(t *testing.T) {
 		t.Fatalf("migrate an empty database: %v", err)
 	}
 	for _, stmt := range []string{
-		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur, finished_at) VALUES
-		 ('t-failed', 'failed', 'o', 'sf/r', 'agent', 1, now()),
-		 ('t-done', 'done', 'o', 'sf/r', 'agent', 1, now()),
-		 ('t-closed', 'closed', 'o', 'sf/r', 'agent', 1, now())`,
-		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur) VALUES ('t-wait', 'waiting-human', 'o', 'sf/r', 'agent', 1)`,
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur, finished_at, track) VALUES
+		 ('t-failed', 'failed', 'o', 'sf/r', 'agent', 1, now(), 'direct'),
+		 ('t-done', 'done', 'o', 'sf/r', 'agent', 1, now(), 'direct'),
+		 ('t-closed', 'closed', 'o', 'sf/r', 'agent', 1, now(), 'direct')`,
+		`INSERT INTO tasks (id, status, objective, repository, kind, budget_eur, track) VALUES ('t-wait', 'waiting-human', 'o', 'sf/r', 'agent', 1, 'direct')`,
 		`INSERT INTO alerts (id, kind, source, task_id) VALUES
 		 (1, 'alert', 's', 't-failed'), (2, 'alert', 's', 't-done'), (3, 'alert', 's', 't-closed'),
 		 (4, 'alert', 's', 't-wait'), (6, 'escalation', 's', 't-failed')`,

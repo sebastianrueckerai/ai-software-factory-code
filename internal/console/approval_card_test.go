@@ -194,9 +194,9 @@ func TestCardPressAnswersWithTheBoard(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	for page, wants := range map[string][]string{
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
-			`data-holds="backlog queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
+			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
 			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" hx-target="#board" hx-swap="outerHTML" data-to="in-review">`},
-		"/?project=ai-software-factory-code&view=wide": {`data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
+		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},
 	} {
 		body := r.do(httptest.NewRequest(http.MethodGet, page, nil), ck).Body.String()

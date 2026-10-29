@@ -1,10 +1,8 @@
 # yaml-language-server: $schema=../schema/process.schema.json
-# Today's flow as blocks (ruling 208): a bug from anyone, or a writer's
-# agent label, starts a coder at once; an improvement waits in the backlog
-# with an analyzer's write-up until a writer moves it to ready.
-lanes:
-  - {name: backlog, write_up: analyzer}
-  - {name: ready, class: coder, moved_by: writers}
+# Maintenance (ruling 208, roadmap 225): every card is a direct-track
+# card, which a coder builds once a work slot is free.
+tracks:
+  direct: {class: coder}
 stages:
   - {name: screening, on_findings: human, enabled: true, when: outsider}
   - {name: checks, on_findings: agent, enabled: true}

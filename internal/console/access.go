@@ -44,15 +44,15 @@ const (
 
 // accessRule is one route's or tool's entry in accessTable: every role
 // in need must hold, judged in the order the wrappers had (the factory's
-// writers, the project's, its approvers), or for a lane move one of
-// either. Scope is where; what names an approver's action in its
+// writers, the project's, its approvers). Scope is where; what names an
+// approver's action in its
 // refusal; hide answers a GET's refusal as 404, so a card's existence
 // stays hidden from a member who may not see it.
 type accessRule struct {
-	need, either role
-	scope        scope
-	what         string
-	hide         bool
+	need  role
+	scope scope
+	what  string
+	hide  bool
 }
 
 // The table's repeated rules.
@@ -61,7 +61,6 @@ var (
 	rFactory = accessRule{need: factoryWriter, scope: scFactory}
 	rCard    = accessRule{need: writer, scope: scCard}
 	rProject = accessRule{need: writer, scope: scProject}
-	rLane    = accessRule{need: member, either: writer | approver, scope: scCard}
 )
 
 // accessTable is every console route's and chat tool's access in one
@@ -112,14 +111,10 @@ var accessTable = map[string]accessRule{
 	"POST /tasks/{id}/fund":                     {need: approver, scope: scCard, what: "fund a card"},
 	"POST /tasks/{id}/summary":                  rCard,
 	"POST /tasks/{id}/accent":                   rCard,
-	"POST /cards/{id}/lane":                     rLane,
 	"POST /cards/{id}/thread":                   rCard,
-	"POST /tasks/{id}/start-plan":               {need: approver, scope: scCard, what: "start a plan"},
-	"POST /tasks/{id}/plan/accept":              {need: approver, scope: scCard, what: "accept a plan"},
 	"POST /tasks/{id}/plan/answer":              rCard,
 	"POST /tasks/{id}/plan/holdout":             rCard,
 	"POST /tasks/{id}/plan/changes":             rCard,
-	"POST /tasks/{id}/plan/reject":              rCard,
 	"POST /tasks/{id}/retry":                    {need: approver, scope: scCard, what: "retry a card"},
 	"POST /tasks/{id}/close":                    rCard,
 	"POST /tasks/{id}/acceptance-close":         {need: approver, scope: scCard, what: "close a card on its acceptance"},
@@ -171,16 +166,12 @@ var accessTable = map[string]accessRule{
 	"release_resource": rFactory,
 	"new_card":         {need: writer, scope: scChat},
 	"request_image":    {need: writer, scope: scChat},
-	"move_card":        rLane,
 	"answer":           rCard,
 	"tell_card":        rCard,
 	"comment":          rCard,
 	"steer":            rCard,
 	"retry":            {need: approver, scope: scCard, what: "retry a card"},
-	"start_plan":       {need: approver, scope: scCard, what: "start a plan"},
-	"accept_plan":      {need: approver, scope: scCard, what: "accept a plan"},
 	"request_changes":  rCard,
-	"reject_plan":      rCard,
 	"approve_merge":    {need: approver, scope: scCard, what: "authorize spend"},
 	"deny_merge":       rCard,
 	"rerun_checks":     rCard,
@@ -195,7 +186,6 @@ var accessTable = map[string]accessRule{
 	"fund":             {need: approver, scope: scCard, what: "fund a card"},
 	"set_dependency":   rCard,
 	"split_card":       {need: approver, scope: scCard, what: "split a card"},
-	"unmove_card":      rCard,
 	"delete_comment":   rCard,
 	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},
 	"routine_write":    {need: approver, scope: scChat, what: "change a routine"},
@@ -221,17 +211,6 @@ func (c *Console) admit(ctx context.Context, rule accessRule, a actor, repositor
 	if rule.need&writer != 0 {
 		if err := c.writes(ctx, a, repository, subject); err != nil {
 			return err
-		}
-	} else if rule.either&(writer|approver) != 0 {
-		// a lane move takes a writer or an approver; the lane's moved_by,
-		// which the move itself judges, decides which
-		w, werr := c.mayMoveCached(ctx, repository, a.s.user, policy.MovedByWriters)
-		p, perr := c.mayMoveCached(ctx, repository, a.s.user, policy.MovedByApprovers)
-		if werr != nil && perr != nil {
-			return refuse(http.StatusServiceUnavailable, "cannot check the project's writers")
-		}
-		if !w && !p {
-			return c.writes(ctx, a, repository, subject)
 		}
 	}
 	if rule.need&approver != 0 {
@@ -297,7 +276,7 @@ func pathID(r *http.Request) int64 {
 // scope. A rule of no role takes no session: the sign-in pages.
 func (c *Console) route(pattern string, handler http.Handler) http.Handler {
 	rule := accessTable[pattern]
-	if rule.need == 0 && rule.either == 0 && rule.scope == scNone {
+	if rule.need == 0 && rule.scope == scNone {
 		return handler
 	}
 	return c.auth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

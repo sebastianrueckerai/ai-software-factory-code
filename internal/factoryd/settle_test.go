@@ -41,7 +41,7 @@ func TestSettleOf(t *testing.T) {
 			PokeSettle{Word: "answered", By: FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, EventSessionGranted, FactoryDecider)}},
 		{"a task ended", ask, []Event{ev(12, 1, EventTaskEnded, FactoryDecider)}, false, false,
 			PokeSettle{Word: "moved on", By: FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, EventTaskEnded, FactoryDecider)}},
-		{"the wait guard moves a row on", ask, []Event{ev(11, 1, EventCardMoved, "the agent")}, false, false,
+		{"the wait guard moves a row on", ask, []Event{ev(11, 1, EventCardRetried, "the agent")}, false, false,
 			PokeSettle{Word: "moved on", At: at.Add(time.Minute)}},
 		{"the wait guard with no event at all", ask, nil, false, false, PokeSettle{Word: "moved on", At: at}},
 		{"the first settling event wins", ask, []Event{ev(14, 2, EventMergeApproved, "sebastian"), ev(12, 1, EventQuestionAnswered, "bob")}, false, false,

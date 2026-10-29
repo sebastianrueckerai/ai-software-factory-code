@@ -325,25 +325,18 @@ func (s *acceptTasks) RollCarries(_ context.Context, _ string) ([]factoryd.Task,
 	return nil, nil
 }
 
-func (s *acceptTasks) moveCard(taskID, lane string) {
+func (s *acceptTasks) SetHumanSummary(_ context.Context, id, summary string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i, t := range s.tasks {
-		if t.ID == taskID {
-			s.tasks[i].Lane = lane
-			if lane == policy.LaneReady {
-				s.tasks[i].Status = "queued"
-			} else {
-				s.tasks[i].Status = lane
-			}
-			break
+		if t.ID == id {
+			s.tasks[i].HumanSummary = summary
 		}
 	}
+	return nil
 }
-
-func (s *acceptTasks) SetHumanSummary(_ context.Context, _, _ string) error { return nil }
-func (s *acceptTasks) SetTaskAccent(_ context.Context, _, _ string) error   { return nil }
-func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error    { return nil }
+func (s *acceptTasks) SetTaskAccent(_ context.Context, _, _ string) error { return nil }
+func (s *acceptTasks) SetObjective(_ context.Context, _, _ string) error  { return nil }
 func (s *acceptTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
@@ -381,7 +374,7 @@ type acceptEvents struct {
 	tasks *acceptTasks
 }
 
-func (*acceptTasks) CountBacklog(context.Context, string) (int, error) { return 0, nil }
+func (*acceptTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
 	if e.Repository == "" || e.Kind == "" {
@@ -396,11 +389,6 @@ func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error
 	}
 	f.rows = append(f.rows, e)
 	f.bus.Publish(e)
-	if e.Kind == factoryd.EventCardMoved && f.tasks != nil {
-		if lane, ok := e.Detail["lane"].(string); ok {
-			f.tasks.moveCard(e.TaskID, lane)
-		}
-	}
 	return e.ID, nil
 }
 
@@ -1072,10 +1060,10 @@ func newRig(t *testing.T) *rig {
 	t.Cleanup(fgsrv.Close)
 	led := &acceptLedger{}
 	tasks := &acceptTasks{tasks: []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Objective: "Fix the cache.\n\nAcceptance:\n- go test ./internal/cache/", BudgetEUR: 3,
 			Size: "small"}},
-		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
+		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Track: policy.TrackDirect,
 			Process: "maintenance", Repository: "sf/code", IssueNumber: 11, PRNumber: 9, Objective: "Speed up the board."}},
 	}}
 	evs := &acceptEvents{bus: factoryd.NewEventBus(), tasks: tasks}
@@ -1091,15 +1079,17 @@ func newRig(t *testing.T) *rig {
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
 		},
+		Writes: func(_ context.Context, repository, user string) (bool, error) {
+			return repository == "sf/code" && user == "sebastian", nil
+		},
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: &acceptApprovals{}, Resources: &acceptResources{}, Alerts: &acceptAlerts{},
 		Projects: &acceptProjects{rows: []factoryd.Project{{Name: "ai-software-factory-code", Repository: "sf/code",
 			MergeRule: "human", Objects: policy.ObjectsSeed, Agents: "coder", File: true, Process: "maintenance",
-			Lanes: []policy.Lane{{Name: "backlog", WriteUp: "analyzer"}, {Name: "ready", Class: "coder", MovedBy: "writers"}}}}},
+			Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}}}}},
 		Events: evs, Bus: evs.bus, Chat: ch,
 		Mirrors:  &acceptMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
-		MayMove:  func(_ context.Context, _, user, _ string) (bool, error) { return user == "sebastian", nil },
 	})
 	if err != nil {
 		t.Fatal(err)

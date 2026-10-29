@@ -92,9 +92,9 @@ func TestCardFacePillPerStatus(t *testing.T) {
 	for status, class := range map[string]string{
 		"running": "st-running", "closing": "st-running", "queued": "st-queued", "waiting-deps": "st-waiting",
 		"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow", "waiting-image": "st-waiting", "in-review": "st-review",
-		"done": "st-done", "failed": "st-failed", "closed": "st-closed", "backlog": "st-backlog",
+		"done": "st-done", "failed": "st-failed", "closed": "st-closed",
 	} {
-		r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: "work"})
+		r.tasks.set("", factoryd.Task{ID: "t-1", Kind: "agent", Status: status, Track: "direct", Repository: "sf/code", Objective: "work"})
 		body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 		word := cmp.Or(map[string]string{"running": "building", "closing": "building", "in-review": "verifying", "waiting-image": "waiting for image"}[status], status)
 		want := `<span class="pill ` + class + `">` + word + `</span>`
@@ -181,10 +181,10 @@ func TestCardFaceChips(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-bare", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "bare", CreatedAt: time.Now()}},
-		{Task: factoryd.Task{ID: "t-full", Kind: "agent", Status: "running", Lane: "ready", Repository: "sf/code", Objective: "full",
+		{Task: factoryd.Task{ID: "t-full", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code", Objective: "full",
 			ModelAlias: "small"}, Dependencies: "#3, #5"},
-		{Task: factoryd.Task{ID: "t-free", Kind: "agent", Status: "queued", Lane: "ready", Repository: "sf/code", Objective: "deps done"}},
-		{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-deps", Lane: "ready", Repository: "sf/code", Objective: "waits"},
+		{Task: factoryd.Task{ID: "t-free", Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/code", Objective: "deps done"}},
+		{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-deps", Track: "direct", Repository: "sf/code", Objective: "waits"},
 			WaitingOn: "#7", Dependencies: "#7"},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
@@ -193,7 +193,7 @@ func TestCardFaceChips(t *testing.T) {
 		t.Errorf("t-full lacks %s:\n%s", want, full)
 	}
 	if strings.Contains(full, "small") || strings.Contains(full, `class="badge"`) {
-		t.Errorf("the face names the model or the default lane:\n%s", full)
+		t.Errorf("the face names the model or wears a badge:\n%s", full)
 	}
 	if bare := faceOf(t, body, "t-bare"); strings.Contains(bare, `class="chips"`) || strings.Contains(bare, `class="transitions"`) {
 		t.Errorf("a card with nothing to show has a chips or transitions line:\n%s", bare)
@@ -207,22 +207,23 @@ func TestCardFaceChips(t *testing.T) {
 	}
 }
 
-// An accepted plan's card rolls its cards up as n running · n done ·
-// n waiting, only the parts with cards; with only backlog cards, none.
+// A done plan's card rolls its cards up as n running · n done · n waiting
+// · n queued, only the parts with cards: a plan whose cards all wait for
+// a work slot reads them queued (roadmap 225).
 func TestCardFacePlanChildren(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
-	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "running", Lane: "ready",
+	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "running", Track: "direct",
 		Process: "spec", Objective: "card 9", Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">1 running · 1 done · 1 waiting</span>`) {
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">1 running · 1 done · 1 waiting · 2 queued</span>`) {
 		t.Errorf("the plan's face lacks its rollup:\n%s", face)
 	}
 	r.tasks.tasks = planTasks()[:3]
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); strings.Contains(face, "chip rollup") {
-		t.Errorf("a plan with only backlog cards shows a rollup:\n%s", face)
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">2 queued</span>`) {
+		t.Errorf("a plan with only queued cards lacks their rollup:\n%s", face)
 	}
 }
 
@@ -394,7 +395,7 @@ func TestCardFaceAccent(t *testing.T) {
 
 // The amber ring and its words: a live card whose newest event is half an
 // hour old or more, or that has had none in its half hour on the board;
-// never a final card, never one in the backlog or parked in the queue.
+// never a final card, never one parked in the queue.
 func TestCardFaceStaleRing(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
@@ -402,11 +403,10 @@ func TestCardFaceStaleRing(t *testing.T) {
 	r.tasks.set("",
 		factoryd.Task{ID: "t-quiet", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "quiet", CreatedAt: old},
 		factoryd.Task{ID: "t-busy", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "busy", CreatedAt: old},
-		factoryd.Task{ID: "t-new", Kind: "agent", Status: "queued", Lane: "ready", Repository: "sf/code", Objective: "never moved", CreatedAt: old},
-		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", Objective: "done", CreatedAt: old},
-		factoryd.Task{ID: "t-idea", Kind: "agent", Status: "backlog", Lane: "backlog", Repository: "sf/code", Objective: "an idea", CreatedAt: old})
-	for id, at := range map[string]time.Time{"t-quiet": old, "t-busy": recent, "t-done": old, "t-idea": old} {
-		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: id, Kind: factoryd.EventCardMoved,
+		factoryd.Task{ID: "t-new", Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/code", Objective: "never moved", CreatedAt: old},
+		factoryd.Task{ID: "t-done", Kind: "agent", Status: "done", Repository: "sf/code", Objective: "done", CreatedAt: old})
+	for id, at := range map[string]time.Time{"t-quiet": old, "t-busy": recent, "t-done": old, "t-new": old} {
+		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: id, Kind: factoryd.EventCardRetried,
 			Actor: "sebastian", Via: factoryd.ViaButton, At: at}); err != nil {
 			t.Fatal(err)
 		}
@@ -414,14 +414,14 @@ func TestCardFaceStaleRing(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", Objective: "asks", CreatedAt: old}, Escalation: "The agent asks: which region?\nthe details"})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	quiet := `card moved by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
+	quiet := `card retried by sebastian via button at ` + old.UTC().Format("15:04") + ` — nothing for over 45 min</p>`
 	for id, words := range map[string]string{"t-quiet": quiet,
 		"t-ask": `<p class="activity">which region? — no event yet, 45 min on the card</p>`} {
 		if face := faceOf(t, body, id); !strings.HasPrefix(face, `<article class="card face stale" data-card="`+id+`" `) || !strings.Contains(face, words) {
 			t.Errorf("%s lacks the ring or %s:\n%s", id, words, face)
 		}
 	}
-	for _, id := range []string{"t-busy", "t-done", "t-idea", "t-new"} {
+	for _, id := range []string{"t-busy", "t-done", "t-new"} {
 		if face := faceOf(t, body, id); strings.Contains(face, "stale") || strings.Contains(face, "nothing for over") || strings.Contains(face, "no event yet") {
 			t.Errorf("%s wears the ring:\n%s", id, face)
 		}
@@ -440,7 +440,7 @@ func TestCardFaceStaleRingReadsTheTimeline(t *testing.T) {
 		factoryd.Task{ID: "t-live", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "live session", CreatedAt: old},
 		factoryd.Task{ID: "t-dead", Kind: "agent", Status: "running", Repository: "sf/code", Objective: "dead workflow", CreatedAt: old})
 	for _, id := range []string{"t-live", "t-dead"} {
-		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: id, Kind: factoryd.EventCardMoved,
+		if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: id, Kind: factoryd.EventCardRetried,
 			Actor: "sebastian", Via: factoryd.ViaButton, At: old}); err != nil {
 			t.Fatal(err)
 		}
@@ -474,7 +474,7 @@ func TestCardFaceWaitingReason(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.set(factoryd.AgentAsks+"use a replica or a shard?\nWhy: the reads grow",
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", Objective: "add the feed", IssueNumber: 12})
-	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventCardMoved,
+	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
@@ -486,7 +486,7 @@ func TestCardFaceWaitingReason(t *testing.T) {
 		if title == "Needs you" {
 			board = five
 		}
-		if face := faceOf(t, col(t, board, title), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_moved") {
+		if face := faceOf(t, col(t, board, title), "t-e"); !strings.Contains(face, want) || strings.Contains(face, "card_retried") {
 			t.Errorf("%s: the waiting card's activity is not its question:\n%s", title, face)
 		}
 	}
@@ -608,16 +608,13 @@ func TestSummaryPost(t *testing.T) {
 		}
 	}
 	r.repoWriters["sf/code"] = nil
-	r.c.mu.Lock()
-	r.c.moves = nil
-	r.c.mu.Unlock()
+	r.forgetWriters()
 	before := ev.count()
 	if rec := r.do(post("/tasks/t-1/summary", url.Values{"csrf": {s.csrf}, "summary": {"mine"}}), ck); rec.Code != http.StatusForbidden || ev.count() != before {
 		t.Fatalf("a non-writer's summary = %d with %d rows, want 403 and none", rec.Code, ev.count()-before)
 	}
-	// no longer a writer, the viewer asks for the project
-	if got := titleOf(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "t-1"); got != "Fix the cache. Then the tests." {
-		t.Fatalf("a refused summary changed the title to %q", got)
+	if k, _, _ := r.tasks.Task(t.Context(), "t-1"); k.HumanSummary != "" {
+		t.Fatalf("a refused summary stored %q", k.HumanSummary)
 	}
 }
 
@@ -660,17 +657,15 @@ func TestAccentPost(t *testing.T) {
 		t.Fatalf("a cleared accent still shows:\n%s", face)
 	}
 	r.repoWriters["sf/code"] = nil
-	r.c.mu.Lock()
-	r.c.moves = nil
-	r.c.mu.Unlock()
+	r.forgetWriters()
 	if code := accent("blue"); code != http.StatusForbidden || stored() != "" {
 		t.Fatalf("a non-writer's accent = %d, stored %q; want 403 and nothing", code, stored())
 	}
 }
 
-// On a filtered board every form carries the filter back: move, retry, Start plan, the plan's accept, changes and
-// reject, summary and accent; the poll asks for the same board, and a
-// browser's POST is sent back to it.
+// On a filtered board every form carries the filter back: retry, the
+// plan's changes, summary and accent; the poll asks for the same board,
+// and a browser's POST is sent back to it.
 func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
@@ -691,12 +686,8 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	}
 	for _, want := range []string{
 		`data-query="?project=linkshort">`,
-		htmx("/cards/t-c2/lane") + ` class="inline move" data-move="ready">` + filter,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
-		htmx("/tasks/t-plan/start-plan") + ` class="inline">` + filter,
-		htmx("/tasks/t-spec2/plan/accept") + ` data-to="done">` + "\n" + filter,
 		htmx("/tasks/t-spec2/plan/changes") + ` data-to="running">` + "\n" + filter,
-		htmx("/tasks/t-spec2/plan/reject") + ` data-to="failed">` + "\n" + filter,
 		`<form method="post" ` + htmx("/tasks/t-ask/answer") + ` data-to="running">` + "\n" + filter,
 	} {
 		if !strings.Contains(body, want) {

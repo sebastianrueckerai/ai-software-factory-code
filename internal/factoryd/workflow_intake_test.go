@@ -511,7 +511,7 @@ func TestRequestInfo(t *testing.T) {
 		"empty: the project's approvers": {nil, []string{"bob"}, "cc @visitor @bob"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			task := Task{ID: "t1", Status: "running", Objective: "the slug breaks", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Author: "visitor"}
+			task := Task{ID: "t1", Status: "running", Objective: "the slug breaks", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Author: "visitor", Track: "direct"}
 			r, store, objects := newActivityRunner(t, task, &prForgejo{})
 			fj := &requestInfoForgejo{}
 			r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
@@ -549,7 +549,7 @@ func TestRequestInfo(t *testing.T) {
 
 // After 14 days the issue gets the comment and is closed, once.
 func TestCloseNotReproduced(t *testing.T) {
-	task := Task{ID: "t1", Status: "waiting-poster", Repository: "sf/repo", IssueNumber: 4, Kind: "agent"}
+	task := Task{ID: "t1", Status: "waiting-poster", Repository: "sf/repo", IssueNumber: 4, Kind: "agent", Track: "direct"}
 	r, _, _ := newActivityRunner(t, task, &prForgejo{})
 	fj := &requestInfoForgejo{}
 	r.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}

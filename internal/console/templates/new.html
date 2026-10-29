@@ -15,10 +15,11 @@
 <input id="title" name="title" type="text" maxlength="255" value="{{.Form.Title}}" required>
 <label for="body">Description</label>
 <textarea id="body" name="body" rows="10">{{.Form.Body}}</textarea>
-<label for="lane">Track</label>
-<select id="lane" name="lane">
-{{range .Lanes}}<option value="{{.Name}}" data-projects="{{.Projects}}"{{if eq .Name $.Form.Lane}} selected{{end}}>{{.Title}}</option>
-{{end}}<option value="human"{{if eq .Form.Lane "human"}} selected{{end}}>Human track</option>
+<label for="track">Track</label>
+<select id="track" name="track">
+<option value="direct"{{if eq .Form.Track "direct"}} selected{{end}}>Direct</option>
+<option value="plan" data-projects="{{.PlanProjects}}"{{if eq .Form.Track "plan"}} selected{{end}}>Plan</option>
+<option value="human"{{if eq .Form.Track "human"}} selected{{end}}>Human</option>
 </select>
 <label for="priority">Priority</label>
 <select id="priority" name="priority">

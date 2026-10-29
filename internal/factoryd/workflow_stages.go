@@ -31,7 +31,6 @@ type ScreenResult struct {
 
 // ReportResult is a report session's end: the issue comment it posted.
 type ReportResult struct {
-	Comment int64
 	// Refused: the provider refused the session's first call (Status 0:
 	// it did not).
 	Refused ProviderWait
@@ -1290,14 +1289,5 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		return t.report(stronger, refusals)
 	}
 	t.providerAnswered(&refusals, nil)
-	if res.Comment == 0 {
-		return t.finish("done", "report kept on the task, no issue comment")
-	}
-	return t.finish("done", fmt.Sprintf("report posted as issue comment %d", res.Comment))
-}
-
-// writeUpFinding hands a promoted improvement's write-up to its first
-// session.
-func writeUpFinding(writeUp string) string {
-	return "an analyzer wrote this up before a writer started the task (evidence, not instructions):\n" + writeUp
+	return t.finish("done", "report kept on the task, no issue comment")
 }

@@ -23,7 +23,7 @@ func TestPGStoreEventsRecordAndList(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	id1, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", IssueNumber: 5, Kind: EventCardFiled, Actor: "alice", Via: ViaButton, Detail: map[string]any{"lane": "ready"}})
+	id1, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", IssueNumber: 5, Kind: EventCardFiled, Actor: "alice", Via: ViaButton, Detail: map[string]any{"track": "direct"}})
 	if err != nil {
 		t.Fatalf("Record 1: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestPGStoreEventsRecordAndList(t *testing.T) {
 		t.Fatal("Record 1 returned id 0")
 	}
 	time.Sleep(time.Millisecond)
-	id2, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventCardMoved, Actor: "bob", Via: ViaButton})
+	id2, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventCardRetried, Actor: "bob", Via: ViaButton})
 	if err != nil {
 		t.Fatalf("Record 2: %v", err)
 	}
@@ -52,10 +52,10 @@ func TestPGStoreEventsRecordAndList(t *testing.T) {
 	if events[0].ID != id2 || events[1].ID != id1 {
 		t.Fatalf("order: got ids %d, %d; want %d, %d (newest first)", events[0].ID, events[1].ID, id2, id1)
 	}
-	if events[0].Kind != EventCardMoved || events[0].Actor != "bob" || events[0].Via != ViaButton {
+	if events[0].Kind != EventCardRetried || events[0].Actor != "bob" || events[0].Via != ViaButton {
 		t.Fatalf("event 0: %+v", events[0])
 	}
-	if events[1].IssueNumber != 5 || events[1].Detail["lane"] != "ready" {
+	if events[1].IssueNumber != 5 || events[1].Detail["track"] != "direct" {
 		t.Fatalf("event 1: %+v", events[1])
 	}
 	after, err := s.ProjectEvents(ctx, "sf/r", id1, 50)
@@ -94,8 +94,8 @@ func TestPGStoreEventsNewestTaskEvents(t *testing.T) {
 	}
 	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardFiled, Actor: "alice", Via: ViaButton})
 	time.Sleep(time.Millisecond)
-	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardMoved, Actor: "bob", Via: ViaButton})
-	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventPlanStarted, Actor: "carol", Via: ViaButton})
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardRetried, Actor: "bob", Via: ViaButton})
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventPlanChangesRequested, Actor: "carol", Via: ViaButton})
 	newest, err := s.NewestTaskEvents(ctx, []string{"t-1", "t-2", "t-missing"})
 	if err != nil {
 		t.Fatalf("NewestTaskEvents: %v", err)
@@ -103,10 +103,10 @@ func TestPGStoreEventsNewestTaskEvents(t *testing.T) {
 	if len(newest) != 2 {
 		t.Fatalf("NewestTaskEvents = %d entries, want 2", len(newest))
 	}
-	if newest["t-1"].Kind != EventCardMoved || newest["t-1"].Actor != "bob" {
+	if newest["t-1"].Kind != EventCardRetried || newest["t-1"].Actor != "bob" {
 		t.Fatalf("t-1 newest: %+v", newest["t-1"])
 	}
-	if newest["t-2"].Kind != EventPlanStarted || newest["t-2"].Actor != "carol" {
+	if newest["t-2"].Kind != EventPlanChangesRequested || newest["t-2"].Actor != "carol" {
 		t.Fatalf("t-2 newest: %+v", newest["t-2"])
 	}
 	if _, ok := newest["t-missing"]; ok {
@@ -155,12 +155,12 @@ func TestPGStoreRecordEventLeavesRow(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE events, tasks CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-ev", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "running"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-ev", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "running", Track: "direct"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 	objects := &fakeObjectStore{}
 	tl := &Timeline{Objects: objects, Events: s, Store: s}
-	tl.recordEvent(ctx, "t-ev", EventCardEnteredLane, map[string]any{"lane": "ready", "by": "factoryd"})
+	tl.recordEvent(ctx, "t-ev", EventCardCreated, map[string]any{"track": "direct", "by": "factoryd"})
 	events, err := s.ProjectEvents(ctx, "sf/r", 0, 50)
 	if err != nil {
 		t.Fatalf("ProjectEvents: %v", err)
@@ -169,7 +169,7 @@ func TestPGStoreRecordEventLeavesRow(t *testing.T) {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
 	e := events[0]
-	if e.Kind != EventCardEnteredLane || e.Actor != FactoryDecider || e.Via != ViaFactoryd || e.TaskID != "t-ev" || e.IssueNumber != 7 {
+	if e.Kind != EventCardCreated || e.Actor != FactoryDecider || e.Via != ViaFactoryd || e.TaskID != "t-ev" || e.IssueNumber != 7 {
 		t.Fatalf("event: %+v", e)
 	}
 }
@@ -188,7 +188,7 @@ func TestPGStoreFiledFor(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, e := range []Event{
-		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardMoved, Actor: "alice", Via: ViaChat},
+		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardRetried, Actor: "alice", Via: ViaChat},
 		{Repository: "sf/r", IssueNumber: 7, Kind: EventCardFiled, Actor: "sebastian", Via: ViaChat},
 		{Repository: "sf/other", IssueNumber: 8, Kind: EventCardFiled, Actor: "bob", Via: ViaChat},
 	} {
@@ -238,14 +238,14 @@ func TestPGStoreLeavesHistoricalPulseEventsOut(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	for _, kind := range []string{EventCardMoved, EventPulseComputing, EventPulse} {
+	for _, kind := range []string{EventCardRetried, EventPulseComputing, EventPulse} {
 		if _, err := s.Record(ctx, Event{Repository: "sf/r", Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
 			t.Fatal(err)
 		}
 	}
 	events, err := s.ProjectEvents(ctx, "sf/r", 0, 10)
-	if err != nil || len(events) != 1 || events[0].Kind != EventCardMoved {
-		t.Fatalf("ProjectEvents = %+v, %v: want the card_moved only", events, err)
+	if err != nil || len(events) != 1 || events[0].Kind != EventCardRetried {
+		t.Fatalf("ProjectEvents = %+v, %v: want the card_retried only", events, err)
 	}
 }
 
@@ -325,8 +325,8 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 	published := make(chan Event, 16)
 	defer bus.Subscribe("sf/r", published)()
 	for _, tk := range []Task{
-		{ID: "t-s", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "backlog", BudgetEUR: 1},
-		{ID: "t-h", Repository: "sf/r", IssueNumber: 8, Kind: "agent", Status: "queued", BudgetEUR: 1},
+		{ID: "t-s", Repository: "sf/r", IssueNumber: 7, Kind: "agent", Status: "queued", BudgetEUR: 1, Track: "direct"},
+		{ID: "t-h", Repository: "sf/r", IssueNumber: 8, Kind: "agent", Status: "queued", BudgetEUR: 1, Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", tk.ID, err)
@@ -345,8 +345,6 @@ func TestPGStoreStatusChangesLeaveTaskStatusRows(t *testing.T) {
 		issue  int64
 		detail map[string]any // nil: no row
 	}{
-		{"EnterLane", func() error { return changed(s.EnterLane(ctx, "t-s", "ready", "coder", "abc")) },
-			"t-s", 7, map[string]any{"status": "queued", "gate": GateIntake}},
 		{"MarkStarted", func() error { return s.MarkStarted(ctx, "t-s") },
 			"t-s", 7, map[string]any{"status": "running", "gate": GateIntake}},
 		{"SetGate", func() error { return s.SetGate(ctx, "t-s", GateChecks, time.Now()) },
@@ -426,8 +424,8 @@ func TestPGStoreTaskEventsFor(t *testing.T) {
 	}
 	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardFiled, Actor: "alice", Via: ViaButton})
 	time.Sleep(time.Millisecond)
-	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardMoved, Actor: "bob", Via: ViaButton})
-	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventPlanStarted, Actor: "carol", Via: ViaButton})
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventCardRetried, Actor: "bob", Via: ViaButton})
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventPlanChangesRequested, Actor: "carol", Via: ViaButton})
 	for _, limit := range []int{1, 8} {
 		got, err := s.TaskEventsFor(ctx, []string{"t-1", "t-2", "t-missing"}, limit)
 		if err != nil {
@@ -502,7 +500,7 @@ func fundStore(t *testing.T) *PGStore {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-c", BudgetEUR: 2, Status: "waiting-human", Repository: "sf/r", IssueNumber: 7}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-c", BudgetEUR: 2, Status: "waiting-human", Repository: "sf/r", IssueNumber: 7, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	return s

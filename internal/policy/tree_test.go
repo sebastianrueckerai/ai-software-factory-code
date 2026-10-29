@@ -426,22 +426,20 @@ func TestSchemasDescribeTheTypes(t *testing.T) {
 		t.Errorf("stage required = %v", stage.Required)
 	}
 	proc := root["process.schema.json"]
-	if got := proc.Properties["lanes"].Items.Properties["name"].Enum; !reflect.DeepEqual(got, []any{"backlog", "plan", "ready"}) {
-		t.Errorf("lane name enum = %v", got)
+	plan := proc.Properties["tracks"].Properties["plan"]
+	if got := proc.Properties["tracks"].Required; !slices.Equal(got, []string{"direct"}) {
+		t.Errorf("tracks required = %v, want direct", got)
 	}
-	if lanes := proc.Properties["lanes"]; lanes.MinItems == nil || *lanes.MinItems != 2 || lanes.MaxItems == nil || *lanes.MaxItems != 3 {
-		t.Errorf("lanes items = %v to %v, want 2 to 3", lanes.MinItems, lanes.MaxItems)
-	}
-	if mc := proc.Properties["lanes"].Items.Properties["plan"].Properties["max_cards"]; mc.Minimum == nil || *mc.Minimum != 2 || mc.Maximum == nil || *mc.Maximum != 20 {
+	if mc := plan.Properties["plan"].Properties["max_cards"]; mc.Minimum == nil || *mc.Minimum != 2 || mc.Maximum == nil || *mc.Maximum != 20 {
 		t.Errorf("max_cards = %v to %v, want 2 to 20", mc.Minimum, mc.Maximum)
 	}
-	if mc := proc.Properties["lanes"].Items.Properties["plan"].Properties["min_cards"]; mc.Minimum == nil || *mc.Minimum != 1 || mc.Maximum == nil || *mc.Maximum != 20 {
+	if mc := plan.Properties["plan"].Properties["min_cards"]; mc.Minimum == nil || *mc.Minimum != 1 || mc.Maximum == nil || *mc.Maximum != 20 {
 		t.Errorf("min_cards = %v to %v, want 1 to 20", mc.Minimum, mc.Maximum)
 	}
 	if got := proc.Properties["merge"].Properties["queue"].Enum; !reflect.DeepEqual(got, []any{"none", "project"}) {
 		t.Errorf("merge queue enum = %v", got)
 	}
-	if !slices.Equal(proc.Required, []string{"lanes", "stages", "merge"}) || !strings.Contains(proc.Properties["stages"].Items.Properties["on_findings"].Description, "limits.sessions is the round cap") {
+	if !slices.Equal(proc.Required, []string{"tracks", "stages", "merge"}) || !strings.Contains(proc.Properties["stages"].Items.Properties["on_findings"].Description, "limits.sessions is the round cap") {
 		t.Errorf("process required = %v, on_findings %q", proc.Required, proc.Properties["stages"].Items.Properties["on_findings"].Description)
 	}
 	if got := root["policy.schema.json"].Properties["classes"].AdditionalProperties.Properties["session"].Enum; !reflect.DeepEqual(got, []any{"code", "plan", "report"}) {

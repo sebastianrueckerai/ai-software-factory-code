@@ -448,43 +448,43 @@ func compactedScene(now time.Time) labScene {
 	earlier := []factoryd.ChatMessage{
 		{Conversation: 4, Role: "user", Content: "Which cards wait on the session store?", At: ago(40 * time.Minute)},
 		{Conversation: 4, Role: "assistant", Content: "Two: the login redirect (#8) and the remember-me box (#11).", At: ago(40*time.Minute - 15*time.Second)},
-		{Conversation: 4, Role: "user", Content: "Keep #11 in the backlog until the store is settled.", At: ago(38 * time.Minute)},
-		{Conversation: 4, Role: "assistant", Content: "#11 stays in the backlog.", At: ago(38*time.Minute - 10*time.Second)},
+		{Conversation: 4, Role: "user", Content: "Hold #11 until the store is settled.", At: ago(38 * time.Minute)},
+		{Conversation: 4, Role: "assistant", Content: "#11 waits until the store is settled.", At: ago(38*time.Minute - 10*time.Second)},
 	}
 	s.chat = append(slices.Clone(s.chat[:5]), append(earlier, s.chat[5:]...)...)
-	s.summaries = map[int64]factoryd.ThreadSummary{4: {Text: "Sebastian asked which cards wait on the session store: the login redirect (#8) and the remember-me box (#11). #11 stays in the backlog until the store is settled.", Upto: 9}}
+	s.summaries = map[int64]factoryd.ThreadSummary{4: {Text: "Sebastian asked which cards wait on the session store: the login redirect (#8) and the remember-me box (#11). #11 waits until the store is settled.", Upto: 9}}
 	s.seen[4] = 11
 	return s
 }
 
 // assistedScene is the factory's own code at autonomy assisted: the
-// agent started the login card itself (its applied move in the chat, the
+// agent filed the login card itself (its applied filing in the chat, the
 // event naming it the decider, the inbox's poke with its decider line),
-// one card works, one backlog card waits, and the board head's selector
+// one card works, two queued cards wait, and the board head's selector
 // shows the level.
 func assistedScene(now time.Time) labScene {
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
-	running := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a1", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
+	running := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a1", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 7, Size: "small", BudgetEUR: 2, SpentEUR: 0.31, CreatedAt: ago(40 * time.Minute),
 		Objective: "Speed up the find box.\n\nAcceptance:\n- The find answers in under 100 ms\n"}}
-	moved := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a2", Kind: "agent", Status: "queued", Lane: policy.LaneReady,
+	moved := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a2", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 8, Size: "small", BudgetEUR: 2, CreatedAt: ago(30 * time.Minute),
 		Objective: "Fix the login redirect.\n\nAcceptance:\n- A signed-in member lands on the board\n"}}
-	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a3", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog,
+	waiting := factoryd.BoardTask{Task: factoryd.Task{ID: "t-a3", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 		Process: "spec", Repository: "sf/code", IssueNumber: 9, Size: "small", CreatedAt: ago(2 * time.Hour),
 		Objective: "Trim the roll notes.\n\nAcceptance:\n- The roll comment fits on one line\n"}}
 	msgs := []factoryd.ChatMessage{
-		{Role: "user", Content: "Start the login redirect card; the slots are free.", At: ago(9 * time.Minute)},
+		{Role: "user", Content: "File the login redirect fix; it is small.", At: ago(9 * time.Minute)},
 		{Role: "assistant", At: ago(9*time.Minute - 5*time.Second), ToolCalls: []factoryd.ChatToolCall{{
-			ID: "call_1", Name: "move_card", Arguments: `{"task_id":"t-a2","lane":"ready"}`, ReadAt: ago(9*time.Minute - 5*time.Second),
-			Result: "Moved #8 to lane ready; it leaves the backlog once factoryd picks it up."}}},
+			ID: "call_1", Name: "new_card", Arguments: `{"title":"Fix the login redirect","acceptance":["A signed-in member lands on the board"],"track":"direct","track_reason":"a small, clear fix","size":"small"}`,
+			ReadAt: ago(9*time.Minute - 5*time.Second), Result: "Filed sf/code#8 on track direct."}}},
 		{Role: "assistant", At: ago(9*time.Minute - 3*time.Second), Content: "#8 is queued for a work slot; #7 runs its session. The ready check passed: criteria, size, budget and room."},
 		{Conversation: 2, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-a2", At: ago(9*time.Minute - 4*time.Second),
 			Content: `Started #8 "Fix the login redirect".`, Decider: "assisted level · started by the agent"},
 	}
 	events := []factoryd.Event{
-		{Kind: factoryd.EventCardMoved, TaskID: "t-a2", IssueNumber: 8, Actor: "sebastian", Via: factoryd.ViaChat, At: ago(9 * time.Minute),
-			Detail: map[string]any{"lane": "ready", "autonomy": "assisted", "merge_rule": "human", "decider": "agent",
+		{Kind: factoryd.EventCardFiled, TaskID: "t-a2", IssueNumber: 8, Actor: "sebastian", Via: factoryd.ViaChat, At: ago(9 * time.Minute),
+			Detail: map[string]any{"track": "direct", "reason": "a small, clear fix", "title": "Fix the login redirect", "autonomy": "assisted", "merge_rule": "human", "decider": "agent",
 				"chat_task": factoryd.ChatTaskID("ai-software-factory-code", now)}},
 	}
 	return labScene{autonomy: policy.AutonomyAssisted, tasks: []factoryd.BoardTask{running, moved, waiting}, inbox: 2, open: 1,
@@ -545,7 +545,7 @@ var labLabels = []factoryd.RepoLabel{{ID: 1, Name: "agent"}, {ID: 2, Name: "huma
 // labProjects are the project rows of the Go-coded scenes.
 func labProjects() []factoryd.Project {
 	rows := slices.DeleteFunc(projectRows(), func(p factoryd.Project) bool { return p.Name == "gone" })
-	rows[0].Process, rows[0].Lanes = "spec", testProcesses()["spec"].Lanes
+	rows[0].Process, rows[0].Tracks = "spec", testProcesses()["spec"].Tracks
 	// demo-app's staging is deployed, its prod never had a green build (roadmap 257)
 	demo := &rows[slices.IndexFunc(rows, func(p factoryd.Project) bool { return p.Name == "demo-app" })]
 	demo.Environments = append(demo.Environments, factoryd.Environment{Namespace: "demo-prod", Path: "deploy/prod"})
@@ -585,6 +585,7 @@ func (r *rig) seedScene(s labScene) string {
 	r.ledger.monthCaps = map[string]float64{project.Name: cmp.Or(s.monthCap, 120)}
 	r.ledger.mu.Unlock()
 	r.repoWriters[repository] = []string{login}
+	r.forgetWriters()
 	labObjects.Lock()
 	labFiles = s.prFiles
 	if labFiles == nil {
@@ -616,13 +617,13 @@ func (r *rig) seedScene(s labScene) string {
 		body, _ := issue["body"].(string)
 		t := factoryd.Task{ID: labID(highest), Kind: "agent", Process: p.Process, Repository: repository, IssueNumber: highest,
 			Objective: factoryd.IssueObjective(title, body), Source: "webhook", Author: login, AuthorWriter: true, CreatedAt: time.Now()}
-		switch lane := factoryd.IssueLane(names, p.Lanes); lane {
-		case factoryd.LaneHuman:
+		switch track := factoryd.IssueTrack(names, p.Tracks); track {
+		case factoryd.LabelHuman:
 			t.Kind, t.Status = "human", "waiting-human"
-		case policy.LaneBacklog:
-			t.Status, t.Lane = "backlog", lane
+		case "":
+			return highest // an interest, no card
 		default:
-			t.Status, t.Lane = "queued", lane
+			t.Status, t.Track = "queued", track
 		}
 		r.tasks.mu.Lock()
 		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: t})
@@ -813,12 +814,12 @@ func labID(issue int64) string {
 // labCard is issue's card of the code project, filed age before now with
 // its issue's title and body as factoryd builds the objective; one that
 // has had a session ran it on small.
-func labCard(now time.Time, issue int64, status, lane string, age time.Duration, title, body string) factoryd.Task {
+func labCard(now time.Time, issue int64, status, track string, age time.Duration, title, body string) factoryd.Task {
 	alias := "small"
-	if slices.Contains([]string{"backlog", "queued", "waiting-deps", "closed"}, status) {
+	if slices.Contains([]string{"queued", "waiting-deps", "closed"}, status) {
 		alias = ""
 	}
-	return factoryd.Task{ID: labID(issue), Kind: "agent", Status: status, Lane: lane, Process: "spec", Repository: "sf/code",
+	return factoryd.Task{ID: labID(issue), Kind: "agent", Status: status, Track: track, Process: "spec", Repository: "sf/code",
 		IssueNumber: issue, Objective: title + "\n\n" + body, Source: "webhook", Author: "sebastian", AuthorWriter: true,
 		RiskClass: "standard", BudgetEUR: 2, ModelAlias: alias, CreatedAt: now.Add(-age)}
 }
@@ -890,13 +891,13 @@ func busyScene(now time.Time) labScene {
 	s := labScene{drawer: labID(606), github: "1 open pull request", spend: 61.40, chatSpend: 3.85,
 		objects: map[string]string{}, questions: map[string][]factoryd.PlanQuestion{}}
 
-	merge := labCard(now, 607, "in-review", "ready", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
+	merge := labCard(now, 607, "in-review", "direct", 3*time.Hour, "Chat proposals survive a restart: keep them in Postgres",
 		"The proposals live in the console's memory, so a restart between a proposal and its Do it loses it. Store them in a table "+
 			"with their expiry and purge the old ones in the settlement pass.")
 	merge.PRNumber, merge.Gate, merge.GateSince, merge.SpentEUR, merge.ModelAlias = 612, factoryd.GateApproval, at(25*time.Minute), 1.31, "big"
 	s.objects["sessions/"+merge.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(merge.CreatedAt, "big", "")...)
 
-	esc := factoryd.BoardTask{Task: labCard(now, 603, "waiting-human", "ready", 95*time.Minute, "Board export: keep the nightly snapshots",
+	esc := factoryd.BoardTask{Task: labCard(now, 603, "waiting-human", "direct", 95*time.Minute, "Board export: keep the nightly snapshots",
 		"Write the board to a JSON snapshot every night so a lost database still leaves the cards. Keep 30 snapshots."),
 		Escalation: factoryd.AgentAsks + "Which store keeps the nightly board snapshots? Postgres shares the factory's backups; " +
 			"SQLite keeps them beside the export and off the cluster.",
@@ -919,7 +920,7 @@ func busyScene(now time.Time) labScene {
 	s.plans = map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 1, Plan: planJSON, SHA256: planSHA, CreatedAt: ago(12 * time.Minute)}}}
 	s.questions[plan.ID+" 1"] = []factoryd.PlanQuestion{{Text: "How far back does the feed page by default?", Choices: []string{"One day", "One week", "The 500 newest rows"}}}
 
-	drawer := labCard(now, 606, "running", "ready", 72*time.Minute, "Console polish: clamp board chip objectives, theme the scrollbar",
+	drawer := labCard(now, 606, "running", "direct", 72*time.Minute, "Console polish: clamp board chip objectives, theme the scrollbar",
 		"Long objectives push the chips off the card; clamp them at three lines. Theme every scrollbar with the page's colours.")
 	drawer.PRNumber, drawer.Gate, drawer.GateSince, drawer.SpentEUR, drawer.ModelAlias = 609, factoryd.GateSession, at(37*time.Minute), 1.72, "big"
 	tl := pushedTimeline(drawer.CreatedAt, "small", "acceptance")
@@ -938,25 +939,25 @@ func busyScene(now time.Time) labScene {
 		said(31*time.Minute, "Both pass. Next: the scrollbar colours for the dark and the light theme."),
 	)
 
-	run2 := labCard(now, 611, "running", "ready", 22*time.Minute, "Live check 3.11: split pre-check runs on the parent diff",
+	run2 := labCard(now, 611, "running", "direct", 22*time.Minute, "Live check 3.11: split pre-check runs on the parent diff",
 		"The split's pre-check reads the child's diff, so a split card fails a check its parent passed. Run it on the parent's diff.")
 	run2.Gate, run2.GateSince, run2.SpentEUR = factoryd.GateSession, at(21*time.Minute), 0.41
-	run3 := labCard(now, 614, "running", "ready", 47*time.Minute, "Fresh-context and aged-read acceptance tests, the five defects fixed",
+	run3 := labCard(now, 614, "running", "direct", 47*time.Minute, "Fresh-context and aged-read acceptance tests, the five defects fixed",
 		"Add the acceptance tests for a fresh context and an aged read, and fix the five defects the review found.")
 	run3.Gate, run3.GateSince, run3.SpentEUR = factoryd.GateSession, at(9*time.Minute), 0.93
 
-	backlog := labCard(now, 598, "backlog", "backlog", 50*time.Hour, "README.md: extend the intro",
+	backlog := labCard(now, 598, "queued", "direct", 50*time.Hour, "README.md: extend the intro",
 		"Say in the first paragraph what the factory is for and who runs it.")
-	deps := factoryd.BoardTask{Task: labCard(now, 616, "waiting-deps", "ready", 70*time.Minute, "Board export: a download button on the costs page",
+	deps := factoryd.BoardTask{Task: labCard(now, 616, "waiting-deps", "direct", 70*time.Minute, "Board export: a download button on the costs page",
 		"Offer the newest snapshot as a download beside the costs table."), WaitingOn: "#603, #611"}
-	queued := factoryd.BoardTask{Task: labCard(now, 617, "queued", "ready", 40*time.Minute, "Chat form: center the Send button next to the two-row textarea",
+	queued := factoryd.BoardTask{Task: labCard(now, 617, "queued", "direct", 40*time.Minute, "Chat form: center the Send button next to the two-row textarea",
 		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: "#611, #614"}
 	child := func(issue int64, status, key, title string, age time.Duration) factoryd.Task {
-		k := labCard(now, issue, status, "ready", age, title, fmt.Sprintf("Card %s of plan #531, accepted by sebastian. Written by the planner.", key))
+		k := labCard(now, issue, status, "direct", age, title, fmt.Sprintf("Card %s of plan #531, filed for sebastian. Written by the planner.", key))
 		k.Source, k.Parent, k.PlanKey = factoryd.SourcePlan, labID(531), key
 		return k
 	}
-	review := labCard(now, 601, "in-review", "ready", 4*time.Hour, "Pulse: recompute on a card's status change",
+	review := labCard(now, 601, "in-review", "direct", 4*time.Hour, "Pulse: recompute on a card's status change",
 		"The pulse recomputes every ten minutes; a card that fails waits that long to show. Recompute on each task_status row, at most once a minute.")
 	review.PRNumber, review.Gate, review.GateSince, review.SpentEUR = 605, factoryd.GateMergeQueue, at(8*time.Minute), 0.87
 	s.objects["sessions/"+review.ID+"/timeline.jsonl"] = jsonl(pushedTimeline(review.CreatedAt, "small", "")...)
@@ -964,13 +965,13 @@ func busyScene(now time.Time) labScene {
 	planDone := finished(labCard(now, 531, "done", "plan", 30*time.Hour, "Console: the card drawer",
 		"Open a card beside the board with its overview, its activity, its files and its session."), now, 26*time.Hour, 0.52)
 	planDone.BudgetEUR, planDone.ModelAlias = 5, "big"
-	exported := finished(labCard(now, 596, "done", "ready", 9*time.Hour, "Chat: the Undo of a move restores the lane",
+	exported := finished(labCard(now, 596, "done", "direct", 9*time.Hour, "Chat: the Undo of a move restores the lane",
 		"An undone move leaves the card in ready; put it back where it was."), now, 7*time.Hour, 0.33)
 	exported.GitHubPR, exported.GitHubPRURL, exported.GitHubPRState = 14, "https://github.com/sebastianrueckerai/ai-software-factory-code/pull/14", "open"
-	failed := finished(labCard(now, 597, "failed", "ready", 6*time.Hour, "Gateway: retry a 529 from the provider with backoff",
+	failed := finished(labCard(now, 597, "failed", "direct", 6*time.Hour, "Gateway: retry a 529 from the provider with backoff",
 		"An overloaded provider answers 529; retry it twice with backoff before the session ends."), now, 5*time.Hour, 2.00)
 	failed.ModelAlias = "big"
-	closed := finished(labCard(now, 590, "closed", "backlog", 5*24*time.Hour, "Board: drag cards between lanes",
+	closed := finished(labCard(now, 590, "closed", "direct", 5*24*time.Hour, "Board: drag cards between lanes",
 		"Drag a card from the backlog into ready."), now, 20*time.Hour, 0)
 
 	s.tasks = []factoryd.BoardTask{{Task: merge}, esc, {Task: plan}, {Task: drawer}, {Task: run2}, {Task: run3}, {Task: backlog}, deps, queued,
@@ -979,7 +980,7 @@ func busyScene(now time.Time) labScene {
 		{Task: finished(child(532, "done", "drawer-overview", "Drawer: the Overview tab", 26*time.Hour), now, 22*time.Hour, 0.29)},
 		{Task: finished(child(534, "done", "drawer-chat", "Drawer: the session's chat", 26*time.Hour), now, 19*time.Hour, 0.61)},
 		{Task: exported},
-		{Task: finished(labCard(now, 600, "done", "ready", 5*time.Hour, "Costs: the day cap line under the table",
+		{Task: finished(labCard(now, 600, "done", "direct", 5*time.Hour, "Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."), now, 3*time.Hour, 0.18)},
 		{Task: finished(child(535, "failed", "drawer-activity", "Drawer: the Activity tab", 26*time.Hour), now, 18*time.Hour, 1.12)},
 		{Task: failed}, {Task: closed},
@@ -1016,7 +1017,7 @@ func busyScene(now time.Time) labScene {
 			map[string]any{"text": "Compare against the parent's merge base, not main."}),
 		labStatus(614, "running", factoryd.GateSession, ago(9*time.Minute)),
 		labEvent(616, factoryd.EventDependencySet, "sebastian", factoryd.ViaChat, ago(26*time.Minute), nil),
-		labEvent(617, factoryd.EventCardMoved, "sebastian", factoryd.ViaButton, ago(12*time.Minute), map[string]any{"lane": "ready"}),
+		labEvent(617, factoryd.EventCardRetried, "sebastian", factoryd.ViaButton, ago(12*time.Minute), map[string]any{"replacement": 618}),
 		labStatus(533, "queued", "", ago(24*time.Minute)),
 		labStatus(601, "in-review", factoryd.GateMergeQueue, ago(8*time.Minute)),
 		labEvent(598, factoryd.EventCardFiled, "sebastian", factoryd.ViaChat, ago(50*time.Hour), nil),
@@ -1084,7 +1085,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 	depArgs := fmt.Sprintf(`{"task_id":%q,"depends_on":%q}`, queued.ID, running.ID)
 	const fileTitle = "Plan: Documents in the conversation (roadmap 300)"
 	const fileBody = "Drag the documents into the chat and read them by tool"
-	noTests := `{"title":"` + fileTitle + `","body":"` + fileBody + `","lane":"plan","size":"medium"}`
+	noTests := `{"title":"` + fileTitle + `","body":"` + fileBody + `","track":"plan","track_reason":"a feature that needs a plan","size":"medium"}`
 	withTests := noTests[:len(noTests)-1] + `,"acceptance":["the chat shows the documents a member sends","the agent reads them by tool"]}`
 	proposals := []factoryd.ChatProposal{
 		{Token: "labSteer606xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "steer",
@@ -1097,11 +1098,11 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 	used := []factoryd.ChatProposal{
 		{Token: "labFile300NoAcceptancexxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian", Tool: "new_card",
 			Args: json.RawMessage(noTests), ExpiresAt: now.Add(30 * time.Minute),
-			Description: "File a card, title " + fileTitle + ", body " + fileBody + ", lane plan, size medium"},
+			Description: "File a card, title " + fileTitle + ", body " + fileBody + ", track plan, track_reason a feature that needs a plan, size medium"},
 	}
 	filed := factoryd.ChatProposal{Token: "labFile300WithTestsxxxxxxxxxxxxxxxxxxxxxx", Kind: "proposal", Repository: "sf/code", Login: "sebastian",
 		Tool: "new_card", Args: json.RawMessage(withTests), ExpiresAt: now.Add(30 * time.Minute),
-		Description: "File a card, title " + fileTitle + ", body " + fileBody + ", lane plan, size medium, " +
+		Description: "File a card, title " + fileTitle + ", body " + fileBody + ", track plan, track_reason a feature that needs a plan, size medium, " +
 			"acceptance the chat shows the documents a member sends; the agent reads them by tool"}
 	proposals = append(proposals, filed)
 	call := func(p factoryd.ChatProposal, id string, read time.Time) factoryd.ChatToolCall {
@@ -1237,12 +1238,12 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	s.runs[labDeps.Name][0].CostEUR, s.runs[labAudit.Name][0].CostEUR = 0.94, 1.37
 
 	card := func(rt policy.Routine, r factoryd.RoutineRun, status, title, body string) factoryd.Task {
-		lane := policy.LaneReady
+		track := policy.TrackDirect
 		if rt.Files == policy.FilesHuman {
 			// a human card's body ends in the line factoryd files it with
-			lane, body = "", body+"\n\n"+fmt.Sprintf("%s%s · run %d", factoryd.RoutineProvenance, rt.Name, r.Run)
+			track, body = "", body+"\n\n"+fmt.Sprintf("%s%s · run %d", factoryd.RoutineProvenance, rt.Name, r.Run)
 		}
-		t := labCard(now, r.Issue, status, lane, at.Sub(r.Started), title, body)
+		t := labCard(now, r.Issue, status, track, at.Sub(r.Started), title, body)
 		t.Source, t.Author, t.AuthorWriter = factoryd.SourceRoutine, "factory-agent", false
 		if rt.Files == policy.FilesHuman {
 			t.Kind, t.BudgetEUR, t.ModelAlias = "human", 0, ""
@@ -1266,7 +1267,7 @@ func (s *labScene) addRoutines(now time.Time, held bool) {
 	}
 
 	view := func(rt policy.Routine, st factoryd.RoutineState) factoryd.RoutineView {
-		v := factoryd.RoutineView{Project: labCodeProject.Name, Routine: rt, State: st, Lane: "queued", Last: s.runs[rt.Name][0]}
+		v := factoryd.RoutineView{Project: labCodeProject.Name, Routine: rt, State: st, Column: "queued", Last: s.runs[rt.Name][0]}
 		labNext(&v, now, at, at)
 		if every := rt.MergesEvery(); every > 0 {
 			v.MergesLeft = every - st.Merges
@@ -1309,13 +1310,13 @@ func idleScene(now time.Time) labScene {
 		if i == 10 {
 			status = "failed"
 		}
-		k := finished(labCard(now, d.issue, status, "ready", d.age+50*time.Minute, d.title, "Done as the issue asks."), now, d.age, d.eur)
+		k := finished(labCard(now, d.issue, status, "direct", d.age+50*time.Minute, d.title, "Done as the issue asks."), now, d.age, d.eur)
 		s.tasks = append(s.tasks, factoryd.BoardTask{Task: k})
 	}
 	s.tasks = append([]factoryd.BoardTask{
-		{Task: labCard(now, 455, "backlog", "backlog", 53*time.Hour, "Live check: close (Stage 16, 3.4)",
+		{Task: labCard(now, 455, "queued", "direct", 53*time.Hour, "Live check: close (Stage 16, 3.4)",
 			"Close the stage's live check once the restart round has run.")},
-		{Task: labCard(now, 178, "backlog", "backlog", 347*time.Hour, "Console: show the configuration version",
+		{Task: labCard(now, 178, "queued", "direct", 347*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer.")},
 	}, s.tasks...)
 	s.alerts = []factoryd.Alert{
@@ -1340,7 +1341,7 @@ func historyScene(now time.Time) labScene {
 			status = "failed"
 		}
 		age := time.Duration(i+1) * 30 * time.Minute
-		s.tasks = append(s.tasks, factoryd.BoardTask{Task: finished(labCard(now, int64(1319-i), status, "ready", age+40*time.Minute,
+		s.tasks = append(s.tasks, factoryd.BoardTask{Task: finished(labCard(now, int64(1319-i), status, "direct", age+40*time.Minute,
 			titles[i%len(titles)], "Done as the issue asks."), now, age, 0.25)})
 	}
 	return s
@@ -1351,13 +1352,13 @@ func fireScene(now time.Time) labScene {
 	at := func(d time.Duration) *time.Time { v := now.Add(-d); return &v }
 	s := labScene{drawer: labID(620), spend: 97.30, chatSpend: 3.20, objects: map[string]string{}}
 
-	stale := labCard(now, 619, "running", "ready", 90*time.Minute, "Load test: the event stream under 200 followers",
+	stale := labCard(now, 619, "running", "direct", 90*time.Minute, "Load test: the event stream under 200 followers",
 		"Open 200 followers on one project's stream and measure the heartbeat's board reads.")
 	stale.Gate, stale.GateSince, stale.SpentEUR = factoryd.GateSession, at(41*time.Minute), 0.88
 	s.objects["sessions/"+stale.ID+"/timeline.jsonl"] = jsonl(map[string]any{"step": "session_start", "time": stamp(ago(41 * time.Minute)),
 		"session": "s-1", "model": "small", "attempt": 1})
 
-	near := labCard(now, 620, "running", "ready", 65*time.Minute, "Pulse: name the failed cards first",
+	near := labCard(now, 620, "running", "direct", 65*time.Minute, "Pulse: name the failed cards first",
 		"A pulse that lists a failure after the running cards hides it; name failed cards first.")
 	near.PRNumber, near.Gate, near.GateSince, near.SpentEUR, near.ModelAlias = 622, factoryd.GateSession, at(14*time.Minute), 1.95, "big"
 	tl := pushedTimeline(near.CreatedAt, "small", "test")
@@ -1375,30 +1376,30 @@ func fireScene(now time.Time) labScene {
 			map[string]any{"step": factoryd.StepProviderRefused, "time": stamp(ago(d)), "status": 429, "reason": "budget exhausted", "backoff_s": 120},
 		)
 	}
-	wait1 := labCard(now, 615, "running", "ready", 25*time.Minute, "Gateway: count the provider's 429s per model",
+	wait1 := labCard(now, 615, "running", "direct", 25*time.Minute, "Gateway: count the provider's 429s per model",
 		"Count each refusal per model alias so the pulse can name a provider that is down.")
 	wait1.Gate, wait1.GateSince, wait1.SpentEUR, wait1.ModelAlias = factoryd.GateProvider, at(2*time.Minute), 0.06, "big"
 	s.objects["sessions/"+wait1.ID+"/timeline.jsonl"] = refused(2 * time.Minute)
-	wait2 := labCard(now, 621, "running", "ready", 18*time.Minute, "Review: retry the review on a provider refusal",
+	wait2 := labCard(now, 621, "running", "direct", 18*time.Minute, "Review: retry the review on a provider refusal",
 		"A refused review call fails the gate; retry it after the provider's backoff.")
 	wait2.Gate, wait2.GateSince, wait2.SpentEUR, wait2.ModelAlias = factoryd.GateProvider, at(1*time.Minute), 0.02, "big"
 	s.objects["sessions/"+wait2.ID+"/timeline.jsonl"] = refused(time.Minute)
 
-	capped := factoryd.BoardTask{Task: labCard(now, 610, "waiting-human", "ready", 5*time.Hour, "Board export: import a snapshot back",
+	capped := factoryd.BoardTask{Task: labCard(now, 610, "waiting-human", "direct", 5*time.Hour, "Board export: import a snapshot back",
 		"Read a nightly snapshot back into an empty database; every card keeps its lane and its accent."),
 		Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\n\n" +
 			"- acceptance: TestExportRoundTrip fails on the second import\n- review: the importer drops a card's accent",
 		EscalatedAt: ago(12 * time.Minute), EscalationAlert: 66}
 	capped.SpentEUR, capped.ModelAlias, capped.Usage.Attempts = 1.48, "big", 3
 
-	queued := factoryd.BoardTask{Task: labCard(now, 623, "waiting-deps", "ready", 50*time.Minute, "Board export: document the snapshot format",
+	queued := factoryd.BoardTask{Task: labCard(now, 623, "waiting-deps", "direct", 50*time.Minute, "Board export: document the snapshot format",
 		"Describe the snapshot's JSON in docs/export.md."), WaitingOn: "#610"}
-	f1 := finished(labCard(now, 604, "failed", "ready", 4*time.Hour, "Export: GitHub pull requests for merged cards",
+	f1 := finished(labCard(now, 604, "failed", "direct", 4*time.Hour, "Export: GitHub pull requests for merged cards",
 		"Open a GitHub pull request for every card merged since the export's last run."), now, 70*time.Minute, 2.00)
 	f1.ModelAlias = "big"
-	f2 := finished(labCard(now, 609, "failed", "ready", 3*time.Hour, "Fresh-context and aged-read acceptance tests",
+	f2 := finished(labCard(now, 609, "failed", "direct", 3*time.Hour, "Fresh-context and aged-read acceptance tests",
 		"Add the acceptance tests for a fresh context and an aged read."), now, 35*time.Minute, 1.21)
-	done := finished(labCard(now, 602, "done", "ready", 7*time.Hour, "Costs: the day cap line under the table",
+	done := finished(labCard(now, 602, "done", "direct", 7*time.Hour, "Costs: the day cap line under the table",
 		"Show today's spend against the day cap under the costs table."), now, 6*time.Hour, 0.18)
 	s.tasks = []factoryd.BoardTask{capped, {Task: stale}, {Task: near}, {Task: wait1}, {Task: wait2}, queued, {Task: f1}, {Task: f2}, {Task: done}}
 	s.addRoutines(now, true)
@@ -1432,23 +1433,23 @@ func fireScene(now time.Time) labScene {
 
 func quietScene(now time.Time) labScene {
 	s := labScene{drawer: labID(624), spend: 4.10, chatSpend: 0.40, objects: map[string]string{}}
-	run := labCard(now, 624, "running", "ready", 16*time.Minute, "README.md: extend the intro",
+	run := labCard(now, 624, "running", "direct", 16*time.Minute, "README.md: extend the intro",
 		"Say in the first paragraph what the factory is for and who runs it.")
 	run.Gate, run.GateSince, run.SpentEUR = factoryd.GateSession, &run.CreatedAt, 0.22
 	s.objects["sessions/"+run.ID+"/timeline.jsonl"] = jsonl(map[string]any{"step": "session_start", "time": stamp(now.Add(-15 * time.Minute)),
 		"session": "s-1", "model": "small", "attempt": 1})
 	s.objects["sessions/"+run.ID+"/s-1.jsonl"] = jsonl(map[string]any{"time": stamp(now.Add(-14 * time.Minute)), "kind": "model_call",
 		"detail": map[string]any{"text": "Reading README.md and docs/overview.md first."}})
-	roll := labCard(now, 626, "running", "ready", 9*time.Minute, "roll 5e1f0a2: factoryd, gateway, worker, ci-runner", "Roll the merged changes.")
+	roll := labCard(now, 626, "running", "direct", 9*time.Minute, "roll 5e1f0a2: factoryd, gateway, worker, ci-runner", "Roll the merged changes.")
 	roll.Source = factoryd.SourceRoll
-	merged := finished(labCard(now, 623, "merged", "ready", 2*time.Hour, "Footer: link the licence", "Link the licence in the footer."), now, time.Hour, 0.12)
+	merged := finished(labCard(now, 623, "merged", "direct", 2*time.Hour, "Footer: link the licence", "Link the licence in the footer."), now, time.Hour, 0.12)
 	merged.PRNumber = 623
 	s.tasks = []factoryd.BoardTask{{Task: run}, {Task: roll}, {Task: merged, ChainState: "success", RollID: roll.ID, RollIssue: 626},
-		{Task: finished(labCard(now, 622, "done", "ready", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
+		{Task: finished(labCard(now, 622, "done", "direct", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
 			"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)},
-		{Task: finished(labCard(now, 621, "done", "ready", 6*time.Hour, "Costs: the day cap line under the table",
+		{Task: finished(labCard(now, 621, "done", "direct", 6*time.Hour, "Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."), now, 5*time.Hour, 0.18)},
-		{Task: finished(labCard(now, 620, "done", "ready", 9*time.Hour, "Console: show the configuration version",
+		{Task: finished(labCard(now, 620, "done", "direct", 9*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer."), now, 8*time.Hour, 0.33)},
 	}
 	s.events = []factoryd.Event{labStatus(624, "running", factoryd.GateSession, now.Add(-3*time.Minute))}

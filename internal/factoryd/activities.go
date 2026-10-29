@@ -123,7 +123,6 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityWithdrawApproval:            r.WithdrawApproval,
 		ActivityRunPlan:                     r.RunPlan,
 		ActivityRequestPlan:                 r.RequestPlan,
-		ActivityCreateChildren:              r.CreateChildren,
 		ActivityOpenPlanQuestions:           r.OpenPlanQuestions,
 		ActivityAwaitSessionGap:             r.AwaitSessionGap,
 		ActivityAwaitRollHold:               r.AwaitRollHold,
@@ -389,8 +388,8 @@ func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) er
 		return err
 	}
 	if u.ExtraTime > t.Usage.ExtraTime {
-		process, lane := processLane(ctx, r.store, t)
-		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, lane)
+		process, track := processTrack(ctx, r.store, t)
+		r.cfg.Metrics.Intervened(ctx, InterventionExtraTime, process, track)
 	}
 	return nil
 }
@@ -1103,6 +1102,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
+		// a parked card holds no slot: the next queued card takes it
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	}
 	// the shaped question's buttons are not these choices: they carry
 	// values, and park and keep waiting record an answer without posting
@@ -1150,6 +1151,7 @@ func (r *Runner) RequestInfo(ctx context.Context, taskID, reason string) (int64,
 			return 0, terminalError("task %s is %s, cannot wait for the issue's author: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-poster")
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	}
 	notify := r.cfg.Policy().ApproversOf(t.Repository)
 	if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil {
@@ -1414,13 +1416,9 @@ func (r *Runner) mergeBase(ctx context.Context, repo, fork Repo, commit, base, m
 }
 
 // TaskConfig reads the task's row and its process in the pinned version:
-// the row's process, else (a row the loader's backfill has not reached)
-// the process the task's project follows in that version, and the class
-// of the row's lane. A report task runs its own class, the write-up's or
-// the screening's, with no lane; a roll has no lane and runs ready's
-// class, whose program is the lifecycle. A card for a pull request
-// factoryd opened outside a card's workflow (roadmap 187) has no lane
-// either and runs ready's process and class.
+// the row's process, else the process the task's project follows in that
+// version (a roll's, a factory pull request's card's), and the class of
+// the row's track. A report task runs its own class, the screening's.
 func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (TaskConfig, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1439,25 +1437,19 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 	if !ok {
 		return TaskConfig{}, terminalError("task %s: repository %s follows no process in configuration version %d", t.ID, t.Repository, v.ID)
 	}
-	laneRow := cmp.Or(t.Lane, policy.LaneReady)
-	if (t.Source == SourceRoll || factoryPRSources(t.Source)) && t.Lane == "" {
-		laneRow = policy.LaneReady
-	}
-	tc := TaskConfig{Process: name, Lane: t.Lane, Stages: p.Stages, Queue: p.Merge.Queue, Dependencies: p.Dependencies}
-	if plan, ok := p.Lane(policy.LanePlan); ok {
+	tc := TaskConfig{Process: name, Track: t.Track, Stages: p.Stages, Queue: p.Merge.Queue, Dependencies: p.Dependencies}
+	if plan, ok := p.Tracks.Track(policy.TrackPlan); ok {
 		tc.PlanShape = plan.Plan
 	}
-	switch lane, ok := p.Lane(laneRow); {
+	switch track, ok := p.Tracks.Track(t.Track); {
 	case t.Report() && len(t.RequiredCapabilities) == 0:
 		return TaskConfig{}, terminalError("task %s: a report task with no class", t.ID)
 	case t.Report():
 		tc.Class = t.RequiredCapabilities[0]
 	case !ok:
-		return TaskConfig{}, terminalError("task %s: process %s has no lane %s in configuration version %d", t.ID, name, t.Lane, v.ID)
-	case lane.Class == "":
-		return TaskConfig{}, terminalError("task %s: lane %s of process %s starts nothing", t.ID, t.Lane, name)
+		return TaskConfig{}, terminalError("task %s: process %s has no track %q in configuration version %d", t.ID, name, t.Track, v.ID)
 	default:
-		tc.Class = lane.Class
+		tc.Class = track.Class
 	}
 	tc.Session = v.Document.Classes[tc.Class].Session
 	tc.Stronger = tc.Session == policy.SessionCode && (project.Model == policy.ModelStronger || t.Rung == RungFrontier)
@@ -1488,9 +1480,6 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	}
 	if st.Report {
 		return st, nil
-	}
-	if st.WriteUp, err = r.writeUp(ctx, t.ID); err != nil {
-		return RunState{}, err
 	}
 	if !st.FactoryPR { // its object store is the card's session's, which never ran
 		if err := r.stageMemory(ctx, t.ID, &st); err != nil {

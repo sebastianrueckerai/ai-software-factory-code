@@ -209,7 +209,7 @@ func TestTaskImage(t *testing.T) {
 	if err != nil || image != "store.test/sf/sandbox-demo-app.browser@"+digest || !reflect.DeepEqual(m, want) {
 		t.Fatalf("pinned: %q %+v %v, want the store's image at the pin and its manifest", image, m, err)
 	}
-	for _, task := range []Task{{ID: "t1", Repository: "demo-app/demo-app"}, {ID: "t1", Repository: "demo-app/demo-app", Image: "default"}} {
+	for _, task := range []Task{{ID: "t1", Repository: "demo-app/demo-app", Track: "direct"}, {ID: "t1", Repository: "demo-app/demo-app", Image: "default", Track: "direct"}} {
 		if image, m, err := r.taskImage(ctx, task); err != nil || image != "reg/worker@sha256:abc" || m != nil {
 			t.Fatalf("default unpinned (%q): %q %+v %v, want the factory's image", task.Image, image, m, err)
 		}
@@ -237,7 +237,7 @@ func TestTaskImageRefusesAnUnsignedPin(t *testing.T) {
 		t.Fatal(err)
 	}
 	r, digest, rig := signedImageRunner(t, other)
-	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser"}
+	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser", Track: "direct"}
 	for range 2 {
 		if _, _, err := r.taskImage(context.Background(), task); !isTerminal(err) || !strings.Contains(err.Error(), "image browser of project demo-app is pinned at "+digest) {
 			t.Fatalf("taskImage = %v, want a terminal refusal naming the image and its digest", err)
@@ -266,7 +266,7 @@ func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 	store.projects = []Project{{Name: "demo-app", Repository: "demo-app/demo-app"}}
 	r.store = store
 	r.forgejo = &Forgejo{BotUser: "factory-agent"}
-	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser", Status: "running"}
+	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser", Status: "running", Track: "direct"}
 	if err := store.CreateTask(ctx, task); err != nil {
 		t.Fatal(err)
 	}
@@ -307,7 +307,7 @@ func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 		t.Fatalf("the lease loop applied %v (%v), want the image's egress kept", kube.applies, err)
 	}
 
-	waiting := Task{ID: "t2", Repository: "demo-app/demo-app", Image: "video"}
+	waiting := Task{ID: "t2", Repository: "demo-app/demo-app", Image: "video", Track: "direct"}
 	var notPinned ErrImageNotPinned
 	if _, _, err := r.setupNamespace(ctx, &waiting, ForgejoToken{}); !errors.As(err, &notPinned) || kube.createdNs["factory-agents-t2"] != nil {
 		t.Fatalf("unpinned variant: %v, namespace %v; want ErrImageNotPinned before any namespace", err, kube.createdNs["factory-agents-t2"])
@@ -325,7 +325,7 @@ func TestSandboxRefusesAnImageReachingTheCanary(t *testing.T) {
 	pin := c.Images["browser"]
 	pin.Egress = []string{"cdn.example.org", "Example.com."}
 	c.Images["browser"] = pin
-	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser"}
+	task := Task{ID: "t1", Repository: "demo-app/demo-app", Image: "browser", Track: "direct"}
 	r.store.CreateTask(context.Background(), task)
 	_, _, err := r.setupNamespace(context.Background(), &task, ForgejoToken{})
 	if !isTerminal(err) || !strings.Contains(err.Error(), "image browser") || !strings.Contains(err.Error(), "example.com, the egress canary") || len(kube.createdNs) != 0 {

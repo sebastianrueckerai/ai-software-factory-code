@@ -48,23 +48,23 @@ func docLock(repository string) *sync.Mutex {
 }
 
 // autonomyRefusal is the change's refusal; "" for a sound one.
-func autonomyRefusal(state string, backlogCap int) string {
+func autonomyRefusal(state string, queueCap int) string {
 	switch {
 	case !slices.Contains(policy.AutonomyStates, state):
 		return "autonomy must be manual, assisted, autonomous or full auto"
-	case backlogCap < 0:
-		return "backlog_cap must not be negative"
+	case queueCap < 0:
+		return "queue_cap must not be negative"
 	}
 	return ""
 }
 
-// doSetAutonomy writes project name's autonomy state and backlog cap, 0
+// doSetAutonomy writes project name's autonomy state and queue cap, 0
 // for the file's own, into its project file as the member, an approver,
 // through commitProjectFile. Full auto writes autonomous with merge_rule
 // auto, autonomous merge_rule human; manual and assisted leave the rule.
 // The change records one event naming the member.
-func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlogCap int, a actor) error {
-	if line := autonomyRefusal(state, backlogCap); line != "" {
+func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCap int, a actor) error {
+	if line := autonomyRefusal(state, queueCap); line != "" {
 		return refuse(http.StatusBadRequest, line)
 	}
 	start := time.Now()
@@ -74,13 +74,13 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, backlog
 			from, repo = p.AutonomyState(), p.Repository
 		}
 	}
-	pr, err := c.commitProjectFile(ctx, a, name, fmt.Sprintf("Project %s: autonomy %s", name, state), autonomyEdit(state, backlogCap), nil)
+	pr, err := c.commitProjectFile(ctx, a, name, fmt.Sprintf("Project %s: autonomy %s", name, state), autonomyEdit(state, queueCap), nil)
 	if err != nil {
 		return err
 	}
 	detail := map[string]any{"from": from, "to": state, "pr": pr}
-	if backlogCap > 0 && backlogCap != policy.DefaultBacklogCap {
-		detail["backlog_cap"] = backlogCap
+	if queueCap > 0 && queueCap != policy.DefaultQueueCap {
+		detail["queue_cap"] = queueCap
 	}
 	c.event(context.WithoutCancel(ctx), factoryd.Event{Repository: repo, Kind: factoryd.EventAutonomyChanged,
 		Actor: a.s.user, Via: cmp.Or(a.via, factoryd.ViaChat), Detail: detail})
@@ -195,16 +195,16 @@ func (c *Console) infraFile(ctx context.Context, path string) (content []byte, b
 }
 
 // autonomyButton answers POST /projects/{name}/autonomy, the chat's level
-// control (C14): the state and the backlog cap into the project file, then
+// control (C14): the state and the queue cap into the project file, then
 // 204.
 func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	level := r.PostFormValue("autonomy")
 	cap := 0
-	if s := r.PostFormValue("backlog_cap"); s != "" {
+	if s := r.PostFormValue("queue_cap"); s != "" {
 		n, err := strconv.Atoi(s)
 		if err != nil || n < 1 {
-			http.Error(w, "backlog_cap must be a positive count", http.StatusBadRequest)
+			http.Error(w, "queue_cap must be a positive count", http.StatusBadRequest)
 			return
 		}
 		cap = n
@@ -280,12 +280,12 @@ func keyIndex(m *yaml.Node, key string) int {
 	return -1
 }
 
-// autonomyEdit sets the project file to autonomy state with backlog_cap:
+// autonomyEdit sets the project file to autonomy state with queue_cap:
 // full auto is autonomous with merge_rule auto, autonomous takes
 // merge_rule human, manual and assisted keep the rule; a cap of 0 keeps
 // the file's, another lands only away from the default, and an existing
 // key set to the default comes off.
-func autonomyEdit(state string, backlogCap int) func(doc *yaml.Node) error {
+func autonomyEdit(state string, queueCap int) func(doc *yaml.Node) error {
 	return func(doc *yaml.Node) error {
 		m := doc.Content[0]
 		scalar := func(v, tag string) *yaml.Node {
@@ -308,12 +308,12 @@ func autonomyEdit(state string, backlogCap int) func(doc *yaml.Node) error {
 		default:
 			set("autonomy", state)
 		}
-		switch i := keyIndex(m, "backlog_cap"); {
-		case backlogCap == 0:
-		case backlogCap != policy.DefaultBacklogCap && i >= 0:
-			m.Content[i+1].Value, m.Content[i+1].Tag, m.Content[i+1].Style = strconv.Itoa(backlogCap), "!!int", 0
-		case backlogCap != policy.DefaultBacklogCap:
-			m.Content = append(m.Content, scalar("backlog_cap", "!!str"), scalar(strconv.Itoa(backlogCap), "!!int"))
+		switch i := keyIndex(m, "queue_cap"); {
+		case queueCap == 0:
+		case queueCap != policy.DefaultQueueCap && i >= 0:
+			m.Content[i+1].Value, m.Content[i+1].Tag, m.Content[i+1].Style = strconv.Itoa(queueCap), "!!int", 0
+		case queueCap != policy.DefaultQueueCap:
+			m.Content = append(m.Content, scalar("queue_cap", "!!str"), scalar(strconv.Itoa(queueCap), "!!int"))
 		case i >= 0:
 			m.Content = append(m.Content[:i], m.Content[i+2:]...)
 		}
@@ -632,10 +632,10 @@ func docCurrent(path, current, why string) string {
 		factoryd.ContentHash(current), textutil.Truncate(current, docShown))
 }
 
-// capNote is the backlog cap's note in a level change's answer.
+// capNote is the queue cap's note in a level change's answer.
 func capNote(cap int) string {
-	if cap > 0 && cap != policy.DefaultBacklogCap {
-		return fmt.Sprintf(" with a backlog cap of %d", cap)
+	if cap > 0 && cap != policy.DefaultQueueCap {
+		return fmt.Sprintf(" with a queue cap of %d", cap)
 	}
 	return ""
 }

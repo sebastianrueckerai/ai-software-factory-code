@@ -1139,7 +1139,7 @@ func TestBumpDigestEditsOnlyThePinnedDigest(t *testing.T) {
 
 func newRollRunner(t *testing.T, f *rollForgejo, rolls ...RollRequest) (*Runner, *fakeStore) {
 	t.Helper()
-	runner, _, store := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "running", Repository: codeRepo, Kind: "agent"},
+	runner, _, store := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "running", Repository: codeRepo, Kind: "agent", Track: "direct"},
 		newFakeKube(), &fakeObjectStore{})
 	runner.forgejo, _ = f.srv(t)
 	store.rolls = rolls
@@ -1345,7 +1345,7 @@ func TestRollCommitCutsAnUpdateFromMainsHeadAgain(t *testing.T) {
 
 // RollCommit refuses a task that is no roll.
 func TestRollCommitRefusesAnAgentTask(t *testing.T) {
-	runner, _, _ := newTestRunner(t, Task{ID: "t1", Source: "webhook", Status: "running", Repository: codeRepo}, newFakeKube(), &fakeObjectStore{})
+	runner, _, _ := newTestRunner(t, Task{ID: "t1", Source: "webhook", Status: "running", Repository: codeRepo, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
 	if _, err := execActivity(t, runner, ActivityRollCommit, "t1"); err == nil || !strings.Contains(err.Error(), "no roll task") {
 		t.Fatalf("err %v", err)
 	}
@@ -1355,7 +1355,7 @@ func TestRollCommitRefusesAnAgentTask(t *testing.T) {
 // endpoint fails the test on any call): the card reads the note.
 func TestModelReviewOfARollCallsNoModel(t *testing.T) {
 	runner, _, _ := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "in-review", Repository: codeRepo, Kind: "agent",
-		RequiredCapabilities: []string{"coder"}}, newFakeKube(), &fakeObjectStore{})
+		RequiredCapabilities: []string{"coder"}, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
 	var rv Review
 	out, err := execActivity(t, runner, ActivityModelReview, "t-roll", PullRequest{Number: 9}, "r1", GateResults{})
 	if err != nil || out.Get(&rv) != nil {
@@ -2248,7 +2248,7 @@ func TestRollRetryAnswerStartsAFreshRoll(t *testing.T) {
 // confirms the rollout.
 func TestAwaitRolloutReadsTheDeploymentThroughTheKube(t *testing.T) {
 	kube := newFakeKube()
-	r, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Kind: "agent", Repository: "sf/repo", PRNumber: 9, Source: SourceRoll}, kube, &fakeObjectStore{})
+	r, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Kind: "agent", Repository: "sf/repo", PRNumber: 9, Source: SourceRoll, Track: "direct"}, kube, &fakeObjectStore{})
 	pinned := func(image, digest string) string { return registryHost + image + "@" + digest }
 	factorydAt := func(gateway string) string {
 		return "image: " + pinned("factory-gateway", gateway) + "\nworker: " + pinned("opencode-worker", digestOld) + "\nbase: " + pinned("sandbox-base", digestOld) +

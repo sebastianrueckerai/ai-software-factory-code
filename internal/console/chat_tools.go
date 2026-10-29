@@ -30,7 +30,8 @@ type toolInput struct {
 	TaskID      string   `json:"task_id,omitempty"`
 	Title       string   `json:"title,omitempty"`
 	Body        string   `json:"body,omitempty"`
-	Lane        string   `json:"lane,omitempty"`
+	Track       string   `json:"track,omitempty"`
+	TrackReason string   `json:"track_reason,omitempty"`
 	Text        string   `json:"text,omitempty"`
 	EUR         float64  `json:"eur,omitempty"`
 	Question    int      `json:"question,omitempty"`
@@ -38,7 +39,6 @@ type toolInput struct {
 	Minutes     int      `json:"minutes,omitempty"`
 	Action      string   `json:"action,omitempty"`
 	Revision    int      `json:"revision,omitempty"`
-	SHA256      string   `json:"sha256,omitempty"`
 	Summary     string   `json:"summary,omitempty"`
 	Accent      string   `json:"accent,omitempty"`
 	Login       string   `json:"login,omitempty"`
@@ -71,7 +71,7 @@ type toolInput struct {
 	Mode        string   `json:"mode,omitempty"`
 	Autonomy    string   `json:"autonomy,omitempty"`
 	Content     string   `json:"content,omitempty"`
-	BacklogCap  int      `json:"backlog_cap,omitempty"`
+	QueueCap    int      `json:"queue_cap,omitempty"`
 	// Old and New are a document edit's passage and its replacement,
 	// BaseSHA256 the hash the document was read with; Find narrows a
 	// document read to the lines that hold it, Regex makes Find a pattern,
@@ -326,6 +326,18 @@ func (t *turn) byTaskID(in *toolInput) error {
 // and "Carries: #9", the line that already supplies a carry, is no ask.
 var carryAsk = regexp.MustCompile(`(?i)refs/pull|(?:carry|fetch|get|restore|re-?apply|rebase|cherry.?pick)\b[^.!?\n]{0,80}\b(?:pr|pull requests?)\b`)
 
+// refuseTrack refuses a new_card without a track or the one line why
+// the card takes it.
+func refuseTrack(in toolInput) error {
+	switch {
+	case trackLabels[in.Track] == "":
+		return refuse(http.StatusBadRequest, "track: direct builds at once, plan plans first, human is a person's card")
+	case strings.TrimSpace(in.TrackReason) == "":
+		return refuse(http.StatusBadRequest, "track_reason: why the card takes track "+in.Track+", one line")
+	}
+	return nil
+}
+
 // refuseCarry refuses a new_card whose brief asks the sandbox to obtain an
 // existing pull request's commits without carry_pr: the sandbox holds no
 // git credential, so the head must reach the clone before the session
@@ -339,8 +351,7 @@ func refuseCarry(title, body string, carry int64) error {
 }
 
 // describe is one line saying what a proposal of tool with in would do,
-// in pinned to the plan revision an accept_plan names, an approve_merge's
-// with its warning; a card of another project refuses it, and so do an
+// an approve_merge's with its warning; a card of another project refuses it, and so do an
 // approve_merge or a deny_merge without a pending merge request and a
 // github_export the console would refuse.
 func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
@@ -353,6 +364,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		}
 	}
 	if tool.name == "new_card" {
+		if err := refuseTrack(*in); err != nil {
+			return "", err
+		}
 		if _, err := pinnedImage(t.p, in.Image); err != nil {
 			return "", err
 		}
@@ -366,11 +380,6 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		var err error
 		if k, err = t.card(*in); err != nil {
 			return "", err
-		}
-		if tool.name == "accept_plan" {
-			if err := t.pinPlan(in); err != nil {
-				return "", err
-			}
 		}
 		parts = append(parts, fmt.Sprintf("#%d %s %q", k.IssueNumber, k.ID, factoryd.CardTitle(k)))
 	}
@@ -388,7 +397,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if in.EUR > 0 {
 		parts = append(parts, fmt.Sprintf("%.2f EUR", in.EUR))
 	}
-	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"lane", in.Lane},
+	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
 		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
 		{"verdict", in.Verdict}, {"autonomy", in.Autonomy}, {"path", in.Path}, {"old", in.Old}, {"new", in.New}, {"content", in.Content}} {
@@ -413,11 +422,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		parts = append(parts, "undo the pending skip")
 	}
 	if tool.name == "set_autonomy" {
-		if in.BacklogCap > 0 {
-			parts = append(parts, fmt.Sprintf("backlog cap %d", in.BacklogCap))
+		if in.QueueCap > 0 {
+			parts = append(parts, fmt.Sprintf("queue cap %d", in.QueueCap))
 		} else {
 			v, _ := t.c.inForce(t.r.Context())
-			parts = append(parts, fmt.Sprintf("backlog cap %d stays", v.Tree.BacklogCapOf(t.p.Repository)))
+			parts = append(parts, fmt.Sprintf("queue cap %d stays", v.Tree.QueueCapOf(t.p.Repository)))
 		}
 	}
 	if tool.name == "tell_card" {
@@ -428,11 +437,7 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		return sanitize.Inbound(toldLine(strings.Join(parts, ", "), branch, k)), nil
 	}
 	if in.Revision > 0 {
-		rev := fmt.Sprintf("revision %d", in.Revision)
-		if in.SHA256 != "" {
-			rev += " sha " + textutil.Truncate(in.SHA256, 7)
-		}
-		parts = append(parts, rev)
+		parts = append(parts, fmt.Sprintf("revision %d", in.Revision))
 	}
 	if tool.name == "answer" {
 		bt, _, err := t.c.cfg.Tasks.BoardTask(t.r.Context(), in.TaskID)
@@ -566,26 +571,6 @@ func (t *turn) exportToken() (factoryd.Mirror, error) {
 	return m, nil
 }
 
-// pinPlan sets the plan revision in names, the newest for none, and its
-// sha256 unless in names one; a card with no such revision keeps in.
-func (t *turn) pinPlan(in *toolInput) error {
-	if in.Revision > 0 && in.SHA256 != "" {
-		return nil
-	}
-	k, err := t.card(*in)
-	if err != nil {
-		return err
-	}
-	rev, ok, err := t.c.cfg.Tasks.PlanRevision(t.r.Context(), k.ID, in.Revision)
-	if ok {
-		in.Revision = rev.Revision
-		if in.SHA256 == "" {
-			in.SHA256 = rev.SHA256
-		}
-	}
-	return err
-}
-
 // numbered is a question's choices on one line, each with its number, so
 // the member may answer "the second".
 func numbered(choices []string) string {
@@ -599,7 +584,7 @@ func numbered(choices []string) string {
 // planQuestions are the questions of plan card t's newest revision; none
 // for a card that is no plan.
 func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factoryd.PlanQuestion, error) {
-	if t.Lane != policy.LanePlan {
+	if t.Track != policy.TrackPlan {
 		return nil, nil
 	}
 	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.ID, 0)
@@ -1215,17 +1200,21 @@ var tools = []chatTool{
 			"acceptance": map[string]any{"type": "array", "minItems": 1, "maxItems": factoryd.MaxCardAcceptance,
 				"items":       map[string]any{"type": "string"},
 				"description": "the acceptance tests, one line each"},
-			"lane":        fallback(policy.LaneBacklog, enum("where the card starts", "backlog", "plan", "ready", "human")),
-			"size":        enum("the card's size, which sets its budget", policy.CardSizes...),
-			"rung":        enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
-			"rung_reason": str("why that rung, one line"),
-			"image":       str("a pinned sandbox image to run on, none for the default"),
-			"carry_pr":    map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
+			"track":        enum("how the card's work runs", policy.TrackDirect, policy.TrackPlan, factoryd.LabelHuman),
+			"track_reason": str("why that track, one line"),
+			"size":         enum("the card's size, which sets its budget", policy.CardSizes...),
+			"rung":         enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
+			"rung_reason":  str("why that rung, one line"),
+			"image":        str("a pinned sandbox image to run on, none for the default"),
+			"carry_pr":     map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
 			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 				"description": "the thread's images to attach (img1, as their rows show)"}},
-		required: []string{"title"},
+		required: []string{"title", "track", "track_reason"},
 		about:    "File a new card on the project.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			if err := refuseTrack(in); err != nil {
+				return "", nil, err
+			}
 			body := in.Body
 			if len(in.Acceptance) > 0 {
 				body += "\n\nAcceptance:"
@@ -1244,12 +1233,12 @@ var tools = []chatTool{
 			if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
 				return "", nil, err
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Lane, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)
 			if err != nil {
 				return "", nil, err
 			}
 			path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/assets", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), issue)
-			return fmt.Sprintf("Filed %s#%d in lane %s.", repo, issue, in.Lane) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, path, ups), nil, nil
+			return fmt.Sprintf("Filed %s#%d on track %s.", repo, issue, in.Track) + t.c.uploadAssets(context.WithoutCancel(t.r.Context()), t.a.s, path, ups), nil, nil
 		}},
 	{name: "request_image", title: "Ask for a sandbox tool", write: true,
 		params: map[string]any{
@@ -1261,13 +1250,6 @@ var tools = []chatTool{
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.requestImage(in)
 			return s, nil, err
-		}},
-	{name: "move_card", title: "Move a card", write: true,
-		params: map[string]any{"task_id": taskParam, "lane": enum("the starting lane", policy.LanePlan, policy.LaneReady)}, required: []string{"task_id", "lane"},
-		about: "Move a backlog card into a starting lane.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doMoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
-			return note, &inverse{"unmove_card", toolInput{TaskID: in.TaskID, Lane: in.Lane}}, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -1327,27 +1309,9 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "File a failed plan card again, its replacement in lane ready.",
+		about: "File a failed plan card again, which starts once a work slot is free.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
-			return note, nil, err
-		}},
-	{name: "start_plan", title: "Start a plan", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "Start an accepted plan, its backlog cards into lane ready.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doStartPlan(t.r.Context(), t.a, in.TaskID)
-			return note, nil, err
-		}},
-	{name: "accept_plan", title: "Accept a plan", write: true,
-		params: map[string]any{"task_id": taskParam, "revision": map[string]any{"type": "integer", "description": "the revision the member saw (default the newest)", "minimum": 1},
-			"sha256": str("its sha256 (default the revision's)")},
-		required: []string{"task_id"},
-		about:    "Accept a plan's revision, which factoryd files as cards.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			if err := t.pinPlan(&in); err != nil {
-				return "", nil, err
-			}
-			note, err := t.c.doAcceptPlan(t.r.Context(), t.a, in.TaskID, in.Revision, in.SHA256)
 			return note, nil, err
 		}},
 	{name: "request_changes", title: "Ask for changes to a plan", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
@@ -1355,13 +1319,6 @@ var tools = []chatTool{
 		about:    "Ask the planner for changes to a plan.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRequestChanges(t.r.Context(), t.a, in.TaskID, in.Text)
-			return note, nil, err
-		}},
-	{name: "reject_plan", title: "Reject a plan", write: true, params: map[string]any{"task_id": taskParam, "note": str("why")},
-		required: []string{"task_id", "note"},
-		about:    "Reject a plan, its task failed with the reason.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doRejectPlan(t.r.Context(), t.a, in.TaskID, in.Note)
 			return note, nil, err
 		}},
 	{name: "approve_merge", title: "Approve a merge", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1510,14 +1467,14 @@ var tools = []chatTool{
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
 		params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),
-			"backlog_cap": map[string]any{"type": "integer", "description": "how many cards may wait unstarted, unset keeps it", "minimum": 1}},
+			"queue_cap": map[string]any{"type": "integer", "description": "how many cards may wait unstarted, unset keeps it", "minimum": 1}},
 		required: []string{"autonomy"},
-		about:    "Set the project's autonomy state and backlog cap through a pull request on its project file.",
+		about:    "Set the project's autonomy state and queue cap through a pull request on its project file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.BacklogCap, t.a); err != nil {
+			if err := t.c.doSetAutonomy(t.r.Context(), t.p.Name, in.Autonomy, in.QueueCap, t.a); err != nil {
 				return "", nil, err
 			}
-			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.BacklogCap)), nil, nil
+			return fmt.Sprintf("The project runs at %s now%s.", in.Autonomy, capNote(in.QueueCap)), nil, nil
 		}},
 	{name: "routines", title: "Read the routines",
 		about: "The project's routines: each one's schedule, next run, last run and open card.",
@@ -1651,11 +1608,6 @@ var tools = []chatTool{
 		required: []string{"minutes", "note"},
 		about:    "Set a one-shot timer that wakes this thread with its note.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.setTimer(in); return s, nil, err }},
-	{name: "unmove_card", write: true, internal: true,
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doUnmoveCard(t.r.Context(), t.a, in.TaskID, in.Lane)
-			return note, nil, err
-		}},
 	{name: "delete_comment", write: true, internal: true,
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doDeleteComment(t.r.Context(), t.a, in.TaskID, int64(in.N))
@@ -1751,7 +1703,7 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 	ctx, tool := t.r.Context(), strings.TrimSpace(in.Tool)
 	admit := func(title string) error {
 		return t.c.chatFiling(ctx, t.a, t.p, func(tree policy.Tree) string {
-			return factoryd.BacklogRefusal(ctx, t.c.cfg.Tasks, tree, t.p.Repository, title)
+			return factoryd.QueueRefusal(ctx, t.c.cfg.Tasks, tree, t.p.Repository, title)
 		})
 	}
 	ask, err := t.c.cfg.RequestImage(ctx, t.p.Repository, tool, strings.TrimSpace(in.Need), strings.TrimSpace(in.Image), t.a.s.user, admit)
@@ -1771,7 +1723,7 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 	if ask.Filed {
 		what = fmt.Sprintf("Filed tool card #%d %s %q.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
 		t.c.record(ctx, t.a, t.p.Repository, card.ID, card.IssueNumber, factoryd.EventCardFiled,
-			map[string]any{"lane": card.Lane, "title": factoryd.CardTitle(card), "image": ask.Target, "tool": tool})
+			map[string]any{"track": card.Track, "title": factoryd.CardTitle(card), "image": ask.Target, "tool": tool})
 	}
 	return what + " After it merges, the factory builds, signs and pins the image; cards can then name it in image.", nil
 }
@@ -1808,7 +1760,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
-  new_card's lanes: backlog waits, plan is a spec to plan, ready starts an agent now, human is a person's. A plan or ready card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
+  new_card's tracks: direct builds at once, plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
@@ -1858,12 +1810,10 @@ func (t *turn) systemText() (string, error) {
 	}
 	b.WriteString(":\n")
 	if hasProc {
-		for _, l := range proc.Lanes {
-			line := fmt.Sprintf("  lane %s", l.Name)
-			if l.MovedBy != "" {
-				line += ", moved by " + l.MovedBy
+		for _, name := range policy.TrackNames {
+			if tr, ok := proc.Tracks.Track(name); ok {
+				fmt.Fprintf(&b, "  track %s, class %s\n", name, tr.Class)
 			}
-			b.WriteString(line + "\n")
 		}
 		fmt.Fprintf(&b, "  merge rule: %s\n", t.p.MergeRule)
 	}

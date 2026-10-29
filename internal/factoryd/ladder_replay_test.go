@@ -220,7 +220,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "file what you have", Comment: 801})
-		h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+		h.file = map[int]bool{1: true}
 
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, escalated = %q", final, h.escalated)

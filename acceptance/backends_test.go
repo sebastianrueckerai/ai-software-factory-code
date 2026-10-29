@@ -174,7 +174,7 @@ func (s *acceptanceStore) CreateTask(_ context.Context, t factoryd.Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now()
 	}
-	if t.Kind == "agent" && t.Status != "backlog" && t.Gate == "" {
+	if t.Kind == "agent" && t.Gate == "" {
 		t.Gate, t.GateSince = factoryd.GateIntake, &t.CreatedAt
 	}
 	s.tasks[t.ID] = t
@@ -236,7 +236,7 @@ func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (i
 	defer s.mu.Unlock()
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
 		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
@@ -252,7 +252,7 @@ func (s *acceptanceStore) ListQueuedByRepository(_ context.Context, repository s
 	defer s.mu.Unlock()
 	var out []factoryd.Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && t.Lane != "" && t.Status == "queued" {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" {
 			out = append(out, t)
 		}
 	}
@@ -551,18 +551,6 @@ func (s *acceptanceStore) DeleteLiveSession(context.Context, string) error { ret
 
 func (s *acceptanceStore) RollHold(context.Context, time.Time) (factoryd.RollHold, bool, error) {
 	return factoryd.RollHold{}, false, nil
-}
-
-func (s *acceptanceStore) EnterLane(_ context.Context, id, lane, class, sha string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.tasks[id]
-	if !ok || t.Status != "backlog" {
-		return false, nil
-	}
-	t.Lane, t.RequiredCapabilities, t.SHA, t.Status = lane, []string{class}, sha, "queued"
-	s.tasks[id] = t
-	return true, nil
 }
 
 func (s *acceptanceStore) ToHumanLane(_ context.Context, id string) (bool, error) {
@@ -1098,7 +1086,11 @@ func (s *acceptanceStore) alertRowByFingerprint(fp string) factoryd.Alert {
 	return factoryd.Alert{}
 }
 
-func (s *acceptanceStore) CountBacklog(context.Context, string) (int, error) { return 0, nil }
+func (s *acceptanceStore) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
+	return factoryd.ProjectSpend{}, nil
+}
+
+func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 

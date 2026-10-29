@@ -52,12 +52,12 @@ func newReadsRig(t *testing.T) (*rig, *chatGateway) {
 		}
 	}
 	for _, k := range []factoryd.Task{
-		{ID: "t-p", Status: "done", Lane: policy.LanePlan, Process: "spec", IssueNumber: 20, Objective: "Build the link shortener."},
+		{ID: "t-p", Status: "done", Track: policy.TrackPlan, Process: "spec", IssueNumber: 20, Objective: "Build the link shortener."},
 		{ID: "t-d", Status: "done", IssueNumber: 19, Objective: "Add the schema."},
-		{ID: "t-c1", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady, Process: "maintenance", IssueNumber: 21,
+		{ID: "t-c1", Status: "running", Gate: factoryd.GateSession, Track: policy.TrackDirect, Process: "maintenance", IssueNumber: 21,
 			Source: factoryd.SourcePlan, Parent: "t-p", PlanKey: "api", BudgetEUR: 2, SpentEUR: 0.5,
 			Usage: factoryd.TaskUsage{Attempts: 3, ExtraAttempts: 1}, Objective: "Build the API."},
-		{ID: "t-c2", Status: "waiting-deps", Lane: policy.LaneReady, Process: "maintenance", IssueNumber: 22,
+		{ID: "t-c2", Status: "waiting-deps", Track: policy.TrackDirect, Process: "maintenance", IssueNumber: 22,
 			Source: factoryd.SourcePlan, Parent: "t-p", PlanKey: "web", BudgetEUR: 2, Objective: "Build the web UI."},
 	} {
 		k.Kind, k.Repository = "agent", "sf/code"
@@ -176,16 +176,16 @@ func TestChatCardInFull(t *testing.T) {
 	// (77.1%); 0.0072 EUR over four
 	equal(t, "the card reads", reads(t, r, g, "card", `{"task_id":"t-r"}`, "card", `{"task_id":"t-c2"}`, "card", `{"task_id":"t-c1"}`), []string{
 		`#11 t-r "Speed up the board." running (runs an agent session), gate session (an agent works in a sandbox), €1.23 of €5.00` + "\n" +
-			"lane ready of process maintenance\nissue https://git.example/sf/code/issues/11\nsessions: 1 of 3\n" +
+			"track direct of process maintenance\nissue https://git.example/sf/code/issues/11\nsessions: 1 of 3\n" +
 			s2Cost + "cost: small, 4 calls, prompt tokens per call median 40,000 max 52,000, 77% cached, 0.0018 EUR per call\n" +
 			"pull request #9 https://git.example/sf/code/pulls/9, head c0ffee1, open\n" +
 			"reviews: concerns (2 findings): see pr\naudit: clear: see pr\nchecks: 1/2: see pr\nsessions: 1: see session\n" +
 			"objective: Speed up the board.",
 		`#22 t-c2 "web" waiting-deps (waits for the cards it depends on), €0.00 of €2.00` + "\n" +
-			"lane ready of process maintenance\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\ncost: no model calls\n" +
+			"track direct of process maintenance\nissue https://git.example/sf/code/issues/22\nsessions: 0 of 3\ncost: no model calls\n" +
 			"depends on #21 (runs an agent session)\ndepends on #19 (is done)\nplan: see plan\nobjective: Build the web UI.",
 		`#21 t-c1 "api" running (runs an agent session), gate session (an agent works in a sandbox), €0.50 of €2.00` + "\n" +
-			"lane ready of process maintenance\nissue https://git.example/sf/code/issues/21\nsessions: 3 of 4\ncost: no model calls\n" +
+			"track direct of process maintenance\nissue https://git.example/sf/code/issues/21\nsessions: 3 of 4\ncost: no model calls\n" +
 			"needed by #22 (waits for the cards it depends on)\nplan: see plan\nobjective: Build the API.",
 	})
 	r.objects["sessions/t-r/timeline.jsonl"] = []byte(readsTimeline + `{"step":"signal","time":"2026-10-11T10:00:00Z","signal":"pr_merged","author":"sebastian"}` + "\n")

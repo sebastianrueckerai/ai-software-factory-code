@@ -354,7 +354,7 @@ func (a toolAsker) onFactory() string {
 
 // notStarted are the statuses of a tool card no session has read yet,
 // which a join's need still reaches.
-var notStarted = []string{"backlog", "queued", "waiting-deps"}
+var notStarted = []string{"queued", "waiting-deps"}
 
 // toolCardRefusal is why a tool card's own ask gets no image;
 // configRepoRefusal why an ask on the configuration repository does.
@@ -483,6 +483,7 @@ func (r *Runner) parkWaits(ctx context.Context, t Task, p ImagePark) (ToolPark, 
 			return ToolPark{}, terminalError("task %s is %s, cannot wait for an image: %v", t.ID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-image")
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	}
 	r.record(ctx, t.ID, "image_park", map[string]any{"image": p.Target, "tool": p.Tool, "need": p.Need, "tool_card": p.ToolTask, "issue": p.ToolIssue})
 	return ToolPark{Park: p}, nil

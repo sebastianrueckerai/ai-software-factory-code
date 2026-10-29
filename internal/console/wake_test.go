@@ -351,20 +351,6 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 		}
 		approved(t, r, "member")
 	})
-	t.Run("plan in a wake", func(t *testing.T) {
-		r := newRig(t)
-		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human",
-			Lane: policy.LanePlan, Process: "spec", Objective: "Uptime checker.", Repository: "sf/code", IssueNumber: 22}})
-		r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {planRevision("t-plan", 4, "11e3f66aa")}}
-		note, err := r.c.doAcceptPlan(t.Context(), inWake(t, r), "t-plan", 4, "11e3f66aa")
-		if err != nil || note != "Accepted revision 4 of plan #22; factoryd files its cards." {
-			t.Fatalf("accept = %q, %v", note, err)
-		}
-		if !slices.Equal(r.fg.calls, []string{"SIGNAL plan_accepted t-plan 4 11e3f66aa by sebastian decided by factory-chat",
-			"POST /api/v1/repos/sf/code/issues/22/comments Bearer chat-token"}) {
-			t.Fatalf("calls %q: want the plan decided by factory-chat for sebastian's cards, the comment as the chat bot", r.fg.calls)
-		}
-	})
 }
 
 // A card a wake files is the woken member's: the issue goes out as the
@@ -380,7 +366,7 @@ func TestAWakesFilingIsTheWokenMembers(t *testing.T) {
 			t.Fatal(err)
 		}
 		a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent"}
-		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.", "backlog", "", "", "", "", "", 0)
+		_, n, err := r.c.doFileCard(t.Context(), a, "ai-software-factory-code", "Bump the dep", "Bump it.\n\nAcceptance:\n- go build passes", "direct", "a routine bump", "", "small", "", "", "", 0)
 		return n, err
 	}
 	t.Run("recorded", func(t *testing.T) {

@@ -102,13 +102,13 @@ func TestRunSessionCarriesAnAcceptanceGreenHome(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
-				Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+				Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 			kube := newFakeKube()
 			objects := &fakeObjectStore{}
 			runner, _, store := newTestRunner(t, task, kube, objects)
 			(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
 			if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review",
-				Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
+				Repository: "sf/ai-software-factory-code", Objective: "a plan", Track: "direct"}); err != nil {
 				t.Fatal(err)
 			}
 			plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
@@ -155,10 +155,10 @@ func TestRunSessionCarriesAnAcceptanceGreenHome(t *testing.T) {
 // (TestWorkflowClosesOnAnAcceptanceGreen).
 func TestRunSessionCarriesAnAcceptanceStepPastTheCut(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
-		Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+		Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
-	if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
+	if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
@@ -203,10 +203,10 @@ func TestRunSessionAcceptanceOnlyWhereTheExitIsTheCommands(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
-				Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+				Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 			runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 			(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
-			if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan"}); err != nil {
+			if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review", Repository: "sf/ai-software-factory-code", Objective: "a plan", Track: "direct"}); err != nil {
 				t.Fatal(err)
 			}
 			plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief", Acceptance: []PlanItem{{Text: tt.item}}}}})

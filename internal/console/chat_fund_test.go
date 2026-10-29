@@ -323,8 +323,8 @@ func TestChatFundRefusesWhatIsNoRaise(t *testing.T) {
 // stopped cell but no form, and their chat the line of who may fund.
 func TestChatFundIsAnApproversAction(t *testing.T) {
 	r, _, _ := newChatRig(t)
-	r.writers.users = []string{"sebastian", "morgan"}
 	r.repoWriters["sf/code"] = []string{"sebastian", "morgan"}
+	r.forgetWriters()
 	ck, s := memberLogin(t, r, "morgan")
 	chat := stoppedChat(t, r)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()

@@ -66,12 +66,10 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 	}
 
 	// ToHumanLane on Postgres: a queued agent task only, which leaves its
-	// lane and process
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, gate, gate_since)
-		VALUES ('t-q', 1, 0, 'queued', 'sf/r', 'agent', 'intake', now()), ('t-r', 1, 0, 'running', 'sf/r', 'agent', 'checks', now())`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET lane = 'ready', process = 'maintenance'`); err != nil {
+	// track and process
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, gate, gate_since, track, process)
+		VALUES ('t-q', 1, 0, 'queued', 'sf/r', 'agent', 'intake', now(), 'direct', 'maintenance'),
+			('t-r', 1, 0, 'running', 'sf/r', 'agent', 'checks', now(), 'direct', 'maintenance')`); err != nil {
 		t.Fatal(err)
 	}
 	if moved, err := s.ToHumanLane(ctx, "t-q"); !moved || err != nil {
@@ -80,11 +78,11 @@ func TestMigration0032KeepsTheMintedTokens(t *testing.T) {
 	if moved, err := s.ToHumanLane(ctx, "t-r"); moved || err != nil {
 		t.Fatalf("running: %v, %v", moved, err)
 	}
-	var lane string
-	if err := s.db.QueryRowContext(ctx, `SELECT kind || ' ' || status || ' ' || gate || ' ' || (gate_since IS NULL) || ' ' || COALESCE(lane, '-') || ' ' || COALESCE(process, '-')
-		FROM tasks WHERE id = 't-q'`).Scan(&lane); err != nil ||
-		lane != "human waiting-human  true - -" {
-		t.Fatalf("t-q = %q, %v", lane, err)
+	var row string
+	if err := s.db.QueryRowContext(ctx, `SELECT kind || ' ' || status || ' ' || gate || ' ' || (gate_since IS NULL) || ' ' || COALESCE(track, '-') || ' ' || COALESCE(process, '-')
+		FROM tasks WHERE id = 't-q'`).Scan(&row); err != nil ||
+		row != "human waiting-human  true - -" {
+		t.Fatalf("t-q = %q, %v", row, err)
 	}
 }
 

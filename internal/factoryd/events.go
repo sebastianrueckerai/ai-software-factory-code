@@ -11,17 +11,16 @@ import (
 )
 
 // The events (stage11-design.md section 2): the fixed list a later triggers
-// block reads. Only card_entered_lane and task_ended drive behaviour.
+// block reads. Only task_ended drives behaviour.
 const (
-	// EventAutonomyChanged records a project's autonomy level or backlog
-	// cap change (roadmap 239): detail {"from", "to", "backlog_cap"}.
+	// EventAutonomyChanged records a project's autonomy level or queue
+	// cap change (roadmap 239): detail {"from", "to", "queue_cap"}.
 	EventAutonomyChanged = "autonomy_changed"
 	// EventIntakeChanged records a project's intake switch (the chat
 	// header's): detail {"from", "to"} with the words open and closed —
 	// closed refuses the wake's own filings, the member's ask still files.
 	EventIntakeChanged     = "intake_changed"
 	EventCardCreated       = "card_created"
-	EventCardEnteredLane   = "card_entered_lane"
 	EventTaskEnded         = "task_ended"
 	EventPullRequestMerged = "pull_request_merged"
 	EventAllChildrenDone   = "all_children_done"
@@ -110,23 +109,6 @@ func (tl *Timeline) RecordProjectRow(ctx context.Context, e Event) {
 	if _, err := tl.Events.Record(ctx, e); err != nil {
 		log.Printf("event %s: the row: %v", e.Kind, err)
 	}
-}
-
-// enterLane records card t's entry into its lane by user by and starts
-// what the lane starts: a queued card's workflow, or a backlog card's
-// write-up (writeUp, nil where the caller opens none). A task with no lane
-// (a roll) records nothing and only starts.
-func enterLane(ctx context.Context, tl *Timeline, wf Workflows, t Task, by string, writeUp func() error) error {
-	if t.Lane != "" {
-		tl.recordEvent(ctx, t.ID, EventCardEnteredLane, map[string]any{"lane": t.Lane, "by": by})
-	}
-	switch {
-	case t.Status == "queued":
-		return wf.Start(ctx, t.ID)
-	case t.Status == "backlog" && writeUp != nil:
-		return writeUp()
-	}
-	return nil
 }
 
 // allDoneMu holds taskEnded's check and record of all_children_done

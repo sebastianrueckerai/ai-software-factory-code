@@ -140,7 +140,7 @@ func agentDB(t *testing.T) *sql.DB {
 func seedTask(t *testing.T, db *sql.DB, id string, budget float64) {
 	t.Helper()
 	if _, err := db.ExecContext(context.Background(),
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository) VALUES ($1, $2, 0, 'running', 'sf/app')`, id, budget); err != nil {
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, track) VALUES ($1, $2, 0, 'running', 'sf/app', 'direct')`, id, budget); err != nil {
 		t.Fatal(err)
 	}
 }

@@ -128,35 +128,35 @@ func TestChatNewCardImage(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.projects.rows[0].Images = pins
 	before := r.events.count()
-	args := `{"title":"Shoot the page","body":"Screenshot the landing page.","lane":"backlog","image":"chromium"}`
+	args := `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"chromium"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., lane backlog, image chromium","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, acceptance The page is shot","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nImage: chromium")
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small\nImage: chromium")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "backlog", "title": "Shoot the page", "image": "chromium", "thread": int64(1)}})
+		Detail: map[string]any{"track": "direct", "reason": "one screenshot", "title": "Shoot the page", "size": "small", "image": "chromium", "thread": int64(1)}})
 
 	r, g = newWritesRig(t)
 	r.projects.rows[0].Images = pins
-	args = `{"title":"Shoot the page","body":"Screenshot the landing page.","lane":"backlog","image":"default"}`
+	args = `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"default"}`
 	_, done, _ = proposeAndDo(t, r, g, "new_card", args)
-	equal(t, "Do it on default", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
-	equal(t, "the issue's body on default", r.fg.issues[0]["body"], "Screenshot the landing page.")
+	equal(t, "Do it on default", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+	equal(t, "the issue's body on default", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small")
 
 	unpinned := "Project ai-software-factory-code pins no image video: its images are chromium, default. Name one of them, leave image out for the default, or add the image with request_image."
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Lane: policy.LaneBacklog, Image: "video"})
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Shoot the page", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "an unpinned image", []any{code, msg}, []any{http.StatusConflict, unpinned})
 	// the proposal judges the image, so the agent corrects it before Do it
 	ck, s := r.loggedIn(t)
-	args = `{"image":"video","lane":"backlog","title":"Shoot the page"}`
+	args = `{"image":"video","title":"Shoot the page","track":"direct","track_reason":"one screenshot"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it on video"}})
 	equal(t, "the proposal of an unpinned image", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + unpinned + `"}`, `text {"text":"Refused."}`, `done {}`})
 	r.projects.rows[0].Images = nil
-	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Lane: policy.LaneBacklog, Image: "video"})
+	code, msg = refused(t, r, "new_card", toolInput{Title: "Shoot the page", Track: policy.TrackDirect, TrackReason: "one screenshot", Image: "video"})
 	equal(t, "a project without images", []any{code, msg}, []any{http.StatusConflict,
 		"Project ai-software-factory-code pins no sandbox images. Leave image out for the default, or add the image with request_image."})
 }
@@ -164,12 +164,12 @@ func TestChatNewCardImage(t *testing.T) {
 // request_image is the member's ask for a tool, confirmed as new_card is:
 // Do it hands the project's repository, the arguments and the member to
 // factoryd, which files or joins the tool card the result names. A filed
-// card is recorded as the chat's filing, with its lane, title, image and
+// card is recorded as the chat's filing, with its track, title, image and
 // tool; a join files nothing and records nothing. A refusal of factoryd's
 // reaches the agent as it is.
 func TestChatRequestImage(t *testing.T) {
 	const after = " After it merges, the factory builds, signs and pins the image; cards can then name it in image."
-	tool := factoryd.Task{ID: "t-tool", IssueNumber: 50, Lane: policy.LaneReady, Objective: "Add ffmpeg to image video\n\nRequested in the project chat by sebastian: ffmpeg, cut it."}
+	tool := factoryd.Task{ID: "t-tool", IssueNumber: 50, Track: policy.TrackDirect, Objective: "Add ffmpeg to image video\n\nRequested in the project chat by sebastian: ffmpeg, cut it."}
 	r, g := newWritesRig(t)
 	r.imageAsk = factoryd.ImageAsk{Card: tool, Target: "video", Filed: true}
 	before := r.events.count()
@@ -181,7 +181,7 @@ func TestChatRequestImage(t *testing.T) {
 	equal(t, "Do it", done, ran("request_image", args, `Filed tool card #50 t-tool \"Add ffmpeg to image video\".`+after))
 	equal(t, "the ask", r.imageAsks, []string{"sf/code: ffmpeg | cut the demo video | video, by sebastian"})
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-tool", IssueNumber: 50, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "ready", "title": "Add ffmpeg to image video", "image": "video", "tool": "ffmpeg", "thread": int64(1)}})
+		Detail: map[string]any{"track": "direct", "title": "Add ffmpeg to image video", "image": "video", "tool": "ffmpeg", "thread": int64(1)}})
 
 	r.imageAsk.Filed = false
 	before = r.events.count()
@@ -204,7 +204,7 @@ func TestChatRequestImage(t *testing.T) {
 func TestChatRequestImageAtAssisted(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
-	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Lane: policy.LaneReady, Objective: "Add ffmpeg to image ffmpeg\n\nRequested."},
+	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Track: policy.TrackDirect, Objective: "Add ffmpeg to image ffmpeg\n\nRequested."},
 		Target: "ffmpeg", Filed: true}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
@@ -214,17 +214,17 @@ func TestChatRequestImageAtAssisted(t *testing.T) {
 		t.Fatalf("the unconfirmed ask did not run: %v", events)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-tool", IssueNumber: 50, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "ready", "title": "Add ffmpeg to image ffmpeg", "image": "ffmpeg", "tool": "ffmpeg", "autonomy": "assisted", "merge_rule": "human",
+		Detail: map[string]any{"track": "direct", "title": "Add ffmpeg to image ffmpeg", "image": "ffmpeg", "tool": "ffmpeg", "autonomy": "assisted", "merge_rule": "human",
 			"decider": "agent", "chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now()), "thread": int64(1)}})
 }
 
 // request_image's filing meets the chat's admission, as new_card's does:
 // a wake files no tool card on a closed intake, and no ask files one past
-// the project's backlog cap. The refusal names the state and what to do.
+// the project's queue cap. The refusal names the state and what to do.
 func TestChatRequestImageAdmission(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
-	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Lane: policy.LaneReady}, Target: "ffmpeg", Filed: true}
+	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Track: policy.TrackDirect}, Target: "ffmpeg", Filed: true}
 	ck, s := r.loggedIn(t)
 	if rec := r.do(post("/projects/ai-software-factory-code/intake", url.Values{"csrf": {s.csrf}, "intake": {"closed"}}), ck); rec.Code != http.StatusNoContent {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
@@ -252,10 +252,10 @@ func TestChatRequestImageAdmission(t *testing.T) {
 		"Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts."})
 	chatRows(t, r.events, before, "sebastian")
 
-	// t-m in the backlog and t-r not yet admitted fill a cap of 2
-	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: policy.MergeHuman, BacklogCap: 2}}
+	// t-m, t-r and t-e, none admitted, fill a cap of 3
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: policy.MergeHuman, QueueCap: 3}}
 	code, msg := refused(t, r, "request_image", toolInput{Tool: "ffmpeg", Need: "cut"})
-	equal(t, "an ask past the backlog cap", []any{code, msg}, []any{http.StatusConflict,
-		"The ready check refuses the filing: card Add ffmpeg to image ffmpeg: the backlog holds 2 of its 2 cards; file it when one starts"})
+	equal(t, "an ask past the queue cap", []any{code, msg}, []any{http.StatusConflict,
+		"The ready check refuses the filing: card Add ffmpeg to image ffmpeg: the queue holds 3 of its 3 cards; file it when one starts"})
 	chatRows(t, r.events, before, "sebastian")
 }

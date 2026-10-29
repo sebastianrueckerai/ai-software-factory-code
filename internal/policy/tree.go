@@ -104,7 +104,9 @@ func ParseTree(files map[string][]byte) (Tree, error) {
 				err = errors.New("the file name: lowercase letters, digits and dashes, at most 37")
 				break
 			}
-			t.Processes[stem], err = parseFile(b, name, kindProcess, Process.Validate)
+			if err = removedLanes(b); err == nil {
+				t.Processes[stem], err = parseFile(b, name, kindProcess, Process.Validate)
+			}
 		case path.Dir(name) == DirProjects && path.Ext(name) == ".yaml":
 			t.Projects[stem], err = parseFile(b, name, kindProject, func(p ProjectConfig) error { return p.Validate(stem) })
 		case strings.HasPrefix(name, DirTemplates+"/") && strings.Count(name, "/") >= 2:
@@ -207,8 +209,8 @@ func checkOutputLimits(d Document) error {
 	return errors.Join(errs...)
 }
 
-// checkLinks judges what the files name in each other: a lane's class of
-// the right session, naming the models the stages call; a project's
+// checkLinks judges what the files name in each other: a track's class
+// of the right session, naming the models the stages call; a project's
 // process; the audit a project switches on. It also judges a routine's
 // brief, and that a project's routine is named apart from policy.yaml's
 // routines that run for it.
@@ -222,43 +224,39 @@ func (t Tree) checkLinks() error {
 		}
 		review, reviewOK := p.Stage(StageReview)
 		_, audit := p.Stage(StageAudit)
-		for _, l := range p.Lanes {
-			block := "lanes." + l.Name
-			for _, ref := range []struct{ key, class, want string }{
-				{"class", l.Class, map[string]string{LaneReady: SessionCode, LanePlan: SessionPlan}[l.Name]},
-				{"write_up", l.WriteUp, SessionReport},
-			} {
-				if ref.class == "" || ref.want == "" {
-					continue
-				}
-				c, ok := t.Document.Classes[ref.class]
-				switch {
-				case !ok:
-					bad(block, "%s %q is not a class of policy.yaml (classes: %s)", ref.key, ref.class, strings.Join(classes, ", "))
-					continue
-				case c.Session == "":
-					// checkSessions refuses it once, in policy.yaml
-					continue
-				case c.Session != ref.want && ref.key == "class":
-					bad(block, "class %s has session %s; lane %s needs a class with session %s", ref.class, c.Session, l.Name, ref.want)
-					continue
-				case c.Session != ref.want:
-					bad(block, "write_up %s has session %s; a write-up needs a class with session %s", ref.class, c.Session, ref.want)
-					continue
-				}
-				if c.SupervisorModel == "" {
-					bad(block, "class %s names no supervisor_model, which the session supervisor calls", ref.class)
-				}
-				if l.Name != LaneReady || ref.key != "class" {
-					continue
-				}
-				if reviewOK && review.Enabled && c.ReviewModel == "" {
-					bad(block, "class %s names no review_model, which the review stage calls", ref.class)
-				}
-				for _, proj := range slices.Sorted(maps.Keys(t.Projects)) {
-					if pc := t.Projects[proj]; audit && pc.Process == pname && pc.Audit && c.AuditModel == "" {
-						bad(block, "class %s names no audit_model, which the audit stage calls for project %s (audit: true)", ref.class, proj)
-					}
+		tracks := []struct {
+			name, want string
+			track      *Track
+		}{{TrackDirect, SessionCode, &p.Tracks.Direct}, {TrackPlan, SessionPlan, p.Tracks.Plan}}
+		for _, tr := range tracks {
+			if tr.track == nil || tr.track.Class == "" {
+				continue
+			}
+			block, class := "tracks."+tr.name, tr.track.Class
+			c, ok := t.Document.Classes[class]
+			switch {
+			case !ok:
+				bad(block, "class %q is not a class of policy.yaml (classes: %s)", class, strings.Join(classes, ", "))
+				continue
+			case c.Session == "":
+				// checkSessions refuses it once, in policy.yaml
+				continue
+			case c.Session != tr.want:
+				bad(block, "class %s has session %s; track %s needs a class with session %s", class, c.Session, tr.name, tr.want)
+				continue
+			}
+			if c.SupervisorModel == "" {
+				bad(block, "class %s names no supervisor_model, which the session supervisor calls", class)
+			}
+			if tr.name != TrackDirect {
+				continue
+			}
+			if reviewOK && review.Enabled && c.ReviewModel == "" {
+				bad(block, "class %s names no review_model, which the review stage calls", class)
+			}
+			for _, proj := range slices.Sorted(maps.Keys(t.Projects)) {
+				if pc := t.Projects[proj]; audit && pc.Process == pname && pc.Audit && c.AuditModel == "" {
+					bad(block, "class %s names no audit_model, which the audit stage calls for project %s (audit: true)", class, proj)
 				}
 			}
 		}

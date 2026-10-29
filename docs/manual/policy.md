@@ -3,8 +3,10 @@
 factoryd's configuration is the directory `factory/` of the infra
 repository's `main` (ruling 183): `policy.yaml` (classes with their
 `session: code|plan|report`), `processes/<name>.yaml` (ruling 206: the
-blocks `lanes`, `dependencies`, `stages`, each with its `on_findings`
-rule, ruling 177, and `merge`) and `projects/<name>.yaml` (one per
+blocks `tracks` (roadmap 225: `direct` and an optional `plan`, each with
+its class, the plan track with the plan's bounds), `dependencies`,
+`stages`, each with its `on_findings` rule, ruling 177, and `merge`; a
+file that still carries the removed `lanes` block is refused by name) and `projects/<name>.yaml` (one per
 project: repository, merge rule, `objects: factory|seed`,
 `agents: coder|none`, `process`, notify, namespaces, environments,
 quota, secrets, `budget: {month_eur}`, `model: stronger`). The Go types in `internal/policy` are the
@@ -19,8 +21,8 @@ linting in an editor. `factoryd config check <dir>` decodes a tree as
 the loader does and compares its `schema/` with the generated one: exit
 0 ok, 1 refused with every reason, 2 usage; the infra repository's CI
 runs it on every push to `main`. `factoryd config explain [--tree <dir>]
-<process> <card kind>` prints the path of a card kind (`bug`,
-`improvement`, `plan`, `child`) through a process, generated from the
+<process> <card kind>` prints the path of a card kind (`direct`, `plan`,
+`child`) through a process, generated from the
 same graph whose check refuses a dead end or an uncapped cycle.
 
 factoryd polls the head of `main` of `CONFIG_REPO` (the infra
@@ -34,8 +36,8 @@ keys, enumerations). A valid tree becomes an immutable `policy_versions`
 row keyed by the commit (`commit_sha`, the whole tree as one JSON
 document, `loaded_at`); the version in force is the latest row of the
 append-only `policy_activations`; a commit seen before activates its
-earlier row again. A refused commit, or one where a class a starting
-lane names leaves out a model of the ladder (`MODEL`, `STRONGER_MODEL`), logs `CONFIG
+earlier row again. A refused commit, or one where a class a track names
+leaves out a model of the ladder (`MODEL`, `STRONGER_MODEL`), logs `CONFIG
 REJECTED`, keeps the previous version current and files, once per
 commit, a human-lane issue on the infra repository (a `human` task,
 source `config`) and an open alerts row of kind `config_rejected`
@@ -50,12 +52,12 @@ when no valid version exists at all, and the gateway refuses every call
 while the version in force does not validate. `config check` judges a
 tree with the loader's own function (`factoryd.CheckTree`, the ladder
 from `MODEL` and `STRONGER_MODEL` included); the loader alone then
-refuses a tree that takes a lane from under open cards (a process file
-that drops the lane, or a project moved to a process without it), since
-only it reads the open cards (`CheckOpenLanes`, `OpenCardsByLane`), and
-judges such a commit again at every poll from the tree it read once,
+refuses a tree that takes a track from under open cards (a process file
+that drops the plan track, or a project moved to a process without it),
+since only it reads the open cards (`CheckOpenTracks`, `OpenCardsByTrack`),
+and judges such a commit again at every poll from the tree it read once,
 logging and raising it only when its lines change, so it loads once the
-cards left the lane. `config check` says so in its last line. `GET /policy` and the
+cards left the track. `config check` says so in its last line. `GET /policy` and the
 console's configuration page show the version in force, read-only, each
 file linked at its commit.
 
@@ -63,13 +65,12 @@ A task's workflow pins, at its start, the version in force
 (`WorkflowConfig.PolicyVersion`). Read from the pinned version: the
 session cap, the agent time and the stronger rung (captured by the
 workflow); the task's process (its first activity, `TaskConfig`, from
-change id `processes`: the row's process, or where the loader has not
-filled it yet the process of the task's project, with the row's lane,
-its stages, merge queue and dependency block, and the session mode of
-the lane's class (ready's for a roll, which has no lane), or of a report
-task's own class, which chooses
-the program: `code` the lifecycle, `report` the write-up, `plan` the
-plan loop); and in every session, report session,
+change id `processes`: the row's process, or for a card with none of its
+own (a roll, a factory pull request's card) the process of the task's
+project, with the row's track, its stages, merge queue and dependency
+block, and the session mode of the track's class, or of a report task's
+own class, which chooses the program: `code` the lifecycle, `report` the
+screening, `plan` the plan loop); and in every session, report session,
 gate-supervisor call and model review the agent time, `steps`, `supervisor_calls`,
 `supervisor_timeout` and the `no_write` detector, the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,

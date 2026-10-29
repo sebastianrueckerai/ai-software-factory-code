@@ -52,7 +52,7 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	report.ID, report.Status, report.SpentEUR, report.ModelAlias, report.Parent = "t-report", "running", 0.05, "small", "t1"
 	report.Usage.Attempts = 1
 	store.CreateTask(context.Background(), report)
-	if _, err := execActivity(t, r, ActivityFinish, "t-report", "done", "report posted as issue comment 3"); err != nil {
+	if _, err := execActivity(t, r, ActivityFinish, "t-report", "done", "report kept on the task, no issue comment"); err != nil {
 		t.Fatal(err)
 	}
 	roll := prTask
@@ -71,17 +71,17 @@ func TestFinishCountsTheOutcomeAndTheCost(t *testing.T) {
 	}
 
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=2,lane=none,merge_rule=auto,model_alias=big,process=none,project=demo,state=done":         1,
-		"attempts=1,lane=none,merge_rule=auto,model_alias=small,process=none,project=demo,state=done":       1,
-		"attempts=0,lane=none,merge_rule=auto,model_alias=none,process=none,project=demo,state=done":        1,
-		"attempts=3,lane=none,merge_rule=human,model_alias=small,process=none,project=sf/repo,state=failed": 1,
+		"attempts=2,merge_rule=auto,model_alias=big,process=none,project=demo,state=done,track=direct":         1,
+		"attempts=1,merge_rule=auto,model_alias=small,process=none,project=demo,state=done,track=direct":       1,
+		"attempts=0,merge_rule=auto,model_alias=none,process=none,project=demo,state=done,track=direct":        1,
+		"attempts=3,merge_rule=human,model_alias=small,process=none,project=sf/repo,state=failed,track=direct": 1,
 	})
 	got := histograms(t, reader, "factory.task.cost")
 	want := map[string]histPoint{
-		"lane=none,model_alias=big,outcome=merged,process=none":   {1, 0.42},
-		"lane=none,model_alias=small,outcome=done,process=none":   {1, 0.05},
-		"lane=none,model_alias=none,outcome=merged,process=none":  {1, 0},
-		"lane=none,model_alias=small,outcome=failed,process=none": {1, 0.1},
+		"model_alias=big,outcome=merged,process=none,track=direct":   {1, 0.42},
+		"model_alias=small,outcome=done,process=none,track=direct":   {1, 0.05},
+		"model_alias=none,outcome=merged,process=none,track=direct":  {1, 0},
+		"model_alias=small,outcome=failed,process=none,track=direct": {1, 0.1},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("cost = %v, want %v", got, want)
@@ -117,10 +117,10 @@ func TestModelReviewCountsEachAnswer(t *testing.T) {
 	review(roll, `{"verdict":"approve","summary":"never asked"}`)
 
 	wantSums(t, sums(t, reader, "factory.review.verdict"), map[string]float64{
-		"lane=none,process=none,round=1,strict_improvement=unset,verdict=concerns": 1,
-		"lane=none,process=none,round=2,strict_improvement=true,verdict=approve":   1,
-		"lane=none,process=none,round=3,strict_improvement=false,verdict=approve":  1,
-		"lane=none,process=none,round=1,strict_improvement=unset,verdict=none":     1,
+		"process=none,round=1,strict_improvement=unset,track=direct,verdict=concerns": 1,
+		"process=none,round=2,strict_improvement=true,track=direct,verdict=approve":   1,
+		"process=none,round=3,strict_improvement=false,track=direct,verdict=approve":  1,
+		"process=none,round=1,strict_improvement=unset,track=direct,verdict=none":     1,
 	})
 }
 
@@ -145,14 +145,14 @@ func TestRecordUsageCountsATimeGrant(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=extra_time,lane=none,process=none": 1})
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=extra_time,process=none,track=direct": 1})
 }
 
 // A session records the alias of its model on the task: the last
 // session's is the task's.
 func TestSessionRecorderKeepsTheModelAlias(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "running"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "running", Track: "direct"})
 	for _, model := range []string{"factory/small", "factory/big"} {
 		if _, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, "t1", "s-"+model, "", model); err != nil {
 			t.Fatal(err)
@@ -195,21 +195,19 @@ func TestAnswersCountAsInterventions(t *testing.T) {
 	comment(31, "sebastian", 5)
 	comment(32, "sebastian", 6)
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
-		"kind=escalation_answer,lane=none,process=none": 2,
-		"kind=poster_answer,lane=none,process=none":     1,
+		"kind=escalation_answer,process=none,track=none": 2,
+		"kind=poster_answer,process=none,track=none":     1,
 	})
 }
 
-// The endings outside a workflow count their outcome as Finish does: a
-// backlog card whose issue a writer closed, and a human-lane task whose issue
-// closed.
+// An ending outside a workflow counts its outcome as Finish does: a
+// person's card whose issue closed, once.
 func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	m, reader := testMetrics(t)
 	in.Metrics = m
-	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "backlog", IssueNumber: 30, Kind: "agent", Author: "visitor"}
 	store.tasks["t-h"] = Task{ID: "t-h", Repository: "sf/ai-software-factory-code", Status: "waiting-human", IssueNumber: 31, Kind: "human"}
-	for _, issue := range []int{30, 31, 31} {
+	for _, issue := range []int{31, 31} {
 		b, _ := json.Marshal(map[string]any{"action": "closed", "issue": map[string]any{"number": issue, "user": map[string]string{"login": "visitor"}},
 			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"}, "sender": map[string]string{"login": "sebastian"}})
 		if rr := postWebhook(in, "issues", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
@@ -217,8 +215,7 @@ func TestIntakeEndingsCountTheOutcome(t *testing.T) {
 		}
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=closed": 1,
-		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=done":   1,
+		"attempts=0,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=done,track=none": 1,
 	})
 }
 
@@ -262,7 +259,7 @@ func TestIntakeCountsPullRequestDecisions(t *testing.T) {
 	send("pull_request", "closed", "sebastian", false, "d5")
 	send("pull_request", "closed", "sebastian", false, "d6")
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
-		"kind=approve,lane=none,process=none": 1, "kind=request_changes,lane=none,process=none": 1, "kind=reject,lane=none,process=none": 1,
+		"kind=approve,process=none,track=none": 1, "kind=request_changes,process=none,track=none": 1, "kind=reject,process=none,track=none": 1,
 	})
 }
 
@@ -294,18 +291,18 @@ func TestIntakeCountsNoRejectByTheProjectsAccount(t *testing.T) {
 	if got, want := workflowsOf(in).signals, []string{"t-tu1 pr_closed factory-projects #21: ", "t-tu2 pr_closed sebastian #22: "}; !slices.Equal(got, want) {
 		t.Fatalf("signals %q, want %q", got, want)
 	}
-	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=reject,lane=none,process=none": 1})
+	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{"kind=reject,process=none,track=none": 1})
 }
 
-// The four task metrics carry the task row's process and lane, none where
-// the row holds none (a roll): the outcome and the cost at Finish, the
-// review answer, and a human's intervention from the workflow's usage and
-// from the intake.
-func TestMetricsCarryProcessAndLane(t *testing.T) {
+// The four task metrics carry the task row's process and track, none where
+// the row holds none (a roll's process): the outcome and the cost at
+// Finish, the review answer, and a human's intervention from the
+// workflow's usage and from the intake.
+func TestMetricsCarryProcessAndTrack(t *testing.T) {
 	ctx := context.Background()
 	m, reader := testMetrics(t)
 	card := prTask
-	card.Status, card.PRNumber, card.SpentEUR, card.ModelAlias, card.Lane, card.Process = "in-review", 7, 0.3, "small", "ready", "spec"
+	card.Status, card.PRNumber, card.SpentEUR, card.ModelAlias, card.Process = "in-review", 7, 0.3, "small", "spec"
 	card.Usage = TaskUsage{AgentTime: 18 * time.Minute, Attempts: 1}
 	r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}, pulls: map[int64]string{7: mergedAt(7, "m7")}})
 	r.cfg.Metrics, r.completion.Metrics = m, m
@@ -326,18 +323,18 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=1,lane=ready,merge_rule=human,model_alias=small,process=spec,project=linkshort,state=done": 1,
-		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=linkshort,state=failed": 1,
+		"attempts=1,merge_rule=human,model_alias=small,process=spec,project=linkshort,state=done,track=direct":  1,
+		"attempts=0,merge_rule=human,model_alias=none,process=none,project=linkshort,state=failed,track=direct": 1,
 	})
 	if got, want := histograms(t, reader, "factory.task.cost"), map[string]histPoint{
-		"lane=ready,model_alias=small,outcome=merged,process=spec": {1, 0.3},
-		"lane=none,model_alias=none,outcome=failed,process=none":   {1, 0},
+		"model_alias=small,outcome=merged,process=spec,track=direct": {1, 0.3},
+		"model_alias=none,outcome=failed,process=none,track=direct":  {1, 0},
 	}; !maps.Equal(got, want) {
 		t.Fatalf("cost = %v, want %v", got, want)
 	}
 
 	reviewed := gateTask
-	reviewed.Lane, reviewed.Process = "ready", "maintenance"
+	reviewed.Process = "maintenance"
 	g, _, _ := newGateRunner(t, reviewed, &gateForgejo{diff: "diff --git a/x b/x\n+x\n"})
 	g.cfg.Metrics = m
 	g.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"concerns","summary":"no test"}`}).srv(t).URL)
@@ -345,12 +342,12 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 		t.Fatal(err)
 	}
 	wantSums(t, sums(t, reader, "factory.review.verdict"), map[string]float64{
-		"lane=ready,process=maintenance,round=1,strict_improvement=unset,verdict=concerns": 1,
+		"process=maintenance,round=1,strict_improvement=unset,track=direct,verdict=concerns": 1,
 	})
 
 	in, istore, _ := newTestIntake(t)
 	in.Metrics = m
-	istore.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 21, Lane: "ready", Process: "maintenance"}
+	istore.tasks["t-pr"] = Task{ID: "t-pr", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", PRNumber: 21, Track: "direct", Process: "maintenance"}
 	b, _ := json.Marshal(map[string]any{
 		"action": "reviewed",
 		"pull_request": map[string]any{"number": 21,
@@ -361,41 +358,42 @@ func TestMetricsCarryProcessAndLane(t *testing.T) {
 	})
 	post(t, in, "pull_request_review_approved", b)
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{
-		"kind=extra_time,lane=ready,process=spec":     1,
-		"kind=approve,lane=ready,process=maintenance": 1,
+		"kind=extra_time,process=spec,track=direct":     1,
+		"kind=approve,process=maintenance,track=direct": 1,
 	})
 }
 
-// A report task's row holds no lane; its metrics carry its parent's
-// process and lane: the presort's card waits in backlog, the screening's
-// is in ready.
-func TestReportMetricsTakeParentLane(t *testing.T) {
+// A report task's row holds its own track and no process; its metrics
+// carry its parent's process and track.
+func TestReportMetricsTakeParentTrack(t *testing.T) {
 	ctx := context.Background()
 	m, reader := testMetrics(t)
 	parent := prTask
-	parent.Status, parent.Lane, parent.Process = "backlog", "backlog", "maintenance"
-	r, store, _ := newActivityRunner(t, parent, &prForgejo{labels: map[int64][]string{4: {"improvement", "state/backlog"}}})
+	parent.Track, parent.Process = "plan", "spec"
+	r, store, _ := newActivityRunner(t, parent, &prForgejo{labels: map[int64][]string{4: {"plan", "state/running"}}})
 	r.completion.Metrics = m
 	store.projects = []Project{{Name: "demo", Repository: "sf/repo"}}
-	store.CreateTask(ctx, Task{ID: "t-ready", Status: "running", Repository: "sf/repo", IssueNumber: 5, Lane: "ready", Process: "spec"})
+	store.CreateTask(ctx, Task{ID: "t-direct", Status: "running", Repository: "sf/repo", IssueNumber: 5, Track: "direct", Process: "maintenance"})
 	for _, report := range []Task{
-		{ID: "t-presort", Parent: "t1", Source: SourcePresort},
-		{ID: "t-screen", Parent: "t-ready", Source: SourceScreening},
+		{ID: "t-screen-plan", Parent: "t1", IssueNumber: 4},
+		{ID: "t-screen-direct", Parent: "t-direct", IssueNumber: 5},
 	} {
-		report.Status, report.Repository, report.IssueNumber, report.ModelAlias, report.SpentEUR = "running", "sf/repo", 4, "small", 0.05
+		report.Status, report.Repository, report.Source, report.Track, report.ModelAlias, report.SpentEUR = "running", "sf/repo", SourceScreening, "direct", "small", 0.05
 		report.Usage.Attempts = 1
-		store.CreateTask(ctx, report)
+		if err := store.CreateTask(ctx, report); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := execActivity(t, r, ActivityFinish, report.ID, "done", "report posted"); err != nil {
 			t.Fatal(err)
 		}
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=1,lane=backlog,merge_rule=human,model_alias=small,process=maintenance,project=demo,state=done": 1,
-		"attempts=1,lane=ready,merge_rule=human,model_alias=small,process=spec,project=demo,state=done":          1,
+		"attempts=1,merge_rule=human,model_alias=small,process=spec,project=demo,state=done,track=plan":          1,
+		"attempts=1,merge_rule=human,model_alias=small,process=maintenance,project=demo,state=done,track=direct": 1,
 	})
 	if got, want := histograms(t, reader, "factory.task.cost"), map[string]histPoint{
-		"lane=backlog,model_alias=small,outcome=done,process=maintenance": {1, 0.05},
-		"lane=ready,model_alias=small,outcome=done,process=spec":          {1, 0.05},
+		"model_alias=small,outcome=done,process=spec,track=plan":          {1, 0.05},
+		"model_alias=small,outcome=done,process=maintenance,track=direct": {1, 0.05},
 	}; !maps.Equal(got, want) {
 		t.Fatalf("cost = %v, want %v", got, want)
 	}

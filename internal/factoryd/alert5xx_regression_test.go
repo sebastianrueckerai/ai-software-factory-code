@@ -48,7 +48,7 @@ func TestReproAlert5xxOnFactorydWithoutTheWiring(t *testing.T) {
 		Namespaces: &fakeNamespaces{labels: map[string]string{"factory": "ai-software-factory-code"}},
 		Projects: &memProjects{m: map[string]Project{"ai-software-factory-code": {Name: "ai-software-factory-code",
 			Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder", File: true,
-			Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}}},
+			Namespaces: []string{"factory"}, Process: "maintenance", Tracks: maintenanceTracks}}},
 		Store: newFakeStore(), Forgejo: forgejo, Workflows: &fakeWorkflows{}, Budget: testBudget,
 		Namespace: "factory"} // Kube left nil, as main.go first had it
 

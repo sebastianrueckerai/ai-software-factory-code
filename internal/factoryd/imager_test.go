@@ -2015,7 +2015,7 @@ func TestPGStoreImagePins(t *testing.T) {
 	card := func(id, repository, image, ranOn, status string, finished *time.Time, created time.Time) {
 		t.Helper()
 		id += "-" + suffix
-		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", Repository: repository, Objective: id, Image: image}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "running", Repository: repository, Objective: id, Image: image, Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 		if ranOn != "" {

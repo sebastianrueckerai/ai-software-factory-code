@@ -34,7 +34,7 @@ func watchedEnv(store *fakeStore, bound time.Duration) *testsuite.TestActivityEn
 // activity was scheduled; one that opens none leaves the row.
 func TestGateWatchMovesTheTaskToTheActivitysGate(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "running"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "running", Track: "direct"})
 	env := watchedEnv(store, time.Minute)
 	env.RegisterActivityWithOptions(func(context.Context, SessionInput) error { return nil }, activity.RegisterOptions{Name: ActivityRunSession})
 	env.RegisterActivityWithOptions(func(context.Context, string, string) error { return nil }, activity.RegisterOptions{Name: ActivityWaitChecks})
@@ -69,7 +69,7 @@ func TestGateWatchMovesTheTaskToTheActivitysGate(t *testing.T) {
 // however long it runs past it.
 func TestGateWatchAlertsOncePerOverrun(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
 	env := watchedEnv(store, 50*time.Millisecond)
 	env.RegisterActivityWithOptions(func(context.Context, string, string) error {
 		time.Sleep(300 * time.Millisecond)
@@ -132,7 +132,7 @@ func signallingEnv(g *GateWatch) *testsuite.TestActivityEnvironment {
 // gate only alert (ruling 162).
 func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
 	sig := &signalled{}
 	env := signallingEnv(&GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal})
 	var info activity.Info
@@ -170,7 +170,7 @@ func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 // its bound trips a second time, and a second wait extends nothing.
 func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
 	sig := &signalled{}
 	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return 100 * time.Millisecond }, Signal: sig.signal}
 	var mu sync.Mutex
@@ -219,7 +219,7 @@ func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
-			store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+			store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
 			sig := &signalled{}
 			env := signallingEnv(&GateWatch{Store: store, Bound: func(_ context.Context, _ string, _ int64, parts int) time.Duration {
 				return time.Duration(parts) * 100 * time.Millisecond
@@ -291,7 +291,7 @@ func TestReviewAndAuditBoundThemselvesByTheirParts(t *testing.T) {
 // activity's retry policy runs it again.
 func TestGateWatchRetryEndsTheAttemptForARetry(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
 	sig := &signalled{}
 	g := &GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return 50 * time.Millisecond }, Signal: sig.signal}
 	var mu sync.Mutex

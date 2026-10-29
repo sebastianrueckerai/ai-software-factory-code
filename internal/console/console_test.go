@@ -403,7 +403,7 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 	n := 0
 	for _, bt := range s.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
 		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
@@ -414,13 +414,13 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 	return n, nil
 }
 
-func (s *fakeTasks) CountBacklog(_ context.Context, repository string) (int, error) {
+func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, bt := range s.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" || t.AdmittedAt != nil || factoryd.Final(t.Status) {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil || factoryd.Final(t.Status) {
 			continue
 		}
 		n++
@@ -680,26 +680,24 @@ func (s *fakeTasks) SetTaskAccent(_ context.Context, id, accent string) error {
 	return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
 }
 
-// setStatus changes task id's row to status; a read hook already holds the
-// lock, so it takes none.
-func (s *fakeTasks) setStatus(id, status string) {
-	for i := range s.tasks {
-		if s.tasks[i].ID == id {
-			s.tasks[i].Status = status
-			return
-		}
-	}
+// fakeWriters are each project's writers by repository, the factory's own
+// sf/code among them (Config.Writers).
+type fakeWriters struct {
+	mu    sync.Mutex
+	by    map[string][]string
+	asked int
+	err   error
+	delay time.Duration
 }
 
-// fakeWriters are the writers of the factory's own code project (sf/code),
-// users, and of the others, by repository.
-type fakeWriters struct {
-	mu     sync.Mutex
-	users  []string
-	others map[string][]string
-	asked  int
-	err    error
-	delay  time.Duration
+// writes is Config.Writes over the same lists, by repository.
+func (w *fakeWriters) writes(_ context.Context, repository, user string) (bool, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.err != nil {
+		return false, w.err
+	}
+	return slices.Contains(w.by[repository], user), nil
 }
 
 func (w *fakeWriters) list(context.Context) (string, map[string][]string, error) {
@@ -710,9 +708,7 @@ func (w *fakeWriters) list(context.Context) (string, map[string][]string, error)
 	if w.err != nil {
 		return "", nil, w.err
 	}
-	all := map[string][]string{"sf/code": w.users}
-	maps.Copy(all, w.others)
-	return "sf/code", all, nil
+	return "sf/code", maps.Clone(w.by), nil
 }
 
 type fakeObjects map[string][]byte
@@ -865,8 +861,8 @@ type fakeLedger struct {
 	down      bool              // no policy in force can be read
 }
 
-// testProcesses are the shipped two processes; spec lists its lanes out of
-// the board's order, which the board does not follow.
+// testProcesses are the shipped two processes: maintenance builds direct
+// only, spec has a plan track.
 func testProcesses() map[string]policy.Process {
 	stages := []policy.Stage{
 		{Name: "screening", OnFindings: "human", When: "outsider"},
@@ -874,10 +870,10 @@ func testProcesses() map[string]policy.Process {
 		{Name: "merge", OnFindings: "human", Enabled: true},
 	}
 	return map[string]policy.Process{
-		"maintenance": {Lanes: []policy.Lane{{Name: "backlog", WriteUp: "analyzer"}, {Name: "ready", Class: "coder", MovedBy: "writers"}},
+		"maintenance": {Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}},
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
-		"spec": {Lanes: []policy.Lane{{Name: "ready", Class: "coder", MovedBy: "writers"}, {Name: "backlog"},
-			{Name: "plan", Class: "planner", MovedBy: "writers", Plan: &policy.PlanShape{MaxCards: 12, Foundation: true, Integration: true}}},
+		"spec": {Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"},
+			Plan: &policy.Track{Class: "planner", Plan: &policy.PlanShape{MaxCards: 12, Foundation: true, Integration: true}}},
 			Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, Stages: stages, Merge: policy.Merge{Queue: "project"}},
 	}
 }
@@ -975,11 +971,9 @@ type rig struct {
 	routines *fakeRoutines
 	deps     *fakeDeps
 	figures  *fakeFigures
-	// repoWriters are the writers of each project's repository, which
-	// MayMove reads for a lane moved by writers
+	// repoWriters are the writers of each project's repository, the
+	// writer lists' map (writers.by)
 	repoWriters map[string][]string
-	mayAsked    []string // "repository user moved_by" per MayMove
-	mayErr      error
 	signalErr   error
 	retried     []string // "task by user" per RetryPlanCard
 	retryErr    error
@@ -1008,6 +1002,30 @@ type rig struct {
 
 var monthly = 8.99
 
+// writerOf logs user in, as a further session of the rig, as a writer of
+// repository alone.
+func (r *rig) writerOf(t *testing.T, user, repository string) (*http.Cookie, *session) {
+	t.Helper()
+	r.repoWriters[repository] = append(r.repoWriters[repository], user)
+	return memberLogin(t, r, user)
+}
+
+// readerOfCode logs user in as a writer of demo-app alone whom Forgejo
+// shows the code project's repository: a reader of its board.
+func (r *rig) readerOfCode(t *testing.T, user string) (*http.Cookie, *session) {
+	t.Helper()
+	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
+	return r.writerOf(t, user, "demo-app/demo-app")
+}
+
+// forgetWriters drops the console's writer lists and its writes answers,
+// so its next check reads the rig's anew.
+func (r *rig) forgetWriters() {
+	r.c.mu.Lock()
+	r.c.writersT, r.c.written = time.Time{}, nil
+	r.c.mu.Unlock()
+}
+
 func newRig(t *testing.T) *rig {
 	fg := newFakeForgejo(t)
 	reader := sdkmetric.NewManualReader()
@@ -1015,7 +1033,8 @@ func newRig(t *testing.T) *rig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{users: []string{"sebastian"}}, objects: fakeObjects{}, ledger: &fakeLedger{processes: testProcesses()},
+	repoWriters := map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}
+	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{processes: testProcesses()},
 		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
 			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
 				Reason: "load test (beyond the envelope: a lease of 300 minutes exceeds the envelope's 4 h)",
@@ -1040,7 +1059,7 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
-		repoWriters: map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}},
+		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.tasks.events = r.events
 	r.chat = &fakeChat{tasks: r.tasks}
@@ -1050,7 +1069,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
@@ -1082,30 +1101,6 @@ func newRig(t *testing.T) *rig {
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL changes_requested %s #%d by %s: %s", taskID, pr, by, words))
 			return r.signalErr
-		},
-		MayMove: func(_ context.Context, repository, user, movedBy string) (bool, error) {
-			r.mayAsked = append(r.mayAsked, repository+" "+user+" "+movedBy)
-			if r.mayErr != nil {
-				return false, r.mayErr
-			}
-			if movedBy == policy.MovedByApprovers {
-				return user == "sebastian", nil
-			}
-			return slices.Contains(r.repoWriters[repository], user), nil
-		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
-			newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0)
-			if newest.Revision != revision || newest.SHA256 != sha {
-				return factoryd.ErrStalePlan{Newest: newest.Revision}
-			}
-			fg.mu.Lock()
-			defer fg.mu.Unlock()
-			call := fmt.Sprintf("SIGNAL plan_accepted %s %d %s by %s", taskID, revision, sha, author)
-			if decider != author {
-				call += " decided by " + decider
-			}
-			fg.calls = append(fg.calls, call)
-			return nil
 		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
 			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
@@ -1145,12 +1140,6 @@ func newRig(t *testing.T) *rig {
 			fg.mu.Lock()
 			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL holdout_decided %s %d %d %s by %s", taskID, revision, idx, verb, by))
-			return nil
-		},
-		RejectPlan: func(_ context.Context, taskID, by, why string) error {
-			fg.mu.Lock()
-			defer fg.mu.Unlock()
-			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL plan_rejected %s by %s: %s", taskID, by, why))
 			return nil
 		},
 		CloseCard: func(_ context.Context, taskID, by string) error {
@@ -1431,8 +1420,9 @@ func TestNonWriterGets403AndNoSession(t *testing.T) {
 func TestWriterRemovedLosesTheSession(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	r.writers.users = []string{"someone-else"}
-	r.c.writersT = time.Time{}
+	clear(r.repoWriters)
+	r.repoWriters["sf/code"] = []string{"someone-else"}
+	r.forgetWriters()
 	if rec := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck); rec.Code != http.StatusForbidden {
 		t.Fatalf("GET / after removal = %d, want 403", rec.Code)
 	}
@@ -1467,7 +1457,7 @@ func TestPagesRequireASession(t *testing.T) {
 func TestPostWithoutCSRFTokenIsRefused(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
-	form := url.Values{"title": {"x"}, "lane": {"ready"}, "project": {"ai-software-factory-code"}, "body": {"Do the thing.\n\nAcceptance:\n- It works\n"}, "size": {"small"}}
+	form := url.Values{"title": {"x"}, "track": {"direct"}, "project": {"ai-software-factory-code"}, "body": {"Do the thing.\n\nAcceptance:\n- It works\n"}, "size": {"small"}}
 	for name, tok := range map[string]string{"missing": "", "wrong": "nope"} {
 		f := url.Values{}
 		for k, v := range form {
@@ -1490,7 +1480,7 @@ func TestPostWithoutCSRFTokenIsRefused(t *testing.T) {
 	}
 }
 
-func TestBoardRendersLanesFromTheStore(t *testing.T) {
+func TestBoardRendersColumnsFromTheStore(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	r.tasks.set("cannot reach the database", []factoryd.Task{
@@ -1506,13 +1496,13 @@ func TestBoardRendersLanesFromTheStore(t *testing.T) {
 	// the reason comes from the task's row; the board reads no timeline
 	r.objects["sessions/t-e/timeline.jsonl"] = []byte(`{"step":"escalated","reason":"old reason","comment":4}
 `)
-	// the lanes and the state columns are the wide view's
+	// the state columns are the wide view's
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET / = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	cols := []string{"Ready", "Running", "Waiting on a human", "In review", "Done", "Failed"}
+	cols := []string{"Queued", "Running", "Waiting on a human", "In review", "Done", "Failed"}
 	objs := []string{"queued work", "closing work", "stuck work", "review work", "done work", "failed work"}
 	for i, col := range cols {
 		start := strings.Index(body, ">"+col+" <span")
@@ -1645,7 +1635,7 @@ func TestBoardShowsTheConfigVersion(t *testing.T) {
 	}
 }
 
-func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
+func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, s := r.loggedIn(t)
@@ -1659,27 +1649,27 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 	if !strings.Contains(form, picker) || strings.Contains(form, "infra") {
 		t.Fatalf("form's projects: %s", form)
 	}
-	// section 5: the lane select holds backlog and the starting lanes of
-	// the projects' processes, ready by default, and the human lane
-	for _, want := range []string{
-		`<option value="backlog" data-projects="ai-software-factory-code demo-app linkshort">Backlog</option>`,
-		`<option value="plan" data-projects="linkshort">Plan</option>`,
-		`<option value="ready" data-projects="ai-software-factory-code demo-app linkshort" selected>Ready</option>`,
-		`<option value="human">Human track</option>`,
-	} {
-		if !strings.Contains(form, want) {
-			t.Errorf("the lane select lacks %q", want)
-		}
+	// roadmap 225: the track select offers direct, the default, plan where
+	// the project's process has a plan track, and human
+	want := `<select id="track" name="track">
+<option value="direct" selected>Direct</option>
+<option value="plan" data-projects="linkshort">Plan</option>
+<option value="human">Human</option>
+</select>`
+	if !strings.Contains(form, want) {
+		t.Errorf("the form lacks the track select %q:\n%s", want, form)
 	}
+	// each track files its label: direct agent, plan plan, human human
 	for _, tc := range []struct {
-		project, lane, priority, body, size string
-		labels                              []any
-		filed                               string
+		project, track, priority, body, size string
+		labels                               []any
+		filed                                string
 	}{
-		{"ai-software-factory-code", "ready", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}, "41"},
+		{"ai-software-factory-code", "direct", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}, "41"},
 		{"ai-software-factory-code", "human", "priority/p1", "details", "", []any{2.0, 7.0}, "41"},
-		{"ai-software-factory-code", "backlog", "", "details", "", []any{3.0}, "41"},
 		{"linkshort", "plan", "", "details\n\nAcceptance:\n- It works", "small", []any{24.0}, "42"},
+		{"linkshort", "direct", "", "details", "", []any{21.0}, "42"},
+		{"linkshort", "human", "", "details", "", []any{22.0}, "42"},
 	} {
 		wantBody := tc.body
 		if tc.size != "" {
@@ -1687,33 +1677,41 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheLaneLabel(t *testing.T) {
 		}
 		r.fg.issues, r.fg.calls = nil, nil
 		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {tc.body},
-			"lane": {tc.lane}, "priority": {tc.priority}, "size": {tc.size}}), ck)
+			"track": {tc.track}, "priority": {tc.priority}, "size": {tc.size}}), ck)
 		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed+"&project="+tc.project {
-			t.Fatalf("%s: POST /tasks = %d to %q: %s", tc.lane, rec.Code, rec.Header().Get("Location"), rec.Body)
+			t.Fatalf("%s %s: POST /tasks = %d to %q: %s", tc.project, tc.track, rec.Code, rec.Header().Get("Location"), rec.Body)
 		}
 		got := r.fg.issues[0]
 		if got["title"] != "Fix the cache" || got["body"] != wantBody || fmt.Sprint(got["labels"]) != fmt.Sprint(tc.labels) {
-			t.Errorf("%s: issue %v, want labels %v and body %q", tc.lane, got, tc.labels, wantBody)
+			t.Errorf("%s %s: issue %v, want labels %v and body %q", tc.project, tc.track, got, tc.labels, wantBody)
 		}
 		for _, call := range r.fg.calls {
 			if !strings.HasSuffix(call, " Bearer access-1") {
-				t.Errorf("%s: call %q not made with the human's token", tc.lane, call)
+				t.Errorf("%s %s: call %q not made with the human's token", tc.project, tc.track, call)
 			}
 		}
 	}
-	for name, f := range map[string]url.Values{
-		"no title":     {"title": {"  "}, "lane": {"ready"}},
-		"bad lane":     {"title": {"x"}, "lane": {"robot"}},
-		"old lane":     {"title": {"x"}, "lane": {"agent"}, "project": {"ai-software-factory-code"}},
-		"no plan lane": {"title": {"x"}, "lane": {"plan"}, "project": {"ai-software-factory-code"}},
-		"bad priority": {"title": {"x"}, "lane": {"ready"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}},
-		"no project":   {"title": {"x"}, "lane": {"ready"}},
-		"agents none":  {"title": {"x"}, "lane": {"human"}, "project": {"ai-software-factory-infra"}},
+	noTrack := "track must be direct, plan or human\n"
+	for name, tc := range map[string]struct {
+		form url.Values
+		want string
+	}{
+		"no title":  {url.Values{"title": {"  "}, "track": {"direct"}}, "a title of 1 to 255 characters is required\n"},
+		"no track":  {url.Values{"title": {"x"}, "project": {"ai-software-factory-code"}}, noTrack},
+		"bad track": {url.Values{"title": {"x"}, "track": {"robot"}, "project": {"ai-software-factory-code"}}, noTrack},
+		"old lane":  {url.Values{"title": {"x"}, "track": {"ready"}, "project": {"ai-software-factory-code"}}, noTrack},
+		"backlog":   {url.Values{"title": {"x"}, "track": {"backlog"}, "project": {"ai-software-factory-code"}}, noTrack},
+		"label":     {url.Values{"title": {"x"}, "track": {"agent"}, "project": {"ai-software-factory-code"}}, noTrack},
+		"no plan track": {url.Values{"title": {"x"}, "track": {"plan"}, "project": {"ai-software-factory-code"}},
+			"Project ai-software-factory-code follows process maintenance, which has no plan track: file the card on track direct.\n"},
+		"bad priority": {url.Values{"title": {"x"}, "track": {"direct"}, "priority": {"urgent"}, "project": {"ai-software-factory-code"}}, "unknown priority\n"},
+		"no project":   {url.Values{"title": {"x"}, "track": {"direct"}}, "choose a project agents work on\n"},
+		"agents none":  {url.Values{"title": {"x"}, "track": {"human"}, "project": {"ai-software-factory-infra"}}, "choose a project agents work on\n"},
 	} {
 		r.fg.issues = nil
-		f.Set("csrf", s.csrf)
-		if rec := r.do(post("/tasks", f), ck); rec.Code != http.StatusBadRequest || len(r.fg.issues) != 0 {
-			t.Errorf("%s: %d, want 400 and no issue", name, rec.Code)
+		tc.form.Set("csrf", s.csrf)
+		if rec := r.do(post("/tasks", tc.form), ck); rec.Code != http.StatusBadRequest || rec.Body.String() != tc.want || len(r.fg.issues) != 0 {
+			t.Errorf("%s: %d %q, want 400 %q and no issue", name, rec.Code, rec.Body, tc.want)
 		}
 	}
 }
@@ -1734,30 +1732,30 @@ func TestNewTaskSize(t *testing.T) {
 	if !strings.Contains(form, want) {
 		t.Fatalf("form lacks the size select %q: %s", want, form)
 	}
-	file := func(size, lane, body string) *httptest.ResponseRecorder {
+	file := func(size, track, body string) *httptest.ResponseRecorder {
 		r.fg.issues = nil
 		return r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {"Fix the cache"},
-			"body": {body}, "lane": {lane}, "size": {size}}), ck)
+			"body": {body}, "track": {track}, "size": {size}}), ck)
 	}
-	for _, tt := range []struct{ size, lane, body, wantBody string }{
-		{"large", "ready", "details\n\nAcceptance:\n- It works", "details\n\nAcceptance:\n- It works\n\nSize: large"},
-		{"", "backlog", "details", "details"},
+	for _, tt := range []struct{ size, track, body, wantBody string }{
+		{"large", "direct", "details\n\nAcceptance:\n- It works", "details\n\nAcceptance:\n- It works\n\nSize: large"},
+		{"", "human", "details", "details"},
 	} {
 		before := ev.count()
-		if rec := file(tt.size, tt.lane, tt.body); rec.Code != http.StatusSeeOther {
+		if rec := file(tt.size, tt.track, tt.body); rec.Code != http.StatusSeeOther {
 			t.Fatalf("size %q: POST /tasks = %d: %s", tt.size, rec.Code, rec.Body)
 		}
 		if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != tt.wantBody {
 			t.Fatalf("size %q: issues %v, want one with body %q", tt.size, r.fg.issues, tt.wantBody)
 		}
-		detail := map[string]any{"lane": tt.lane, "title": "Fix the cache"}
+		detail := map[string]any{"track": tt.track, "title": "Fix the cache"}
 		if tt.size != "" {
 			detail["size"] = tt.size
 		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardFiled, repo: "sf/code", detail: detail})
 	}
 	before := ev.count()
-	if rec := file("giant", "ready", "details"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "size must be small, medium or large") {
+	if rec := file("giant", "direct", "details"); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "size must be small, medium or large") {
 		t.Fatalf("size giant: POST /tasks = %d: %s", rec.Code, rec.Body)
 	}
 	if len(r.fg.issues) != 0 || ev.count() != before {
@@ -2681,11 +2679,12 @@ func serverState(c *Console) int {
 // those buttons, get 403, and may still deny and release.
 func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	r := newRig(t)
-	r.fg.user, r.writers.users = "alice", []string{"sebastian", "alice"}
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
 		LeaseExpires: time.Now().Add(time.Hour)}}
-	// alice writes no project's repository: she asks for the code project
+	// alice writes the code project, no other: she asks for it
 	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	if strings.Contains(board, "/approve\"") || !strings.Contains(board, `action="/approvals/3/deny"`) ||
 		!strings.Contains(board, "Only the project's approvers may approve.") {
@@ -2712,15 +2711,7 @@ func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
 	if rec := r.do(post("/resources/11/release", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("release by a writer = %d", rec.Code)
 	}
-	// a deny needs no approver, but a writer of the request's project
-	if rec := r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}}), ck); rec.Code != http.StatusForbidden ||
-		r.approvals.get(3).Status != "pending" {
-		t.Fatalf("deny by a factory writer who writes no sf/code = %d, request %s", rec.Code, r.approvals.get(3).Status)
-	}
-	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "alice")
-	r.c.mu.Lock()
-	r.c.moves = nil
-	r.c.mu.Unlock()
+	// a deny needs no approver, a writer of the request's project
 	if rec := r.do(post("/approvals/3/deny", url.Values{"csrf": {s.csrf}, "note": {"no"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("deny by a writer = %d", rec.Code)
 	}
@@ -2851,16 +2842,16 @@ func TestBoardCardShowsTotalAndCurrentGate(t *testing.T) {
 	}
 }
 
-// A card in waiting-deps sits in its lane's column of the wide view and
-// reads the issues it waits on.
+// A card in waiting-deps sits in the wide view's Queued column and reads
+// the issues it waits on.
 func TestBoardCardShowsWaitingOn(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Lane: "ready", Objective: "links api",
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-deps", Track: "direct", Objective: "links api",
 		Repository: "sf/code", IssueNumber: 7}, WaitingOn: "#3, #5"}}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	if c := col(t, body, "Ready"); !strings.Contains(c, "links api") || !strings.Contains(c, `<span class="chip waiting">waiting on #3, #5</span>`) {
-		t.Fatalf("Ready column = %s, want the card waiting on #3, #5", c)
+	if c := col(t, body, "Queued"); !strings.Contains(c, "links api") || !strings.Contains(c, `<span class="chip waiting">waiting on #3, #5</span>`) {
+		t.Fatalf("Queued column = %s, want the card waiting on #3, #5", c)
 	}
 }
 
@@ -2994,7 +2985,8 @@ func TestAlertVerdicts(t *testing.T) {
 // and a 403.
 func TestAlertVerdictNeedsAnApprover(t *testing.T) {
 	r := newRig(t)
-	r.fg.user, r.writers.users = "alice", []string{"sebastian", "alice"}
+	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
+	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Now()}}
 	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
@@ -3182,7 +3174,7 @@ func TestBoardShowsARollLikeAnyCard(t *testing.T) {
 }
 
 // interventions reads factory.human.intervention by kind, process and
-// lane.
+// track.
 func (r *rig) interventions(t *testing.T) map[string]int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -3198,8 +3190,8 @@ func (r *rig) interventions(t *testing.T) map[string]int64 {
 			for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
 				kind, _ := dp.Attributes.Value(attribute.Key("kind"))
 				process, _ := dp.Attributes.Value(attribute.Key("process"))
-				lane, _ := dp.Attributes.Value(attribute.Key("lane"))
-				out[kind.AsString()+" "+process.AsString()+" "+lane.AsString()] = dp.Value
+				track, _ := dp.Attributes.Value(attribute.Key("track"))
+				out[kind.AsString()+" "+process.AsString()+" "+track.AsString()] = dp.Value
 			}
 		}
 	}

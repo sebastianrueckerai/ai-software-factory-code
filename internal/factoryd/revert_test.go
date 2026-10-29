@@ -235,8 +235,8 @@ func TestRevertPassWritesDiffSizes(t *testing.T) {
 	book := &fakeRevertBook{
 		projects: []Project{{Name: "demo", Repository: "sf/repo"}},
 		tasks: []Task{
-			{ID: "t-one", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: at(-time.Hour)},
-			{ID: "t-two", Repository: "sf/repo", PRNumber: 8, Status: "done", FinishedAt: at(-2 * time.Hour)},
+			{ID: "t-one", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: at(-time.Hour), Track: "direct"},
+			{ID: "t-two", Repository: "sf/repo", PRNumber: 8, Status: "done", FinishedAt: at(-2 * time.Hour), Track: "direct"},
 		},
 	}
 	diffs := map[int64]string{
@@ -270,7 +270,7 @@ func TestPGStoreDiffSizes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.CreateTask(ctx, Task{ID: "t-diff", RiskClass: "standard", BudgetEUR: 1, Status: "done", Objective: "o", Repository: "sf/r"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-diff", RiskClass: "standard", BudgetEUR: 1, Status: "done", Objective: "o", Repository: "sf/r", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	var files, insertions, deletions any
@@ -298,7 +298,7 @@ func TestRevertPassTruncatedDiff(t *testing.T) {
 	at := now.Add(-time.Hour)
 	book := &fakeRevertBook{
 		projects: []Project{{Name: "demo", Repository: "sf/repo"}},
-		tasks:    []Task{{ID: "t-big", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: &at}},
+		tasks:    []Task{{ID: "t-big", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: &at, Track: "direct"}},
 	}
 	big := "diff --git a/big.go b/big.go\n@@ -1 +1,2 @@\n+x\n" + strings.Repeat("y", revertDiffMax)
 	m, _ := testMetrics(t)
@@ -326,12 +326,12 @@ func TestRevertPass(t *testing.T) {
 	book := &fakeRevertBook{
 		projects: []Project{{Name: "demo", Repository: "sf/repo"}},
 		tasks: []Task{
-			{ID: "t-rev", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: at(-3 * day)},
-			{ID: "t-partial", Repository: "sf/repo", PRNumber: 8, Status: "done", FinishedAt: at(-3 * day)},
-			{ID: "t-late", Repository: "sf/repo", PRNumber: 9, Status: "done", FinishedAt: at(-14*day - 20*time.Hour)},
-			{ID: "t-before", Repository: "sf/repo", PRNumber: 10, Status: "done", FinishedAt: at(-2 * day)},
+			{ID: "t-rev", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: at(-3 * day), Track: "direct"},
+			{ID: "t-partial", Repository: "sf/repo", PRNumber: 8, Status: "done", FinishedAt: at(-3 * day), Track: "direct"},
+			{ID: "t-late", Repository: "sf/repo", PRNumber: 9, Status: "done", FinishedAt: at(-14*day - 20*time.Hour), Track: "direct"},
+			{ID: "t-before", Repository: "sf/repo", PRNumber: 10, Status: "done", FinishedAt: at(-2 * day), Track: "direct"},
 		},
-		refiled: []Task{{ID: "t-alert", Repository: "sf/other"}},
+		refiled: []Task{{ID: "t-alert", Repository: "sf/other", Track: "direct"}},
 	}
 	prs := []map[string]any{
 		mergedPR(20, now.Add(-day)),
@@ -372,7 +372,7 @@ func TestPGStoreRevertMarks(t *testing.T) {
 	}
 	mk := func(id, status, source string, pr int64, finishedAgo time.Duration) {
 		t.Helper()
-		if err := s.CreateTask(ctx, Task{ID: id, RiskClass: "standard", BudgetEUR: 1, Status: "queued", Objective: "o", Repository: "sf/r", Source: source}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: id, RiskClass: "standard", BudgetEUR: 1, Status: "queued", Objective: "o", Repository: "sf/r", Source: source, Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = $2, pr_number = $3, finished_at = now() - $4 * interval '1 second' WHERE id = $1`,

@@ -57,14 +57,17 @@ type fakeStore struct {
 	approvals       []ApprovalRequest
 	gates           []string // "task gate since", in order
 	projects        []Project
-	alertsMu        sync.Mutex
-	alerts          []Alert
-	rolls           []RollRequest
-	chain           []fakeChainRun
-	chainNow        func() time.Time // stamps the fake's chain writes; zero where nil
-	unsettledReads  int              // the UnsettledChainCommits calls served
-	liveSessions    map[string]LiveSession
-	pauses          map[string]QueuePause
+	// projectSpend is each repository's month spend, as ProjectMonthSpend
+	// reads it
+	projectSpend   map[string]float64
+	alertsMu       sync.Mutex
+	alerts         []Alert
+	rolls          []RollRequest
+	chain          []fakeChainRun
+	chainNow       func() time.Time // stamps the fake's chain writes; zero where nil
+	unsettledReads int              // the UnsettledChainCommits calls served
+	liveSessions   map[string]LiveSession
+	pauses         map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
 	// budgetRefused BudgetRefused's by task; DayFree answers the day's cap
 	// less daySpent
@@ -195,7 +198,10 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now()
 	}
-	if t.Kind == "agent" && t.Status != "backlog" && t.Gate == "" {
+	if t.Kind == "agent" && t.Track == "" {
+		return fmt.Errorf("task %s: an agent card needs a track (tasks_agent_track)", t.ID)
+	}
+	if t.Kind == "agent" && t.Gate == "" {
 		t.Gate, t.GateSince = GateIntake, &t.CreatedAt
 	}
 	// the insert stamps a task already ended with its filing, as the
@@ -498,7 +504,7 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
 		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
@@ -509,10 +515,10 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 	return n, nil
 }
 
-func (s *fakeStore) CountBacklog(ctx context.Context, repository string) (int, error) {
+func (s *fakeStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" || t.AdmittedAt != nil {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil {
 			continue
 		}
 		if !factorydFinal(t.Status) {
@@ -535,7 +541,7 @@ func factorydFinal(status string) bool {
 func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && t.Lane != "" && t.Status == "queued" {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" {
 			out = append(out, t)
 		}
 	}
@@ -584,30 +590,14 @@ func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
 	if !ok || t.Kind != "agent" || t.Status != "queued" {
 		return false, nil
 	}
-	t.Kind, t.Status, t.Gate, t.GateSince, t.Lane, t.Process = "human", "waiting-human", "", nil, "", ""
+	t.Kind, t.Status, t.Gate, t.GateSince, t.Track, t.Process = "human", "waiting-human", "", nil, "", ""
 	s.tasks[id] = t
 	return true, nil
 }
 
-func (s *fakeStore) BackfillProcess(ctx context.Context, repository, process string) error {
-	for id, t := range s.tasks {
-		if t.Repository == repository && t.Lane != "" && t.Process == "" && !Final(t.Status) {
-			t.Process = process
-			s.tasks[id] = t
-		}
-	}
-	return nil
-}
-
-func (s *fakeStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
-	t, ok := s.tasks[id]
-	if !ok || t.Status != "backlog" {
-		return false, nil
-	}
-	now := time.Now()
-	t.Status, t.Lane, t.RequiredCapabilities, t.SHA, t.Gate, t.GateSince = "queued", lane, []string{class}, sha, GateIntake, &now
-	s.tasks[id] = t
-	return true, nil
+// ProjectMonthSpend is the month's spend a test set for repository.
+func (s *fakeStore) ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error) {
+	return ProjectSpend{EUR: s.projectSpend[repository]}, nil
 }
 
 // testSeeded are the seeded tokens a test's Forgejo holds.
@@ -622,7 +612,7 @@ func seedProject(repository string) Project {
 	return Project{Name: strings.ReplaceAll(repository, "/", "-"), Repository: repository, MergeRule: "human", Objects: "seed", Agents: "coder",
 		File: true, Tokens: policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge, Gate: policy.SecretGate,
 			Chat: policy.SecretChat},
-		Process: "maintenance", Lanes: maintenanceLanes}
+		Process: "maintenance", Tracks: maintenanceTracks}
 }
 
 // ProjectByRepository: with no projects set, every repository is a seed
@@ -1428,6 +1418,7 @@ func TestPGStore(t *testing.T) {
 		Source:               "api",
 		ReproCommand:         "go test ./internal/x",
 		CreatedAt:            time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC),
+		Track:                "direct",
 	}
 	if err := s.CreateTask(ctx, in); err != nil {
 		t.Fatalf("CreateTask: %v", err)
@@ -1582,7 +1573,7 @@ func TestPGStore(t *testing.T) {
 	if err := s.TransitionTask(ctx, "nope", []string{"running"}, "closing"); err == nil {
 		t.Fatal("TransitionTask on a missing task must fail")
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "running", Objective: "x"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t0", Priority: 1, BudgetEUR: 1, Status: "running", Objective: "x", Track: "direct"}); err != nil {
 		t.Fatalf("CreateTask t0: %v", err)
 	}
 	running, err := s.ListTasksByStatus(ctx, "running")
@@ -1602,7 +1593,7 @@ func TestPGStore(t *testing.T) {
 		id     string
 		status string
 	}{{"s-done", "done"}, {"s-failed", "failed"}, {"s-old", "done"}, {"s-run", "running"}} {
-		if err := s.CreateTask(ctx, Task{ID: row.id, BudgetEUR: 1, SpentEUR: 0.5, Status: "closing"}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: row.id, BudgetEUR: 1, SpentEUR: 0.5, Status: "closing", Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.TransitionTask(ctx, row.id, []string{"closing"}, row.status); err != nil {
@@ -1674,7 +1665,7 @@ func TestPGStore(t *testing.T) {
 	// only: a task that booked 0.75 of models and 0.25 of tools (spent 1.0)
 	// while LiteLLM reports 1.0 of models under-booked 0.25; LiteLLM's next
 	// 1.125 raises it by another 0.125, 0.9 by nothing
-	if err := s.CreateTask(ctx, Task{ID: "s-tool", BudgetEUR: 2, SpentEUR: 1, Status: "done"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "s-tool", BudgetEUR: 2, SpentEUR: 1, Status: "done", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('s-tool', 'model', 'small', 0.75), ('s-tool', 'tool', 'web_scrape', 0.25)`); err != nil {
@@ -1719,7 +1710,7 @@ func TestPGStore(t *testing.T) {
 	// 0.1873 of answered calls (0.4767), while LiteLLM charged 0.2751: set
 	// to 0.2751, the difference a negative settlement row on the task's
 	// own day, and settled once
-	if err := s.CreateTask(ctx, Task{ID: "s-cut", BudgetEUR: 2, SpentEUR: 0.4767, Status: "done"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "s-cut", BudgetEUR: 2, SpentEUR: 0.4767, Status: "done", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '3 hours' WHERE id = 's-cut'`); err != nil {
@@ -1797,7 +1788,7 @@ func TestPGStore(t *testing.T) {
 	// Order independence: a task row created the way the gateway seeds one
 	// (only its columns) must survive factoryd's boot and gain the defaults.
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES ('t-gw', 5, 0, 'running')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, track) VALUES ('t-gw', 5, 0, 'running', 'direct')`,
 	); err != nil {
 		t.Fatalf("gateway-style seed: %v", err)
 	}
@@ -1815,8 +1806,8 @@ func TestPGStore(t *testing.T) {
 	// final row without one)
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM backfills WHERE name = '0014_task_capabilities';
 		DELETE FROM schema_migrations WHERE name = 'factoryd/0014_task_capabilities.sql';
-		INSERT INTO tasks (id, budget_eur, status, kind, required_capabilities, finished_at) VALUES
-		('b-agent', 1, 'done', 'agent', 'null', now()), ('b-human', 1, 'done', 'human', 'null', now())`); err != nil {
+		INSERT INTO tasks (id, budget_eur, status, kind, required_capabilities, finished_at, track) VALUES
+		('b-agent', 1, 'done', 'agent', 'null', now(), 'direct'), ('b-human', 1, 'done', 'human', 'null', now(), NULL)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := schema.Migrate(ctx, s2.db); err != nil {
@@ -1859,9 +1850,9 @@ func TestPGStoreShipsRuling(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 17, 9, 0, 0, 0, time.UTC)
 	for _, c := range []Task{
-		{ID: "t-band", Status: "done", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at, ShipsRuling: "C20", ShipsClauses: []int{1, 3}},
-		{ID: "t-panel", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at.Add(time.Hour), ShipsRuling: "C20", ShipsClauses: []int{2}},
-		{ID: "t-uncited", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at.Add(2 * time.Hour)},
+		{ID: "t-band", Status: "done", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at, ShipsRuling: "C20", ShipsClauses: []int{1, 3}, Track: "direct"},
+		{ID: "t-panel", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at.Add(time.Hour), ShipsRuling: "C20", ShipsClauses: []int{2}, Track: "direct"},
+		{ID: "t-uncited", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", CreatedAt: at.Add(2 * time.Hour), Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, c); err != nil {
 			t.Fatalf("CreateTask %s: %v", c.ID, err)
@@ -1881,7 +1872,7 @@ func TestPGStoreShipsRuling(t *testing.T) {
 		}
 		t.Fatalf("TasksByRuling = %v, want [t-band t-panel]", ids)
 	}
-	dup := Task{ID: "t-band", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", ShipsRuling: "C20", ShipsClauses: []int{1, 2, 3}}
+	dup := Task{ID: "t-band", Status: "queued", Repository: "sf/r", Kind: "agent", Source: "webhook", ShipsRuling: "C20", ShipsClauses: []int{1, 2, 3}, Track: "direct"}
 	if err := s.CreateTask(ctx, dup); err == nil {
 		t.Fatal("re-creating t-band was accepted, want a unique violation")
 	}
@@ -1904,10 +1895,10 @@ func TestPGStoreTaskImage(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "plan"}); err != nil {
 		t.Fatal(err)
 	}
-	card, err := s.CreatePlanCard(ctx, Task{ID: "t-card", Status: "backlog", Repository: "sf/r", Kind: "agent", Source: SourcePlan, Parent: "t-plan", PlanKey: "ui", Image: "browser"})
+	card, err := s.CreatePlanCard(ctx, Task{ID: "t-card", Status: "queued", Track: "direct", Repository: "sf/r", Kind: "agent", Source: SourcePlan, Parent: "t-plan", PlanKey: "ui", Image: "browser"})
 	if err != nil || card.Image != "browser" || card.ImageDigest != "" || len(card.ImageEgress) != 0 {
 		t.Fatalf("filed card %+v, %v; want image browser, no run yet", card, err)
 	}
@@ -1937,7 +1928,7 @@ func TestPGStoreApprovals(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskRisk(ctx, "a1", "high"); err != nil {
@@ -2161,8 +2152,8 @@ func TestPGStoreDeployedCommit(t *testing.T) {
 }
 
 // Migration 0026 on a real Postgres: the author and the agent's summary
-// on the row, a backlog card outside every gate until it enters a lane, closed
-// as a final state, the info_request alert kind, projects by repository.
+// on the row, a filed card queued in the intake gate, closed as a final
+// state, the info_request alert kind, projects by repository.
 // The intake switch's rows: no row reads open, a set writes the state,
 // and a second set flips it back.
 func TestPGStoreChatIntake(t *testing.T) {
@@ -2204,27 +2195,17 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, ledger, holds, approval_requests, alerts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-sug", Status: "backlog", Objective: "o", Repository: "sf/r", Kind: "agent",
-		IssueNumber: 7, Source: "webhook", Author: "outsider", Lane: "backlog", Process: "maintenance"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-out", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 7, Source: "webhook",
+		Author: "outsider", Track: "direct", Process: "maintenance", RequiredCapabilities: []string{"coder"}, SHA: "abc"}); err != nil {
 		t.Fatal(err)
 	}
-	got, _, err := s.Task(ctx, "t-sug")
-	if err != nil || got.Author != "outsider" || got.AuthorWriter || got.Gate != "" || got.GateSince != nil || len(got.RequiredCapabilities) != 0 {
-		t.Fatalf("backlog row = %+v, %v; want author outsider, outside account, no gate, no class", got, err)
-	}
-	if ok, err := s.EnterLane(ctx, "t-sug", "ready", "coder", "abc"); err != nil || !ok {
-		t.Fatalf("enter: %v %v", ok, err)
-	}
-	if ok, err := s.EnterLane(ctx, "t-sug", "ready", "coder", "def"); err != nil || ok {
-		t.Fatalf("second entry: %v %v, want false", ok, err)
-	}
-	got, _, _ = s.Task(ctx, "t-sug")
-	if got.Status != "queued" || got.Lane != "ready" || got.Process != "maintenance" || !slices.Equal(got.RequiredCapabilities, []string{"coder"}) ||
-		got.SHA != "abc" || got.Gate != GateIntake || got.GateSince == nil {
-		t.Fatalf("entered row = %+v; want queued in lane ready as coder at abc in the intake gate", got)
+	got, _, err := s.Task(ctx, "t-out")
+	if err != nil || got.Author != "outsider" || got.AuthorWriter || got.Status != "queued" || got.Track != "direct" || got.Process != "maintenance" ||
+		!slices.Equal(got.RequiredCapabilities, []string{"coder"}) || got.SHA != "abc" || got.Gate != GateIntake || got.GateSince == nil {
+		t.Fatalf("filed row = %+v, %v; want the outsider's card queued on the direct track as coder at abc in the intake gate", got, err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t-w", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent",
-		IssueNumber: 8, Source: "webhook", Author: "sebastian", AuthorWriter: true}); err != nil {
+		IssueNumber: 8, Source: "webhook", Author: "sebastian", AuthorWriter: true, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetAgentSummary(ctx, "t-w", "fixed it\nnot_reproduced: x"); err != nil {
@@ -2269,7 +2250,7 @@ func TestPGStoreHoldouts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, plan_questions, plan_holdouts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-ho", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent", Source: "issue"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-ho", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent", Source: "issue", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	drafts := []Holdout{
@@ -2409,7 +2390,7 @@ func TestPGStoreHoldouts(t *testing.T) {
 	for i, o := range []string{"oldest revert stays out", "first revert line\nbody dropped", "second revert line",
 		"\nonly the second line"} {
 		if err := s.CreateTask(ctx, Task{ID: fmt.Sprintf("t-r%d", i), Status: "closed", Objective: o,
-			Repository: "sf/r", Kind: "agent", Source: "revert"}); err != nil {
+			Repository: "sf/r", Kind: "agent", Source: "revert", Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2468,7 +2449,7 @@ func TestPGStoreIntakeWithdraws(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-wd", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-wd", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	withdrawal := IntakeEvent{TaskID: "t-wd", Kind: IntakeEscalationWithdrawn, Author: FactoryDecider, Body: "the checks failed", CommentID: 701, Withdraws: 601}
@@ -2517,7 +2498,7 @@ func TestFactoryCloseConfirmation(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, intake_events CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-fc", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-fc", Status: "in-review", Objective: "o", Repository: "sf/r", Kind: "agent", IssueNumber: 9, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	var ids []int64
@@ -2741,12 +2722,12 @@ func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, alerts CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	parent := Task{ID: "t-parent", RiskClass: "standard", BudgetEUR: 2, Status: "backlog", Objective: "o", Repository: "sf/r", IssueNumber: 5, Source: "webhook"}
+	parent := Task{ID: "t-parent", RiskClass: "standard", BudgetEUR: 2, Status: "queued", Objective: "o", Repository: "sf/r", IssueNumber: 5, Source: "webhook", Track: "direct"}
 	if err := s.CreateTask(ctx, parent); err != nil {
 		t.Fatal(err)
 	}
-	report := Task{ID: "t-report", RiskClass: "standard", BudgetEUR: 2, Status: "queued", Objective: "o", Repository: "sf/r", Source: SourcePresort,
-		Parent: "t-parent", RequiredCapabilities: []string{"analyzer"}}
+	report := Task{ID: "t-report", RiskClass: "standard", BudgetEUR: 2, Status: "queued", Objective: "o", Repository: "sf/r", Source: SourceScreening,
+		Parent: "t-parent", RequiredCapabilities: []string{"analyzer"}, Track: "direct"}
 	got, err := s.OpenReportTask(ctx, report)
 	if err != nil || got.ID != "t-report" || got.Parent != "t-parent" || got.RequiredCapabilities[0] != "analyzer" {
 		t.Fatalf("open: %+v %v", got, err)
@@ -2759,11 +2740,11 @@ func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
 	if _, ok, _ := s.Task(ctx, "t-other"); ok {
 		t.Fatal("a second report row exists")
 	}
-	if got, ok, err := s.ReportOf(ctx, "t-parent", SourcePresort); err != nil || !ok || got.ID != "t-report" {
+	if got, ok, err := s.ReportOf(ctx, "t-parent", SourceScreening); err != nil || !ok || got.ID != "t-report" {
 		t.Fatalf("report of: %+v %v %v", got, ok, err)
 	}
-	if _, ok, err := s.ReportOf(ctx, "t-parent", SourceScreening); err != nil || ok {
-		t.Fatalf("no screening: %v %v", ok, err)
+	if _, ok, err := s.ReportOf(ctx, "t-parent", "webhook"); err != nil || ok {
+		t.Fatalf("no report of another source: %v %v", ok, err)
 	}
 	if p, _, _ := s.Task(ctx, "t-parent"); p.Parent != "" {
 		t.Fatalf("parent's parent = %q", p.Parent)
@@ -2813,9 +2794,9 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 	}
 	defer s.Close()
 	for _, tk := range []Task{
-		{ID: "pre-final", BudgetEUR: 2, SpentEUR: 0.5, Status: "done"},
-		{ID: "pre-window", BudgetEUR: 2, SpentEUR: 0.5, Status: "done"},
-		{ID: "same", BudgetEUR: 2, SpentEUR: 0.25, Status: "done"},
+		{ID: "pre-final", BudgetEUR: 2, SpentEUR: 0.5, Status: "done", Track: "direct"},
+		{ID: "pre-window", BudgetEUR: 2, SpentEUR: 0.5, Status: "done", Track: "direct"},
+		{ID: "same", BudgetEUR: 2, SpentEUR: 0.25, Status: "done", Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
@@ -3392,7 +3373,7 @@ func TestPGStoreRaiseTaskBudget(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-c", BudgetEUR: 2, SpentEUR: 1.83, Status: "waiting-human", Repository: "sf/r"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-c", BudgetEUR: 2, SpentEUR: 1.83, Status: "waiting-human", Repository: "sf/r", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	from, to, err := s.RaiseTaskBudget(ctx, "t-c", 0.5)
@@ -3452,10 +3433,10 @@ func TestTaskStatuses(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at) VALUES
-		('t-wait', 1, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', NULL),
-		('t-run', 1, 0, 'running', 'sf/r', 'agent', 'webhook', NULL),
-		('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now())`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at, track) VALUES
+		('t-wait', 1, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', NULL, 'direct'),
+		('t-run', 1, 0, 'running', 'sf/r', 'agent', 'webhook', NULL, 'direct'),
+		('t-done', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now(), 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.TaskStatuses(ctx, []string{"t-wait", "t-run", "t-missing"})
@@ -3486,7 +3467,7 @@ func TestPGStoreOneCardPerIssue(t *testing.T) {
 	}
 	const repo = "sf/ai-software-factory-code"
 	file := func(id string, issue int64, repo string) error {
-		return s.CreateTask(ctx, Task{ID: id, Status: "queued", Repository: repo, Kind: "agent", Source: "webhook", IssueNumber: issue})
+		return s.CreateTask(ctx, Task{ID: id, Status: "queued", Repository: repo, Kind: "agent", Source: "webhook", IssueNumber: issue, Track: "direct"})
 	}
 	if err := file("t-first", 1109, repo); err != nil {
 		t.Fatal(err)

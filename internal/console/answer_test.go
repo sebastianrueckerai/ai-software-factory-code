@@ -176,23 +176,20 @@ func TestChatEscalate(t *testing.T) {
 	equal(t, "refusals file nothing", len(filed), 1)
 }
 
-// An answer that approves a merge or accepts a plan needs an approver, as
-// the board's buttons and the chat's tools do: a writer on the notify
-// list hears the refusal, and both requests stay pending.
+// An answer that approves a merge needs an approver, as the board's
+// button and the chat's tool do: a writer on the notify list hears the
+// refusal, and the request stays pending.
 func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	r, _ := newReadsRig(t)
 	r.ledger.approvers = []string{"alice"}
 	r.approvals.rows = append(r.approvals.rows,
 		factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-e", Project: "sf/code", PRNumber: 9, Status: "pending",
-			Spec: json.RawMessage(`{"risk_class":"low","head_sha":"abc"}`)},
-		factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: "t-p", Project: "sf/code", Status: "pending",
-			Spec: json.RawMessage(`{"revision":1,"sha256":"5e1f"}`)})
+			Spec: json.RawMessage(`{"risk_class":"low","head_sha":"abc"}`)})
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := r.chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	for _, e := range []struct{ task, text, choice string }{
 		{"t-e", "#13 waits for you: merge PR #9, low risk.", "Approve"},
-		{"t-p", "Plan #20 waits for your acceptance: revision 1, 3 cards.", "Accept"},
 	} {
 		if _, err := r.chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation,
 			Content: e.text, Choices: []string{e.choice}, TaskID: e.task, Conversation: inbox, BirthKind: factoryd.EventApprovalRequested}); err != nil {
@@ -212,9 +209,8 @@ func TestChatAnswerNeedsAnApprover(t *testing.T) {
 	}
 	equal(t, "the notes", notes, []string{
 		"The answer did not land: Only the approvers of project ai-software-factory-code may authorize spend.",
-		"The answer did not land: Only the approvers of project ai-software-factory-code may accept a plan.",
 	})
-	equal(t, "the requests", []string{r.approvals.rows[len(r.approvals.rows)-2].Status, r.approvals.rows[len(r.approvals.rows)-1].Status}, []string{"pending", "pending"})
+	equal(t, "the request", r.approvals.rows[len(r.approvals.rows)-1].Status, "pending")
 }
 
 // The answer row of a question factoryd withdrew answers nothing (roadmap
@@ -394,7 +390,7 @@ func TestChatSettlesRows(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
 		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
 	for _, e := range []factoryd.Event{
-		{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventCardMoved, Actor: "the agent", Via: factoryd.ViaFactoryd, Detail: map[string]any{"lane": "done"}},
+		{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventCardRetried, Actor: "the agent", Via: factoryd.ViaFactoryd, Detail: map[string]any{"replacement": 9}},
 		{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventQuestionAnswered, Actor: "sebastian", Via: factoryd.ViaButton},
 	} {
 		if _, err := r.events.Record(ctx, e); err != nil {

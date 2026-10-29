@@ -6,10 +6,10 @@
 // the time it was read, which GET /projects/{name}/chat answers as
 // read_at, and a later turn replays an earlier turn's read without its
 // result, for its time and age. The rig is the whole chat stack over the
-// fixture stores with the operator model scripted: the agent's move_card
-// runs through the console's own action, the fixture board takes the
-// card into ready as factoryd would, and the next turn's card read
-// answers the new state while the conversation holds no old read.
+// fixture stores with the operator model scripted: the agent's set_summary
+// runs through the console's own action, the fixture board keeps the new
+// summary as factoryd would, and the next turn's card read answers the new
+// state while the conversation holds no old read.
 package acceptance
 
 import (
@@ -27,14 +27,14 @@ import (
 )
 
 const (
-	// movedNote is what the console's move answers; the member's undo of
-	// it rides the applied event, not the tool block.
-	movedNote = "Moved #5 to lane ready; it leaves the backlog once factoryd picks it up."
-	// backlogCardHead and queuedCardHead are #5 as the card tool reads it
-	// in the backlog and after the move into ready; the fixture files it
-	// with a budget of 3 EUR.
-	backlogCardHead = `#5 t-m "Fix the cache." backlog (waits in the backlog until a member moves it into a lane), €0.00 of €3.00`
-	queuedCardHead  = `#5 t-m "Fix the cache." queued (waits for its session to start), €0.00 of €3.00`
+	// summaryNote is what the console's set_summary answers; the member's
+	// undo of it rides the applied event, not the tool block.
+	summaryNote = "The summary of #5 is set."
+	// oldCardHead and newCardHead are #5 as the card tool reads it before
+	// and after the summary is set; the fixture files it with a budget of
+	// 3 EUR.
+	oldCardHead = `#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00`
+	newCardHead = `#5 t-m "Cache fix" queued (waits for a free work slot, in filing order), €0.00 of €3.00`
 	// statusEnd ends every turn's system message: the code project's
 	// status line, #11 running and #5 waiting in the Queued column before
 	// and after its move, the chat's task no card, and its sandbox images,
@@ -45,7 +45,7 @@ const (
 
 // freshRig is the chat rig of these tests: the fixture stores, the code
 // project's two cards, the gateway scripting the operator model, and the
-// chat block of an empty confirm list, so every tool — move_card
+// chat block of an empty confirm list, so every tool — set_summary
 // included — runs at once.
 func freshRig(t *testing.T) *rig {
 	t.Helper()
@@ -55,8 +55,8 @@ func freshRig(t *testing.T) *rig {
 }
 
 // TestAcceptanceFreshContextPerTurn sends two messages with a card-state
-// change between them: the first turn moves #5 from the backlog into
-// ready through the agent's own tool and the fixture board, naming it
+// change between them: the first turn sets #5's summary through the
+// agent's own tool and the fixture board, naming it
 // "#5", the second reads it as 5, with no board read between. Each
 // turn's system message ends with the status and images lines and holds
 // no card; the
@@ -64,19 +64,19 @@ func freshRig(t *testing.T) *rig {
 func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
-		{call(1, "move_card", `{"task_id":"#5","lane":"ready"}`)},
-		{say("moved it.")},
+		{call(1, "set_summary", `{"task_id":"#5","summary":"Cache fix"}`)},
+		{say("summarized it.")},
 		{call(2, "card", `{"task_id":5}`)},
-		{say("it is in ready now.")},
+		{say("it is titled Cache fix now.")},
 	}
-	if code, events := r.post("start #5"); code != http.StatusOK {
-		t.Fatalf("the move turn = %d %v", code, events)
-	} else if !hasToolResult(events, "move_card", movedNote) {
-		t.Fatalf("the move did not run; events:\n%s", strings.Join(events, "\n"))
+	if code, events := r.post("summarize #5"); code != http.StatusOK {
+		t.Fatalf("the summary turn = %d %v", code, events)
+	} else if !hasToolResult(events, "set_summary", summaryNote) {
+		t.Fatalf("the summary was not set; events:\n%s", strings.Join(events, "\n"))
 	}
 	if code, events := r.post("and now?"); code != http.StatusOK {
 		t.Fatalf("the second turn = %d %v", code, events)
-	} else if !hasToolResultPrefix(events, "card", queuedCardHead) {
+	} else if !hasToolResultPrefix(events, "card", newCardHead) {
 		t.Fatalf("the card read of 5 did not answer #5 in its new state; events:\n%s", strings.Join(events, "\n"))
 	}
 	calls := r.gateway.calls()
@@ -99,7 +99,7 @@ func TestAcceptanceToolResultTimestamps(t *testing.T) {
 	start := time.Now().Add(-time.Second)
 	r.gateway.replies = [][]string{
 		{call(1, "card", `{"task_id":"t-m"}`)},
-		{say("#5 waits in the backlog.")},
+		{say("#5 waits in the queue.")},
 	}
 	if code, events := r.post("what about #5?"); code != http.StatusOK {
 		t.Fatalf("chat = %d %v", code, events)
@@ -170,30 +170,30 @@ func TestAcceptanceToolResultTimestamps(t *testing.T) {
 }
 
 // TestAcceptanceEarlierReadLeftOut reads a card by its issue number,
-// mutates it through the agent's own move, then sends another message:
-// the replayed card read is its time, its age and the call to read again,
-// without the backlog card it read, the move's result is whole, and the
+// mutates it through the agent's own set_summary, then sends another
+// message: the replayed card read is its time, its age and the call to
+// read again, without the card it read, the write's result is whole, and the
 // same turn's fresh read of "#5" shows the new state.
 func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	r := freshRig(t)
 	r.gateway.replies = [][]string{
 		{call(1, "card", `{"task_id":"#5"}`)},
 		{say("read it.")},
-		{call(2, "move_card", `{"task_id":5,"lane":"ready"}`)},
-		{say("moved it.")},
+		{call(2, "set_summary", `{"task_id":5,"summary":"Cache fix"}`)},
+		{say("summarized it.")},
 		{call(3, "card", `{"task_id":"#5"}`)},
-		{say("it is in ready now.")},
+		{say("it is titled Cache fix now.")},
 	}
 	if code, events := r.post("what about #5?"); code != http.StatusOK {
 		t.Fatalf("the read turn = %d %v", code, events)
-	} else if !hasToolResultPrefix(events, "card", backlogCardHead) {
-		t.Fatalf("the card read did not answer the backlog card; events:\n%s", strings.Join(events, "\n"))
+	} else if !hasToolResultPrefix(events, "card", oldCardHead) {
+		t.Fatalf("the card read did not answer the card as filed; events:\n%s", strings.Join(events, "\n"))
 	}
 	readAt := cardReadAt(t, r)
-	if code, events := r.post("start #5"); code != http.StatusOK {
-		t.Fatalf("the move turn = %d %v", code, events)
-	} else if !hasToolResult(events, "move_card", movedNote) {
-		t.Fatalf("the move did not run; events:\n%s", strings.Join(events, "\n"))
+	if code, events := r.post("summarize #5"); code != http.StatusOK {
+		t.Fatalf("the summary turn = %d %v", code, events)
+	} else if !hasToolResult(events, "set_summary", summaryNote) {
+		t.Fatalf("the summary was not set; events:\n%s", strings.Join(events, "\n"))
 	}
 	if code, events := r.post("and now?"); code != http.StatusOK {
 		t.Fatalf("the third turn = %d %v", code, events)
@@ -205,21 +205,21 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	results := map[string]string{}
 	for _, m := range messagesOf(calls[len(calls)-1]) {
 		content, _ := m["content"].(string)
-		if strings.Contains(content, backlogCardHead) {
-			t.Errorf("the third turn's %s message holds the old backlog read:\n%s", m["role"], content)
+		if strings.Contains(content, oldCardHead) {
+			t.Errorf("the third turn's %s message holds the old read:\n%s", m["role"], content)
 		}
 		if m["role"] == "tool" {
 			results[m["tool_call_id"].(string)] = content
 		}
 	}
-	if !strings.HasPrefix(results["call_3"], queuedCardHead) {
-		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", queuedCardHead, results["call_3"])
+	if !strings.HasPrefix(results["call_3"], newCardHead) {
+		t.Errorf("the turn's fresh card read lacks the card's new state %q:\n%s", newCardHead, results["call_3"])
 	}
 	delete(results, "call_3")
 	want := map[string]string{
 		"call_1": "[read at " + readAt.UTC().Format("2006-01-02 15:04 UTC") +
 			", 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]",
-		"call_2": movedNote + " The member may undo it.",
+		"call_2": summaryNote + " The member may undo it.",
 	}
 	if !reflect.DeepEqual(results, want) {
 		t.Errorf("the replayed results =\n%q\nwant\n%q", results, want)

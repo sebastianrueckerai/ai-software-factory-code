@@ -553,7 +553,12 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		r.refuseDelta(ctx, t, repo, dues, "the card broke the plan rules: "+strings.Join(findings, "; "))
 		return
 	}
-	if _, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), merged, FactoryDecider); err != nil {
+	sha, err := r.forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
+	if err != nil {
+		log.Printf("plan %s: the delta card's base: %v", t.ID, err)
+		return
+	}
+	if _, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), merged, FactoryDecider, true, sha); err != nil {
 		log.Printf("plan %s: file the delta card: %v", t.ID, err)
 		return
 	}

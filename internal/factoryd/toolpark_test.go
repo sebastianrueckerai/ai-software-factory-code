@@ -68,8 +68,8 @@ func parkRig(t *testing.T, images string, pins ...string) (*Runner, *fakeStore, 
 	wf := &fakeWorkflows{}
 	r := &Runner{cfg: RunnerConfig{Policy: func() policy.Version { return v }, Workflows: wf}, store: store, forgejo: fj}
 	for _, asker := range []Task{
-		{ID: "t-asker", Status: "running", Repository: codeRepo, IssueNumber: 41, Priority: 2, Author: "sebastian"},
-		{ID: "t-second", Status: "running", Repository: codeRepo, IssueNumber: 42, Priority: 1, Author: "sebastian"},
+		{ID: "t-asker", Status: "running", Repository: codeRepo, IssueNumber: 41, Priority: 2, Author: "sebastian", Track: "direct"},
+		{ID: "t-second", Status: "running", Repository: codeRepo, IssueNumber: 42, Priority: 1, Author: "sebastian", Track: "direct"},
 	} {
 		if err := store.CreateTask(context.Background(), asker); err != nil {
 			t.Fatal(err)
@@ -108,7 +108,7 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 		t.Fatalf("park = %+v, want a tool card for image ffmpeg", p)
 	}
 	card := store.tasks[p.Park.ToolTask]
-	if card.Source != SourceToolRequest || card.Parent != "t-asker" || card.Rung != RungCheap || card.Size != "small" || card.Lane != policy.LaneReady ||
+	if card.Source != SourceToolRequest || card.Parent != "t-asker" || card.Rung != RungCheap || card.Size != "small" || card.Track != policy.TrackDirect ||
 		card.Status != "queued" || card.Priority != 2 || card.IssueNumber != 31 || card.Repository != codeRepo {
 		t.Fatalf("tool card = %+v", card)
 	}
@@ -136,8 +136,10 @@ func TestParkForToolFilesOneCard(t *testing.T) {
 	if !slices.Equal(store.deps["t-asker"], []string{p.Park.ToolTask}) || !slices.Equal(rf.deps, []string{"41 on 31"}) {
 		t.Fatalf("deps %v, issue dependencies %v: want #41 on the tool card", store.deps["t-asker"], rf.deps)
 	}
-	if !slices.Equal(wf.started, []string{p.Park.ToolTask}) {
-		t.Fatalf("started = %v, want the tool card's workflow", wf.started)
+	// filed, then pulled again into the slot the parked asker frees: a
+	// start is idempotent
+	if !slices.Equal(wf.started, []string{p.Park.ToolTask, p.Park.ToolTask}) {
+		t.Fatalf("started = %v, want the tool card's workflow at its filing and at the asker's park", wf.started)
 	}
 	if got := store.tasks["t-asker"].Status; got != "waiting-image" {
 		t.Fatalf("asking card is %s, want waiting-image", got)
@@ -286,7 +288,7 @@ func TestParkForToolRetryFilesThePreassignedCard(t *testing.T) {
 func TestParkForToolRefusesTheToolCard(t *testing.T) {
 	r, store, rf, _ := parkRig(t, "", "default")
 	ctx := context.Background()
-	if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: SourceToolRequest, Parent: "t-asker"}); err != nil {
+	if err := store.CreateTask(ctx, Task{ID: "t-tool", Status: "running", Repository: codeRepo, IssueNumber: 50, Source: SourceToolRequest, Parent: "t-asker", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	p, err := r.ParkForTool(ctx, "t-tool", "ffmpeg", "check the encoder")
@@ -654,9 +656,9 @@ func TestPGStoreImageParks(t *testing.T) {
 	suffix := fmt.Sprint(time.Now().UnixNano())
 	asker, other, tool := "t-ask-"+suffix, "t-oth-"+suffix, "t-tool-"+suffix
 	for _, tk := range []Task{
-		{ID: asker, Status: "running", Repository: "sf/parks", IssueNumber: 41, Objective: "a"},
-		{ID: other, Status: "running", Repository: "sf/parks", IssueNumber: 42, Objective: "b"},
-		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: SourceToolRequest, Objective: "Add ffmpeg to image video\n\nCard #41 needs ffmpeg"},
+		{ID: asker, Status: "running", Repository: "sf/parks", IssueNumber: 41, Objective: "a", Track: "direct"},
+		{ID: other, Status: "running", Repository: "sf/parks", IssueNumber: 42, Objective: "b", Track: "direct"},
+		{ID: tool, Status: "queued", Repository: "sf/parks", IssueNumber: 50, Source: SourceToolRequest, Objective: "Add ffmpeg to image video\n\nCard #41 needs ffmpeg", Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
@@ -1148,7 +1150,7 @@ func TestRequestImageFilesAToolCard(t *testing.T) {
 	}
 	card := ask.Card
 	if !ask.Filed || ask.Target != "ffmpeg" || card.Source != SourceToolRequest || card.Parent != "" || card.Rung != RungCheap || card.Size != "small" ||
-		card.Lane != policy.LaneReady || card.Status != "queued" || card.Priority != 0 || card.IssueNumber != 31 || card.Repository != codeRepo ||
+		card.Track != policy.TrackDirect || card.Status != "queued" || card.Priority != 0 || card.IssueNumber != 31 || card.Repository != codeRepo ||
 		card.Author != "sebastian" || !card.AuthorWriter {
 		t.Fatalf("ask = %+v", ask)
 	}
@@ -1307,7 +1309,7 @@ func TestRequestImageJoinsTheOpenCard(t *testing.T) {
 	}
 }
 
-// The chat's admission (a wake's closed intake, the backlog cap) judges
+// The chat's admission (a wake's closed intake, the queue cap) judges
 // an ask that files a new card, by the card's title, before it is filed:
 // its refusal files nothing. An ask that joins an open card files none
 // and is not judged.

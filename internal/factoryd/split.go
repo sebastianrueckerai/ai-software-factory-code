@@ -190,9 +190,8 @@ func (r *Runner) RunSplit(ctx context.Context, taskID, model string, pin int64, 
 }
 
 // FileSplit files the cards of card taskID's split revision for the member
-// who split it, like a plan's, and puts them into the ready lane of the
-// card's process at main's head, where they start; the card's issue
-// names them.
+// who split it, like a plan's, on the direct track at main's head, where
+// they start under the work bound; the card's issue names them.
 func (r *Runner) FileSplit(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -212,10 +211,6 @@ func (r *Runner) FileSplit(ctx context.Context, taskID string, revision int, app
 	}
 	_, project, _ := v.ProjectOf(t.Repository)
 	process := cmp.Or(t.Process, project.Process)
-	ready, ok := v.Processes[process].Lane(policy.LaneReady)
-	if !ok {
-		return ChildrenResult{}, terminalError("task %s: process %q has no lane ready", taskID, process)
-	}
 	sha, err := r.forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
 	if err != nil {
 		return ChildrenResult{}, err
@@ -223,26 +218,13 @@ func (r *Runner) FileSplit(ctx context.Context, taskID string, revision int, app
 	for i := range p.Cards {
 		p.Cards[i].Image = t.Image
 	}
-	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("the split of #%d", t.IssueNumber), p, approver)
+	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("the split of #%d", t.IssueNumber), p, approver, true, sha)
 	if err != nil {
 		return ChildrenResult{}, err
 	}
 	var issues []int64
 	for _, c := range cards {
 		issues = append(issues, c.IssueNumber)
-		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, c.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
-			return ChildrenResult{}, err
-		}
-		if entered, err := r.store.EnterLane(ctx, c.ID, ready.Name, ready.Class, sha); err != nil || !entered {
-			if err != nil {
-				return ChildrenResult{}, err
-			}
-			continue
-		}
-		c.Lane, c.Status = ready.Name, "queued"
-		if err := enterLane(ctx, r.timeline, r.cfg.Workflows, c, approver, nil); err != nil {
-			r.record(ctx, taskID, "split_start", map[string]any{"task": c.ID, "error": err.Error()})
-		}
 	}
 	r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: "+SplitInto(issues)+"; this card closes.")
 	r.record(ctx, taskID, "children_created", map[string]any{"revision": revision, "by": approver, "issues": issues})

@@ -30,11 +30,11 @@ func newWritesRig(t *testing.T) (*rig, *chatGateway) {
 			Objective: "Add the schema."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 31,
 			Objective: "Add the cache."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "spec",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-a", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
 			Repository: "sf/code", IssueNumber: 21, Objective: "Add the API."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "spec",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-b", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
 			Repository: "sf/code", IssueNumber: 22, Objective: "Add the web UI."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan, Process: "spec",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, Process: "spec",
 			Repository: "sf/code", IssueNumber: 40, Objective: "Plan the shortener."}})
 	return r, g
 }
@@ -295,34 +295,60 @@ func TestChatSetDependency(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian", row(false), row(true), row(false))
 }
 
-// new_card takes a size: the proposal names it, and Do it files the issue
-// with its body ending in the size line.
+// new_card takes a track with its one-line reason, and a size: the
+// proposal names them, and Do it files the issue with its track's label
+// and its body ending in the size line; the card_filed row records the
+// track and the reason.
 func TestChatNewCardSize(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Cache metrics","body":"Count hits.","lane":"backlog","size":"large"}`
+	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., lane backlog, size large","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., track direct, track_reason one small change, size large, acceptance The hits count","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nSize: large")
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count\n\nSize: large")
+	equal(t, "the issue's labels", fmt.Sprint(r.fg.issues[0]["labels"]), "[1]")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
+		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
 }
 
-// new_card's lane defaults to backlog: a call without one is proposed
-// with it and files the card there.
-func TestChatNewCardLaneDefaultsToBacklog(t *testing.T) {
+// new_card files nothing without a track or the one line why: the
+// proposal refuses a call that names no track, one of the old lanes, or
+// a blank track_reason, so the agent corrects it before Do it, and the
+// run refuses them too; plan on a process without a plan track is the
+// project's refusal.
+func TestChatNewCardNeedsATrackAndItsReason(t *testing.T) {
 	r, g := newWritesRig(t)
-	before := r.events.count()
-	stored := `{"lane":"backlog","title":"Cache metrics"}`
-	proposed, done, _ := proposeAndDo(t, r, g, "new_card", `{"title":"Cache metrics"}`)
-	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + stored + `,"description":"File a card, title Cache metrics, lane backlog","id":"TOKEN","tool":"new_card"}`, `done {}`})
-	equal(t, "Do it", done, ran("new_card", stored, "Filed sf/code#41 in lane backlog."))
-	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "thread": int64(1)}})
+	noTrack := "track: direct builds at once, plan plans first, human is a person's card"
+	noReason := "track_reason: why the card takes track direct, one line"
+	ck, s := r.loggedIn(t)
+	for args, refusal := range map[string]string{
+		`{"title":"Cache metrics"}`: noTrack,
+		`{"title":"Cache metrics","track":"backlog","track_reason":"later"}`: noTrack,
+		`{"title":"Cache metrics","track":"ready","track_reason":"now"}`:     noTrack,
+		`{"title":"Cache metrics","track":"direct"}`:                         noReason,
+		`{"title":"Cache metrics","track":"direct","track_reason":"  "}`:     noReason,
+	} {
+		g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
+		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file it"}})
+		equal(t, "the proposal of "+args, events, []string{
+			`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + refusal + `"}`, `text {"text":"Refused."}`, `done {}`})
+	}
+	for _, tc := range []struct {
+		in      toolInput
+		refusal string
+	}{
+		{toolInput{Title: "Cache metrics"}, noTrack},
+		{toolInput{Title: "Cache metrics", Track: "direct", TrackReason: " \t "}, noReason},
+		{toolInput{Title: "Cache metrics", Track: "plan", TrackReason: "a spec"},
+			"Project ai-software-factory-code follows process maintenance, which has no plan track: file the card on track direct."},
+	} {
+		code, msg := refused(t, r, "new_card", tc.in)
+		equal(t, "the run of "+tc.in.Track, []any{code, msg}, []any{http.StatusBadRequest, tc.refusal})
+	}
+	equal(t, "the issues filed", len(r.fg.issues), 0)
 }
 
 // new_card carries a pull request: carry_pr files the issue with its body
@@ -333,15 +359,15 @@ func TestChatNewCardLaneDefaultsToBacklog(t *testing.T) {
 func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 	r, g := newWritesRig(t)
 	before := r.events.count()
-	args := `{"title":"Re-land the feed fix","body":"Carry pull request #9 to green checks.","lane":"backlog","carry_pr":9}`
+	args := `{"title":"Re-land the feed fix","body":"Carry pull request #9 to green checks.","acceptance":["The checks are green"],"track":"direct","track_reason":"the fix is known","size":"small","carry_pr":9}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., lane backlog, carries #9","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, carries #9, acceptance The checks are green","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane backlog."))
-	equal(t, "the issue's body", r.fg.issues[0]["body"], "Carry pull request #9 to green checks.\n\nCarries: #9")
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Carry pull request #9 to green checks.\n\nAcceptance:\n- The checks are green\n\nSize: small\nCarries: #9")
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-		Detail: map[string]any{"lane": "backlog", "title": "Re-land the feed fix", "carry": int64(9), "thread": int64(1)}})
+		Detail: map[string]any{"track": "direct", "reason": "the fix is known", "title": "Re-land the feed fix", "size": "small", "carry": int64(9), "thread": int64(1)}})
 
 	for _, brief := range []string{
 		"Carry pull request #9 to green checks.",
@@ -366,29 +392,29 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 	}
 
 	refusal := "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone."
-	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Body: "Carry pull request #9 to green checks.", Lane: policy.LaneBacklog})
+	code, msg := refused(t, r, "new_card", toolInput{Title: "Re-land the feed fix", Body: "Carry pull request #9 to green checks.", Track: policy.TrackDirect, TrackReason: "the fix is known"})
 	equal(t, "a carry brief without carry_pr", []any{code, msg}, []any{http.StatusBadRequest, refusal})
 	// the proposal judges the brief, so the agent corrects it before Do it
 	ck, s := r.loggedIn(t)
-	args = `{"body":"Carry pull request #9 to green checks.","lane":"backlog","title":"Re-land the feed fix"}`
+	args = `{"body":"Carry pull request #9 to green checks.","title":"Re-land the feed fix","track":"direct","track_reason":"the fix is known"}`
 	g.replies = [][]string{{call(1, "new_card", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"re-land the feed fix"}})
 	equal(t, "the proposal of a carry brief without carry_pr", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"new_card","result":"Refused: ` + refusal + `"}`, `text {"text":"Refused."}`, `done {}`})
 }
 
-// set_autonomy without a backlog cap keeps the project's: its proposal
+// set_autonomy without a queue cap keeps the project's: its proposal
 // names the cap that stays, 5 from the project file, and carries none;
 // with a cap it names the new one.
 func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 	r, g := newWritesRig(t)
-	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", BacklogCap: 5}}
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", QueueCap: 5}}
 	ck, s := r.loggedIn(t)
-	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`, "set_autonomy", `{"autonomy":"assisted","backlog_cap":3}`)}}
+	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`, "set_autonomy", `{"autonomy":"assisted","queue_cap":3}`)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
 	equal(t, "proposals", events, []string{
-		`proposal {"arguments":{"autonomy":"assisted"},"description":"Set the autonomy level, autonomy assisted, backlog cap 5 stays","id":"TOKEN","tool":"set_autonomy"}`,
-		`proposal {"arguments":{"autonomy":"assisted","backlog_cap":3},"description":"Set the autonomy level, autonomy assisted, backlog cap 3","id":"TOKEN","tool":"set_autonomy"}`,
+		`proposal {"arguments":{"autonomy":"assisted"},"description":"Set the autonomy level, autonomy assisted, queue cap 5 stays","id":"TOKEN","tool":"set_autonomy"}`,
+		`proposal {"arguments":{"autonomy":"assisted","queue_cap":3},"description":"Set the autonomy level, autonomy assisted, queue cap 3","id":"TOKEN","tool":"set_autonomy"}`,
 		`done {}`})
 }
 
@@ -396,32 +422,32 @@ func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 // (roadmap 222, item 5); a rung without a reason is refused.
 func TestChatNewCardRung(t *testing.T) {
 	r, g := newWritesRig(t)
-	args := `{"title":"Cache metrics","body":"Count hits.\n\nAcceptance:\n- The metrics work","lane":"ready","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
+	args := `{"title":"Cache metrics","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"small and clear","size":"small","rung":"frontier","rung_reason":"touches the queue"}`
 	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
-	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 in lane ready."))
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
-	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "ready", "", "", "cheap", "", "", 0); err == nil {
+	if _, _, err := r.c.doFileCard(t.Context(), actor{}, "code", "x", "y", "direct", "", "", "", "cheap", "", "", 0); err == nil {
 		t.Fatal("a rung without a reason was filed")
 	}
 }
 
-// The face offers a writer Close on a card in the backlog or waiting on a
-// human, behind a confirm, and on no running or final card; the answer
+// The face offers a writer Close on a card waiting on a human, behind a
+// confirm, and on no queued, running or final card; the answer
 // form of a card at its session cap says what the answer does, and its
 // answer is a grant: one session_granted row via button.
 func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	closeForm := `<form method="post" action="/tasks/t-a/close" hx-post="/tasks/t-a/close" hx-target="#board" hx-swap="outerHTML" ` +
-		`hx-confirm="Close #21? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
+	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" hx-target="#board" hx-swap="outerHTML" ` +
+		`hx-confirm="Close #40? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">` +
-		`<button type="submit" class="deny" aria-label="Close #21">Close</button></form>`
-	if face := faceOf(t, body, "t-a"); !strings.Contains(face, closeForm) {
-		t.Errorf("the backlog card's face =\n%s\nwant it to hold\n%s", face, closeForm)
+		`<button type="submit" class="deny" aria-label="Close #40">Close</button></form>`
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, closeForm) {
+		t.Errorf("the waiting card's face =\n%s\nwant it to hold\n%s", face, closeForm)
 	}
-	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-r": false, "t-done": false, "t-f": false} {
+	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": false} {
 		if got := strings.Contains(faceOf(t, body, id), `action="/tasks/`+id+`/close"`); got != closes {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
@@ -446,8 +472,8 @@ func TestCloseACardWithoutAnIssue(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks,
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-n", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Repository: "sf/code", Objective: "Tidy the docs."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Source: factoryd.SourcePresort, Objective: "Write it up."}})
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-n", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code", Objective: "Tidy the docs."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Objective: "Write it up."}})
 	r.tasks.mu.Unlock()
 	before := r.events.count()
 	args := `{"task_id":"t-n"}`
@@ -476,9 +502,9 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 	r, _ := newWritesRig(t)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks,
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Repository: "sf/code", Source: factoryd.SourcePresort,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nw", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 			Objective: "Write it up."}, Escalation: "the model provider refused the first call of 6 sessions in a row (status 429): busy"},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Source: factoryd.SourcePresort, Objective: "Write it up."}})
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nf", Kind: "agent", Status: "failed", Repository: "sf/code", Objective: "Write it up."}})
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
@@ -489,4 +515,30 @@ func TestAWaitingCardWithoutAnIssueOffersClose(t *testing.T) {
 		code, msg := refused(t, r, "answer", toolInput{TaskID: id, Text: "go on"})
 		equal(t, "answer "+id, []any{code, msg}, []any{http.StatusConflict, "Card #0 " + state + ", not a question or a session cap to answer: close ends it (close)."})
 	}
+}
+
+// A write on a card of a project without agents, such as an answer on
+// the infra project's human card, is judged by Forgejo's writers of its
+// repository, as on any project: the console's writer lists name only the
+// agents' projects and the factory's own.
+func TestWritesOnAProjectWithoutAgents(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.c.cfg.Writers = func(context.Context) (string, map[string][]string, error) {
+		return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
+	}
+	r.repoWriters["sf/infra"] = []string{"sebastian"}
+	r.forgetWriters()
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "waiting-human",
+		Repository: "sf/infra", IssueNumber: 5, Objective: "The configuration was rejected."}})
+	r.tasks.mu.Unlock()
+	ck, s := r.loggedIn(t)
+	answer := func() int {
+		return r.do(post("/tasks/t-h/answer", url.Values{"csrf": {s.csrf}, "answer": {"fixed in infra"}, "project": {"ai-software-factory-infra"}}), ck).Code
+	}
+	equal(t, "answer on sf/infra", answer(), http.StatusSeeOther)
+	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/infra/issues/5/comments"], "fixed in infra")
+	r.repoWriters["sf/infra"] = nil
+	r.forgetWriters()
+	equal(t, "answer by a non-writer of sf/infra", answer(), http.StatusForbidden)
 }

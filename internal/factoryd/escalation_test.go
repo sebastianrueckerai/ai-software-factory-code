@@ -153,8 +153,8 @@ var licenseAsk = AgentAsk{Kind: AskEscalation, Question: "Which license applies?
 
 func TestEscalationHandler(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
-	store.CreateTask(t.Context(), Task{ID: "t-wait", Status: "waiting-human"})
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
+	store.CreateTask(t.Context(), Task{ID: "t-wait", Status: "waiting-human", Track: "direct"})
 	post := func(sessions *fakeSessions, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		EscalationHandler(store, sessions).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(body)))
@@ -215,7 +215,7 @@ func TestEscalationHandlerChoices(t *testing.T) {
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 	store := newFakeStore()
-	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
 	wide := strings.Repeat("ä", 60) // 60 characters in 120 bytes
 	for _, tc := range []struct {
 		name, choices, logged string
@@ -292,7 +292,7 @@ func TestEscalateSessionNeedsTheSessionToTakeIt(t *testing.T) {
 // gateway.
 func TestEscalationHandlerToolRequest(t *testing.T) {
 	store := newFakeStore()
-	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
 	post := func(s *fakeSessions, body string) int {
 		rec := httptest.NewRecorder()
 		EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(body)))
@@ -335,7 +335,7 @@ func TestReportSessionRefusesARequestTool(t *testing.T) {
 	took := make(chan AgentAsk, 1)
 	go func() { took <- <-esc }()
 	store := newFakeStore()
-	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running"})
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
 	rec := httptest.NewRecorder()
 	EscalationHandler(store, runner).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(
 		`{"task_id":"t-run","kind":"missing_tool","tool":"ffmpeg","need":"cut the demo video"}`)))
@@ -438,7 +438,7 @@ func TestRunSessionAgentInfoRequest(t *testing.T) {
 // A pushed session leaves the agent's last message on the task row: its
 // recommendation and a not_reproduced line for the gates.
 func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	last := "Fixed the slug check.\nnot_reproduced: the report's URL is gone; the check refused every dash"
 	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": last}}) + "\n" +
@@ -465,7 +465,7 @@ func TestRunSessionKeepsTheAgentsLastWord(t *testing.T) {
 // A session the gateway refused at the month cap waits on a human with the
 // refusal as its reason: no later session could spend, whatever it tried.
 func TestRunSessionParksAtTheMonthCap(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom 0.000100 EUR (task 1.900000, day 19.000000, month 0.000100) fits 25 output tokens after at most 4000 input tokens, below the minimum call of 1024; the month cap budget.month_eur in policy.yaml is spent, and only a human raises it, by a commit"
 	store.capRefusals = map[string]CapRefusal{"t1": {Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: refusal}}}
@@ -494,7 +494,7 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 // call of it before: its card names the refusal and resumes on its own,
 // once the day's headroom funds a session or at the next 00:00 UTC.
 func TestRunSessionWaitsForTheDayCap(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix main", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix main", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612) fits 0 output tokens after a request of 61234 bytes (at most 61234 prompt tokens), below the minimum call of 1024"
 	capped := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: refusal}, At: time.Date(2026, 10, 14, 20, 43, 31, 0, time.UTC), Allowed: true}
@@ -527,7 +527,7 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 // provider's status names no outage of, and a session the audit holds no
 // call of end no_push as before.
 func TestRunSessionNamesAProviderRefusal(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix the slug", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	const said = "DashscopeException: budget exhausted (status 429)"
 	for name, tc := range map[string]struct {
 		audit   string // ProviderRefusal's reason; "" for none
@@ -690,7 +690,7 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 // A session the gateway refused at the project's month cap waits on a
 // human with the refusal, which names the file a human raises the cap in.
 func TestProjectCapRefusalEscalates(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "add the stats page", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "add the stats page", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	refusal := "free headroom -0.000100 EUR (task 1.900000, day 19.000000, month 49.000000, project -0.000100) fits 0 output tokens after at most 4000 input tokens, below the minimum call of 1024; " +
 		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
@@ -715,7 +715,7 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 // Forgejo refuses is left out, and the close goes on.
 func TestCloseIssueAsFactory(t *testing.T) {
 	ctx := context.Background()
-	card := Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}
+	card := Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5, Track: "direct"}
 	const comment = "factoryd: closing this issue."
 	rig := func(failCall string) (*fakeStore, *planForgejo, *Forgejo) {
 		fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}, failCall: failCall}

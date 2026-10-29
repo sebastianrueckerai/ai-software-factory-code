@@ -292,11 +292,12 @@ first count and the counts before a restart are in a day's bar, which an
 increase over a cumulative series drops. A panel sums them over the
 factoryd pods:
 
-The four task metrics below also carry `process` and `lane` from the
-task row (`none` where it holds none: a roll, a human-lane task, the
-console's alert verdict click); a report task carries its parent's.
+The four task metrics below also carry `process` and `track` from the
+task row (`none` where it holds none: a human-lane task, the console's
+alert verdict click, a roll's process); a report task carries its
+parent's.
 
-- `factory.task.outcome{project,state,model_alias,attempts,merge_rule,process,lane}`:
+- `factory.task.outcome{project,state,model_alias,attempts,merge_rule,process,track}`:
   once per task on every path that ends it (`Complete`, which `Finish`
   and the heal pass's failure of a malformed task go through, a closed
   backlog card, a closed human-lane issue, a resolved config task), so it
@@ -306,17 +307,17 @@ console's alert verdict click); a report task carries its parent's.
   and `human` without one), `model_alias` is the alias of the task's last
   session (`tasks.model_alias`, set with each `sessions` row; `none` for
   a task that ran none: a roll, a human-lane task), `attempts` its sessions.
-- `factory.task.cost{model_alias,outcome,process,lane}`: the task's `spent_eur` at
+- `factory.task.cost{model_alias,outcome,process,track}`: the task's `spent_eur` at
   `Finish`, in EUR, buckets 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1, 2, 5 and
   10; `outcome` is `merged` for a done task with a pull request, else the
   final state. Spend settled after `Finish` (LiteLLM's late batches) is
   not in it.
-- `factory.review.verdict{verdict,strict_improvement,round,process,lane}`: every
+- `factory.review.verdict{verdict,strict_improvement,round,process,track}`: every
   model review answer, `verdict` approve, concerns or `none` (refused,
   failed or invalid), `strict_improvement` true, false or `unset`, `round`
   the review's round on the task. A roll's review asks no model and is
   not counted.
-- `factory.human.intervention{kind,process,lane}`: from the Forgejo intake when its
+- `factory.human.intervention{kind,process,track}`: from the Forgejo intake when its
   event row is new (a redelivery or the heal pass's re-read counts
   nothing), so the console's actions (it acts as the human in Forgejo) and
   the same actions taken in Forgejo count alike: `approve` (a writer's

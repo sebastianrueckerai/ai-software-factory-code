@@ -46,10 +46,10 @@ type Project struct {
 	Budget *policy.ProjectBudget
 	// Tokens name a seed project's seeded secrets.
 	Tokens policy.SeedTokens
-	// Process names the process the project's cards follow and Lanes are
-	// its lanes, both in the version in force; "" and none on agents none.
+	// Process names the process the project's cards follow and Tracks are
+	// its tracks, both in the version in force; "" and none on agents none.
 	Process string
-	Lanes   []policy.Lane
+	Tracks  policy.Tracks
 	// Template names the template registration seeds an empty repository
 	// with; TemplateFiles are its files in the same configuration version.
 	Template      string
@@ -141,7 +141,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 		p.Name, p.Repository, p.MergeRule, p.Objects, p.Agents = name, c.Repository, c.MergeRule, c.Objects, c.Agents
 		p.Notify, p.Namespaces, p.Environments, p.Secrets, p.Egress = c.Notify, c.Namespaces, c.Environments, c.Secrets, c.Egress
 		p.Quota, p.Envelope, p.Budget, p.File = v.Document.QuotaOf(c), v.Document.EnvelopeOf(c), c.Budget, true
-		p.Process, p.Lanes = c.Process, v.Processes[c.Process].Lanes
+		p.Process, p.Tracks = c.Process, v.Processes[c.Process].Tracks
 		if c.Tokens != nil {
 			p.Tokens = *c.Tokens
 		}

@@ -15,37 +15,38 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// At assisted the agent's own start runs unconfirmed, and its event row
+// At assisted the agent's own filing runs unconfirmed, and its event row
 // records the decider: the level, the merge rule, the chat task behind it
 // (roadmap 239's recording).
 func TestChatRecordsTheDecider(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
-	g.replies = [][]string{{call(1, "move_card", `{"task_id":"t-m","lane":"ready"}`)}, {say("Moved it.")}}
+	args := `{"title":"Fix the feed","body":"The feed drops items.","acceptance":["The feed keeps its items"],"track":"direct","track_reason":"one bug","size":"small"}`
+	g.replies = [][]string{{call(1, "new_card", args)}, {say("Filed it.")}}
 	ck, s := r.loggedIn(t)
-	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"move the cache card to ready"}})
+	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the feed bug"}})
 	equal(t, "code", code, 200)
-	applied := `applied {"result":"Moved #5 to lane ready; it leaves the backlog once factoryd picks it up.","tool":"move_card","undo":"TOKEN"}`
+	applied := `applied {"result":"Filed sf/code#41 on track direct.","tool":"new_card"}`
 	if !slices.Contains(events, applied) {
 		t.Errorf("the stream lacks the applied line: %v", events)
 	}
-	var moved *factoryd.Event
+	var filed *factoryd.Event
 	for i, e := range r.events.all() {
-		if e.Kind == factoryd.EventCardMoved && e.TaskID == "t-m" {
-			moved = &r.events.all()[i]
+		if e.Kind == factoryd.EventCardFiled && e.IssueNumber == 41 {
+			filed = &r.events.all()[i]
 		}
 	}
-	if moved == nil {
-		t.Fatal("no card_moved row")
+	if filed == nil {
+		t.Fatal("no card_filed row")
 	}
-	if moved.Detail["autonomy"] != "assisted" || moved.Detail["decider"] != "agent" {
-		t.Errorf("detail = %v, want autonomy assisted and decider agent", moved.Detail)
+	if filed.Detail["autonomy"] != "assisted" || filed.Detail["decider"] != "agent" {
+		t.Errorf("detail = %v, want autonomy assisted and decider agent", filed.Detail)
 	}
-	if moved.Detail["merge_rule"] != "human" {
-		t.Errorf("detail merge_rule = %v, want human", moved.Detail["merge_rule"])
+	if filed.Detail["merge_rule"] != "human" {
+		t.Errorf("detail merge_rule = %v, want human", filed.Detail["merge_rule"])
 	}
-	if moved.Detail["chat_task"] != factoryd.ChatTaskID("ai-software-factory-code", time.Now()) {
-		t.Errorf("detail chat_task = %v, want this month's chat task", moved.Detail["chat_task"])
+	if filed.Detail["chat_task"] != factoryd.ChatTaskID("ai-software-factory-code", time.Now()) {
+		t.Errorf("detail chat_task = %v, want this month's chat task", filed.Detail["chat_task"])
 	}
 }
 
@@ -64,33 +65,33 @@ func TestEditProjectFile(t *testing.T) {
 			t.Errorf("editProjectFile lacks %q:\n%s", want, got)
 		}
 	}
-	if strings.Contains(got, "backlog_cap") {
+	if strings.Contains(got, "queue_cap") {
 		t.Errorf("editProjectFile wrote the default cap:\n%s", got)
 	}
 	out, err = editProjectFile(out, autonomyEdit(policy.AutonomyAutonomous, 3))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got = string(out); !strings.Contains(got, "autonomy: autonomous") || !strings.Contains(got, "backlog_cap: 3") {
+	if got = string(out); !strings.Contains(got, "autonomy: autonomous") || !strings.Contains(got, "queue_cap: 3") {
 		t.Errorf("editProjectFile = %s, want autonomous with cap 3", got)
 	}
 	// an existing cap changes as an integer: a quoted "5" fails the schema
 	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyAutonomous, 5)); err != nil {
 		t.Fatal(err)
 	}
-	if got = string(out); !strings.Contains(got, "backlog_cap: 5\n") {
-		t.Errorf("editProjectFile = %s, want backlog_cap: 5 unquoted", got)
+	if got = string(out); !strings.Contains(got, "queue_cap: 5\n") {
+		t.Errorf("editProjectFile = %s, want queue_cap: 5 unquoted", got)
 	}
 	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyManual, 0)); err != nil {
 		t.Fatal(err)
 	}
-	if got = string(out); !strings.Contains(got, "autonomy: manual") || !strings.Contains(got, "backlog_cap: 5\n") {
+	if got = string(out); !strings.Contains(got, "autonomy: manual") || !strings.Contains(got, "queue_cap: 5\n") {
 		t.Errorf("editProjectFile = %s, want manual with cap 5 kept", got)
 	}
-	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyManual, policy.DefaultBacklogCap)); err != nil {
+	if out, err = editProjectFile(out, autonomyEdit(policy.AutonomyManual, policy.DefaultQueueCap)); err != nil {
 		t.Fatal(err)
 	}
-	if got = string(out); strings.Contains(got, "backlog_cap") {
+	if got = string(out); strings.Contains(got, "queue_cap") {
 		t.Errorf("editProjectFile kept the cap at the default:\n%s", got)
 	}
 }

@@ -81,7 +81,8 @@ func TestAcceptanceCloseOffersAndClosesOnTheEvidence(t *testing.T) {
 // close, as Fund's.
 func TestAcceptanceCloseIsAnApproversAction(t *testing.T) {
 	r := newRig(t)
-	r.writers.users = []string{"sebastian", "morgan"}
+	r.repoWriters["sf/code"] = []string{"sebastian", "morgan"}
+	r.forgetWriters()
 	ck, s := memberLogin(t, r, "morgan")
 	waitingCard(r, t)
 	greenRow(r, t, 7, "t-e", "bash check", "s-abc")

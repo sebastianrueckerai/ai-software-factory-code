@@ -24,7 +24,7 @@ func TestSessionReadsTheProjectsDocumentRepository(t *testing.T) {
 		{"without", "", "mint task-t1-base read:repository sf/x,factory-agent/x", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+			task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 			kube := newFakeKube()
 			runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 			v := testPolicyVersion()

@@ -171,7 +171,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		case f.merge:
 			return "approve_merge or deny_merge decide its merge request"
 		case f.plan:
-			return "accept_plan, request_changes or reject_plan decide the plan"
+			return "answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner"
 		}
 		return "answer it (answer)"
 	case "waiting-poster":
@@ -193,8 +193,6 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return "approve_merge or deny_merge decide its merge request"
 		}
 		return "its gates run; nothing to do until they end"
-	case "backlog":
-		return "move_card starts it"
 	case "failed":
 		if t.IssueNumber == 0 {
 			return "close ends it (close)"
@@ -286,9 +284,9 @@ func (c *Console) cardIn(ctx context.Context, a actor, id string) (factoryd.Task
 }
 
 // writes refuses a unless they write repository, whose subject the
-// refusal names: the writers moved_by, through the board's cache.
+// refusal names.
 func (c *Console) writes(ctx context.Context, a actor, repository, subject string) error {
-	ok, err := c.mayMoveCached(ctx, repository, a.s.user, policy.MovedByWriters)
+	ok, err := c.writesRepo(ctx, a.s.user, repository)
 	switch {
 	case err != nil:
 		log.Printf("console: may %s write %s: %v", a.s.user, repository, err)
@@ -313,19 +311,20 @@ func (c *Console) approves(ctx context.Context, a actor, repository, what string
 	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", name, what))
 }
 
-// processOfCard is the name and lanes of the process card t follows.
-func (c *Console) processOfCard(ctx context.Context, t factoryd.Task) (string, policy.Process, error) {
+// processOfCard is the name of the process card t follows: its project's
+// current one, as intake reads it.
+func (c *Console) processOfCard(ctx context.Context, t factoryd.Task) (string, error) {
 	ps, err := c.coderProjects(ctx)
 	if err != nil {
 		log.Printf("console: projects: %v", err)
-		return "", policy.Process{}, refuse(http.StatusInternalServerError, "cannot read the projects")
+		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
 	}
-	byRepo := map[string]factoryd.Project{}
 	for _, p := range ps {
-		byRepo[p.Repository] = p
+		if p.Repository == t.Repository {
+			return p.Process, nil
+		}
 	}
-	name, proc := processOf(byRepo, t)
-	return name, proc, nil
+	return "", nil
 }
 
 // issuePath is the API path of t's issue, with suffix.
@@ -337,10 +336,16 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 	return fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), t.IssueNumber, suffix), nil
 }
 
+// trackLabels are the issue labels that file a card on each track
+// (factoryd.IssueTrack), human a person's card.
+var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, policy.TrackPlan: factoryd.LabelPlan,
+	factoryd.LabelHuman: factoryd.LabelHuman}
+
 // doFileCard files an issue on project's repository as the member, labelled
-// with the lane's label (backlog, plan or agent, or human for the human
-// lane) and priority when given, its body ending, after a blank line,
-// with the field lines the intake reads, each when given: "Size: <size>",
+// with track's label (agent for direct, plan, human for a person's card)
+// and priority when given, reason the one line why the card takes the
+// track, which its card_filed row records; its body ends, after a blank
+// line, with the field lines the intake reads, each when given: "Size: <size>",
 // "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
 // and "Carries: #<n>", the pull request whose head the card's clone
 // supplies as its pull branch; the webhook or the heal pass makes it a
@@ -348,15 +353,15 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 // chat bot posts the issue, and the card_filed row that names the member is
 // written before the answer: an unrecorded filing closes its issue and
 // refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, lane, priority, size, rung, rungReason, image string, carry int64) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a title of 1 to 255 characters is required")
 	case len(body) > 64<<10:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "the description is longer than 64 KiB")
-	case laneLabels[lane] == "" && lane != factoryd.LaneHuman:
-		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "lane must be backlog, plan, ready or human")
+	case trackLabels[track] == "":
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "track must be direct, plan or human")
 	case priority != "" && !slices.Contains(priorities, priority):
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "unknown priority")
 	case size != "" && !slices.Contains(policy.CardSizes, size):
@@ -379,7 +384,13 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if err != nil {
 		return factoryd.Repo{}, 0, err
 	}
-	detail := map[string]any{"lane": lane, "title": title}
+	if _, ok := ps[i].Tracks.Track(track); !ok && track != factoryd.LabelHuman {
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
+	}
+	detail := map[string]any{"track": track, "title": title}
+	if reason = strings.TrimSpace(reason); reason != "" {
+		detail["reason"] = reason
+	}
 	var fields []string
 	if size != "" {
 		fields = append(fields, "Size: "+size)
@@ -400,17 +411,9 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if len(fields) > 0 {
 		body += "\n\n" + strings.Join(fields, "\n")
 	}
-	label := factoryd.LaneHuman
 	var check func(policy.Tree) string
-	if lane != factoryd.LaneHuman {
-		if !slices.ContainsFunc(ps[i].Lanes, func(l policy.Lane) bool { return l.Name == lane }) {
-			return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "project "+ps[i].Name+" has no lane "+lane)
-		}
-		label = laneLabels[lane]
+	if track != factoryd.LabelHuman {
 		check = func(tree policy.Tree) string {
-			if lane == policy.LaneBacklog {
-				return factoryd.BacklogRefusal(ctx, c.cfg.Tasks, tree, ps[i].Repository, title)
-			}
 			return factoryd.FileRefusal(ctx, c.cfg.Tasks, tree, ps[i].Repository, title, title, body, size)
 		}
 	}
@@ -423,7 +426,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return repo, 0, &forgejoRefusal{"read the labels", err}
 	}
 	var ids []int64
-	for _, name := range []string{label, priority} {
+	for _, name := range []string{trackLabels[track], priority} {
 		if name == "" {
 			continue
 		}
@@ -441,7 +444,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		http.StatusCreated, &issue); err != nil {
 		return repo, 0, &forgejoRefusal{"file the issue", err}
 	}
-	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, lane, a.via)
+	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, track, a.via)
 	e := c.eventOf(a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
 	if !a.s.fixed {
 		c.event(context.WithoutCancel(ctx), e)
@@ -510,185 +513,13 @@ func pinnedImage(p factoryd.Project, image string) (string, error) {
 		p.Name, image, strings.Join(slices.Sorted(maps.Keys(p.Images)), ", ")))
 }
 
-// doMoveCard moves backlog card id into a starting lane of its process:
-// the lane's label added as the member, whose label event intake judges.
-func (c *Console) doMoveCard(ctx context.Context, a actor, id, lane string) (string, error) {
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	name, proc, err := c.processOfCard(ctx, t)
-	if err != nil {
-		return "", err
-	}
-	why, err := moveRefusal(ctx, t, c.capFactsOf(ctx, t), name, proc, lane, a.s.user, c.cfg.MayMove)
-	if err != nil {
-		log.Printf("console: may %s move %s into %s: %v", a.s.user, t.ID, lane, err)
-		return "", refuse(http.StatusServiceUnavailable, "cannot check who may move the card")
-	}
-	if why == "" && t.IssueNumber == 0 {
-		why = "The card has no issue yet."
-	}
-	if why != "" {
-		return "", refuse(http.StatusForbidden, why)
-	}
-	if a.via == factoryd.ViaChat {
-		if v, ok := c.inForce(ctx); ok {
-			if line := factoryd.StartRefusal(ctx, c.cfg.Tasks, v.Tree, t); line != "" {
-				return "", refuse(http.StatusConflict, "The ready check refuses the start: "+line)
-			}
-		}
-	}
-	if _, err := c.addLabel(ctx, a, t, laneLabels[lane], t.IssueNumber); err != nil {
-		return "", &forgejoRefusal{"label the issue", err}
-	}
-	log.Printf("console: %s moved %s (%s#%d) to lane %s via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, lane, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardMoved, map[string]any{"lane": lane})
-	return fmt.Sprintf("Moved #%d to lane %s; it leaves the backlog once factoryd picks it up.", t.IssueNumber, lane), nil
-}
-
-// doUnmoveCard undoes a move of card id into lane while the card is still
-// in the backlog: the lane's label taken off as the member. Once factoryd
-// took the card into the lane, nothing moves it back.
-func (c *Console) doUnmoveCard(ctx context.Context, a actor, id, lane string) (string, error) {
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	if t.Status != "backlog" {
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a card still in the backlog")
-	}
-	repo, err := factoryd.SplitRepo(t.Repository)
-	if err != nil {
-		return "", refuse(http.StatusInternalServerError, "the task names no repository")
-	}
-	labels, err := c.labels(ctx, a.s, repo)
-	if err != nil {
-		return "", &forgejoRefusal{"read the labels", err}
-	}
-	label, ok := labels[laneLabels[lane]]
-	if !ok {
-		return "", refuse(http.StatusConflict, "label "+laneLabels[lane]+" does not exist on "+repo.String())
-	}
-	path, err := issuePath(t, fmt.Sprintf("/labels/%d", label))
-	if err != nil {
-		return "", err
-	}
-	if err := c.as(ctx, a.s, http.MethodDelete, path, nil, http.StatusNoContent, nil); err != nil {
-		return "", &forgejoRefusal{"take the label off", err}
-	}
-	log.Printf("console: %s took %s (%s#%d) back from lane %s via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, lane, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardMoved, map[string]any{"lane": policy.LaneBacklog})
-	return fmt.Sprintf("#%d stays in the backlog: label %s is off.", t.IssueNumber, laneLabels[lane]), nil
-}
-
-// doStartPlan labels each card of accepted plan id still in the backlog
-// agent as the member (section 1.5): each label event is a move into
-// ready.
-func (c *Console) doStartPlan(ctx context.Context, a actor, id string) (string, error) {
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	accepted, ok := c.awaitAcceptedPlan(ctx, t)
-	if !ok {
-		if accepted.Lane == policy.LanePlan && accepted.Status != "done" && !factoryd.Final(accepted.Status) {
-			return "", refuse(http.StatusConflict, "The plan's cards are still being filed; try again in a moment.")
-		}
-		return "", wrongState(accepted, c.capFactsOf(ctx, accepted), "an accepted plan")
-	}
-	t = accepted
-	_, proc, err := c.processOfCard(ctx, t)
-	if err != nil {
-		return "", err
-	}
-	ready, _ := proc.Lane(policy.LaneReady)
-	allowed, err := c.cfg.MayMove(ctx, t.Repository, a.s.user, ready.MovedBy)
-	if err != nil {
-		log.Printf("console: may %s start plan %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusServiceUnavailable, "cannot check who may move the cards")
-	}
-	if !allowed {
-		return "", refuse(http.StatusForbidden, movedByRefusal(ready, t.Repository))
-	}
-	cards, err := c.cfg.Tasks.PlanCards(ctx, t.ID)
-	if err != nil {
-		log.Printf("console: the cards of plan %s: %v", t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the plan's cards")
-	}
-	var backlog, waits []factoryd.Task
-	var lines []string
-	var tree policy.Tree
-	hasTree := false
-	if a.via == factoryd.ViaChat {
-		if v, ok := c.inForce(ctx); ok {
-			tree, hasTree = v.Tree, true
-		}
-	}
-	for _, k := range cards {
-		if k.Status != "backlog" || k.IssueNumber == 0 {
-			continue
-		}
-		if hasTree {
-			if line := factoryd.StartRefusal(ctx, c.cfg.Tasks, tree, k); line != "" {
-				waits = append(waits, k)
-				lines = append(lines, fmt.Sprintf("#%d %s", k.IssueNumber, line))
-				continue
-			}
-		}
-		backlog = append(backlog, k)
-	}
-	nums := make([]int64, len(backlog))
-	for i, k := range backlog {
-		nums[i] = k.IssueNumber
-	}
-	n := 0
-	if len(nums) > 0 {
-		if n, err = c.addLabel(ctx, a, t, factoryd.LabelAgent, nums...); err != nil {
-			log.Printf("console: %s started plan %s: %d of %d cards labelled", a.s.user, t.ID, n, len(backlog))
-			return "", &forgejoRefusal{"label the plan's cards", err}
-		}
-	}
-	log.Printf("console: %s started plan %s via %s: %d cards labelled agent, %d wait", a.s.user, t.ID, a.via, n, len(waits))
-	started := map[string]any{"cards": n}
-	if len(waits) > 0 {
-		started["waiting"] = len(waits)
-	}
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanStarted, started)
-	var note string
-	if len(waits) > 0 {
-		note = " The ready check holds " + plural(len(waits), "card") + " in the backlog: " + strings.Join(lines, "; ") + "."
-	}
-	return fmt.Sprintf("Start plan: %d %s of plan #%d labelled agent.%s", n, plural(n, "card"), t.IssueNumber, note), nil
-}
-
-// doRetry files failed plan card id again (factoryd's RetryPlanCard)
-// and labels the replacement agent as the member: the label event is its
-// move into ready, which intake judges.
+// doRetry files failed plan card id again (factoryd's RetryPlanCard):
+// the replacement is queued on the direct track and starts once a work
+// slot is free.
 func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
 		return "", err
-	}
-	_, proc, err := c.processOfCard(ctx, t)
-	if err != nil {
-		return "", err
-	}
-	ready, _ := proc.Lane(policy.LaneReady)
-	allowed, err := c.cfg.MayMove(ctx, t.Repository, a.s.user, ready.MovedBy)
-	if err != nil {
-		log.Printf("console: may %s retry %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusServiceUnavailable, "cannot check who may move the card")
-	}
-	if !allowed {
-		return "", refuse(http.StatusForbidden, movedByRefusal(ready, t.Repository))
-	}
-	if a.via == factoryd.ViaChat {
-		if v, ok := c.inForce(ctx); ok {
-			if line := factoryd.StartRefusal(ctx, c.cfg.Tasks, v.Tree, t); line != "" {
-				return "", refuse(http.StatusConflict, "The ready check refuses the retry: "+line)
-			}
-		}
 	}
 	issue, err := c.cfg.RetryPlanCard(ctx, t.ID, a.s.user)
 	var no factoryd.ErrNoRetry
@@ -699,12 +530,9 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		log.Printf("console: %s retries %s: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusInternalServerError, "The card could not be retried; see the factoryd log.")
 	}
-	if _, err := c.addLabel(ctx, a, t, factoryd.LabelAgent, issue); err != nil {
-		return "", &forgejoRefusal{fmt.Sprintf("label #%d agent (the replacement of #%d is filed)", issue, t.IssueNumber), err}
-	}
 	log.Printf("console: %s retried %s (%s#%d) as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
-	return fmt.Sprintf("Retried #%d as #%d; it starts in lane ready once factoryd picks it up.", t.IssueNumber, issue), nil
+	return fmt.Sprintf("Retried #%d as #%d; it starts once a work slot is free.", t.IssueNumber, issue), nil
 }
 
 // doGo hands the work of card id, a human card that waits on a person,
@@ -718,7 +546,7 @@ func (c *Console) doGo(ctx context.Context, a actor, id string) (string, error) 
 	switch {
 	case t.Kind != "human":
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is an agent card: the factory runs it.", t.IssueNumber))
-	case t.Status != "backlog" && t.Status != "waiting-human":
+	case t.Status != "waiting-human":
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
 	}
 	issue, err := c.cfg.GoCard(ctx, t.ID, a.s.user)
@@ -741,66 +569,10 @@ func (c *Console) doGo(ctx context.Context, a actor, id string) (string, error) 
 // planIn is plan task id for a; 409 when it is no plan.
 func (c *Console) planIn(ctx context.Context, a actor, id string) (factoryd.Task, error) {
 	t, err := c.cardIn(ctx, a, id)
-	if err == nil && (t.Lane != policy.LanePlan || t.IssueNumber == 0) {
-		err = wrongState(t, c.capFactsOf(ctx, t), "a plan awaiting acceptance")
+	if err == nil && (t.Track != policy.TrackPlan || t.IssueNumber == 0) {
+		err = wrongState(t, c.capFactsOf(ctx, t), "a plan card")
 	}
 	return t, err
-}
-
-// doAcceptPlan accepts the revision of plan id the approver saw: the
-// workflow is signalled, then the acceptance commented as the member (the
-// plan's wait reads that comment as no change request, in either order).
-// A stale revision answers factoryd.ErrStalePlan; a plan without the
-// deploy owner its spec needs answers factoryd's sentence with 409, that
-// the planner revises it with no change request (the workflow refuses it
-// to the planner), and that the next revision is the one to accept.
-func (c *Console) doAcceptPlan(ctx context.Context, a actor, id string, revision int, sha string) (string, error) {
-	t, err := c.planIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	if revision < 1 || sha == "" {
-		return "", refuse(http.StatusBadRequest, "the form names no plan revision; reload the board")
-	}
-	var stale factoryd.ErrStalePlan
-	var open factoryd.ErrOpenQuestions
-	if a.via == factoryd.ViaChat {
-		if v, ok := c.inForce(ctx); ok {
-			if rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.ID, revision); err != nil {
-				log.Printf("console: the revision %d of plan %s: %v", revision, t.ID, err)
-				return "", refuse(http.StatusInternalServerError, "cannot read the plan's revision")
-			} else if ok {
-				var p struct {
-					Cards []json.RawMessage `json:"cards"`
-				}
-				if err := json.Unmarshal(rev.Plan, &p); err == nil && len(p.Cards) > 0 {
-					if n, err := c.cfg.Tasks.CountBacklog(ctx, t.Repository); err != nil {
-						log.Printf("console: the backlog of %s: %v", t.Repository, err)
-					} else if room := v.Tree.BacklogCapOf(t.Repository) - n; len(p.Cards) > room {
-						return "", refuse(http.StatusConflict, fmt.Sprintf("The ready check refuses the acceptance: filing %d cards would pass the backlog cap of %d (%d cards wait now); it waits for room.", len(p.Cards), v.Tree.BacklogCapOf(t.Repository), n))
-					}
-				}
-			}
-		}
-	}
-	switch err := c.cfg.AcceptPlan(ctx, t.ID, revision, sha, a.approver(), a.s.user); {
-	case errors.As(err, &stale):
-		return "", stale
-	case errors.As(err, &open):
-		return "", refuse(http.StatusConflict, open.Error())
-	case errors.Is(err, factoryd.ErrNoDeployOwner):
-		return "", refuse(http.StatusConflict, err.Error()+". The planner revises the plan; no change request is needed. "+
-			"The next revision replaces this one: read the plan again before you accept.")
-	case err != nil:
-		log.Printf("console: %s accepts revision %d of plan %s: %v", a.s.user, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, "The plan could not be accepted; see the factoryd log.")
-	}
-	if err := c.comment(ctx, a, t, factoryd.PlanAcceptedComment(revision), nil); err != nil {
-		return "", &forgejoRefusal{"comment the acceptance (the plan is accepted)", err}
-	}
-	log.Printf("console: %s accepted revision %d of plan %s via %s", a.s.user, revision, t.ID, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanAccepted, map[string]any{"revision": revision})
-	return fmt.Sprintf("Accepted revision %d of plan #%d; factoryd files its cards.", revision, t.IssueNumber), nil
 }
 
 // maxPlanAnswer bounds a member's answer to a plan's question, one line.
@@ -969,26 +741,6 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 	log.Printf("console: %s asked for changes to plan %s via %s", a.s.user, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanChangesRequested, nil)
 	return fmt.Sprintf("Your change request is on plan #%d; the planner answers a new revision.", t.IssueNumber), nil
-}
-
-// doRejectPlan ends plan task id failed with the writer's reason, which
-// is bookkeeping on a final verdict and may be empty.
-func (c *Console) doRejectPlan(ctx context.Context, a actor, id, note string) (string, error) {
-	note = strings.TrimSpace(note)
-	if len(note) > 64<<10 {
-		return "", refuse(http.StatusBadRequest, "a reject reason is at most 64 KiB")
-	}
-	t, err := c.planIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	if err := c.cfg.RejectPlan(ctx, t.ID, a.approver(), note); err != nil {
-		log.Printf("console: %s rejects plan %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusConflict, "The plan could not be rejected; see the factoryd log.")
-	}
-	log.Printf("console: %s rejected plan %s via %s: %s", a.s.user, t.ID, a.via, note)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanRejected, nil)
-	return fmt.Sprintf("Rejected plan #%d.", t.IssueNumber), nil
 }
 
 // doAnswer posts the member's answer to card id's escalation as an
@@ -1572,6 +1324,25 @@ func (c *Console) doSplit(ctx context.Context, a actor, id string) (string, erro
 		t.IssueNumber, all[i].PRNumber), nil
 }
 
+// comment posts text on t's issue as a's member; posted, when not nil,
+// gets the comment's id.
+func (c *Console) comment(ctx context.Context, a actor, t factoryd.Task, text string, posted *int64) error {
+	path, err := issuePath(t, "/comments")
+	if err != nil {
+		return err
+	}
+	var out struct {
+		ID int64 `json:"id"`
+	}
+	if err := c.as(ctx, a.s, http.MethodPost, path, map[string]string{"body": text}, http.StatusCreated, &out); err != nil {
+		return err
+	}
+	if posted != nil {
+		*posted = out.ID
+	}
+	return nil
+}
+
 // editIssue patches card t's issue with fields as the member; out takes
 // the issue as Forgejo answers it.
 func (c *Console) editIssue(ctx context.Context, a actor, t factoryd.Task, fields map[string]string, out any) error {
@@ -1649,7 +1420,7 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 	switch {
 	case t.ID == d.ID:
 		return "", refuse(http.StatusBadRequest, "a card cannot depend on itself")
-	case !slices.Contains([]string{"backlog", "queued", "waiting-deps"}, t.Status):
+	case t.Status != "queued" && t.Status != "waiting-deps":
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that has not started")
 	case !remove && factoryd.Final(d.Status):
 		return "", wrongState(d, c.capFactsOf(ctx, d), "a card that is not final")
@@ -1657,7 +1428,7 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		return "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
 	if !remove {
-		name, _, err := c.processOfCard(ctx, t)
+		name, err := c.processOfCard(ctx, t)
 		if err != nil {
 			return "", err
 		}
@@ -1762,10 +1533,10 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 
 // waitsOnAnswer tells a card on which a writer's comment is an answer the
 // sessions get (factoryd's awaitHuman, waitPoster): one waiting on a
-// human or the issue's author, outside the plan lane, whose comments go to
+// human or the issue's author, off the plan track, whose comments go to
 // the planner whole as change requests.
 func waitsOnAnswer(t factoryd.Task) bool {
-	return (t.Status == "waiting-human" || t.Status == "waiting-poster") && t.Lane != policy.LanePlan
+	return (t.Status == "waiting-human" || t.Status == "waiting-poster") && t.Track != policy.TrackPlan
 }
 
 // doDeleteComment deletes comment posted of card id as the member: the undo

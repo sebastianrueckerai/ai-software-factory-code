@@ -47,27 +47,13 @@ func TestFileFactoryPRTaskCreatesCardAndLinksPR(t *testing.T) {
 	}
 	if row.Kind != "agent" || row.Status != "queued" || row.Source != SourceSchemaCopy ||
 		!slices.Equal(row.RequiredCapabilities, []string{policy.ClassCoder}) {
-		t.Fatalf("stored row = %+v, want a queued agent card of ready's class", row)
+		t.Fatalf("stored row = %+v, want a queued agent card of the direct track's class", row)
 	}
 	if !slices.Equal(*labels, []string{"improvement", "state/queued"}) {
 		t.Fatalf("labels %v", *labels)
 	}
 	if !slices.Equal(wf.started, []string{"t-schema"}) {
 		t.Fatalf("started %v, want the workflow started once", wf.started)
-	}
-	// a project whose ready lane the approvers moves files the card with no
-	// lane all the same, like a roll: ready's class, workflow started
-	p := seedProject("sf/r")
-	p.Process, p.Lanes = "gated", approversLanes
-	store, wf = newFakeStore(), &fakeWorkflows{}
-	got, _, err = FileFactoryPRTask(ctx, store, f, wf, nil, testCardBudget, p, "Sync from GitHub abc1234", "body", nil, Task{ID: "t-sync", Source: SourceGitHubSync}, 11)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.Status != "queued" || got.Lane != "" || got.Process != "" ||
-		!slices.Equal(got.RequiredCapabilities, []string{policy.ClassCoder}) ||
-		store.tasks["t-sync"].PRNumber != 11 || !slices.Equal(wf.started, []string{"t-sync"}) {
-		t.Fatalf("task = %+v, stored %+v, started %v; want a no-lane card of ready's class with pull request #11 linked and the workflow started", got, store.tasks["t-sync"], wf.started)
 	}
 }
 
@@ -142,12 +128,12 @@ func TestFileFactoryPRTaskInsertsThePullRequestWithTheRow(t *testing.T) {
 	}
 }
 
-// fileEntry gives every factory pull request source the roll's entry:
-// ready's class, queued, no lane, the workflow started at once. The lane
-// the writers' ready move gave these cards before (finding 224) queued
-// them behind a session start their run never takes: its verify finds the
-// pull request linked and moves in-review straight from queued, which the
-// task state machine refuses.
+// fileEntry gives every factory pull request source the roll's entry: the
+// direct track's class, queued, no process, the workflow started at once
+// outside the work bound. A card under the bound (finding 224) would queue
+// behind a session start its run never takes: its verify finds the pull
+// request linked and moves in-review straight from queued, which the task
+// state machine refuses.
 func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
 	ctx := context.Background()
 	for name, source := range map[string]string{
@@ -161,7 +147,7 @@ func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Status != "queued" || got.Lane != "" || got.Process != "" ||
+			if got.Status != "queued" || got.Track != policy.TrackDirect || got.Process != "" || !got.Unbound() ||
 				!slices.Equal(got.RequiredCapabilities, []string{policy.ClassCoder}) ||
 				store.tasks["t1"].PRNumber != 9 || !slices.Equal(wf.started, []string{"t1"}) {
 				t.Fatalf("task = %+v, stored %+v, started %v; want the roll's entry with pull request #9 linked", got, store.tasks["t1"], wf.started)
@@ -174,8 +160,8 @@ func TestFactoryPRSourcesEnterLikeARoll(t *testing.T) {
 }
 
 // TaskConfig gives a card for a pull request factoryd opened outside any
-// card's workflow ready's process and class with no lane, like a roll; a
-// row that does name a lane keeps it.
+// card's workflow, on the direct track with no process of its own like a
+// roll, its project's process and the direct track's class.
 func TestTaskConfigForFactorySources(t *testing.T) {
 	pinned := fixtureVersion(t)
 	maintenance := pinned.Processes["maintenance"]
@@ -183,7 +169,7 @@ func TestTaskConfigForFactorySources(t *testing.T) {
 		"github sync": SourceGitHubSync, "schema copy": SourceSchemaCopy, "template update": SourceTemplateUpdate,
 	} {
 		t.Run(name, func(t *testing.T) {
-			task := Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Source: source}
+			task := Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Source: source, Track: "direct"}
 			r, _, _ := newActivityRunner(t, task, &prForgejo{})
 			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 			val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
@@ -191,22 +177,11 @@ func TestTaskConfigForFactorySources(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := getInto[TaskConfig](t, val, nil)
-			if got.Process != "maintenance" || got.Class != policy.ClassCoder || got.Session != policy.SessionCode ||
+			if got.Process != "maintenance" || got.Track != policy.TrackDirect || got.Class != policy.ClassCoder || got.Session != policy.SessionCode ||
 				!reflect.DeepEqual(got.Stages, maintenance.Stages) || got.Queue != maintenance.Merge.Queue {
-				t.Fatalf("TaskConfig = %+v, want maintenance's ready lane class %s", got, policy.ClassCoder)
+				t.Fatalf("TaskConfig = %+v, want maintenance's direct track class %s", got, policy.ClassCoder)
 			}
 		})
-	}
-	// a row the loader moved into a lane keeps that lane's class
-	task := Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Source: SourceTemplateUpdate, Lane: "ready", Process: "maintenance"}
-	r, _, _ := newActivityRunner(t, task, &prForgejo{})
-	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
-	val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := getInto[TaskConfig](t, val, nil); got.Lane != policy.LaneReady || got.Class != policy.ClassCoder {
-		t.Fatalf("TaskConfig = %+v, want the row's ready lane", got)
 	}
 }
 
@@ -288,7 +263,7 @@ func reconcileInto(t *testing.T, r *Runner) RunState {
 func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	fj := newOrphanForgejo()
 	card := Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "Copy the schemas of abc123", Repository: "demo-app/demo-app",
-		SHA: "base", IssueNumber: 4, Source: SourceSchemaCopy, PRNumber: 9, RequiredCapabilities: []string{policy.ClassCoder}}
+		SHA: "base", IssueNumber: 4, Source: SourceSchemaCopy, PRNumber: 9, Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}}
 	r, store, _ := newActivityRunner(t, card, &fj.prForgejo)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"the copy matches upstream","findings":[]}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
@@ -302,8 +277,8 @@ func TestFactoryPRCardRealActivitiesMergeTheAdoptedPR(t *testing.T) {
 	}
 	cfgVal, cfgErr := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
 	cfg := activityInto[TaskConfig](t, cfgVal, cfgErr)
-	if cfg.Class != policy.ClassCoder || cfg.Process != "maintenance" || cfg.Lane != "" {
-		t.Fatalf("TaskConfig = %+v, want maintenance's coder with no lane", cfg)
+	if cfg.Class != policy.ClassCoder || cfg.Process != "maintenance" || cfg.Track != policy.TrackDirect {
+		t.Fatalf("TaskConfig = %+v, want maintenance's coder on the direct track", cfg)
 	}
 	if _, err := execActivity(t, r, ActivitySetState, "t1", "running"); err != nil {
 		t.Fatal(err)

@@ -141,7 +141,7 @@ func TestPGStoreSetTaskMergeCommit(t *testing.T) {
 	}
 	defer s.Close()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at) VALUES ('t1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now())`); err != nil {
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at, track) VALUES ('t1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now(), 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskMergeCommit(ctx, "t1", "m-abc"); err != nil {
@@ -170,7 +170,7 @@ func TestPGStoreSetTaskMergeCommitUnknownTaskLogs(t *testing.T) {
 	}
 	defer s.Close()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at) VALUES ('u1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now())`); err != nil {
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, finished_at, track) VALUES ('u1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', now(), 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -212,16 +212,16 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 	// c4 (chat, no card), c7 (running, reverted — no figure may count it),
 	// o1 (sf/other), r1 and r0 (the factory's roll cards, which no card
 	// figure counts: r1 rolled commit cx as s-2, r0 rolled cs3 as s-3)
-	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, files, insertions, deletions, merge_commit) VALUES
-		('c1', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $1, $2, 3, 120, 40, 'm-c1'),
-		('c2', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $3, $4, NULL, NULL, NULL, ''),
-		('c3', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $5, $6, 9, 240, 95, 'm-c3'),
-		('c6', 1, 0, 'done', 'sf/code', 'agent', 'alert',   $7, $8, NULL, NULL, NULL, ''),
-		('c5', 1, 0, 'done', 'sf/code', 'agent', 'webhook', '2026-09-18T08:00Z', '2026-09-20T10:00Z', 5, 80, 20, ''),
-		('c4', 1, 0, 'done', 'sf/code', 'chat',  'webhook', '2026-10-06T09:00Z', '2026-10-07T12:00Z', NULL, NULL, NULL, ''),
-		('o1', 1, 0, 'done', 'sf/other', 'agent', 'webhook', '2026-10-01T07:00Z', '2026-10-02T17:00Z', 2, 10, 5, ''),
-		('r1', 1, 0, 'done', 'sf/code', 'agent', 'roll', '2026-10-03T10:00Z', '2026-10-03T10:05Z', 4, 8, 8, 's-2'),
-		('r0', 1, 0, 'merged', 'sf/code', 'agent', 'roll', '2026-09-22T10:00Z', '2026-09-22T11:05Z', NULL, NULL, NULL, 's-3')`,
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, files, insertions, deletions, merge_commit, track) VALUES
+		('c1', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $1, $2, 3, 120, 40, 'm-c1', 'direct'),
+		('c2', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $3, $4, NULL, NULL, NULL, '', 'direct'),
+		('c3', 1, 0, 'done', 'sf/code', 'agent', 'webhook', $5, $6, 9, 240, 95, 'm-c3', 'direct'),
+		('c6', 1, 0, 'done', 'sf/code', 'agent', 'alert',   $7, $8, NULL, NULL, NULL, '', 'direct'),
+		('c5', 1, 0, 'done', 'sf/code', 'agent', 'webhook', '2026-09-18T08:00Z', '2026-09-20T10:00Z', 5, 80, 20, '', 'direct'),
+		('c4', 1, 0, 'done', 'sf/code', 'chat',  'webhook', '2026-10-06T09:00Z', '2026-10-07T12:00Z', NULL, NULL, NULL, '', NULL),
+		('o1', 1, 0, 'done', 'sf/other', 'agent', 'webhook', '2026-10-01T07:00Z', '2026-10-02T17:00Z', 2, 10, 5, '', 'direct'),
+		('r1', 1, 0, 'done', 'sf/code', 'agent', 'roll', '2026-10-03T10:00Z', '2026-10-03T10:05Z', 4, 8, 8, 's-2', 'direct'),
+		('r0', 1, 0, 'merged', 'sf/code', 'agent', 'roll', '2026-09-22T10:00Z', '2026-09-22T11:05Z', NULL, NULL, NULL, 's-3', 'direct')`,
 		"2026-09-29T06:00Z", "2026-10-02T10:00Z", // c1: 76 h lifetime
 		"2026-10-01T08:00Z", "2026-10-03T09:00Z", // c2: 49 h
 		"2026-10-06T10:00Z", "2026-10-08T16:00Z", // c3: 54 h
@@ -230,11 +230,11 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 	must(`UPDATE tasks SET reverted_at = '2026-09-22T09:00Z' WHERE id = 'c5'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-x' WHERE id = 'c6'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-p' WHERE id = 'c5'`)
-	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, alert_fingerprint) VALUES
-		('c8', 1, 0, 'merged', 'sf/code', 'agent', 'alert', '2026-10-07T08:30Z', '2026-10-07T09:00Z', 'fp-m')`)
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, alert_fingerprint, track) VALUES
+		('c8', 1, 0, 'merged', 'sf/code', 'agent', 'alert', '2026-10-07T08:30Z', '2026-10-07T09:00Z', 'fp-m', 'direct')`)
 	must(`UPDATE tasks SET alert_fingerprint = '' WHERE id = 'c3'`)
-	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at) VALUES
-		('c7', 1, 0, 'running', 'sf/code', 'agent', 'webhook', '2026-10-05T08:00Z')`)
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, track) VALUES
+		('c7', 1, 0, 'running', 'sf/code', 'agent', 'webhook', '2026-10-05T08:00Z', 'direct')`)
 	must(`UPDATE tasks SET reverted_at = '2026-10-06T10:00Z' WHERE id = 'c7'`)
 	must(`UPDATE tasks SET alert_fingerprint = 'fp-c2' WHERE id = 'c2'`)
 	must(`UPDATE tasks SET sha = 'cx' WHERE id = 'r1'`)
@@ -242,13 +242,13 @@ func seedMetricsFigures(t *testing.T, s *PGStore) {
 	// the merges that put the rolled commits on main, a minute before each
 	// commit's CI run: merged cards, not done ones, so no card figure
 	// counts them; a merged card is finished at its merge
-	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, merge_commit, finished_at) VALUES
-		('m0', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-0', '2026-09-25T09:29Z'),
-		('m1', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-1', '2026-09-20T08:59Z'),
-		('m2', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-2', '2026-10-11T22:59Z'),
-		('m4', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-4', '2026-10-05T10:59Z'),
-		('m5', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-5', '2026-08-23T23:39Z'),
-		('mo', 1, 0, 'merged', 'sf/other', 'agent', 'webhook', 'ox', '2026-10-02T13:59Z')`)
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, merge_commit, finished_at, track) VALUES
+		('m0', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-0', '2026-09-25T09:29Z', 'direct'),
+		('m1', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-1', '2026-09-20T08:59Z', 'direct'),
+		('m2', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-2', '2026-10-11T22:59Z', 'direct'),
+		('m4', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-4', '2026-10-05T10:59Z', 'direct'),
+		('m5', 1, 0, 'merged', 'sf/code', 'agent', 'webhook', 'cr-5', '2026-08-23T23:39Z', 'direct'),
+		('mo', 1, 0, 'merged', 'sf/other', 'agent', 'webhook', 'ox', '2026-10-02T13:59Z', 'direct')`)
 	merged := func(task, repo, at string) {
 		t.Helper()
 		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail) VALUES ($1, $2, $3, 'pull_request_merged', 'factoryd', 'factoryd', '{}')`, at, repo, task)
@@ -594,7 +594,7 @@ func TestMetricsNoDoneCards(t *testing.T) {
 	seedMetricsFigures(t, s)
 	ctx := context.Background()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source) VALUES ('n1', 1, 0, 'running', 'sf/nodone', 'agent', 'webhook')`); err != nil {
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track) VALUES ('n1', 1, 0, 'running', 'sf/nodone', 'agent', 'webhook', 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx,
@@ -627,8 +627,8 @@ func TestMetricsPreviousWindowEmpty(t *testing.T) {
 	seedMetricsFigures(t, s)
 	ctx := context.Background()
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, files, insertions, deletions, merge_commit) VALUES
-			('l1', 1, 0, 'done', 'sf/late', 'agent', 'webhook', '2026-10-06T09:00Z', '2026-10-07T09:00Z', 4, 40, 10, 'cl')`); err != nil {
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, files, insertions, deletions, merge_commit, track) VALUES
+			('l1', 1, 0, 'done', 'sf/late', 'agent', 'webhook', '2026-10-06T09:00Z', '2026-10-07T09:00Z', 4, 40, 10, 'cl', 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx,

@@ -33,16 +33,15 @@ func (f readerForgejo) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func members(r *rig) {
-	r.writers.users = []string{"alice", "controller"}
-	r.writers.others = map[string][]string{"demo/demo": {"bob"}}
 	r.repoWriters["sf/code"] = []string{"alice", "controller"}
 	r.repoWriters["demo/demo"] = []string{"bob"}
+	r.forgetWriters()
 	r.ledger.approvers = []string{"alice"}
 	r.ledger.files = map[string]policy.ProjectConfig{"demo": {Repository: "demo/demo", MergeRule: "human", Objects: "factory",
 		Agents: "coder", Process: "maintenance", Approvers: []string{"bob"}}}
 	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "demo", Repository: "demo/demo", MergeRule: "human",
-		Objects: "factory", Agents: "coder", File: true, GitToken: "t", Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes})
-	r.tasks.set("", factoryd.Task{ID: "t-c", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+		Objects: "factory", Agents: "coder", File: true, GitToken: "t", Process: "maintenance", Tracks: testProcesses()["maintenance"].Tracks})
+	r.tasks.set("", factoryd.Task{ID: "t-c", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 		Repository: "sf/code", IssueNumber: 5, Objective: "Fix the cache."})
 }
 
@@ -98,7 +97,7 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 	}
 	for _, path := range []string{"/tasks", "/alerts/1/verdict", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
 		if rec := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "project": {"ai-software-factory-code"}, "title": {"x"},
-			"lane": {"ready"}}), ck); rec.Code != http.StatusForbidden {
+			"track": {"direct"}}), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("POST %s as bob = %d, want 403", path, rec.Code)
 		}
 	}
@@ -191,6 +190,7 @@ func TestInvite(t *testing.T) {
 	chatRows(t, r.events, before, "bob", factoryd.Event{Repository: "demo/demo", Kind: factoryd.EventMemberInvited, Detail: map[string]any{"login": "dave", "autonomy": "manual", "merge_rule": "human", "decider": "member", "chat_task": factoryd.ChatTaskID("demo", time.Now())}})
 
 	r.repoWriters["demo/demo"] = append(r.repoWriters["demo/demo"], "alice")
+	r.forgetWriters()
 	r.ledger.chat = &policy.ChatConfig{Confirm: []string{}}
 	ak, as := memberLogin(t, r, "alice")
 	g.replies = [][]string{{call(1, "invite", `{"login":"erin"}`)}, {say("Only an approver may.")}}

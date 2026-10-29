@@ -9,14 +9,13 @@ import (
 
 // Card kinds: the ways a card enters a process.
 const (
-	CardBug         = "bug"         // enters ready by the bug or agent label, or none
-	CardImprovement = "improvement" // enters backlog by the improvement or backlog label
-	CardPlan        = "plan"        // enters lane plan
-	CardChild       = "child"       // filed by an accepted plan
+	CardDirect = "direct" // filed on the direct track
+	CardPlan   = "plan"   // filed on the plan track
+	CardChild  = "child"  // filed by a plan with no open question
 )
 
 // CardKinds are the card kinds.
-var CardKinds = []string{CardBug, CardImprovement, CardPlan, CardChild}
+var CardKinds = []string{CardDirect, CardPlan, CardChild}
 
 // NodeKind is what a node of a process graph is.
 type NodeKind int
@@ -32,7 +31,7 @@ const (
 // Node is one step a card can be at.
 type Node struct {
 	ID string
-	// Name names the node in the check's refusals, such as lane ready.
+	// Name names the node in the check's refusals, such as track direct.
 	Name string
 	// Head is the node's line in config explain.
 	Head string
@@ -65,7 +64,7 @@ type Edge struct {
 const capLine = -1
 
 // Graph is the directed graph of a process: one path per card kind from
-// its creation through lanes, class programs, stages, the merge queue and
+// its creation through its track's class program, stages, the merge queue and
 // the dependency wait to done, failed, closed or a human card.
 type Graph struct {
 	Process string
@@ -110,47 +109,23 @@ func BuildGraph(name string, p Process, d Document) Graph {
 	b.node(Node{ID: nodeHuman, Name: "human card", Head: "human card", Ref: "human card", Kind: NodeHuman})
 	b.node(Node{ID: nodeFailed, Name: "failed", Head: "end: failed", Ref: "end: failed", Kind: NodeFailed})
 	b.node(Node{ID: nodeClosed, Name: "closed", Head: "end: closed", Ref: "end: closed", Kind: NodeClosed})
-	ready, hasReady := p.Lane(LaneReady)
-	backlog, _ := p.Lane(LaneBacklog)
-	plan, hasPlan := p.Lane(LanePlan)
-	if hasReady {
-		created := b.node(Node{ID: "bug/created", Name: "card created", Head: "card created: an issue labelled bug or agent, or with no lane label, " +
-			map[string]string{MovedByWriters: "from anyone", MovedByApprovers: "by an approver (anyone else's waits in backlog)"}[ready.MovedBy]})
-		b.next(created, b.code(CardBug, ready, " at once", "end: done"))
-		b.g.Entries[CardBug] = created
-
-		created = b.node(Node{ID: "improvement/created", Name: "card created", Head: "card created: an issue labelled improvement or backlog"})
-		head := "lane backlog: does not start"
-		if backlog.WriteUp != "" {
-			head += fmt.Sprintf("; class %s (session %s) writes it up once", backlog.WriteUp, b.d.Classes[backlog.WriteUp].Session)
-		}
-		waiting := b.node(Node{ID: "improvement/backlog", Name: "lane backlog", Head: head})
-		b.next(created, waiting)
-		b.edge(Edge{From: waiting, To: b.code(CardImprovement, ready, "", "end: done"), Label: movers(ready.MovedBy), Next: true, Line: 1})
-		b.g.Entries[CardImprovement] = created
-	}
-	if hasPlan && hasReady {
-		b.planPath(plan)
-		b.childPath(ready)
+	direct := p.Tracks.Direct
+	created := b.node(Node{ID: "direct/created", Name: "card created",
+		Head: "card created on track direct: an issue with no track label, or labelled bug or agent, from anyone, or any card factoryd files"})
+	b.next(created, b.code(CardDirect, direct, " once a work slot is free", "end: done"))
+	b.g.Entries[CardDirect] = created
+	if plan := p.Tracks.Plan; plan != nil {
+		b.planPath(*plan)
+		b.childPath(direct)
 	}
 	return *b.g
 }
 
-// movers is who moves a card out of the backlog into a lane moved_by
-// admits.
-func movers(movedBy string) string {
-	if movedBy == MovedByApprovers {
-		return "an approver's move"
-	}
-	return "a writer's move"
-}
-
-func (b *builder) planPath(plan Lane) {
-	who := map[string]string{MovedByWriters: "a writer", MovedByApprovers: "an approver"}[plan.MovedBy]
+func (b *builder) planPath(plan Track) {
 	created := b.node(Node{ID: "plan/created", Name: "card created",
-		Head: fmt.Sprintf("card created: an issue labelled plan by %s, or a card %s moves from backlog to plan", who, who)})
-	start := b.node(Node{ID: "plan/start", Name: "lane plan",
-		Head: fmt.Sprintf("lane plan: starts a task of class %s (session %s) at once", plan.Class, b.d.Classes[plan.Class].Session)})
+		Head: "card created on track plan: an issue labelled plan by a writer"})
+	start := b.node(Node{ID: "plan/start", Name: "track plan",
+		Head: fmt.Sprintf("track plan: starts a task of class %s (session %s) once a work slot is free", plan.Class, b.d.Classes[plan.Class].Session)})
 	var bounds PlanShape
 	if plan.Plan != nil {
 		bounds = *plan.Plan
@@ -164,32 +139,28 @@ func (b *builder) planPath(plan Lane) {
 	}
 	session := b.node(Node{ID: "plan/session", Name: plan.Class + " session", Head: plan.Class + " session on the stronger rung: " + shape,
 		Ref: "back to the " + plan.Class, Cap: fmt.Sprintf("every %s session counts against limits.sessions (%d)", plan.Class, b.d.Limits.Sessions)})
-	card := b.node(Node{ID: "plan/card", Name: "plan card", Head: "human card: the plan, for approvers to accept", Ref: "human card", Kind: NodeHuman})
 	children := b.node(Node{ID: "plan/children", Name: "children filed",
-		Head:  "factoryd files one card per planned card in lane backlog, with their dependencies (card kind child)",
-		Later: "Start plan (approvers) moves every card of this plan still in backlog to lane ready"})
+		Head: "a plan with no open question: factoryd files one card per planned card on track direct, with their dependencies (card kind child)"})
+	questions := b.node(Node{ID: "plan/questions", Name: "plan questions", Head: "human card: the plan's open questions, for the writers to answer",
+		Ref: "human card", Kind: NodeHuman})
 	done := b.node(Node{ID: "plan/done", Name: "done", Head: "end: done", Kind: NodeDone})
-	b.next(created, start, session, card)
+	b.next(created, start, session, children, done)
 	b.edge(Edge{From: session, To: session, Label: "plan invalid", Capped: true, Line: 1})
-	b.edge(Edge{From: session, To: card, Label: "at the cap", Capped: true, Line: capLine})
-	b.edge(Edge{From: card, To: session, Label: "a writer's comment", Capped: true, Line: 1})
-	b.edge(Edge{From: card, To: nodeFailed, Label: "Reject", Capped: true, Line: 2})
-	b.edge(Edge{From: card, To: nodeClosed, Label: "the issue closed", Capped: true, Line: 2})
-	b.edge(Edge{From: card, To: children, Label: "Accept plan (approvers)", Next: true, Capped: true, Line: 3})
+	b.edge(Edge{From: session, To: questions, Label: "an open question", Capped: true, Line: 1})
+	b.edge(Edge{From: session, To: nodeHuman, Label: "at the cap", Capped: true, Line: capLine})
+	b.edge(Edge{From: questions, To: session, Label: "the last answer, or a writer's comment", Capped: true})
+	b.edge(Edge{From: questions, To: nodeClosed, Label: "the issue closed", Capped: true})
 	b.edge(Edge{From: children, To: session, Label: "a cycle or any finding", Capped: true, Line: 1})
-	b.next(children, done)
 	b.g.Entries[CardPlan] = created
 }
 
-func (b *builder) childPath(ready Lane) {
+func (b *builder) childPath(direct Track) {
 	created := b.node(Node{ID: "child/created", Name: "card created",
-		Head: "card created: by factoryd when an approver accepts a plan, in lane backlog, with the plan's dependencies"})
-	waiting := b.node(Node{ID: "child/backlog", Name: "lane backlog", Head: "lane backlog: does not start"})
-	wait := b.node(Node{ID: "child/wait", Name: "dependency wait", Head: `lane ready: waits until every card it depends on is done ("waiting on #n")`})
+		Head: "card created: by factoryd from a plan with no open question, on track direct, with the plan's dependencies"})
+	wait := b.node(Node{ID: "child/wait", Name: "dependency wait", Head: `track direct: waits until every card it depends on is done ("waiting on #n")`})
 	stuck := b.node(Node{ID: "child/stuck", Name: "dependency human card", Ref: "human card", Kind: NodeHuman})
-	start := b.code(CardChild, ready, "", "end: done; the cards that depend on this one may start")
-	b.next(created, waiting)
-	b.edge(Edge{From: waiting, To: wait, Label: "Start plan (approvers), or " + movers(ready.MovedBy), Next: true, Line: 1})
+	start := b.code(CardChild, direct, "", "end: done; the cards that depend on this one may start")
+	b.next(created, wait)
 	b.edge(Edge{From: wait, To: stuck, Label: "a dependency ends failed or closed", Capped: true, Line: 1})
 	b.edge(Edge{From: stuck, To: start, Label: "an answer", Capped: true})
 	b.edge(Edge{From: stuck, To: nodeClosed, Label: "a close", Capped: true})
@@ -197,15 +168,15 @@ func (b *builder) childPath(ready Lane) {
 	b.g.Entries[CardChild] = created
 }
 
-// code builds the coding program of kind's card from lane ready's start to
-// its end and returns the start.
-func (b *builder) code(kind string, ready Lane, atOnce, end string) string {
+// code builds the coding program of kind's card from the direct track's
+// start to its end and returns the start.
+func (b *builder) code(kind string, direct Track, atOnce, end string) string {
 	id := func(s string) string { return kind + "/" + s }
-	start := b.node(Node{ID: id("start"), Name: "lane ready",
-		Head: fmt.Sprintf("lane ready: starts a task of class %s (session %s)%s", ready.Class, b.d.Classes[ready.Class].Session, atOnce)})
-	session := Node{ID: id("session"), Name: ready.Class + " session", Ref: "back to the " + ready.Class,
-		Head: fmt.Sprintf("%s session (at most %d per task, limits.sessions)", ready.Class, b.d.Limits.Sessions),
-		Cap:  fmt.Sprintf("every return to the %s counts against limits.sessions (%d)", ready.Class, b.d.Limits.Sessions)}
+	start := b.node(Node{ID: id("start"), Name: "track direct",
+		Head: fmt.Sprintf("track direct: starts a task of class %s (session %s)%s", direct.Class, b.d.Classes[direct.Class].Session, atOnce)})
+	session := Node{ID: id("session"), Name: direct.Class + " session", Ref: "back to the " + direct.Class,
+		Head: fmt.Sprintf("%s session (at most %d per task, limits.sessions)", direct.Class, b.d.Limits.Sessions),
+		Cap:  fmt.Sprintf("every return to the %s counts against limits.sessions (%d)", direct.Class, b.d.Limits.Sessions)}
 	chain := []string{start}
 	stages := b.p.Stages
 	if len(stages) > 0 && stages[0].Name == StageScreening {
@@ -407,7 +378,7 @@ func (g Graph) Explain(kind string) (string, error) {
 	}
 	entry, ok := g.Entries[kind]
 	if !ok {
-		return "", fmt.Errorf("process %s has no lane plan: a %s card cannot enter it", g.Process, kind)
+		return "", fmt.Errorf("process %s has no plan track: a %s card cannot enter it", g.Process, kind)
 	}
 	var path []string
 	step := map[string]int{}

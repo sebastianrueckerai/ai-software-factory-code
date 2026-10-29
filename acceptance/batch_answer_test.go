@@ -68,7 +68,7 @@ func newAccBatchTasks() *accBatchTasks {
 	copy(qs, planFixtureQuestions)
 	return &accBatchTasks{
 		tasks: []factoryd.BoardTask{
-			{Task: factoryd.Task{ID: planTask, Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan,
+			{Task: factoryd.Task{ID: planTask, Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan,
 				Process: "maintenance", Repository: "sf/code", IssueNumber: planIssue,
 				Objective: "Every plan answer in one turn."}},
 		},
@@ -123,7 +123,7 @@ func (s *accBatchTasks) CountAdmitted(_ context.Context, repository string) (int
 	defer s.mu.Unlock()
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
 		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
@@ -139,7 +139,7 @@ func (s *accBatchTasks) ListQueuedByRepository(_ context.Context, repository str
 	defer s.mu.Unlock()
 	var out []factoryd.Task
 	for _, bt := range s.tasks {
-		if bt.Repository == repository && bt.Kind == "agent" && bt.Lane != "" && bt.Status == "queued" {
+		if bt.Repository == repository && bt.Kind == "agent" && !bt.Unbound() && bt.Status == "queued" {
 			out = append(out, bt.Task)
 		}
 	}
@@ -355,7 +355,7 @@ func (s *accBatchTasks) openCount() int {
 	return n
 }
 
-func (*accBatchTasks) CountBacklog(context.Context, string) (int, error) { return 0, nil }
+func (*accBatchTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 // accBatchApprovals are the approval_requests rows in memory;
 // ResolveApprovals is factoryd.PGStore.ResolveApprovals on them.
@@ -624,10 +624,7 @@ func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factory
 	return factoryd.LiveSession{}, false, nil
 }
 func (s *accBatchStore) DeleteLiveSession(ctx context.Context, taskID string) error { return nil }
-func (s *accBatchStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
-	panic("unused")
-}
-func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error) { panic("unused") }
+func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error)   { panic("unused") }
 func (s *accBatchStore) ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error) {
 	panic("unused")
 }
@@ -813,7 +810,11 @@ func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.R
 	panic("unused")
 }
 
-func (*accBatchStore) CountBacklog(context.Context, string) (int, error) { return 0, nil }
+func (*accBatchStore) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
+	return factoryd.ProjectSpend{}, nil
+}
+
+func (*accBatchStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 // accBatchPolicies serves the fixture tree as the version in force.
 type accBatchPolicies struct{ tree policy.Tree }
@@ -1209,10 +1210,9 @@ agents: coder
 process: maintenance
 tokens: {read: forgejo-ci-registrar, actions: forgejo-ci-registrar, merge: forgejo-merge}
 `),
-		policy.ProcessFile("maintenance"): []byte(policy.Header(policy.ProcessFile("maintenance")) + "\n" + `lanes:
-  - {name: backlog}
-  - {name: plan, class: planner, moved_by: writers, plan: {max_cards: 8, min_cards: 2, foundation: true, integration: true}}
-  - {name: ready, class: coder, moved_by: writers}
+		policy.ProcessFile("maintenance"): []byte(policy.Header(policy.ProcessFile("maintenance")) + "\n" + `tracks:
+  direct: {class: coder}
+  plan: {class: planner, plan: {max_cards: 8, min_cards: 2, foundation: true, integration: true}}
 dependencies: {wait_until: done, on_failed: human}
 merge: {queue: none}
 stages:
@@ -1257,25 +1257,21 @@ func newBatchRig(t *testing.T) *batchRig {
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
 		},
+		Writes: func(_ context.Context, repository, user string) (bool, error) {
+			return repository == "sf/code" && user == "sebastian", nil
+		},
 		Approvals: apprs, Resources: &acceptResources{}, Alerts: &acceptAlerts{},
 		Projects: &acceptProjects{rows: []factoryd.Project{{Name: accBatchProject, Repository: "sf/code",
 			MergeRule: "human", Objects: policy.ObjectsSeed, Agents: "coder", File: true, Process: "maintenance",
-			Lanes: tree.Processes["maintenance"].Lanes}}},
+			Tracks: tree.Processes["maintenance"].Tracks}}},
 		Events: evs, Bus: evs.bus, Chat: &accBatchChat{tasks: tasks},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
-		MayMove: func(_ context.Context, repository, user, _ string) (bool, error) {
-			return repository == "sf/code" && user == "sebastian", nil
-		},
-		AcceptPlan: func(ctx context.Context, taskID string, revision int, sha, decider, author string) error {
-			return factoryd.AcceptPlan(ctx, store, wf, taskID, revision, sha, decider, author)
-		},
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)
 		},
-		RejectPlan: func(_ context.Context, _, _, _ string) error { return nil },
 	})
 	if err != nil {
 		t.Fatal(err)

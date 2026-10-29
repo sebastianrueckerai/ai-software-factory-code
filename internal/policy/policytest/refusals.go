@@ -17,12 +17,12 @@ type Refusal struct {
 }
 
 const (
-	spec  = "processes/spec.yaml"
-	maint = "processes/maintenance.yaml"
-	pol   = "policy.yaml"
-	ready = "  - {name: ready, class: coder, moved_by: writers}\n"
-	merge = "  - {name: merge, on_findings: human, enabled: true}\n"
-	rev   = "  - {name: review, on_findings: agent, enabled: true}\n"
+	spec   = "processes/spec.yaml"
+	maint  = "processes/maintenance.yaml"
+	pol    = "policy.yaml"
+	direct = "  direct: {class: coder}\n"
+	merge  = "  - {name: merge, on_findings: human, enabled: true}\n"
+	rev    = "  - {name: review, on_findings: agent, enabled: true}\n"
 )
 
 // edit replaces old by new once in file; a fixture that lacks old is a
@@ -42,43 +42,31 @@ func in(file, old, new string) func(map[string][]byte) {
 var Refusals = map[string]Refusal{
 	// S: schema and names
 	"unknown_key": {Change: in(spec, "merge: {queue: project}", "merge: {queue: project, mode: fast}"),
-		Want: []string{"processes/spec.yaml: yaml: unmarshal errors:\n  line 24: field mode not found in type policy.Merge"}},
+		Want: []string{"processes/spec.yaml: yaml: unmarshal errors:\n  line 22: field mode not found in type policy.Merge"}},
 	"header": {Change: in(spec, "# yaml-language-server: $schema=../schema/process.schema.json\n", ""),
 		Want: []string{"processes/spec.yaml: the first line must be # yaml-language-server: $schema=../schema/process.schema.json"}},
 	"process_file_name": {Change: func(f map[string][]byte) { f["processes/Spec.yaml"] = f[spec]; delete(f, spec) },
 		Want: []string{"processes/Spec.yaml: the file name: lowercase letters, digits and dashes, at most 37"}},
-	"lane_unknown": {Change: in(spec, ready, ready+"  - {name: review}\n"),
-		Want: []string{`processes/spec.yaml: lanes: lane 4: unknown name "review" (known: backlog, plan, ready)`}},
-	"lane_twice": {Change: in(spec, ready, ready+ready),
-		Want: []string{"processes/spec.yaml: lanes: lane ready is listed twice"}},
-	"backlog_missing": {Change: in(maint, "  - {name: backlog, write_up: analyzer}\n", ""),
-		Want: []string{"processes/maintenance.yaml: lanes: lane backlog is required: the cards that do not start wait there"}},
-	"ready_missing": {Change: in(maint, ready, ""),
-		Want: []string{"processes/maintenance.yaml: lanes: lane ready is required: it starts the coding tasks"}},
-	"class_unknown": {Change: in(spec, "{name: ready, class: coder", "{name: ready, class: builder"),
-		Want: []string{`processes/spec.yaml: lanes.ready: class "builder" is not a class of policy.yaml (classes: analyzer, coder, planner)`}},
-	"class_missing": {Change: in(spec, "{name: ready, class: coder, moved_by", "{name: ready, moved_by"),
-		Want: []string{"processes/spec.yaml: lanes.ready: class is required on a starting lane"}},
-	"moved_by_missing": {Change: in(spec, "    moved_by: writers\n", ""),
-		Want: []string{"processes/spec.yaml: lanes.plan: moved_by is required on a starting lane, one of [writers approvers]"}},
-	"moved_by_value": {Change: in(spec, "class: coder, moved_by: writers}", "class: coder, moved_by: anyone}"),
-		Want: []string{`processes/spec.yaml: lanes.ready: moved_by "anyone", want one of [writers approvers]`}},
-	"backlog_class": {Change: in(spec, "{name: backlog}", "{name: backlog, class: coder}"),
-		Want: []string{"processes/spec.yaml: lanes.backlog: class and moved_by are not allowed: backlog starts nothing and no card moves into it"}},
-	"write_up_off_backlog": {Change: in(spec, "moved_by: writers}\ndependencies", "moved_by: writers, write_up: analyzer}\ndependencies"),
-		Want: []string{"processes/spec.yaml: lanes.ready: write_up is allowed on lane backlog only"}},
-	"plan_off_plan": {Change: in(spec, "moved_by: writers}\ndependencies", "moved_by: writers, plan: {max_cards: 5, foundation: true, integration: true}}\ndependencies"),
-		Want: []string{"processes/spec.yaml: lanes.ready: plan is allowed on lane plan only"}},
+	"lanes_removed": {Exact: true, Change: in(spec, "tracks:\n", "lanes:\n  - {name: backlog}\ntracks:\n"),
+		Want: []string{"processes/spec.yaml: lanes: removed: whoever files a card sets its track, plan or direct, and the classes and the plan bounds sit under tracks"}},
+	"direct_missing": {Change: in(maint, direct, "  plan: {class: planner, plan: {max_cards: 5, min_cards: 1, foundation: false, integration: false}}\ndependencies: {wait_until: done, on_failed: human}\n"),
+		Want: []string{"processes/maintenance.yaml: tracks.direct: class is required: it builds every card"}},
+	"class_unknown": {Change: in(spec, direct, "  direct: {class: builder}\n"),
+		Want: []string{`processes/spec.yaml: tracks.direct: class "builder" is not a class of policy.yaml (classes: analyzer, coder, planner)`}},
+	"plan_class_missing": {Change: in(spec, "    class: planner\n", ""),
+		Want: []string{"processes/spec.yaml: tracks.plan: class is required: it plans the card"}},
+	"plan_off_plan": {Change: in(spec, direct, "  direct: {class: coder, plan: {max_cards: 5, min_cards: 1, foundation: true, integration: true}}\n"),
+		Want: []string{"processes/spec.yaml: tracks.direct: plan is allowed on the plan track only"}},
 	"plan_shape_missing": {Change: in(spec, "    plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}\n", ""),
-		Want: []string{"processes/spec.yaml: lanes.plan: plan is required: it bounds the plan the planner answers"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: plan is required: it bounds the plan the planner answers"}},
 	"max_cards": {Change: in(spec, "max_cards: 12", "max_cards: 40"),
-		Want: []string{"processes/spec.yaml: lanes.plan: plan.max_cards 40: want 2 to 20"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: plan.max_cards 40: want 2 to 20"}},
 	"min_cards_zero": {Change: in(spec, "min_cards: 1", "min_cards: 0"),
-		Want: []string{"processes/spec.yaml: lanes.plan: plan.min_cards 0: want 1 to 20"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: plan.min_cards 0: want 1 to 20"}},
 	"min_cards_over": {Change: in(spec, "min_cards: 1", "min_cards: 25"),
-		Want: []string{"processes/spec.yaml: lanes.plan: plan.min_cards 25: want 1 to 20"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: plan.min_cards 25: want 1 to 20"}},
 	"min_cards_above_max": {Change: in(spec, "min_cards: 1", "min_cards: 13"),
-		Want: []string{"processes/spec.yaml: lanes.plan: plan.min_cards 13: above plan.max_cards 12"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: plan.min_cards 13: above plan.max_cards 12"}},
 	"queue_value": {Change: in(spec, "merge: {queue: project}", "merge: {queue: area}"),
 		Want: []string{`processes/spec.yaml: merge: queue "area", want one of [none project]`}},
 	"dependencies_value": {Change: in(spec, "wait_until: done", "wait_until: merged"),
@@ -105,27 +93,23 @@ var Refusals = map[string]Refusal{
 		Want: []string{"projects/ai-software-factory-infra.yaml: agents none: process is not allowed, no card starts there"}},
 
 	// N: needs met in order
-	"ready_session": {Change: in(spec, "{name: ready, class: coder", "{name: ready, class: analyzer"),
-		Want: []string{"processes/spec.yaml: lanes.ready: class analyzer has session report; lane ready needs a class with session code"}},
+	"direct_session": {Change: in(spec, direct, "  direct: {class: analyzer}\n"),
+		Want: []string{"processes/spec.yaml: tracks.direct: class analyzer has session report; track direct needs a class with session code"}},
 	"plan_session": {Change: in(spec, "    class: planner\n", "    class: coder\n"),
-		Want: []string{"processes/spec.yaml: lanes.plan: class coder has session code; lane plan needs a class with session plan"}},
-	"write_up_session": {Change: in(maint, "write_up: analyzer", "write_up: coder"),
-		Want: []string{"processes/maintenance.yaml: lanes.backlog: write_up coder has session code; a write-up needs a class with session report"}},
-	"write_up_unknown": {Change: in(maint, "write_up: analyzer", "write_up: writer"),
-		Want: []string{`processes/maintenance.yaml: lanes.backlog: write_up "writer" is not a class of policy.yaml (classes: analyzer, coder, planner)`}},
+		Want: []string{"processes/spec.yaml: tracks.plan: class coder has session code; track plan needs a class with session plan"}},
 	"plan_needs_dependencies": {Change: in(spec, "dependencies: {wait_until: done, on_failed: human}\n", ""),
-		Want: []string{"processes/spec.yaml: lanes.plan: needs the block dependencies before it: the plan's cards wait on each other in lane ready"}},
-	"dependencies_without_plan": {Change: in(maint, ready, ready+"dependencies: {wait_until: done, on_failed: human}\n"),
-		Want: []string{"processes/maintenance.yaml: dependencies: no lane plan makes dependencies: remove the block or add the lane"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: needs the block dependencies: the plan's cards wait on each other"}},
+	"dependencies_without_plan": {Change: in(maint, direct, direct+"dependencies: {wait_until: done, on_failed: human}\n"),
+		Want: []string{"processes/maintenance.yaml: dependencies: no plan track makes dependencies: remove the block or add the track"}},
 	"audit_stage": {Change: in(maint, "  - {name: audit, on_findings: human, enabled: true}\n", ""),
 		Want: []string{"projects/ai-software-factory-code.yaml: audit: process maintenance lists no audit stage"}},
 	"review_model": {Change: in(pol, "    review_model: big\n", ""),
-		Want: []string{"processes/maintenance.yaml: lanes.ready: class coder names no review_model, which the review stage calls",
-			"processes/spec.yaml: lanes.ready: class coder names no review_model, which the review stage calls"}},
+		Want: []string{"processes/maintenance.yaml: tracks.direct: class coder names no review_model, which the review stage calls",
+			"processes/spec.yaml: tracks.direct: class coder names no review_model, which the review stage calls"}},
 	"audit_model": {Change: in(pol, "    audit_model: big\n", ""),
-		Want: []string{"processes/maintenance.yaml: lanes.ready: class coder names no audit_model, which the audit stage calls for project ai-software-factory-code (audit: true)"}},
+		Want: []string{"processes/maintenance.yaml: tracks.direct: class coder names no audit_model, which the audit stage calls for project ai-software-factory-code (audit: true)"}},
 	"supervisor_model": {Change: in(pol, "    session: plan\n    models: [small, big]\n    supervisor_model: supervisor\n", "    session: plan\n    models: [small, big]\n"),
-		Want: []string{"processes/spec.yaml: lanes.plan: class planner names no supervisor_model, which the session supervisor calls"}},
+		Want: []string{"processes/spec.yaml: tracks.plan: class planner names no supervisor_model, which the session supervisor calls"}},
 
 	// F: the floor no process may lower
 	"checks_required": {Change: in(spec, "  - {name: checks, on_findings: agent, enabled: true}\n", ""),
@@ -203,8 +187,8 @@ var Refusals = map[string]Refusal{
 		edit(f, spec, merge, audit+merge)
 	}, Want: []string{"processes/spec.yaml: stages: stage approval must come right before merge",
 		"processes/spec.yaml: stages: stage audit must come between review and approval: it reads the reviewed head"}},
-	"ready_session_only": {Exact: true, Change: in(spec, "{name: ready, class: coder", "{name: ready, class: analyzer"),
-		Want: []string{"processes/spec.yaml: lanes.ready: class analyzer has session report; lane ready needs a class with session code"}},
+	"direct_session_only": {Exact: true, Change: in(spec, direct, "  direct: {class: analyzer}\n"),
+		Want: []string{"processes/spec.yaml: tracks.direct: class analyzer has session report; track direct needs a class with session code"}},
 	"nested_process": {Change: func(f map[string][]byte) { f["processes/x/spec.yaml"] = f[spec] },
 		Want: []string{`processes/x/spec.yaml: unknown file "processes/x/spec.yaml": the tree holds policy.yaml, commands.yaml, processes/<name>.yaml, projects/<name>.yaml, templates/<name>/, routines/<name>.md and schema/`}},
 }

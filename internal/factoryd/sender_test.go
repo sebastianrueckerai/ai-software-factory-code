@@ -107,7 +107,7 @@ func TestSender(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, status, budget_eur) VALUES ('T-1', 'waiting-human', 0)`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, status, budget_eur, track) VALUES ('T-1', 'waiting-human', 0, 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 

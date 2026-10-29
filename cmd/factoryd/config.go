@@ -52,7 +52,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "warning: %s differs from this factoryd's schema (factoryd opens a pull request for it)\n", filepath.Join(args[2], d.Path))
 		}
 		fmt.Fprintf(stdout, "%s: ok, %s, %s, %s\n", args[2], count(len(tree.Projects), "project"), count(len(tree.Processes), "process"), count(len(tree.Templates), "template"))
-		fmt.Fprintln(stdout, "open cards per lane: checked by the running factoryd only")
+		fmt.Fprintln(stdout, "open cards per track: checked by the running factoryd only")
 		return 0
 	case len(args) >= 2 && args[0] == "config" && args[1] == "explain":
 		fs := flag.NewFlagSet("explain", flag.ContinueOnError)

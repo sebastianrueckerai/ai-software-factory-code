@@ -107,7 +107,7 @@ func TestHoldoutDryVerdict(t *testing.T) {
 // model answers, on the repo the reverts read from.
 func holdoutPlanTask() Task {
 	return Task{ID: "plan1", Kind: "agent", Status: "running", Repository: "sf/repo", SHA: "base",
-		Process: "maintenance", RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
+		Process: "maintenance", RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Track: "direct"}
 }
 
 // askHoldouts runs the whole round: the review model proposes two
@@ -442,7 +442,7 @@ func TestAuditVerdictHandler(t *testing.T) {
 func TestAnswerPlanWaitsForTheHoldoutDecisions(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
-	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: "plan", IssueNumber: 20, Repository: "linkshort/linkshort"}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Track: "plan", IssueNumber: 20, Repository: "linkshort/linkshort"}
 	raw, sha, _ := planSHA(questionPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
 	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)

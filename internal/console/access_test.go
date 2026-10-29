@@ -35,7 +35,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		switch {
 		case rule.need&factoryWriter != 0:
 			return http.StatusForbidden, "Only the writers of the factory's own code see the factory's pages."
-		case rule.need&writer != 0, rule.either&(writer|approver) != 0:
+		case rule.need&writer != 0:
 			return http.StatusForbidden, "you write no project of " + subject
 		case rule.need&approver != 0:
 			return http.StatusForbidden, "Only the approvers of project " + project + " may " + rule.what + "."
@@ -71,11 +71,11 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	skipped := []string{}
 	for _, p := range r.c.postRoutes() {
 		rule := accessTable[p.pattern]
-		if rule.need == 0 && rule.either == 0 {
+		if rule.need == 0 {
 			skipped = append(skipped, p.pattern) // the webhook checks its own header secret
 			continue
 		}
-		if rule.need == member && rule.either == 0 {
+		if rule.need == member {
 			skipped = append(skipped, p.pattern)
 			continue
 		}
@@ -96,9 +96,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 47 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
+	if pages != 43 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
 		"POST /notifications/disconnect", "POST /notifications/level", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 47 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
+		t.Fatalf("%d POST routes driven, skipped %v: want 43 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -143,8 +143,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 40 || len(tools) != 75 {
-		t.Fatalf("%d of %d tools checked as writes: want 40 of 75", writes, len(tools))
+	if writes != 35 || len(tools) != 70 {
+		t.Fatalf("%d of %d tools checked as writes: want 35 of 70", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -213,7 +213,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		switch {
 		case rule.need&factoryWriter != 0:
 			return "Only the writers of the factory's own code see the factory's pages."
-		case rule.need&writer != 0, rule.either&(writer|approver) != 0:
+		case rule.need&writer != 0:
 			return "you write no project of " + subject
 		case rule.need&approver != 0:
 			return "Only the approvers of project " + project + " may " + rule.what + "."
@@ -279,8 +279,8 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 40 {
-		t.Fatalf("%d write tools driven: want 40", writes)
+	if writes != 35 {
+		t.Fatalf("%d write tools driven: want 35", writes)
 	}
 }
 

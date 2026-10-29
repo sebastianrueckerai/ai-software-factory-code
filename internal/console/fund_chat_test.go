@@ -325,8 +325,8 @@ func TestOneClickFundChoiceRaisesAndAnswersWithoutANote(t *testing.T) {
 	}
 
 	r = needRig(t)
-	r.writers.users = []string{"sebastian", "morgan"}
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "morgan") // writes sf/code, yet not an approver
+	r.forgetWriters()
 	ck, ms := memberLogin(t, r, "morgan")
 	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {ms.csrf}, "project": {"ai-software-factory-code"},
 		"value": {factoryd.FundChoiceValue(0.5)}}), ck)

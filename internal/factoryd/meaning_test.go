@@ -9,8 +9,7 @@ func TestStatusMeaning(t *testing.T) {
 	tests := []struct {
 		status, want string
 	}{
-		{"backlog", "waits in the backlog until a member moves it into a lane"},
-		{"queued", "waits for its session to start"},
+		{"queued", "waits for a free work slot, in filing order"},
 		{"waiting-deps", "waits for the cards it depends on"},
 		{"running", "runs an agent session"},
 		{"closing", "is being closed"},
@@ -22,6 +21,7 @@ func TestStatusMeaning(t *testing.T) {
 		{"done", "is done"},
 		{"failed", "has failed"},
 		{"closed", "was closed"},
+		{"backlog", "is in an unknown state"},
 		{"bogus", "is in an unknown state"},
 	}
 	for _, tt := range tests {
@@ -30,7 +30,7 @@ func TestStatusMeaning(t *testing.T) {
 		}
 	}
 	var listed []string
-	for _, tt := range tests[:13] {
+	for _, tt := range tests[:12] {
 		listed = append(listed, tt.status)
 	}
 	if !slices.Equal(Statuses, listed) {

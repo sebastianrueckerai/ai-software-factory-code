@@ -90,8 +90,8 @@ func (j labSceneJSON) check(now time.Time) error {
 		if t.Gate != "" && !slices.Contains(labGates, t.Gate) {
 			return fmt.Errorf("task %s: gate %q is none of %v", t.ID, t.Gate, labGates)
 		}
-		if !slices.Contains(policy.LaneNames, t.Lane) {
-			return fmt.Errorf("task %s: lane %q is none of %v", t.ID, t.Lane, policy.LaneNames)
+		if t.Kind == "agent" && !slices.Contains(policy.TrackNames, t.Track) {
+			return fmt.Errorf("task %s: track %q is none of %v", t.ID, t.Track, policy.TrackNames)
 		}
 	}
 	late := func(what string, at time.Time) error {
@@ -174,10 +174,10 @@ func TestLabSceneJSON(t *testing.T) {
 		status string
 	}{
 		{"a running card at its session gate", fmt.Sprintf(`{"Project":{"Name":"nord-booking","Repository":"nord/booking","Login":"sebastian"},
-	 "Tasks":[{"ID":"t-1","Kind":"agent","Status":"running","Lane":"ready","Repository":"nord/booking","IssueNumber":12,
+	 "Tasks":[{"ID":"t-1","Kind":"agent","Status":"running","Track":"direct","Repository":"nord/booking","IssueNumber":12,
 	   "Objective":"Waitlist","CreatedAt":%q,"Gate":"session"}],
 	 "Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(-time.Hour).Format(time.RFC3339)), "running"},
-		{"a card waiting on its dependencies", `{"Tasks":[{"ID":"t-1","Kind":"agent","Status":"waiting-deps","Lane":"ready","Gate":"dependencies","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, "waiting-deps"},
+		{"a card waiting on its dependencies", `{"Tasks":[{"ID":"t-1","Kind":"agent","Status":"waiting-deps","Track":"direct","Gate":"dependencies","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, "waiting-deps"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newRig(t)
@@ -201,12 +201,13 @@ func TestLabSceneJSON(t *testing.T) {
 func TestLabSceneJSONRefuses(t *testing.T) {
 	now := time.Now()
 	for _, tc := range []struct{ name, body, want string }{
-		{"status", `{"Tasks":[{"ID":"t-1","Status":"flying","Lane":"ready","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `status "flying"`},
-		{"gate", `{"Tasks":[{"ID":"t-1","Status":"running","Lane":"ready","Gate":"flying","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `gate "flying"`},
-		{"timeline", `{"Tasks":[{"ID":"t-1","Status":"running","Lane":"ready","CreatedAt":"2026-01-01T00:00:00Z"}]}`, `sessions/t-1/timeline.jsonl`},
-		{"future", fmt.Sprintf(`{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","CreatedAt":%q}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(time.Hour).Format(time.RFC3339)), "CreatedAt"},
-		{"parent", `{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","Parent":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `parent "t-9"`},
-		{"roll", `{"Tasks":[{"ID":"t-1","Status":"merged","Lane":"ready","RollID":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `roll "t-9"`},
+		{"status", `{"Tasks":[{"ID":"t-1","Status":"flying","Track":"direct","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `status "flying"`},
+		{"gate", `{"Tasks":[{"ID":"t-1","Status":"running","Track":"direct","Gate":"flying","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `gate "flying"`},
+		{"track", `{"Tasks":[{"ID":"t-1","Kind":"agent","Status":"queued","Track":"ready","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `track "ready"`},
+		{"timeline", `{"Tasks":[{"ID":"t-1","Status":"running","Track":"direct","CreatedAt":"2026-01-01T00:00:00Z"}]}`, `sessions/t-1/timeline.jsonl`},
+		{"future", fmt.Sprintf(`{"Tasks":[{"ID":"t-1","Status":"queued","Track":"direct","CreatedAt":%q}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, now.Add(time.Hour).Format(time.RFC3339)), "CreatedAt"},
+		{"parent", `{"Tasks":[{"ID":"t-1","Status":"queued","Track":"direct","Parent":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `parent "t-9"`},
+		{"roll", `{"Tasks":[{"ID":"t-1","Status":"merged","Track":"direct","RollID":"t-9","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""}}`, `roll "t-9"`},
 	} {
 		var j labSceneJSON
 		if err := json.Unmarshal([]byte(tc.body), &j); err != nil {
@@ -264,13 +265,13 @@ func nordScene(tasks ...factoryd.BoardTask) labScene {
 	}
 	return labScene{project: labProject{"nord-booking", "nord/booking", "sebastian"},
 		projects: []factoryd.Project{{Name: "nord-booking", Repository: "nord/booking", MergeRule: "human", Objects: "factory", Agents: "coder",
-			GitToken: "minted", Process: "spec", Lanes: testProcesses()["spec"].Lanes, File: true}},
+			GitToken: "minted", Process: "spec", Tracks: testProcesses()["spec"].Tracks, File: true}},
 		tasks: tasks, objects: objects}
 }
 
-// nordCard is card #n of nord/booking in status and lane.
-func nordCard(n int64, status, lane string) factoryd.BoardTask {
-	return factoryd.BoardTask{Task: factoryd.Task{ID: labID(n), Kind: "agent", Status: status, Lane: lane, Process: "spec",
+// nordCard is card #n of nord/booking in status on track.
+func nordCard(n int64, status, track string) factoryd.BoardTask {
+	return factoryd.BoardTask{Task: factoryd.Task{ID: labID(n), Kind: "agent", Status: status, Track: track, Process: "spec",
 		Repository: "nord/booking", IssueNumber: n, Objective: fmt.Sprintf("Card %d", n), CreatedAt: time.Now().Add(-time.Hour)}}
 }
 
@@ -280,22 +281,22 @@ func nordCard(n int64, status, lane string) factoryd.BoardTask {
 func TestLabSceneFilesIssue(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	token := strings.Repeat("p", 43)
-	s := nordScene(nordCard(102, "running", policy.LaneReady), nordCard(101, "done", policy.LaneReady))
+	s := nordScene(nordCard(102, "running", policy.TrackDirect), nordCard(101, "done", policy.TrackDirect))
 	s.proposals = []factoryd.ChatProposal{{Token: token, Kind: "proposal", Repository: "nord/booking", Login: "sebastian",
-		Tool: "new_card", Args: json.RawMessage(`{"title":"Export","body":"Export the bookings.","lane":"backlog"}`),
+		Tool: "new_card", Args: json.RawMessage(`{"title":"Export","body":"Export the bookings.","acceptance":["The export holds every booking"],"track":"plan","track_reason":"a feature","size":"medium"}`),
 		ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}}
 	r.seedScene(s)
 	ck, sess := r.loggedIn(t)
 	rec := r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Waitlist"},
-		"body": {"Guests wait for a free slot.\n\nAcceptance:\n- A freed slot goes to the first guest"}, "lane": {"ready"}}), ck)
+		"body": {"Guests wait for a free slot.\n\nAcceptance:\n- A freed slot goes to the first guest"}, "track": {"direct"}}), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=103&project=nord-booking" {
 		t.Fatalf("POST /tasks = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
 	code, events, _ := chatPost(t, r, ck, sess, "/projects/nord-booking/chat/proposals/"+token, nil)
-	if code != http.StatusOK || !slices.Contains(events, `applied {"result":"Filed nord/booking#104 in lane backlog.","tool":"new_card"}`) {
+	if code != http.StatusOK || !slices.Contains(events, `applied {"result":"Filed nord/booking#104 on track plan.","tool":"new_card"}`) {
 		t.Fatalf("Do it = %d %q, want #104 filed", code, events)
 	}
-	rec = r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Call the venue"}, "lane": {"human"}}), ck)
+	rec = r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Call the venue"}, "track": {"human"}}), ck)
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=105&project=nord-booking" {
 		t.Fatalf("POST /tasks of a human card = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
@@ -309,11 +310,11 @@ func TestLabSceneFilesIssue(t *testing.T) {
 	r.tasks.mu.Lock()
 	var cards []string
 	for _, bt := range r.tasks.tasks {
-		cards = append(cards, fmt.Sprint(bt.ID, " #", bt.IssueNumber, " ", bt.Kind, " ", bt.Status, " ", bt.Lane, " ", bt.Repository))
+		cards = append(cards, fmt.Sprint(bt.ID, " #", bt.IssueNumber, " ", bt.Kind, " ", bt.Status, " ", bt.Track, " ", bt.Repository))
 	}
 	r.tasks.mu.Unlock()
-	equal(t, "the cards", cards, []string{labID(102) + " #102 agent running ready nord/booking", labID(101) + " #101 agent done ready nord/booking",
-		labID(103) + " #103 agent queued ready nord/booking", labID(104) + " #104 agent backlog backlog nord/booking",
+	equal(t, "the cards", cards, []string{labID(102) + " #102 agent running direct nord/booking", labID(101) + " #101 agent done direct nord/booking",
+		labID(103) + " #103 agent queued direct nord/booking", labID(104) + " #104 agent queued plan nord/booking",
 		labID(105) + " #105 human waiting-human  nord/booking"})
 	board := r.do(httptest.NewRequest(http.MethodGet, "/?project=nord-booking", nil), ck).Body.String()
 	for _, n := range []int64{103, 104, 105} {
@@ -354,7 +355,7 @@ func TestLabSceneWakesEmptyBoard(t *testing.T) {
 	r := newRig(t)
 	r.seedScene(nordScene())
 	_, br := streamAt(t, r, "nord-booking", "", "")
-	r.seedScene(nordScene(nordCard(101, "queued", policy.LaneReady)))
+	r.seedScene(nordScene(nordCard(101, "queued", policy.TrackDirect)))
 	seeded := time.Now()
 	for {
 		got := nextMessage(t, br)
@@ -375,7 +376,7 @@ func TestLabSceneWakesEmptyBoard(t *testing.T) {
 
 func TestLabSceneCosts(t *testing.T) {
 	now := time.Now()
-	body := `{"Tasks":[{"ID":"t-1","Status":"backlog","Lane":"backlog","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""},
+	body := `{"Tasks":[{"ID":"t-1","Status":"queued","Track":"direct","CreatedAt":"2026-01-01T00:00:00Z"}],"Objects":{"sessions/t-1/timeline.jsonl":""},
 		"Costs":{"from":"2026-10-01","to":"2026-10-02","days":[{"day":"2026-10-01","by_kind":{"model":1.5},"total":1.5},{"day":"2026-10-02","by_kind":{"model":2},"total":2}],
 		"tasks":[{"task_id":"t-1","eur":3.5,"lines":[{"kind":"model","ref":"big","eur":3.5}]}]}}`
 	var j labSceneJSON

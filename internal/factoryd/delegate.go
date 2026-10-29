@@ -25,7 +25,7 @@ type DelegationStore interface {
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	CountAdmitted(ctx context.Context, repository string) (int, error)
-	CountBacklog(ctx context.Context, repository string) (int, error)
+	CountQueue(ctx context.Context, repository string) (int, error)
 }
 
 // DelegationDeps is what DelegationHandler files a card with.
@@ -41,7 +41,7 @@ type DelegationDeps struct {
 }
 
 // DelegationHandler serves the gateway's hand-over of an agent's delegate
-// call: the child card in lane ready with its dependency on the caller,
+// call: the child card on the direct track with its dependency on the caller,
 // filed before its workflow starts so the wait sees the dependency.
 func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -113,21 +113,21 @@ func DelegationHandler(d DelegationDeps) http.HandlerFunc {
 	}
 }
 
-// fileDelegation files the child: the issue and the row (FileTask), the
-// dependency on the parent, then its workflow (enterLane), which waits in
-// waiting-deps until the parent is done.
+// fileDelegation files the child on the direct track: the issue and the
+// row (FileTask), the dependency on the parent, then its workflow, which
+// waits in waiting-deps until the parent is done.
 func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Task, title, brief string) (Task, IssueRef, error) {
 	body := fmt.Sprintf("Delegated by card #%d (%s): it starts when that card is done and builds on its merge.\n\n%s\n\nSize: small\nRung: cheap, delegated routine work",
 		parent.IssueNumber, parent.ID, brief)
-	t, labels, err := fileEntry(p, Task{
+	t, err := fileEntry(p, Task{
 		ID: NewTaskID(), Priority: parent.Priority, RiskClass: "standard", BudgetEUR: policy.CardBudget(d.Budget(), p.Budget, "small", false, 0),
 		Objective: title + "\n\n" + body, Repository: parent.Repository, Source: SourceDelegate, Parent: parent.ID,
 		Rung: RungCheap, Size: "small", Author: parent.Author, AuthorWriter: true,
-	}, nil)
+	})
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
-	t, ref, err := FileTask(ctx, d.Store, d.Forgejo, p.Repo(), title, body, labels, t)
+	t, ref, err := FileTask(ctx, d.Store, d.Forgejo, p.Repo(), title, body, nil, t)
 	if err != nil {
 		return Task{}, IssueRef{}, err
 	}
@@ -139,9 +139,8 @@ func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Tas
 			log.Printf("task %s: issue dependency on #%d: %v", t.ID, parent.IssueNumber, err)
 		}
 	}
-	by := d.Forgejo.BotUser
-	d.Timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": ref.Number, "parent": parent.ID})
-	if err := enterLane(ctx, d.Timeline, d.Workflows, t, by, nil); err != nil {
+	d.Timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": d.Forgejo.BotUser, "issue": ref.Number, "parent": parent.ID, "track": t.Track})
+	if err := d.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start workflow: %v", t.ID, err)
 	}
 	return t, ref, nil

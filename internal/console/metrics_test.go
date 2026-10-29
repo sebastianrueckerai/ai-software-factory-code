@@ -139,6 +139,7 @@ func TestProjectMetricsAnswers500WhenTheFiguresRefuse(t *testing.T) {
 func TestProjectMetricsAnswers403ForNonWriter(t *testing.T) {
 	r := newRig(t)
 	r.repoWriters["sf/code"] = []string{"someone-else"}
+	r.forgetWriters()
 	ck, _ := r.loggedIn(t)
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics?format=json", nil), ck)
 	if rec.Code != http.StatusForbidden {

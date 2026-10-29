@@ -14,10 +14,10 @@ import (
 // Each poke class's row, hand-derived from the event and its card
 // (roadmap 239, C14's inbox).
 func TestPokeOf(t *testing.T) {
-	card := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", SpentEUR: 0.214}
+	card := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", SpentEUR: 0.214, Track: "direct"}
 	child := card
 	child.Parent = "t-plan"
-	plan := Task{ID: "t-plan", Kind: "agent", IssueNumber: 558, Objective: "Members page"}
+	plan := Task{ID: "t-plan", Kind: "agent", IssueNumber: 558, Objective: "Members page", Track: "plan"}
 	agentDid := func(kind, level string, more map[string]any) Event {
 		d := map[string]any{"autonomy": level, "merge_rule": "human", "decider": "agent"}
 		for k, v := range more {
@@ -50,7 +50,7 @@ func TestPokeOf(t *testing.T) {
 		{"a factory merge on red checks offers the re-run", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": true, "red_checks": true}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: the checks of PR #612 are red, so it cannot merge; run them again, or close it with your words.", Choices: []string{ChoiceRerun}}, true},
 		{"a plan", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "plan", "revision": float64(2), "cards": float64(6)}}, plan,
-			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your acceptance: revision 2, 6 cards.`, Choices: []string{"Accept"}}, true},
+			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 failed: policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml.",
@@ -77,14 +77,14 @@ func TestPokeOf(t *testing.T) {
 				"Fund it from this row or the board's status panel, and the stopped turns go on."}, true},
 		{"a level change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "manual", "to": "assisted"}}, Task{},
 			ChatMessage{Kind: MessagePoke, Content: "sebastian set the autonomy from manual to assisted: the agent starts and files ready work by itself; direction, money beyond a card's budget and merges still ask."}, true},
-		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "backlog_cap": float64(5)}}, Task{},
-			ChatMessage{Kind: MessagePoke, Content: "sebastian set the backlog cap to 5."}, true},
-		{"the agent's start", agentDid(EventCardMoved, "assisted", map[string]any{"lane": "ready"}), card,
-			ChatMessage{Kind: MessagePoke, Content: `Started #603 "Session store: pick the table's store".`, Decider: "assisted level · started by the agent"}, true},
+		{"a cap change", Event{Kind: EventAutonomyChanged, Actor: "sebastian", Detail: map[string]any{"from": "assisted", "to": "assisted", "queue_cap": float64(5)}}, Task{},
+			ChatMessage{Kind: MessagePoke, Content: "sebastian set the queue cap to 5."}, true},
+		{"the agent's retry", agentDid(EventCardRetried, "assisted", map[string]any{}), card,
+			ChatMessage{Kind: MessagePoke, Content: `Retried #603 "Session store: pick the table's store".`, Decider: "assisted level · retried by the agent"}, true},
 		{"the agent's filing at full auto", agentDid(EventCardFiled, "autonomous", map[string]any{"merge_rule": "auto"}), card,
 			ChatMessage{Kind: MessagePoke, Content: `Filed #603 "Session store: pick the table's store".`, Decider: "full auto level · filed by the agent"}, true},
-		{"the agent's move at manual", agentDid(EventCardMoved, "manual", map[string]any{"lane": "ready"}), card, ChatMessage{}, false},
-		{"the member's start", Event{Kind: EventCardMoved, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member", "lane": "ready"}}, card, ChatMessage{}, false},
+		{"the agent's filing at manual", agentDid(EventCardFiled, "manual", map[string]any{}), card, ChatMessage{}, false},
+		{"the member's retry", Event{Kind: EventCardRetried, TaskID: "t-1", Detail: map[string]any{"autonomy": "assisted", "decider": "member"}}, card, ChatMessage{}, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got, ok := pokeOf(tt.e, tt.t)
@@ -116,7 +116,7 @@ func TestPokeOf(t *testing.T) {
 // concluded between merge and poke — informs nobody, its done poke its
 // only tell.
 func TestMergedPokeInformsOnce(t *testing.T) {
-	merged := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "merged", FinishedAt: justNow()}
+	merged := Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "merged", FinishedAt: justNow(), Track: "direct"}
 	merge := func(chain string, repair float64, covered bool) Event {
 		return Event{Kind: EventPullRequestMerged, TaskID: "t-1",
 			Detail: map[string]any{"pr": float64(9), "by": MergeUser, "chain": chain, "repair": repair, "covered": covered}}
@@ -150,7 +150,7 @@ func TestMergedPokeInformsOnce(t *testing.T) {
 func TestDonePokeSaysLive(t *testing.T) {
 	m, ok := pokeOf(Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "done"}},
 		Task{ID: "t-1", Kind: "agent", IssueNumber: 603, Status: "done", SpentEUR: 0.214,
-			Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store"})
+			Objective: "Session store: pick the table's store\n\nAcceptance:\n- one store", Track: "direct"})
 	if !ok {
 		t.Fatal("pokeOf ok = false, want the done poke")
 	}
@@ -190,8 +190,8 @@ func TestPGStorePokes(t *testing.T) {
 	}
 	ctx := t.Context()
 	for _, task := range []Task{
-		{ID: "t-1", Kind: "agent", Repository: "sf/code", IssueNumber: 603, Status: "waiting-human", Objective: "Session store"},
-		{ID: "t-2", Kind: "agent", Repository: "sf/other", IssueNumber: 7, Status: "failed", Objective: "Feed page"},
+		{ID: "t-1", Kind: "agent", Repository: "sf/code", IssueNumber: 603, Status: "waiting-human", Objective: "Session store", Track: "direct"},
+		{ID: "t-2", Kind: "agent", Repository: "sf/other", IssueNumber: 7, Status: "failed", Objective: "Feed page", Track: "direct"},
 	} {
 		if err := s.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
@@ -295,7 +295,7 @@ func TestPGStorePokes(t *testing.T) {
 
 	// a merged card informs once at its merge, its words the chain's facts
 	// as the pass reads them: a red chain names the repair card on it
-	merged := Task{ID: "t-3", Kind: "agent", Repository: "sf/code", IssueNumber: 604, PRNumber: 9, Status: "merged", FinishedAt: justNow(), Objective: "Feed page"}
+	merged := Task{ID: "t-3", Kind: "agent", Repository: "sf/code", IssueNumber: 604, PRNumber: 9, Status: "merged", FinishedAt: justNow(), Objective: "Feed page", Track: "direct"}
 	if err := s.CreateTask(ctx, merged); err != nil {
 		t.Fatal(err)
 	}
@@ -373,11 +373,11 @@ func TestTheMergedInformReachesACardOnItsWayToMerged(t *testing.T) {
 	}
 	ctx := t.Context()
 	tasks := []Task{
-		{ID: "t-rev", Kind: "agent", Repository: "sf/code", IssueNumber: 601, PRNumber: 9, Status: "in-review", Objective: "Feed page"},
-		{ID: "t-cls", Kind: "agent", Repository: "sf/code", IssueNumber: 602, PRNumber: 10, Status: "closing", Objective: "Feed page"},
-		{ID: "t-roll", Kind: "agent", Repository: "sf/code", IssueNumber: 603, PRNumber: 11, Status: "closing", Source: SourceRoll, Objective: "roll"},
-		{ID: "t-none", Kind: "agent", Repository: "sf/demo", IssueNumber: 604, PRNumber: 3, Status: "closing", Objective: "Feed page"},
-		{ID: "t-gone", Kind: "agent", Repository: "sf/gone", IssueNumber: 605, PRNumber: 4, Status: "closing", Objective: "Feed page"},
+		{ID: "t-rev", Kind: "agent", Repository: "sf/code", IssueNumber: 601, PRNumber: 9, Status: "in-review", Objective: "Feed page", Track: "direct"},
+		{ID: "t-cls", Kind: "agent", Repository: "sf/code", IssueNumber: 602, PRNumber: 10, Status: "closing", Objective: "Feed page", Track: "direct"},
+		{ID: "t-roll", Kind: "agent", Repository: "sf/code", IssueNumber: 603, PRNumber: 11, Status: "closing", Source: SourceRoll, Objective: "roll", Track: "direct"},
+		{ID: "t-none", Kind: "agent", Repository: "sf/demo", IssueNumber: 604, PRNumber: 3, Status: "closing", Objective: "Feed page", Track: "direct"},
+		{ID: "t-gone", Kind: "agent", Repository: "sf/gone", IssueNumber: 605, PRNumber: 4, Status: "closing", Objective: "Feed page", Track: "direct"},
 	}
 	for _, task := range tasks {
 		if err := s.CreateTask(ctx, task); err != nil {

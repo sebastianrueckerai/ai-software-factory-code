@@ -43,7 +43,7 @@ func TestPGStore(t *testing.T) {
 
 	// factoryd owns task rows; seed one the way it would.
 	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app', 'small')`,
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, track) VALUES ('t1', 10, 2, 'running', '["coder"]', 'sf/app', 'small', 'direct')`,
 	); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 	}
 	defer s.db.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
-		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'small')`); err != nil {
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, track) VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'small', 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {
@@ -214,8 +214,8 @@ func TestRowsCarryTheSessionAndTheAuthor(t *testing.T) {
 	}
 	defer s.db.Close()
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
-		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, author)
-		VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'small', 'alice')`); err != nil {
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, author, track)
+		VALUES ('t1', 10, 0, 'running', '["coder"]', 'sf/app', 'small', 'alice', 'direct')`); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := policy.Record(ctx, s.db, "abc", policy.Tree{Document: testPolicy(0, 20).Document}); err != nil {

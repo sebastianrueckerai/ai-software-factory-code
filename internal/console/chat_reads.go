@@ -52,8 +52,8 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	var b strings.Builder
 	b.WriteString(cardLine(k))
-	if k.Lane != "" {
-		fmt.Fprintf(&b, "\nlane %s of process %s", k.Lane, k.Process)
+	if k.Track != "" {
+		fmt.Fprintf(&b, "\ntrack %s of process %s", k.Track, k.Process)
 	}
 	if k.Accent != "" {
 		b.WriteString(", accent " + k.Accent)
@@ -142,7 +142,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if n := newestChecksCount(steps); n != "" {
 		fmt.Fprintf(&b, "\nchecks: %s: see pr", n)
 	}
-	if k.Lane == policy.LanePlan || planChild(k) {
+	if k.Track == policy.TrackPlan || planChild(k) {
 		b.WriteString("\nplan: see plan")
 	}
 	if n := len(every(steps, "session_start")); n > 0 {
@@ -167,11 +167,11 @@ func (t *turn) splitLines(k factoryd.Task) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if ok && parent.Lane != policy.LanePlan {
+		if ok && parent.Track != policy.TrackPlan {
 			fmt.Fprintf(&b, "\nsplit from #%d", parent.IssueNumber)
 		}
 	}
-	if k.Lane != policy.LanePlan && k.PRNumber != 0 {
+	if k.Track != policy.TrackPlan && k.PRNumber != 0 {
 		cards, err := t.c.cfg.Tasks.PlanCards(ctx, k.ID)
 		if err != nil {
 			return "", err
@@ -266,7 +266,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 			return "", err
 		}
 		fmt.Fprintf(&b, "card of plan #%d\n", plan.IssueNumber)
-	case k.Lane != policy.LanePlan:
+	case k.Track != policy.TrackPlan:
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is no plan and belongs to none.", k.IssueNumber))
 	}
 	rev, summary, rows, ok, err := t.c.planTable(ctx, plan.ID, 0)

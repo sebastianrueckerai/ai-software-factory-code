@@ -71,6 +71,7 @@ func TestGithubPullRequestMode(t *testing.T) {
 	r.syncErr = errors.New("git fetch: exit status 128: fatal: unable to access 'https://github.com/acme/app.git/': Could not resolve host: github.com")
 	sync(ck, s.csrf, http.StatusSeeOther, "failed: git fetch: exit status 128: fatal: unable to access 'https://github.com/acme/app.git/': Could not resolve host: github.com")
 	r.repoWriters["demo-app/demo-app"] = append(r.repoWriters["demo-app/demo-app"], "anna")
+	r.forgetWriters()
 	ak, as := r.as(t, "anna")
 	sync(ak, as.csrf, http.StatusForbidden, "")
 	delete(r.mirrors.rows, "demo-app export")

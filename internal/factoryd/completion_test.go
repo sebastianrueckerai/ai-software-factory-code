@@ -75,7 +75,7 @@ func TestCompletionClosesSpendThenRevokesThenDones(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running"})
+	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
 	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -97,7 +97,7 @@ func TestCompletionMarksFailedRunAsFailed(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running"})
+	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
 	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "failed"); err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -116,7 +116,7 @@ func TestCompletionSkipsOtherTasksTokens(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200, forgejoTokens: `[{"id":78,"name":"task-t2"}]`}
 	fjURL, llURL := back.srv(t)
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running"})
+	store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
 	if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done"); err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -135,7 +135,7 @@ func TestCompletionLeavesClosingOnRevocationFailure(t *testing.T) {
 		breakIt(back)
 		fjURL, llURL := back.srv(t)
 		store := newFakeStore()
-		store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running"})
+		store.CreateTask(context.Background(), Task{ID: "t1", BudgetEUR: 5, Status: "running", Track: "direct"})
 
 		if err := newCompletion(store, fjURL, llURL).Complete(context.Background(), "t1", "done"); err == nil {
 			t.Fatalf("%s: Complete succeeded against a broken backend", name)
@@ -176,11 +176,11 @@ func TestCompletionSettlesSpendAgainstLiteLLM(t *testing.T) {
 	store := newFakeStore()
 	now := time.Now()
 	for _, tk := range []Task{
-		{ID: "t1", SpentEUR: 0.5, Status: "done"},
-		{ID: "t2", SpentEUR: 1, Status: "failed"},
-		{ID: "old", SpentEUR: 0.5, Status: "done"},
-		{ID: "cut", SpentEUR: 0.4767, Status: "done"},
-		{ID: "run", SpentEUR: 0.5, Status: "running"},
+		{ID: "t1", SpentEUR: 0.5, Status: "done", Track: "direct"},
+		{ID: "t2", SpentEUR: 1, Status: "failed", Track: "direct"},
+		{ID: "old", SpentEUR: 0.5, Status: "done", Track: "direct"},
+		{ID: "cut", SpentEUR: 0.4767, Status: "done", Track: "direct"},
+		{ID: "run", SpentEUR: 0.5, Status: "running", Track: "direct"},
 	} {
 		store.CreateTask(context.Background(), tk)
 	}
@@ -240,7 +240,7 @@ func TestCompletionSettleLoopRunsPasses(t *testing.T) {
 	}))
 	defer ll.Close()
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1", Status: "done"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "done", Track: "direct"})
 	store.finished["t1"] = time.Now()
 	c := &Completion{Store: store, LiteLLM: &LiteLLMAdmin{BaseURL: ll.URL, MasterKey: "mk"}}
 

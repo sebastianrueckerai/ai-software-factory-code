@@ -333,8 +333,8 @@ func RetryID(id string) string {
 // failed card's branch, if any, to start from; the dependents wake, and the
 // failed card's issue closes as factoryd's recorded close. Each step after
 // the transaction is safe to repeat: a retry that stopped is finished by
-// the next. It returns the replacement's issue, which lane ready takes
-// once a human labels it.
+// the next. The replacement is queued on the direct track, where it starts
+// under the work bound once its branch is copied. It returns its issue.
 func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, error) {
 	old, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -362,12 +362,20 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 		if old.PlanKey == "" {
 			return 0, retried
 		}
+		p, ok, err := r.store.ProjectByRepository(ctx, old.Repository)
+		if err != nil {
+			return 0, err
+		}
+		class, has := trackClass(p, policy.TrackDirect)
+		if !ok || !has {
+			return 0, errNoTrack(p)
+		}
 		reason, _ := lastStep(tl, "final")["reason"].(string)
 		objective := old.Objective + "\n\n" + r.untrusted(old, fmt.Sprintf("Replaces #%d, which failed: %s", old.IssueNumber,
 			cmp.Or(reason, "the timeline records no reason")))
-		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "backlog",
-			Lane: policy.LaneBacklog, Process: old.Process, Objective: objective, Repository: old.Repository, SHA: old.SHA, Kind: "agent",
-			Source: SourcePlan, Parent: old.Parent, PlanKey: old.PlanKey, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
+		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
+			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
+			SHA: old.SHA, Kind: "agent", Source: SourcePlan, Parent: old.Parent, PlanKey: old.PlanKey, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
 		switch ok, err := r.store.ReplaceFailedCard(ctx, old.ID, t); {
 		case err != nil:
 			return 0, err
@@ -390,15 +398,19 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 			return 0, stopped("linking its issue #"+fmt.Sprint(ref.Number), err)
 		}
 		t.IssueNumber = ref.Number
-		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID})
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID, "track": t.Track})
 	}
-	if t.Status == "backlog" {
-		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, []string{LabelBacklog, "state/backlog"}); err != nil {
+	// a retry that stopped at the labels labels it the next time
+	if t.Status == "queued" {
+		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
 			return 0, stopped("labelling its issue", err)
 		}
 	}
 	if err := r.forgejo.CopyBranch(ctx, r.forgejo.Fork(repo), taskBranch(old), taskBranch(t)); err != nil {
 		return 0, stopped("copying the branch", err)
+	}
+	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
+		log.Printf("task %s: start the replacement %s: %v", old.ID, t.ID, err)
 	}
 	signalDependents(ctx, r.store, r.cfg.Workflows, t.ID)
 	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, old, fmt.Sprintf("factoryd: Retried as #%d.", t.IssueNumber)); err != nil {
@@ -430,7 +442,7 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 	switch {
 	case t.Kind != "human":
 		return 0, ErrNoGo(fmt.Sprintf("Card #%d is an agent card: the factory runs it.", t.IssueNumber))
-	case t.Status != "backlog" && t.Status != "waiting-human":
+	case t.Status != "waiting-human":
 		return 0, ErrNoGo(fmt.Sprintf("Card #%d does not wait on you: it is %s.", t.IssueNumber, t.Status))
 	}
 	v := r.cfg.Policy()

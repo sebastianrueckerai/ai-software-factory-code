@@ -53,57 +53,39 @@ func TestReadyFindings(t *testing.T) {
 }
 
 type fakeCounts struct {
-	admitted, backlog int
-	err               error
+	admitted, queue int
+	err             error
 }
 
 func (f fakeCounts) CountAdmitted(context.Context, string) (int, error) { return f.admitted, f.err }
-func (f fakeCounts) CountBacklog(context.Context, string) (int, error)  { return f.backlog, f.err }
+func (f fakeCounts) CountQueue(context.Context, string) (int, error)    { return f.queue, f.err }
 
 func readyTree() policy.Tree {
 	return policy.Tree{Projects: map[string]policy.ProjectConfig{
-		"p": {Repository: "o/r", WorkInProgress: 2, BacklogCap: 3}}}
-}
-
-func TestStartRefusal(t *testing.T) {
-	ctx := context.Background()
-	tree := readyTree()
-	card := Task{ID: "t1", Repository: "o/r", PlanKey: "k", Size: "small", Objective: "T\n\nbody\n\nAcceptance:\n- TestA\n"}
-	if got := StartRefusal(ctx, fakeCounts{admitted: 1}, tree, card); got != "" {
-		t.Errorf("a ready card under the bound: refusal %q, want none", got)
-	}
-	got := StartRefusal(ctx, fakeCounts{admitted: 2}, tree, card)
-	if got != "card t1: all 2 work slots of the project are busy; it starts when one frees" {
-		t.Errorf("at the bound: refusal %q, want the slots line", got)
-	}
-	card.Size = ""
-	got = StartRefusal(ctx, fakeCounts{admitted: 0}, tree, card)
-	if got != `card k: size "": want small, medium or large` {
-		t.Errorf("a card without a size: refusal %q, want the size line", got)
-	}
-	if got := StartRefusal(ctx, fakeCounts{err: context.DeadlineExceeded}, tree,
-		Task{ID: "t1", Repository: "o/r", PlanKey: "k", Size: "small", Objective: "T\n\nbody\n\nAcceptance:\n- TestA\n"}); got != "" {
-		t.Errorf("a failed count: refusal %q, want none: the workflow's bound holds", got)
-	}
+		"p": {Repository: "o/r", WorkInProgress: 2, QueueCap: 3}}}
 }
 
 func TestFileRefusal(t *testing.T) {
 	ctx := context.Background()
 	tree := readyTree()
-	got := FileRefusal(ctx, fakeCounts{backlog: 3}, tree, "o/r", "t-new", "Title", "body\n\nAcceptance:\n- TestA\n", "small")
-	if got != "card t-new: the backlog holds 3 of its 3 cards; file it when one starts" {
+	got := FileRefusal(ctx, fakeCounts{queue: 3}, tree, "o/r", "t-new", "Title", "body\n\nAcceptance:\n- TestA\n", "small")
+	if got != "card t-new: the queue holds 3 of its 3 cards; file it when one starts" {
 		t.Errorf("at the cap: refusal %q, want the cap line", got)
 	}
-	if got := FileRefusal(ctx, fakeCounts{backlog: 2}, tree, "o/r", "t-new", "Title", "body\n\nAcceptance:\n- TestA\n", "small"); got != "" {
+	if got := FileRefusal(ctx, fakeCounts{queue: 2}, tree, "o/r", "t-new", "Title", "body\n\nAcceptance:\n- TestA\n", "small"); got != "" {
 		t.Errorf("under the cap: refusal %q, want none", got)
 	}
-	got = FileRefusal(ctx, fakeCounts{backlog: 0}, tree, "o/r", "t-new", "Title", "a body without criteria", "small")
+	got = FileRefusal(ctx, fakeCounts{queue: 0}, tree, "o/r", "t-new", "Title", "a body without criteria", "small")
 	if got != "card t-new: 0 acceptance tests; want 1 to 10" {
 		t.Errorf("without criteria: refusal %q, want the acceptance line", got)
 	}
 }
 
-func TestCountBacklog(t *testing.T) {
+// CountQueue counts the agent cards under the work bound that hold no
+// admission stamp and have not ended: the queued cards not yet admitted;
+// an admitted, a finished, a person's card and a roll, which the bound
+// leaves out, count none.
+func TestCountQueue(t *testing.T) {
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_ready"))
 	if err != nil {
 		t.Skipf("no database: %v", err)
@@ -113,23 +95,20 @@ func TestCountBacklog(t *testing.T) {
 		t.Fatal(err)
 	}
 	ctx := t.Context()
-	for _, id := range []string{"t-backlog-1", "t-backlog-2"} {
-		if err := s.insertTask(ctx, Task{ID: id, Repository: "o/r", Kind: "agent", Lane: policy.LaneBacklog, Status: "backlog", Objective: "b"}, ""); err != nil {
-			t.Fatal(err)
-		}
-	}
 	for _, tt := range []struct {
-		id, status, lane string
-		admitted         bool
+		id, status, kind, track, source string
+		admitted                        bool
 	}{
-		{"t-queued", "queued", policy.LaneReady, false},
-		{"t-admitted", "queued", policy.LaneReady, true},
-		{"t-running", "running", policy.LaneReady, true},
-		{"t-waiting-human", "waiting-human", policy.LaneReady, true},
-		{"t-done", "done", policy.LaneReady, true},
-		{"t-human", "waiting-human", "", false},
+		{"t-queued-1", "queued", "agent", "direct", "webhook", false},
+		{"t-queued-2", "queued", "agent", "plan", "webhook", false},
+		{"t-admitted", "queued", "agent", "direct", "webhook", true},
+		{"t-running", "running", "agent", "direct", "webhook", true},
+		{"t-waiting-human", "waiting-human", "agent", "direct", "webhook", true},
+		{"t-done", "done", "agent", "direct", "webhook", true},
+		{"t-human", "waiting-human", "human", "", "webhook", false},
+		{"t-roll", "queued", "agent", "direct", SourceRoll, false},
 	} {
-		if err := s.insertTask(ctx, Task{ID: tt.id, Repository: "o/r", Kind: "agent", Lane: tt.lane, Status: tt.status, Objective: "b"}, ""); err != nil {
+		if err := s.insertTask(ctx, Task{ID: tt.id, Repository: "o/r", Kind: tt.kind, Track: tt.track, Source: tt.source, Status: tt.status, Objective: "b"}, ""); err != nil {
 			t.Fatal(err)
 		}
 		if tt.admitted {
@@ -138,14 +117,14 @@ func TestCountBacklog(t *testing.T) {
 			}
 		}
 	}
-	n, err := s.CountBacklog(ctx, "o/r")
+	n, err := s.CountQueue(ctx, "o/r")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n != 3 {
-		t.Errorf("CountBacklog = %d, want 3: two backlog cards and the unadmitted queued one", n)
+	if n != 2 {
+		t.Errorf("CountQueue = %d, want 2: the unadmitted queued cards", n)
 	}
-	if n, err := s.CountBacklog(ctx, "o/other"); err != nil || n != 0 {
-		t.Errorf("CountBacklog(other) = %d, %v, want 0, nil", n, err)
+	if n, err := s.CountQueue(ctx, "o/other"); err != nil || n != 0 {
+		t.Errorf("CountQueue(other) = %d, %v, want 0, nil", n, err)
 	}
 }

@@ -837,7 +837,7 @@ func pushedLine(commit string) string {
 
 func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "add a README line",
-		Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2}
+		Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, _ := newTestRunner(t, task, kube, objects)
@@ -1010,7 +1010,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 // resumed session's branch head is. The worker container, where the agent
 // runs, gets neither the read token nor the repository URL to use it on.
 func TestSessionPodClonesInAnInitContainer(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
@@ -1068,8 +1068,8 @@ func TestSessionPodClonesInAnInitContainer(t *testing.T) {
 // factory's image whatever image the worker runs.
 func TestSandboxPodsTakeTheHarnessFromAnInitContainer(t *testing.T) {
 	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
-	task := Task{ID: "t1", Repository: "linkshort/linkshort"}
-	project := Task{ID: "t1", Repository: "linkshort/linkshort", ImageDigest: "reg/project@sha256:def"}
+	task := Task{ID: "t1", Repository: "linkshort/linkshort", Track: "direct"}
+	project := Task{ID: "t1", Repository: "linkshort/linkshort", ImageDigest: "reg/project@sha256:def", Track: "direct"}
 	for name, c := range map[string]struct {
 		pod   map[string]any
 		image string
@@ -1208,7 +1208,7 @@ func TestRunSessionPublishesTheAgentsText(t *testing.T) {
 // The worker gets the tools the task's classes may call under its pinned
 // version, for the brief to name.
 func TestRunSessionPassesTheOpenTools(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	v := runner.cfg.Policy()
@@ -1228,7 +1228,7 @@ func TestRunSessionPassesTheOpenTools(t *testing.T) {
 // A tool card's session gets no request_tool: it declares tools its own
 // sandbox never gets.
 func TestRunSessionGivesAToolCardNoRequestTool(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Source: SourceToolRequest}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", RequiredCapabilities: []string{"coder"}, Source: SourceToolRequest, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	v := runner.cfg.Policy()
@@ -1253,7 +1253,7 @@ func TestReportSessionGetsNoRequestTool(t *testing.T) {
 	coder := doc.Classes["coder"]
 	coder.Tools = map[string]policy.ToolCap{policy.ToolRequestTool: {}, policy.ToolRequestInfo: {}}
 	doc.Classes["coder"] = coder
-	task := Task{ID: "t1", Repository: "sf/repo", RequiredCapabilities: []string{"coder"}}
+	task := Task{ID: "t1", Repository: "sf/repo", RequiredCapabilities: []string{"coder"}, Track: "direct"}
 	for report, want := range map[string]string{"": `["request_info","request_tool"]`, "the guide": `["request_info"]`} {
 		pod := r.workerPodSpec(task, sessionSpec{id: "s-1", policy: doc, report: report})
 		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != want {
@@ -1290,7 +1290,7 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 		{"Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon", "webhook", false, "", "Fix the drawer\n\nIt breaks.\nSize: huge\nRung: soon"},
 	} {
 		task := Task{ID: "t1", Status: "running", Objective: tc.objective, Repository: "sf/repo", SHA: "base", Source: tc.source,
-			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}}
+			Author: "sebastian", AuthorWriter: tc.writer, RequiredCapabilities: []string{"coder"}, Track: "direct"}
 		kube := newFakeKube()
 		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
@@ -1308,7 +1308,7 @@ func TestRunSessionPassesTheCardsDirectories(t *testing.T) {
 }
 
 func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 
@@ -1337,7 +1337,7 @@ func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
 // scheduled, image pull stuck) still gets linked as the parent of its
 // replacement; only a session that ran adds the interruption finding.
 func TestRunSessionRetryLinksDeadSessionThatNeverRan(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	dead := &sessionProgress{SessionID: "s-dead"}
@@ -1363,7 +1363,7 @@ func TestRunSessionRetryLinksDeadSessionThatNeverRan(t *testing.T) {
 }
 
 func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	kube.namespaces["factory-agents-t1"] = map[string]string{"factory.ai/task": "t1"}
@@ -1413,7 +1413,7 @@ func TestRunSessionRetryReplacesDeadSession(t *testing.T) {
 // builds on the branch head, not on the ref the attempt was scheduled with,
 // or its non-force push would be refused.
 func TestRunSessionStartsFromTheBranchHead(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	hub.branchHead = "c9"
@@ -1436,7 +1436,7 @@ func TestFirstSessionStartsAtMainHead(t *testing.T) {
 		"stamped":  {"seed1", "", "seed1", "seed1"},
 		"ref c3":   {"seed1", "c3", "c3", "seed1"},
 	} {
-		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: tc.sha}
+		task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: tc.sha, Track: "direct"}
 		kube := newFakeKube()
 		runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 		hub.mainHead = "main2"
@@ -1461,7 +1461,7 @@ func TestFirstSessionStartsAtMainHead(t *testing.T) {
 // pull-request gate refuse a clean branch against a base it was not cut
 // from (task t-0c9745c86d12).
 func TestSessionStartStampsTheBaseOnce(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	ctx := context.Background()
@@ -1501,7 +1501,7 @@ func loopFailure(i int) string {
 
 func supervisedTask(id string) Task {
 	return Task{ID: id, Status: "running", Objective: "make loopcheck pass", Repository: "sf/repo", BudgetEUR: 0.3, SpentEUR: 0.05, IssueNumber: 7,
-		RequiredCapabilities: []string{policy.ClassCoder}}
+		RequiredCapabilities: []string{policy.ClassCoder}, Track: "direct"}
 }
 
 // The third identical failure trips same_failure; the check-in inside the
@@ -1981,7 +1981,7 @@ func TestRunSessionDropsWorkerSupervisorEvents(t *testing.T) {
 }
 
 func TestRunSessionAdapterFailureIsNoPush(t *testing.T) {
-	task := Task{ID: "t3", Status: "running", Objective: "break", Repository: "sf/repo"}
+	task := Task{ID: "t3", Status: "running", Objective: "break", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 
@@ -1998,7 +1998,7 @@ func TestRunSessionAdapterFailureIsNoPush(t *testing.T) {
 }
 
 func TestRunSessionSuccessWithoutPushIsNoPush(t *testing.T) {
-	task := Task{ID: "t3", Status: "running", Objective: "noop", Repository: "sf/repo"}
+	task := Task{ID: "t3", Status: "running", Objective: "noop", Repository: "sf/repo", Track: "direct"}
 	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil, resultLine(true, "no changes to push"))
@@ -2008,7 +2008,7 @@ func TestRunSessionSuccessWithoutPushIsNoPush(t *testing.T) {
 }
 
 func TestRunSessionPodDeathIsNoPush(t *testing.T) {
-	task := Task{ID: "t4", Status: "running", Objective: "flaky", Repository: "sf/repo"}
+	task := Task{ID: "t4", Status: "running", Objective: "flaky", Repository: "sf/repo", Track: "direct"}
 	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4", Attempt: 1, Model: "m"}, nil,
@@ -2022,7 +2022,7 @@ func TestRunSessionPodDeathIsNoPush(t *testing.T) {
 // apart from any other death: the next session's findings name the cause
 // instead of the generic "pod exited without a result".
 func TestEvictionRecorded(t *testing.T) {
-	task := Task{ID: "t4e", Status: "running", Objective: "flaky", Repository: "sf/repo"}
+	task := Task{ID: "t4e", Status: "running", Objective: "flaky", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	kube.onCreatePod = func() {
 		p := kube.podOrder[len(kube.podOrder)-1]
@@ -2078,7 +2078,7 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 			summary: openCanary, step: "egress probe", act: "check the task namespace's worker-egress policy, or the pod's uid, against the probe named below"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := Task{ID: "t4i", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+			task := Task{ID: "t4i", Status: "running", Objective: "fix vet", Repository: "sf/repo", Track: "direct"}
 			kube := newFakeKube()
 			if tc.containers != nil {
 				kube.onCreatePod = func() {
@@ -2132,7 +2132,7 @@ func TestRunSessionRetriesATransientStartFailure(t *testing.T) {
 			"fatal: unable to access 'http://forgejo/sf/repo.git/': The requested URL returned error: 502",
 	} {
 		t.Run(step, func(t *testing.T) {
-			task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+			task := Task{ID: "t4j", Status: "running", Objective: "fix vet", Repository: "sf/repo", Track: "direct"}
 			objects := &fakeObjectStore{}
 			runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
 			line, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: summary, Step: step, Transient: true}})
@@ -2315,7 +2315,7 @@ func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
 
 	kube := newFakeKube()
 	unschedulable(kube)
-	runner, _, _ := newTestRunner(t, Task{ID: "t6", Status: "running", Objective: "o", Repository: "sf/repo"}, kube, &fakeObjectStore{})
+	runner, _, _ := newTestRunner(t, Task{ID: "t6", Status: "running", Objective: "o", Repository: "sf/repo", Track: "direct"}, kube, &fakeObjectStore{})
 	short(runner)
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil)
 	if err != nil || res.Outcome != OutcomeNotStarted || !strings.HasPrefix(res.Summary, "pod worker-") || !strings.HasSuffix(res.Summary, ": "+refusal) {
@@ -2323,7 +2323,7 @@ func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
 	}
 
 	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		Parent: "t-parent", Source: SourcePresort, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+		Parent: "t-parent", Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
 	kube = newFakeKube()
 	unschedulable(kube)
 	runner, hub, store := newTestRunner(t, report, kube, &fakeObjectStore{})
@@ -2334,7 +2334,7 @@ func TestSessionsWhosePodNoNodeTakesEndNotStarted(t *testing.T) {
 	if err == nil {
 		err = val.Get(&rep)
 	}
-	if err != nil || !strings.HasSuffix(rep.NotStarted, ": "+refusal) || rep.Comment != 0 || len(hub.comments) != 0 {
+	if err != nil || !strings.HasSuffix(rep.NotStarted, ": "+refusal) || len(hub.comments) != 0 {
 		t.Fatalf("RunReport = %+v, %v; want NotStarted naming %q, no comment", rep, err, refusal)
 	}
 }
@@ -2373,7 +2373,7 @@ func TestRunSessionNamesHowThePodEndedWithoutAResult(t *testing.T) {
 			want: "pod exited without a result"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			task := Task{ID: "t4o", Status: "running", Objective: "flaky", Repository: "sf/repo"}
+			task := Task{ID: "t4o", Status: "running", Objective: "flaky", Repository: "sf/repo", Track: "direct"}
 			kube := newFakeKube()
 			kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].containers = tc.containers }
 			runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
@@ -2400,7 +2400,7 @@ func TestStoppedWorkerNamesHowItEndedWithoutAResult(t *testing.T) {
 		"nothing pushed":         {"", "", []string{"work in progress not pushed: " + ended}},
 		"pushed, then no report": {pushedLine("c-wip") + "\n", "c-wip", []string{ended}},
 	} {
-		task := Task{ID: "t5o", Status: "running", Objective: "slow", Repository: "sf/repo"}
+		task := Task{ID: "t5o", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 		kube := newFakeKube()
 		kube.keepDeleted = true
 		kube.onCreatePod = func() {
@@ -2424,7 +2424,7 @@ func TestStoppedWorkerNamesHowItEndedWithoutAResult(t *testing.T) {
 // takes longer than the cheap rung's cap leaves the session on the cheap
 // rung, with no cheap_cap trip at its first event.
 func TestSlowPodStartIsNoTimeOfTheCheapRung(t *testing.T) {
-	task := Task{ID: "t4s", Status: "running", Objective: "fix vet", Repository: "sf/repo"}
+	task := Task{ID: "t4s", Status: "running", Objective: "fix vet", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	kube.onCreatePod = func() {
 		p := kube.podOrder[len(kube.podOrder)-1]
@@ -2456,7 +2456,7 @@ func TestRunSessionTakesThePinnedVersion(t *testing.T) {
 		"before the pin": {pin: 0, pinned: time.Hour, current: 300 * time.Millisecond},
 	} {
 		t.Run(name, func(t *testing.T) {
-			task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
+			task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 			runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 			runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
 			pinned, current := testPolicyVersion(), testPolicyVersion()
@@ -2484,7 +2484,7 @@ func TestRunSessionPassesThePinnedStepCap(t *testing.T) {
 		"pinned before it": {pinned: 0, want: "200"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			task := Task{ID: "t5", Status: "running", Objective: "steps", Repository: "sf/repo"}
+			task := Task{ID: "t5", Status: "running", Objective: "steps", Repository: "sf/repo", Track: "direct"}
 			kube := newFakeKube()
 			runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 			pinned, current := testPolicyVersion(), testPolicyVersion()
@@ -2504,7 +2504,7 @@ func TestRunSessionPassesThePinnedStepCap(t *testing.T) {
 }
 
 func TestRunSessionWallClockTrip(t *testing.T) {
-	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo"}
+	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
@@ -2523,7 +2523,7 @@ func TestRunSessionWallClockTrip(t *testing.T) {
 // it: its pod, namespace and credentials go, the session's end is on the
 // timeline, and the cancel is the activity's error.
 func TestRunSessionCancelCleansUpAndFails(t *testing.T) {
-	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo"}
+	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, _ := newTestRunner(t, task, kube, objects)
@@ -2642,7 +2642,7 @@ func TestRunSessionReattachesToTheLivePod(t *testing.T) {
 // A live row whose pod is gone (a crash took it) starts the attempt over
 // as before: a new pod, and the row replaced by the new session's.
 func TestRunSessionReattachFindsNoPodAndStartsOver(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	store.liveSessions = map[string]LiveSession{"t1": {TaskID: "t1", SessionID: "s-gone", Namespace: "factory-agents-t1", Pod: "worker-s-gone", MessageToken: "tok", Lines: 4,
@@ -2705,7 +2705,7 @@ func TestRunSessionWorkerStopCutsAnInFlightCheckin(t *testing.T) {
 }
 
 func TestRunSessionSetupFailureDeletesNamespace(t *testing.T) {
-	task := Task{ID: "t8", Status: "running", Objective: "x", Repository: "sf/repo"}
+	task := Task{ID: "t8", Status: "running", Objective: "x", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	kube.saErr = fmt.Errorf("apiserver says no")
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
@@ -2729,10 +2729,10 @@ func TestBootSweepKeepsOnlyLiveTaskNamespaces(t *testing.T) {
 	for _, id := range []string{"trunning", "tqueued", "treview", "tdone", "ghost", "ci-87"} {
 		kube.namespaces["factory-agents-"+id] = map[string]string{"factory.ai/task": id}
 	}
-	runner, _, store := newTestRunner(t, Task{ID: "trunning", Status: "running", Repository: "sf/repo"}, kube, &fakeObjectStore{})
-	store.CreateTask(context.Background(), Task{ID: "tqueued", Status: "queued", Repository: "sf/repo"})
-	store.CreateTask(context.Background(), Task{ID: "treview", Status: "in-review", Repository: "sf/repo"})
-	store.CreateTask(context.Background(), Task{ID: "tdone", Status: "done", Repository: "sf/repo"})
+	runner, _, store := newTestRunner(t, Task{ID: "trunning", Status: "running", Repository: "sf/repo", Track: "direct"}, kube, &fakeObjectStore{})
+	store.CreateTask(context.Background(), Task{ID: "tqueued", Status: "queued", Repository: "sf/repo", Track: "direct"})
+	store.CreateTask(context.Background(), Task{ID: "treview", Status: "in-review", Repository: "sf/repo", Track: "direct"})
+	store.CreateTask(context.Background(), Task{ID: "tdone", Status: "done", Repository: "sf/repo", Track: "direct"})
 
 	runner.BootSweep(context.Background())
 
@@ -2751,7 +2751,7 @@ func TestBootSweepKeepsOnlyLiveTaskNamespaces(t *testing.T) {
 func TestFreshNamespaceReplacesLeftover(t *testing.T) {
 	kube := newFakeKube()
 	kube.namespaces["factory-agents-t10"] = map[string]string{"stale": "yes"}
-	runner, _, _ := newTestRunner(t, Task{ID: "t10", Status: "queued"}, kube, &fakeObjectStore{})
+	runner, _, _ := newTestRunner(t, Task{ID: "t10", Status: "queued", Track: "direct"}, kube, &fakeObjectStore{})
 
 	if err := runner.freshNamespace(context.Background(), "factory-agents-t10", map[string]string{"factory.ai/task": "t10"}); err != nil {
 		t.Fatal(err)
@@ -3148,7 +3148,7 @@ func TestAdmitLeasesSkipsTerminatingNamespaces(t *testing.T) {
 // running in a dying namespace, roadmap 240).
 func TestAdmitLeasesObservesOnlyAWaitThatHoldsALeaseBack(t *testing.T) {
 	kube := newFakeKube()
-	r, _, _ := newTestRunner(t, Task{ID: "t1"}, kube, &fakeObjectStore{})
+	r, _, _ := newTestRunner(t, Task{ID: "t1", Track: "direct"}, kube, &fakeObjectStore{})
 	for _, id := range []string{"t1", "t3"} {
 		kube.namespaces["factory-agents-"+id] = map[string]string{"factory.ai/task": id}
 		kube.terminating["factory-agents-"+id] = true
@@ -3171,7 +3171,7 @@ func TestSetupNamespaceAdmitsTheTasksLeases(t *testing.T) {
 	cfg := testRunnerConfig()
 	cfg.Leases = &fakeLeases{byID: map[string][]string{"t1": {"203.0.113.7"}, "t2": {"203.0.113.8"}}}
 	store := newFakeStore()
-	store.CreateTask(context.Background(), Task{ID: "t1"})
+	store.CreateTask(context.Background(), Task{ID: "t1", Track: "direct"})
 	r := &Runner{cfg: cfg, kube: kube, store: store}
 	if _, _, err := r.setupNamespace(context.Background(), &Task{ID: "t1"}, ForgejoToken{}); err != nil {
 		t.Fatal(err)
@@ -3484,7 +3484,7 @@ func TestRunSessionResultNamesTheModelItEndedOn(t *testing.T) {
 }
 
 func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/small"}, nil,
@@ -3498,7 +3498,7 @@ func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
 }
 
 func TestRunSessionWithoutASessionsCapStatesThePolicyLimit(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	// testPolicyYAML sets limits.sessions to 3
@@ -3628,7 +3628,7 @@ func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 }
 
 func TestRunSessionPassesTheContextCap(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
@@ -3643,7 +3643,7 @@ func TestRunSessionPassesTheContextCap(t *testing.T) {
 // The gateway refused a call for the card's budget and the worker pushed
 // the work in progress: the session is pushed, with that commit.
 func TestRunSessionBudgetRefusalAfterAPushIsPushed(t *testing.T) {
-	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo"}
+	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo", Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	store.budgetRefused = map[string]bool{"t3": true}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil,
@@ -3656,7 +3656,7 @@ func TestRunSessionBudgetRefusalAfterAPushIsPushed(t *testing.T) {
 // A failure that pushed but met no budget refusal stays no_push, and a
 // refusal with nothing pushed has no commit to call pushed.
 func TestRunSessionOnlyABudgetRefusalAfterAPushIsPushed(t *testing.T) {
-	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo"}
+	task := Task{ID: "t3", Status: "running", Objective: "x", Repository: "sf/repo", Track: "direct"}
 	runner, _, store := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t3", Attempt: 1, Model: "m"}, nil,
 		pushedLine("c-wip")+"\n"+resultLine(false, "model refused"))

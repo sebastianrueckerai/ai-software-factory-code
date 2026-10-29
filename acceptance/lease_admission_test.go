@@ -81,9 +81,8 @@ risk:
 envelope_default: {monthly_eur: 10, server_types: [cx23], max_count: 2, max_lease_hours: 4, volume_max_gb: 20}
 `
 
-const processYAML = `lanes:
-  - {name: backlog}
-  - {name: ready, class: coder, moved_by: writers}
+const processYAML = `tracks:
+  direct: {class: coder}
 merge: {queue: none}
 stages:
   - {name: checks, on_findings: agent, enabled: true}

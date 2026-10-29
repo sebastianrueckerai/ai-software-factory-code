@@ -13,7 +13,7 @@ func TestTextCarriesTheFactory(t *testing.T) {
 		t.Fatalf("Text opens %q, want the loop sentence", text[:60])
 	}
 	for _, want := range []string{
-		"backlog: waits in the backlog",
+		"queued: waits for a free work slot, in filing order",
 		"running: runs an agent session",
 		"done: is done",
 		"intake: the issue becomes a card",
@@ -26,6 +26,9 @@ func TestTextCarriesTheFactory(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Text lacks %q:\n%s", want, text)
 		}
+	}
+	if strings.Contains(text, "backlog") || strings.Contains(text, "lane") {
+		t.Fatalf("Text names a backlog or a lane, which no card is in:\n%s", text)
 	}
 	if !strings.Contains(text, "escalate_to_human") || !strings.Contains(text, "request_info") {
 		t.Fatalf("Text lacks the ask-for-a-human tools:\n%s", text)

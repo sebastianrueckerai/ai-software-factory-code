@@ -1336,7 +1336,7 @@ func (p *ChainPoller) raiseChainAlert(ctx context.Context, repository, kind stri
 
 // fileRepair files the repair card of repository's red head: one per
 // repository while one holds it (repairHeld; a second red tick joins the
-// open card's work), an agent card in the project's lane ready whose
+// open card's work), an agent card on the project's direct track whose
 // objective carries the findings, the failing run's link and the issue
 // numbers of the cards the head carried; where the project has no agents,
 // a human card asking the same (repairQuestion). The factory's own

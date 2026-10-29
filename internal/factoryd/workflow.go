@@ -73,10 +73,8 @@ type TaskSignal struct {
 	PR      int64
 	Comment int64     // the issue comment's id, for human_comment
 	At      time.Time // when the comment or review was made; zero for a signal from before dates
-	// Revision and SHA256 are the plan revision plan_accepted accepts,
-	// Revision and Index the plan question plan_answered answers.
+	// Revision and Index are the plan question plan_answered answers.
 	Revision int
-	SHA256   string
 	Index    int
 	// Image and Refusal are image_ready's: the image the card waited on,
 	// and why it does not run on it ("" when it does).
@@ -191,12 +189,12 @@ type WorkflowConfig struct {
 }
 
 // TaskConfig is what the task's process in its pinned version makes of it:
-// the lane it runs in, the class and the session mode that choose its
-// program, the stages, the merge queue, the dependency wait and a plan
-// lane's shape.
+// the track it runs on, the class and the session mode that choose its
+// program, the stages, the merge queue, the dependency wait and the plan
+// track's shape.
 type TaskConfig struct {
 	Process      string
-	Lane         string
+	Track        string
 	Class        string
 	Session      string
 	Stages       []policy.Stage
@@ -401,8 +399,6 @@ type RunState struct {
 	Report bool
 	// Standing is the issue author's (Task.Standing), for a stage's when.
 	Standing string
-	// WriteUp is the analyzer's write-up of a promoted improvement.
-	WriteUp string
 	// Screening: the human the task waits on answers its screening's
 	// suspect verdict.
 	Screening bool
@@ -535,7 +531,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkedRead = workflow.GetVersion(ctx, "checked-head", workflow.DefaultVersion, versionCheckedHead)
 	run.tripRouting = workflow.GetVersion(ctx, "trip-routing", workflow.DefaultVersion, versionTripRouting)
 	run.auditBeside = workflow.GetVersion(ctx, "audit-beside", workflow.DefaultVersion, versionAuditBeside)
-	run.burstAccept = workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
+	// its value is unused; the call stays until no running history carries the marker
+	workflow.GetVersion(ctx, "burst-accept", workflow.DefaultVersion, versionBurstAccept)
 	run.queueTurns = workflow.GetVersion(ctx, "queue-turns", workflow.DefaultVersion, versionQueueTurns)
 	run.dayCap = workflow.GetVersion(ctx, "day-cap", workflow.DefaultVersion, versionDayCap)
 	run.factoryPRSource = workflow.GetVersion(ctx, "factory-pr-source", workflow.DefaultVersion, versionFactoryPRSource)
@@ -602,7 +599,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAccepted, SignalPlanRejected, SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalImageReady} {
+		SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalImageReady} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -955,8 +952,8 @@ const (
 	// itself.
 	versionAuditBeside workflow.Version = 1
 	// versionBurstAccept (change id "burst-accept", roadmap 237): the burst
-	// window of a planner session's end (planCommentsWhole) takes a plan
-	// acceptance, which before waited for the next plan wait.
+	// window of a planner session's end took a plan acceptance. Plans take
+	// no acceptance since roadmap 225.
 	versionBurstAccept workflow.Version = 1
 	// versionQueueTurns (change id "queue-turns", roadmap 202): a queue head
 	// red at its merge gets its maxRestages re-runs, the turns on which main
@@ -1205,7 +1202,6 @@ type taskRun struct {
 	checkedRead       workflow.Version // headGreen reads the checked head, which ends with its pass (versionCheckedHead)
 	tripRouting       workflow.Version // trips route by their run's activity id (versionTripRouting)
 	auditBeside       workflow.Version // the audit beside the checks wait (versionAuditBeside)
-	burstAccept       workflow.Version // a planner session's burst window takes a plan acceptance (versionBurstAccept)
 	queueTurns        workflow.Version // every turn of a red queue head counts (versionQueueTurns)
 	factoryPRSource   workflow.Version // a factory pull request card is known by its source (versionFactoryPRSource)
 	besideLadder      workflow.Version // each running gate supervised on its own (versionBesideLadder)
@@ -1509,9 +1505,6 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			setFindings(answer, "changes")
-			if st.WriteUp != "" && u.Attempts == 0 {
-				addFindings([]string{writeUpFinding(st.WriteUp)}, "changes")
-			}
 		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.DayCap != "":
 			// the day cap's wait, its own end included
 			t.pr, startRef = st.PR, st.Head
@@ -1632,9 +1625,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			apply(v)
 		case t.v16 >= versionStages && u.Attempts == 0:
-			if st.WriteUp != "" {
-				addFindings([]string{writeUpFinding(st.WriteUp)}, "changes")
-			}
 			final, why, more := t.screen()
 			if final != "" {
 				return t.finish(final, why)

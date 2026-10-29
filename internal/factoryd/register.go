@@ -456,7 +456,7 @@ func (r *Registrar) reconcile(ctx context.Context, p Project, rotate bool) error
 // factory-projects and nothing in the cluster.
 func (run *reconcileRun) seed(ctx context.Context) {
 	f, repo := run.r.Forgejo, run.p.Repo()
-	if c, err := f.EnsureProjectLabels(ctx, repo.Owner, repo.Name, run.p.Lanes); !run.fail("labels", err) {
+	if c, err := f.EnsureProjectLabels(ctx, repo.Owner, repo.Name, run.p.Tracks); !run.fail("labels", err) {
 		run.line("labels", c)
 	}
 	fork := "fork " + f.Fork(repo).String()
@@ -577,7 +577,7 @@ func (run *reconcileRun) forgejo(ctx context.Context) ([]string, bool) {
 			return run.protection(ctx, DeployBranch, DeployProtection())
 		}},
 		{"fork " + f.Fork(repo).String(), func() (Change, error) { return "ready", f.EnsureFork(ctx, repo) }},
-		{"labels", func() (Change, error) { return f.EnsureProjectLabels(ctx, repo.Owner, repo.Name, run.p.Lanes) }},
+		{"labels", func() (Change, error) { return f.EnsureProjectLabels(ctx, repo.Owner, repo.Name, run.p.Tracks) }},
 	}...)
 	for _, step := range steps {
 		c, err := step.do()

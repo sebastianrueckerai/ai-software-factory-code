@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // eventLimitDefault is the project feed's page size when the query names
@@ -31,7 +30,7 @@ func (c *Console) reads(ctx context.Context, s *session, p factoryd.Project) (bo
 	if s.user == "" {
 		return false, nil
 	}
-	if writes, err := c.mayMoveCached(ctx, p.Repository, s.user, policy.MovedByWriters); err == nil && writes {
+	if writes, err := c.writesRepo(ctx, s.user, p.Repository); err == nil && writes {
 		return true, nil
 	}
 	repo := p.Repo()
@@ -239,7 +238,7 @@ func (c *Console) counters(d boardData) string {
 // write the factory's own code, or read its repository (boardOf's rule).
 func (c *Console) follows(r *http.Request, p factoryd.Project) (sees, writes bool, err error) {
 	s := current(r)
-	if writes, err = c.mayMoveCached(r.Context(), p.Repository, s.user, policy.MovedByWriters); err != nil || writes {
+	if writes, err = c.writesRepo(r.Context(), s.user, p.Repository); err != nil || writes {
 		return writes, writes, err
 	}
 	if _, factory, err := c.writer(r.Context(), s.user); err != nil || factory {
@@ -265,8 +264,11 @@ func sseWriter(w http.ResponseWriter, window time.Duration) func(s string) error
 }
 
 // sightWait bounds a stream connect's retries of a sight check that
-// errors; a test shortens it.
-var sightWait = 4 * time.Second
+// errors, sightRetry spaces them; a test shortens them.
+var (
+	sightWait  = 4 * time.Second
+	sightRetry = 2 * time.Second
+)
 
 // sight is follows with the connect's patience: a check that errors —
 // a canceled ask, a Forgejo blip — is asked again until sightWait is
@@ -287,7 +289,7 @@ func (c *Console) sight(r *http.Request, p factoryd.Project) (sees, writes bool,
 		if wait <= 0 {
 			return sees, writes, err
 		}
-		wait = min(wait, moveFailTTL) // re-ask once the failure cache has breathed out
+		wait = min(wait, sightRetry)
 		select {
 		case <-r.Context().Done():
 			return false, false, err

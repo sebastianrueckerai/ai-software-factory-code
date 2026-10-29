@@ -283,7 +283,7 @@ func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 			if err := s.AddChatWatch(t.Context(), "sf/wake", "sebastian", conv, "t-1"); err != nil {
 				t.Fatal(err)
 			}
-			return wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd, false)
+			return wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
 		}},
 		{"a timer", "wake_timer", "Timer: Check the build.", func(t *testing.T, s *PGStore, at time.Time) int64 {
 			conv, err := s.NewConversation(t.Context(), "sf/wake", "sebastian")
@@ -414,7 +414,7 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	if err := s.CreateTask(t.Context(), Task{ID: "t-1", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/wake", IssueNumber: 40, Objective: "Use a replica?"}); err != nil {
+		Repository: "sf/wake", IssueNumber: 40, Objective: "Use a replica?", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
@@ -483,7 +483,7 @@ func TestVenueGoneDropsItsWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	starter.gone = map[int64]bool{conv: true}
-	wakeMove(t, s, "sf/wake", "t-1", "board", true)
+	wakeMove(t, s, "sf/wake", "t-1", "board")
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass returned %v, want nil", err)
 	}

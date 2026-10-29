@@ -138,8 +138,8 @@ type verdictForm struct {
 
 // The project screen's four columns (ruling 255 as C8 amends it), a view
 // over the task states and never a state of their own: In progress holds
-// running, closing and in review, the stage word on the card; the lane
-// and the fine state are chips on the card.
+// running, closing and in review, the stage word on the card; the fine
+// state is a chip on the card.
 const (
 	colNeedsYou = iota
 	colQueued
@@ -153,18 +153,14 @@ var columnTitles = []string{"Needs you", "Queued", "In progress", "Done"}
 // data-holds names for a card's action to move the card to.
 var columnHolds = [][]string{
 	colNeedsYou: {"waiting-human", "waiting-poster"},
-	colQueued:   {"backlog", "queued", "waiting-deps", "waiting-image"},
+	colQueued:   {"queued", "waiting-deps", "waiting-image"},
 	colProgress: {"running", "closing", "in-review", "merged"},
 	colDone:     {"done", "failed", "closed"},
 }
 
-// fiveColumn is t's column for viewer, -1 for a status none holds: a card
-// waiting on its author needs the viewer when they are the author, else
-// it waits like a queued one; for no viewer (the pulse's) it needs a person.
-func fiveColumn(t factoryd.Task, viewer string) int {
-	if t.Status == "waiting-poster" && t.Author != viewer && viewer != "" {
-		return colQueued
-	}
+// fiveColumn is t's column, -1 for a status none holds: Needs you holds
+// every card whose next actor is a person, its author's wait included.
+func fiveColumn(t factoryd.Task) int {
 	for i, holds := range columnHolds {
 		if slices.Contains(holds, t.Status) {
 			return i
@@ -469,10 +465,10 @@ func isState(k card, v string) bool {
 	return false
 }
 
-// stateColumns are the wide view's columns after the lanes, in board
-// order; closing counts as running.
+// stateColumns are the wide view's columns, in board order; waiting-deps
+// counts as queued, closing as running.
 var stateColumns = []struct{ Title, Status string }{
-	{"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting for image", "waiting-image"}, {"Waiting on the author", "waiting-poster"},
+	{"Queued", "queued"}, {"Running", "running"}, {"Waiting on a human", "waiting-human"}, {"Waiting for image", "waiting-image"}, {"Waiting on the author", "waiting-poster"},
 	{"In review", "in-review"}, {"Merged", "merged"}, {"Done", "done"}, {"Failed", "failed"}, {"Closed", "closed"},
 }
 
@@ -514,17 +510,15 @@ type card struct {
 	// reads it.
 	Total, GateAge string
 	// Stage is the work stage of a card in progress (C8): planning on a
-	// plan-lane card, building on a coder's, verifying in review, "" in
-	// any other status. StageAge is how long the card has been in it.
+	// plan-track card, building on a direct one, verifying in review, ""
+	// in any other status. StageAge is how long the card has been in it.
 	Stage, StageAge    string
 	GateText           string
 	EscalationAlert    int64  // the escalation's open alert
 	WaitingOn          string // a card in waiting-deps: the issues it waits on
-	Badge              string // the card's starting lane, in a column after the lanes
 	PlanIssue          int64  // a plan's card: the plan's issue
-	Moves              []move // a backlog card: the starting lanes the viewer may move it into
-	Plan               *planCards
-	Retry              *retry // a failed plan card's Retry, for an approver who may move it into ready
+	Plan               []card // a done plan's cards, which its drawer lists
+	Retry              *retry // a failed plan card's Retry, for an approver
 	Activity           string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
@@ -550,7 +544,7 @@ type card struct {
 	// session last reported, an input to the stale ring beside the newest
 	// event.
 	stepAt time.Time
-	// Children roll up an accepted plan: n running, n done, n waiting.
+	// Children roll up a done plan: n running, n done, n waiting, n queued.
 	Children string
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
@@ -576,13 +570,13 @@ type card struct {
 	Place string
 }
 
-// Closes: the face offers its viewer, a writer, Close: a card in the
-// backlog or waiting on a human, or failed without an issue, which has no
-// other way out. A card whose question offers a close, or a choice card,
-// offers its choices alone.
+// Closes: the face offers its viewer, a writer, Close: a card waiting on
+// a human, or failed without an issue, which has no other way out. A card
+// whose question offers a close, or a choice card, offers its choices
+// alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
-	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (slices.Contains([]string{"backlog", "waiting-human"}, k.Status) || k.IssueNumber == 0 && k.Status == "failed")
+	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.IssueNumber == 0 && k.Status == "failed")
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free
@@ -596,7 +590,7 @@ func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }
 type fine struct{ Words, Class string }
 
 // fineStates are what k's column and pill leave unsaid: retrying; in the
-// five columns waiting on the author, which the wide view has a column
+// four columns waiting on the author, which the wide view has a column
 // for; and stale. Failed and closed are the pill's own words.
 func fineStates(k card, wide bool) []fine {
 	var out []fine
@@ -624,7 +618,7 @@ var statusClasses = map[string]string{
 	"running": "st-running", "closing": "st-running", "queued": "st-queued",
 	"waiting-human": "st-waiting", "waiting-poster": "st-waiting hollow",
 	"in-review": "st-review", "merged": "st-merged", "done": "st-done", "failed": "st-failed",
-	"closed": "st-closed", "backlog": "st-backlog", "plan": "st-plan",
+	"closed":       "st-closed",
 	"waiting-deps": "st-waiting", "waiting-image": "st-waiting",
 }
 
@@ -803,10 +797,31 @@ func depsCount(list string) int {
 	return strings.Count(list, "#")
 }
 
-// planRollup is an accepted plan's children as one line: only the parts
-// with cards in them, in the order running, done, waiting.
+// planIssue is plan task id's issue: from the board's tasks, else read.
+func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) int64 {
+	if t, ok := byID[id]; ok {
+		return t.IssueNumber
+	}
+	t, ok, err := c.cfg.Tasks.Task(ctx, id)
+	if err != nil || !ok {
+		log.Printf("console: plan %s: found %v, %v", id, ok, err)
+		return 0
+	}
+	byID[id] = t
+	return t.IssueNumber
+}
+
+func plural(n int, word string) string {
+	if n == 1 {
+		return word
+	}
+	return word + "s"
+}
+
+// planRollup is a done plan's children as one line: only the parts
+// with cards in them, in the order running, done, waiting, queued.
 func planRollup(cards []card) string {
-	var running, done, waiting int
+	var running, done, waiting, queued int
 	for _, k := range cards {
 		switch {
 		case k.Status == "running" || k.Status == "closing":
@@ -815,6 +830,8 @@ func planRollup(cards []card) string {
 			done++
 		case strings.HasPrefix(k.Status, "waiting"):
 			waiting++
+		case k.Status == "queued":
+			queued++
 		}
 	}
 	var parts []string
@@ -827,12 +844,11 @@ func planRollup(cards []card) string {
 	if waiting > 0 {
 		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
 	}
+	if queued > 0 {
+		parts = append(parts, fmt.Sprintf("%d queued", queued))
+	}
 	return strings.Join(parts, " \u00b7 ")
 }
-
-// move is a backlog card's button into a starting lane. The board's filter
-// rides on the form from the card's Filter.
-type move struct{ Lane, Title, CSRF string }
 
 // fundForm is an approver's Fund action beside a capped card's answer box:
 // the stated amount raises the card's budget_eur (roadmap 210).
@@ -846,17 +862,8 @@ type acceptanceCloseForm struct{ CSRF, Evidence string }
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
 
-// planCards are an accepted plan's cards and, for an approver while any
-// is in the backlog, Start plan (CSRF set).
-type planCards struct {
-	Cards   []card
-	Backlog int
-	CSRF    string
-}
-
 type column struct {
 	Title string
-	Lane  string // a lane column's lane, where a card is dropped
 	Holds string // the statuses the column holds, space-separated
 	// Total is the column's count before the find narrowed it (C13); the
 	// head reads "n of m" when they differ.
@@ -969,8 +976,8 @@ func (n need) Waiting() string {
 	return minutes(time.Since(n.Since))
 }
 
-// viewWide is the board's wide view: the lanes as columns first, then the
-// task states, as the board was before the five columns.
+// viewWide is the board's wide view: a column per task state, as the
+// board was before the four columns.
 const viewWide = "wide"
 
 // boardFilter is what the board was asked to show: the project and the
@@ -1463,16 +1470,8 @@ func (c *Console) card(t factoryd.Task) card {
 // began, else since the admission; a card never admitted counts from its
 // filing.
 func stage(t factoryd.Task, now time.Time) (string, string) {
-	var word string
-	switch t.Status {
-	case "running", "closing":
-		word = "building"
-		if t.Lane == policy.LanePlan {
-			word = "planning"
-		}
-	case "in-review":
-		word = "verifying"
-	default:
+	word := runKind(t.Status, t.Track)
+	if !slices.Contains([]string{"planning", "building", "verifying"}, word) {
 		return "", ""
 	}
 	since := t.CreatedAt
@@ -1738,15 +1737,14 @@ type boardView struct {
 	policy          policy.Version
 	policyOK        bool // the policy could be read; false leaves the board's version line off
 	filter          boardFilter
-	byRepo          map[string]factoryd.Project
 	byID            map[string]factoryd.Task
 	pending         []factoryd.ApprovalRequest
 	carded, planned map[string]bool
 	// mergePended names the tasks whose merge approval pends: in the four
 	// columns the card yields In progress to that approval (Needs you
-	// holds it), as a plan does to its acceptance.
+	// holds it), as a plan does to its open questions.
 	mergePended map[string]bool
-	unchecked   bool // a may-move check failed, logged once per render
+	unchecked   bool // a writers check failed, logged once per render
 	problems    []string
 }
 
@@ -1775,16 +1773,12 @@ func (c *Console) viewOf(r *http.Request, f boardFilter) (*boardView, []factoryd
 // approval.
 func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []factoryd.Project, error) {
 	ctx, s := r.Context(), current(r)
-	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byRepo: map[string]factoryd.Project{},
-		byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{},
+	v := &boardView{user: s.user, csrf: s.csrf, filter: f, byID: map[string]factoryd.Task{}, carded: map[string]bool{}, planned: map[string]bool{},
 		mergePended: map[string]bool{}}
 	v.policy, v.policyOK = c.inForce(ctx)
 	all, err := c.coderProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
-	}
-	for _, p := range all {
-		v.byRepo[p.Repository] = p
 	}
 	return v, all, nil
 }
@@ -1824,21 +1818,6 @@ func (v *boardView) approves(repository string) bool {
 	return slices.Contains(v.policy.ApproversOf(repository), v.user)
 }
 
-// mayReady: the viewer, an approver, may move t's cards into ready, as
-// Start plan and Retry do.
-func (c *Console) mayReady(ctx context.Context, v *boardView, t factoryd.Task) bool {
-	if !v.approves(t.Repository) {
-		return false
-	}
-	_, proc := processOf(v.byRepo, t)
-	ready, _ := proc.Lane(policy.LaneReady)
-	ok, err := c.mayMoveCached(ctx, t.Repository, v.user, ready.MovedBy)
-	if err != nil {
-		log.Printf("console: may %s move %s's cards into ready: %v", v.user, t.Repository, err)
-	}
-	return ok
-}
-
 // boardCard is bt's card as the board shows it, in a column, the human
 // lane or the escalations, and as the card fragment swaps it in; its
 // activity line, checks and forms follow from finishCards. Place is
@@ -1847,8 +1826,8 @@ func (c *Console) mayReady(ctx context.Context, v *boardView, t factoryd.Task) b
 func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.BoardTask) card {
 	t := bt.Task
 	k := c.card(t)
-	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Lane, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
-		fiveColumn(t, v.user))
+	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Track, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
+		fiveColumn(t))
 	if bt.Status == "merged" {
 		k.Stage = deployStage(bt.ChainState, bt.RollIssue)
 		k.RollID = bt.RollID
@@ -1874,47 +1853,21 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
 		k.PlanIssue = c.planIssue(ctx, v.byID, t.Parent)
 	}
-	switch t.Status {
-	case "backlog":
-		name, proc := processOf(v.byRepo, t)
-		for _, lane := range policy.LaneNames {
-			why, err := moveRefusal(ctx, t, capFacts{}, name, proc, lane, v.user, c.mayMoveCached)
-			if err != nil && !v.unchecked {
-				v.unchecked = true
-				log.Printf("console: may %s move %s into %s: %v", v.user, t.ID, lane, err)
-				v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
-			}
-			if err == nil && why == "" {
-				k.Moves = append(k.Moves, move{Lane: lane, Title: laneTitles[lane], CSRF: v.csrf})
-			}
-		}
-	case "queued", "waiting-deps":
-	default:
-		if t.Lane == policy.LanePlan || t.Lane == policy.LaneReady {
-			k.Badge = t.Lane
-		}
-	}
-	// the four columns are no lanes: a card wears its lane when it is
-	// not the default, ready, and its status does not say the same word
-	if !v.filter.wide() {
-		k.Badge = t.Lane
-		if t.Lane == t.Status || t.Lane == policy.LaneReady {
-			k.Badge = ""
-		}
-	}
-	if t.Lane == policy.LanePlan && t.Status == "done" {
-		var err error
-		if k.Plan, err = c.planCards(ctx, t, c.mayReady(ctx, v, t), v.csrf); err != nil {
+	if t.Track == policy.TrackPlan && t.Status == "done" {
+		if cards, err := c.cfg.Tasks.PlanCards(ctx, t.ID); err != nil {
 			log.Printf("console: the cards of plan %s: %v", t.ID, err)
 			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
 		} else {
-			k.Children = planRollup(k.Plan.Cards)
+			for _, child := range cards {
+				k.Plan = append(k.Plan, c.card(child))
+			}
+			k.Children = planRollup(k.Plan)
 		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
 	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
-		c.mayReady(ctx, v, t) {
+		v.approves(t.Repository) {
 		k.Retry = &retry{CSRF: v.csrf}
 	}
 	if v.escalated(t) {
@@ -2005,8 +1958,8 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	// newest of its newest event and its newest timeline step (its own
 	// session's last report), one that never had either its own age —
 	// comes only on a card that is running its work: never a final one,
-	// never one in the backlog, the plan lane or the queue; a card parked
-	// for a slot owes no work while it waits.
+	// never a queued one; a card parked for a slot owes no work while it
+	// waits.
 	setActivity := func(k *card) {
 		lastAt := func(at time.Time) time.Time {
 			if k.stepAt.After(at) {
@@ -2015,7 +1968,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 			return at
 		}
 		ring := func(d time.Duration) bool { return d >= factoryd.StaleWindow }
-		live := !factoryd.Final(k.Status) && k.Status != "backlog" && k.Status != "plan" && k.Status != "queued"
+		live := !factoryd.Final(k.Status) && k.Status != "queued"
 		reason := func() string {
 			q, _, _ := strings.Cut(strings.TrimPrefix(k.Reason, factoryd.AgentAsks), "\n")
 			return q
@@ -2061,7 +2014,7 @@ func (c *Console) finishCards(ctx context.Context, v *boardView, each func(func(
 	c.callTotals(ctx, each)
 	each(func(k *card) { k.Fine = fineStates(*k, v.filter.wide()) })
 	setForms := func(k *card) {
-		ok, err := c.mayMoveCached(ctx, k.Repository, v.user, policy.MovedByWriters)
+		ok, err := c.writesRepo(ctx, v.user, k.Repository)
 		if err != nil && !v.unchecked {
 			v.unchecked = true
 			log.Printf("console: may %s write %s: %v", v.user, k.Repository, err)
@@ -2113,11 +2066,11 @@ func callsLine(t policy.CallTotals) string {
 func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardView, all []factoryd.Project, f boardFilter) (shown factoryd.Project, projects []string, writable map[string]bool, err error) {
 	writable = map[string]bool{}
 	for _, p := range all {
-		writes, werr := c.mayMoveCached(ctx, p.Repository, v.user, policy.MovedByWriters)
+		writes, werr := c.writesRepo(ctx, v.user, p.Repository)
 		if werr != nil && !v.unchecked {
 			v.unchecked = true
 			log.Printf("console: may %s write %s: %v", v.user, p.Repository, werr)
-			v.problems = append(v.problems, "who may move a card could not be checked: the move buttons are hidden")
+			v.problems = append(v.problems, "the project's writers could not be checked: its buttons are hidden")
 		}
 		writable[p.Name] = writes
 		if writes || werr != nil {
@@ -2145,10 +2098,9 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 
 // boardOf is the board of one project, f.Project or else the first the
 // viewer writes, the project's cards, as the session's
-// human sees it. The five columns are the default, the human lane folded
-// into Needs you; the wide view puts the lanes of the project's process
-// first in the fixed order backlog, plan, ready, then the state columns,
-// under the human lane. act is the actor whose board read this is — the
+// human sees it. The four columns are the default, the human lane folded
+// into Needs you; the wide view puts a column per state under the human
+// lane. act is the actor whose board read this is — the
 // button's or the chat's — which its approval cards read the head's
 // checks as (#1013).
 func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData, error) {
@@ -2203,18 +2155,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	clear := f
 	clear.Q = ""
 	d.ClearQuery = clear.query()
-	byLane, byStatus := map[string]int{}, map[string]int{}
+	byStatus := map[string]int{}
 	if wide {
-		lanes := map[string]bool{}
-		for _, l := range shown.Lanes {
-			lanes[l.Name] = true
-		}
-		for _, name := range policy.LaneNames {
-			if lanes[name] {
-				byLane[name] = len(d.Columns)
-				d.Columns = append(d.Columns, column{Title: laneTitles[name], Lane: name})
-			}
-		}
 		for _, col := range stateColumns {
 			byStatus[col.Status] = len(d.Columns)
 			k := column{Title: col.Title, Holds: col.Status}
@@ -2225,6 +2167,8 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		}
 		byStatus["closing"] = byStatus["running"]
 		d.Columns[byStatus["closing"]].Holds += " closing"
+		byStatus["waiting-deps"] = byStatus["queued"]
+		d.Columns[byStatus["waiting-deps"]].Holds += " waiting-deps"
 	} else {
 		for i, title := range columnTitles {
 			d.Columns = append(d.Columns, column{Title: title, Holds: strings.Join(columnHolds[i], " ")})
@@ -2261,9 +2205,9 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	// pending approval's task lives in its project, which here is shown's
 	for _, bt := range tasks {
 		t := bt.Task
-		human, col := v.humanLane(t), fiveColumn(t, v.user)
+		human, col := v.humanLane(t), fiveColumn(t)
 		// the status line counts the project's cards, whatever the accent;
-		// a plan that waits on its acceptance counts as its approval
+		// a plan that waits for its answers counts as its approval
 		switch {
 		case human:
 			if !factoryd.Final(t.Status) {
@@ -2302,23 +2246,14 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 				d.Escalations = append(d.Escalations, n)
 			}
 		case wide:
-			i, ok := byStatus[t.Status]
-			switch t.Status {
-			case "backlog":
-				i, ok = byLane[policy.LaneBacklog]
-			case "queued", "waiting-deps":
-				if i, ok = byLane[t.Lane]; !ok {
-					i, ok = byLane[policy.LaneReady]
-				}
-			}
-			if ok {
+			if i, ok := byStatus[t.Status]; ok {
 				d.Columns[i].Cards = append(d.Columns[i].Cards, k)
 			}
 			if v.escalated(t) {
 				d.Escalations = append(d.Escalations, escalation(k))
 			}
 		case col == colNeedsYou:
-			// a plan that waits on its acceptance needs its approval card
+			// a plan that waits for its answers needs its approval card
 			if v.planned[t.ID] {
 				break
 			}
@@ -2330,7 +2265,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 			needs = append(needs, n)
 		case col >= 0:
 			// a card whose merge approval pends yields In progress to
-			// that approval, as a plan yields to its acceptance card
+			// that approval, as a plan yields to its questions' card
 			if col == colProgress && v.mergePended[t.ID] && !v.planned[t.ID] {
 				break
 			}
@@ -2883,15 +2818,15 @@ func (c *Console) coderProjects(ctx context.Context) ([]factoryd.Project, error)
 // findings of a first submit with the text as the member wrote it
 // (roadmap 125).
 type newTask struct {
-	Project, Title, Body, Lane, Priority, Size string
+	Project, Title, Body, Track, Priority, Size string
 }
 
 func (c *Console) newTaskForm(w http.ResponseWriter, r *http.Request) {
-	c.renderNewTask(w, r, newTask{Lane: policy.LaneReady}, nil)
+	c.renderNewTask(w, r, newTask{Track: policy.TrackDirect}, nil)
 }
 
 // renderNewTask answers the New task form: the projects agents work on,
-// their lanes and the priority labels the first's repository offers. A
+// those whose process has a plan track and the priority labels the first's repository offers. A
 // first submit whose text is flagged answers the form again, the form's
 // values kept and the findings shown above it.
 func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form newTask, flags []filingFlag) {
@@ -2916,21 +2851,14 @@ func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form new
 			offered = append(offered, p)
 		}
 	}
-	type laneOption struct{ Name, Title, Projects string }
-	var lanes []laneOption
-	for _, name := range policy.LaneNames {
-		var in []string
-		for _, p := range ps {
-			if slices.ContainsFunc(p.Lanes, func(l policy.Lane) bool { return l.Name == name }) {
-				in = append(in, p.Name)
-			}
-		}
-		if in != nil {
-			lanes = append(lanes, laneOption{name, laneTitles[name], strings.Join(in, " ")})
+	var plan []string
+	for _, p := range ps {
+		if p.Tracks.Plan != nil {
+			plan = append(plan, p.Name)
 		}
 	}
 	c.render(w, "new.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf, "Factory": true,
-		"Projects": ps, "Priorities": offered, "Lanes": lanes, "Form": form, "Flags": flags})
+		"Projects": ps, "Priorities": offered, "PlanProjects": strings.Join(plan, " "), "Form": form, "Flags": flags})
 }
 
 // createTask files the issue as the human (doFileCard). Text the
@@ -2940,14 +2868,14 @@ func (c *Console) renderNewTask(w http.ResponseWriter, r *http.Request, form new
 // because a human may mean it.
 func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 	form := newTask{Project: r.PostFormValue("project"), Title: r.PostFormValue("title"), Body: r.PostFormValue("body"),
-		Lane: r.PostFormValue("lane"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
+		Track: r.PostFormValue("track"), Priority: r.PostFormValue("priority"), Size: r.PostFormValue("size")}
 	if r.PostFormValue("as_written") == "" {
 		if flags := filingFlags(form.Title, form.Body); len(flags) > 0 {
 			c.renderNewTask(w, r, form, flags)
 			return
 		}
 	}
-	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Lane, form.Priority, form.Size, "", "", "", 0)
+	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3314,7 +3242,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 	switch tab {
 	case "overview":
 		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
-		if bt.Lane == policy.LanePlan {
+		if bt.Track == policy.TrackPlan {
 			var err error
 			if _, d.PlanSummary, d.PlanRows, _, err = c.planTable(ctx, bt.ID, 0); err != nil {
 				problem("plan", err)
@@ -3468,10 +3396,8 @@ func (c *Console) relatedCards(ctx context.Context, bt factoryd.BoardTask, k car
 			out = append(out, related{whys[i], c.card(rt)})
 		}
 	}
-	if k.Plan != nil {
-		for _, child := range k.Plan.Cards {
-			out = append(out, related{"child", child})
-		}
+	for _, child := range k.Plan {
+		out = append(out, related{"child", child})
 	}
 	return out, nil
 }

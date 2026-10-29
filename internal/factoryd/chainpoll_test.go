@@ -344,7 +344,7 @@ func (f *chainForgejo) seedCards(store *fakeStore) {
 			}
 			t, ok := store.tasks[id]
 			if !ok {
-				t = Task{ID: id, Repository: repo, PRNumber: n, Status: "in-review"}
+				t = Task{ID: id, Repository: repo, PRNumber: n, Status: "in-review", Track: "direct"}
 			}
 			t.MergeCommit = commit
 			store.tasks[id] = t
@@ -797,7 +797,7 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 			codeRepo: {commitC2: {{"status": "pending", "context": "factory/roll"}}},
 		},
 	}
-	tk := Task{ID: "t-wait", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, BudgetEUR: 1, Kind: "agent"}
+	tk := Task{ID: "t-wait", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, BudgetEUR: 1, Kind: "agent", Track: "direct"}
 	if err := pg.CreateTask(ctx, tk); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -1344,7 +1344,7 @@ func TestRepairFilesOneCardPerRedHead(t *testing.T) {
 
 // The repair card carries the findings: the failing step, the failing
 // run's link, and the issue numbers of the cards whose change the head
-// carried — a queued agent card of the project's lane ready on the head.
+// carried — a queued agent card of the project's direct track on the head.
 func TestRepairCardCarriesTheFindings(t *testing.T) {
 	f := &chainForgejo{
 		runs: map[string][]map[string]any{demoRepo: {chainRun(21, demoCommit, "failure")}},
@@ -1362,7 +1362,7 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 		}}}
 	}
 	p.Workflows = &fakeWorkflows{}
-	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge, Track: "direct"}
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -1382,8 +1382,8 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 			t.Fatalf("objective misses %q:\n%s", want, card.Objective)
 		}
 	}
-	if card.Lane != policy.LaneReady || card.Status != "queued" || card.Kind != "agent" || card.SHA != demoCommit {
-		t.Fatalf("card %+v, want a queued agent card of lane ready on the head", card)
+	if card.Track != policy.TrackDirect || card.Status != "queued" || card.Kind != "agent" || card.SHA != demoCommit {
+		t.Fatalf("card %+v, want a queued agent card of the direct track on the head", card)
 	}
 }
 
@@ -1477,7 +1477,7 @@ func stallRig(t *testing.T, status string, requires ...string) (*ChainPoller, *f
 	p.Workflows = &fakeWorkflows{}
 	p.End = func(context.Context, string, int64) error { return nil } // a green head covers #77
 	p.Forgejo.PublicURL = "https://git.example"
-	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge, Track: "direct"}
 	clock := time.Date(2026, 10, 20, 9, 0, 0, 0, time.UTC)
 	p.Now = func() time.Time { return clock }
 	store.chainNow = p.Now
@@ -1519,7 +1519,7 @@ func askedQuestion(t *testing.T, s *fakeStore, id string) HumanQuestion {
 func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	p, store, f, clock := stallRig(t, "running")
 	// #76 rode an earlier commit whose run went red: the stall holds it too
-	store.tasks["t-old"] = Task{ID: "t-old", Repository: demoRepo, PRNumber: 2, IssueNumber: 76, Status: "merged", FinishedAt: justNow(), MergeCommit: "0b0b"}
+	store.tasks["t-old"] = Task{ID: "t-old", Repository: demoRepo, PRNumber: 2, IssueNumber: 76, Status: "merged", FinishedAt: justNow(), MergeCommit: "0b0b", Track: "direct"}
 	store.chain = append(store.chain, fakeChainRun{repo: demoRepo, pr: 2, sha: "0b0b", run: 20, status: "failure"})
 	tickAt(t, p, clock, 0)
 	tickAt(t, p, clock, 2*time.Minute)
@@ -1960,7 +1960,7 @@ func TestChainLadderRows(t *testing.T) {
 	for _, c := range []Task{
 		{ID: "t-old", Kind: "human", Status: "done", FinishedAt: &old, CreatedAt: old, Repository: demoRepo, Source: SourceChainStall, IssueNumber: 5},
 		{ID: "t-new", Kind: "human", Status: "waiting-human", Repository: demoRepo, Source: SourceChainStall, IssueNumber: 6},
-		{ID: "t-repair", Kind: "agent", Status: "queued", Repository: demoRepo, Source: SourceChainRepair, IssueNumber: 7, BudgetEUR: 1},
+		{ID: "t-repair", Kind: "agent", Status: "queued", Repository: demoRepo, Source: SourceChainRepair, IssueNumber: 7, BudgetEUR: 1, Track: "direct"},
 		{ID: "t-web", Kind: "human", Status: "waiting-human", Repository: webRepo, Source: SourceChainStall, IssueNumber: 8},
 	} {
 		must(pg.CreateTask(ctx, c))
@@ -1991,12 +1991,12 @@ func TestChainHeldIssues(t *testing.T) {
 	}
 	now := time.Now()
 	for _, c := range []Task{
-		{ID: "t-green", PRNumber: 1, IssueNumber: 11, Status: "merged"},
-		{ID: "t-red", PRNumber: 2, IssueNumber: 12, Status: "merged"},
-		{ID: "t-head", PRNumber: 3, IssueNumber: 13, Status: "merged"},
-		{ID: "t-none", PRNumber: 4, IssueNumber: 14, Status: "merged"},
-		{ID: "t-done", PRNumber: 5, IssueNumber: 15, Status: "done"},
-		{ID: "t-web", PRNumber: 6, IssueNumber: 16, Status: "merged", Repository: webRepo},
+		{ID: "t-green", PRNumber: 1, IssueNumber: 11, Status: "merged", Track: "direct"},
+		{ID: "t-red", PRNumber: 2, IssueNumber: 12, Status: "merged", Track: "direct"},
+		{ID: "t-head", PRNumber: 3, IssueNumber: 13, Status: "merged", Track: "direct"},
+		{ID: "t-none", PRNumber: 4, IssueNumber: 14, Status: "merged", Track: "direct"},
+		{ID: "t-done", PRNumber: 5, IssueNumber: 15, Status: "done", Track: "direct"},
+		{ID: "t-web", PRNumber: 6, IssueNumber: 16, Status: "merged", Repository: webRepo, Track: "direct"},
 	} {
 		c.Kind, c.BudgetEUR, c.FinishedAt, c.Repository = "agent", 1, &now, cmp.Or(c.Repository, demoRepo)
 		if err := pg.CreateTask(ctx, c); err != nil {
@@ -2019,10 +2019,10 @@ func TestChainHeldIssues(t *testing.T) {
 }
 
 // noAgents is repository's seed project on agents none: no process and
-// no lanes, as the tree holds the infra project.
+// no tracks, as the tree holds the infra project.
 func noAgents(repository string) Project {
 	p := seedProject(repository)
-	p.Agents, p.Process, p.Lanes = policy.AgentsNone, "", nil
+	p.Agents, p.Process, p.Tracks = policy.AgentsNone, "", policy.Tracks{}
 	return p
 }
 
@@ -2109,7 +2109,7 @@ func TestTheHumanRepairCardNamesTheCarriedCards(t *testing.T) {
 	f.carries = map[string]map[string][]map[string]any{
 		demoRepo: {"parent-of-" + demoCommit + "..." + demoCommit: {{"sha": demoMerge}}},
 	}
-	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: demoRepo, PRNumber: 3, IssueNumber: 77, Status: "merged", FinishedAt: justNow(), MergeCommit: demoMerge, Track: "direct"}
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -2395,9 +2395,9 @@ func TestChainCarriedMapsByMergeCommit(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	store.tasks["t-in"] = Task{ID: "t-in", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: mergePR12}
-	store.tasks["t-out"] = Task{ID: "t-out", Repository: codeRepo, PRNumber: 14, Status: "in-review", MergeCommit: mergePR14}
-	store.tasks["t-open"] = Task{ID: "t-open", Repository: codeRepo, PRNumber: 15, Status: "in-review"}
+	store.tasks["t-in"] = Task{ID: "t-in", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: mergePR12, Track: "direct"}
+	store.tasks["t-out"] = Task{ID: "t-out", Repository: codeRepo, PRNumber: 14, Status: "in-review", MergeCommit: mergePR14, Track: "direct"}
+	store.tasks["t-open"] = Task{ID: "t-open", Repository: codeRepo, PRNumber: 15, Status: "in-review", Track: "direct"}
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -2423,7 +2423,7 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 		},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
-	store.tasks["t-7"] = Task{ID: "t-7", Repository: codeRepo, PRNumber: 7, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12}
+	store.tasks["t-7"] = Task{ID: "t-7", Repository: codeRepo, PRNumber: 7, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
 	var ended []string
 	p.End = func(ctx context.Context, taskID string, run int64) error {
 		ended = append(ended, fmt.Sprintf("%s run %d", taskID, run))
@@ -2464,9 +2464,9 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.End = func(ctx context.Context, taskID string, run int64) error { return nil }
-	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow()}
-	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c"}
-	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14}
+	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), Track: "direct"}
+	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c", Track: "direct"}
+	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14, Track: "direct"}
 	ctx := context.Background()
 	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC1, 61, "success"); err != nil {
 		t.Fatal(err)
@@ -2518,8 +2518,8 @@ func TestALateCompareFailureStopsNothingElse(t *testing.T) {
 		ended = append(ended, taskID)
 		return nil
 	}
-	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12}
-	store.tasks["t-cov"] = Task{ID: "t-cov", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c"}
+	store.tasks["t-late"] = Task{ID: "t-late", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
+	store.tasks["t-cov"] = Task{ID: "t-cov", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c", Track: "direct"}
 	ctx := context.Background()
 	for _, row := range []struct {
 		pr  int64
@@ -2565,7 +2565,7 @@ func TestTheLateSweepStopsAtTheLastCard(t *testing.T) {
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.End = func(ctx context.Context, taskID string, run int64) error { return nil }
-	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "b0b0"}
+	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "b0b0", Track: "direct"}
 	ctx := context.Background()
 	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
 		t.Fatal(err)
@@ -2603,8 +2603,8 @@ func TestAnUncarriedMergedCardAlertsAfterTheBound(t *testing.T) {
 	p.End = func(context.Context, string, int64) error { return nil }
 	store.chainNow = p.Now
 	merged := clock
-	store.tasks["t-served"] = Task{ID: "t-served", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: "f00d"}
-	store.tasks["t-unserved"] = Task{ID: "t-unserved", Repository: demoRepo, PRNumber: 3, Status: "in-review"}
+	store.tasks["t-served"] = Task{ID: "t-served", Repository: codeRepo, PRNumber: 12, Status: "in-review", MergeCommit: "f00d", Track: "direct"}
+	store.tasks["t-unserved"] = Task{ID: "t-unserved", Repository: demoRepo, PRNumber: 3, Status: "in-review", Track: "direct"}
 	for _, id := range []string{"t-served", "t-unserved"} {
 		if err := store.TransitionTask(context.Background(), id, []string{"in-review"}, "merged"); err != nil {
 			t.Fatal(err)
@@ -2787,7 +2787,7 @@ func TestAnUncarriedCardAlertsInARepositoryWhoseChainBlockIsBroken(t *testing.T)
 	clock := time.Date(2026, 10, 20, 10, 0, 0, 0, time.UTC)
 	p.Now = func() time.Time { return clock }
 	store.chainNow = p.Now
-	store.tasks["t-x"] = Task{ID: "t-x", Repository: codeRepo, PRNumber: 12, Status: "in-review"}
+	store.tasks["t-x"] = Task{ID: "t-x", Repository: codeRepo, PRNumber: 12, Status: "in-review", Track: "direct"}
 	if err := store.TransitionTask(context.Background(), "t-x", []string{"in-review"}, "merged"); err != nil {
 		t.Fatal(err)
 	}
@@ -2892,8 +2892,8 @@ func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
 	f, pol := factoryChain(map[string]string{"status": "pending", "context": "factory/roll"})
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.Policy = pol
-	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12}
-	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14}
+	store.tasks["t-12"] = Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12, Track: "direct"}
+	store.tasks["t-14"] = Task{ID: "t-14", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14, MergeCommit: mergePR14, Track: "direct"}
 	var ended []string
 	p.End = func(_ context.Context, id string, run int64) error {
 		ended = append(ended, fmt.Sprintf("%s run %d", id, run))

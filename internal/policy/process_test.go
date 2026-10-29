@@ -66,13 +66,13 @@ func TestValidTreePasses(t *testing.T) {
 		t.Fatalf("Validate: %v", err)
 	}
 	spec := tree.Processes["spec"]
-	if len(spec.Lanes) != 3 || spec.Lanes[1].Plan == nil || *spec.Lanes[1].Plan != (PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}) ||
+	if spec.Tracks.Direct != (Track{Class: ClassCoder}) || spec.Tracks.Plan == nil || spec.Tracks.Plan.Class != "planner" || spec.Tracks.Plan.Plan == nil ||
+		*spec.Tracks.Plan.Plan != (PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}) ||
 		spec.Dependencies == nil || *spec.Dependencies != (Dependencies{WaitUntil: "done", OnFailed: "human"}) || spec.Merge.Queue != QueueProject || len(spec.Stages) != 9 {
 		t.Fatalf("spec = %+v", spec)
 	}
 	maint := tree.Processes["maintenance"]
-	if maint.Lanes[0] != (Lane{Name: LaneBacklog, WriteUp: ClassAnalyzer}) || maint.Lanes[1] != (Lane{Name: LaneReady, Class: ClassCoder, MovedBy: MovedByWriters}) ||
-		maint.Dependencies != nil || maint.Merge.Queue != QueueNone {
+	if maint.Tracks != (Tracks{Direct: Track{Class: ClassCoder}}) || maint.Dependencies != nil || maint.Merge.Queue != QueueNone {
 		t.Fatalf("maintenance = %+v", maint)
 	}
 	if tree.Document.Classes["planner"].Session != SessionPlan || tree.Projects["linkshort"].Process != "spec" || tree.Projects["ai-software-factory-infra"].Process != "" {
@@ -125,10 +125,11 @@ func TestTreeValidateJudgesAStoredProcess(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := tree.Processes["spec"]
-	spec.Lanes = slices.Clone(spec.Lanes)
-	spec.Lanes[1].Plan = nil
+	plan := *spec.Tracks.Plan
+	plan.Plan = nil
+	spec.Tracks.Plan = &plan
 	tree.Processes["spec"] = spec
-	if err := tree.Validate(); err == nil || !hasLines(err.Error(), "processes/spec.yaml: lanes.plan: plan is required: it bounds the plan the planner answers") {
+	if err := tree.Validate(); err == nil || !hasLines(err.Error(), "processes/spec.yaml: tracks.plan: plan is required: it bounds the plan the planner answers") {
 		t.Fatalf("Validate = %v", err)
 	}
 }

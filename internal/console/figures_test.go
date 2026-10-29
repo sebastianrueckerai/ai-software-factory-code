@@ -14,8 +14,8 @@ import (
 // The board page carries what the status panel and the stage word read:
 // the factory's spend this UTC day and the policy's day cap as /costs
 // shows them, the GitHub export's remote, and each card in progress with
-// its stage and the time in it: planning on a plan-lane card and building
-// on a coder's since the admission (the filing when never admitted),
+// its stage and the time in it: planning on a plan-track card and
+// building on a direct one since the admission (the filing when never admitted),
 // verifying since the gate began; no stage in any other status.
 func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 	r, ck := screenRig(t)
@@ -34,7 +34,7 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 		}
 	}
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-planning", Kind: "agent", Status: "running",
-		Lane: policy.LanePlan, Repository: "sf/code", Objective: "plan it", CreatedAt: now.Add(-8 * time.Minute)}})
+		Track: policy.TrackPlan, Repository: "sf/code", Objective: "plan it", CreatedAt: now.Add(-8 * time.Minute)}})
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, r.readSession(t, ck)))
@@ -55,7 +55,7 @@ func TestBoardPageCarriesTheFiguresOfTheStatusPanel(t *testing.T) {
 		}
 	}
 	want := map[string][2]string{"t-run": {"building", "23 min"}, "t-close": {"building", "under a minute"}, "t-planning": {"planning", "8 min"},
-		"t-rev": {"verifying", "6 min"}, "t-queue": {"", ""}, "t-deps": {"", ""}, "t-done": {"", ""}, "t-fail": {"", ""}, "t-back": {"", ""}}
+		"t-rev": {"verifying", "6 min"}, "t-queue": {"", ""}, "t-deps": {"", ""}, "t-done": {"", ""}, "t-fail": {"", ""}}
 	for id, w := range want {
 		if got[id] != w {
 			t.Errorf("%s: stage %q for %q, want %q for %q", id, got[id][0], got[id][1], w[0], w[1])

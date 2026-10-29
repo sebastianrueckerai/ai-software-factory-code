@@ -147,7 +147,7 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 }
 
 var gateTask = Task{ID: "t1", Status: "in-review", Objective: "Add a make check target", Repository: "sf/repo",
-	SHA: "base", IssueNumber: 4, Source: "api", PRNumber: 9, Kind: "agent", RequiredCapabilities: []string{policy.ClassCoder}}
+	SHA: "base", IssueNumber: 4, Source: "api", PRNumber: 9, Kind: "agent", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}}
 
 func newGateRunner(t *testing.T, task Task, fj *gateForgejo) (*Runner, *fakeStore, *fakeObjectStore) {
 	t.Helper()

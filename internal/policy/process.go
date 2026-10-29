@@ -4,18 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 )
 
 // Process is processes/<name>.yaml: the blocks a project's cards pass
 // (ruling 206). A class is policy.yaml's; a process only names it.
 type Process struct {
-	// Lanes are where a card waits or starts: backlog and ready always,
-	// plan for a process that builds from a spec. A card entering a
-	// starting lane (plan, ready) starts a task of the lane's class.
-	Lanes []Lane `yaml:"lanes" json:"lanes"`
-	// Dependencies is how a plan's cards wait on each other in lane ready;
-	// only in a process with a lane plan.
+	// Tracks are how a card's work runs, chosen by whoever files it
+	// (roadmap 225): direct always, plan for a process that builds from a
+	// spec. A card starts a task of its track's class.
+	Tracks Tracks `yaml:"tracks" json:"tracks"`
+	// Dependencies is how a plan's cards wait on each other; only in a
+	// process with a plan track.
 	Dependencies *Dependencies `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
 	// Stages are the stages a coding task's work passes, in this order
 	// (ruling 177): checks, policy, approval and merge are required,
@@ -34,23 +33,21 @@ type Process struct {
 	Time *Time `yaml:"time,omitempty" json:"time,omitempty"`
 }
 
-// Lane is one lane of a process.
-type Lane struct {
-	// Name is backlog, plan or ready, each at most once.
-	Name string `yaml:"name" json:"name"`
-	// Class is the class of the task a card entering the lane starts: on
-	// ready a class with session code, on plan one with session plan; not
-	// on backlog.
-	Class string `yaml:"class,omitempty" json:"class,omitempty"`
-	// MovedBy is who may put a card into a starting lane, at its creation
-	// or later: writers of the card's repository, or the policy's
-	// approvers. Not on backlog: no card moves into it.
-	MovedBy string `yaml:"moved_by,omitempty" json:"moved_by,omitempty"`
-	// WriteUp is, on backlog only, a class with session report that writes
-	// a card up once when it enters (ruling 185).
-	WriteUp string `yaml:"write_up,omitempty" json:"write_up,omitempty"`
-	// Plan bounds the plan the planner answers; on lane plan only, and
-	// required there.
+// Tracks are a process's tracks.
+type Tracks struct {
+	// Direct builds a card at once: a class with session code.
+	Direct Track `yaml:"direct" json:"direct"`
+	// Plan plans a card first, a class with session plan, and files the
+	// plan's cards on the direct track.
+	Plan *Track `yaml:"plan,omitempty" json:"plan,omitempty"`
+}
+
+// Track is one track of a process.
+type Track struct {
+	// Class is the class of the task a card on the track starts.
+	Class string `yaml:"class" json:"class"`
+	// Plan bounds the plan the planner answers; on the plan track only,
+	// and required there.
 	Plan *PlanShape `yaml:"plan,omitempty" json:"plan,omitempty"`
 }
 
@@ -136,33 +133,25 @@ func (p Process) Stage(name string) (Stage, bool) {
 	return p.Stages[i], true
 }
 
-// Lane is the named lane and whether the process has it.
-func (p Process) Lane(name string) (Lane, bool) {
-	i := slices.IndexFunc(p.Lanes, func(l Lane) bool { return l.Name == name })
-	if i < 0 {
-		return Lane{}, false
+// Track is the named track and whether the process has it.
+func (t Tracks) Track(name string) (Track, bool) {
+	switch {
+	case name == TrackDirect:
+		return t.Direct, true
+	case name == TrackPlan && t.Plan != nil:
+		return *t.Plan, true
 	}
-	return p.Lanes[i], true
+	return Track{}, false
 }
 
-// Lane names.
+// Track names.
 const (
-	LaneBacklog = "backlog"
-	LanePlan    = "plan"
-	LaneReady   = "ready"
+	TrackDirect = "direct"
+	TrackPlan   = "plan"
 )
 
-// LaneNames are the lanes, in the board's order.
-var LaneNames = []string{LaneBacklog, LanePlan, LaneReady}
-
-// Who may move a card into a starting lane.
-const (
-	MovedByWriters   = "writers"
-	MovedByApprovers = "approvers"
-)
-
-// MovedByValues are the moved_by values.
-var MovedByValues = []string{MovedByWriters, MovedByApprovers}
+// TrackNames are the tracks.
+var TrackNames = []string{TrackDirect, TrackPlan}
 
 // Session modes of a class: code runs the coding lifecycle, plan the plan
 // loop, report a write-up.
@@ -222,8 +211,18 @@ const WhenOutsider = "outsider"
 // StagePredicates are the when values.
 var StagePredicates = []string{WhenOutsider}
 
-// starting reports whether a card entering lane starts a task.
-func starting(lane string) bool { return lane == LanePlan || lane == LaneReady }
+// removedLanes refuses a process file that still carries the lanes block,
+// by name: a removed schema, not an ignored one (roadmap 225).
+func removedLanes(b []byte) error {
+	var doc map[string]any
+	if decodeOne(b, &doc, false) != nil {
+		return nil
+	}
+	if _, ok := doc["lanes"]; ok {
+		return errors.New("lanes: removed: whoever files a card sets its track, plan or direct, and the classes and the plan bounds sit under tracks")
+	}
+	return nil
+}
 
 // Validate checks a process on its own, each refusal one line
 // "<block>: <reason>"; what it needs from policy.yaml and the projects is
@@ -233,59 +232,31 @@ func (p Process) Validate() error {
 	bad := func(block, format string, a ...any) {
 		errs = append(errs, fmt.Errorf(block+": "+format, a...))
 	}
-	var seen []string
-	for i, l := range p.Lanes {
+	if p.Tracks.Direct.Class == "" {
+		bad("tracks.direct", "class is required: it builds every card")
+	}
+	if p.Tracks.Direct.Plan != nil {
+		bad("tracks.direct", "plan is allowed on the plan track only")
+	}
+	if t := p.Tracks.Plan; t != nil {
 		switch {
-		case !slices.Contains(LaneNames, l.Name):
-			bad("lanes", "lane %d: unknown name %q (known: %s)", i+1, l.Name, strings.Join(LaneNames, ", "))
-			continue
-		case slices.Contains(seen, l.Name):
-			bad("lanes", "lane %s is listed twice", l.Name)
-			continue
-		}
-		seen = append(seen, l.Name)
-		block := "lanes." + l.Name
-		if starting(l.Name) {
-			if l.Class == "" {
-				bad(block, "class is required on a starting lane")
-			}
-			switch {
-			case l.MovedBy == "":
-				bad(block, "moved_by is required on a starting lane, one of %v", MovedByValues)
-			case !slices.Contains(MovedByValues, l.MovedBy):
-				bad(block, "moved_by %q, want one of %v", l.MovedBy, MovedByValues)
-			}
-		} else if l.Class != "" || l.MovedBy != "" {
-			bad(block, "class and moved_by are not allowed: backlog starts nothing and no card moves into it")
-		}
-		if l.WriteUp != "" && l.Name != LaneBacklog {
-			bad(block, "write_up is allowed on lane backlog only")
-		}
-		switch {
-		case l.Plan != nil && l.Name != LanePlan:
-			bad(block, "plan is allowed on lane plan only")
-		case l.Plan == nil && l.Name == LanePlan:
-			bad(block, "plan is required: it bounds the plan the planner answers")
-		case l.Plan != nil && (l.Plan.MaxCards < 2 || l.Plan.MaxCards > 20):
-			bad(block, "plan.max_cards %d: want 2 to 20", l.Plan.MaxCards)
-		case l.Plan != nil && (l.Plan.MinCards < 1 || l.Plan.MinCards > 20):
-			bad(block, "plan.min_cards %d: want 1 to 20", l.Plan.MinCards)
-		case l.Plan != nil && l.Plan.MinCards > l.Plan.MaxCards:
-			bad(block, "plan.min_cards %d: above plan.max_cards %d", l.Plan.MinCards, l.Plan.MaxCards)
+		case t.Class == "":
+			bad("tracks.plan", "class is required: it plans the card")
+		case t.Plan == nil:
+			bad("tracks.plan", "plan is required: it bounds the plan the planner answers")
+		case t.Plan.MaxCards < 2 || t.Plan.MaxCards > 20:
+			bad("tracks.plan", "plan.max_cards %d: want 2 to 20", t.Plan.MaxCards)
+		case t.Plan.MinCards < 1 || t.Plan.MinCards > 20:
+			bad("tracks.plan", "plan.min_cards %d: want 1 to 20", t.Plan.MinCards)
+		case t.Plan.MinCards > t.Plan.MaxCards:
+			bad("tracks.plan", "plan.min_cards %d: above plan.max_cards %d", t.Plan.MinCards, t.Plan.MaxCards)
 		}
 	}
-	if !slices.Contains(seen, LaneBacklog) {
-		bad("lanes", "lane backlog is required: the cards that do not start wait there")
-	}
-	if !slices.Contains(seen, LaneReady) {
-		bad("lanes", "lane ready is required: it starts the coding tasks")
-	}
-	_, plan := p.Lane(LanePlan)
-	switch d := p.Dependencies; {
+	switch plan, d := p.Tracks.Plan != nil, p.Dependencies; {
 	case plan && d == nil:
-		bad("lanes.plan", "needs the block dependencies before it: the plan's cards wait on each other in lane ready")
+		bad("tracks.plan", "needs the block dependencies: the plan's cards wait on each other")
 	case !plan && d != nil:
-		bad("dependencies", "no lane plan makes dependencies: remove the block or add the lane")
+		bad("dependencies", "no plan track makes dependencies: remove the block or add the track")
 	}
 	if d := p.Dependencies; d != nil {
 		if !slices.Contains(WaitUntilValues, d.WaitUntil) {

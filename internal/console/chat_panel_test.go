@@ -22,6 +22,7 @@ import (
 func TestChatPanel(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
+	r.forgetWriters()
 	ck, s := r.loggedIn(t)
 	page := func(ck *http.Cookie, path string) string {
 		t.Helper()
@@ -44,7 +45,7 @@ func TestChatPanel(t *testing.T) {
 <button type="button" class="sw-sum" data-swtoggle aria-expanded="false" aria-controls="switcher" hidden></button>
 <div class="chat-main">
 <div id="thread-head" class="thead"></div>
-<p class="chat-start" title="Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, moves, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
+<p class="chat-start" title="Ask or tell the project agent. It reads, explains, files, answers, steers and approves as you, through the console's own actions; it runs no code.">Ask or tell the project agent. It reads, explains, files, answers, steers and approves as you, through the console's own actions; it runs no code.</p>
 <div id="chat-log" class="chat-log" role="log" aria-label="The conversation with the project agent">
 </div>
 <div id="chat-answer" class="answer" role="group" aria-label="Answer" hidden></div>
@@ -81,7 +82,9 @@ func TestChatPanel(t *testing.T) {
 		t.Fatalf("GET /static/chat.js = %d, %d bytes", rec.Code, len(js))
 	}
 
-	ak, _ := r.as(t, "alice")
+	// alice writes linkshort and reads the code project's repository
+	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
+	ak, _ := memberLogin(t, r, "alice")
 	body = page(ak, code)
 	if want := `<section id="chat" class="chat" aria-labelledby="chat-title">
 <div class="chat-head"><h2 id="chat-title">Chat</h2> <span class="chat-who">project agent · ai-software-factory-code</span> <button type="button" id="chat-full" class="wctl" aria-pressed="false" aria-label="Chat and board" data-tip="Grow the chat to the whole screen; the glyph flips, click again or press Esc for the board back"><svg viewBox="0 0 16 16" aria-hidden="true"><path class="exp" d="M9.5 2.5h4v4M6.5 13.5h-4v-4M3 13l10-10" fill="none" stroke="currentColor" stroke-width="1.5"/><path class="col" d="M13.5 6.5v-4h-4M2.5 9.5v4h4M13 3L3 13" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button></div>
@@ -100,7 +103,8 @@ func TestChatPanel(t *testing.T) {
 		}
 	}
 
-	bk, _ := r.as(t, "bob")
+	r.repoWriters["sf/infra"] = []string{"bob"}
+	bk, _ := memberLogin(t, r, "bob")
 	none := func(who, body string) {
 		t.Helper()
 		for _, unwanted := range []string{`id="chat"`, "with-chat", "chat.js"} {
@@ -109,7 +113,7 @@ func TestChatPanel(t *testing.T) {
 			}
 		}
 	}
-	none("bob, who writes no project", page(bk, "/"))
+	none("bob, who writes no project agents work on", page(bk, "/"))
 	none("the wide view", page(ck, code+"&view=wide"))
 	r.c.cfg.Operator = nil
 	none("a console without the model", page(ck, code))
@@ -133,10 +137,10 @@ func TestChatPanelScript(t *testing.T) {
 	}
 	const driver = `var chatView = require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8") + "\nchatView",
   {document: {getElementById: function () { return null; }}});
-var args = '{"title":"Cache metrics","lane":"ready"}';
+var args = '{"title":"Cache metrics","track":"direct"}';
 var msgs = [{role: "user", content: "file a card", at: "2026-10-11T09:30:01Z"},
   {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "call_1", name: "new_card", arguments: args,
-    result: "Proposed to sebastian: File a card, title Cache metrics, lane ready. Nothing runs until they press Do it.", proposal: "tok1"}]}];
+    result: "Proposed to sebastian: File a card, title Cache metrics, track direct. Nothing runs until they press Do it.", proposal: "tok1"}]}];
 var now = new Date("2026-10-11T12:00:00Z");
 var cmds = [{name: "compact", words: "the older turns of this thread become a summary"}, {name: "new", words: "a new thread"},
   {name: "standup", words: "what moved", message: "What moved since yesterday?"}];
@@ -147,7 +151,7 @@ var threads = [{number: 3, title: "Inbox", state: "active", inbox: true, last_at
 console.log(JSON.stringify({
   pending: chatView.historyHTML(msgs, "sebastian", [{token: "tok1", state: "pending"}]),
   used: chatView.historyHTML(msgs, "sebastian", [{token: "tok1", state: "used"}]),
-  stream: chatView.proposalHTML({id: "tok1", tool: "new_card", arguments: JSON.parse(args), description: "File a card, title Cache metrics, lane ready"}),
+  stream: chatView.proposalHTML({id: "tok1", tool: "new_card", arguments: JSON.parse(args), description: "File a card, title Cache metrics, track direct"}),
   rows: chatView.rowsHTML(threads, 2, "", "sebastian", now),
   sum: chatView.sumHTML(threads, "sebastian", false),
   unread: String(chatView.unreadOf(threads, "sebastian")),
@@ -221,9 +225,9 @@ console.log(JSON.stringify({
 	const (
 		you      = `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">file a card</p></div>`
 		agent    = `<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p>`
-		args     = `{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;lane&quot;:&quot;ready&quot;}`
-		result   = `Proposed to sebastian: File a card, title Cache metrics, lane ready. Nothing runs until they press Do it.`
-		proposal = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, lane ready</li></ul>` +
+		args     = `{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;track&quot;:&quot;direct&quot;}`
+		result   = `Proposed to sebastian: File a card, title Cache metrics, track direct. Nothing runs until they press Do it.`
+		proposal = `<div class="proposal" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, track direct</li></ul>` +
 			`<details class="args"><summary>new_card arguments</summary><pre>` + args + `</pre></details>` +
 			`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`
 		dot = `<span class="tmark working"><i class="dot" aria-hidden="true"></i><span class="visually-hidden">a turn in flight</span></span>`

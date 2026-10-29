@@ -61,7 +61,7 @@ func TestCardDrawerCarriesTheProvenanceLine(t *testing.T) {
 	r.tasks.set("which pins?",
 		factoryd.Task{ID: "t-790", Kind: "human", Status: "waiting-human", Repository: "sf/code", IssueNumber: 790, Source: factoryd.SourceRoutine,
 			Objective: "Weekly bump\n\nBump the pins.\n\nfiled by the factory · routine weekly-bump · run 15"},
-		factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Lane: policy.LaneReady})
+		factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Track: policy.TrackDirect})
 	ck, _ := r.loggedIn(t)
 	line := func(want string) {
 		t.Helper()
@@ -222,7 +222,7 @@ func TestRoutineDrawerTabs(t *testing.T) {
 	// policy.yaml's template pass, the factory's: its fold adds to its
 	// pull request, its Config says it is the factory's, and what its acts
 	// reach
-	pass := factoryd.RoutineView{Project: "ai-software-factory-code", Lane: "queued",
+	pass := factoryd.RoutineView{Project: "ai-software-factory-code", Column: "queued",
 		Routine: policy.Routine{Name: "template-pass", Title: "Template update", Files: policy.FilesPullRequest, Pass: policy.PassTemplate,
 			Schedule: []policy.Trigger{{On: policy.OnConfigurationVersion}}, WhileOpen: policy.WhileOpenFold},
 		State: factoryd.RoutineState{Routine: "template-pass"}}
@@ -246,7 +246,7 @@ func TestRoutineDrawerNeedsAMember(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
 	const path = "/routines/" + bumpKey + "/drawer"
 
-	ak, _ := r.as(t, "anna")
+	ak, _ := r.readerOfCode(t, "anna")
 	if rec := getPage(r, ak, path); rec.Code != http.StatusForbidden {
 		t.Fatalf("anna, who does not write the project, = %d:\n%s", rec.Code, rec.Body)
 	}
@@ -270,7 +270,7 @@ func TestRoutineDrawerNeedsAMember(t *testing.T) {
 func TestRoutineDrawerOfAnEventRoutine(t *testing.T) {
 	r := newRig(t)
 	rt := policy.Routine{Name: "push-report", Title: "Push report", Files: policy.FilesReport, Schedule: []policy.Trigger{{On: policy.OnPushMain}}}
-	r.routines.views = []factoryd.RoutineView{{Project: "ai-software-factory-code", Routine: rt, NextWords: rt.Words(), Lane: "queued"}}
+	r.routines.views = []factoryd.RoutineView{{Project: "ai-software-factory-code", Routine: rt, NextWords: rt.Words(), Column: "queued"}}
 	ck, _ := r.loggedIn(t)
 	d := getPage(r, ck, "/routines/ai-software-factory-code/push-report/drawer").Body.String()
 	for _, want := range []string{

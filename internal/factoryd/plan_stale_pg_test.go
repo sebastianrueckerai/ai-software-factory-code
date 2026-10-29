@@ -25,16 +25,17 @@ func TestPGStorePlanStaleness(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, plan_revisions, sessions CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	seed := Task{Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Lane: "plan"}
+	seed := Task{Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Track: "plan"}
 	parent := seed
 	parent.ID, parent.Status, parent.IssueNumber = "t-plan", "done", 20
 	if err := s.CreateTask(ctx, parent); err != nil {
 		t.Fatal(err)
 	}
 	mid, last, fresh := seed, seed, seed
-	mid.ID, mid.Status, mid.IssueNumber, mid.Source, mid.Parent, mid.PlanKey = "t-mid", "backlog", 21, SourcePlan, "t-plan", "foundation"
-	last.ID, last.Status, last.IssueNumber, last.Source, last.Parent, last.PlanKey = "t-last", "backlog", 22, SourcePlan, "t-plan", "links-api"
-	fresh.ID, fresh.Status, fresh.IssueNumber, fresh.Source, fresh.Parent, fresh.PlanKey = "t-fresh", "backlog", 23, SourcePlan, "t-plan", "redirects"
+	mid.ID, mid.Status, mid.IssueNumber, mid.Source, mid.Parent, mid.PlanKey = "t-mid", "queued", 21, SourcePlan, "t-plan", "foundation"
+	last.ID, last.Status, last.IssueNumber, last.Source, last.Parent, last.PlanKey = "t-last", "queued", 22, SourcePlan, "t-plan", "links-api"
+	fresh.ID, fresh.Status, fresh.IssueNumber, fresh.Source, fresh.Parent, fresh.PlanKey = "t-fresh", "queued", 23, SourcePlan, "t-plan", "redirects"
+	mid.Track, last.Track, fresh.Track = "direct", "direct", "direct"
 	for _, task := range []Task{mid, last, fresh} {
 		if err := s.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)

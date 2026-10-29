@@ -205,6 +205,7 @@ func TestChatGithubExport(t *testing.T) {
 	equal(t, "Do it once the token is gone", gone, []string{tool(none), `text {"text":"Set it again."}`, `done {}`})
 
 	r.repoWriters["demo-app/demo-app"] = append(r.repoWriters["demo-app/demo-app"], "anna")
+	r.forgetWriters()
 	ak, as := r.as(t, "anna")
 	g.replies = [][]string{{call(1, "github_export", args)}, {say("Ask an approver.")}}
 	_, refused, _ := chatPost(t, r, ak, as, demo, url.Values{"message": {"export it"}})
@@ -271,6 +272,7 @@ func TestProjectsPageGithubExport(t *testing.T) {
 	}
 
 	r.repoWriters["demo-app/demo-app"] = append(r.repoWriters["demo-app/demo-app"], "anna")
+	r.forgetWriters()
 	ak, as := r.as(t, "anna")
 	if body := page(ak); strings.Contains(body, form) || strings.Contains(body, remove) || !strings.Contains(body, "GitHub export</dt><dd>acme/app, failed: Authentication failed</dd>") {
 		t.Fatalf("a writer's /projects: want the state without the form or Remove:\n%s", body)

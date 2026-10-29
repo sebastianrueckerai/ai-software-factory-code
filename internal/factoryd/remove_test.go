@@ -93,8 +93,8 @@ func newRemovalRig(t *testing.T) *removalRig {
 	rig.kube.labels = map[string]map[string]string{
 		"demo-staging": {ProjectLabel: "demo-app"}, "demo-prod": {ProjectLabel: "demo-app"}}
 	rig.store.tasks = []Task{
-		{ID: "t-done-1", Repository: "demo-app/demo-app", Status: "done"},
-		{ID: "t-done-2", Repository: "demo-app/demo-app", Status: "closed"},
+		{ID: "t-done-1", Repository: "demo-app/demo-app", Status: "done", Track: "direct"},
+		{ID: "t-done-2", Repository: "demo-app/demo-app", Status: "closed", Track: "direct"},
 	}
 	rig.store.history = map[string]int{"events": 12, "ledger": 34, "audit": 5, "chat": 2}
 	litellm := &fakeKeyLiteLLM{keys: []liteKey{

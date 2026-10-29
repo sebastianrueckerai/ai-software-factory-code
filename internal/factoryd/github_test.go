@@ -267,7 +267,7 @@ func newPullsRig(t *testing.T) *pullsRig {
 func (p *pullsRig) done(id, objective string, pr int64) {
 	p.t.Helper()
 	ctx := context.Background()
-	if err := p.store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "in-review", Repository: "demo-app/demo-app", Objective: objective}); err != nil {
+	if err := p.store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "in-review", Repository: "demo-app/demo-app", Objective: objective, Track: "direct"}); err != nil {
 		p.t.Fatal(err)
 	}
 	if err := errors.Join(p.store.SetTaskPR(ctx, id, pr), p.store.TransitionTask(ctx, id, []string{"in-review"}, "done")); err != nil {

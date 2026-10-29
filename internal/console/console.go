@@ -128,10 +128,10 @@ type Tasks interface {
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
-	// CountAdmitted and CountBacklog count the project's work slots and
+	// CountAdmitted and CountQueue count the project's work slots and
 	// its unstarted filings, the ready check's room (roadmap 239).
 	CountAdmitted(ctx context.Context, repository string) (int, error)
-	CountBacklog(ctx context.Context, repository string) (int, error)
+	CountQueue(ctx context.Context, repository string) (int, error)
 	// ProjectImageParks are the parks of project's cards that wait for an
 	// image, the oldest first, each with its tool card's issue.
 	ProjectImageParks(ctx context.Context, project string) ([]factoryd.ImagePark, error)
@@ -156,7 +156,11 @@ type Config struct {
 	// factory's own code project's repository (the one deploying into
 	// factoryd's namespace): a writer of any project may log in, a writer
 	// of own also reaches the factory-level pages (ruling 254).
-	Writers   func(ctx context.Context) (own string, writers map[string][]string, err error)
+	Writers func(ctx context.Context) (own string, writers map[string][]string, err error)
+	// Writes reports whether user writes repository's code on Forgejo
+	// (factoryd.Intake.Writes), for a project of any agents: what a write
+	// action on its cards needs.
+	Writes    func(ctx context.Context, repository, user string) (bool, error)
 	Timelines factoryd.ObjectStore
 	Policies  Policies
 	Costs     Costs
@@ -190,15 +194,9 @@ type Config struct {
 	// Bus is the in-process event broadcaster: the stream subscribes to it
 	// so every Record fans out without polling the table (factoryd.EventBus).
 	Bus *factoryd.EventBus
-	// MayMove is intake's moved_by judgement (factoryd.Intake.MayMove):
-	// whether user may put a card of repository into a lane moved by
-	// movedBy. The console asks it only to offer and pre-check a move.
-	MayMove func(ctx context.Context, repository, user, movedBy string) (bool, error)
-	// AcceptPlan, AnswerPlan and RejectPlan signal a plan task's workflow
-	// (factoryd.AcceptPlan, factoryd.AnswerPlan, factoryd.RejectPlan);
-	// AcceptPlan's decider decides the plan's request, its author authors
-	// the cards.
-	AcceptPlan func(ctx context.Context, taskID string, revision int, sha, decider, author string) error
+	// AnswerPlan signals a plan task's workflow with a writer's answer to
+	// one question of the revision that waits for its answers
+	// (factoryd.AnswerPlan).
 	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, answer, by string) error
 	// AnswerPlanQuestions signals a plan task's workflow with every answer
 	// of one turn at once (factoryd.AnswerPlanQuestions).
@@ -215,7 +213,6 @@ type Config struct {
 	GrantCriteria       func(ctx context.Context, id, by string, approval int64) (int, error)
 	DecideCriterion     func(ctx context.Context, id, cid, verdict, by, reason string) error
 	RecordHumanCriteria func(ctx context.Context, taskID, approver string) (int, error)
-	RejectPlan          func(ctx context.Context, taskID, by, why string) error
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
@@ -356,7 +353,7 @@ type Console struct {
 	writers  writerLists
 	writersT time.Time
 	flight   singleflight.Group
-	moves    map[string]answer // the board's MayMove answers
+	written  map[string]answer // Writes answers by repository and user
 	checks   map[string]checks // the cards' checks counts, by task
 	// runs are the new projects' merge refusals and registrations, in
 	// memory for the status panel.
@@ -477,14 +474,10 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
-		{"POST /cards/{id}/lane", http.HandlerFunc(c.moveCard), nil},
 		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
-		{"POST /tasks/{id}/start-plan", http.HandlerFunc(c.startPlan), nil},
-		{"POST /tasks/{id}/plan/accept", http.HandlerFunc(c.acceptPlan), nil},
 		{"POST /tasks/{id}/plan/answer", http.HandlerFunc(c.planAnswer), nil},
 		{"POST /tasks/{id}/plan/holdout", http.HandlerFunc(c.planHoldout), nil},
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
-		{"POST /tasks/{id}/plan/reject", http.HandlerFunc(c.rejectPlan), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
@@ -729,38 +722,92 @@ func (c *Console) purgeSessions(ctx context.Context) {
 	}
 }
 
-// writer reports whether user writes any project and whether they write
-// the factory's own, from the writer lists read at most once a minute by
-// one request while the others wait for it; when Forgejo fails, the last
+// readWriters are the writer lists, read at most once a minute by one
+// request while the others wait for it; when Forgejo fails, the last
 // lists serve for up to five minutes.
-func (c *Console) writer(ctx context.Context, user string) (admitted, factory bool, err error) {
+func (c *Console) readWriters(ctx context.Context) (writerLists, error) {
 	c.mu.Lock()
 	lists, at := c.writers, c.writersT
 	c.mu.Unlock()
-	if time.Since(at) >= writersTTL {
-		v, err, _ := c.flight.Do("writers", func() (any, error) {
-			own, by, err := c.cfg.Writers(context.WithoutCancel(ctx))
-			l := writerLists{own, by}
-			if err == nil {
-				c.mu.Lock()
-				c.writers, c.writersT = l, time.Now()
-				c.mu.Unlock()
-			}
-			return l, err
-		})
-		switch {
-		case err == nil:
-			lists = v.(writerLists)
-		case lists.by != nil && time.Since(at) < writersStale:
-			log.Printf("console: writers: %v; serving the lists of %s", err, at.UTC().Format(time.RFC3339))
-		default:
-			return false, false, err
+	if time.Since(at) < writersTTL {
+		return lists, nil
+	}
+	v, err, _ := c.flight.Do("writers", func() (any, error) {
+		own, by, err := c.cfg.Writers(context.WithoutCancel(ctx))
+		l := writerLists{own, by}
+		if err == nil {
+			c.mu.Lock()
+			c.writers, c.writersT = l, time.Now()
+			c.mu.Unlock()
 		}
+		return l, err
+	})
+	switch {
+	case err == nil:
+		return v.(writerLists), nil
+	case lists.by != nil && time.Since(at) < writersStale:
+		log.Printf("console: writers: %v; serving the lists of %s", err, at.UTC().Format(time.RFC3339))
+		return lists, nil
+	}
+	return writerLists{}, err
+}
+
+// writer reports whether user writes any project and whether they write
+// the factory's own (readWriters).
+func (c *Console) writer(ctx context.Context, user string) (admitted, factory bool, err error) {
+	lists, err := c.readWriters(ctx)
+	if err != nil {
+		return false, false, err
 	}
 	for _, users := range lists.by {
 		admitted = admitted || slices.Contains(users, user)
 	}
 	return admitted, slices.Contains(lists.by[lists.own], user), nil
+}
+
+// writeAsk bounds one Writes ask on a board render, which must not stall
+// on Forgejo.
+const writeAsk = 5 * time.Second
+
+// writeFailTTL is how long a failed Writes ask is served as the answer: a
+// breath, so a render and the polls right after it ask Forgejo once each,
+// while a healthy ask follows one broken render within seconds.
+var writeFailTTL = 2 * time.Second
+
+// answer is a remembered Writes answer, a failure included.
+type answer struct {
+	ok  bool
+	err error
+	at  time.Time
+}
+
+// writesRepo reports whether user writes repository (Config.Writes): an
+// answer is kept for writersTTL per repository and user, so a render and
+// the polls after it ask Forgejo once; a failure is kept for writeFailTTL
+// only, so a canceled ask (a browser abort mid-render) never poisons the
+// renders after it.
+func (c *Console) writesRepo(ctx context.Context, user, repository string) (bool, error) {
+	if user == "" {
+		return false, nil // the pulse's view of the board, no member's
+	}
+	key := repository + "\x00" + user
+	c.mu.Lock()
+	a, ok := c.written[key]
+	c.mu.Unlock()
+	if ok && time.Since(a.at) < writersTTL && (a.err == nil || time.Since(a.at) < writeFailTTL) {
+		return a.ok, a.err
+	}
+	ask, cancel := context.WithTimeout(ctx, writeAsk)
+	defer cancel()
+	a.ok, a.err = c.cfg.Writes(ask, repository, user)
+	a.at = time.Now()
+	c.mu.Lock()
+	if c.written == nil {
+		c.written = map[string]answer{}
+	}
+	c.written[key] = a
+	c.mu.Unlock()
+	return a.ok, a.err
 }
 
 // factoryAccess refuses a factory-level page, read or action to anyone but

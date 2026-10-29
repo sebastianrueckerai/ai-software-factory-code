@@ -75,7 +75,7 @@ type accProposal struct {
 }
 
 // NewAcceptanceRig builds the rig: logged out, with the code project's
-// cards #5 t-m in the backlog, #11 t-r running its session with pull
+// cards #5 t-m queued, #11 t-r running its session with pull
 // request #9 and #13 t-e waiting on an answer, and no event recorded.
 // steer wires the steer stub: every text handed to a task's session is
 // recorded as "task user: text". docs, when not nil, seats the document
@@ -88,10 +88,10 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 	t.Helper()
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus()}
 	a.tasks = []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
 			Objective: "Fix the cache. It drops entries.\n\nAcceptance:\n- The cache keeps entries across a restart\n"}},
-		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Lane: policy.LaneReady,
+		{Task: factoryd.Task{ID: "t-r", Kind: "agent", Status: "running", Gate: factoryd.GateSession, Track: policy.TrackDirect,
 			Process: "maintenance", Repository: "sf/code", IssueNumber: 11, PRNumber: 9, Objective: "Speed up the board."}},
 		{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
 			Objective: "Use a replica?"}},
@@ -109,7 +109,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
 		},
-		MayMove: func(_ context.Context, repository, user, _ string) (bool, error) {
+		Writes: func(_ context.Context, repository, user string) (bool, error) {
 			return repository == "sf/code" && user == "sebastian", nil
 		},
 		Operator: &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
@@ -318,7 +318,7 @@ func (a *AcceptanceRig) TellCard(taskID string, issue, pr, id int64, objective, 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.tasks = append(a.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: taskID, Kind: "agent", Status: "in-review",
-		Gate: factoryd.GateApproval, Lane: policy.LaneReady, Process: "maintenance", Repository: "sf/code",
+		Gate: factoryd.GateApproval, Track: policy.TrackDirect, Process: "maintenance", Repository: "sf/code",
 		IssueNumber: issue, PRNumber: pr, Objective: objective}})
 	a.approvals = append(a.approvals, factoryd.ApprovalRequest{ID: id, Kind: factoryd.ApprovalMerge, TaskID: taskID,
 		Project: "sf/code", PRNumber: pr, Status: "pending",
@@ -998,7 +998,7 @@ func (a *AcceptanceRig) PurgeProposals(_ context.Context, before time.Time) (int
 func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error) {
 	v, _, _ := a.CurrentPolicy(ctx)
 	return []factoryd.Project{{Name: accProjectName, Repository: "sf/code", MergeRule: "human", Objects: "seed",
-		Agents: "coder", File: true, Process: "maintenance", Lanes: v.Tree.Processes["maintenance"].Lanes,
+		Agents: "coder", File: true, Process: "maintenance", Tracks: v.Tree.Processes["maintenance"].Tracks,
 		Namespaces: []string{"factory"},
 		Tokens:     policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}}, nil
 }
@@ -1016,7 +1016,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 		{Name: "merge", OnFindings: "human", Enabled: true},
 	}
 	processes := map[string]policy.Process{
-		"maintenance": {Lanes: []policy.Lane{{Name: "backlog", WriteUp: "analyzer"}, {Name: "ready", Class: "coder", MovedBy: "writers"}},
+		"maintenance": {Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}},
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
 	}
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Now(), ActivatedAt: time.Now(),
@@ -1062,7 +1062,7 @@ func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int
 	n := 0
 	for _, bt := range a.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
 		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
@@ -1073,13 +1073,13 @@ func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int
 	return n, nil
 }
 
-func (a *AcceptanceRig) CountBacklog(_ context.Context, repository string) (int, error) {
+func (a *AcceptanceRig) CountQueue(_ context.Context, repository string) (int, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	n := 0
 	for _, bt := range a.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Lane == "" || t.AdmittedAt != nil || factoryd.Final(t.Status) {
+		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil || factoryd.Final(t.Status) {
 			continue
 		}
 		n++

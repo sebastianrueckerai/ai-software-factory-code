@@ -192,31 +192,15 @@ func boardAction(name, path, kind, repo, taskID string, detail map[string]any, s
 // linkshort at revision 2, waiting for its approver.
 func planRig(r *rig) {
 	withLinkshort(r)
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan,
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan,
 		Process: "spec", Objective: "Link shortener", Repository: "linkshort/linkshort", IssueNumber: 1}}}
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {planRevision("t-plan", 1, "sha-1"), planRevision("t-plan", 2, "sha-2")}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 20, Kind: factoryd.ApprovalPlan, TaskID: "t-plan",
 		Project: "linkshort/linkshort", Status: "pending", Spec: json.RawMessage(`{"revision":2,"sha256":"sha-2"}`)})
 }
 
-// acceptedPlanRig is the same plan once its approver accepted revision 2
-// and factoryd filed its cards: Start plan labels the backlog children.
-func acceptedPlanRig(r *rig) {
-	planRig(r)
-	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-plan" {
-			r.tasks.tasks[i].Status, r.tasks.tasks[i].Escalation = "done", ""
-		}
-	}
-	for _, c := range planTasks() {
-		if c.ID != "t-plan" && c.Repository == "linkshort/linkshort" && c.Status == "backlog" {
-			r.tasks.tasks = append(r.tasks.tasks, c)
-		}
-	}
-}
-
-func backlogCard(r *rig) {
-	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+func queuedCard(r *rig) {
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 		Repository: "sf/code", IssueNumber: 5})
 }
 
@@ -227,10 +211,10 @@ func escalatedCard(r *rig) {
 
 func failedPlanCard(r *rig) {
 	withLinkshort(r)
-	child := factoryd.Task{ID: "t-c2", Kind: "agent", Status: "failed", Lane: policy.LaneReady, Process: "spec",
+	child := factoryd.Task{ID: "t-c2", Kind: "agent", Status: "failed", Track: policy.TrackDirect, Process: "spec",
 		Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}
 	r.tasks.tasks = []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Lane: policy.LanePlan, Process: "spec",
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
 			Objective: "Link shortener", Repository: "linkshort/linkshort", IssueNumber: 1}},
 		{Task: child},
 	}
@@ -251,25 +235,16 @@ func standingResource(r *rig) {
 // its Timeline (internal/factoryd).
 var actions = []action{
 	boardAction("createTask", "/tasks", factoryd.EventCardFiled, "sf/code", "",
-		map[string]any{"lane": "ready", "title": "Fix the cache"}, nil,
-		url.Values{"project": {"ai-software-factory-code"}, "title": {"Fix the cache"}, "body": {"details"}, "lane": {"ready"}}),
-	boardAction("moveCard", "/cards/t-m/lane", factoryd.EventCardMoved, "sf/code", "t-m",
-		map[string]any{"lane": "ready"}, backlogCard,
-		url.Values{"project": {"ai-software-factory-code"}, "lane": {"ready"}}),
+		map[string]any{"track": "direct", "title": "Fix the cache"}, nil,
+		url.Values{"project": {"ai-software-factory-code"}, "title": {"Fix the cache"}, "body": {"details"}, "track": {"direct"}}),
 	boardAction("answer", "/tasks/t-e/answer", factoryd.EventQuestionAnswered, "sf/code", "t-e",
 		postedDetail(1), escalatedCard,
 		url.Values{"answer": {"use the replica"}}),
-	boardAction("startPlan", "/tasks/t-plan/start-plan", factoryd.EventPlanStarted, "linkshort/linkshort", "t-plan",
-		map[string]any{"cards": 2}, acceptedPlanRig, url.Values{}),
-	boardAction("acceptPlan", "/tasks/t-plan/plan/accept", factoryd.EventPlanAccepted, "linkshort/linkshort", "t-plan",
-		map[string]any{"revision": 2}, planRig, url.Values{"revision": {"2"}, "sha256": {"sha-2"}}),
 	boardAction("planAnswer", "/tasks/t-plan/plan/answer", factoryd.EventPlanQuestionAnswered, "linkshort/linkshort", "t-plan",
 		map[string]any{"answer": "60 seconds", "index": 1, "revision": 2}, questionsRig,
 		url.Values{"revision": {"2"}, "index": {"1"}, "answer": {"60 seconds"}}),
 	boardAction("planChanges", "/tasks/t-plan/plan/changes", factoryd.EventPlanChangesRequested, "linkshort/linkshort", "t-plan",
 		nil, planRig, url.Values{"text": {"Split the web pages into two cards."}}),
-	boardAction("rejectPlan", "/tasks/t-plan/plan/reject", factoryd.EventPlanRejected, "linkshort/linkshort", "t-plan",
-		nil, planRig, url.Values{"note": {"not this quarter"}}),
 	boardAction("retryCard", "/tasks/t-c2/retry", factoryd.EventCardRetried, "linkshort/linkshort", "t-c2",
 		map[string]any{"replacement": 9}, failedPlanCard, url.Values{}),
 	boardAction("approve resource", "/approvals/3/approve", factoryd.EventMergeApproved, "sf/code", "t-res",
@@ -285,11 +260,11 @@ var actions = []action{
 	boardAction("verdict", "/alerts/3/verdict", factoryd.EventAlertVerdict, "sf/code", "t-e",
 		map[string]any{"alert": 3, "verdict": "real"}, verdictAlert, url.Values{"verdict": {"real"}}),
 	boardAction("setSummary", "/tasks/t-m/summary", factoryd.EventSummarySet, "sf/code", "t-m",
-		map[string]any{"summary": "a short summary"}, backlogCard, url.Values{"summary": {"a short summary"}}),
+		map[string]any{"summary": "a short summary"}, queuedCard, url.Values{"summary": {"a short summary"}}),
 	boardAction("closeCard", "/tasks/t-m/close", factoryd.EventCardClosed, "sf/code", "t-m",
-		map[string]any{"note": ""}, backlogCard, url.Values{"project": {"ai-software-factory-code"}}),
+		map[string]any{"note": ""}, queuedCard, url.Values{"project": {"ai-software-factory-code"}}),
 	boardAction("setAccent", "/tasks/t-m/accent", factoryd.EventAccentSet, "sf/code", "t-m",
-		map[string]any{"accent": "blue"}, backlogCard, url.Values{"value": {"blue"}}),
+		map[string]any{"accent": "blue"}, queuedCard, url.Values{"value": {"blue"}}),
 	boardAction("promote", "/resources/11/promote", factoryd.EventResourcePromoted, "sf/code", "t-res",
 		map[string]any{"resource": 11, "kind": "server"}, standingResource, url.Values{}),
 	boardAction("release", "/resources/11/release", factoryd.EventResourceReleased, "sf/code", "t-res",
@@ -414,7 +389,7 @@ func TestProjectFeedAnswers200JSONForWriter(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
 	ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFiled, Actor: "alice", Via: factoryd.ViaButton})
-	ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardMoved, Actor: "bob", Via: factoryd.ViaButton})
+	ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardRetried, Actor: "bob", Via: factoryd.ViaButton})
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/events?limit=50", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET /projects/.../events = %d: %s", rec.Code, rec.Body)
@@ -429,7 +404,7 @@ func TestProjectFeedAnswers200JSONForWriter(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %d, want 2", len(events))
 	}
-	if events[0].Kind != factoryd.EventCardMoved || events[1].Kind != factoryd.EventCardFiled {
+	if events[0].Kind != factoryd.EventCardRetried || events[1].Kind != factoryd.EventCardFiled {
 		t.Fatalf("order: %s, %s; want newest first", events[0].Kind, events[1].Kind)
 	}
 	if events[0].Repository != "sf/code" || events[0].Via != factoryd.ViaButton || events[0].Actor != "bob" {
@@ -441,6 +416,7 @@ func TestProjectFeedAnswers403ForNonWriter(t *testing.T) {
 	r, _ := newRigWithEvents(t)
 	ck, _ := r.loggedIn(t)
 	r.repoWriters["sf/code"] = []string{"someone-else"}
+	r.forgetWriters()
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/events", nil), ck)
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("non-writer = %d, want 403", rec.Code)
@@ -640,8 +616,8 @@ func TestStreamFollowsReadOnly(t *testing.T) {
 	row := func(kind string, detail map[string]any) {
 		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-c", IssueNumber: 5, Kind: kind, Actor: "alice", Via: factoryd.ViaButton, At: at, Detail: detail})
 	}
-	row(factoryd.EventCardMoved, nil)
-	row(factoryd.EventCardMoved, nil)
+	row(factoryd.EventCardRetried, nil)
+	row(factoryd.EventCardRetried, nil)
 	memberLogin(t, r, "bob")
 	resp, br := streamOf(t, r, "1")
 	if resp.StatusCode != http.StatusOK {
@@ -678,33 +654,33 @@ func (f failingRepo) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f.base.RoundTrip(r)
 }
 
-// A writer who loses the project's write right gets no row from the next
+// A writer who loses demo's write right gets no row from the next
 // heartbeat on: sebastian, who still sees the board as a writer of the
-// factory's code, and bob, whose read of the repository then fails, so
-// the stream stays, read-only, and reads no board.
+// factory's code, and bob, who still writes linkshort and whose read of
+// demo's repository then fails, so the stream stays, read-only, and reads
+// no board.
 func TestStreamStopsRowsToAFormerWriter(t *testing.T) {
 	wait, beat := countersWait, heartbeat
 	countersWait, heartbeat = time.Hour, 30*time.Millisecond
 	t.Cleanup(func() { countersWait, heartbeat = wait, beat })
-	for _, tc := range []struct{ user, project, repo string }{{"sebastian", "ai-software-factory-code", "sf/code"}, {"bob", "demo", "demo/demo"}} {
+	for _, tc := range []struct{ user, also string }{{"sebastian", "sf/code"}, {"bob", "linkshort/linkshort"}} {
 		r := newRig(t)
 		members(r)
-		r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "sebastian")
-		r.writers.users = append(r.writers.users, "sebastian")
+		r.repoWriters["demo/demo"] = []string{"bob", "sebastian"}
+		r.repoWriters[tc.also] = append(r.repoWriters[tc.also], tc.user)
+		r.forgetWriters()
 		r.c.cfg.HTTP = &http.Client{Transport: failingRepo{http.DefaultTransport}}
 		memberLogin(t, r, tc.user)
-		_, br := streamAt(t, r, tc.project, "", "")
-		r.repoWriters[tc.repo] = nil
-		r.c.mu.Lock()
-		clear(r.c.moves)
-		r.c.mu.Unlock()
+		_, br := streamAt(t, r, "demo", "", "")
+		r.repoWriters["demo/demo"] = nil
+		r.forgetWriters()
 		// the second heartbeat after it checked the member again
 		for pings := 0; pings < 2; {
 			if got := nextMessage(t, br); slices.Equal(got, pinged) {
 				pings++
 			}
 		}
-		r.events.Record(context.Background(), factoryd.Event{Repository: tc.repo, TaskID: "t-x", Kind: factoryd.EventCardSteered, Actor: "alice",
+		r.events.Record(context.Background(), factoryd.Event{Repository: "demo/demo", TaskID: "t-x", Kind: factoryd.EventCardSteered, Actor: "alice",
 			Via: factoryd.ViaButton, At: at, Detail: map[string]any{"text": "a writer's steer"}})
 		for pings := 0; pings < 2; {
 			switch got := nextMessage(t, br); {
@@ -730,7 +706,7 @@ func TestStreamSendsAWriterNoBoardAfterEvents(t *testing.T) {
 	r.tasks.set("", running)
 	_, br := streamOf(t, r, "")
 	moved := func() {
-		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
 	moved()
 	for _, want := range []string{"id: 1", "event: counters"} {
@@ -798,11 +774,11 @@ func TestStreamCarriesARecordedEvent(t *testing.T) {
 	ctx := context.Background()
 	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-old", Kind: factoryd.EventCardFiled, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	_, br := streamOf(t, r, "")
-	r.events.Record(ctx, factoryd.Event{Repository: "demo-app/demo-app", TaskID: "t-d", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
-	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-x", IssueNumber: 4, Kind: factoryd.EventCardMoved, Actor: "alice",
-		Via: factoryd.ViaButton, At: at, Detail: map[string]any{"lane": "ready"}})
+	r.events.Record(ctx, factoryd.Event{Repository: "demo-app/demo-app", TaskID: "t-d", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-x", IssueNumber: 4, Kind: factoryd.EventCardRetried, Actor: "alice",
+		Via: factoryd.ViaButton, At: at, Detail: map[string]any{"replacement": 9}})
 	want := []string{"id: 3", "event: event",
-		`data: {"id":3,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"t-x","issue_number":4,"kind":"card_moved","actor":"alice","via":"button","detail":{"lane":"ready"}}`}
+		`data: {"id":3,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"t-x","issue_number":4,"kind":"card_retried","actor":"alice","via":"button","detail":{"replacement":9}}`}
 	if got := nextMessage(t, br); !slices.Equal(got, want) {
 		t.Fatalf("message = %q, want %q", got, want)
 	}
@@ -816,12 +792,12 @@ func TestStreamReplaysAfterLastEventID(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	for _, task := range []string{"t-1", "t-2", "t-3"} {
-		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: task, Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: task, Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
 	_, br := streamOf(t, r, "1")
 	row := func(id int, task string) []string {
 		return []string{fmt.Sprintf("id: %d", id), "event: event", fmt.Sprintf(
-			`data: {"id":%d,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"%s","issue_number":0,"kind":"card_moved","actor":"alice","via":"button","detail":{}}`, id, task)}
+			`data: {"id":%d,"at":"2026-10-11T09:30:00Z","repository":"sf/code","task_id":"%s","issue_number":0,"kind":"card_retried","actor":"alice","via":"button","detail":{}}`, id, task)}
 	}
 	for _, want := range [][]string{row(2, "t-2"), row(3, "t-3")} {
 		if got := nextMessage(t, br); !slices.Equal(got, want) {
@@ -829,7 +805,7 @@ func TestStreamReplaysAfterLastEventID(t *testing.T) {
 		}
 	}
 	r.events.bus.Publish(r.events.all()[2])
-	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-4", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-4", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	if got, want := nextMessage(t, br), row(4, "t-4"); !slices.Equal(got, want) {
 		t.Fatalf("live after the replay %q, want %q", got, want)
 	}
@@ -842,14 +818,14 @@ func TestStreamKeepsOutOfOrderLiveEvents(t *testing.T) {
 	r := newRig(t)
 	ctx := context.Background()
 	for range 10 {
-		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+		r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
 	_, br := streamOf(t, r, "9")
 	if got := nextMessage(t, br); len(got) == 0 || got[0] != "id: 10" {
 		t.Fatalf("replayed %q, want id 10", got)
 	}
 	for _, id := range []int64{12, 11, 10, 13} {
-		r.events.bus.Publish(factoryd.Event{ID: id, Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+		r.events.bus.Publish(factoryd.Event{ID: id, Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
 	for _, want := range []string{"id: 12", "id: 11", "id: 13"} {
 		if got := nextMessage(t, br); len(got) == 0 || got[0] != want {
@@ -862,7 +838,7 @@ func TestStreamKeepsOutOfOrderLiveEvents(t *testing.T) {
 // the browser's Last-Event-ID stays the last row's, also after a replay.
 func TestStreamSendsALiveOnlyEvent(t *testing.T) {
 	r := newRig(t)
-	r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+	r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-x", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	_, br := streamOf(t, r, "1")
 	r.events.bus.Publish(factoryd.Event{Repository: "sf/code", TaskID: "t-x", IssueNumber: 4, Kind: factoryd.EventSessionSaid, Actor: factoryd.FactoryDecider,
 		Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"session": "s-1", "text": "Reading the store."}})
@@ -888,7 +864,7 @@ func TestStreamSendsTheCounters(t *testing.T) {
 	r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck)
 	_, br := streamOf(t, r, "")
 	moved := func() {
-		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "alice", Via: factoryd.ViaButton, At: at})
+		r.events.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardRetried, Actor: "alice", Via: factoryd.ViaButton, At: at})
 	}
 	// next is the next counters message, past the events and the heartbeats
 	next := func(br *bufio.Reader) countersJSON {
@@ -1005,16 +981,15 @@ func TestStreamEndsAtTheServersShutdown(t *testing.T) {
 
 // Every card face the board renders is what its fragment answers, byte
 // for byte, under the board's filter: the escalated card in its column and
-// in the escalations, backlog cards with one move form per lane, a plan's
-// cards with Start plan, Retry and their plan's issue, the badge, the
-// blocked, waiting and merge queue lines, a human task, an accent and an
-// activity line.
+// in the escalations, queued cards, a done plan with its rollup, a plan's
+// cards with Retry and their plan's issue, the blocked, waiting and merge
+// queue lines, a human task, an accent and an activity line.
 func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	withLinkshort(r)
 	since := time.Now().Add(-90 * time.Minute)
 	r.tasks.tasks = append(planTasks(),
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c7", Kind: "agent", Status: "failed", Lane: "ready", Process: "spec", Objective: "card 7",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-c7", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 7",
 			Repository: "linkshort/linkshort", IssueNumber: 7, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k7"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
 			Objective: "add the feed", Accent: "teal", CreatedAt: since}, Escalation: "The agent asks: a replica or a shard?\nmore", EscalationAlert: 3},
@@ -1023,7 +998,7 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-blk", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15,
 			Objective: "blocked work", HumanSummary: "the blocked one", CreatedAt: since}, Dependencies: "#3, #5"},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-h", Kind: "human", Status: "queued", Repository: "sf/code", IssueNumber: 16, Objective: "rotate the key"}})
-	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardMoved,
+	if _, err := ev.Record(context.Background(), factoryd.Event{Repository: "sf/code", TaskID: "t-run", Kind: factoryd.EventCardRetried,
 		Actor: "sebastian", Via: factoryd.ViaButton, At: since}); err != nil {
 		t.Fatal(err)
 	}
@@ -1058,16 +1033,6 @@ func TestCardFragmentIsTheBoardsCard(t *testing.T) {
 			t.Errorf("board%s shows %d faces, want %d", page, faces, want)
 		}
 	}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String() +
-		r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	for id, lanes := range map[string][]string{"t-c2": {"ready"}, "t-b": {"ready"}} {
-		face := faceOf(t, body, id)
-		for _, lane := range lanes {
-			if n := strings.Count(face, `data-move="`+lane+`"`); n != 1 {
-				t.Errorf("%s has %d forms into %s, want 1", id, n, lane)
-			}
-		}
-	}
 }
 
 func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
@@ -1075,6 +1040,7 @@ func TestCardFragmentAnswers404ForNonWriter(t *testing.T) {
 	r.tasks.set("", factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 99})
 	ck, _ := r.loggedIn(t)
 	r.repoWriters["sf/code"] = []string{"someone-else"}
+	r.forgetWriters()
 	rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-x", nil), ck)
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("non-writer = %d, want 404", rec.Code)
@@ -1278,7 +1244,7 @@ await settle();
 requests = [];
 fire("htmx:beforeRequest", {elt: {id: "find"}});
 event({id: 12, at: "2026-10-11T10:11:00Z", task_id: "", kind: "card_filed", actor: "sebastian", detail: {}});
-event({id: 13, at: "2026-10-11T10:11:00Z", task_id: "t-other", kind: "card_moved", actor: "sebastian", detail: {}});
+event({id: 13, at: "2026-10-11T10:11:00Z", task_id: "t-other", kind: "card_retried", actor: "sebastian", detail: {}});
 out.finding = requests.slice();
 fire("htmx:afterRequest", {elt: {id: "find"}});
 await settle();
@@ -1828,13 +1794,13 @@ console.log(JSON.stringify(out));
 func TestBoardActivityLine(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.projects.rows = append(r.projects.rows, factoryd.Project{Name: "code", Repository: "sf/code", MergeRule: "human",
-		Objects: "factory", Agents: "coder", File: true, GitToken: "t", Process: "maintenance", Lanes: testProcesses()["maintenance"].Lanes})
+		Objects: "factory", Agents: "coder", File: true, GitToken: "t", Process: "maintenance", Tracks: testProcesses()["maintenance"].Tracks})
 	r.tasks.set("The agent asks: use a replica or a shard?",
-		factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Lane: policy.LaneReady, Process: "maintenance",
+		factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
 			Objective: "fix the cache", Repository: "sf/code", IssueNumber: 11},
 		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Process: "maintenance",
 			Objective: "add the feed", Repository: "sf/code", IssueNumber: 12, CreatedAt: time.Now()},
-		factoryd.Task{ID: "t-b", Kind: "agent", Status: "backlog", Lane: policy.LaneBacklog, Process: "maintenance",
+		factoryd.Task{ID: "t-b", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Objective: "an improvement", Repository: "sf/code", IssueNumber: 13},
 		factoryd.Task{ID: "t-rev", Kind: "agent", Status: "in-review", Process: "maintenance",
 			Objective: "review it", Repository: "sf/code", IssueNumber: 14, CreatedAt: time.Now()},
@@ -1842,7 +1808,7 @@ func TestBoardActivityLine(t *testing.T) {
 			Objective: "finished", Repository: "sf/code", IssueNumber: 15})
 	at := time.Now().Add(-5 * time.Minute)
 	for _, e := range []factoryd.Event{
-		{TaskID: "t-run", Kind: factoryd.EventCardMoved, Actor: "sebastian", Via: factoryd.ViaButton},
+		{TaskID: "t-run", Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton},
 		{TaskID: "t-rev", Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "in-review", "gate": "checks"}},
 		{TaskID: "t-fin", Kind: factoryd.EventTaskStatus, Detail: map[string]any{"status": "done", "gate": ""}},
 	} {
@@ -1868,7 +1834,7 @@ func TestBoardActivityLine(t *testing.T) {
 		end := strings.Index(body[i:], "</article>")
 		return body[start : i+end]
 	}
-	if got := card("t-run"); !strings.Contains(got, `class="activity">card moved by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
+	if got := card("t-run"); !strings.Contains(got, `class="activity">card retried by sebastian via button at `+at.UTC().Format("15:04")+`<`) {
 		t.Errorf("the card with an event: %.400s", got)
 	}
 	if got := card("t-e"); !strings.Contains(got, `class="activity">use a replica or a shard?<`) {

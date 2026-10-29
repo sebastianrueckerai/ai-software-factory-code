@@ -21,7 +21,7 @@ func demoProject() Project {
 			{Namespace: "demo-prod", Path: "deploy/prod", Hostname: "demo.aisoftwarefactory.world"}},
 		Quota:   policy.Quota{CPU: "2", Memory: "4Gi", Storage: "10Gi"},
 		Secrets: []string{"demo-write-token/token"},
-		Process: "maintenance", Lanes: []policy.Lane{{Name: policy.LaneBacklog}, {Name: policy.LaneReady, Class: policy.ClassCoder, MovedBy: policy.MovedByWriters}}}
+		Process: "maintenance", Tracks: maintenanceTracks}
 }
 
 // demoFile is demoProject's projects/demo-app.yaml.

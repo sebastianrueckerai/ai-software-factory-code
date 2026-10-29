@@ -4,8 +4,8 @@ import "testing"
 
 // G1: a node with no way out reaches neither done nor a human card.
 func TestGraphRefusesDeadEnd(t *testing.T) {
-	g := Graph{Process: "x", Nodes: []Node{{ID: "ready", Name: "lane ready"}, {ID: "done", Name: "done", Kind: NodeDone}}}
-	if err := g.Check(); err == nil || err.Error() != "processes/x.yaml: graph: from lane ready no path reaches done or a human card" {
+	g := Graph{Process: "x", Nodes: []Node{{ID: "ready", Name: "track direct"}, {ID: "done", Name: "done", Kind: NodeDone}}}
+	if err := g.Check(); err == nil || err.Error() != "processes/x.yaml: graph: from track direct no path reaches done or a human card" {
 		t.Fatalf("Check = %v", err)
 	}
 	g.Edges = append(g.Edges, Edge{From: "ready", To: "done", Next: true})
@@ -56,7 +56,7 @@ func TestGraphOfTheFixtureProcessesPasses(t *testing.T) {
 
 // An edge to a node the graph does not hold is refused, not followed.
 func TestGraphRefusesAnEdgeToNoNode(t *testing.T) {
-	g := Graph{Process: "x", Nodes: []Node{{ID: "ready", Name: "lane ready"}, {ID: "done", Name: "done", Kind: NodeDone}},
+	g := Graph{Process: "x", Nodes: []Node{{ID: "ready", Name: "track direct"}, {ID: "done", Name: "done", Kind: NodeDone}},
 		Edges: []Edge{{From: "ready", To: "done", Next: true}, {From: "ready", To: "queue", Label: "a conflict"}}}
 	if err := g.Check(); err == nil || err.Error() != `processes/x.yaml: graph: an edge names "queue", which is no node` {
 		t.Fatalf("Check = %v", err)

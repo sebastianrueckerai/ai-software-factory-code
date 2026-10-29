@@ -4,7 +4,6 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -473,7 +472,7 @@ func TestFactoryAddsFoundationAndIntegrationEdges(t *testing.T) {
 	}
 }
 
-// planForgejo is Forgejo's issue API for one repository as CreateChildren
+// planForgejo is Forgejo's issue API for one repository as fileChildren
 // and the plan's comment use it.
 type planForgejo struct {
 	mu        sync.Mutex
@@ -646,7 +645,7 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 // issue #1, the planner's revision 1 of p stored.
 func newPlanRunner(t *testing.T, p Plan) (*Runner, *fakeStore, *fakeObjectStore, *planForgejo) {
 	t.Helper()
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		IssueNumber: 1, Author: "alice", AuthorWriter: true, Priority: 2, Objective: "Link shortener\n\nBuild a link shortener."}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {title: "Link shortener", poster: "alice"}}, next: 1}
 	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
@@ -664,11 +663,39 @@ func newPlanRunner(t *testing.T, p Plan) (*Runner, *fakeStore, *fakeObjectStore,
 	return runner, store, runner.objects.(*fakeObjectStore), fj
 }
 
-// createChildren runs CreateChildren of revision 1, accepted by sebastian.
-func createChildren(t *testing.T, r *Runner) ChildrenResult {
+// confirmSpec is the members' okay to the spec's confirmation (piece 5)
+// on an earlier revision of t-plan: asked until answered once, so the
+// revision under test asks no question.
+func confirmSpec(t *testing.T, store *fakeStore) {
 	t.Helper()
-	val, err := execActivity(t, r, ActivityCreateChildren, "t-plan", 1, "sebastian", int64(7))
-	return getInto[ChildrenResult](t, val, err)
+	ctx := context.Background()
+	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 0, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 0, 1, "okay", "alice"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// fileRig is newPlanRunner's plan card running with its spec confirmed, so
+// revision 1 asks no question, and workflows that record the starts.
+func fileRig(t *testing.T, p Plan) (*Runner, *fakeStore, *fakeObjectStore, *planForgejo, *fakeWorkflows) {
+	t.Helper()
+	r, store, objects, fj := newPlanRunner(t, p)
+	plan := store.tasks["t-plan"]
+	plan.Status = "running"
+	store.tasks["t-plan"] = plan
+	confirmSpec(t, store)
+	wf := &fakeWorkflows{}
+	r.cfg.Workflows = wf
+	return r, store, objects, fj, wf
+}
+
+// requestPlan runs RequestPlan of revision 1 under version 7.
+func requestPlan(t *testing.T, r *Runner) PlanRef {
+	t.Helper()
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
+	return getInto[PlanRef](t, val, err)
 }
 
 // cardsByKey are the plan's cards filed, by key.
@@ -699,22 +726,22 @@ func browserInForce(t *testing.T) policy.Version {
 // A card's image reaches its task row when the policy in force pins it for
 // the project, the version taskImage resolves with, even when the pin
 // landed after the plan task's version; an image no version in force pins
-// refuses the acceptance.
+// refuses the filing.
 func TestChildrenCarryTheirImage(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Image = "browser"
-	r, _, _, _ := newPlanRunner(t, p)
+	r, _, _, _, _ := fileRig(t, p)
 	r.cfg.Policy = func() policy.Version { return fixtureVersion(t) }
-	if res := createChildren(t, r); len(res.Issues) != 0 ||
-		!slices.Equal(res.Refused, []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}) {
-		t.Fatalf("no pin: %+v, want the refusal", res)
+	if ref := requestPlan(t, r); len(ref.Filed) != 0 ||
+		!slices.Equal(ref.Refused, []string{`plan: card links-api: image "browser" is not one of this project's pinned images (none)`}) {
+		t.Fatalf("no pin: %+v, want the refusal", ref)
 	}
 
-	r, store, _, _ := newPlanRunner(t, p)
+	r, store, _, _, _ := fileRig(t, p)
 	inForce := browserInForce(t)
 	r.cfg.Policy = func() policy.Version { return inForce }
-	if res := createChildren(t, r); len(res.Issues) != 4 || len(res.Refused) != 0 {
-		t.Fatalf("pinned: %+v, want four cards", res)
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 || len(ref.Refused) != 0 {
+		t.Fatalf("pinned: %+v, want four cards", ref)
 	}
 	for key, want := range map[string]string{"foundation": "", "links-api": "browser", "redirects": "", "integration": ""} {
 		if got := cardsByKey(t, store)[key].Image; got != want {
@@ -723,17 +750,38 @@ func TestChildrenCarryTheirImage(t *testing.T) {
 	}
 }
 
-// The cards are filed so that every card's dependencies exist first: the
-// foundation, the features, the integration; each a backlog row of the
-// plan's process, authored by the approver, with its Forgejo dependencies
-// and task_deps.
+// A revision that asks no question files its cards so that every card's
+// dependencies exist first: the foundation, the features, the integration;
+// each queued on the direct track with its class at main's head, authored
+// by the plan card's author (plans do not nest), labelled agent, with its
+// Forgejo dependencies and task_deps, then started in that order; the
+// plan's comment names their issues.
+// A plan card an outside account filed (its plan label a writer's
+// vouching) files cards with the poster's standing: no approver read the
+// plan, so each child keeps its spec's author and runs the outsider's
+// stages, the screening included.
+func TestChildrenKeepTheirPlanAuthorsStanding(t *testing.T) {
+	r, store, _, _, _ := fileRig(t, testPlan())
+	plan := store.tasks["t-plan"]
+	plan.Author, plan.AuthorWriter = "outsider", false
+	store.tasks["t-plan"] = plan
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("ref = %+v", ref)
+	}
+	for key, c := range cardsByKey(t, store) {
+		if c.Author != "outsider" || c.AuthorWriter {
+			t.Errorf("card %s: author %q, writer %v; want the outsider without standing", key, c.Author, c.AuthorWriter)
+		}
+	}
+}
+
 func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	p := testPlan()
 	p.Cards = []PlanCard{p.Cards[3], p.Cards[2], p.Cards[1], p.Cards[0]} // the model's order is no filing order
-	r, store, objects, fj := newPlanRunner(t, p)
-	res := createChildren(t, r)
-	if !slices.Equal(res.Issues, []int64{2, 3, 4, 5}) || len(res.Refused) != 0 {
-		t.Fatalf("result = %+v", res)
+	r, store, objects, fj, wf := fileRig(t, p)
+	ref := requestPlan(t, r)
+	if !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || len(ref.Refused) != 0 || ref.Revision != 1 || ref.Answered {
+		t.Fatalf("ref = %+v", ref)
 	}
 	var titles []string
 	for n := int64(2); n <= 5; n++ {
@@ -743,16 +791,24 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 		t.Fatalf("issues filed in order %q", titles)
 	}
 	cards := cardsByKey(t, store)
+	var ids []string
+	for _, key := range []string{"foundation", "links-api", "redirects", "integration"} {
+		ids = append(ids, cards[key].ID)
+	}
+	if !slices.Equal(wf.started, ids) {
+		t.Fatalf("started %v, want the cards in filing order %v", wf.started, ids)
+	}
 	for key, issue := range map[string]int64{"foundation": 2, "links-api": 3, "redirects": 4, "integration": 5} {
 		c := cards[key]
-		if c.IssueNumber != issue || c.Status != "backlog" || c.Lane != policy.LaneBacklog || c.Process != "spec" || c.Source != SourcePlan ||
-			c.Parent != "t-plan" || c.Author != "sebastian" || !c.AuthorWriter || c.Kind != "agent" || c.Priority != 2 {
+		if c.IssueNumber != issue || c.Status != "queued" || c.Track != policy.TrackDirect || !slices.Equal(c.RequiredCapabilities, []string{policy.ClassCoder}) ||
+			c.SHA != "m1" || c.Process != "spec" || c.Source != SourcePlan || c.Parent != "t-plan" || c.Author != "alice" || !c.AuthorWriter ||
+			c.Kind != "agent" || c.Priority != 2 {
 			t.Fatalf("card %s = %+v", key, c)
 		}
-		if !slices.Equal(fj.issues[issue].labels, []string{"backlog", "state/backlog"}) {
+		if !slices.Equal(fj.issues[issue].labels, []string{"agent", "state/queued"}) {
 			t.Fatalf("issue #%d labels %v", issue, fj.issues[issue].labels)
 		}
-		if got := events(t, objects, c.ID); !slices.Equal(got, []string{"card_created sebastian"}) {
+		if got := events(t, objects, c.ID); !slices.Equal(got, []string{"card_created direct alice"}) {
 			t.Fatalf("card %s events %v", key, got)
 		}
 	}
@@ -774,7 +830,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 		}
 	}
 	redirects := fj.issues[4].body
-	want := "Card redirects of plan #1 (3 of 4), accepted by sebastian. Written by the planner.\n\nGET /<slug> answers 302 and counts a click.\n\n" +
+	want := "Card redirects of plan #1 (3 of 4), filed for alice. Written by the planner.\n\nGET /<slug> answers 302 and counts a click.\n\n" +
 		"Directories (guidance, not a boundary): none\nDepends on: #2 (foundation), #3 (links-api)\nAcceptance:\n- GET /abc answers 302 [redirect_302]\nSize: small\n\n" +
 		"<!-- factoryd plan t-plan card redirects -->"
 	if redirects != want {
@@ -785,6 +841,19 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	if got := fj.issues[5].body; !strings.Contains(got, "\n\nThe spec of the whole feature:\nSpec: A link shortener: links with slugs that redirect and count clicks.\n"+
 		"Glossary:\n- slug: the short key a link gets\n- click: one redirect served\n") || strings.Contains(fj.issues[2].body, "The spec of the whole feature") {
 		t.Fatalf("the integration card's spec section:\n%s", got)
+	}
+	var onPlan []string
+	for _, c := range fj.comments {
+		if c.issue == 1 {
+			onPlan = append(onPlan, c.body)
+		}
+	}
+	if len(onPlan) != 1 || !strings.HasPrefix(onPlan[0], "factoryd: plan revision 1 of task t-plan, written by the planner. It asks no question, so its cards are filed") ||
+		!strings.Contains(onPlan[0], "| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 |") {
+		t.Fatalf("the plan's comments %q, want one naming the issues", onPlan)
+	}
+	if got, _, _ := store.Task(context.Background(), "t-plan"); got.Status != "running" || len(store.approvals) != 0 {
+		t.Fatalf("plan task %s, approvals %+v; want it running, no request: nothing waits", got.Status, store.approvals)
 	}
 	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"children_created [2 3 4 5]"}) {
 		t.Fatalf("plan steps %v", steps)
@@ -801,15 +870,15 @@ func TestChildrenBudgetBySize(t *testing.T) {
 		budget *policy.ProjectBudget
 		large  float64
 	}{{nil, 10}, {&policy.ProjectBudget{MonthEUR: 50, TaskMaxEUR: 3}, 3}} {
-		r, store, _, _ := newPlanRunner(t, p)
+		r, store, _, _, _ := fileRig(t, p)
 		pinned := fixtureVersion(t)
 		pinned.Document.Budget.TaskDefaultEUR, pinned.Document.Budget.TaskMaxEUR = 5, 15
 		project := pinned.Projects["linkshort"]
 		project.Budget = tc.budget
 		pinned.Projects["linkshort"] = project
 		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
-		if res := createChildren(t, r); len(res.Refused) != 0 {
-			t.Fatalf("refused %q", res.Refused)
+		if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+			t.Fatalf("ref %+v, want four cards", ref)
 		}
 		cards := cardsByKey(t, store)
 		for key, want := range map[string]float64{"foundation": min(5, tc.large), "links-api": tc.large, "redirects": 2} {
@@ -825,9 +894,9 @@ func TestChildrenBudgetBySize(t *testing.T) {
 func TestChildrenBudgetOfAFrontierCard(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Rung = RungFrontier
-	r, store, _, _ := newPlanRunner(t, p)
-	if res := createChildren(t, r); len(res.Refused) != 0 {
-		t.Fatalf("refused %q", res.Refused)
+	r, store, _, _, _ := fileRig(t, p)
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("ref %+v, want four cards", ref)
 	}
 	cards := cardsByKey(t, store)
 	for key, want := range map[string]float64{"links-api": 5, "redirects": 2} {
@@ -863,24 +932,25 @@ func planSteps(t *testing.T, objects *fakeObjectStore, id string) []string {
 
 // A retry files nothing twice: a card whose issue was filed before a crash
 // (its row not linked yet) is found by its marker, and a second run over
-// filed cards adds no issue, row, dependency or event.
-func TestCreateChildrenIdempotent(t *testing.T) {
-	r, store, objects, fj := newPlanRunner(t, testPlan())
+// filed cards answers the same issues and adds no issue, row, dependency
+// or event.
+func TestFileRevisionIdempotent(t *testing.T) {
+	r, store, objects, fj, _ := fileRig(t, testPlan())
 	fj.failLabel = 2 // links-api's issue is filed, its labels fail
-	if _, err := execActivity(t, r, ActivityCreateChildren, "t-plan", 1, "sebastian", int64(7)); err == nil {
-		t.Fatal("CreateChildren succeeded through a failing label call")
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7)); err == nil {
+		t.Fatal("RequestPlan succeeded through a failing label call")
 	}
 	if fj.next != 3 {
 		t.Fatalf("issues after the crash: %d, want #2 and #3", fj.next-1)
 	}
-	res := createChildren(t, r)
-	if !slices.Equal(res.Issues, []int64{2, 3, 4, 5}) || fj.next != 5 {
-		t.Fatalf("result %+v, last issue #%d", res, fj.next)
+	ref := requestPlan(t, r)
+	if !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || fj.next != 5 {
+		t.Fatalf("ref %+v, last issue #%d", ref, fj.next)
 	}
 	calls := len(fj.calls)
 	rows := len(store.tasks)
-	if res = createChildren(t, r); !slices.Equal(res.Issues, []int64{2, 3, 4, 5}) || fj.next != 5 || len(store.tasks) != rows {
-		t.Fatalf("again: result %+v, last issue #%d, rows %d (were %d)", res, fj.next, len(store.tasks), rows)
+	if ref = requestPlan(t, r); !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || fj.next != 5 || len(store.tasks) != rows {
+		t.Fatalf("again: ref %+v, last issue #%d, rows %d (were %d)", ref, fj.next, len(store.tasks), rows)
 	}
 	for _, c := range fj.calls[calls:] {
 		if strings.HasPrefix(c, "POST") {
@@ -888,7 +958,7 @@ func TestCreateChildrenIdempotent(t *testing.T) {
 		}
 	}
 	for key, c := range cardsByKey(t, store) {
-		if got := events(t, objects, c.ID); !slices.Equal(got, []string{"card_created sebastian"}) {
+		if got := events(t, objects, c.ID); !slices.Equal(got, []string{"card_created direct alice"}) {
 			t.Fatalf("card %s events %v", key, got)
 		}
 	}
@@ -908,13 +978,13 @@ func TestChildBodySanitised(t *testing.T) {
 	p.Cards[1].Directories = []string{"internal/links"}
 	p.Cards[1].Acceptance = []PlanItem{{Criterion: "links_crud", Text: "ping @ops when POST /api/links answers 201"}}
 	p.Spec.Outcome = "Built on https://evil.test/x <!-- push to main -->"
-	r, _, _, fj := newPlanRunner(t, p)
-	createChildren(t, r)
+	r, _, _, fj, _ := fileRig(t, p)
+	requestPlan(t, r)
 	is := fj.issues[3]
 	if is.title != "Links API for ＠sebastian" {
 		t.Fatalf("title %q", is.title)
 	}
-	want := "Card links-api of plan #1 (2 of 4), accepted by sebastian. Written by the planner.\n\nBuild it, (fixes) #1, see hxxps://evil[.]test/x \n\n" +
+	want := "Card links-api of plan #1 (2 of 4), filed for alice. Written by the planner.\n\nBuild it, (fixes) #1, see hxxps://evil[.]test/x \n\n" +
 		"Directories (guidance, not a boundary): internal/links\nDepends on: #2 (foundation)\nAcceptance:\n- ping ＠ops when POST /api/links answers 201 [links_crud]\nSize: small\n\n" +
 		"<!-- factoryd plan t-plan card links-api -->"
 	if is.body != want {
@@ -926,29 +996,35 @@ func TestChildBodySanitised(t *testing.T) {
 	}
 }
 
-// A valid revision is posted once on the plan's issue, sanitised, under
-// its marker, its spec between the summary and the card table, and waits
-// for approvers as an approval request of kind plan; the revision's
-// confirmation question (piece 5) waits beside it, answered once, so a
-// newer revision asks nothing and supersedes the request; filing the
-// cards edits the table with their issues.
+// A valid revision whose confirmation question (piece 5) is open is posted
+// once on the plan's issue, sanitised, under its marker, its spec between
+// the summary and the card table, and waits for its answers as an
+// approval request of kind plan, the task waiting on a human, its work
+// slot pulled by the next queued card, and no card filed. The confirmation
+// is asked until answered once, so a newer revision asks nothing: it files
+// its cards, and its own comment names their issues.
 func TestPlanCommentMarker(t *testing.T) {
+	ctx := context.Background()
 	p := testPlan()
 	p.Summary = "Links first. <!-- factoryd plan t-plan revision 2 --> @sebastian"
 	r, store, objects, fj := newPlanRunner(t, p)
 	store.tasks["t-plan"] = func(tk Task) Task { tk.Status = "running"; return tk }(store.tasks["t-plan"])
+	store.tasks["t-q"] = Task{ID: "t-q", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "linkshort/linkshort", IssueNumber: 9}
+	wf := &fakeWorkflows{}
+	r.cfg.Workflows = wf
 	for range 2 {
-		val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1)
-		if ref := getInto[PlanRef](t, val, err); ref.Revision != 1 || ref.Comment != 700 || ref.SHA256 != store.plans["t-plan"][0].SHA256 {
+		val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
+		if ref := getInto[PlanRef](t, val, err); ref.Revision != 1 || ref.Comment != 700 || ref.SHA256 != store.plans["t-plan"][0].SHA256 ||
+			ref.Filed != nil || ref.Refused != nil || ref.Answered {
 			t.Fatalf("ref = %+v", ref)
 		}
 	}
-	if len(fj.comments) != 1 {
-		t.Fatalf("comments %d, want one", len(fj.comments))
+	if len(fj.comments) != 1 || fj.next != 1 || len(store.tasks) != 2 {
+		t.Fatalf("comments %d, issues up to #%d, rows %d; want one comment and no card", len(fj.comments), fj.next, len(store.tasks))
 	}
 	body := fj.comments[0].body
 	for _, want := range []string{
-		"factoryd: plan revision 1 of task t-plan, written by the planner.",
+		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the members' answers on the factory console",
 		"Links first.  ＠sebastian",
 		"Spec: A link shortener: links with slugs that redirect and count clicks.\nGlossary:\n- slug: the short key a link gets\n- click: one redirect served",
 		"| # | key | role | title | size | depends on | issue |",
@@ -966,165 +1042,44 @@ func TestPlanCommentMarker(t *testing.T) {
 	if !strings.HasSuffix(body, "\n<!-- factoryd plan t-plan revision 1 -->") || strings.Count(body, "<!--") != 1 {
 		t.Fatalf("comment's markers:\n%s", body)
 	}
-	if got, _, _ := store.Task(context.Background(), "t-plan"); got.Status != "waiting-human" {
+	if got, _, _ := store.Task(ctx, "t-plan"); got.Status != "waiting-human" {
 		t.Fatalf("plan task %s", got.Status)
 	}
+	if !slices.Equal(wf.started, []string{"t-q"}) {
+		t.Fatalf("started %v, want the queued card in the slot the plan freed", wf.started)
+	}
 	if len(store.approvals) != 1 || store.approvals[0].Kind != ApprovalPlan || store.approvals[0].Status != "pending" ||
-		string(store.approvals[0].Spec) != `{"revision":1,"sha256":"`+store.plans["t-plan"][0].SHA256+`"}` {
+		string(store.approvals[0].Spec) != `{"revision":1,"sha256":"`+store.plans["t-plan"][0].SHA256+`"}` ||
+		store.approvals[0].Reason != "plan revision 1 of issue #1, 4 cards, waits for 1 answers" {
 		t.Fatalf("approvals %+v", store.approvals)
 	}
 	// a member answers revision 1's confirmation: the asking ends (asked
 	// until answered once), revision 2 carries no question of its own
-	if err := store.AnswerPlanQuestion(context.Background(), "t-plan", 1, 1, "okay", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "okay", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	// revision 2 supersedes revision 1's request
 	p2 := testPlan()
 	raw, sha, _ := planSHA(p2)
-	store.AddPlanRevision(context.Background(), "t-plan", raw, sha)
-	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 0)
-	if ref := getInto[PlanRef](t, val, err); ref.Revision != 2 || ref.Comment != 701 {
+	store.AddPlanRevision(ctx, "t-plan", raw, sha)
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 0, int64(7))
+	if ref := getInto[PlanRef](t, val, err); ref.Revision != 2 || ref.SHA256 != sha || !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || ref.Comment != 0 {
 		t.Fatalf("ref = %+v", ref)
 	}
-	if store.approvals[0].Status != "denied" || store.approvals[1].Status != "pending" || string(store.approvals[1].Spec) != `{"revision":2,"sha256":"`+sha+`"}` {
-		t.Fatalf("approvals %+v", store.approvals)
-	}
-	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"approval_requested 1", "approval_requested 2"}) {
-		t.Fatalf("steps %v", steps)
-	}
-	// the confirmation was answered once (piece 5): revision 2 asks none
-	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 1 || qs[0].Answer != "okay" || qs[0].AnsweredBy != "alice" {
+	if qs, _ := store.PlanQuestions(ctx, "t-plan", 1); len(qs) != 1 || qs[0].Answer != "okay" || qs[0].AnsweredBy != "alice" {
 		t.Fatalf("revision 1's questions %+v, want the answered confirmation", qs)
 	}
-	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 2); len(qs) != 0 {
+	if qs, _ := store.PlanQuestions(ctx, "t-plan", 2); len(qs) != 0 {
 		t.Fatalf("revision 2's questions %+v, want none", qs)
-	}
-	// filing revision 2's cards names their issues in its comment
-	if _, err := execActivity(t, r, ActivityCreateChildren, "t-plan", 2, "sebastian", int64(7)); err != nil {
-		t.Fatal(err)
 	}
 	if len(fj.comments) != 2 || !strings.Contains(fj.comments[1].body, "| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 |") ||
 		!strings.HasSuffix(fj.comments[1].body, "\n<!-- factoryd plan t-plan revision 2 -->") {
-		t.Fatalf("comments %d, revision 2's:\n%s", len(fj.comments), fj.comments[1].body)
+		t.Fatalf("comments %d, revision 2's:\n%s", len(fj.comments), fj.comments[len(fj.comments)-1].body)
 	}
-	if store.approvals[1].Status != "approved" || store.approvals[1].DecidedBy != "sebastian" {
-		t.Fatalf("approval %+v", store.approvals[1])
+	if len(store.approvals) != 1 {
+		t.Fatalf("approvals %+v, want revision 1's alone: a revision that files asks nobody", store.approvals)
 	}
-}
-
-// signalRecorder records signals with their payload; err fails them.
-type signalRecorder struct {
-	signals []string
-	// sent are the signals as sent, beside their lines
-	sent []TaskSignal
-	err  error
-}
-
-func (w *signalRecorder) Start(context.Context, string) error                    { return nil }
-func (w *signalRecorder) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
-func (w *signalRecorder) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
-	if w.err != nil {
-		return w.err
-	}
-	w.signals = append(w.signals, fmt.Sprintf("%s %s %s %d %s %s", taskID, name, sig.Author, sig.Revision, sig.SHA256, sig.Body))
-	w.sent = append(w.sent, sig)
-	return nil
-}
-
-// The project agent's acceptance is the factory's decision on the member's
-// behalf: the plan's request is decided by factory-chat, and the signal
-// names the member, whose cards CreateChildren files with the author the
-// signal carries, as the plan's workflow passes it.
-func TestTheAgentsAcceptanceFilesTheMembersCards(t *testing.T) {
-	ctx := context.Background()
-	r, store, _, _ := newPlanRunner(t, testPlan())
-	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	rev, _, _ := store.PlanRevision(ctx, "t-plan", 0)
-	wf := &signalRecorder{}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, rev.SHA256, ChatUser, "sebastian"); err != nil {
-		t.Fatalf("accept: %v", err)
-	}
-	if !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 1 " + rev.SHA256 + " "}) {
-		t.Fatalf("signals %q, want the acceptance for sebastian", wf.signals)
-	}
-	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != ChatUser {
-		t.Fatalf("approval = %+v, want it decided by factory-chat", a)
-	}
-	val, err := execActivity(t, r, ActivityCreateChildren, "t-plan", 1, wf.sent[0].Author, int64(7))
-	if res := getInto[ChildrenResult](t, val, err); len(res.Issues) != 4 {
-		t.Fatalf("result = %+v", res)
-	}
-	for key, c := range cardsByKey(t, store) {
-		if c.Author != "sebastian" || !c.AuthorWriter {
-			t.Fatalf("card %s author %q, writer %v: want sebastian's", key, c.Author, c.AuthorWriter)
-		}
-	}
-	if a := store.approvals[0]; a.DecidedBy != ChatUser {
-		t.Fatalf("approval after the filing = %+v, want it still factory-chat's", a)
-	}
-}
-
-// Accept plan names the revision the approver read: a newer one refuses it
-// with the card's line, in the console (AcceptPlan) and in the workflow.
-func TestAcceptRefusesStaleRevision(t *testing.T) {
-	ctx := context.Background()
-	store := newFakeStore()
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one"}`), "sha-1")
-	wf := &signalRecorder{}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian", "sebastian"); err == nil || !strings.Contains(err.Error(), "no plan waiting") {
-		t.Fatalf("no pending request: %v", err)
-	}
-	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "sha-2")
-	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian", "sebastian")
-	if err == nil || err.Error() != "the plan changed to revision 2; reload" || len(wf.signals) != 0 {
-		t.Fatalf("stale accept: %v, signals %v", err, wf.signals)
-	}
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-1", "sebastian", "sebastian"); err == nil || len(wf.signals) != 0 {
-		t.Fatalf("a sha of another revision: %v, signals %v", err, wf.signals)
-	}
-	// a decision whose signal fails is undone: the request waits again
-	wf.err = errors.New("temporal unavailable")
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian", "sebastian"); err == nil || store.approvals[0].Status != "pending" || store.approvals[0].DecidedBy != "" {
-		t.Fatalf("accept with a failed signal: %v, approval %+v", err, store.approvals[0])
-	}
-	wf.err = nil
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, "sha-2", "sebastian", "sebastian"); err != nil || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 2 sha-2 "}) {
-		t.Fatalf("accept: %v, signals %v", err, wf.signals)
-	}
-	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "revision 2 accepted" {
-		t.Fatalf("approval after the accept = %+v", a)
-	}
-	if err := RejectPlan(ctx, store, wf, "t-plan", "alice", "not this quarter"); err == nil || len(wf.signals) != 1 {
-		t.Fatalf("reject of an accepted plan: %v, signals %v", err, wf.signals)
-	}
-	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	wf.err = errors.New("temporal unavailable")
-	if err := RejectPlan(ctx, store, wf, "t-plan", "alice", "not this quarter"); err == nil || store.approvals[1].Status != "pending" || store.approvals[1].DecidedBy != "" || store.approvals[1].DecisionNote != "" {
-		t.Fatalf("reject with a failed signal: %v, approval %+v", err, store.approvals[1])
-	}
-	wf.err = nil
-	if err := RejectPlan(ctx, store, wf, "t-plan", "alice", "not this quarter"); err != nil || wf.signals[1] != "t-plan plan_rejected alice 0  not this quarter" {
-		t.Fatalf("reject: %v, signals %v", err, wf.signals)
-	}
-	if a := store.approvals[1]; a.Status != "denied" || a.DecidedBy != "alice" || a.DecisionNote != "rejected: not this quarter" {
-		t.Fatalf("approval after the reject = %+v", a)
-	}
-
-	// the workflow: an acceptance of revision 1 once revision 2 waits is
-	// recorded and ignored
-	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "split the web card", Comment: 701})
-	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-	h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 2, SHA256: "sha-2"})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 accepted: 3 cards filed" {
-		t.Fatalf("finals %v", h.finals)
-	}
-	if !slices.Equal(h.created, []string{"2 sebastian 7"}) {
-		t.Fatalf("CreateChildren calls %v", h.created)
-	}
-	if got := h.planSignals(); !slices.Equal(got, []string{"plan_accepted sebastian 1 the plan changed to revision 2", "plan_accepted sebastian 2 "}) {
-		t.Fatalf("recorded %v", got)
+	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"approval_requested 1", "children_created [2 3 4 5]"}) {
+		t.Fatalf("steps %v", steps)
 	}
 }
 
@@ -1132,54 +1087,50 @@ func TestAcceptRefusesStaleRevision(t *testing.T) {
 const planSession = 5 * time.Minute
 
 // planHarness is the workflow harness on a plan card: its RunPlan answers
-// results in order, RequestPlan posts revision n as comment 699+n or
-// answers what requestPlan returns when set, CreateChildren files three
-// cards unless refuse says why not, or answers children's result when set,
-// OpenPlanQuestions answers open in order.
+// results in order; RequestPlan answers what requestPlan returns when set,
+// else revision n (1 for 0) refused with refuse[n] where set, filed as
+// issues 2 to 4 where file[n], else waiting on its answers as comment
+// 699+n; OpenPlanQuestions answers open in order.
 type planHarness struct {
 	*workflowHarness
 	plans       [][]string // RunPlan's findings, per call
 	models      []string
 	requests    []int
-	created     []string
-	refuse      [][]string // CreateChildren's refusals, in order
-	open        []int      // OpenPlanQuestions' answers, in order
-	asked       []int      // the revisions OpenPlanQuestions was asked about
-	children    func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error)
+	pins        []int64          // RequestPlan's pins, per call
+	file        map[int]bool     // the revisions RequestPlan files
+	refuse      map[int][]string // the revisions RequestPlan refuses, with why
+	open        []int            // OpenPlanQuestions' answers, in order
+	asked       []int            // the revisions OpenPlanQuestions was asked about
 	requestPlan func(taskID string, revision int) (PlanRef, error)
 }
 
 func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	h := &planHarness{workflowHarness: newWorkflowHarness(t)}
-	h.taskConfig = &TaskConfig{Process: "spec", Lane: policy.LanePlan, Class: "planner", Session: policy.SessionPlan, PlanShape: &testShape}
+	h.taskConfig = &TaskConfig{Process: "spec", Track: policy.TrackPlan, Class: "planner", Session: policy.SessionPlan, PlanShape: &testShape}
 	h.env.OnActivity(ActivityRunPlan, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			h.plans, h.models = append(h.plans, findings), append(h.models, model)
 			return results[min(len(h.plans), len(results))-1], nil
 		}).After(planSession)
-	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID string, revision int) (PlanRef, error) {
-			h.requests = append(h.requests, revision)
+	h.env.OnActivity(ActivityRequestPlan, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, revision int, pin int64) (PlanRef, error) {
+			h.requests, h.pins = append(h.requests, revision), append(h.pins, pin)
 			if h.requestPlan != nil {
 				return h.requestPlan(taskID, revision)
 			}
 			if revision == 0 {
 				revision = 1
 			}
-			return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Comment: int64(699 + revision)}, nil
-		})
-	h.env.OnActivity(ActivityCreateChildren, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
-			h.created = append(h.created, fmt.Sprintf("%d %s %d", revision, approver, pin))
-			if h.children != nil {
-				return h.children(ctx, revision, approver, pin)
+			ref := PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision)}
+			switch {
+			case h.refuse[revision] != nil:
+				ref.Refused = h.refuse[revision]
+			case h.file[revision]:
+				ref.Filed = []int64{2, 3, 4}
+			default:
+				ref.Comment = int64(699 + revision)
 			}
-			if len(h.refuse) > 0 {
-				r := h.refuse[0]
-				h.refuse = h.refuse[1:]
-				return ChildrenResult{Refused: r}, nil
-			}
-			return ChildrenResult{Issues: []int64{2, 3, 4}}, nil
+			return ref, nil
 		})
 	h.env.OnActivity(ActivityOpenPlanQuestions, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID string, revision int) (int, error) {
@@ -1191,18 +1142,6 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 	return h
 }
 
-// planSignals are the recorded plan signals: name, author, revision and
-// why it was ignored.
-func (h *planHarness) planSignals() []string {
-	var out []string
-	for _, s := range h.recorded {
-		if s.step == "signal" && (s.detail["signal"] == SignalPlanAccepted || s.detail["signal"] == SignalPlanRejected) {
-			out = append(out, fmt.Sprintf("%v %v %v %v", s.detail["signal"], s.detail["author"], s.detail["revision"], cmpOrAny(s.detail["ignored"])))
-		}
-	}
-	return out
-}
-
 func cmpOrAny(v any) string {
 	if v == nil {
 		return ""
@@ -1210,54 +1149,48 @@ func cmpOrAny(v any) string {
 	return fmt.Sprint(v)
 }
 
-// The planner runs on the stronger rung under the pin; its valid plan
-// waits for the approvers; Accept plan files the cards and ends the task.
-func TestPlanLoopAcceptFilesTheCards(t *testing.T) {
+// The planner runs on the stronger rung under the pin; its valid revision
+// that asks no question files its cards in the same step: the plan card
+// ends done as its session ends, with no wait and no signal.
+func TestPlanLoopCleanRevisionFilesInTheSameStep(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 accepted: 3 cards filed" {
+	h.file = map[int]bool{1: true}
+	start := h.env.Now()
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.models, []string{"factory/big"}) ||
-		!slices.Equal(h.requests, []int{1}) || !slices.Equal(h.created, []string{"1 sebastian 7"}) || !slices.Equal(h.states, []string{"running"}) {
-		t.Fatalf("plans %q models %v requests %v created %v states %v", h.plans, h.models, h.requests, h.created, h.states)
+		!slices.Equal(h.requests, []int{1}) || !slices.Equal(h.pins, []int64{7}) || !slices.Equal(h.states, []string{"running"}) {
+		t.Fatalf("plans %q models %v requests %v pins %v states %v", h.plans, h.models, h.requests, h.pins, h.states)
 	}
 	if len(h.usage) != 1 || h.usage[0].Attempts != 1 {
 		t.Fatalf("usage %+v", h.usage)
 	}
-	// the accepting signal ends the approvers' wait, begun when the session ended
-	i := slices.IndexFunc(h.recorded, func(s recordedStep) bool { return s.step == "signal" && s.detail["signal"] == SignalPlanAccepted })
-	if i < 0 {
-		t.Fatal("no plan_accepted step")
-	}
-	if started, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(h.recorded[i].detail["started"])); h.recorded[i].at.Sub(started) != time.Hour-planSession {
-		t.Fatalf("accepted at %s, wait started %v", h.recorded[i].at, h.recorded[i].detail["started"])
+	if got := h.finishAt.Sub(start); got != planSession || len(h.escalated) != 0 ||
+		slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "signal" }) {
+		t.Fatalf("finished %s after the start, escalated %q, steps %+v; want the session's %s, no wait, no signal", got, h.escalated, h.recorded, planSession)
 	}
 }
 
 // An invalid plan goes back to the planner as its findings; a writer's
 // comment on the waiting plan asks for a new revision (a comment older
-// than the plan the session answered, and the console's acceptance
-// comment, ask nothing); Reject ends the task failed.
-func TestPlanLoopFindingsCommentsAndReject(t *testing.T) {
+// than the plan the session answered asks nothing); the issue's close
+// ends the task closed before the plan filed its cards.
+func TestPlanLoopFindingsCommentsAndClose(t *testing.T) {
 	invalid := []string{"plan: no fenced json block in the last message"}
 	h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: PlanAcceptedComment(1), Comment: 702})
 	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "split the web card", Comment: 703})
 	h.signalAfter(3*time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "a redelivered old remark", Comment: 699})
-	h.signalAfter(4*time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: "not this quarter"})
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice: not this quarter" {
+	h.signalAfter(4*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan filed its cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	want := [][]string{nil, invalid, {"writer alice asked for changes to the plan: split the web card"}}
 	if len(h.plans) != 3 || !slices.Equal(h.plans[0], want[0]) || !slices.Equal(h.plans[1], want[1]) || !slices.Equal(h.plans[2], want[2]) {
 		t.Fatalf("RunPlan findings %q, want %q", h.plans, want)
 	}
-	if !slices.Equal(h.requests, []int{1, 2}) || len(h.created) != 0 || len(h.escalated) != 0 {
-		t.Fatalf("requests %v created %v escalated %q", h.requests, h.created, h.escalated)
-	}
-	if got := h.planSignals(); !slices.Equal(got, []string{"plan_rejected alice 0 "}) {
-		t.Fatalf("recorded %v", got)
+	if !slices.Equal(h.requests, []int{1, 2}) || len(h.escalated) != 0 {
+		t.Fatalf("requests %v escalated %q", h.requests, h.escalated)
 	}
 	var ignored []string
 	for _, s := range h.recorded {
@@ -1265,35 +1198,22 @@ func TestPlanLoopFindingsCommentsAndReject(t *testing.T) {
 			ignored = append(ignored, fmt.Sprintf("%v %v", s.detail["comment"], s.detail["ignored"]))
 		}
 	}
-	if !slices.Equal(ignored, []string{"702 the console's acceptance comment", "699 older than the plan or question the planner answered"}) {
+	if !slices.Equal(ignored, []string{"699 older than the plan or question the planner answered"}) {
 		t.Fatalf("ignored comments %q", ignored)
 	}
 }
 
-// A Reject carries no reason of its own: the verdict is final either
-// way, and the final reason names the author without an empty tail.
-func TestPlanLoopRejectWithoutReason(t *testing.T) {
-	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.signalAfter(time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: ""})
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice" {
-		t.Fatalf("finals %v", h.finals)
-	}
-	if got := h.planSignals(); !slices.Equal(got, []string{"plan_rejected alice 0 "}) {
-		t.Fatalf("recorded %v", got)
-	}
-}
-
-// A writer's comment made while a planner session runs (older than the
-// plan that session then posts) reaches the next session: the new plan
-// goes back at once. One made during an invalid session goes along with
-// the findings.
+// A writer's comment made while a planner session runs reaches the next
+// session before the revision that session filed may file its cards: the
+// revision goes back unrequested. One made during an invalid session goes
+// along with the findings.
 func TestPlanLoopCommentDuringSession(t *testing.T) {
 	invalid := []string{"plan: no fenced json block in the last message"}
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Findings: invalid}, PlanResult{Revision: 2, SHA256: "sha-2"})
 	h.signalAfter(2*time.Minute, SignalHumanComment, TaskSignal{Author: "alice", Body: "auth is by magic link", Comment: 650})
 	h.signalAfter(7*time.Minute, SignalHumanComment, TaskSignal{Author: "alice", Body: "and no passwords", Comment: 705})
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 2, SHA256: "sha-2"})
-	if final := h.run(t); final != "done" {
+	h.file = map[int]bool{1: true, 2: true}
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	want := [][]string{nil, {"writer alice asked for changes to the plan: auth is by magic link"},
@@ -1301,8 +1221,8 @@ func TestPlanLoopCommentDuringSession(t *testing.T) {
 	if len(h.plans) != 3 || !slices.Equal(h.plans[1], want[1]) || !slices.Equal(h.plans[2], want[2]) {
 		t.Fatalf("RunPlan findings %q, want %q", h.plans, want)
 	}
-	if !slices.Equal(h.requests, []int{1, 2}) || !slices.Equal(h.created, []string{"2 sebastian 7"}) {
-		t.Fatalf("requests %v created %v", h.requests, h.created)
+	if !slices.Equal(h.requests, []int{2}) {
+		t.Fatalf("requests %v, want revision 2 only: revision 1 went back with the comment", h.requests)
 	}
 }
 
@@ -1337,8 +1257,8 @@ func TestPlanLoopCommentInPartsGoesBackOnce(t *testing.T) {
 				h.signalAfter(time.Hour+time.Duration(i)*10*time.Second, SignalHumanComment,
 					TaskSignal{Author: "alice", Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(701 + i)})
 			}
-			h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 2, SHA256: "sha-2"})
-			if final := h.run(t); final != "done" {
+			h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
+			if final := h.run(t); final != "closed" {
 				t.Fatalf("finals %v", h.finals)
 			}
 			if len(h.plans) != len(tc.plans) || !slices.EqualFunc(h.plans, tc.plans, slices.Equal) {
@@ -1369,7 +1289,7 @@ func TestPlanLoopCommentInPartsAfterAnInvalidPlan(t *testing.T) {
 	for i, at := range []time.Duration{4*time.Minute + 40*time.Second, 4*time.Minute + 50*time.Second, 5*time.Minute + 20*time.Second} {
 		h.signalAfter(at, SignalHumanComment, TaskSignal{Author: "alice", Body: fmt.Sprintf("part %d of 3", i+1), Comment: int64(701 + i)})
 	}
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" {
 		t.Fatalf("finals %v", h.finals)
 	}
@@ -1382,61 +1302,16 @@ func TestPlanLoopCommentInPartsAfterAnInvalidPlan(t *testing.T) {
 	}
 }
 
-// Roadmap 237: an acceptance that arrives in the burst window of a planner
-// session's end with findings is taken there. Revision 1 waits; a writer's
-// comment at 1h sends the planner back at 1h0m30s; its session ends at
-// 1h5m30s with findings and takes a second comment made meanwhile, whose
-// window closes at 1h6m; the acceptance of revision 1 at 1h5m40s files
-// its cards. A run from before the change leaves the acceptance for the
-// next plan wait, where the planner's revision 2 has made it stale.
-func TestPlanLoopAcceptanceInTheBurstWindowFilesTheCards(t *testing.T) {
-	invalid := []string{"plan: no fenced json block in the last message"}
-	for _, tc := range []struct {
-		name    string
-		version workflow.Version
-		final   string
-		created []string
-		signals []string
-		plans   int
-	}{
-		{"current", versionBurstAccept, "done", []string{"1 sebastian 7"}, []string{"plan_accepted sebastian 1 "}, 2},
-		{"before burst-accept", workflow.DefaultVersion, "failed", nil,
-			[]string{"plan_accepted sebastian 1 the plan changed to revision 2", "plan_rejected alice 0 "}, 3},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Findings: invalid}, PlanResult{Revision: 2, SHA256: "sha-2"})
-			h.env.OnGetVersion("burst-accept", workflow.DefaultVersion, versionBurstAccept).Return(tc.version)
-			for i, at := range []time.Duration{time.Hour, time.Hour + 5*time.Minute + 20*time.Second} {
-				h.signalAfter(at, SignalHumanComment, TaskSignal{Author: "alice", Body: fmt.Sprintf("remark %d", i+1), Comment: int64(701 + i)})
-			}
-			h.signalAfter(time.Hour+5*time.Minute+40*time.Second, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-			h.signalAfter(10*time.Hour, SignalPlanRejected, TaskSignal{Author: "alice", Body: "not this quarter"})
-			if final := h.run(t); final != tc.final {
-				t.Fatalf("final = %q, finals %v", final, h.finals)
-			}
-			if tc.final == "done" && h.finals[0][1] != "plan revision 1 accepted: 3 cards filed" {
-				t.Fatalf("finals %v", h.finals)
-			}
-			if !slices.Equal(h.created, tc.created) || len(h.plans) != tc.plans {
-				t.Fatalf("CreateChildren calls %v, %d planner sessions; want %v, %d", h.created, len(h.plans), tc.created, tc.plans)
-			}
-			if got := h.planSignals(); !slices.Equal(got, tc.signals) {
-				t.Fatalf("recorded %v, want %v", got, tc.signals)
-			}
-		})
-	}
-}
-
 // A planner that stops to ask a human (its own escalate_to_human, or the
 // gate supervisor's escalation) puts the question on the card; the
-// answer goes to the next session. A Reject sent while a session runs
+// answer goes to the next session. The issue's close while a session runs
 // ends the task before another one.
 func TestPlanLoopPlannerAsksAHuman(t *testing.T) {
 	ask := "The session stopped (agent_escalation, escalate): which login does the spec mean?"
 	h := newPlanHarness(t, PlanResult{Escalate: ask}, PlanResult{Findings: []string{"plan: 1 cards; this process allows 2 to 12"}})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "magic links", Comment: 602})
-	h.signalAfter(time.Hour+2*time.Minute, SignalPlanRejected, TaskSignal{Author: "alice", Body: "we buy one"})
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice: we buy one" {
+	h.signalAfter(time.Hour+planSession+time.Minute, SignalIssueClosed, TaskSignal{Author: "alice"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" without merge" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	if !slices.Equal(h.escalated, []string{ask}) || len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer alice asked for changes to the plan: magic links"}) {
@@ -1450,10 +1325,10 @@ func TestPlanLoopPlannerAsksAHuman(t *testing.T) {
 func TestPlanLoopSessionThatCannotStartCostsNothing(t *testing.T) {
 	ask := startEscalation("image pull", "push the worker image or correct its reference",
 		"start failed: image pull: container clone waits with ErrImagePull: not found")
-	h := newPlanHarness(t, PlanResult{Escalate: ask, StartFailed: true}, PlanResult{Findings: []string{"plan: 1 cards; this process allows 2 to 12"}})
+	h := newPlanHarness(t, PlanResult{Escalate: ask, StartFailed: true}, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "the image is pushed", Comment: 602})
-	h.signalAfter(time.Hour+2*time.Minute, SignalPlanRejected, TaskSignal{Author: "alice", Body: "we buy one"})
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "plan rejected by alice: we buy one" {
+	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
+	if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan filed its cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	if !slices.Equal(h.escalated, []string{ask}) || len(h.plans) != 2 {
@@ -1473,8 +1348,8 @@ func TestPlanLoopStartFailureKeepsTheFindings(t *testing.T) {
 		"start failed: image pull: container clone waits with ErrImagePull: not found")
 	h := newPlanHarness(t, PlanResult{Findings: []string{invalid}}, PlanResult{Escalate: ask, StartFailed: true}, PlanResult{Findings: []string{invalid}})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "the image is pushed", Comment: 602})
-	h.signalAfter(time.Hour+2*time.Minute, SignalPlanRejected, TaskSignal{Author: "alice", Body: "we buy one"})
-	if final := h.run(t); final != "failed" || len(h.plans) != 3 {
+	h.signalAfter(time.Hour+planSession+time.Minute, SignalIssueClosed, TaskSignal{Author: "alice"})
+	if final := h.run(t); final != "closed" || len(h.plans) != 3 {
 		t.Fatalf("final %q after %d plans, finals %v", final, len(h.plans), h.finals)
 	}
 	want := []string{invalid, "writer alice asked for changes to the plan: the image is pushed"}
@@ -1483,40 +1358,40 @@ func TestPlanLoopStartFailureKeepsTheFindings(t *testing.T) {
 	}
 }
 
-// A refused acceptance (a cycle found when the cards are filed) goes back
-// to the planner as its findings, and the next valid revision is accepted.
-func TestAcceptRefusesCycle(t *testing.T) {
+// A revision whose cards form a cycle files none: the refusal is commented
+// on the plan's issue once and recorded, no request opens, and it goes
+// back to the planner as the next session's finding, whose next valid
+// revision files.
+func TestFileRevisionRefusesACycle(t *testing.T) {
 	// the activity: the stored revision holds a cycle
 	p := testPlan()
 	p.Cards[1].DependsOn = []string{"redirects"}
-	r, store, objects, fj := newPlanRunner(t, p)
-	store.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	res := createChildren(t, r)
+	r, store, objects, fj, wf := fileRig(t, p)
 	cycle := "plan: the dependencies form a cycle: links-api -> redirects -> links-api"
-	if !slices.Equal(res.Refused, []string{cycle}) || len(res.Issues) != 0 {
-		t.Fatalf("result %+v", res)
+	for range 2 {
+		if ref := requestPlan(t, r); !slices.Equal(ref.Refused, []string{cycle}) || len(ref.Filed) != 0 || ref.Revision != 1 {
+			t.Fatalf("ref %+v", ref)
+		}
 	}
-	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 ||
-		fj.comments[0].body != "factoryd: accepting revision 1 was refused: "+cycle {
-		t.Fatalf("issues up to #%d, rows %d, comments %v", fj.next, len(store.tasks), fj.comments)
+	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(wf.started) != 0 ||
+		fj.comments[0].body != "factoryd: revision 1 files no cards: "+cycle {
+		t.Fatalf("issues up to #%d, rows %d, started %v, comments %v", fj.next, len(store.tasks), wf.started, fj.comments)
 	}
-	if a := store.approvals[0]; a.Status != "denied" || a.DecisionNote != "accepting revision 1 was refused: "+cycle {
-		t.Fatalf("approval %+v", a)
+	if got, _, _ := store.Task(context.Background(), "t-plan"); len(store.approvals) != 0 || got.Status != "running" {
+		t.Fatalf("approvals %+v, plan task %s; want none, running", store.approvals, got.Status)
 	}
-	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + cycle + "]"}) {
+	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + cycle + "]", "plan_refused [" + cycle + "]"}) {
 		t.Fatalf("steps %v", steps)
 	}
 
 	// the workflow: the refusal is the next session's finding
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
-	h.refuse = [][]string{{cycle}}
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 2, SHA256: "sha-2"})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 accepted: 3 cards filed" {
+	h.refuse, h.file = map[int][]string{1: {cycle}}, map[int]bool{2: true}
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{cycle}) || !slices.Equal(h.created, []string{"1 sebastian 7", "2 sebastian 7"}) {
-		t.Fatalf("plans %q created %v", h.plans, h.created)
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{cycle}) || !slices.Equal(h.requests, []int{1, 2}) || len(h.escalated) != 0 {
+		t.Fatalf("plans %q requests %v escalated %q", h.plans, h.requests, h.escalated)
 	}
 }
 
@@ -1528,7 +1403,7 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Findings: invalid})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
 	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
-	if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan was accepted" {
+	if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan filed its cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	if len(h.plans) != 4 || !slices.Equal(h.plans[3], []string{"writer alice asked for changes to the plan: keep the web card small"}) {
@@ -1543,17 +1418,47 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	}
 }
 
-// A run healed while the plan waited for its approvers asks nothing again
-// and runs no session: the newest revision's request stands.
+// A run healed while the plan waited for its answers asks nothing again
+// and runs no session: the newest revision waits on; its last answer sends
+// the planner back, whose revision files.
 func TestPlanLoopHealedWaitsOnTheRevision(t *testing.T) {
-	h := newPlanHarness(t)
+	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
 	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-	if final := h.run(t); final != "done" {
+	h.open, h.file = []int{0}, map[int]bool{2: true}
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.plans) != 0 || !slices.Equal(h.requests, []int{0}) || len(h.escalated) != 0 || !slices.Equal(h.created, []string{"1 sebastian 7"}) {
-		t.Fatalf("plans %q requests %v escalated %q created %v", h.plans, h.requests, h.escalated, h.created)
+	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.requests, []int{0, 2}) || len(h.escalated) != 0 || !slices.Equal(h.asked, []int{1}) {
+		t.Fatalf("plans %q requests %v escalated %q asked %v", h.plans, h.requests, h.escalated, h.asked)
+	}
+}
+
+// A healed run whose newest revision asks no question files its cards and
+// ends done at once; one whose questions all carry their answers (the last
+// answer landed while no workflow ran) goes back to the planner, whose
+// next revision files.
+func TestPlanLoopHealedOnARevisionThatNoLongerWaits(t *testing.T) {
+	h := newPlanHarness(t)
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.file = map[int]bool{1: true}
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" || len(h.plans) != 0 || !slices.Equal(h.requests, []int{0}) {
+		t.Fatalf("filed: finals %v, plans %q, requests %v", h.finals, h.plans, h.requests)
+	}
+
+	h = newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.requestPlan = func(taskID string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{Revision: 1, SHA256: "sha-1", Answered: true}, nil
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+	}
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("answered: finals %v", h.finals)
+	}
+	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.requests, []int{0, 2}) || len(h.escalated) != 0 {
+		t.Fatalf("answered: plans %q requests %v escalated %q", h.plans, h.requests, h.escalated)
 	}
 }
 
@@ -1564,12 +1469,12 @@ func TestPlanLoopHealedWaitsOnTheRevision(t *testing.T) {
 // the integration card's with the acceptance/ line.
 func TestChildBriefCarriesSpec(t *testing.T) {
 	ctx := context.Background()
-	card := Task{ID: "t1", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "spec", Repository: "sf/r", SHA: "abc123",
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
 		IssueNumber: 4, Source: SourcePlan, Parent: "t-plan", PlanKey: "integration", Author: "sebastian", AuthorWriter: true,
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests\n\nTurn A1 to A9 into tests."}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
-	store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener\n\nBuild a link shortener, cc @ops."})
+	store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener\n\nBuild a link shortener, cc @ops.", Track: "direct"})
 	raw, sha, _ := planSHA(testPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
@@ -1597,12 +1502,12 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	}
 	// a split's card: its spec names the large pull request, whose head the
 	// clone container fetches as branch pull/9
-	child := Task{ID: "t3", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "spec", Repository: "sf/r", SHA: "abc123",
+	child := Task{ID: "t3", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
 		IssueNumber: 8, Source: SourcePlan, Parent: "t-big", PlanKey: "web", Author: "sebastian", AuthorWriter: true,
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Objective: "The links page"}
 	kube = newFakeKube()
 	splitRunner, _, splitStore := newTestRunner(t, child, kube, &fakeObjectStore{})
-	splitStore.CreateTask(ctx, Task{ID: "t-big", Kind: "agent", Status: "closed", Repository: "sf/r", IssueNumber: 7, PRNumber: 9, Objective: "Links\n\nThe page and the API."})
+	splitStore.CreateTask(ctx, Task{ID: "t-big", Kind: "agent", Status: "closed", Repository: "sf/r", IssueNumber: 7, PRNumber: 9, Objective: "Links\n\nThe page and the API.", Track: "direct"})
 	raw, sha, _ = planSHA(splitPlan())
 	splitStore.AddPlanRevision(ctx, "t-big", raw, sha)
 	if _, err := runSession(t, nil, splitRunner, SessionInput{TaskID: "t3", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
@@ -1617,7 +1522,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	}
 	// a task no plan filed gets neither
 	store.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "queued", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, Source: "webhook",
-		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it"})
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it", Track: "direct"})
 	if spec, role, dirs, pull, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || pull != 0 || err != nil {
 		t.Fatalf("planOf a webhook task = %q %q %q %d %v", spec, role, dirs, pull, err)
 	}
@@ -1628,7 +1533,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 // and why — the sandbox holds no git credential, so the agent cannot
 // fetch the head itself.
 func TestCarryCardCloneSuppliesThePullRef(t *testing.T) {
-	card := Task{ID: "t-carry", Kind: "agent", Status: "queued", Lane: policy.LaneReady, Process: "spec", Repository: "sf/r", SHA: "abc123",
+	card := Task{ID: "t-carry", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
 		IssueNumber: 12, Source: "webhook", Author: "sebastian", AuthorWriter: true, CarryPR: 9,
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Carry pull request #9 to green checks"}
 	kube := newFakeKube()
@@ -1646,11 +1551,11 @@ func TestCarryCardCloneSuppliesThePullRef(t *testing.T) {
 	}
 }
 
-// When the last of an accepted plan's cards turns done, the plan records
+// When the last of a plan's cards turns done, the plan records
 // all_children_done and says so on its issue, once.
 func TestAllChildrenDoneEvent(t *testing.T) {
-	r, store, objects, fj := newPlanRunner(t, testPlan())
-	createChildren(t, r)
+	r, store, objects, fj, _ := fileRig(t, testPlan())
+	requestPlan(t, r)
 	cards := cardsByKey(t, store)
 	for i, key := range []string{"foundation", "links-api", "redirects", "integration"} {
 		c := store.tasks[cards[key].ID]
@@ -1688,7 +1593,7 @@ func TestPGStorePlans(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Lane: "plan", IssueNumber: 1}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Track: "plan", IssueNumber: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok, err := s.PlanRevision(ctx, "t-plan", 0); ok || err != nil {
@@ -1709,9 +1614,9 @@ func TestPGStorePlans(t *testing.T) {
 	if two, ok, _ := s.PlanRevision(ctx, "t-plan", 2); !ok || two.SHA256 != "s2" {
 		t.Fatalf("revision 2 = %+v", two)
 	}
-	card := Task{ID: "t-c1", Status: "backlog", Lane: "backlog", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Source: SourcePlan, Parent: "t-plan", PlanKey: "links-api"}
+	card := Task{ID: "t-c1", Status: "queued", Track: "direct", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Source: SourcePlan, Parent: "t-plan", PlanKey: "links-api"}
 	got, err := s.CreatePlanCard(ctx, card)
-	if err != nil || got.ID != "t-c1" || got.PlanKey != "links-api" || got.Gate != "" {
+	if err != nil || got.ID != "t-c1" || got.PlanKey != "links-api" || got.Track != "direct" || got.Gate != GateIntake {
 		t.Fatalf("card = %+v %v", got, err)
 	}
 	card.ID = "t-c2"
@@ -1740,7 +1645,7 @@ func TestPGStorePlans(t *testing.T) {
 	r, _, _, _ := newPlanRunner(t, testPlan())
 	r.store = s
 	if err := s.CreateTask(ctx, Task{ID: "t-p2", Status: "running", Kind: "agent", Repository: "linkshort/linkshort", BudgetEUR: 1,
-		Lane: "plan", Process: "spec", IssueNumber: 1}); err != nil {
+		Track: "plan", Process: "spec", IssueNumber: 1}); err != nil {
 		t.Fatal(err)
 	}
 	raw, sha, _ := planSHA(testPlan())
@@ -1749,7 +1654,7 @@ func TestPGStorePlans(t *testing.T) {
 	}
 	var ids []int64
 	for range 2 {
-		if _, err := execActivity(t, r, ActivityRequestPlan, "t-p2", 0); err != nil {
+		if _, err := execActivity(t, r, ActivityRequestPlan, "t-p2", 0, int64(7)); err != nil {
 			t.Fatal(err)
 		}
 		pending, _ := s.ApprovalRequests(ctx, "pending")
@@ -1774,7 +1679,7 @@ func TestPGStoreCatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Lane: "plan", IssueNumber: 1}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-plan", Status: "running", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Track: "plan", IssueNumber: 1}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary": "one"}`), "s1"); err != nil {
@@ -1820,7 +1725,7 @@ func TestPGStoreCatches(t *testing.T) {
 // last message and the files it read beside the finding; a filing an
 // earlier session left is stale, not this session's answer.
 func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -1859,7 +1764,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 // The planner's guide lists the images the policy in force pins, a pin
 // that landed after the plan task's version included.
 func TestRunPlanGuideListsThePinsInForce(t *testing.T) {
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -1887,7 +1792,7 @@ func TestRunPlanGuideListsThePinsInForce(t *testing.T) {
 // the start failure, not back to the next planner session as a missing
 // plan.
 func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -1927,7 +1832,7 @@ func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
 // files as the next revision and is held for the running session, and a
 // task not running files nothing (roadmap 178).
 func TestFilePlanChecksAndStores(t *testing.T) {
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -1992,7 +1897,7 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 // gateway reads: a refused plan 200 with its findings, a valid one its
 // revision, a body that is not the pair 400.
 func TestPlanFileHandler(t *testing.T) {
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -2039,7 +1944,7 @@ func TestPlanFileHandler(t *testing.T) {
 // filing is what RunPlan returns when the session ends, and both filings
 // cost one session, not two (roadmap 178).
 func TestRunPlanTakesAToolFiling(t *testing.T) {
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -2122,7 +2027,7 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	}
 	pinned := policy.Version{ID: 7, Commit: "c7", Tree: tree}
 
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -2198,32 +2103,27 @@ func TestDeployOwner(t *testing.T) {
 	}
 }
 
-// A plan without a deploy owner against a Deploy spec is refused when its
-// cards are filed, as a cycle is; with one the cards are filed and the
-// plan comment marks the owner's row.
-func TestAcceptRefusesPlanWithoutDeployOwner(t *testing.T) {
-	r, store, objects, fj := newPlanRunner(t, testPlan())
+// A plan without a deploy owner against a Deploy spec files no cards, as a
+// cycle does; with one the cards are filed and the plan comment marks the
+// owner's row.
+func TestFileRevisionRefusesAPlanWithoutDeployOwner(t *testing.T) {
+	r, store, objects, fj, _ := fileRig(t, testPlan())
 	store.tasks["t-plan"] = func(tk Task) Task { tk.Objective = deploySpec; return tk }(store.tasks["t-plan"])
-	store.OpenApproval(context.Background(), ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	res := createChildren(t, r)
-	if !slices.Equal(res.Refused, []string{noDeployOwner}) || len(res.Issues) != 0 {
-		t.Fatalf("result %+v", res)
+	if ref := requestPlan(t, r); !slices.Equal(ref.Refused, []string{noDeployOwner}) || len(ref.Filed) != 0 {
+		t.Fatalf("ref %+v", ref)
 	}
-	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 ||
-		fj.comments[0].body != "factoryd: accepting revision 1 was refused: "+noDeployOwner {
-		t.Fatalf("issues up to #%d, rows %d, comments %v", fj.next, len(store.tasks), fj.comments)
-	}
-	if a := store.approvals[0]; a.Status != "denied" || a.DecisionNote != "accepting revision 1 was refused: "+noDeployOwner {
-		t.Fatalf("approval %+v", a)
+	if fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 || len(store.approvals) != 0 ||
+		fj.comments[0].body != "factoryd: revision 1 files no cards: "+noDeployOwner {
+		t.Fatalf("issues up to #%d, rows %d, comments %v, approvals %+v", fj.next, len(store.tasks), fj.comments, store.approvals)
 	}
 	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"plan_refused [" + noDeployOwner + "]"}) {
 		t.Fatalf("steps %v", steps)
 	}
 
-	r, store, _, fj = newPlanRunner(t, deployPlan())
+	r, store, _, fj, _ = fileRig(t, deployPlan())
 	store.tasks["t-plan"] = func(tk Task) Task { tk.Objective = deploySpec; return tk }(store.tasks["t-plan"])
-	if res := createChildren(t, r); !slices.Equal(res.Issues, []int64{2, 3, 4, 5}) || len(res.Refused) != 0 {
-		t.Fatalf("result %+v", res)
+	if ref := requestPlan(t, r); !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || len(ref.Refused) != 0 {
+		t.Fatalf("ref %+v", ref)
 	}
 	if len(fj.comments) != 1 {
 		t.Fatalf("comments %v", fj.comments)
@@ -2245,51 +2145,37 @@ func TestAcceptRefusesPlanWithoutDeployOwner(t *testing.T) {
 	}
 }
 
-// The console's Accept plan on a plan without the deploy owner its Deploy
-// spec needs answers the finding at once and still signals: the
-// workflow's CreateChildren refuses it (the approval denied, no card
-// filed) and the planner revises in exactly one new session with the
-// finding; with an owner Accept plan only signals.
-func TestAcceptPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
+// A plan without the deploy owner its Deploy spec needs goes back to the
+// planner through the real RequestPlan: no card is filed, and the planner
+// revises in exactly one new session with the finding, whose revision with
+// an owner files the cards and ends the plan done.
+func TestPlanWithoutDeployOwnerThePlannerRevises(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, fj := newPlanRunner(t, testPlan())
+	r, store, _, fj, _ := fileRig(t, testPlan())
 	store.tasks["t-plan"] = func(tk Task) Task { tk.Objective = deploySpec; return tk }(store.tasks["t-plan"])
-	store.plans["t-plan"][0].SHA256 = "sha-1"
-	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	wf := &signalRecorder{}
-	err := AcceptPlan(ctx, store, wf, "t-plan", 1, "sha-1", "sebastian", "sebastian")
-	if !errors.Is(err, ErrNoDeployOwner) || err.Error() != noDeployOwner || !slices.Equal(wf.signals, []string{"t-plan plan_accepted sebastian 1 sha-1 "}) {
-		t.Fatalf("accept without an owner: %v, signals %v", err, wf.signals)
+	raw, sha, _ := planSHA(deployPlan())
+	if n, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); n != 2 || err != nil {
+		t.Fatalf("revision 2: %d, %v", n, err)
 	}
-
-	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
-	h.children = func(ctx context.Context, revision int, approver string, pin int64) (ChildrenResult, error) {
-		return r.CreateChildren(ctx, "t-plan", revision, approver, pin)
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: store.plans["t-plan"][0].SHA256}, PlanResult{Revision: 2, SHA256: sha})
+	h.requestPlan = func(taskID string, revision int) (PlanRef, error) {
+		return r.RequestPlan(ctx, "t-plan", revision, 7)
 	}
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
-	if final := h.run(t); final != "closed" {
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 4 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], []string{noDeployOwner}) || !slices.Equal(h.created, []string{"1 sebastian 7"}) {
-		t.Fatalf("plans %q created %v", h.plans, h.created)
+	if len(h.plans) != 2 || h.plans[0] != nil || !slices.Equal(h.plans[1], []string{noDeployOwner}) || !slices.Equal(h.requests, []int{1, 2}) {
+		t.Fatalf("plans %q requests %v", h.plans, h.requests)
 	}
-	if store.approvals[0].Status != "denied" || fj.next != 1 || len(store.tasks) != 1 || len(fj.comments) != 1 {
-		t.Fatalf("approval %+v, issues up to #%d, rows %d, comments %v", store.approvals[0], fj.next, len(store.tasks), fj.comments)
-	}
-
-	raw, sha, _ := planSHA(deployPlan())
-	store.AddPlanRevision(ctx, "t-plan", raw, sha)
-	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	if err := AcceptPlan(ctx, store, wf, "t-plan", 2, sha, "sebastian", "sebastian"); err != nil || len(wf.signals) != 2 || wf.signals[1] != "t-plan plan_accepted sebastian 2 "+sha+" " {
-		t.Fatalf("accept with an owner: %v, signals %v", err, wf.signals)
+	if fj.next != 5 || len(cardsByKey(t, store)) != 4 || !strings.HasPrefix(fj.comments[0].body, "factoryd: revision 1 files no cards: "+noDeployOwner) {
+		t.Fatalf("issues up to #%d, cards %v, comments %v", fj.next, cardsByKey(t, store), fj.comments)
 	}
 }
 
 // RunPlan answers a provider's refusal, not an invalid plan (roadmap 155).
 func TestRunPlanNamesAProviderRefusal(t *testing.T) {
 	const said = "DashscopeException: budget exhausted (status 429)"
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -2320,7 +2206,7 @@ func TestRunPlanNamesAProviderRefusal(t *testing.T) {
 // beside the findings a run from before the change reads (roadmap 240).
 func TestRunPlanNamesACap(t *testing.T) {
 	const said = "the model call failed: refused_day_cap"
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -2353,7 +2239,7 @@ func TestRunPlanNamesACap(t *testing.T) {
 // hold and the fitting action reach the next planner session.
 func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 	const said = `the agent's last model step finished on "length" after 24576 output and 0 reasoning tokens, not on "stop"`
-	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Lane: policy.LanePlan, Process: "spec", Repository: "linkshort/linkshort",
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
 		Objective: "Link shortener\n\nBuild a link shortener."}
 	kube := newFakeKube()
@@ -2402,7 +2288,7 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 			}
 			return turned, nil
 		})
-	h.signalAfter(6*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || !sameTimes(turns, []time.Time{oct(15, 0, 0)}) {
 		t.Fatalf("final %q, escalations %q, turns %v; want the day cap asked and the turn at 00:00", final, h.escalated, turns)
 	}
@@ -2417,7 +2303,7 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 	h = newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &month},
 		PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
-	h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) {
 		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
 	}
@@ -2434,7 +2320,7 @@ func TestPlanLoopRunsAgainWhenItsPodNeverStarted(t *testing.T) {
 	why := podPendingWhy("s1")
 	waited := PlanResult{Findings: []string{"plan: the session ended without a last message: " + why}, NotStarted: why}
 	h := newPlanHarness(t, waited, PlanResult{Revision: 1, SHA256: "sha-1"})
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" || len(h.escalated) != 0 || len(h.plans) != 2 || !slices.Equal(h.plans[1], h.plans[0]) {
 		t.Fatalf("final %q, escalations %q, plans %q; want done after a second session with the first's findings", final, h.escalated, h.plans)
 	}
@@ -2450,8 +2336,8 @@ var planRefused = PlanResult{Refused: ProviderWait{Status: 429, Reason: refusedS
 func TestPlanLoopWaitsOnTheProvider(t *testing.T) {
 	h := newPlanHarness(t, planRefused, planRefused, PlanResult{Revision: 1, SHA256: "sha-1"})
 	backoffs := providerBackoffs(h.workflowHarness)
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 accepted: 3 cards filed" {
+	h.file = map[int]bool{1: true}
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
 	if len(h.plans) != 3 || slices.ContainsFunc(h.plans, func(f []string) bool { return f != nil }) || !slices.Equal(*backoffs, []int{120, 240}) ||
@@ -2479,7 +2365,7 @@ func TestPlanLoopRefusalBeforeTheChange(t *testing.T) {
 	h := newPlanHarness(t, planRefused, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.env.OnGetVersion("provider-wait-sessions", workflow.DefaultVersion, versionSessionRefusals).Return(workflow.DefaultVersion)
 	backoffs := providerBackoffs(h.workflowHarness)
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	want := []string{"plan: the session ended without a last message: " + refusedSession.Reason}
 	if final := h.run(t); final != "done" || len(*backoffs) != 0 || len(h.usage) != 2 || h.usage[1].Attempts != 2 || len(h.plans) != 2 || !slices.Equal(h.plans[1], want) {
 		t.Fatalf("final %q, backoffs %v, usage %+v, plans %q; want the second with %q", final, *backoffs, h.usage, h.plans, want)
@@ -2509,7 +2395,7 @@ func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 	c := PlanCard{Key: "redirects", Title: "Redirects", Brief: "GET /<slug> answers 302.", Directories: []string{"internal/links"},
 		Acceptance: []PlanItem{{Text: "GET /abc answers 302"}}, Size: "small", Rung: RungCheap, RungReason: "routine"}
 	objective := "Redirects\n\n" + cardBody(c, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "")
-	want := "Redirects\n\nCard redirects of plan #1 (3 of 4), accepted by sebastian. Written by the planner.\n\nGET /<slug> answers 302.\n\n" +
+	want := "Redirects\n\nCard redirects of plan #1 (3 of 4), filed for sebastian. Written by the planner.\n\nGET /<slug> answers 302.\n\n" +
 		"Depends on: #2 (foundation)\nAcceptance:\n- GET /abc answers 302"
 	if got := briefObjective(objective, true); got != want {
 		t.Fatalf("brief objective =\n%s\nwant\n%s", got, want)
@@ -2543,7 +2429,7 @@ func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
 			budgets = append(budgets, info.StartToCloseTimeout)
 		}
 	})
-	h.signalAfter(time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v, want done after a second planner", final, h.finals)
 	}
@@ -2595,7 +2481,7 @@ func TestPlanLoopOutOfTimeAsksAHuman(t *testing.T) {
 				}
 			})
 			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
-			h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+			h.file = map[int]bool{1: true}
 			final := h.run(t)
 			if tc.question == "" {
 				if final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.plans) != 0 || len(h.escalated) != 0 || len(h.usage) != 0 {
@@ -2633,7 +2519,7 @@ func TestPlanLoopAnswerAtTheTimeLimitBuysTime(t *testing.T) {
 		}
 	})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "magic links", Comment: 801})
-	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{"which login do accounts use?"}) {
 		t.Fatalf("final %q, finals %v, escalated %q, want done after the planner's own question alone", final, h.finals, h.escalated)
 	}
@@ -2657,7 +2543,7 @@ func TestPlanLoopHealedOnTheTimeQuestionAsksAgain(t *testing.T) {
 		if revision == 0 {
 			return PlanRef{}, nil // the planner filed no plan: the wait was the time question's
 		}
-		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Comment: int64(699 + revision)}, nil
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
 	}
 	var budgets []time.Duration
 	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
@@ -2666,7 +2552,6 @@ func TestPlanLoopHealedOnTheTimeQuestionAsksAgain(t *testing.T) {
 		}
 	})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
-	h.signalAfter(2*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final %q, finals %v, want done after the re-ask", final, h.finals)
 	}

@@ -11,51 +11,40 @@ both sides.
 `X-Forgejo-Signature` (hex HMAC-SHA256 of the raw body, secret
 `factoryd-webhook`) is checked with a constant-time compare before the
 body is parsed at all; a bad or missing signature is a 401 and only the
-event type is logged, never the body. Every issue becomes a card of the
-lane its labels ask for (`internal/factoryd/lanes.go`), idempotent per
-(repository, issue number): redeliveries and later relabel events on the
-same issue find the task already linked. The lane rule is fixed in code,
-the same for every process:
+event type is logged, never the body. Every issue becomes a card on the
+track its labels ask for (`internal/factoryd/tracks.go`, roadmap 225),
+idempotent per (repository, issue number): redeliveries and later relabel
+events on the same issue find the task already linked. Whoever files a
+card sets its track, plan or direct, and no card is filed undecided: the
+schema refuses an agent card without one (`tasks.track`, constraint
+`tasks_agent_track`). The track rule is fixed in code, the same for every
+process:
 
-| labels | lane |
+| labels | card |
 | --- | --- |
-| `human` (wins over the rest) | human lane, `waiting-human`, no agent run, no lane or process on the row |
-| `agent` or `bug` | ready |
-| `plan` | plan where the project's process has a plan lane, else backlog |
-| `backlog` or `improvement` | backlog: status `backlog`, no workflow |
-| none of these | ready (the default entry) |
+| `human` (wins over the rest) | a person's card, `waiting-human`, no agent run, no track or process on the row |
+| `agent` or `bug` | direct |
+| `plan` | plan where the project's process has a plan track, else no card |
+| `backlog` or `improvement` | no card: the issue holds an interest until a writer's label commits it |
+| none of these | direct |
 
-A card entering a starting lane (plan, ready) is judged against the
-lane's `moved_by`: writers (write access on the repository) or
-approvers (the policy's). A new issue with a lane label judges its
-poster; the default entry (no lane label, or `bug`) enters ready from
-anyone under `writers` and from an approver only under `approvers`. On a
-backlog card, a lane label added, or a lane label removed so that none is
-left, judges the event's sender, and so does a label event that brings in
-an issue with no card yet (its lane label judges poster and sender); the
-bot's own label events move nothing. The heal pass knows no sender: for a
-backlog card whose issue carries a starting lane's label it reads the
-issue's timeline and judges the latest entry that added that label
-(`type` `label`, `body` `1`) by a user other than the bot; it never infers
-a removal, so a backlog card with no lane label stays. A refused entry
-lands in the backlog: factoryd takes
-the starting lane labels off, puts `backlog` on and comments once why
-(`factoryd: lane ready takes a card from writers of <repo>; <user> is
-none. The card stays in backlog.`). A card that enters a starting lane
-keeps that lane's label as its one lane label, is queued at the branch
-head with the lane's class as its capabilities
-and its workflow starts; the row keeps its lane and its process
-(`tasks.lane`, `tasks.process`). A backlog lane with `write_up` opens that
-class's write-up of the card (source `presort`). Until it moves a
-backlog card runs nothing: comments on it are neither recorded nor
-signalled, and a writer's close (webhook or heal pass) ends it `closed`.
-Forgejo 15 applies whatever labels its
+A direct or plan card is queued at the branch head with its track's class
+as its capabilities, its row keeps its track and its process
+(`tasks.track`, `tasks.process`), and its workflow starts under the work
+bound (the admission below). An issue that files no card is read again by
+every label event and every heal pass: a writer's `agent` or `plan` label,
+or the removal of `backlog`, files it then, its author still the poster.
+A card's track never changes after its filing: a label event on a card
+moves nothing, and only retries a queued card's workflow start that failed.
+An issue whose reproduction command breaks the sandbox rule files a
+person's card instead, which asks the poster to file it again with a
+command that keeps the rule. Forgejo 15 applies whatever labels its
 new-issue form posts, from any account (checked on 15.0.9: an account
 with no access filed issues with a template's label, with smuggled
 `agent` and `improvement` label ids, and with a label and no template;
 all three kept their labels, while the API drops a non-writer's labels
 and refuses its later label edits with 403), so from an outside account
-intake reads only `bug`, `improvement` and non-lane labels: `agent`,
+intake reads only `bug`, `improvement` and non-track labels: `agent`,
 `plan`, `human`, `priority/*` and `severity/*` count from writers only,
 and intake takes them off an outside account's new issue. The task
 keeps its author and whether they could write the repository then
@@ -73,11 +62,21 @@ labels below) for every project. An issue the bot user
 is ignored, as are its comments and the pull requests it closed itself,
 so the factory's own status updates never create a second task or a
 stray signal; a bot issue with a task row (a plan's card) takes its
-label events like any other. `POST /tasks` and SigNoz alerts file a
-Forgejo issue through `FileAgentTask`: the default entry into ready of
-the project's process (the backlog where the approvers move ready), so
-every task — API-created or webhook-created — has exactly one linked
-issue. A roll takes ready's class and no lane.
+label events like any other. `POST /tasks`, SigNoz alerts, the roller,
+the routines and the factory's own pull requests file a Forgejo issue
+through `FileAgentTask`: a direct card of the project's process, so every
+task — API-created or webhook-created — has exactly one linked issue. A
+roll and a factory pull request's card take the direct track's class, no
+process of their own, and run outside the work bound.
+
+The work bound (`BoundedWorkflows`) is the one admission step every start
+passes: a queued card starts only while fewer than its project's
+`work_in_progress` cards hold a slot, every card it depends on is done
+(or one ended closed, which its workflow takes to a person), and its
+project's month budget has headroom. Otherwise it stays queued, holding no
+slot. A card that ends or parks on a person or its image frees its slot,
+and the oldest queued card of its project starts (the pull, in filing
+order); the heal pass re-derives the same admission every minute.
 
 Priority is the higher of two label scales, default 0 if neither is present:
 
@@ -99,20 +98,19 @@ A comment or review on anything the factory did not file — no task
 behind that issue number or branch — is silently dropped rather than
 erroring.
 
-A task's state (`backlog`, `queued`, `waiting-deps`, `running`, `waiting-human`,
+A task's state (`queued`, `waiting-deps`, `running`, `waiting-human`,
 `waiting-image`, `waiting-poster`, `in-review`, `done`, `failed`, `closed`) is mirrored
 onto its issue as exactly one `state/*` label, swapped by `Forgejo.SetStateLabel` through the shared
 `mirrorTaskState` helper (`internal/factoryd/forgejo.go`), the one call
 site behind the task workflow's activities, completion, and the webhook
 intake; the full label set (`agent`, `human`, `bug`, `improvement`, the
-priorities and severities, one `state/*` per status, and the lane labels
-of the project's process: `backlog`, and `plan` where it has a plan lane)
+priorities and severities, one `state/*` per status, and the track labels
+of the project's process: `backlog`, and `plan` where it has a plan track)
 is created at boot by `EnsureProjectLabels` if missing, and on every
-project by its registration; that step first renames `state/suggested`
-to `state/backlog` in place. Mirroring
+project by its registration. Mirroring
 failures are logged and retried on the next transition, never fail the
 task itself. A webhook-created task is mirrored immediately after its
-row exists: `state/queued` for the agent lane, and `state/waiting-human`
+row exists: `state/queued` for an agent card, and `state/waiting-human`
 for the human lane, which starts no workflow (architecture 5.6's
 "waiting on a human" board column is the human lane's whole lifecycle,
 not a transient state on the way to `running`).

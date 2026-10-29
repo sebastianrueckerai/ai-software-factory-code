@@ -29,9 +29,9 @@ func TestSplitCard(t *testing.T) {
 	}
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks,
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-big", Kind: "agent", Status: "in-review", Lane: policy.LaneReady, Process: "maintenance",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-big", Kind: "agent", Status: "in-review", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 30, PRNumber: 32, Objective: "Links."}},
-		factoryd.BoardTask{Task: factoryd.Task{ID: "t-hi", Kind: "agent", Status: "in-review", Lane: policy.LaneReady, Process: "maintenance",
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-hi", Kind: "agent", Status: "in-review", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 31, PRNumber: 33, Objective: "Index."}})
 	r.tasks.mu.Unlock()
 	r.approvals.rows = append(r.approvals.rows,
@@ -55,7 +55,7 @@ func TestSplitCard(t *testing.T) {
 
 	for id, want := range map[string]string{
 		"t-hi": "Card #31 waits at its approval gate, where a human approves the merge, not a large pull request at its approval gate: approve_merge or deny_merge decide its merge request.",
-		"t-m":  "Card #5 waits in the backlog until a member moves it into a lane, not a large pull request at its approval gate: move_card starts it.",
+		"t-m":  "Card #5 waits for a free work slot, in filing order, not a large pull request at its approval gate: nothing to do until it starts.",
 	} {
 		status, msg := refused(t, r, "split_card", toolInput{TaskID: id})
 		equal(t, "split_card on "+id, []any{status, msg}, []any{http.StatusConflict, want})
@@ -108,10 +108,10 @@ func TestSplitCard(t *testing.T) {
 		{ID: "t-c1", IssueNumber: 41, Parent: "t-big"}, {ID: "t-c2", IssueNumber: 42, Parent: "t-big", PRNumber: 50}, {ID: "t-g", IssueNumber: 43, Parent: "t-c2"},
 		{ID: "t-pc", IssueNumber: 21, Parent: "t-plan", PRNumber: 22}, {ID: "t-pg", IssueNumber: 23, Parent: "t-pc"},
 	} {
-		k.Kind, k.Status, k.Lane, k.Process, k.Repository, k.Source, k.Objective = "agent", "queued", policy.LaneReady, "maintenance", "sf/code", factoryd.SourcePlan, "A part."
+		k.Kind, k.Status, k.Track, k.Process, k.Repository, k.Source, k.Objective = "agent", "queued", policy.TrackDirect, "maintenance", "sf/code", factoryd.SourcePlan, "A part."
 		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: k})
 	}
-	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Lane: policy.LanePlan,
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Track: policy.TrackPlan,
 		Process: "maintenance", Repository: "sf/code", IssueNumber: 20, Objective: "A plan."}})
 	r.tasks.mu.Unlock()
 	got := reads(t, r, g, "card", `{"task_id":"t-big"}`, "card", `{"task_id":"t-c2"}`, "card", `{"task_id":"t-c1"}`, "card", `{"task_id":"t-pc"}`)

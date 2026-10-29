@@ -355,7 +355,7 @@ func TestNamedKeepsATerminalErrorTerminal(t *testing.T) {
 // A session whose start fails before session_start names the step: the
 // task row of an unknown task, terminal as it was.
 func TestRunSessionNamesItsStepBeforeTheSessionStarts(t *testing.T) {
-	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo"}, newFakeKube(), &fakeObjectStore{})
+	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "x", Repository: "sf/repo", Track: "direct"}, newFakeKube(), &fakeObjectStore{})
 	_, err := execActivity(t, runner, ActivityRunSession, SessionInput{TaskID: "nope", Attempt: 1, Model: "m"})
 	var app *temporal.ApplicationError
 	if !errors.As(err, &app) || app.Message() != "task: task nope not found" || !app.NonRetryable() {
@@ -464,7 +464,7 @@ func TestFinishCompletesWhenThePullRequestIsGone(t *testing.T) {
 }
 
 var prTask = Task{ID: "t1", Status: "running", Objective: "Add a make check target\n\nand wire it into CI", Repository: "sf/repo",
-	SHA: "base", IssueNumber: 4, Source: "api"}
+	SHA: "base", IssueNumber: 4, Source: "api", Track: "direct"}
 
 func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 	fj := &prForgejo{}
@@ -1243,7 +1243,7 @@ func taskEnds(t *testing.T, objects *fakeObjectStore, id string) []string {
 }
 
 var mergedCard = Task{ID: "t1", Status: "running", Kind: "agent", Objective: "Add a make check target", Repository: "sf/repo",
-	PRNumber: 7, Source: "api"}
+	PRNumber: 7, Source: "api", Track: "direct"}
 
 // mergedAt is Forgejo's pull request number, merged at commit.
 func mergedAt(number int64, commit string) string {
@@ -2173,7 +2173,7 @@ func TestEscalateAsksAHumanOnTheIssue(t *testing.T) {
 func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 	fj := &prForgejo{}
 	task := prTask
-	task.IssueNumber, task.Source, task.Parent = 0, SourcePresort, "t-parent"
+	task.IssueNumber, task.Source, task.Parent = 0, SourceScreening, "t-parent"
 	r, store, _ := newActivityRunner(t, task, fj)
 	reason := providerRefused + "6 sessions in a row (status 429): budget exhausted"
 	var id int64
@@ -2319,7 +2319,7 @@ func fixtureVersion(t *testing.T) policy.Version {
 }
 
 // TaskConfig reads the task's project in the pinned version and takes its
-// process and lane ready, and whether the project switches the audit on;
+// process and the class of its track, and whether the project switches the audit on;
 // a report task runs its own class's session. The version in force
 // differs, and is never read.
 func TestTaskConfigFromProcess(t *testing.T) {
@@ -2331,19 +2331,19 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		task Task
 		want TaskConfig
 	}{
-		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
+			TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
 				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute, NoAudit: true}},
-		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, NoAudit: true}},
-		"a project that switches the audit on": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "sf/ai-software-factory-code", Lane: "ready", RequiredCapabilities: []string{policy.ClassCoder}},
-			TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		"a project that switches the audit on": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "sf/ai-software-factory-code", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute}},
-		"presort report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort,
-			RequiredCapabilities: []string{policy.ClassAnalyzer}},
-			TaskConfig{Process: "maintenance", Class: policy.ClassAnalyzer, Session: policy.SessionReport,
+		"screening report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourceScreening,
+			Track: "direct", RequiredCapabilities: []string{policy.ClassAnalyzer}},
+			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassAnalyzer, Session: policy.SessionReport,
 				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, NoAudit: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2358,7 +2358,7 @@ func TestTaskConfigFromProcess(t *testing.T) {
 	}
 	for name, repo := range map[string]string{"no process": "sf/ai-software-factory-infra", "no project": "sf/other"} {
 		t.Run(name, func(t *testing.T) {
-			r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: repo}, &prForgejo{})
+			r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: repo, Track: "direct"}, &prForgejo{})
 			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 			_, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
 			if want := "task t1: repository " + repo + " follows no process in configuration version 7"; err == nil || !strings.Contains(err.Error(), want) {
@@ -2367,7 +2367,7 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		})
 	} // Reconcile's report task, with no class to run: refused, never a
 	// coding session
-	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourcePresort}, &prForgejo{})
+	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourceScreening, Track: "direct"}, &prForgejo{})
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil || !strings.Contains(err.Error(), "task t1: a report task with no class") {
 		t.Fatalf("error = %v, want the report task with no class refused", err)
@@ -2380,14 +2380,13 @@ func TestTaskConfigFromProcess(t *testing.T) {
 func TestTaskConfigCarriesTime(t *testing.T) {
 	classes := map[string]policy.Class{"coder": {Session: policy.SessionCode,
 		Time: &policy.Time{AgentTime: 2 * time.Hour, CheckIn: ptr(45 * time.Minute)}}}
-	process := policy.Process{Lanes: []policy.Lane{{Name: policy.LaneReady, Class: "coder"}},
-		Time: &policy.Time{AgentTime: 3 * time.Hour}}
+	process := policy.Process{Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}}, Time: &policy.Time{AgentTime: 3 * time.Hour}}
 	project := policy.ProjectConfig{Repository: "org/repo", Process: "p", Time: &policy.Time{AgentTime: 90 * time.Minute}}
 	v := policy.Version{ID: 1, Tree: policy.Tree{
 		Document:  policy.Document{Limits: policy.Limits{AgentTime: 20 * time.Minute}, Classes: classes},
 		Processes: map[string]policy.Process{"p": process}, Projects: map[string]policy.ProjectConfig{"proj": project}}}
 
-	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "org/repo", Lane: "ready"}, &prForgejo{})
+	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "org/repo", Track: "direct"}, &prForgejo{})
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return v, true, nil }
 	val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(1))
 	got := getInto[TaskConfig](t, val, err)
@@ -2398,27 +2397,24 @@ func TestTaskConfigCarriesTime(t *testing.T) {
 }
 
 // TaskConfig sets Stronger for a coding card of a project whose file sets
-// model: stronger; the plan lane's planner keeps its own rung.
+// model: stronger; the plan track's planner keeps its own rung.
 func TestProjectModelStronger(t *testing.T) {
 	classes := map[string]policy.Class{
 		"coder":   {Session: policy.SessionCode},
 		"planner": {Session: policy.SessionPlan},
 	}
-	process := policy.Process{Lanes: []policy.Lane{
-		{Name: policy.LaneReady, Class: "coder"},
-		{Name: policy.LanePlan, Class: "planner"},
-	}}
+	process := policy.Process{Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}, Plan: &policy.Track{Class: "planner"}}}
 	project := policy.ProjectConfig{Repository: "org/repo", Process: "p", Model: policy.ModelStronger}
 	v := policy.Version{ID: 1, Tree: policy.Tree{
 		Document:  policy.Document{Classes: classes},
 		Processes: map[string]policy.Process{"p": process}, Projects: map[string]policy.ProjectConfig{"proj": project}}}
 
 	for name, tc := range map[string]struct {
-		lane string
-		want bool
-	}{"ready lane coder": {policy.LaneReady, true}, "plan lane planner": {policy.LanePlan, false}} {
+		track string
+		want  bool
+	}{"direct track coder": {policy.TrackDirect, true}, "plan track planner": {policy.TrackPlan, false}} {
 		t.Run(name, func(t *testing.T) {
-			r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "org/repo", Lane: tc.lane}, &prForgejo{})
+			r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "org/repo", Track: tc.track}, &prForgejo{})
 			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return v, true, nil }
 			val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(1))
 			if got := getInto[TaskConfig](t, val, err); got.Stronger != tc.want {
@@ -2443,19 +2439,19 @@ func TestSessionDeadlineFromInput(t *testing.T) {
 	}
 }
 
-// TaskConfig reads the row's lane: its class and session come from that
-// lane of the process; a roll has no lane and runs ready's class; a lane
-// the process lacks is refused.
-func TestTaskConfigReadsRowLane(t *testing.T) {
+// TaskConfig reads the row's track: its class and session come from that
+// track of the process; a roll, on the direct track with no process of its
+// own, runs its project's; a track the process lacks is refused.
+func TestTaskConfigReadsRowTrack(t *testing.T) {
 	pinned := fixtureVersion(t)
 	spec, maintenance := pinned.Processes["spec"], pinned.Processes["maintenance"]
 	for name, tc := range map[string]struct {
-		task                          Task
-		process, lane, class, session string
+		task                           Task
+		process, track, class, session string
 	}{
-		"plan":  {Task{Repository: "linkshort/linkshort", Lane: "plan", Process: "spec"}, "spec", "plan", "planner", policy.SessionPlan},
-		"ready": {Task{Repository: "linkshort/linkshort", Lane: "ready", Process: "spec"}, "spec", "ready", policy.ClassCoder, policy.SessionCode},
-		"roll":  {Task{Repository: "demo-app/demo-app", Source: SourceRoll}, "maintenance", "", policy.ClassCoder, policy.SessionCode},
+		"plan":   {Task{Repository: "linkshort/linkshort", Track: "plan", Process: "spec"}, "spec", "plan", "planner", policy.SessionPlan},
+		"direct": {Task{Repository: "linkshort/linkshort", Track: "direct", Process: "spec"}, "spec", "direct", policy.ClassCoder, policy.SessionCode},
+		"roll":   {Task{Repository: "demo-app/demo-app", Source: SourceRoll, Track: "direct"}, "maintenance", "direct", policy.ClassCoder, policy.SessionCode},
 	} {
 		t.Run(name, func(t *testing.T) {
 			tc.task.ID, tc.task.Kind, tc.task.Status = "t1", "agent", "queued"
@@ -2464,33 +2460,27 @@ func TestTaskConfigReadsRowLane(t *testing.T) {
 			val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
 			got := getInto[TaskConfig](t, val, err)
 			p := map[string]policy.Process{"spec": spec, "maintenance": maintenance}[tc.process]
-			if got.Process != tc.process || got.Lane != tc.lane || got.Class != tc.class || got.Session != tc.session ||
+			if got.Process != tc.process || got.Track != tc.track || got.Class != tc.class || got.Session != tc.session ||
 				!reflect.DeepEqual(got.Stages, p.Stages) || got.Queue != p.Merge.Queue {
-				t.Fatalf("TaskConfig = %+v, want process %s lane %q class %s session %s", got, tc.process, tc.lane, tc.class, tc.session)
+				t.Fatalf("TaskConfig = %+v, want process %s track %q class %s session %s", got, tc.process, tc.track, tc.class, tc.session)
 			}
 		})
 	}
-	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "plan", Process: "maintenance"}, &prForgejo{})
+	r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Track: "plan", Process: "maintenance"}, &prForgejo{})
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil ||
-		!strings.Contains(err.Error(), "task t1: process maintenance has no lane plan in configuration version 7") {
-		t.Fatalf("error = %v, want the missing lane refused", err)
-	}
-	r, _, _ = newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Lane: "backlog", Process: "maintenance"}, &prForgejo{})
-	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
-	if _, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7)); err == nil ||
-		!strings.Contains(err.Error(), "task t1: lane backlog of process maintenance starts nothing") {
-		t.Fatalf("error = %v, want a backlog card refused", err)
+		!strings.Contains(err.Error(), `task t1: process maintenance has no track "plan" in configuration version 7`) {
+		t.Fatalf("error = %v, want the missing track refused", err)
 	}
 }
 
-// A row with no process yet (open before the lanes migration, not reached
-// by the loader's backfill) follows its project's process in the pinned
-// version; a row's own process wins over the project's.
+// A row with no process of its own (a roll's, a factory pull request's
+// card's) follows its project's process in the pinned version; a row's
+// own process wins over the project's.
 func TestTaskConfigNullProcess(t *testing.T) {
 	pinned := fixtureVersion(t)
 	for process, want := range map[string]string{"": "spec", "maintenance": "maintenance"} {
-		r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "running", Repository: "linkshort/linkshort", Lane: "ready", Process: process}, &prForgejo{})
+		r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "running", Repository: "linkshort/linkshort", Track: "direct", Process: process}, &prForgejo{})
 		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 		val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
 		if got := getInto[TaskConfig](t, val, err); got.Process != want || !reflect.DeepEqual(got.Stages, pinned.Processes[want].Stages) ||
@@ -2761,7 +2751,7 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 func TestAttemptFundedNetsTheHolds(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
-	if err := store.CreateTask(context.Background(), Task{ID: "t-756", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.83}); err != nil {
+	if err := store.CreateTask(context.Background(), Task{ID: "t-756", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.83, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	store.held = map[string]policy.TaskFree{"t-756": {Held: 0.17, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
@@ -2815,7 +2805,7 @@ func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.insertTask(ctx, Task{ID: "t-756", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b"}, ""); err != nil {
+	if err := s.insertTask(ctx, Task{ID: "t-756", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.83 WHERE id = 't-756'`); err != nil {
@@ -2894,7 +2884,7 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	prices := aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
 		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
 	store := newFakeStore()
-	if err := store.CreateTask(context.Background(), Task{ID: "t-704", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.89}); err != nil {
+	if err := store.CreateTask(context.Background(), Task{ID: "t-704", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.89, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	s1 := []policy.OpeningCall{{Ref: "big", Bytes: 44342, WantOut: 24576}, {Ref: "small", Bytes: 7031, WantOut: 24576}}
@@ -2954,7 +2944,7 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 // cheap floor refuses too. With the floor absent only the opening decides.
 func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	store := newFakeStore()
-	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5}); err != nil {
+	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	v := testPolicyVersion()
@@ -3002,7 +2992,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
-	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2}); err != nil {
+	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	v := testPolicyVersion()
@@ -3071,7 +3061,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds, ledger, audit CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.insertTask(ctx, Task{ID: "t-704", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b"}, ""); err != nil {
+	if err := s.insertTask(ctx, Task{ID: "t-704", Repository: "o/r", Kind: "agent", Status: "running", BudgetEUR: 5, Objective: "b", Track: "direct"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.89 WHERE id = 't-704';
@@ -3140,8 +3130,8 @@ func TestAttemptFundedReadsTheHoldFloor(t *testing.T) {
 	}
 	store := newFakeStore()
 	for _, tsk := range []Task{
-		{ID: "t-burned", Status: "running", BudgetEUR: 2, SpentEUR: 2 - 0.004}, // 0.004 EUR left, under the 0.004096 floor
-		{ID: "t-solvent", Status: "running", BudgetEUR: 2, SpentEUR: 0.5},
+		{ID: "t-burned", Status: "running", BudgetEUR: 2, SpentEUR: 2 - 0.004, Track: "direct"}, // 0.004 EUR left, under the 0.004096 floor
+		{ID: "t-solvent", Status: "running", BudgetEUR: 2, SpentEUR: 0.5, Track: "direct"},
 	} {
 		if err := store.CreateTask(context.Background(), tsk); err != nil {
 			t.Fatal(err)

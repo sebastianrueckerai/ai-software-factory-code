@@ -18,7 +18,7 @@ func TestRecordEventLeavesOneFactorydRow(t *testing.T) {
 	rec := &fakeEventRecorder{}
 	objects := &fakeObjectStore{}
 	tl := &Timeline{Objects: objects, Events: rec, Store: store}
-	tl.recordEvent(context.Background(), "t1", EventCardEnteredLane, map[string]any{"lane": "ready"})
+	tl.recordEvent(context.Background(), "t1", EventCardCreated, map[string]any{"track": "direct"})
 	if len(rec.rows) != 1 {
 		t.Fatalf("rows = %d, want 1", len(rec.rows))
 	}
@@ -28,50 +28,30 @@ func TestRecordEventLeavesOneFactorydRow(t *testing.T) {
 	}
 }
 
-// Each of the five events is one timeline line of step event on the task
+// Each of the four events is one timeline line of step event on the task
 // it concerns, recorded where it happens.
 func TestEventsRecorded(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("card_created", func(t *testing.T) {
-		in, store, _ := laneIntake(t, "maintenance", maintenanceLanes)
+		in, store, _ := trackIntake(t, "maintenance", maintenanceTracks)
 		objects := &fakeObjectStore{}
 		in.Timeline = &Timeline{Objects: objects}
 		post(t, in, "issues", issueOpenedBody(5, "sebastian", []string{"agent"}, "Fix it", "body"))
 		post(t, in, "issues", issueOpenedBody(6, "sebastian", []string{"human"}, "Decide it", "body"))
-		if got := events(t, objects, card(store, 5).ID); !slices.Equal(got, []string{"card_created sebastian", "card_entered_lane ready sebastian"}) {
+		if got := events(t, objects, card(store, 5).ID); !slices.Equal(got, []string{"card_created direct sebastian"}) {
 			t.Fatalf("agent card: %v", got)
 		}
-		if got := events(t, objects, card(store, 6).ID); !slices.Equal(got, []string{"card_created sebastian"}) {
-			t.Fatalf("human-lane card: %v", got)
+		if got := events(t, objects, card(store, 6).ID); !slices.Equal(got, []string{"card_created human sebastian"}) {
+			t.Fatalf("person's card: %v", got)
 		}
 		f, _ := fileStub(t)
 		filed, _, err := FileAgentTask(ctx, newFakeStore(), f, &fakeWorkflows{}, in.Timeline, seedProject("sf/r"), "Fix it", "body", []string{"agent"}, Task{ID: "t-api", Source: "api", Author: "factory-agent"})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := events(t, objects, filed.ID); !slices.Equal(got, []string{"card_created factory-agent", "card_entered_lane ready factory-agent"}) {
+		if got := events(t, objects, filed.ID); !slices.Equal(got, []string{"card_created direct factory-agent"}) {
 			t.Fatalf("filed card: %v", got)
-		}
-	})
-
-	t.Run("card_entered_lane", func(t *testing.T) {
-		in, store, _ := laneIntake(t, "maintenance", maintenanceLanes)
-		objects := &fakeObjectStore{}
-		in.Timeline = &Timeline{Objects: objects}
-		post(t, in, "issues", issueOpenedBody(7, "outsider", []string{"improvement"}, "A wish", "body"))
-		c := card(store, 7)
-		writeUp, _, _ := store.ReportOf(ctx, c.ID, SourcePresort)
-		if got := events(t, objects, c.ID); !slices.Equal(got, []string{"card_created outsider", "card_entered_lane backlog outsider"}) || writeUp.ID == "" ||
-			!slices.Equal(workflowsOf(in).started, []string{writeUp.ID}) {
-			t.Fatalf("backlog entry: %v, write-up %q, started %v", got, writeUp.ID, workflowsOf(in).started)
-		}
-		labels := []string{"improvement", "agent"}
-		setLabels(t, in, 7, labels)
-		post(t, in, "issue_label", labelEvent(7, "outsider", labels, "sebastian"))
-		want := []string{"card_created outsider", "card_entered_lane backlog outsider", "card_entered_lane ready sebastian"}
-		if got := events(t, objects, c.ID); !slices.Equal(got, want) || !slices.Equal(workflowsOf(in).started, []string{writeUp.ID, c.ID}) {
-			t.Fatalf("move: %v, started %v", got, workflowsOf(in).started)
 		}
 	})
 
@@ -119,15 +99,15 @@ func TestEventsRecorded(t *testing.T) {
 	})
 
 	t.Run("all_children_done", func(t *testing.T) {
-		plan := Task{ID: "t-plan", Kind: "agent", Status: "done", Lane: "plan", Process: "spec", Repository: "sf/repo", IssueNumber: 1}
+		plan := Task{ID: "t-plan", Kind: "agent", Status: "done", Track: "plan", Process: "spec", Repository: "sf/repo", IssueNumber: 1}
 		fj := &prForgejo{labels: map[int64][]string{1: {"plan", "state/done"}, 2: {"agent"}, 3: {"agent"}}}
 		r, store, objects := newActivityRunner(t, plan, fj)
 		for id, issue := range map[string]int64{"t-c2": 2, "t-c3": 3} {
-			store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Lane: "ready", Process: "spec", Repository: "sf/repo",
+			store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Track: "direct", Process: "spec", Repository: "sf/repo",
 				IssueNumber: issue, Parent: "t-plan", Source: SourcePlan, PlanKey: id})
 		}
 		// a card that failed and was retried lets go of its key: the plan's cards are the others
-		store.CreateTask(ctx, Task{ID: "t-c1", Kind: "agent", Status: "failed", Lane: "ready", Process: "spec", Repository: "sf/repo",
+		store.CreateTask(ctx, Task{ID: "t-c1", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Repository: "sf/repo",
 			IssueNumber: 4, Parent: "t-plan", Source: SourcePlan})
 		if _, err := execActivity(t, r, ActivityFinish, "t-c2", "done", "merged"); err != nil {
 			t.Fatal(err)

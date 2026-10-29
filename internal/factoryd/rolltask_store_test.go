@@ -22,7 +22,7 @@ func TestPGStoreRollRequests(t *testing.T) {
 	const repo = "sf/ai-software-factory-code"
 	task := func(id, status string) {
 		t.Helper()
-		if err := s.CreateTask(ctx, Task{ID: id, Status: status, Repository: repo, Kind: "agent", Source: SourceRoll}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: id, Status: status, Repository: repo, Kind: "agent", Source: SourceRoll, Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -98,7 +98,7 @@ func TestPGStoreRollRequests(t *testing.T) {
 	if err := s.SetTaskPR(ctx, "rt1", 21); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "agent1", Status: "in-review", Repository: repo, Kind: "agent", Source: "webhook"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "agent1", Status: "in-review", Repository: repo, Kind: "agent", Source: "webhook", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskPR(ctx, "agent1", 22); err != nil {
@@ -193,7 +193,7 @@ func TestPGStoreRebaseRolls(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE roll_requests, tasks CASCADE`); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "rt1", Status: "in-review", Repository: "sf/ai-software-factory-code", Kind: "agent", Source: SourceRoll}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "rt1", Status: "in-review", Repository: "sf/ai-software-factory-code", Kind: "agent", Source: SourceRoll, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	for _, r := range []RollRequest{
@@ -311,7 +311,7 @@ func TestARollRequestSettlesOnAMergedRollTask(t *testing.T) {
 	for i, c := range []struct{ task, status, sha string }{
 		{"rt1", "merged", "m"}, {"rt2", "failed", "f"}, {"rt3", "running", "r"},
 	} {
-		if err := s.CreateTask(ctx, Task{ID: c.task, Status: c.status, Repository: repo, Kind: "agent", Source: SourceRoll}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: c.task, Status: c.status, Repository: repo, Kind: "agent", Source: SourceRoll, Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.InsertRollRequest(ctx, RollRequest{SHA: c.sha, Repository: repo, RunID: int64(10 + i), State: RollOpened, TaskID: c.task}); err != nil {

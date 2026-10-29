@@ -810,73 +810,12 @@ func (f *Forgejo) EnsureLabels(ctx context.Context, owner, repo string, wanted m
 	return Change(fmt.Sprintf("created %s", strings.Join(missing, ", "))), errors.Join(errs...)
 }
 
-// EnsureProjectLabels is a project's labels step: state/suggested renamed
-// state/backlog first (renameLabel), then BootLabels and the lane labels
-// of lanes, the project's process, created where missing.
-func (f *Forgejo) EnsureProjectLabels(ctx context.Context, owner, repo string, lanes []policy.Lane) (Change, error) {
-	renamed, err := f.renameLabel(ctx, owner, repo, "state/suggested", "state/backlog")
-	if err != nil {
-		return "", err
-	}
+// EnsureProjectLabels is a project's labels step: BootLabels and the
+// track labels of tracks, the project's process's, created where missing.
+func (f *Forgejo) EnsureProjectLabels(ctx context.Context, owner, repo string, tracks policy.Tracks) (Change, error) {
 	wanted := maps.Clone(BootLabels)
-	maps.Copy(wanted, laneLabels(lanes))
-	ensured, err := f.EnsureLabels(ctx, owner, repo, wanted)
-	var changes []string
-	for _, c := range []Change{renamed, ensured} {
-		if c != "" && c != Unchanged {
-			changes = append(changes, string(c))
-		}
-	}
-	if len(changes) == 0 {
-		return Unchanged, err
-	}
-	return Change(strings.Join(changes, "; ")), err
-}
-
-// renameLabel renames label from of owner/repo to to in place, so every
-// issue carrying it follows. With both present (a half-done earlier run)
-// it moves from's open issues to to and deletes from; with from absent it
-// does nothing.
-func (f *Forgejo) renameLabel(ctx context.Context, owner, repo, from, to string) (Change, error) {
-	existing, err := f.ListLabels(ctx, owner, repo)
-	if err != nil {
-		return "", fmt.Errorf("forgejo labels %s/%s: %w", owner, repo, err)
-	}
-	old := slices.IndexFunc(existing, func(l RepoLabel) bool { return l.Name == from })
-	if old < 0 {
-		return Unchanged, nil
-	}
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/labels/%d", owner, repo, existing[old].ID)
-	if !slices.ContainsFunc(existing, func(l RepoLabel) bool { return l.Name == to }) {
-		payload, err := json.Marshal(map[string]string{"name": to})
-		if err != nil {
-			return "", err
-		}
-		if _, err := f.call(ctx, http.MethodPatch, path, payload, http.StatusOK); err != nil {
-			return "", fmt.Errorf("forgejo rename label %s of %s/%s: %w", from, owner, repo, err)
-		}
-		return Change(fmt.Sprintf("renamed %s to %s", from, to)), nil
-	}
-	issues, err := f.OpenIssues(ctx, owner, repo)
-	if err != nil {
-		return "", err
-	}
-	moved := 0
-	for _, is := range issues {
-		names := labelNames(is.Labels)
-		if !slices.Contains(names, from) {
-			continue
-		}
-		names = slices.DeleteFunc(names, func(n string) bool { return n == from || n == to })
-		if err := f.ReplaceIssueLabels(ctx, owner, repo, is.Index, append(names, to)); err != nil {
-			return "", fmt.Errorf("forgejo move issue #%d of %s/%s to %s: %w", is.Index, owner, repo, to, err)
-		}
-		moved++
-	}
-	if _, err := f.call(ctx, http.MethodDelete, path, nil, http.StatusNoContent); err != nil {
-		return "", fmt.Errorf("forgejo delete label %s of %s/%s: %w", from, owner, repo, err)
-	}
-	return Change(fmt.Sprintf("moved %d issues from %s to %s and deleted %s", moved, from, to, from)), nil
+	maps.Copy(wanted, trackLabels(tracks))
+	return f.EnsureLabels(ctx, owner, repo, wanted)
 }
 
 // IssueLabels lists the names of the labels currently on issue number.

@@ -61,7 +61,7 @@ func newStaleRig(t *testing.T, ages map[string]time.Duration) *staleRig {
 			t.Fatalf("unknown stale rig card %s", id)
 		}
 		store.CreateTask(context.Background(), Task{ID: id, Status: status, Kind: map[string]string{"t-chat": KindChat}[id],
-			Repository: "sf/code", IssueNumber: 42, CreatedAt: time.Now().Add(-age)})
+			Repository: "sf/code", IssueNumber: 42, CreatedAt: time.Now().Add(-age), Track: "direct"})
 	}
 	forgejo, requests, comments := staleForgejoStub(t)
 	wf := &fakeWorkflows{}

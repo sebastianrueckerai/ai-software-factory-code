@@ -60,7 +60,7 @@ func TestPGStoreChatTaskPerMonth(t *testing.T) {
 	if code, _, err := s.Task(ctx, other.ID); err != nil || code.Status != "running" {
 		t.Fatalf("another project's chat task = %+v, %v: want it running", code, err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-card", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", IssueNumber: 4}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-card", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", IssueNumber: 4, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	board, err := s.BoardTasks(ctx, "linkshort/linkshort")
@@ -193,8 +193,8 @@ func TestPGStoreProjectMonthSpend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, task := range []Task{{ID: "t-card", Kind: "agent", Status: "running", Repository: "linkshort/linkshort", IssueNumber: 4},
-		{ID: "t-other", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 4}} {
+	for _, task := range []Task{{ID: "t-card", Kind: "agent", Status: "running", Repository: "linkshort/linkshort", IssueNumber: 4, Track: "direct"},
+		{ID: "t-other", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 4, Track: "direct"}} {
 		if err := s.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
@@ -290,7 +290,7 @@ func TestPGStoreTaskEvents(t *testing.T) {
 	var ids []int64
 	for _, e := range []Event{
 		{Repository: "sf/r", TaskID: "t-1", Kind: EventCardFiled, Actor: "a", Via: ViaButton},
-		{Repository: "sf/r", TaskID: "t-2", Kind: EventCardMoved, Actor: "a", Via: ViaButton},
+		{Repository: "sf/r", TaskID: "t-2", Kind: EventCardRetried, Actor: "a", Via: ViaButton},
 		{Repository: "sf/r", TaskID: "t-1", Kind: EventSummarySet, Actor: "b", Via: ViaChat},
 		{Repository: "sf/r", TaskID: "t-1", Kind: EventAccentSet, Actor: "b", Via: ViaChat},
 	} {
@@ -320,7 +320,7 @@ func TestPGStoreTakeProposal(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
 	p := ChatProposal{Token: "tok-1", Kind: "proposal", Repository: "sf/code", Login: "anna", Tool: "new_card",
-		Args: json.RawMessage(`{"lane": "ready", "title": "Cache metrics"}`), Description: "File a card, title Cache metrics, lane ready",
+		Args: json.RawMessage(`{"title": "Cache metrics", "track": "direct"}`), Description: "File a card, title Cache metrics, track direct",
 		ExpiresAt: now.Add(30 * time.Minute)}
 	if err := s.PutProposal(ctx, p); err != nil {
 		t.Fatal(err)

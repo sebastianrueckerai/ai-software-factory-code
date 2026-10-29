@@ -59,10 +59,10 @@ func TestPGStoreBoardTasks(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "low", Priority: 0, Status: "queued"},
-		{ID: "high", Priority: 3, Status: "running"},
-		{ID: "recent", Status: "done"},
-		{ID: "old", Status: "failed"},
+		{ID: "low", Priority: 0, Status: "queued", Track: "direct"},
+		{ID: "high", Priority: 3, Status: "running", Track: "direct"},
+		{ID: "recent", Status: "done", Track: "direct"},
+		{ID: "old", Status: "failed", Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -150,10 +150,10 @@ func TestPGStoreChainLiveness(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "t-era", Status: "done", PRNumber: 11},
-		{ID: "t-green", Status: "done", PRNumber: 12},
-		{ID: "t-run", Status: "merged", PRNumber: 13},
-		{ID: "t-red", Status: "merged", PRNumber: 14},
+		{ID: "t-era", Status: "done", PRNumber: 11, Track: "direct"},
+		{ID: "t-green", Status: "done", PRNumber: 12, Track: "direct"},
+		{ID: "t-run", Status: "merged", PRNumber: 13, Track: "direct"},
+		{ID: "t-red", Status: "merged", PRNumber: 14, Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -244,12 +244,12 @@ func TestPGStoreBoardTasksOfRepository(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "mine-low", Priority: 0, Status: "queued"},
-		{ID: "mine-waits", Priority: 1, Status: "waiting-deps", IssueNumber: 4},
-		{ID: "mine-high", Priority: 3, Status: "running"},
-		{ID: "mine-done", Priority: 5, Status: "done"},
+		{ID: "mine-low", Priority: 0, Status: "queued", Track: "direct"},
+		{ID: "mine-waits", Priority: 1, Status: "waiting-deps", IssueNumber: 4, Track: "direct"},
+		{ID: "mine-high", Priority: 3, Status: "running", Track: "direct"},
+		{ID: "mine-done", Priority: 5, Status: "done", Track: "direct"},
 		{ID: "mine-chat", Priority: 5, Status: "running", Kind: KindChat},
-		{ID: "theirs", Priority: 5, Status: "queued", IssueNumber: 9, Repository: "sf/other"},
+		{ID: "theirs", Priority: 5, Status: "queued", IssueNumber: 9, Repository: "sf/other", Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, cmp.Or(tk.Repository, "sf/r"), cmp.Or(tk.Kind, "agent")
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -293,12 +293,12 @@ func TestPGStoreBoardDoneOrder(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "q0", Priority: 0, Status: "queued"},
-		{ID: "q2", Priority: 2, Status: "queued"},
-		{ID: "older", Priority: 2, Status: "done"},
-		{ID: "roll", Priority: 0, Status: "done"},
-		{ID: "unstamped", Priority: 1, Status: "failed", PlanKey: "k"},
-		{ID: "waiter", Priority: 1, Status: "waiting-deps"},
+		{ID: "q0", Priority: 0, Status: "queued", Track: "direct"},
+		{ID: "q2", Priority: 2, Status: "queued", Track: "direct"},
+		{ID: "older", Priority: 2, Status: "done", Track: "direct"},
+		{ID: "roll", Priority: 0, Status: "done", Track: "direct"},
+		{ID: "unstamped", Priority: 1, Status: "failed", PlanKey: "k", Track: "direct"},
+		{ID: "waiter", Priority: 1, Status: "waiting-deps", Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -370,18 +370,18 @@ func TestPGStoreFinishedPages(t *testing.T) {
 		Task
 		at *time.Time
 	}{
-		{Task{ID: "a", Status: "done"}, minute(0)},
-		{Task{ID: "b", Status: "failed"}, minute(1)},
-		{Task{ID: "c", Status: "done"}, minute(1)},
-		{Task{ID: "d", Status: "closed"}, minute(1)},
-		{Task{ID: "e", Status: "done"}, minute(2)},
-		{Task{ID: "f", Status: "failed", PlanKey: "k", CreatedAt: at90}, &at90},
-		{Task{ID: "g", Status: "done"}, &week},
+		{Task{ID: "a", Status: "done", Track: "direct"}, minute(0)},
+		{Task{ID: "b", Status: "failed", Track: "direct"}, minute(1)},
+		{Task{ID: "c", Status: "done", Track: "direct"}, minute(1)},
+		{Task{ID: "d", Status: "closed", Track: "direct"}, minute(1)},
+		{Task{ID: "e", Status: "done", Track: "direct"}, minute(2)},
+		{Task{ID: "f", Status: "failed", PlanKey: "k", CreatedAt: at90, Track: "direct"}, &at90},
+		{Task{ID: "g", Status: "done", Track: "direct"}, &week},
 		{Task{ID: "h", Status: "done", Kind: "human"}, minute(0)},
 		{Task{ID: "i", Status: "closed", Kind: KindChat}, minute(0)},
-		{Task{ID: "j", Status: "done", Repository: "sf/other"}, minute(0)},
-		{Task{ID: "k", Status: "running"}, nil},
-		{Task{ID: "w", Status: "waiting-deps"}, nil},
+		{Task{ID: "j", Status: "done", Repository: "sf/other", Track: "direct"}, minute(0)},
+		{Task{ID: "k", Status: "running", Track: "direct"}, nil},
+		{Task{ID: "w", Status: "waiting-deps", Track: "direct"}, nil},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, cmp.Or(tk.Repository, "sf/r"), cmp.Or(tk.Kind, "agent")
 		if err := s.CreateTask(ctx, tk.Task); err != nil {
@@ -439,7 +439,7 @@ func TestPGStoreHumanSummaryAndAccent(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent"}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t-s", Status: "running", BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	read := func() (Task, BoardTask) {
@@ -511,8 +511,8 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 	}
 	asked := time.Date(2026, 9, 28, 9, 0, 0, 0, time.UTC)
 	for _, tk := range []Task{
-		{ID: "issue", Status: "queued", Kind: "agent", CreatedAt: asked},
-		{ID: "api", Status: "queued", Kind: "agent"},
+		{ID: "issue", Status: "queued", Kind: "agent", CreatedAt: asked, Track: "direct"},
+		{ID: "api", Status: "queued", Kind: "agent", Track: "direct"},
 		{ID: "hand", Status: "waiting-human", Kind: "human", CreatedAt: asked},
 	} {
 		tk.BudgetEUR, tk.Repository = 1, "sf/r"

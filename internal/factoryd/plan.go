@@ -28,23 +28,18 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The plan (stage11-design.md section 1.2): a plan card's planner answers
-// a plan, an approver accepts one revision, and factoryd files its cards.
+// The plan (stage11-design.md section 1.2, roadmap 225): a plan-track
+// card's planner answers a plan; a revision with no open question files
+// its cards on the direct track and the plan card ends done in the same
+// step, and one with open questions waits for the writers' answers, which
+// the planner revises it with.
 const (
-	// SignalPlanAccepted is the console's Accept plan (AcceptPlan): Author
-	// the member the cards are filed for, Revision and SHA256 the revision
-	// they read.
-	SignalPlanAccepted = "plan_accepted"
-	// SignalPlanRejected is the console's Reject (RejectPlan): Author the
-	// writer, Body why. The plan task ends failed.
-	SignalPlanRejected = "plan_rejected"
 	// SignalPlanAnswered is the console's answer to a plan's question
 	// (AnswerPlan): Author the member, Revision and Index the question.
 	SignalPlanAnswered = "plan_answered"
 
-	ActivityRunPlan        = "RunPlan"
-	ActivityRequestPlan    = "RequestPlan"
-	ActivityCreateChildren = "CreateChildren"
+	ActivityRunPlan     = "RunPlan"
+	ActivityRequestPlan = "RequestPlan"
 	// ActivityOpenPlanQuestions counts a revision's open questions.
 	ActivityOpenPlanQuestions = "OpenPlanQuestions"
 )
@@ -216,14 +211,21 @@ const maxPlanEcho = 2000
 
 // PlanRef is the plan revision a plan task waits on, and its comment on
 // the issue: only later comments ask for changes. Zero: no plan yet.
+// Filed are the issues of the cards a revision with no open question filed:
+// the plan card ends done. Refused is why such a revision filed none, the
+// next planner session's findings. Answered: every question of the
+// revision has its answer, which the planner revises it with.
 type PlanRef struct {
 	Revision int
 	SHA256   string
 	Comment  int64
+	Filed    []int64  `json:",omitempty"`
+	Refused  []string `json:",omitempty"`
+	Answered bool     `json:",omitempty"`
 }
 
-// ChildrenResult is CreateChildren's: the cards filed, or why the
-// acceptance was refused.
+// ChildrenResult is the cards a plan's revision or a split filed, or why
+// a revision filed none.
 type ChildrenResult struct {
 	Issues  []int64
 	Refused []string
@@ -237,8 +239,6 @@ var (
 	criterionID    = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
 	roles          = []string{RoleFoundation, RoleFeature, RoleIntegration}
 	criterionKinds = []string{CriterionTest, CriterionInvariant, CriterionJudgement, CriterionHuman}
-	// acceptedComment is PlanAcceptedComment of any revision
-	acceptedComment = regexp.MustCompile(`^Plan revision [0-9]+ accepted\.$`)
 	// deployLine is a spec's line asking for a deployment: "Deploy:" or
 	// "Deployment:", or a Deploy or Deployment heading
 	deployLine = regexp.MustCompile(`(?im)^[ \t]*(deploy(ment)?[ \t]*:|#+[ \t]+deploy(ment)?\b)`)
@@ -795,8 +795,12 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
 	needed, owner := deployOwner(t.Objective, p)
 	var b strings.Builder
-	fmt.Fprintf(&b, "factoryd: plan revision %d of task %s, written by the planner. An approver accepts it on the factory console; "+
-		"a comment here asks the planner for a new revision; closing the issue ends the plan.\n\n%s\n\n", revision, t.ID, strings.TrimSpace(p.Summary))
+	next := "Its open questions wait for the members' answers on the factory console, which send it back to the planner; " +
+		"a comment here asks the planner for a new revision; closing the issue ends the plan."
+	if issues != nil {
+		next = "It asks no question, so its cards are filed: the table names their issues."
+	}
+	fmt.Fprintf(&b, "factoryd: plan revision %d of task %s, written by the planner. %s\n\n%s\n\n", revision, t.ID, next, strings.TrimSpace(p.Summary))
 	if s := specBlock(p); s != "" {
 		b.WriteString(s + "\n\n")
 	}
@@ -895,18 +899,18 @@ func cardFacts(c PlanCard) string {
 }
 
 // cardBody is card c's issue body before its marker: card i of n of of
-// (plan #n), accepted by approver, with the issues of the cards it
-// depends on (deps, their keys by issue). The integration card carries
-// the plan's spec (piece 7: its brief already does), spec the rendered
-// spec block or "".
-func cardBody(c PlanCard, of string, i, n int, approver string, deps []Dependency, spec string) string {
+// (plan #n), filed for author, with the issues of the cards it depends on
+// (deps, their keys by issue). The integration card carries the plan's
+// spec (piece 7: its brief already does), spec the rendered spec block or
+// "".
+func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency, spec string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
 	directories, facts, _ := strings.Cut(cardFacts(c), "\n")
-	body := fmt.Sprintf("Card %s of %s (%d of %d), accepted by %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
-		c.Key, of, i, n, approver, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
+	body := fmt.Sprintf("Card %s of %s (%d of %d), filed for %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
+		c.Key, of, i, n, author, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
 	if spec != "" {
 		body += "\n\nThe spec of the whole feature:\n" + spec
 	}
@@ -966,7 +970,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
 		"and turn each finding into a question with origin self_attack. " +
 		"questions: open points the spec leaves to the member; their answers come back to you with your last plan, " +
-		"and a plan with open questions cannot be accepted until they are answered. " +
+		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
 		"answer the whole plan again."
@@ -1011,13 +1015,6 @@ func sizeLines(bound int) map[string]int {
 	return map[string]int{"small": int(math.Round(0.3 * float64(bound))), "medium": int(math.Round(0.6 * float64(bound))), "large": bound}
 }
 
-// PlanAcceptedComment is the console's comment, as the approver, on the
-// plan's issue when they accept revision: the plan's wait does not read it
-// as a change request.
-func PlanAcceptedComment(revision int) string {
-	return fmt.Sprintf("Plan revision %d accepted.", revision)
-}
-
 // PlanAnswerComment is the console's comment, as the member, on the plan's
 // issue when they answer question idx: intake knows it for no change
 // request by the answer stored before it.
@@ -1025,30 +1022,12 @@ func PlanAnswerComment(idx int, answer string) string {
 	return fmt.Sprintf("Answer %d: %s", idx, answer)
 }
 
-// ErrStalePlan refuses an acceptance of a revision that is no longer the
+// ErrStalePlan refuses an answer to a revision that is no longer the
 // newest; its message is the card's.
 type ErrStalePlan struct{ Newest int }
 
 func (e ErrStalePlan) Error() string {
 	return fmt.Sprintf("the plan changed to revision %d; reload", e.Newest)
-}
-
-// ErrOpenQuestions refuses an acceptance of a revision whose questions
-// are not all answered; its message is the card's.
-type ErrOpenQuestions struct{ Issue, Revision, Open int }
-
-func (e ErrOpenQuestions) Error() string {
-	return fmt.Sprintf("plan #%d revision %d has %d unanswered questions; answer them first", e.Issue, e.Revision, e.Open)
-}
-
-// openQuestions refuses revision of plan task t while any of its
-// questions is open.
-func openQuestions(ctx context.Context, store Store, t Task, revision int) error {
-	n, err := store.OpenPlanQuestions(ctx, t.ID, revision)
-	if err == nil && n > 0 {
-		err = ErrOpenQuestions{Issue: int(t.IssueNumber), Revision: revision, Open: n}
-	}
-	return err
 }
 
 // ErrAnswerUnsignalled is a plan's answer stored whose workflow the
@@ -1059,8 +1038,8 @@ var ErrAnswerUnsignalled = errors.New("the answer is recorded, but the plan's wo
 // revision revision, which must be the newest (ErrStalePlan): the answer
 // is stored (ErrAnswered for a second one), then the plan task's workflow
 // signalled, which sends the planner back once none is open. The last
-// answer resolves the plan's approval as superseded: Accept cannot file
-// the revision the planner revises with the answers.
+// answer resolves the plan's request as superseded: the planner revises
+// the revision with the answers.
 func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision, idx int, answer, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
@@ -1123,8 +1102,8 @@ func confirmationAnswer(ctx context.Context, store Store, taskID string, revisio
 // entry — ErrAnswered for an answered question, ErrNotFound for an unknown
 // one — stores none), then the plan task's workflow signalled once per
 // answer, which sends the planner back once none is open. When no question
-// of the revision stays open the plan's approval resolves as superseded:
-// Accept cannot file the revision the planner revises with the answers.
+// of the revision stays open the plan's request resolves as superseded:
+// the planner revises the revision with the answers.
 func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID string, revision int, answers []PlanAnswer, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
@@ -1169,62 +1148,6 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 		return err
 	}
 	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
-}
-
-// AcceptPlan is the console's Accept plan: decider decides the plan's
-// request (ChatUser when the project agent accepted), author, the member,
-// authors the cards. It signals the plan task's workflow when revision (at
-// sha) is the newest and awaits acceptance; a newer revision refuses it
-// with ErrStalePlan, an open question with ErrOpenQuestions. A plan
-// without the deploy owner its spec needs is signalled all the same, so
-// CreateChildren refuses it back to the planner, and answers
-// ErrNoDeployOwner.
-func AcceptPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision int, sha, decider, author string) error {
-	q, err := pendingPlan(ctx, store, taskID)
-	if err != nil {
-		return err
-	}
-	newest, ok, err := store.PlanRevision(ctx, taskID, 0)
-	if err != nil {
-		return err
-	}
-	if !ok || newest.Revision != revision || newest.SHA256 != sha {
-		return ErrStalePlan{Newest: newest.Revision}
-	}
-	t, _, err := store.Task(ctx, taskID)
-	if err != nil {
-		return err
-	}
-	if err := openQuestions(ctx, store, t, revision); err != nil {
-		return err
-	}
-	var p Plan
-	if err := json.Unmarshal(newest.Plan, &p); err != nil {
-		return err
-	}
-	sig := TaskSignal{Author: author, Revision: revision, SHA256: sha}
-	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
-		// CreateChildren refuses it to the planner and denies the request
-		if err := wf.Signal(ctx, taskID, SignalPlanAccepted, sig); err != nil {
-			return err
-		}
-		return ErrNoDeployOwner
-	}
-	return decideAndSignal(ctx, store, wf, q, "approved", decider, fmt.Sprintf("revision %d accepted", revision), SignalPlanAccepted, sig)
-}
-
-// RejectPlan is the console's Reject, by a writer: the plan task ends
-// failed with why, which may be empty.
-func RejectPlan(ctx context.Context, store Store, wf Workflows, taskID, by, why string) error {
-	q, err := pendingPlan(ctx, store, taskID)
-	if err != nil {
-		return err
-	}
-	reason := "rejected"
-	if why != "" {
-		reason += ": " + why
-	}
-	return decideAndSignal(ctx, store, wf, q, "denied", by, reason, SignalPlanRejected, TaskSignal{Author: by, Body: why})
 }
 
 // pendingPlan is the task's pending approval request of kind plan.
@@ -1458,11 +1381,12 @@ func (s *PGStore) SetTaskIssue(ctx context.Context, id string, issue int64) erro
 }
 
 // planLoop is the program of a task of session mode plan: planner sessions
-// until one answers a valid plan, then the approvers' wait. A writer's
-// comment sends the planner back with the last plan; Accept plan files the
-// cards (a refusal sends the planner back); Reject ends the task failed, a
-// closed issue closed. Every session counts against the session cap, where
-// the card waits for a human and a writer's comment buys one more.
+// until one answers a valid plan, which RequestPlan files when it asks no
+// question (a refusal sends the planner back) and which otherwise waits for
+// its answers; the last answer or a writer's comment sends the planner
+// back with the last plan, a closed issue ends the task closed. Every
+// session counts against the session cap, where the card waits for a
+// human and a writer's comment buys one more.
 func (t *taskRun) planLoop() (string, error) {
 	if err := workflow.ExecuteActivity(t.short, ActivityEnsureIssue, t.taskID).Get(t.ctx, nil); err != nil {
 		return t.finish("failed", "ensure issue: "+errMessage(err))
@@ -1475,19 +1399,25 @@ func (t *taskRun) planLoop() (string, error) {
 	case st.Skip:
 		return st.Status, nil
 	case st.IssueClosed:
-		return t.finish("closed", ReasonIssueClosed+" before the plan was accepted")
+		return t.finish("closed", ReasonIssueClosed+" before the plan filed its cards")
 	}
 	u := st.Usage
 	var ref PlanRef
+	var findings []string
 	healed := st.Status == "waiting-human"
 	if healed {
-		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, 0).Get(t.ctx, &ref); err != nil {
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, 0, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
+		}
+		if final, why, next, stop := planRequested(&ref); stop {
+			if final != "" {
+				return t.finish(final, why)
+			}
+			findings = next
 		}
 		t.escalation = ref.Comment
 	}
 	wait := ref.Revision != 0
-	var findings []string
 	var ask string // a question for a human: the cap card, or a stop's
 	// carried are the findings of a session that could not start: the
 	// next one starts with them and what the wait brings
@@ -1576,9 +1506,6 @@ func (t *taskRun) planLoop() (string, error) {
 				final, why, _ = closedBeforeStart(final, why)
 				return t.finish(final, why)
 			}
-			if final, why, ok := t.planRejected(); ok {
-				return t.finish(final, why)
-			}
 			continue
 		}
 		if t.podWait >= versionPodWait && err == nil && !decided && res.NotStarted != "" {
@@ -1588,9 +1515,6 @@ func (t *taskRun) planLoop() (string, error) {
 			}
 			if final, why, ok := t.decided(); ok {
 				final, why, _ = closedBeforeStart(final, why)
-				return t.finish(final, why)
-			}
-			if final, why, ok := t.planRejected(); ok {
 				return t.finish(final, why)
 			}
 			continue
@@ -1604,9 +1528,6 @@ func (t *taskRun) planLoop() (string, error) {
 			u.Attempts++
 		}
 		t.recordUsage(u)
-		if final, why, ok := t.planRejected(); ok {
-			return t.finish(final, why)
-		}
 		switch {
 		case decided && v.final != "":
 			final, why, _ := closedBeforeStart(v.final, v.reason)
@@ -1618,7 +1539,7 @@ func (t *taskRun) planLoop() (string, error) {
 			return t.finish("failed", "planner session: "+errMessage(err))
 		case err != nil:
 			reason = "planner session failed: " + errMessage(err)
-			final, why, comments := t.planCommentsWhole(&ref, floor)
+			final, why, comments := t.planCommentsWhole(floor)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1642,19 +1563,34 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings, ask = "the planner asked a human", nil, res.Escalate
 			continue
 		case len(res.Findings) > 0:
-			final, why, comments := t.planCommentsWhole(&ref, floor)
+			final, why, comments := t.planCommentsWhole(floor)
 			if final != "" {
 				return t.finish(final, why)
 			}
 			reason, findings = "the planner filed no plan", append(res.Findings, comments...)
 			continue
 		}
-		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, res.Revision).Get(t.ctx, &ref); err != nil {
+		// a writer's comment made while the session ran asks for changes
+		// before the revision may file its cards
+		if final, why, comments := t.planCommentsWhole(floor); final != "" {
+			return t.finish(final, why)
+		} else if len(comments) > 0 {
+			reason, findings = "a writer asked for changes while the planner ran", comments
+			continue
+		}
+		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, res.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
+		}
+		if final, why, next, stop := planRequested(&ref); stop {
+			if final != "" {
+				return t.finish(final, why)
+			}
+			reason, findings = "the plan's revision filed no cards", next
+			continue
 		}
 		t.escalation, findings, wait = ref.Comment, nil, true
 		t.approvalRequested = workflow.Now(t.ctx)
-		reason = fmt.Sprintf("plan revision %d waits for an approver", ref.Revision)
+		reason = fmt.Sprintf("plan revision %d waits for its answers", ref.Revision)
 	}
 }
 
@@ -1682,26 +1618,25 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 		plannerOutOfTime, what, t.answerTime().Minutes())
 }
 
-// planRejected takes a Reject sent while a session ran: the task ends
-// before the next session spends. A Reject without a reason names its
-// author alone.
-func (t *taskRun) planRejected() (final, why string, ok bool) {
-	var sig TaskSignal
-	if workflow.GetSignalChannel(t.ctx, SignalPlanRejected).ReceiveAsync(&sig) {
-		t.recordPlanSignal(SignalPlanRejected, sig, "")
-		why := "plan rejected by " + sig.Author
-		if sig.Body != "" {
-			why += ": " + sig.Body
-		}
-		return "failed", why, true
+// planRequested reads what RequestPlan made of revision ref: filed cards
+// end the plan card done (final); a refusal or a revision answered whole
+// clears ref and goes back to the planner with findings; either way stop.
+// A revision with open questions waits.
+func planRequested(ref *PlanRef) (final, why string, findings []string, stop bool) {
+	switch {
+	case len(ref.Filed) > 0:
+		return "done", fmt.Sprintf("plan revision %d filed %d cards", ref.Revision, len(ref.Filed)), nil, true
+	case len(ref.Refused) > 0 || ref.Answered:
+		findings = ref.Refused
+		*ref = PlanRef{}
+		return "", "", findings, true
 	}
-	return "", "", false
+	return "", "", nil, false
 }
 
 // planComments takes the writers' comments signalled so far: each newer
-// than floor, the comment the session answered, asks for changes; the
-// console's acceptance comment asks for nothing. heard are the comments
-// that ask.
+// than floor, the comment the session answered, asks for changes. heard
+// are the comments that ask.
 func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
@@ -1709,8 +1644,6 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 		switch {
 		case sig.Comment <= floor:
 			detail["ignored"] = "older than the plan or question the planner answered"
-		case acceptedComment.MatchString(strings.TrimSpace(sig.Body)):
-			detail["ignored"] = "the console's acceptance comment"
 		default:
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)
@@ -1724,30 +1657,16 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 
 // planCommentsWhole is planComments with the rest of the burst a comment
 // opens (versionPlanBurst): a writer's change request in parts reaches the
-// next planner session whole. final is the task's end meanwhile, an
-// acceptance of revision ref in the burst's window too
-// (versionBurstAccept), whose refusals join out.
-func (t *taskRun) planCommentsWhole(ref *PlanRef, floor int64) (final, why string, out []string) {
+// next planner session whole. final is the task's end meanwhile.
+func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []string) {
 	out, heard := t.planComments(floor)
 	if len(heard) == 0 || t.planBurst < versionPlanBurst {
 		return "", "", out
 	}
-	wake := []string{SignalIssueClosed, SignalHumanComment, SignalPlanRejected}
-	accepts := t.burstAccept >= versionBurstAccept
-	if accepts {
-		wake = append(wake, SignalPlanAccepted)
-	}
-	t.awaitBurst(wake, func() ([]int64, bool) {
+	t.awaitBurst([]string{SignalIssueClosed, SignalHumanComment}, func() ([]int64, bool) {
 		var ended bool
 		if final, why, ended = t.planEnded(); ended {
 			return nil, true
-		}
-		if accepts {
-			var refused []string
-			if final, why, refused, ended = t.planAccepted(ref); ended {
-				out = append(out, refused...)
-				return nil, true
-			}
 		}
 		more, heard := t.planComments(floor)
 		out = append(out, more...)
@@ -1756,40 +1675,34 @@ func (t *taskRun) planCommentsWhole(ref *PlanRef, floor int64) (final, why strin
 	return final, why, out
 }
 
-// planEnded takes a close of the issue or a Reject signalled so far: the
-// task's end before a plan was accepted.
+// planEnded takes a close of the issue signalled so far: the task's end
+// before the plan filed its cards.
 func (t *taskRun) planEnded() (final, why string, ok bool) {
 	var sig TaskSignal
 	if workflow.GetSignalChannel(t.ctx, SignalIssueClosed).ReceiveAsync(&sig) {
 		t.counted(SignalIssueClosed, sig)
-		return "closed", ReasonIssueClosed + " before the plan was accepted", true
+		return "closed", ReasonIssueClosed + " before the plan filed its cards", true
 	}
-	return t.planRejected()
+	return "", "", false
 }
 
-// awaitPlan waits, at no cost, for the approvers on revision ref (none
+// awaitPlan waits, at no cost, for the writers on revision ref (none
 // yet: only a writer's comment or an end): the task's end, or the
-// findings the next planner session starts with. An accepted revision
-// files its cards and ends the task done; a refused acceptance, a
-// writer's comment and the rest of its burst (versionPlanBurst), or the
-// answer that leaves no question of the revision open
-// (versionPlanAnswers) goes back to the planner, as does the end of day, a
-// wait on the day cap, on its own (versionDayCap).
+// findings the next planner session starts with. A writer's comment and
+// the rest of its burst (versionPlanBurst), or the answer that leaves no
+// question of the revision open (versionPlanAnswers), goes back to the
+// planner, as does the end of day, a wait on the day cap, on its own
+// (versionDayCap).
 func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why string, findings []string) {
 	day.start(t)
 	defer day.stop()
-	wake := []string{SignalIssueClosed, SignalHumanComment, SignalPlanAccepted, SignalPlanRejected}
+	wake := []string{SignalIssueClosed, SignalHumanComment}
 	if t.planAnswers >= versionPlanAnswers {
 		wake = append(wake, SignalPlanAnswered)
 	}
 	answered := false
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.planEnded(); stop {
-			return nil, true
-		}
-		var refused []string
-		if final, why, refused, stop = t.planAccepted(ref); stop {
-			findings = append(findings, refused...)
 			return nil, true
 		}
 		ok, err := t.planAnswered(ref)
@@ -1822,36 +1735,6 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why
 	}
 }
 
-// planAccepted takes the acceptances signalled so far: the first of
-// revision ref files its cards and ends the task done (final), or, the
-// cards refused, clears ref and returns the refusals for the planner;
-// either way stop. An acceptance of no plan or of another revision is
-// recorded and ignored.
-func (t *taskRun) planAccepted(ref *PlanRef) (final, why string, refused []string, stop bool) {
-	var sig TaskSignal
-	for workflow.GetSignalChannel(t.ctx, SignalPlanAccepted).ReceiveAsync(&sig) {
-		if ref.Revision == 0 {
-			t.recordPlanSignal(SignalPlanAccepted, sig, "no plan waits for acceptance")
-			continue
-		}
-		if sig.Revision != ref.Revision || sig.SHA256 != ref.SHA256 {
-			t.recordPlanSignal(SignalPlanAccepted, sig, fmt.Sprintf("the plan changed to revision %d", ref.Revision))
-			continue
-		}
-		t.recordPlanSignal(SignalPlanAccepted, sig, "")
-		var res ChildrenResult
-		if err := workflow.ExecuteActivity(t.short, ActivityCreateChildren, t.taskID, ref.Revision, sig.Author, t.cfg.PolicyVersion).Get(t.ctx, &res); err != nil {
-			return "failed", "create the plan's cards: " + errMessage(err), nil, true
-		}
-		if len(res.Refused) > 0 {
-			*ref = PlanRef{}
-			return "", "", res.Refused, true
-		}
-		return "done", fmt.Sprintf("plan revision %d accepted: %d cards filed", sig.Revision, len(res.Issues)), nil, true
-	}
-	return "", "", nil, false
-}
-
 // planAnswered takes the members' answers signalled so far: whether one
 // answered a question of revision ref and none of its questions is open
 // any more. An answer to another revision is recorded and ignored.
@@ -1863,8 +1746,13 @@ func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalPlanAnswered).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalPlanAnswered, "author": sig.Author, "revision": sig.Revision, "index": sig.Index}
-		if sig.Revision != ref.Revision {
+		switch {
+		case sig.Revision != ref.Revision:
 			detail["ignored"] = fmt.Sprintf("the plan changed to revision %d", ref.Revision)
+		case !t.approvalRequested.IsZero():
+			// the writers' wait ends: its step carries the wait's start
+			detail["started"] = rfc3339(t.approvalRequested)
+			t.approvalRequested = time.Time{}
 		}
 		current = current || sig.Revision == ref.Revision
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
@@ -1877,23 +1765,6 @@ func (t *taskRun) planAnswered(ref *PlanRef) (bool, error) {
 	var open int
 	err := workflow.ExecuteActivity(t.short, ActivityOpenPlanQuestions, t.taskID, ref.Revision).Get(t.ctx, &open)
 	return err == nil && open == 0, err
-}
-
-// recordPlanSignal records an approver's or writer's plan signal on the
-// timeline, with why it does not count when it does not.
-func (t *taskRun) recordPlanSignal(name string, sig TaskSignal, ignored string) {
-	detail := map[string]any{"signal": name, "author": sig.Author, "revision": sig.Revision}
-	switch {
-	case ignored != "":
-		detail["ignored"] = ignored
-	case !t.approvalRequested.IsZero():
-		// the approvers' wait ends: its step carries the wait's start
-		detail["started"] = rfc3339(t.approvalRequested)
-		t.approvalRequested = time.Time{}
-	}
-	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
-		workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
-	}
 }
 
 // OpenPlanQuestions is how many of plan revision's questions have no
@@ -1909,7 +1780,7 @@ func projectPins(v policy.Version, repository string) map[string]policy.ImagePin
 	return p.Images
 }
 
-// planShape is the plan lane's shape of the process task t follows in
+// planShape is the plan track's shape of the process task t follows in
 // version v, and the process's name.
 func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 	name := t.Process
@@ -1917,11 +1788,11 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 		_, project, _ := v.ProjectOf(t.Repository)
 		name = project.Process
 	}
-	lane, ok := v.Processes[name].Lane(policy.LanePlan)
-	if !ok || lane.Plan == nil {
-		return policy.PlanShape{}, "", terminalError("task %s: process %q has no lane plan in configuration version %d", t.ID, name, v.ID)
+	plan, ok := v.Processes[name].Tracks.Track(policy.TrackPlan)
+	if !ok || plan.Plan == nil {
+		return policy.PlanShape{}, "", terminalError("task %s: process %q has no plan track in configuration version %d", t.ID, name, v.ID)
 	}
-	return *lane.Plan, name, nil
+	return *plan.Plan, name, nil
 }
 
 // RunPlan is one planner session under the pinned version, with findings,
@@ -2020,8 +1891,8 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if t.Status != "running" {
 		return PlanResult{Findings: []string{"plan: the task is " + t.Status + ", not running"}}, nil
 	}
-	if t.Lane != policy.LanePlan {
-		return PlanResult{Findings: []string{"plan: the task is not in the plan lane"}}, nil
+	if t.Track != policy.TrackPlan {
+		return PlanResult{Findings: []string{"plan: the task is not on the plan track"}}, nil
 	}
 	v := r.cfg.Policy()
 	shape, _, err := planShape(v, t)
@@ -2221,11 +2092,15 @@ func PlanFileHandler(runner *Runner) http.HandlerFunc {
 	}
 }
 
-// RequestPlan puts revision (0: the newest, none: a zero PlanRef) before
-// the approvers: its comment on the plan's issue, once; an approval
-// request of kind plan, which supersedes the one of an earlier revision;
-// the task waiting on a human.
-func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (PlanRef, error) {
+// RequestPlan asks revision's questions of plan task taskID (the newest
+// revision for 0; none yet answers PlanRef{}). A revision that asks none
+// files its cards (fileRevision) and the plan card ends done in the same
+// step; one whose questions all carry their answers goes back to the
+// planner; one with open questions posts the plan and waits for the
+// writers' answers in Needs you: the plan's request names the revision,
+// and the task waits on a human, its work slot freed. pin is the version
+// the cards are filed under (0: the one in force).
+func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, pin int64) (PlanRef, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanRef{}, err
@@ -2249,8 +2124,28 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 	if err := r.askConfirmation(ctx, t, rev.Revision, p); err != nil {
 		return PlanRef{}, err
 	}
-	comment, err := r.postPlan(ctx, t, repo, rev.Revision, p, nil)
+	ref := PlanRef{Revision: rev.Revision, SHA256: rev.SHA256}
+	asked, err := r.store.PlanQuestions(ctx, taskID, rev.Revision)
 	if err != nil {
+		return PlanRef{}, err
+	}
+	open, err := r.store.OpenPlanQuestions(ctx, taskID, rev.Revision)
+	switch {
+	case err != nil:
+		return PlanRef{}, err
+	case len(asked) == 0:
+		v, err := r.pinnedVersion(ctx, pin)
+		if err != nil {
+			return PlanRef{}, err
+		}
+		res, err := r.fileRevision(ctx, t, repo, v, rev)
+		ref.Filed, ref.Refused = res.Issues, res.Refused
+		return ref, err
+	case open == 0:
+		ref.Answered = true
+		return ref, nil
+	}
+	if ref.Comment, err = r.postPlan(ctx, t, repo, rev.Revision, p, nil); err != nil {
 		return PlanRef{}, err
 	}
 	pending, err := r.store.ApprovalRequests(ctx, "pending")
@@ -2267,7 +2162,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 		return a.Kind == ApprovalPlan && a.TaskID == taskID && json.Unmarshal(a.Spec, &have) == nil && have == want
 	}) {
 		id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: taskID, Project: t.Repository, Spec: spec,
-			Reason: fmt.Sprintf("plan revision %d of issue #%d, %d cards, waits for an approver", rev.Revision, t.IssueNumber, len(p.Cards))})
+			Reason: fmt.Sprintf("plan revision %d of issue #%d, %d cards, waits for %d answers", rev.Revision, t.IssueNumber, len(p.Cards), open)})
 		if err != nil {
 			return PlanRef{}, err
 		}
@@ -2277,11 +2172,12 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int) (
 	}
 	if t.Status != "waiting-human" {
 		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "running"}, "waiting-human"); err != nil {
-			return PlanRef{}, terminalError("task %s is %s, cannot wait for its approvers: %v", taskID, t.Status, err)
+			return PlanRef{}, terminalError("task %s is %s, cannot wait for its answers: %v", taskID, t.Status, err)
 		}
 		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	}
-	return PlanRef{Revision: rev.Revision, SHA256: rev.SHA256, Comment: comment}, nil
+	return ref, nil
 }
 
 // askQuestions stores revision's questions of plan task t, sanitised as
@@ -2398,55 +2294,35 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 	return r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body)
 }
 
-// CreateChildren files the cards of the plan task's accepted revision,
-// once however often it runs: it judges the revision again, the deploy
-// owner its spec needs and its answered questions included (a finding
-// refuses the acceptance: the
-// approval ends, the planner gets it); files
-// each card in topological order as a backlog task row and a bot issue
-// found by its marker or filed; records the edges in Forgejo and
+// fileRevision files the cards of plan task t's revision rev, which asks
+// no question, under version v, once however often it runs: it judges the revision again, the
+// deploy owner its spec needs included (a finding refuses the filing, the
+// planner gets it); files each card in topological order on the direct
+// track at main's head, with the card's author as the cards' (plans do not
+// nest: the children are direct cards); records the edges in Forgejo and
 // task_deps; puts the issues into the plan's comment.
-func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
-	t, repo, err := r.task(ctx, taskID)
-	if err != nil {
-		return ChildrenResult{}, err
-	}
-	v, err := r.pinnedVersion(ctx, pin)
-	if err != nil {
-		return ChildrenResult{}, err
-	}
+func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.Version, rev PlanRevision) (ChildrenResult, error) {
+	revision := rev.Revision
 	shape, process, err := planShape(v, t)
 	if err != nil {
 		return ChildrenResult{}, err
-	}
-	rev, ok, err := r.store.PlanRevision(ctx, taskID, revision)
-	if err != nil {
-		return ChildrenResult{}, err
-	}
-	if !ok {
-		return ChildrenResult{}, terminalError("task %s has no plan revision %d", taskID, revision)
 	}
 	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository))
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
-	var unanswered ErrOpenQuestions
-	switch err := openQuestions(ctx, r.store, t, revision); {
-	case errors.As(err, &unanswered):
-		findings = append(findings, unanswered.Error())
-	case err != nil:
-		return ChildrenResult{}, err
-	}
 	if len(findings) > 0 {
-		note := fmt.Sprintf("accepting revision %d was refused: %s", revision, strings.Join(findings, "; "))
-		if err := r.store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, note); err != nil {
-			return ChildrenResult{}, err
-		}
+		note := fmt.Sprintf("revision %d files no cards: %s", revision, strings.Join(findings, "; "))
 		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: "+r.untrusted(t, note))
-		r.record(ctx, taskID, "plan_refused", map[string]any{"revision": revision, "by": approver, "findings": findings})
+		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil
 	}
-	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, approver)
+	sha, err := r.forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
+	if err != nil {
+		return ChildrenResult{}, err
+	}
+	author := cmp.Or(t.Author, r.forgejo.BotUser)
+	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha)
 	if err != nil {
 		return ChildrenResult{}, err
 	}
@@ -2459,21 +2335,26 @@ func (r *Runner) CreateChildren(ctx context.Context, taskID string, revision int
 	if _, err := r.postPlan(ctx, t, repo, revision, p, byKey); err != nil {
 		return ChildrenResult{}, err
 	}
-	if err := r.store.ResolveApprovals(ctx, taskID, ApprovalPlan, "approved", approver, fmt.Sprintf("revision %d accepted: %d cards filed", revision, len(issues))); err != nil {
-		return ChildrenResult{}, err
-	}
-	r.record(ctx, taskID, "children_created", map[string]any{"revision": revision, "by": approver, "issues": issues})
+	r.record(ctx, t.ID, "children_created", map[string]any{"revision": revision, "by": author, "issues": issues})
 	return ChildrenResult{Issues: issues}, nil
 }
 
 // fileChildren files p's cards of task t, its process's, the cards of
-// of (plan #n), in topological order as backlog task rows and bot issues
-// found by their markers or filed, and records the edges in Forgejo and
-// task_deps; the cards in filing order.
-func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string) ([]Task, error) {
+// of (plan #n), in topological order as task rows queued on the direct
+// track at base sha and bot issues found by their markers or filed,
+// records the edges in Forgejo and task_deps, then starts each under the
+// work bound, where a card waits for the cards it depends on (plans do not
+// nest: a plan's card is never a plan). approver authors the cards, with
+// writer as its standing: a plan's are its card's, whose spec an outside
+// account may have written; the cards in filing order.
+func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
 	_, project, _ := v.ProjectOf(t.Repository)
+	direct, ok := v.Processes[process].Tracks.Track(policy.TrackDirect)
+	if !ok || direct.Class == "" {
+		return nil, terminalError("task %s: process %q has no direct track in configuration version %d", t.ID, process, v.ID)
+	}
 	cards := map[string]Task{}
 	var open []webhookIssue
 	for i, c := range order {
@@ -2488,9 +2369,10 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps, spec))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
-			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "backlog", Lane: policy.LaneBacklog, Process: process,
+			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
+			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: sha, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
-			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: true})
+			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer})
 		if err != nil {
 			return nil, err
 		}
@@ -2513,13 +2395,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				}
 				card.IssueNumber = ref.Number
 			}
-			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, []string{LabelBacklog, "state/backlog"}); err != nil {
+			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
 				return nil, err
 			}
 			if err := r.store.SetTaskIssue(ctx, card.ID, card.IssueNumber); err != nil {
 				return nil, err
 			}
-			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID})
+			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect})
 		}
 		cards[c.Key] = card
 	}
@@ -2549,6 +2431,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	out := make([]Task, len(order))
 	for i, c := range order {
 		out[i] = cards[c.Key]
+		if out[i].Status != "queued" {
+			continue // a card an earlier filing of the plan left
+		}
+		if err := r.cfg.Workflows.Start(ctx, out[i].ID); err != nil {
+			// the heal pass's pull starts it
+			log.Printf("task %s: start card %s of %s: %v", t.ID, out[i].ID, of, err)
+		}
 	}
 	return out, nil
 }
@@ -2615,10 +2504,11 @@ func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dep
 	return err
 }
 
-// acceptedPlan is plan task parent's accepted plan revision, as stored;
+// filedPlan is plan task parent's newest plan revision, the one that filed
+// its cards, as stored;
 // child names the card the revision's findings name. A read that fails is
 // a terminal one.
-func (r *Runner) acceptedPlan(ctx context.Context, parent, child string) (Plan, error) {
+func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, error) {
 	rev, ok, err := r.store.PlanRevision(ctx, parent, 0)
 	if err != nil || !ok {
 		return Plan{}, cmp.Or(err, error(terminalError("plan %s of card %s has no revision", parent, child)))
@@ -2631,7 +2521,7 @@ func (r *Runner) acceptedPlan(ctx context.Context, parent, child string) (Plan, 
 }
 
 // planOf is plan card t's section "The spec and the plan" (its plan's
-// issue text and the accepted plan's summary), its role and its plan
+// issue text and the plan's summary), its role and its plan
 // row's directories, and the pull request of a split's card; "" and none
 // for a task no plan filed.
 func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, pull int64, err error) {
@@ -2642,7 +2532,7 @@ func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []
 	if err != nil {
 		return "", "", nil, 0, err
 	}
-	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	p, err := r.filedPlan(ctx, t.Parent, t.ID)
 	if err != nil {
 		return "", "", nil, 0, err
 	}

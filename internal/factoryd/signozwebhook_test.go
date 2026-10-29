@@ -168,7 +168,7 @@ func newAlertRig(t *testing.T) *alertRig {
 		"foreign": "demo-app", "legacy": "old"}}
 	projects := &memProjects{m: map[string]Project{
 		"demo-app": {Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory", Agents: "coder", File: true, GitToken: "git-tok", Namespaces: []string{"demo-staging", "demo-prod"},
-			Process: "maintenance", Lanes: maintenanceLanes},
+			Process: "maintenance", Tracks: maintenanceTracks},
 		// a row without a file: its project was removed from the configuration
 		"old": {Name: "old", Repository: "sf/old", GitToken: "git-tok", Namespaces: []string{"legacy"}},
 	}}
@@ -714,7 +714,7 @@ func TestAlertIntakeOnTheFactorysOwnNamespaces(t *testing.T) {
 	r.ns.labels["factory"], r.ns.labels["platform"] = "ai-software-factory-code", "ai-software-factory-infra"
 	m := r.in.Projects.(*memProjects).m
 	m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder",
-		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Tracks: maintenanceTracks}
 	m["ai-software-factory-infra"] = Project{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none",
 		File: true, Namespaces: []string{"platform", "forgejo"}}
 
@@ -805,7 +805,7 @@ func TestAlertInsideRollWindowIsHeld(t *testing.T) {
 	ctx := context.Background()
 	r.ns.labels["factory"] = "ai-software-factory-code"
 	r.in.Projects.(*memProjects).m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code",
-		Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+		Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Tracks: maintenanceTracks}
 	deployments := &fakeDeployments{json: map[string]string{
 		"factoryd":        deploymentJSON("2020-01-01T00:00:00Z", "2020-01-01T00:01:00Z", registryHost+"factory-gateway@"+digestOld),
 		"factory-gateway": deploymentJSON("2026-09-28T12:00:00Z", "2026-09-28T12:01:30Z", registryHost+"factory-gateway@"+digestNew),
@@ -915,7 +915,7 @@ func TestAlertInsideRollWindowIsHeld(t *testing.T) {
 	r2 := newAlertRig(t)
 	r2.ns.labels["factory"] = "ai-software-factory-code"
 	r2.in.Projects.(*memProjects).m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code",
-		Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+		Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Tracks: maintenanceTracks}
 	deployments2 := &fakeDeployments{json: map[string]string{
 		"factoryd":        deploymentJSON("2020-01-01T00:00:00Z", "2020-01-01T00:01:00Z", registryHost+"factory-gateway@"+digestOld),
 		"factory-gateway": deploymentJSON("2026-09-28T12:00:00Z", "2026-09-28T12:01:30Z", registryHost+"factory-gateway@"+digestNew),
@@ -952,7 +952,7 @@ func TestAlertAfterItsTaskClosedStillChecksTheWindow(t *testing.T) {
 		r := newAlertRig(t)
 		r.ns.labels["factory"] = "ai-software-factory-code"
 		r.in.Projects.(*memProjects).m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code",
-			Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+			Objects: "seed", Agents: "coder", File: true, Namespaces: []string{"factory"}, Process: "maintenance", Tracks: maintenanceTracks}
 		// a roll long over by the time the first incident fires: it files
 		// normally, giving a filed row to close
 		deployments := &fakeDeployments{json: map[string]string{
@@ -1062,7 +1062,7 @@ func seedProjects(r *alertRig) {
 		"ai-software-factory-code", "ai-software-factory-infra", "ai-software-factory-infra"
 	m := r.in.Projects.(*memProjects).m
 	m["ai-software-factory-code"] = Project{Name: "ai-software-factory-code", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder",
-		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Lanes: maintenanceLanes}
+		File: true, Namespaces: []string{"factory"}, Process: "maintenance", Tracks: maintenanceTracks}
 	m["ai-software-factory-infra"] = Project{Name: "ai-software-factory-infra", Repository: "sf/ai-software-factory-infra", Objects: "seed", Agents: "none",
 		File: true, Namespaces: []string{"platform", "forgejo"}}
 	r.in.Kube = &fakeDeployments{json: map[string]string{

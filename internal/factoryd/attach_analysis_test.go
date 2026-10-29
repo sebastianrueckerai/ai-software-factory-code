@@ -41,7 +41,7 @@ func newAskStore(t *testing.T) *PGStore {
 func seedAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64, question string) {
 	t.Helper()
 	if err := s.CreateTask(t.Context(), Task{ID: taskID, Kind: "agent", Status: "waiting-human",
-		Repository: repository, IssueNumber: issue, Objective: question}); err != nil {
+		Repository: repository, IssueNumber: issue, Objective: question, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,

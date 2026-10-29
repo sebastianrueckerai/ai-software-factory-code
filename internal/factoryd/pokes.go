@@ -43,15 +43,14 @@ const ChoiceRerun = "Re-run the checks"
 
 // pokeKinds are the events a poke may answer.
 var pokeKinds = []string{EventQuestionAsked, EventQuestionWithdrawn, EventApprovalRequested, EventTaskEnded, EventAllChildrenDone, EventAutonomyChanged,
-	EventCardFiled, EventCardMoved, EventPlanStarted, EventPlanAccepted, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
+	EventCardFiled, EventCardRetried, EventSessionGranted, EventRoutineRan, EventChatBudgetSpent,
 	EventPullRequestMerged}
 
 // budgetSources are the escalation sources of a card stopped by money.
 var budgetSources = []string{"budget", "cap", SourceMonthCap, "project_cap", "day_cap", "split_cap"}
 
 // agentVerbs are the agent's own actions a poke tells, by event kind.
-var agentVerbs = map[string]string{EventCardFiled: "filed", EventCardMoved: "moved", EventPlanStarted: "started",
-	EventPlanAccepted: "accepted", EventCardRetried: "retried", EventSessionGranted: "granted"}
+var agentVerbs = map[string]string{EventCardFiled: "filed", EventCardRetried: "retried", EventSessionGranted: "granted"}
 
 // PokeDelivery is a poke's messenger half (roadmap 145): the member level
 // its row asks (empty for a row that never leaves the factory), the
@@ -300,8 +299,7 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 				}
 			}
 		case ApprovalPlan:
-			m.Content = fmt.Sprintf("Plan %s %q waits for your acceptance: revision %d, %d cards.", ref, CardTitle(t), num("revision"), num("cards"))
-			m.Choices = []string{"Accept"}
+			m.Content = fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards"))
 		default:
 			return m, false
 		}
@@ -338,8 +336,8 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		switch {
 		case from != to:
 			m.Content = fmt.Sprintf("%s set the autonomy from %s to %s: %s.", e.Actor, from, to, policy.AutonomyMeaning[to])
-		case num("backlog_cap") > 0:
-			m.Content = fmt.Sprintf("%s set the backlog cap to %d.", e.Actor, num("backlog_cap"))
+		case num("queue_cap") > 0:
+			m.Content = fmt.Sprintf("%s set the queue cap to %d.", e.Actor, num("queue_cap"))
 		default:
 			return m, false
 		}
@@ -355,15 +353,6 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		switch e.Kind {
 		case EventCardFiled:
 			m.Content = "Filed " + title + "."
-		case EventCardMoved:
-			m.Content = fmt.Sprintf("Moved %s to lane %s.", title, str("lane"))
-			if str("lane") == policy.LaneReady {
-				verb, m.Content = "started", "Started "+title+"."
-			}
-		case EventPlanStarted:
-			m.Content = "Started plan " + title + "."
-		case EventPlanAccepted:
-			m.Content = "Accepted plan " + title + "."
 		case EventCardRetried:
 			m.Content = "Retried " + title + "."
 		case EventSessionGranted:

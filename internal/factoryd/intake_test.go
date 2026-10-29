@@ -46,6 +46,8 @@ var openIssues = []string{
 	`{"number":9,"title":"Needs a decision","user":{"login":"sebastian"},"labels":[{"name":"human"}]}`,
 	`{"number":11,"title":"Unlabelled","user":{"login":"outsider"},"labels":[]}`,
 	`{"number":12,"title":"A wish","user":{"login":"outsider"},"labels":[{"name":"improvement"}]}`,
+	`{"number":13,"title":"A wish a writer took","user":{"login":"outsider"},"labels":[{"name":"improvement"},{"name":"agent"}]}`,
+	`{"number":14,"title":"A wish labelled by no writer","user":{"login":"outsider"},"labels":[{"name":"improvement"},{"name":"agent"}]}`,
 }
 
 func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
@@ -109,6 +111,9 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 				t.Errorf("issue list query %q, want every open issue", r.URL.RawQuery)
 			}
 			servePage(w, r, 50, openIssues...)
+		case strings.HasSuffix(r.URL.Path, "/issues/13/timeline") && r.Method == http.MethodGet:
+			// sebastian, a writer, added agent to the outsider's wish
+			servePage(w, r, 50, `{"type":"label","body":"1","label":{"name":"agent"},"user":{"login":"sebastian"}}`)
 		case strings.HasSuffix(r.URL.Path, "/timeline") && r.Method == http.MethodGet:
 			io.WriteString(w, `[]`)
 		case strings.Count(r.URL.Path, "/") == 4: // /api/v1/repos/{owner}/{repo}
@@ -323,7 +328,7 @@ func TestIntakeIssueOpenedAgentLabelCreatesTask(t *testing.T) {
 	if labels := issueLabels(t, in.Forgejo, 7); !slices.Contains(labels, "state/queued") {
 		t.Fatalf("labels = %v, want state/queued", labels)
 	}
-	if want := "webhook intake: issue #7 on sf/ai-software-factory-code by sebastian: ready task " + task.ID; !strings.Contains(logs.String(), want) {
+	if want := "webhook intake: issue #7 on sf/ai-software-factory-code by sebastian: direct task " + task.ID; !strings.Contains(logs.String(), want) {
 		t.Fatalf("log = %q, want a line containing %q", logs.String(), want)
 	}
 }
@@ -441,29 +446,29 @@ func TestIntakeIssueBotAuthoredIsIgnored(t *testing.T) {
 	}
 }
 
-// Each lane end to end through the webhook, from an outside account and a
-// writer: the row's status, kind, author standing and whether its
-// workflow starts.
-func TestIntakeIssueLanes(t *testing.T) {
+// Each track end to end through the webhook, from an outside account and a
+// writer: the row's status, kind, track, author standing and whether its
+// workflow starts; an improvement files no card.
+func TestIntakeIssueTracks(t *testing.T) {
 	for _, tc := range []struct {
 		poster     string
 		labels     []string
-		status     string
+		status     string // "" for no card
 		kind       string
+		track      string
 		writer     bool
-		started    bool
 		stateLabel string
 	}{
-		{"outsider", nil, "queued", "agent", false, true, "state/queued"},
-		{"outsider", []string{"bug"}, "queued", "agent", false, true, "state/queued"},
-		{"outsider", []string{"improvement"}, "backlog", "agent", false, false, "state/backlog"},
-		{"sebastian", []string{"question"}, "queued", "agent", true, true, "state/queued"},
-		{"sebastian", []string{"improvement"}, "backlog", "agent", true, false, "state/backlog"},
-		{"sebastian", []string{"human"}, "waiting-human", "human", true, false, "state/waiting-human"},
+		{"outsider", nil, "queued", "agent", "direct", false, "state/queued"},
+		{"outsider", []string{"bug"}, "queued", "agent", "direct", false, "state/queued"},
+		{"outsider", []string{"improvement"}, "", "", "", false, ""},
+		{"sebastian", []string{"question"}, "queued", "agent", "direct", true, "state/queued"},
+		{"sebastian", []string{"improvement"}, "", "", "", true, ""},
+		{"sebastian", []string{"human"}, "waiting-human", "human", "", true, "state/waiting-human"},
 		// Forgejo applies any label an outsider's new-issue form posts:
-		// the writers' lane labels do not count from them
-		{"outsider", []string{"human"}, "queued", "agent", false, true, "state/queued"},
-		{"outsider", []string{"improvement", "agent"}, "backlog", "agent", false, false, "state/backlog"},
+		// the writers' track labels do not count from them
+		{"outsider", []string{"human"}, "queued", "agent", "direct", false, "state/queued"},
+		{"outsider", []string{"improvement", "agent"}, "", "", "", false, ""},
 	} {
 		t.Run(fmt.Sprintf("%s %v", tc.poster, tc.labels), func(t *testing.T) {
 			in, store, _ := newTestIntake(t)
@@ -479,23 +484,19 @@ func TestIntakeIssueLanes(t *testing.T) {
 			if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 				t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
 			}
-			// a backlog card's second row is its write-up (ruling 185)
-			if want := map[bool]int{true: 2, false: 1}[tc.status == "backlog"]; len(store.tasks) != want {
+			task, ok, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 5)
+			if want := map[bool]int{true: 1, false: 0}[tc.status != ""]; len(store.tasks) != want || ok != (want == 1) {
 				t.Fatalf("tasks = %d, want %d", len(store.tasks), want)
 			}
-			task, _, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 5)
-			if task.Status != tc.status || task.Kind != tc.kind || task.Author != tc.poster || task.AuthorWriter != tc.writer || task.Priority != 0 {
-				t.Fatalf("task = %+v, want status %s kind %s author %s writer %v", task, tc.status, tc.kind, tc.poster, tc.writer)
+			if ok && (task.Status != tc.status || task.Kind != tc.kind || task.Track != tc.track || task.Author != tc.poster || task.AuthorWriter != tc.writer || task.Priority != 0) {
+				t.Fatalf("task = %+v, want status %s kind %s track %q author %s writer %v", task, tc.status, tc.kind, tc.track, tc.poster, tc.writer)
 			}
-			if started := slices.Contains(workflowsOf(in).started, task.ID); started != tc.started {
-				t.Fatalf("started = %v, want %v", started, tc.started)
-			}
-			if tc.status == "backlog" && (task.SHA != "" || task.Gate != "") {
-				t.Fatalf("backlog card = %+v, want no base and no gate before it starts", task)
+			if started := workflowsOf(in).started; !slices.Equal(started, map[bool][]string{true: {task.ID}, false: nil}[tc.status == "queued"]) {
+				t.Fatalf("started = %v, want the queued card's workflow alone", started)
 			}
 			labels = issueLabels(t, in.Forgejo, 5)
-			if !slices.Contains(labels, tc.stateLabel) {
-				t.Fatalf("labels = %v, want %s", labels, tc.stateLabel)
+			if tc.stateLabel != "" && !slices.Contains(labels, tc.stateLabel) || tc.stateLabel == "" && slices.ContainsFunc(labels, func(l string) bool { return strings.HasPrefix(l, "state/") }) {
+				t.Fatalf("labels = %v, want state label %q", labels, tc.stateLabel)
 			}
 			// an outside account's writer labels are off the issue (review M1)
 			if tc.poster == "outsider" && slices.ContainsFunc(labels, func(l string) bool { return l == "agent" || l == "human" || l == "priority/p0" }) {
@@ -505,15 +506,17 @@ func TestIntakeIssueLanes(t *testing.T) {
 	}
 }
 
-// A backlog improvement starts on a writer's agent label, never on an
-// outside account's, and the heal pass (no sender) leaves it be.
-func TestIntakeBacklogCardStartsOnAWritersAgentLabel(t *testing.T) {
+// An improvement files no card; a writer's agent label files it, as the
+// poster's card on the direct track at the branch head, never an outside
+// account's label, a label event with no sender or the bot's, nor a
+// writer's edit that is no label event.
+func TestIntakeImprovementFilesOnAWritersAgentLabel(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	opened := issueOpenedBody(12, "outsider", []string{"improvement"}, "A wish", "body")
 	postWebhook(in, "issues", opened, sign(webhookSecret, opened))
-	wish, _, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 12)
-	id := wish.ID
-	presort, _, _ := store.ReportOf(context.Background(), id, SourcePresort)
+	if len(store.tasks) != 0 {
+		t.Fatalf("tasks %+v, want none for an improvement", store.tasks)
+	}
 	labelled := func(sender string) []byte {
 		var p map[string]any
 		json.Unmarshal(issueOpenedBody(12, "outsider", []string{"improvement", "agent"}, "A wish", "body"), &p)
@@ -521,30 +524,31 @@ func TestIntakeBacklogCardStartsOnAWritersAgentLabel(t *testing.T) {
 		b, _ := json.Marshal(p)
 		return b
 	}
-	// a writer's edit that is no label event starts nothing (review M1)
+	// a writer's edit that is no label event files nothing (review M1)
 	edited := labelled("sebastian")
 	var ep map[string]any
 	json.Unmarshal(edited, &ep)
 	ep["action"] = "edited"
 	edited, _ = json.Marshal(ep)
 	postWebhook(in, "issues", edited, sign(webhookSecret, edited))
-	// the bot's own label events (its state mirror) start nothing (re-review m1)
+	// the bot's own label events (its label mirror) file nothing (re-review m1)
 	for _, sender := range []string{"outsider", "", "factory-agent"} {
 		b := labelled(sender)
 		if rr := postWebhook(in, "issue_label", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
 			t.Fatalf("status = %d", rr.Code)
 		}
 	}
-	if store.tasks[id].Status != "backlog" || !slices.Equal(workflowsOf(in).started, []string{presort.ID}) {
-		t.Fatalf("task = %+v, started %q: an outside account's or no sender's label starts nothing", store.tasks[id], workflowsOf(in).started)
+	if len(store.tasks) != 0 || len(workflowsOf(in).started) != 0 {
+		t.Fatalf("tasks %+v, started %q: an outside account's, no sender's or the bot's label files nothing", store.tasks, workflowsOf(in).started)
 	}
 	b := labelled("sebastian")
 	if rr := postWebhook(in, "issue_label", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
 		t.Fatalf("status = %d", rr.Code)
 	}
-	got := store.tasks[id]
-	if got.Status != "queued" || got.Lane != "ready" || got.SHA != "sha-main-head" || got.Gate != GateIntake || !slices.Equal(workflowsOf(in).started, []string{presort.ID, id}) {
-		t.Fatalf("task = %+v, started %q: want queued at the branch head with its workflow started", got, workflowsOf(in).started)
+	got, ok, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 12)
+	if !ok || got.Status != "queued" || got.Track != "direct" || got.SHA != "sha-main-head" || got.Gate != GateIntake || got.Author != "outsider" ||
+		got.AuthorWriter || !slices.Equal(workflowsOf(in).started, []string{got.ID}) {
+		t.Fatalf("task = %+v, started %q: want the outsider's queued card at the branch head with its workflow started", got, workflowsOf(in).started)
 	}
 	if labels := issueLabels(t, in.Forgejo, 12); !slices.Contains(labels, "state/queued") {
 		t.Fatalf("labels = %v, want state/queued", labels)
@@ -1310,18 +1314,24 @@ func TestIntakeResyncIssuesTakesInWhatTheWebhooksMissed(t *testing.T) {
 	for _, tk := range store.tasks {
 		byIssue[tk.IssueNumber] = tk
 	}
-	agent, human, bug, wish := byIssue[7], byIssue[9], byIssue[11], byIssue[12]
-	presort, _, _ := store.ReportOf(context.Background(), wish.ID, SourcePresort)
-	if len(store.tasks) != 6 || presort.ID == "" || agent.Kind != "agent" || agent.Status != "queued" || agent.Priority != 2 || agent.SHA != "sha-main-head" ||
-		agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" || human.Status != "waiting-human" ||
-		bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter || wish.Status != "backlog" {
-		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7 and the unlabelled #11, a human one for #9, #12 in the backlog with its presort", store.tasks)
+	agent, human, bug, taken := byIssue[7], byIssue[9], byIssue[11], byIssue[13]
+	_, wish := byIssue[12]
+	_, unvouched := byIssue[14]
+	if len(store.tasks) != 5 || wish || unvouched || agent.Kind != "agent" || agent.Status != "queued" || agent.Track != "direct" ||
+		agent.Priority != 2 || agent.SHA != "sha-main-head" || agent.Objective != "Add the runner\n\nobjective body" || human.Kind != "human" ||
+		human.Status != "waiting-human" || bug.Status != "queued" || bug.Author != "outsider" || bug.AuthorWriter ||
+		taken.Track != "direct" || taken.Author != "outsider" || taken.AuthorWriter {
+		t.Fatalf("tasks = %+v, want #10's plus agent tasks for #7, the unlabelled #11 and #13, whose agent label a writer added, "+
+			"a human one for #9, none for the improvements #12 and #14", store.tasks)
 	}
 	// the second pass starts the still-queued workflows again, as the
-	// webhook's redelivery would (Temporal refuses a running one); #12's
-	// presort starts once, when it opens (the heal pass restarts it)
-	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, bug.ID, presort.ID, agent.ID, bug.ID}) {
-		t.Fatalf("started = %q, want #7's and #11's workflows once a pass, #12's presort once", got)
+	// webhook's redelivery would (Temporal refuses a running one)
+	if got := workflowsOf(in).started; !slices.Equal(got, []string{agent.ID, bug.ID, taken.ID, agent.ID, bug.ID, taken.ID}) {
+		t.Fatalf("started = %q, want #7's, #11's and #13's workflows once a pass", got)
+	}
+	// the label no writer added comes off #14
+	if got := issueLabels(t, in.Forgejo, 14); !slices.Equal(got, []string{"improvement"}) {
+		t.Errorf("#14 labels = %q, want the improvement label alone", got)
 	}
 }
 
@@ -1934,67 +1944,49 @@ func TestValidateReproCommand(t *testing.T) {
 	}
 }
 
-// The filing refusal of a refused reproduction command names the sandbox
-// rule and the backlog.
-func TestReproRefusalText(t *testing.T) {
-	got := reproRefusal(ValidateReproCommand("cd /tmp/x && make repro"))
-	want := "factoryd: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place. The card stays in backlog."
-	if got != want {
-		t.Errorf("reproRefusal = %q, want %q", got, want)
+// The person's card of a refused reproduction command names the poster
+// and the sandbox rule, and asks for the issue again.
+func TestReproQuestionText(t *testing.T) {
+	q := reproQuestion("A card", "sebastian", ValidateReproCommand("cd /tmp/x && make repro"))
+	if want := "filed by sebastian: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"; q.Why != want {
+		t.Errorf("Why = %q, want %q", q.Why, want)
 	}
-	if got := reproRefusal(ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(got, "creates a git worktree: "+sandboxCheckoutRule) {
-		t.Errorf("worktree reproRefusal = %q, want the sandbox rule named", got)
+	if !strings.HasPrefix(q.Info, "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again") {
+		t.Errorf("Info = %q", q.Info)
 	}
-}
-
-// A writer's agent issue whose repro block chains cd is refused at filing:
-// the card lands in the backlog with no reproduction command and one
-// comment naming the sandbox rule; its coder workflow never starts (the
-// backlog presort write-up does) and the labels that asked for the entry
-// stay, so a later label event judges the fixed command again.
-func TestIntakeRefusesCdChainRepro(t *testing.T) {
-	in, store, requests := laneIntake(t, "maintenance", maintenanceLanes)
-	body := "Fix it.\n\n```repro\ncd /tmp/x && make repro\n```\n"
-	post(t, in, "issues", issueOpenedBody(21, "sebastian", []string{"agent"}, "A card", body))
-	got := card(store, 21)
-	if got.Status != "backlog" || got.Lane != "backlog" || got.ReproCommand != "" {
-		t.Fatalf("card = %+v, want a backlog card with no reproduction command", got)
-	}
-	presort, _, _ := store.ReportOf(context.Background(), got.ID, SourcePresort)
-	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
-		t.Fatalf("started %q, want the presort alone", started)
-	}
-	if labels := issueLabels(t, in.Forgejo, 21); !slices.Contains(labels, "agent") {
-		t.Fatalf("labels = %v, want the agent label kept", labels)
-	}
-	want := "factoryd: the reproduction command chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place. The card stays in backlog."
-	cs := comments(*requests)
-	if len(cs) != 1 || cs[0] != want {
-		t.Fatalf("comments = %q, want only %q", cs, want)
+	if q := reproQuestion("A card", "sebastian", ValidateReproCommand("git worktree add /tmp/w HEAD")); !strings.Contains(q.Why, "creates a git worktree: "+sandboxCheckoutRule) {
+		t.Errorf("worktree Why = %q, want the sandbox rule named", q.Why)
 	}
 }
 
-// A writer's agent issue whose repro block creates a git worktree is
-// refused at filing the same way.
-func TestIntakeRefusesGitWorktreeRepro(t *testing.T) {
-	in, store, requests := laneIntake(t, "maintenance", maintenanceLanes)
-	body := "Fix it.\n\n```repro\ngit worktree add /tmp/w HEAD\n```\n"
-	post(t, in, "issues", issueOpenedBody(22, "sebastian", []string{"agent"}, "A card", body))
-	got := card(store, 22)
-	if got.Status != "backlog" || got.Lane != "backlog" || got.ReproCommand != "" {
-		t.Fatalf("card = %+v, want a backlog card with no reproduction command", got)
-	}
-	presort, _, _ := store.ReportOf(context.Background(), got.ID, SourcePresort)
-	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
-		t.Fatalf("started %q, want the presort alone", started)
-	}
-	if labels := issueLabels(t, in.Forgejo, 22); !slices.Contains(labels, "agent") {
-		t.Fatalf("labels = %v, want the agent label kept", labels)
-	}
-	want := "factoryd: the reproduction command creates a git worktree: the sandbox has one checkout, the command runs in place. The card stays in backlog."
-	cs := comments(*requests)
-	if len(cs) != 1 || cs[0] != want {
-		t.Fatalf("comments = %q, want only %q", cs, want)
+// A writer's agent issue whose repro block chains cd out of the worktree,
+// or creates a git worktree, is refused at filing: no agent card, a
+// person's card whose ask names the sandbox rule, no coder workflow.
+func TestIntakeRefusesASandboxBreakingRepro(t *testing.T) {
+	for issue, tc := range map[int64]struct{ cmd, rule string }{
+		21: {"cd /tmp/x && make repro", "chains cd out of the checked-out worktree: the sandbox has one checkout, the command runs in place"},
+		22: {"git worktree add /tmp/w HEAD", "creates a git worktree: the sandbox has one checkout, the command runs in place"},
+	} {
+		t.Run(tc.cmd, func(t *testing.T) {
+			in, store, _ := trackIntake(t, "maintenance", maintenanceTracks)
+			post(t, in, "issues", issueOpenedBody(issue, "sebastian", []string{"agent"}, "A card", "Fix it.\n\n```repro\n"+tc.cmd+"\n```\n"))
+			got := card(store, issue)
+			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || got.ReproCommand != "" || len(store.tasks) != 1 {
+				t.Fatalf("card = %+v, %d tasks; want one person's card with no reproduction command", got, len(store.tasks))
+			}
+			if started := workflowsOf(in).started; len(started) != 0 {
+				t.Fatalf("started %q, want nothing", started)
+			}
+			var whys []string
+			for _, e := range store.intakeEvents {
+				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+					whys = append(whys, e.Question.Why)
+				}
+			}
+			if want := "filed by sebastian: the reproduction command " + tc.rule; !slices.Equal(whys, []string{want}) {
+				t.Fatalf("asks %q, want %q", whys, want)
+			}
+		})
 	}
 }
 
@@ -2161,88 +2153,6 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	}
 }
 
-// A backlog card takes only a writer's agent label as its start (review
-// I1): comments by its author or a writer are neither recorded nor
-// signalled (a signal would start its workflow), and a writer's close
-// ends it closed without one.
-func TestIntakeBacklogCardRunsNothingUntilItStarts(t *testing.T) {
-	in, store, _ := newTestIntake(t)
-	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "backlog", IssueNumber: 30, Kind: "agent", Author: "visitor"}
-	for i, user := range []string{"visitor", "sebastian"} {
-		b, _ := json.Marshal(map[string]any{
-			"action":     "created",
-			"issue":      map[string]any{"number": 30, "user": map[string]string{"login": "visitor"}},
-			"comment":    map[string]any{"id": i + 1, "user": map[string]string{"login": user}, "body": "+1"},
-			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
-		})
-		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
-			t.Fatalf("%s: status %d", user, rr.Code)
-		}
-	}
-	closed := func(sender string) []byte {
-		b, _ := json.Marshal(map[string]any{"action": "closed", "issue": map[string]any{"number": 30, "user": map[string]string{"login": "visitor"}},
-			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"}, "sender": map[string]string{"login": sender}})
-		return b
-	}
-	b := closed("visitor")
-	postWebhook(in, "issues", b, sign(webhookSecret, b))
-	if got := store.tasks["t-s"].Status; got != "backlog" {
-		t.Fatalf("after the author's close: %s, want backlog (an outsider's close decides nothing)", got)
-	}
-	b = closed("sebastian")
-	if rr := postWebhook(in, "issues", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
-		t.Fatalf("close: status %d", rr.Code)
-	}
-	if w := workflowsOf(in); len(w.signals) != 0 || len(w.started) != 0 || len(store.intakeEvents) != 0 {
-		t.Fatalf("signals %q, starts %q, events %d: want none for a backlog card", w.signals, w.started, len(store.intakeEvents))
-	}
-	if got := store.tasks["t-s"]; got.Status != "closed" || got.FinishedAt == nil {
-		t.Fatalf("task = %+v, want closed", got)
-	}
-	if labels := issueLabels(t, in.Forgejo, 30); !slices.Contains(labels, "state/closed") {
-		t.Fatalf("labels = %v", labels)
-	}
-}
-
-// The heal pass takes in a backlog card's close the webhook missed, and
-// starts nothing.
-func TestHealPassClosesABacklogCard(t *testing.T) {
-	forgejo, _ := resyncForgejoStub(t, "sebastian")
-	store := newFakeStore()
-	in := &Intake{Store: store, Forgejo: forgejo, Workflows: &fakeWorkflows{}, BotUser: "factory-agent", Secret: webhookSecret}
-	store.tasks["t-s"] = Task{ID: "t-s", Repository: "sf/ai-software-factory-code", Status: "backlog", Kind: "agent", IssueNumber: 30}
-	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
-	if got := store.tasks["t-s"].Status; got != "closed" || len(workflowsOf(in).started) != 0 || len(workflowsOf(in).signals) != 0 {
-		t.Fatalf("status %s, started %q, signals %q", got, workflowsOf(in).started, workflowsOf(in).signals)
-	}
-}
-
-// An improvement issue stays in the backlog and opens an analyzer report task
-// on it at the branch head, whose workflow starts (ruling 185); a
-// redelivery or heal pass opens no second one.
-func TestIntakeImprovementIsPresorted(t *testing.T) {
-	in, store, _ := newTestIntake(t)
-	opened := issueOpenedBody(12, "outsider", []string{"improvement"}, "A wish", "body")
-	for range 2 {
-		if rr := postWebhook(in, "issues", opened, sign(webhookSecret, opened)); rr.Code != http.StatusOK {
-			t.Fatalf("status = %d", rr.Code)
-		}
-	}
-	wish, ok, _ := store.TaskByIssue(context.Background(), "sf/ai-software-factory-code", 12)
-	if !ok || wish.Status != "backlog" {
-		t.Fatalf("wish = %+v", wish)
-	}
-	presort, ok, _ := store.ReportOf(context.Background(), wish.ID, SourcePresort)
-	if !ok || presort.Status != "queued" || presort.SHA != "sha-main-head" || presort.IssueNumber != 0 ||
-		!slices.Equal(presort.RequiredCapabilities, []string{policy.ClassAnalyzer}) || presort.Objective != wish.Objective ||
-		presort.Author != "outsider" || presort.AuthorWriter || len(store.tasks) != 2 {
-		t.Fatalf("presort = %+v, %d tasks", presort, len(store.tasks))
-	}
-	if started := workflowsOf(in).started; !slices.Equal(started, []string{presort.ID}) {
-		t.Fatalf("started = %v, want the presort's workflow once", started)
-	}
-}
-
 // Ruling 179: every issue of a project on agents none lands in the human
 // lane, whatever its labels, and runs nothing; the heal pass ends it when a
 // writer closes it, the writers read with the project's own read token
@@ -2327,9 +2237,10 @@ func TestResyncIssuesOverTheProjectRows(t *testing.T) {
 			t.Fatalf("read %s", p)
 		}
 	}
-	// five issues (all but the bot's) and the improvement's presort (ruling 185)
-	if len(store.tasks) != 6 {
-		t.Fatalf("tasks %d, want one per open issue of the code repository but the bot's, and a presort", len(store.tasks))
+	// seven issues (all but the bot's), of which the improvement and the
+	// one whose agent label no writer added file none
+	if len(store.tasks) != 5 {
+		t.Fatalf("tasks %d, want one per open issue of the code repository but the bot's, #12 and #14", len(store.tasks))
 	}
 }
 
@@ -2477,14 +2388,14 @@ func TestHumanLaneAlertVerdictFollowsTheClose(t *testing.T) {
 }
 
 // The console's Close of a card without an issue (roadmap 170) ends it in
-// the store alone, with no Forgejo call: a backlog or failed card closed;
+// the store alone, with no Forgejo call: a failed card closed;
 // one waiting on a human through its workflow, signalled as by its
 // issue's close.
 func TestIntakeCloseCardWithoutAnIssue(t *testing.T) {
 	in, store, requests := newTestIntake(t)
 	ctx := context.Background()
-	for status, want := range map[string]string{"backlog": "closed", "failed": "closed", "waiting-human": "waiting-human"} {
-		store.CreateTask(ctx, Task{ID: "t-" + status, Kind: "agent", Status: status, Repository: "sf/ai-software-factory-code"})
+	for status, want := range map[string]string{"failed": "closed", "waiting-human": "waiting-human"} {
+		store.CreateTask(ctx, Task{ID: "t-" + status, Kind: "agent", Status: status, Repository: "sf/ai-software-factory-code", Track: "direct"})
 		err := in.CloseCard(ctx, "t-"+status, "sebastian")
 		if got, _, _ := store.Task(ctx, "t-"+status); err != nil || got.Status != want {
 			t.Fatalf("close %s: %v, status %q, want %q", status, err, got.Status, want)

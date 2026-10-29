@@ -303,7 +303,7 @@ func newCardDeps(t *testing.T, rig *intakeRig) *cardDeps {
 }
 
 // acceptancePolicyVersion is the configuration version a card starts under:
-// the maintenance process with a coder class on lane ready.
+// the maintenance process with a coder class on the direct track.
 func acceptancePolicyVersion() policy.Version {
 	return policy.Version{ID: 7, Commit: "c7", Tree: policy.Tree{
 		Document: policy.Document{
@@ -313,8 +313,7 @@ func acceptancePolicyVersion() policy.Version {
 				Models: []string{"factory/small", "factory/big"}}},
 		},
 		Processes: map[string]policy.Process{"maintenance": {
-			Lanes: []policy.Lane{{Name: policy.LaneBacklog, WriteUp: policy.ClassAnalyzer},
-				{Name: policy.LaneReady, Class: policy.ClassCoder, MovedBy: policy.MovedByWriters}},
+			Tracks: policy.Tracks{Direct: policy.Track{Class: policy.ClassCoder}},
 			Stages: []policy.Stage{
 				{Name: "screening", OnFindings: "human", Enabled: true, When: "outsider"},
 				{Name: "checks", OnFindings: "agent", Enabled: true},
@@ -431,9 +430,8 @@ func (r *intakeRig) post(t *testing.T, labels map[string]string, fingerprint str
 func demoProjectWithAgents() factoryd.Project {
 	return factoryd.Project{Name: "demo-app", Repository: "demo-app/demo-app", Objects: "factory",
 		Agents: "coder", File: true, GitToken: "git-tok", Namespaces: []string{"demo-staging", "demo-prod"},
-		Process: "maintenance", Lanes: []policy.Lane{
-			{Name: policy.LaneBacklog, WriteUp: policy.ClassAnalyzer},
-			{Name: policy.LaneReady, Class: policy.ClassCoder, MovedBy: policy.MovedByWriters}}}
+		Process: "maintenance",
+		Tracks:  policy.Tracks{Direct: policy.Track{Class: policy.ClassCoder}}}
 }
 
 func demoProjectWithoutAgents() factoryd.Project {

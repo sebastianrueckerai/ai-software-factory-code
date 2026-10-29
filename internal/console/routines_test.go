@@ -160,7 +160,7 @@ func weeklyBump() factoryd.RoutineView {
 	return factoryd.RoutineView{Project: "ai-software-factory-code",
 		Routine: policy.Routine{Name: "weekly-bump", Title: "Weekly bump", Files: policy.FilesHuman, Schedule: []policy.Trigger{{Cron: "0 6 * * 1"}}},
 		State:   factoryd.RoutineState{Project: "ai-software-factory-code", Routine: "weekly-bump"},
-		Next:    time.Date(2026, 10, 20, 6, 0, 0, 0, time.UTC), NextWords: "Mon 20 Oct 06:00", Lane: "queued"}
+		Next:    time.Date(2026, 10, 20, 6, 0, 0, 0, time.UTC), NextWords: "Mon 20 Oct 06:00", Column: "queued"}
 }
 
 // htmxPost is post as htmx sends it: the answer is the board's fragment.

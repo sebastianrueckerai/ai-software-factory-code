@@ -55,7 +55,7 @@ func TestClosedIntakeRefusesTheWakesFilings(t *testing.T) {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
 	before := len(r.events.all())
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Bump the dep","lane":"backlog"}`)}, {say("Your intake is closed, so I filed nothing. Tell me what to file.")}}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Bump the dep","track":"direct","track_reason":"a routine bump"}`)}, {say("Your intake is closed, so I filed nothing. Tell me what to file.")}}
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
@@ -90,7 +90,7 @@ func TestClosedIntakeRefusesTheWakesFilings(t *testing.T) {
 }
 
 // The member's explicit ask still files and starts on a closed intake:
-// their own turn's new_card lands in lane ready, ready to start.
+// their own turn's new_card lands on track direct, ready to start.
 func TestMembersAskStillFilesAndStartsOnAClosedIntake(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
@@ -99,15 +99,15 @@ func TestMembersAskStillFilesAndStartsOnAClosedIntake(t *testing.T) {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
 	before := len(r.events.all())
-	g.replies = [][]string{{call(1, "new_card", `{"title":"Fix the flux","body":"Count hits.\n\nAcceptance:\n- The metrics work","lane":"ready","size":"small","rung":"frontier","rung_reason":"touches the queue"}`)}, {say("Filed it for you.")}}
-	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"the flux broke; file a ready card for it"}})
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Fix the flux","body":"Count hits.\n\nAcceptance:\n- The metrics work","track":"direct","track_reason":"one fix","size":"small","rung":"frontier","rung_reason":"touches the queue"}`)}, {say("Filed it for you.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"the flux broke; file a direct card for it"}})
 	equal(t, "code", code, 200)
-	if !strings.Contains(events[1], `"result":"Filed sf/code#41 in lane ready."`) {
-		t.Errorf("the member's new_card did not file in lane ready: %v", events)
+	if !strings.Contains(events[1], `"result":"Filed sf/code#41 on track direct."`) {
+		t.Errorf("the member's new_card did not file on track direct: %v", events)
 	}
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The metrics work\n\nSize: small\nRung: frontier, touches the queue")
 	rows := r.events.all()[before:]
-	if len(rows) != 1 || rows[0].Kind != factoryd.EventCardFiled || rows[0].IssueNumber != 41 || rows[0].Detail["lane"] != "ready" {
-		t.Errorf("the member's filing recorded %+v, want one card_filed row of #41 in lane ready", rows)
+	if len(rows) != 1 || rows[0].Kind != factoryd.EventCardFiled || rows[0].IssueNumber != 41 || rows[0].Detail["track"] != "direct" {
+		t.Errorf("the member's filing recorded %+v, want one card_filed row of #41 on track direct", rows)
 	}
 }

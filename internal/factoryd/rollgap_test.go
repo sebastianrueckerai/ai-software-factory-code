@@ -93,7 +93,7 @@ func rollGapRunner(t *testing.T, task Task) (*Runner, *fakeStore, *gapClock) {
 	return r, store, newGapClock(r)
 }
 
-var rollTask = Task{ID: "r1", Kind: "agent", Source: SourceRoll, Status: "in-review", Repository: "sf/repo"}
+var rollTask = Task{ID: "r1", Kind: "agent", Source: SourceRoll, Status: "in-review", Repository: "sf/repo", Track: "direct"}
 
 // The bound is the longest agent time in force, at any level a task's
 // agent time can come from, plus half an hour.
@@ -195,7 +195,7 @@ func TestAwaitSessionGapMergesAtTheBound(t *testing.T) {
 // with one held step; once the hold is cleared it starts and counts as
 // live from then, until its RunSession takes over or a minute passes.
 func TestAwaitRollHoldWaitsWhileAHoldIsInForce(t *testing.T) {
-	r, store, c := rollGapRunner(t, Task{ID: "t1", Kind: "agent", Status: "running", Repository: "sf/repo"})
+	r, store, c := rollGapRunner(t, Task{ID: "t1", Kind: "agent", Status: "running", Repository: "sf/repo", Track: "direct"})
 	ctx := context.Background()
 	if err := store.SetRollHold(ctx, "r1", gapStart, gapStart.Add(time.Hour)); err != nil {
 		t.Fatal(err)
@@ -232,7 +232,7 @@ func TestAwaitRollHoldWaitsWhileAHoldIsInForce(t *testing.T) {
 func TestAwaitRollHoldPassesChatAndTheRollItself(t *testing.T) {
 	for _, task := range []Task{
 		{ID: "t1", Kind: KindChat, Status: "running", Repository: "sf/repo"},
-		{ID: "r1", Kind: "agent", Source: SourceRoll, Status: "running", Repository: "sf/repo"},
+		{ID: "r1", Kind: "agent", Source: SourceRoll, Status: "running", Repository: "sf/repo", Track: "direct"},
 	} {
 		r, store, c := rollGapRunner(t, task)
 		if err := store.SetRollHold(context.Background(), "r1", gapStart, gapStart.Add(time.Hour)); err != nil {
@@ -253,7 +253,7 @@ func TestAwaitRollHoldPassesChatAndTheRollItself(t *testing.T) {
 // A session counts as live from its RunSession's start, before its pod,
 // to its end, and replaces its admission.
 func TestRunSessionCountsAsLiveUntilItEnds(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	newGapClock(runner)

@@ -13,7 +13,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The delegate hand-over files the child in lane ready on the cheap rung,
+// The delegate hand-over files the child on the direct track on the cheap rung,
 // a small card of source delegate with the caller as its parent and its
 // dependency, before the child's workflow starts; a caller that is not
 // running is refused.
@@ -22,7 +22,7 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 	fj, _ := rf.srv(t)
 	store := newFakeStore()
 	store.projects = []Project{seedProject("sf/ai-software-factory-code")}
-	parent := Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41, Author: "sebastian", Priority: 2}
+	parent := Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41, Author: "sebastian", Priority: 2, Track: "direct"}
 	if err := store.CreateTask(context.Background(), parent); err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 		t.Fatalf("answer %s: %v", rr.Body, err)
 	}
 	child := store.tasks[res.TaskID]
-	if child.Source != SourceDelegate || child.Parent != "t-parent" || child.Rung != RungCheap || child.Size != "small" || child.Lane != policy.LaneReady ||
+	if child.Source != SourceDelegate || child.Parent != "t-parent" || child.Rung != RungCheap || child.Size != "small" || child.Track != policy.TrackDirect ||
 		child.Status != "queued" || child.BudgetEUR != 2 || child.Priority != 2 || child.IssueNumber != res.Issue {
 		t.Fatalf("child = %+v", child)
 	}
@@ -82,7 +82,7 @@ func TestDelegationNeutralisesTheAgentsText(t *testing.T) {
 	fj.PublicURL = "https://git.example"
 	store := newFakeStore()
 	store.projects = []Project{seedProject("sf/ai-software-factory-code")}
-	if err := store.CreateTask(context.Background(), Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41}); err != nil {
+	if err := store.CreateTask(context.Background(), Task{ID: "t-parent", Status: "running", Repository: "sf/ai-software-factory-code", IssueNumber: 41, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	h := DelegationHandler(DelegationDeps{Store: store, Forgejo: fj, Workflows: &fakeWorkflows{},

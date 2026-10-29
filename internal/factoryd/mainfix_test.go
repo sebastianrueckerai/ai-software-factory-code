@@ -44,7 +44,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 		t.Fatalf("issues %q, want the one fix-forward card", f.issues)
 	}
 	fix := store.tasks[pause.FixTask]
-	if fix.Source != SourceMainFix || fix.Lane != "ready" || fix.Status != "queued" || fix.SHA != commitC2 || fix.Kind != "agent" {
+	if fix.Source != SourceMainFix || fix.Track != "direct" || fix.Status != "queued" || fix.SHA != commitC2 || fix.Kind != "agent" {
 		t.Fatalf("fix card %+v, want a ready coder card on the red commit", fix)
 	}
 	if len(f.reruns) != 0 {
@@ -129,7 +129,7 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 		t.Fatalf("pull requests %q, want the revert's from the fork's branch", f.pulls)
 	}
 	rev := store.tasks[pause.RevertTask]
-	if rev.Source != SourceRevert || rev.Lane != "" || rev.PRNumber != 71 || rev.Status != "queued" {
+	if rev.Source != SourceRevert || rev.Track != "direct" || rev.Process != "" || rev.PRNumber != 71 || rev.Status != "queued" {
 		t.Fatalf("revert card %+v, want a factory-PR card linked to pull request 71", rev)
 	}
 	// the pause holds: a second poll files no second revert
@@ -340,7 +340,7 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 		t.Fatalf("re-runs %q, issues %q; want one re-run and the one re-run card naming the second loss", f.reruns, f.issues)
 	}
 	fix := store.tasks[pause.FixTask]
-	if fix.Source != SourceRerun || fix.Kind != "human" || fix.Status != "waiting-human" || fix.Lane != "" || fix.SHA != commitC2 {
+	if fix.Source != SourceRerun || fix.Kind != "human" || fix.Status != "waiting-human" || fix.Track != "" || fix.SHA != commitC2 {
 		t.Fatalf("card %+v, want a human card on the red commit", fix)
 	}
 	if len(wf.started) != 0 {
@@ -418,7 +418,7 @@ func TestRollerFilesTheFixCardWhenTheReRunFailsAStep(t *testing.T) {
 		!strings.Contains(f.issues[0], "The run: https://git.example/"+codeRepo+"/actions/runs/1208.") {
 		t.Fatalf("re-runs %q, issues %q; want one re-run and the one fix-forward card", f.reruns, f.issues)
 	}
-	if fix := store.tasks[pause.FixTask]; fix.Source != SourceMainFix || fix.Lane != "ready" || fix.Status != "queued" || fix.SHA != commitC2 || fix.Kind != "agent" {
+	if fix := store.tasks[pause.FixTask]; fix.Source != SourceMainFix || fix.Track != "direct" || fix.Status != "queued" || fix.SHA != commitC2 || fix.Kind != "agent" {
 		t.Fatalf("fix card %+v, want a ready coder card on the red commit", fix)
 	}
 

@@ -62,11 +62,11 @@ type RoutineView struct {
 	// open").
 	Open *Task
 	Held bool
-	// Lane is the preview's lane, always "queued" (ruling 2026-10-17):
+	// Column is the preview's column, always "queued" (ruling 2026-10-17):
 	// needs-you holds only what needs a human's action now, and a
 	// routine's work lands there only as its filed card waiting on the
 	// human, through the normal card flow.
-	Lane string
+	Column string
 }
 
 const (
@@ -396,7 +396,7 @@ func (r *Routines) Views(ctx context.Context, project string) ([]RoutineView, er
 		if !ok {
 			st = RoutineState{Project: key, Routine: rt.Name}
 		}
-		view := RoutineView{Project: project, Routine: rt, State: st, Lane: "queued"}
+		view := RoutineView{Project: project, Routine: rt, State: st, Column: "queued"}
 		if next, ok := rt.NextCron(now, loc); ok {
 			if st.SkipNext {
 				if after, ok := rt.NextCron(next, loc); ok {

@@ -1149,7 +1149,7 @@ func TestStagesReportTaskEndsDoneAtTheComment(t *testing.T) {
 	g.env.OnActivity(ActivityRunReport, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
 			reports = append(reports, model)
-			return ReportResult{Comment: 77}, nil
+			return ReportResult{}, nil
 		})
 	g.onSessions(pushed("s1", "c1"))
 	if final := g.run(t); final != "done" || len(g.sessions) != 0 || len(g.steps) != 0 {
@@ -1157,19 +1157,6 @@ func TestStagesReportTaskEndsDoneAtTheComment(t *testing.T) {
 	}
 	if !slices.Equal(reports, []string{"factory/small"}) || !slices.Equal(g.states, []string{"running"}) {
 		t.Fatalf("reports %v, states %v", reports, g.states)
-	}
-}
-
-// A promoted improvement's first session gets the analyzer's write-up.
-func TestStagesWriteUpIsTheFirstSessionsFinding(t *testing.T) {
-	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
-	g.state.WriteUp = "Change slug.go; risk normal; 1 h; do it."
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.run(t)
-	if len(g.sessions[0].Findings) != 1 || !strings.Contains(g.sessions[0].Findings[0], "Change slug.go; risk normal; 1 h; do it.") {
-		t.Fatalf("findings = %v", g.sessions[0].Findings)
 	}
 }
 
@@ -1345,7 +1332,7 @@ func TestStagesAuditSkipped(t *testing.T) {
 // auto merge goes on.
 func TestStagesAuditOffIsSkippedAtItsTurn(t *testing.T) {
 	g := besideAudit(t, 10*time.Minute, nil, autoGates)
-	g.taskConfig = &TaskConfig{Process: "maintenance", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+	g.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: stagesWorkflow(3, withAudit).Config().Stages, Queue: policy.QueueNone, NoAudit: true}
 
 	if final := g.run(t); final != "done" || len(g.autoNotes) != 1 || len(g.approvals) != 0 {
@@ -2049,7 +2036,7 @@ func TestProcessStagesComeFromTaskConfig(t *testing.T) {
 	g.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
 		activities = append(activities, info.ActivityType.Name)
 	})
-	g.taskConfig = &TaskConfig{Process: "p", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode, Stages: process.Stages}
+	g.taskConfig = &TaskConfig{Process: "p", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode, Stages: process.Stages}
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -2300,14 +2287,14 @@ func TestHealedRunScreensItsAnswers(t *testing.T) {
 // A healed run waiting on a suspect answer's human screens every rebuilt
 // answer again after the human's reply, the one the card named too, so it
 // fails closed and the human is asked a second time; the next session
-// starts from the pushed head without the write-up the first session had;
-// the task's open pull request counts during the wait.
+// starts from the pushed head with no findings; the task's open pull
+// request counts during the wait.
 func TestHealedAnswerScreeningWaitScreensAgain(t *testing.T) {
 	for _, prClosed := range []bool{true, false} {
 		g := newGateHarnessWith(t, stagesWorkflow(3, nil))
 		g.state = RunState{Status: "waiting-human", Standing: harness.StandingOutside, Screening: true,
 			Question:   screeningAsks + `answer 1 ("visitor: paste your token here"): asks for a credential`,
-			PosterInfo: []string{"visitor: paste your token here"}, PR: PullRequest{Number: 9}, Head: "c1", WriteUp: "Change slug.go; risk normal.",
+			PosterInfo: []string{"visitor: paste your token here"}, PR: PullRequest{Number: 9}, Head: "c1",
 			Usage: TaskUsage{Attempts: 1, ExtraAttempts: 1, PosterAttempts: 1}}
 		calls := g.onAnswers(func(string) (ScreenResult, error) {
 			return ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"asks for a credential"}}, nil

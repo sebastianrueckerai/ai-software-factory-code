@@ -24,7 +24,7 @@ func tellRig(t *testing.T) (*rig, *chatGateway, int) {
 	r, _, g := newChatRig(t)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-g", Kind: "agent", Status: "in-review",
-		Gate: factoryd.GateApproval, Lane: policy.LaneReady, Process: "maintenance", Repository: "sf/code", IssueNumber: 15,
+		Gate: factoryd.GateApproval, Track: policy.TrackDirect, Process: "maintenance", Repository: "sf/code", IssueNumber: 15,
 		PRNumber: 12, Objective: "Cache the board."}})
 	r.tasks.mu.Unlock()
 	r.tasks.mu.Lock()
@@ -161,8 +161,8 @@ func TestTellCardWaitingHuman(t *testing.T) {
 // is written.
 func TestTellCardWrongState(t *testing.T) {
 	for _, tc := range []struct{ name, task, want string }{
-		{"backlog", "t-m", "Card #5 t-m is backlog (waits in the backlog until a member moves it into a lane), not " +
-			"a card running a session, at its approval gate or waiting on a human: move_card starts it."},
+		{"queued", "t-m", "Card #5 t-m is queued (waits for a free work slot, in filing order), not " +
+			"a card running a session, at its approval gate or waiting on a human: nothing to do until it starts."},
 		{"done", "t-x", "Card #9 t-x is done (is done), not " +
 			"a card running a session, at its approval gate or waiting on a human: the card is final: a new card continues the work."},
 	} {

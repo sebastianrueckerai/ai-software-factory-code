@@ -131,8 +131,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 }
 
 // HealPass starts a workflow for every agent task not yet done or
-// failed, except a queued card of a lane: those start under the work
-// bound only, one pull per project below in filing order. Main runs it
+// failed, except a queued card under the work bound: those start through
+// the admission only, one pull per project below in filing order. Main runs it
 // at boot and every minute. Starting is idempotent, so
 // this heals an intake that stored its task row but failed to start the
 // workflow, and a task whose workflow died (in review, or mid-completion)
@@ -158,10 +158,11 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 	if err := in.HealFactoryCloses(ctx); err != nil {
 		log.Printf("heal pass: factory closes: %v", err)
 	}
-	// pulls are the projects with queued cards of a lane: their oldest
-	// queued cards start below, under the work bound, once per project
+	// pulls are the projects with queued cards under the work bound: their
+	// oldest queued cards start below, once per project, the sweep that
+	// re-derives what a missed pull would have started
 	pulls := map[string]bool{}
-	for _, status := range []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
+	for _, status := range []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("start open workflows: list %s: %v", status, err)
@@ -171,9 +172,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			if t.Kind == KindChat {
 				continue
 			}
-			if t.Kind == "human" || status == "backlog" {
+			if t.Kind == "human" {
 				// no workflow: only a close to take in
-				if status == "waiting-human" || status == "backlog" {
+				if status == "waiting-human" {
 					if err := in.Resync(ctx, t); err != nil {
 						log.Printf("heal pass: resync task %s: %v", t.ID, err)
 					}
@@ -200,7 +201,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 					}
 					continue
 				}
-				if t.Lane != "" {
+				if !t.Unbound() {
 					pulls[t.Repository] = true
 					continue
 				}
@@ -395,6 +396,9 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 		return fmt.Errorf("task %s is %s, cannot wait for a human: %w", t.ID, t.Status, err)
 	}
 	mirrorTaskState(ctx, forgejo, t, "waiting-human")
+	if in != nil {
+		pullQueued(ctx, in.Store, in.Workflows, t.Repository)
+	}
 	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment}
 	if shaped != nil {
 		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info

@@ -81,9 +81,9 @@ const (
 // call returns it wrapped with the count.
 var ErrChatWakeCap = errors.New("this project's watches and timers are full")
 
-// wakeKinds are the events the Waker reads: the asks, and the card and
-// task moves the watches judge.
-var wakeKinds = []string{EventQuestionAsked, EventCardMoved, EventTaskStatus, EventTaskEnded}
+// wakeKinds are the events the Waker reads: the asks, and the task moves
+// the watches judge.
+var wakeKinds = []string{EventQuestionAsked, EventTaskStatus, EventTaskEnded}
 
 // Loop passes every interval until ctx ends.
 func (w *Waker) Loop(ctx context.Context, every time.Duration) {
@@ -171,7 +171,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 			pending = append(pending, pendingAsk{e, key})
 			continue
 		}
-		if (e.Kind == EventCardMoved || e.Kind == EventTaskStatus) && p.Autonomy != policy.AutonomyManual && !moved[e.TaskID] {
+		if e.Kind == EventTaskStatus && p.Autonomy != policy.AutonomyManual && !moved[e.TaskID] {
 			moved[e.TaskID] = true // one wake judges a card per batch
 			watches, err := w.Store.ChatWatchesFor(ctx, p.Repository, e.TaskID)
 			if err != nil {

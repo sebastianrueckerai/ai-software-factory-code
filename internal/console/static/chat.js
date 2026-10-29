@@ -1467,7 +1467,7 @@ var chatView = (function () {
   // and a settling event at once — the answer row and the badges follow
   // over the page's one stream (the settle concept)
   var settleEvents = {question_asked: 1, question_answered: 1, session_granted: 1, question_withdrawn: 1, merge_approved: 1, merge_denied: 1,
-    plan_accepted: 1, plan_changes_requested: 1, plan_rejected: 1, card_closed: 1, task_ended: 1, approval_requested: 1};
+    plan_changes_requested: 1, card_closed: 1, task_ended: 1, approval_requested: 1};
   // reread reads the open thread again, a hidden tab once it is back
   var behind = false;
   function reread() {

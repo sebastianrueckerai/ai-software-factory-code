@@ -187,7 +187,7 @@ func TestModelReviewRefusesARulingClauseLeftToNoCard(t *testing.T) {
 func TestModelReviewPassesARulingWhoseClausesAreAllListed(t *testing.T) {
 	task := gateTask
 	task.ShipsRuling, task.ShipsClauses = "C20", []int{2}
-	earlier := Task{ID: "t2", Repository: "sf/repo", Status: "done", ShipsRuling: "C20", ShipsClauses: []int{1, 3}}
+	earlier := Task{ID: "t2", Repository: "sf/repo", Status: "done", ShipsRuling: "C20", ShipsClauses: []int{1, 3}, Track: "direct"}
 	if rv := reviewShips(t, task, []Task{earlier}, designDecisionsC20); rv.Verdict != "approve" || len(rv.Findings) != 0 {
 		t.Fatalf("review = %+v, want the model's approve with no finding", rv)
 	}
@@ -203,7 +203,7 @@ func TestModelReviewPassesARulingWhoseClausesAreAllListed(t *testing.T) {
 func TestModelReviewRefusesABrokenShipsStatement(t *testing.T) {
 	task := gateTask
 	task.ShipsRuling, task.ShipsClauses = "C20", []int{1, 7}
-	rv := reviewShips(t, task, []Task{{ID: "t2", Repository: "sf/repo", Status: "done", ShipsRuling: "C20", ShipsClauses: []int{2}}},
+	rv := reviewShips(t, task, []Task{{ID: "t2", Repository: "sf/repo", Status: "done", ShipsRuling: "C20", ShipsClauses: []int{2}, Track: "direct"}},
 		designDecisionsC20)
 	joined := strings.Join(rv.Findings, "\n")
 	if rv.Verdict != "concerns" || !strings.Contains(joined, "clause 7 of C20, which the entry does not have") ||

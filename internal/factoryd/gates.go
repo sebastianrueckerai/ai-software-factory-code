@@ -1321,8 +1321,8 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		detail["dropped"] = rv.Dropped
 	}
 	r.record(ctx, t.ID, "model_review", detail)
-	process, lane := processLane(ctx, r.store, t)
-	r.countReview(ctx, rv, round, process, lane)
+	process, track := processTrack(ctx, r.store, t)
+	r.countReview(ctx, rv, round, process, track)
 	return rv, nil
 }
 

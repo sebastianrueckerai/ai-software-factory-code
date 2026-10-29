@@ -26,7 +26,7 @@ func holdoutsRig(r *rig, confirmation factoryd.PlanQuestion) {
 }
 
 // Piece 6: the plan card holds the round's hold-out criteria between its
-// questions and its accept form, this round's rows only, each with its
+// questions and its Request changes, this round's rows only, each with its
 // state's one line, an Okay on a drafted one and a Drop on a drafted or
 // unrunnable one; the forms carry the row's own index, the number the gate
 // and factoryd know it by, and the confirmation stays the card's only open
@@ -58,8 +58,8 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	if strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 3 || strings.Count(card, `value="drop" class="deny">Drop`) != 2 {
 		t.Errorf("want 3 hold-out forms, one okay and two drops:\n%s", card)
 	}
-	if i, q, a := strings.Index(card, `class="holdouts"`), strings.LastIndex(card, `action="/tasks/t-plan/plan/answer"`), strings.Index(card, `action="/tasks/t-plan/plan/accept"`); !(q < i && i < a) {
-		t.Errorf("the hold-out zone sits at %d, the last answer form %d, the accept form %d; want answer < zone < accept", q, i, a)
+	if i, q, c := strings.Index(card, `class="holdouts"`), strings.LastIndex(card, `action="/tasks/t-plan/plan/answer"`), strings.Index(card, `action="/tasks/t-plan/plan/changes"`); !(q < i && i < c) {
+		t.Errorf("the hold-out zone sits at %d, the last answer form %d, Request changes %d; want answer < zone < changes", i, q, c)
 	}
 }
 

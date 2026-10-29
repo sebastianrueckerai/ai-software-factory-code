@@ -389,8 +389,8 @@ func TestTemplateUpdateFilesCard(t *testing.T) {
 	}
 	row := got[0]
 	if row.Source != SourceTemplateUpdate || row.PRNumber != 1 || row.IssueNumber != 1 || row.Repository != "demo-app/demo-app" ||
-		row.Status != "queued" || row.Lane != "" {
-		t.Fatalf("stored row = %+v, want a queued no-lane card of pull request #1 and issue #1", row)
+		row.Status != "queued" || row.Track != "direct" || row.Process != "" {
+		t.Fatalf("stored row = %+v, want a queued direct-track card with no process of pull request #1 and issue #1", row)
 	}
 	if len(wf.started) != 1 || wf.started[0] != row.ID {
 		t.Fatalf("started %v, want the card's run", wf.started)
@@ -657,7 +657,7 @@ func TestPGStoreTasksByPRAndReachedReview(t *testing.T) {
 		pr int64
 	}{{"t-new", 9}, {"t-old", 9}, {"t-other", 10}} {
 		if err := s.CreateTask(ctx, Task{ID: c.id, Kind: "agent", Status: "queued", Repository: "sf/r", Source: SourceTemplateUpdate,
-			PRNumber: c.pr, CreatedAt: at.Add(-time.Duration(i) * time.Minute)}); err != nil {
+			PRNumber: c.pr, CreatedAt: at.Add(-time.Duration(i) * time.Minute), Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 	}

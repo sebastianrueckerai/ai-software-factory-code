@@ -526,7 +526,7 @@ func (r *Runner) endAudit(taskID string) {
 // the file_verdict tool, and the row keeps it.
 func (r *Runner) auditHoldout(ctx context.Context, t Task, repo Repo, pin int64, ho Holdout, evidence string) (holdoutAudit, error) {
 	defer beatUntilDone(ctx, "holdout-audit")()
-	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	p, err := r.filedPlan(ctx, t.Parent, t.ID)
 	if err != nil {
 		return holdoutAudit{}, err
 	}
@@ -653,7 +653,7 @@ func (r *Runner) FileVerdict(ctx context.Context, in HoldoutVerdict) ([]string, 
 			if len(quote) < 20 {
 				findings = append(findings, "file_verdict: the quote of the spec sentence is at least 20 characters")
 			} else {
-				p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+				p, err := r.filedPlan(ctx, t.Parent, t.ID)
 				if err != nil {
 					return nil, err
 				}

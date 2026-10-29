@@ -1995,7 +1995,7 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 	}
 	logs := rig.logs.String()
 	for _, want := range []string{
-		"project demo-app: labels: created agent, bug, human, improvement, noise, priority/p0,",
+		"project demo-app: labels: created agent, backlog, bug, human, improvement, noise, priority/p0,",
 		"project demo-app: fork factory-agent/demo-app: ready\n",
 		"project demo-app: webhook: missing: the seed makes it, factoryd never does\n",
 		"project demo-app: namespace demo-staging labels factory/project, factory/objects: present\n",
@@ -2013,7 +2013,8 @@ func TestSeedProjectIsReadAndReported(t *testing.T) {
 			t.Errorf("a seed project's reconcile wrote %s", w)
 		}
 	}
-	if len(rig.fj.labels) != len(BootLabels) || rig.fj.fork == nil || len(rig.fj.hooks) != 0 || len(rig.kube.changes) != 0 {
+	// BootLabels and backlog: the project's process has no plan track
+	if len(rig.fj.labels) != len(BootLabels)+1 || rig.fj.fork == nil || len(rig.fj.hooks) != 0 || len(rig.kube.changes) != 0 {
 		t.Fatalf("labels %d, fork %v, hooks %v, cluster %v", len(rig.fj.labels), rig.fj.fork, rig.fj.hooks, rig.kube.changes)
 	}
 	if !slices.Equal(rig.fj.hookReads, []string{"token registrar-tok"}) {

@@ -333,7 +333,7 @@ func TestPlanSessionWaitsForNoRollHold(t *testing.T) {
 			t.Errorf("a planner session waited for a roll's hold")
 			return nil
 		})
-	h.signalAfter(3*time.Hour, SignalPlanAccepted, TaskSignal{Author: "sebastian", Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
 	if final := h.run(t); final != "done" {
 		t.Fatalf("finals %v", h.finals)
 	}
@@ -347,7 +347,7 @@ func TestPlanSessionWaitsForNoRollHold(t *testing.T) {
 // card merges past a roll that waits (roadmap 222, item 1).
 func TestWorkflowRollTakesNoQueueTurn(t *testing.T) {
 	g, commits := newRollHarnessWith(t, func(g *gateHarness) {
-		g.taskConfig = &TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+		g.taskConfig = &TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 			Stages: testStages(), Queue: policy.QueueProject}
 	}, "r1")
 	g.env.OnActivity(ActivityEnterQueue, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (int, error) {

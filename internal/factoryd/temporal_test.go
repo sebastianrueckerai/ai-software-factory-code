@@ -52,9 +52,9 @@ func TestTemporalStartAllowsRestartOfFailedWorkflowsOnly(t *testing.T) {
 func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	store := newFakeStore()
 	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tv": "in-review", "tw": "waiting-human", "ti": "waiting-image", "tc": "closing", "tm": "merged", "td": "done", "tf": "failed"} {
-		store.CreateTask(context.Background(), withStatus(Task{ID: id, Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30}, st))
+		store.CreateTask(context.Background(), withStatus(Task{ID: id, Kind: "agent", Track: "direct", Repository: "sf/ai-software-factory-code", IssueNumber: 30}, st))
 	}
-	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Repository: "no-slash"})
+	store.CreateTask(context.Background(), Task{ID: "tbroken", Status: "running", Kind: "agent", Track: "direct", Repository: "no-slash"})
 	store.CreateTask(context.Background(), Task{ID: "th", Status: "waiting-human", Kind: "human", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
@@ -70,11 +70,13 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 		t.Fatalf("the failed task's events = %v", got)
 	}
 	wantSums(t, sums(t, reader, "factory.task.outcome"), map[string]float64{
-		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=no-slash,state=failed":                  1,
-		"attempts=0,lane=none,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=done": 1,
+		"attempts=0,merge_rule=human,model_alias=none,process=none,project=no-slash,state=failed,track=direct":                1,
+		"attempts=0,merge_rule=human,model_alias=none,process=none,project=sf-ai-software-factory-code,state=done,track=none": 1,
 	})
+	// the queued tq starts twice, idempotently: once in the slot the closing
+	// tc frees as it ends (taskEnded's pull), once in the pass's own pull
 	slices.Sort(wf.started)
-	if want := []string{"tc", "ti", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
+	if want := []string{"tc", "ti", "tq", "tq", "tr", "tv", "tw"}; !slices.Equal(wf.started, want) {
 		t.Fatalf("started = %v, want %v", wf.started, want)
 	}
 	slices.Sort(wf.signals)
@@ -103,7 +105,7 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 func TestHealPassLeavesTheChatTaskBe(t *testing.T) {
 	store := newFakeStore()
 	ctx := context.Background()
-	store.CreateTask(ctx, Task{ID: "tr", Status: "running", Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
+	store.CreateTask(ctx, Task{ID: "tr", Status: "running", Kind: "agent", Repository: "sf/ai-software-factory-code", IssueNumber: 30, Track: "direct"})
 	store.CreateTask(ctx, Task{ID: "t-chat-code-2026-10", Status: "running", Kind: KindChat, Repository: "sf/ai-software-factory-code"})
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
@@ -406,7 +408,7 @@ func TestHealFactoryCloses(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
 			if !tc.noTask {
-				store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Repository: cmp.Or(tc.repo, "linkshort/linkshort"), IssueNumber: 5})
+				store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Repository: cmp.Or(tc.repo, "linkshort/linkshort"), IssueNumber: 5, Track: "direct"})
 			}
 			store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, Body: body, CreatedAt: time.Now().Add(-tc.age)})
 			if tc.confirmed {
@@ -440,7 +442,7 @@ func TestHealFactoryCloses(t *testing.T) {
 func TestHealPassFinishesAFactoryClose(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
-	if err := store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "done", Repository: "linkshort/linkshort", IssueNumber: 5}); err != nil {
+	if err := store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "done", Repository: "linkshort/linkshort", IssueNumber: 5, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-a", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 5, CreatedAt: time.Now().Add(-3 * time.Minute)}); err != nil {

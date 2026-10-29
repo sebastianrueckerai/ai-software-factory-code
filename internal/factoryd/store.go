@@ -36,7 +36,7 @@ type Task struct {
 	Repository           string
 	SHA                  string
 	// Kind is "agent" (an agent run, the default) or "human" (Stage 7's
-	// console lane: no agent run).
+	// person's card: no agent run).
 	Kind string
 	// IssueNumber is the Forgejo issue mirroring this task's state; 0 means
 	// none is linked yet.
@@ -94,10 +94,12 @@ type Task struct {
 	// RevertedAt is when the daily revert pass found the task's merged
 	// work undone (RevertPass); nil while it holds.
 	RevertedAt *time.Time
-	// Lane is the card's lane (backlog, plan, ready); "" for the human
-	// lane, rolls and report tasks. Process is the process it follows,
-	// "" where it has no lane or the loader has not filled it yet.
-	Lane, Process string
+	// Track is how an agent card's work runs, set by whoever filed it
+	// (roadmap 225): policy.TrackDirect or policy.TrackPlan; "" for a
+	// human or chat task. Process is the process it follows, "" for a
+	// card that runs its project's (a roll, a factory pull request) and a
+	// human or chat task.
+	Track, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
 	// PlanRevision is the plan revision the card's first session ran
@@ -153,7 +155,7 @@ func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 
 // Report tells a report task (ruling 185) by its source: a plan's cards
 // have a parent too and are no report.
-func (t Task) Report() bool { return t.Source == SourceScreening || t.Source == SourcePresort }
+func (t Task) Report() bool { return t.Source == SourceScreening }
 
 // Standing is the issue author's standing (ruling 152); "" for a task
 // from before authors were kept.
@@ -285,18 +287,19 @@ type Store interface {
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	// CountAdmitted counts repository's cards holding a work slot: those
 	// in a status a started card holds until it settles, plus queued
-	// cards already admitted. A lane-less card (a roll, a factory pull
-	// request) and human and chat cards hold none. A card parked on a
+	// cards already admitted. A card the bound leaves out (Task.Unbound:
+	// a roll, a factory pull request, a screening) and human and chat
+	// cards hold none. A card parked on a
 	// person (waiting-human, waiting-poster) or on its image
 	// (waiting-image) holds none either: no session runs and no spend
 	// accrues, so its slot frees at once (the tool card the image waits on
 	// may need it), and the answer or the image that resumes it overshoots
 	// the bound for one gate pass.
 	CountAdmitted(ctx context.Context, repository string) (int, error)
-	// CountBacklog counts repository's cards that hold no admission
-	// stamp: backlog rows and queued rows not yet admitted, the
-	// complement of CountAdmitted's slots (roadmap 239's backlog cap).
-	CountBacklog(ctx context.Context, repository string) (int, error)
+	// CountQueue counts repository's cards that hold no admission stamp:
+	// the queued cards not yet admitted, the complement of CountAdmitted's
+	// slots (roadmap 239's queue cap).
+	CountQueue(ctx context.Context, repository string) (int, error)
 	// ListQueuedByRepository lists repository's queued cards in filing
 	// order, the oldest first: the order a freed slot admits them in.
 	// created_at ties (Forgejo stamps whole seconds) break by issue
@@ -433,10 +436,6 @@ type Store interface {
 	SetRollHold(ctx context.Context, taskID string, since, until time.Time) error
 	ClearRollHold(ctx context.Context, taskID string) error
 	RollHold(ctx context.Context, now time.Time) (RollHold, bool, error)
-	// EnterLane moves backlog card id into starting lane lane: queued at
-	// base sha with the lane's class as its capabilities, in the intake
-	// gate from now; false when the card was not in the backlog.
-	EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error)
 	// ToHumanLane makes queued agent task id a human-lane task waiting on
 	// a human; false when it was not a queued agent task.
 	ToHumanLane(ctx context.Context, id string) (bool, error)
@@ -532,6 +531,9 @@ type Store interface {
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
 	// RemoveTaskDeps drops task id's waits on each of dependsOn.
 	RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error
+	// ProjectMonthSpend is repository's ledger spend in the UTC month of
+	// at, as the gateway's project headroom counts it.
+	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
@@ -644,8 +646,8 @@ type Store interface {
 const (
 	ApprovalMerge    = "merge"
 	ApprovalResource = "resource"
-	// ApprovalPlan is a plan revision for approvers to accept (Spec a
-	// PlanSpec).
+	// ApprovalPlan is a plan revision that waits for its open questions'
+	// answers (Spec a PlanSpec).
 	ApprovalPlan = "plan"
 	// ApprovalCriteria is a plan's gap question (the spec-intake concept,
 	// pieces 7 and 8): its cards ran out with a criterion still open; the
@@ -802,17 +804,17 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, lane, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at)
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
-         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN $17 ELSE '' END,
-         CASE WHEN $12 = 'agent' AND $7 <> 'backlog' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
+         CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
+         CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
          CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Lane, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR)
+		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR)
 	return err
 }
 
@@ -874,7 +876,7 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(lane, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress`
@@ -886,7 +888,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Lane, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
+		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
 		&t.Image, &t.ImageDigest, &egress); err != nil {
 		return Task{}, err
@@ -1344,19 +1346,8 @@ func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 }
 
 func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
-	return s.changeStatus(ctx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, lane = NULL, process = NULL`,
+	return s.changeStatus(ctx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
 		`id = $1 AND kind = 'agent' AND status = 'queued'`, id)
-}
-
-func (s *PGStore) BackfillProcess(ctx context.Context, repository, process string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET process = $2
-		WHERE repository = $1 AND lane IS NOT NULL AND process IS NULL AND status NOT IN ('done', 'failed', 'closed')`, repository, process)
-	return err
-}
-
-func (s *PGStore) EnterLane(ctx context.Context, id, lane, class, sha string) (bool, error) {
-	return s.changeStatus(ctx, `status = 'queued', lane = $2, required_capabilities = jsonb_build_array($3::text),
-		sha = $4, gate = $5, gate_since = now()`, `id = $1 AND status = 'backlog'`, id, lane, class, sha, GateIntake)
 }
 
 func (s *PGStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
@@ -1411,7 +1402,7 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 
 func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
 	_, err := s.changeStatus(ctx, `gate = $2, gate_since = $3`,
-		`id = $1 AND status NOT IN ('done', 'failed', 'closed', 'backlog')`, id, gate, since)
+		`id = $1 AND status NOT IN ('done', 'failed', 'closed')`, id, gate, since)
 	return err
 }
 
@@ -1433,16 +1424,16 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
-		WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> ''
+		WHERE repository = $1 AND `+boundCards+`
 			AND (status IN ('waiting-deps', 'running', 'in-review', 'closing')
-				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository).Scan(&n)
+				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository).Scan(&n) // #nosec G202 -- boundCards is built from constants
 	return n, err
 }
 
 func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+`
-		FROM tasks WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> '' AND status = 'queued'
-		ORDER BY created_at, issue_number, id`, repository)
+		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued'
+		ORDER BY created_at, issue_number, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
 // changeStatus updates the one task $1 names, SET set WHERE where, and
@@ -1855,15 +1846,15 @@ func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string
 	return sha, true, nil
 }
 
-// CountBacklog counts repository's cards that hold no admission stamp:
-// backlog rows and queued rows not yet admitted, the complement of
-// CountAdmitted's slots (roadmap 239's backlog cap).
-func (s *PGStore) CountBacklog(ctx context.Context, repository string) (int, error) {
+// CountQueue counts repository's cards that hold no admission stamp: the
+// queued cards not yet admitted, the complement of CountAdmitted's slots
+// (roadmap 239's queue cap).
+func (s *PGStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
-		WHERE repository = $1 AND kind = 'agent' AND COALESCE(lane, '') <> ''
-			AND status NOT IN ('done', 'failed', 'closed') AND admitted_at IS NULL`, repository).Scan(&n)
+		WHERE repository = $1 AND `+boundCards+`
+			AND status NOT IN ('done', 'failed', 'closed') AND admitted_at IS NULL`, repository).Scan(&n) // #nosec G202 -- boundCards is built from constants
 	return n, err
 }
 

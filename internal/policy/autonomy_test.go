@@ -11,11 +11,11 @@ import (
 // the always-confirm set, full auto is autonomous with merges following
 // merge_rule.
 
-var wantManual = []string{"new_card", "request_image", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
+var wantManual = []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}
 
-var wantAssisted = []string{"answer", "tell_card", "steer", "request_changes", "reject_plan",
+var wantAssisted = []string{"answer", "tell_card", "steer", "request_changes",
 	"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "fund", "set_dependency", "split_card",
 	"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_skip"}
 
@@ -102,7 +102,7 @@ func TestAutonomyState(t *testing.T) {
 
 func TestProjectValidateAutonomy(t *testing.T) {
 	ok := ProjectConfig{Repository: "u/u", MergeRule: MergeHuman, Objects: ObjectsSeed, Agents: AgentsNone, Tokens: &SeedTokens{Read: SecretConfig},
-		Autonomy: AutonomyAssisted, BacklogCap: 8}
+		Autonomy: AutonomyAssisted, QueueCap: 8}
 	if err := ok.Validate("u"); err != nil {
 		t.Errorf("valid autonomy: %v", err)
 	}
@@ -112,24 +112,24 @@ func TestProjectValidateAutonomy(t *testing.T) {
 		t.Errorf("Autonomy fly: want an autonomy refusal, got %v", err)
 	}
 	bad = ok
-	bad.BacklogCap = -1
-	if err := bad.Validate("u"); err == nil || !contains(err.Error(), "backlog_cap") {
-		t.Errorf("backlog_cap -1: want a backlog_cap refusal, got %v", err)
+	bad.QueueCap = -1
+	if err := bad.Validate("u"); err == nil || !contains(err.Error(), "queue_cap") {
+		t.Errorf("queue_cap -1: want a queue_cap refusal, got %v", err)
 	}
 }
 
 func contains(s, sub string) bool { return strings.Contains(s, sub) }
 
-func TestBacklogCapOf(t *testing.T) {
-	tr := Tree{Projects: map[string]ProjectConfig{"a": {Repository: "o/a", BacklogCap: 3}, "b": {Repository: "o/b"}}}
-	if got := tr.BacklogCapOf("o/a"); got != 3 {
-		t.Errorf("BacklogCapOf(o/a) = %d, want 3", got)
+func TestQueueCapOf(t *testing.T) {
+	tr := Tree{Projects: map[string]ProjectConfig{"a": {Repository: "o/a", QueueCap: 3}, "b": {Repository: "o/b"}}}
+	if got := tr.QueueCapOf("o/a"); got != 3 {
+		t.Errorf("QueueCapOf(o/a) = %d, want 3", got)
 	}
-	if got := tr.BacklogCapOf("o/b"); got != DefaultBacklogCap {
-		t.Errorf("BacklogCapOf(o/b) = %d, want %d", got, DefaultBacklogCap)
+	if got := tr.QueueCapOf("o/b"); got != DefaultQueueCap {
+		t.Errorf("QueueCapOf(o/b) = %d, want %d", got, DefaultQueueCap)
 	}
-	if got := tr.BacklogCapOf("o/x"); got != DefaultBacklogCap {
-		t.Errorf("BacklogCapOf(o/x) = %d, want %d", got, DefaultBacklogCap)
+	if got := tr.QueueCapOf("o/x"); got != DefaultQueueCap {
+		t.Errorf("QueueCapOf(o/x) = %d, want %d", got, DefaultQueueCap)
 	}
 }
 

@@ -18,7 +18,7 @@ import (
 func TestRunsOfACardsLife(t *testing.T) {
 	at := func(h, m int) time.Time { return time.Date(2026, 10, 14, h, m, 0, 0, time.UTC) }
 	stamp := func(h, m, s int) string { return time.Date(2026, 10, 14, h, m, s, 0, time.UTC).Format(time.RFC3339) }
-	task := factoryd.Task{ID: "t-life", Kind: "agent", Status: "waiting-human", Lane: "ready", Repository: "sf/code", CreatedAt: at(10, 0), SpentEUR: 0.70}
+	task := factoryd.Task{ID: "t-life", Kind: "agent", Status: "waiting-human", Track: "direct", Repository: "sf/code", CreatedAt: at(10, 0), SpentEUR: 0.70}
 	status := func(h, m int, s string) factoryd.Event {
 		return factoryd.Event{TaskID: "t-life", Kind: factoryd.EventTaskStatus, At: at(h, m), Detail: map[string]any{"status": s}}
 	}
@@ -80,7 +80,7 @@ func TestRunsOfACardsLife(t *testing.T) {
 // session builds from 10:21.
 func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
 	at := func(h, m, s int) time.Time { return time.Date(2026, 10, 15, h, m, s, 0, time.UTC) }
-	task := factoryd.Task{ID: "t-w", Kind: "agent", Status: "running", Lane: "ready", CreatedAt: at(9, 50, 0)}
+	task := factoryd.Task{ID: "t-w", Kind: "agent", Status: "running", Track: "direct", CreatedAt: at(9, 50, 0)}
 	status := func(t time.Time, s string) factoryd.Event {
 		return factoryd.Event{TaskID: "t-w", Kind: factoryd.EventTaskStatus, At: t, Detail: map[string]any{"status": s}}
 	}

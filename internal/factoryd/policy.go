@@ -30,15 +30,15 @@ type PolicyStore interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 	// SweepHolds books the holds whose caller never released them.
 	SweepHolds(ctx context.Context) (int, error)
-	// OpenCardsByLane are the open cards that sit in a lane.
-	OpenCardsByLane(ctx context.Context) ([]OpenCard, error)
+	// OpenCardsByTrack are the open agent cards with their tracks.
+	OpenCardsByTrack(ctx context.Context) ([]OpenCard, error)
 }
 
-// OpenCard is an open card in a lane: the project its repository belongs
-// to, its lane, the process it follows and its issue.
+// OpenCard is an open agent card: the project its repository belongs to,
+// its track, the process it follows and its issue.
 type OpenCard struct {
-	Project, Lane, Process string
-	Issue                  int64
+	Project, Track, Process string
+	Issue                   int64
 }
 
 // ConfigSource reads the configuration tree (ruling 183): the head commit
@@ -136,8 +136,8 @@ func (l *PolicyLoader) Boot(ctx context.Context) error {
 
 // Load reads the head commit and records its tree if the commit changed
 // since the last call. It logs every failure itself; a failure to read is
-// tried again at the next call, a refused tree is not, unless open cards in
-// a lane it drops refused it (CheckOpenLanes): that head's tree is kept and
+// tried again at the next call, a refused tree is not, unless open cards on
+// a track it drops refused it (CheckOpenTracks): that head's tree is kept and
 // its cards read again at each call, logged and raised only when the lines
 // change.
 func (l *PolicyLoader) Load(ctx context.Context) error {
@@ -171,12 +171,12 @@ func (l *PolicyLoader) Load(ctx context.Context) error {
 			return err
 		}
 	}
-	cards, err := l.Store.OpenCardsByLane(ctx)
+	cards, err := l.Store.OpenCardsByTrack(ctx)
 	if err != nil {
-		log.Printf("config: commit %s: open cards per lane: %v", head, err)
-		return fmt.Errorf("open cards per lane: %w", err)
+		log.Printf("config: commit %s: open cards per track: %v", head, err)
+		return fmt.Errorf("open cards per track: %w", err)
 	}
-	if lines := CheckOpenLanes(tree, cards); len(lines) > 0 {
+	if lines := CheckOpenTracks(tree, cards); len(lines) > 0 {
 		err := errors.New(strings.Join(lines, "\n"))
 		if head == held && err.Error() == heldLines {
 			return err
@@ -266,8 +266,8 @@ func (l *PolicyLoader) Budget() policy.Budget { return l.Current().Document.Budg
 
 // CheckTree is the loader's whole judgement of a tree's files, which
 // `factoryd config check` runs too: policy.ParseTree, and every class a
-// starting lane names must allow every model of the ladder, else a task
-// would be refused mid-run.
+// track names must allow every model of the ladder, else a task would be
+// refused mid-run.
 func CheckTree(files map[string][]byte, ladder []string) (policy.Tree, error) {
 	tree, err := policy.ParseTree(files)
 	if err != nil {
@@ -306,14 +306,15 @@ func CheckChange(files, changes map[string][]byte, ladder []string) error {
 	return err
 }
 
-// CheckOpenLanes is the loader's one judgement the tree alone cannot make
-// (D1, D1b): no open card may sit in a lane that the process its project
-// follows in tree lacks. One line per project and lane, on the process file
-// when the card's own process lost the lane, else on the project file.
-func CheckOpenLanes(tree policy.Tree, cards []OpenCard) []string {
+// CheckOpenTracks is the loader's one judgement the tree alone cannot make
+// (D1, D1b): no open card may sit on a track that the process its project
+// follows in tree lacks. One line per project and track, on the process
+// file when the card's own process lost the track, else on the project
+// file.
+func CheckOpenTracks(tree policy.Tree, cards []OpenCard) []string {
 	type key struct {
-		project, lane, process string
-		moved                  bool
+		project, track, process string
+		moved                   bool
 	}
 	held := map[key][]int64{}
 	for _, c := range cards {
@@ -321,10 +322,10 @@ func CheckOpenLanes(tree policy.Tree, cards []OpenCard) []string {
 		if !ok || pc.Process == "" {
 			continue
 		}
-		if _, ok := laneOf(tree.Processes[pc.Process].Lanes, c.Lane); ok {
+		if _, ok := tree.Processes[pc.Process].Tracks.Track(c.Track); ok {
 			continue
 		}
-		k := key{c.Project, c.Lane, pc.Process, c.Process != "" && c.Process != pc.Process}
+		k := key{c.Project, c.Track, pc.Process, c.Process != "" && c.Process != pc.Process}
 		held[k] = append(held[k], c.Issue)
 	}
 	var lines []string
@@ -335,31 +336,32 @@ func CheckOpenLanes(tree policy.Tree, cards []OpenCard) []string {
 			count += "s"
 		}
 		if k.moved {
-			lines = append(lines, fmt.Sprintf("%s: process %s has no lane %s, which holds %s of project %s (%s); move or close them first",
-				policy.ProjectFile(k.project), k.process, k.lane, count, k.project, issueRefs(issues)))
+			lines = append(lines, fmt.Sprintf("%s: process %s has no track %s, which holds %s of project %s (%s); close them first",
+				policy.ProjectFile(k.project), k.process, k.track, count, k.project, issueRefs(issues)))
 			continue
 		}
-		lines = append(lines, fmt.Sprintf("%s: lanes: lane %s is gone from process %s, which project %s follows: it holds %s (%s); move or close them first",
-			policy.ProcessFile(k.process), k.lane, k.process, k.project, count, issueRefs(issues)))
+		lines = append(lines, fmt.Sprintf("%s: tracks: track %s is gone from process %s, which project %s follows: it holds %s (%s); close them first",
+			policy.ProcessFile(k.process), k.track, k.process, k.project, count, issueRefs(issues)))
 	}
 	slices.Sort(lines)
 	return lines
 }
 
-// fitsLadder holds every class a starting lane of any process names
-// against the ladder, one line per class and missing model.
+// fitsLadder holds every class a track of any process names against the
+// ladder, one line per class and missing model.
 func fitsLadder(t policy.Tree, ladder []string) error {
 	var errs []error
 	seen := map[string]bool{}
 	for _, name := range slices.Sorted(maps.Keys(t.Processes)) {
-		for _, l := range t.Processes[name].Lanes {
+		for _, track := range policy.TrackNames {
+			tr, ok := t.Processes[name].Tracks.Track(track)
 			for _, m := range ladder {
-				if l.Class == "" || seen[l.Class+" "+m] || t.Document.AllowsModel([]string{l.Class}, m) {
+				if !ok || tr.Class == "" || seen[tr.Class+" "+m] || t.Document.AllowsModel([]string{tr.Class}, m) {
 					continue
 				}
-				seen[l.Class+" "+m] = true
-				errs = append(errs, fmt.Errorf("%s: capability class %q does not allow the ladder model %q (lane %s of %s starts it)",
-					policy.FilePolicy, l.Class, m, l.Name, policy.ProcessFile(name)))
+				seen[tr.Class+" "+m] = true
+				errs = append(errs, fmt.Errorf("%s: capability class %q does not allow the ladder model %q (track %s of %s starts it)",
+					policy.FilePolicy, tr.Class, m, track, policy.ProcessFile(name)))
 			}
 		}
 	}
@@ -579,11 +581,11 @@ func (s *PGStore) RecordPolicy(ctx context.Context, commit string, tree policy.T
 	return policy.Record(ctx, s.db, commit, tree)
 }
 
-// OpenCardsByLane reads every open card with a lane; its project is the
-// one whose file in force names its repository, a card of no project is
-// left out, and a card the loader has not given a process yet follows its
-// project's in force.
-func (s *PGStore) OpenCardsByLane(ctx context.Context) ([]OpenCard, error) {
+// OpenCardsByTrack reads every open agent card with its track; its
+// project is the one whose file in force names its repository, a card of
+// no project is left out, and a card with no process of its own follows
+// its project's in force.
+func (s *PGStore) OpenCardsByTrack(ctx context.Context) ([]OpenCard, error) {
 	ps, err := s.Projects(ctx)
 	if err != nil {
 		return nil, err
@@ -594,8 +596,8 @@ func (s *PGStore) OpenCardsByLane(ctx context.Context) ([]OpenCard, error) {
 			project[p.Repository] = p
 		}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT repository, lane, COALESCE(process, ''), issue_number FROM tasks
-		WHERE lane IS NOT NULL AND status NOT IN ('done', 'failed', 'closed') ORDER BY issue_number`)
+	rows, err := s.db.QueryContext(ctx, `SELECT repository, track, COALESCE(process, ''), issue_number FROM tasks
+		WHERE kind = 'agent' AND status NOT IN ('done', 'failed', 'closed') ORDER BY issue_number`)
 	if err != nil {
 		return nil, err
 	}
@@ -604,7 +606,7 @@ func (s *PGStore) OpenCardsByLane(ctx context.Context) ([]OpenCard, error) {
 	for rows.Next() {
 		var repository string
 		var c OpenCard
-		if err := rows.Scan(&repository, &c.Lane, &c.Process, &c.Issue); err != nil {
+		if err := rows.Scan(&repository, &c.Track, &c.Process, &c.Issue); err != nil {
 			return nil, err
 		}
 		p, ok := project[repository]
@@ -719,9 +721,6 @@ type ConfigBook interface {
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
-	// BackfillProcess sets process on repository's open cards that have a
-	// lane and no process yet.
-	BackfillProcess(ctx context.Context, repository, process string) error
 	projectLookup
 	taskReader
 }
@@ -778,20 +777,10 @@ func (a *ConfigAlarm) ReadFailing(ctx context.Context, err error) error {
 	return ierr
 }
 
-// Resolve is PolicyLoader.Loaded: a valid commit loaded. The open cards
-// the lanes migration left without a process take their project's, and
-// every open rejection is fixed: each issue gets a comment naming the
-// commit and is closed as the bot, its task ends done, and its alert is
-// judged real.
+// Resolve is PolicyLoader.Loaded: a valid commit loaded. Every open
+// rejection is fixed: each issue gets a comment naming the commit and is
+// closed as the bot, its task ends done, and its alert is judged real.
 func (a *ConfigAlarm) Resolve(ctx context.Context, v policy.Version) error {
-	for _, c := range v.Projects {
-		if c.Process == "" {
-			continue
-		}
-		if err := a.Store.BackfillProcess(ctx, c.Repository, c.Process); err != nil {
-			return fmt.Errorf("process of the open cards of %s: %w", c.Repository, err)
-		}
-	}
 	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return err

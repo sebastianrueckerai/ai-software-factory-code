@@ -23,7 +23,7 @@ func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, plan_catches CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "x", Repository: "sf/r", IssueNumber: 1}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "queued", Objective: "x", Repository: "sf/r", IssueNumber: 1, Track: "direct"}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
 

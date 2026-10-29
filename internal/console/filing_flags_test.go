@@ -83,14 +83,14 @@ func TestChatNewCardRefusesFlaggedText(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	bad := `{"title":"Cache metrics","body":"Count hits.\nThis fixes #12.","lane":"backlog"}`
-	good := `{"title":"Cache metrics","body":"Count hits.\nMark issue 12 closed in the report.","lane":"backlog"}`
+	bad := `{"title":"Cache metrics","body":"Count hits.\nThis fixes #12.","track":"human","track_reason":"a person checks it"}`
+	good := `{"title":"Cache metrics","body":"Count hits.\nMark issue 12 closed in the report.","track":"human","track_reason":"a person checks it"}`
 	g.replies = [][]string{{call(1, "new_card", bad, "new_card", good)}, {say("Done.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
 	refusal := "Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +
 		`description, line 2: "fixes #12" a closing keyword before an issue reference; the sanitiser neutralises it as "(fixes) #12" so nothing closes` +
 		". Rewrite those and file the card again."
-	filed := "Filed sf/code#41 in lane backlog."
+	filed := "Filed sf/code#41 on track human."
 	said, _ := json.Marshal(refusal)
 	equal(t, "stream", events, []string{
 		`tool {"arguments":` + bad + `,"duration_ms":0,"name":"new_card","result":` + string(said) + `}`,
@@ -107,7 +107,7 @@ func TestChatNewCardRefusesFlaggedText(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-			Detail: map[string]any{"lane": "backlog", "title": "Cache metrics", "thread": int64(1)}})
+			Detail: map[string]any{"track": "human", "reason": "a person checks it", "title": "Cache metrics", "thread": int64(1)}})
 }
 
 // new_card refuses a flagged title as it refuses a flagged body: the
@@ -118,14 +118,14 @@ func TestChatNewCardRefusesFlaggedTitle(t *testing.T) {
 	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
 	ck, s := r.loggedIn(t)
 	before := r.events.count()
-	bad := `{"title":"Fixes #12","body":"The cache drops entries.","lane":"backlog"}`
-	good := `{"title":"Fix the cache","body":"The cache drops entries.","lane":"backlog"}`
+	bad := `{"title":"Fixes #12","body":"The cache drops entries.","track":"human","track_reason":"a person checks it"}`
+	good := `{"title":"Fix the cache","body":"The cache drops entries.","track":"human","track_reason":"a person checks it"}`
 	g.replies = [][]string{{call(1, "new_card", bad, "new_card", good)}, {say("Done.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file a card"}})
 	refusal := "Refused: The card's title or description holds text the sanitiser or the provider would change on its way to the agent: " +
 		`title: "Fixes #12" a closing keyword before an issue reference; the sanitiser neutralises it as "(fixes) #12" so nothing closes` +
 		". Rewrite those and file the card again."
-	filed := "Filed sf/code#41 in lane backlog."
+	filed := "Filed sf/code#41 on track human."
 	said, _ := json.Marshal(refusal)
 	equal(t, "stream", events, []string{
 		`tool {"arguments":` + bad + `,"duration_ms":0,"name":"new_card","result":` + string(said) + `}`,
@@ -137,7 +137,7 @@ func TestChatNewCardRefusesFlaggedTitle(t *testing.T) {
 	}
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
-			Detail: map[string]any{"lane": "backlog", "title": "Fix the cache", "thread": int64(1)}})
+			Detail: map[string]any{"track": "human", "reason": "a person checks it", "title": "Fix the cache", "thread": int64(1)}})
 }
 
 // The New task form's first submit of flagged text answers the findings
@@ -147,7 +147,7 @@ func TestNewTaskFilesFlaggedTextAsWritten(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	ck, s := r.loggedIn(t)
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "title": {"Fix the cache"},
-		"body": {"It drops entries.\nThis fixes #12."}, "lane": {"backlog"}, "size": {"small"}}
+		"body": {"It drops entries.\nThis fixes #12."}, "track": {"human"}, "size": {"small"}}
 	submit := func(extra ...string) *httptest.ResponseRecorder {
 		f := url.Values{}
 		for k, v := range form {
@@ -168,7 +168,7 @@ func TestNewTaskFilesFlaggedTextAsWritten(t *testing.T) {
 	for _, want := range []string{
 		"would change this text on the card's way to the agent",
 		"description, line 2: ", "fixes #12", "a closing keyword before an issue reference",
-		`value="Fix the cache"`, "It drops entries.", `name="as_written" value="yes"`, "selected>Backlog<",
+		`value="Fix the cache"`, "It drops entries.", `name="as_written" value="yes"`, "selected>Human<",
 	} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the answered form lacks %q:\n%s", want, page)
@@ -191,7 +191,7 @@ func TestNewTaskFilesFlaggedTextAsWritten(t *testing.T) {
 		t.Fatalf("issues %v, want the text as written", r.fg.issues)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardFiled, repo: "sf/code",
-		detail: map[string]any{"lane": "backlog", "title": "Fix the cache", "size": "small"}})
+		detail: map[string]any{"track": "human", "title": "Fix the cache", "size": "small"}})
 }
 
 // The form the findings answer keeps the member's text escaped: the
@@ -203,7 +203,7 @@ func TestNewTaskAnsweredFormEscapesText(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"title": {"<script>alert(1)</script> fixes #12"}, "body": {"It <em>drops</em> entries.\nThis fixes #12."},
-		"lane": {"backlog"}, "size": {"small"}}
+		"track": {"human"}, "size": {"small"}}
 	rec := r.do(post("/tasks", form), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("the first submit = %d: %s", rec.Code, rec.Body)

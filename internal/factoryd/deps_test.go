@@ -27,11 +27,11 @@ func TestPGStoreTaskDeps(t *testing.T) {
 	}
 	defer s.Close()
 	for _, tk := range []Task{
-		{ID: "t-a", Status: "running", IssueNumber: 5},
-		{ID: "t-b", Status: "done", IssueNumber: 3},
-		{ID: "t-c", Status: "failed", IssueNumber: 4},
-		{ID: "t-x", Status: "waiting-deps", IssueNumber: 7},
-		{ID: "t-y", Status: "queued", IssueNumber: 8},
+		{ID: "t-a", Status: "running", IssueNumber: 5, Track: "direct"},
+		{ID: "t-b", Status: "done", IssueNumber: 3, Track: "direct"},
+		{ID: "t-c", Status: "failed", IssueNumber: 4, Track: "direct"},
+		{ID: "t-x", Status: "waiting-deps", IssueNumber: 7, Track: "direct"},
+		{ID: "t-y", Status: "queued", IssueNumber: 8, Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind, tk.Source = 1, "sf/r", "agent", SourcePlan
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -110,7 +110,7 @@ func TestPGStoreTaskDeps(t *testing.T) {
 // depsConfig is TaskConfig for a card of process spec, which has the
 // dependencies block.
 func depsConfig() *TaskConfig {
-	return &TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+	return &TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: policy.QueueProject, Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}}
 }
 
@@ -178,14 +178,14 @@ func TestWaitStartsWhenDepsDone(t *testing.T) {
 	})
 	t.Run("activity and trigger", func(t *testing.T) {
 		ctx := context.Background()
-		card := Task{ID: "t-c", Kind: "agent", Status: "queued", Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7,
+		card := Task{ID: "t-c", Kind: "agent", Status: "queued", Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7,
 			Parent: "t-plan", Source: SourcePlan}
 		fj := &prForgejo{labels: map[int64][]string{7: {"agent", "state/queued"}}}
 		r, store, objects := newActivityRunner(t, card, fj)
 		wf := &fakeWorkflows{}
 		r.cfg.Workflows = wf
 		for id, issue := range map[string]int64{"t-a": 3, "t-b": 5} {
-			store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Lane: "ready", Process: "spec", Repository: "sf/repo",
+			store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Track: "direct", Process: "spec", Repository: "sf/repo",
 				IssueNumber: issue, Parent: "t-plan", Source: SourcePlan})
 		}
 		if err := store.AddTaskDeps(ctx, "t-c", []string{"t-b", "t-a"}); err != nil {
@@ -241,10 +241,10 @@ func TestWaitStartsWhenDepsDone(t *testing.T) {
 // failed) finishes the entry: the gate, the label and the wait's record.
 func TestDependenciesRetryFinishesEntry(t *testing.T) {
 	ctx := context.Background()
-	card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
+	card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
 	fj := &prForgejo{labels: map[int64][]string{7: {"agent", "state/queued"}}}
 	r, store, objects := newActivityRunner(t, card, fj)
-	store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 3})
+	store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 3, Track: "direct"})
 	store.AddTaskDeps(ctx, "t-c", []string{"t-a"})
 	for range 2 {
 		if _, err := execActivity(t, r, ActivityDependencies, "t-c"); err != nil {
@@ -394,10 +394,10 @@ func TestClosedDependencyOpensCard(t *testing.T) {
 	})
 	t.Run("activity", func(t *testing.T) {
 		ctx := context.Background()
-		card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
+		card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
 		r, store, _ := newActivityRunner(t, card, &prForgejo{})
-		store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "closed", Repository: "sf/repo", IssueNumber: 3, PlanKey: "links-api"})
-		store.CreateTask(ctx, Task{ID: "t-b", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 5})
+		store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "closed", Repository: "sf/repo", IssueNumber: 3, PlanKey: "links-api", Track: "direct"})
+		store.CreateTask(ctx, Task{ID: "t-b", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 5, Track: "direct"})
 		store.AddTaskDeps(ctx, "t-c", []string{"t-a", "t-b"})
 		v, err := execActivity(t, r, ActivityDependencies, "t-c")
 		if err != nil {
@@ -422,11 +422,11 @@ func TestHealSignalsWaitingCards(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	for id, st := range map[string]string{"t-done": "done", "t-failed": "failed", "t-closed": "closed", "t-open": "running"} {
-		store.CreateTask(ctx, Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code"})
+		store.CreateTask(ctx, Task{ID: id, Status: st, Kind: "agent", Repository: "sf/ai-software-factory-code", Track: "direct"})
 	}
 	for id, deps := range map[string][]string{"tw-free": {"t-done"}, "tw-failed": {"t-done", "t-failed"}, "tw-closed": {"t-done", "t-closed", "t-open"},
 		"tw-waits": {"t-done", "t-open"}} {
-		store.CreateTask(ctx, Task{ID: id, Status: "waiting-deps", Kind: "agent", Repository: "sf/ai-software-factory-code"})
+		store.CreateTask(ctx, Task{ID: id, Status: "waiting-deps", Kind: "agent", Repository: "sf/ai-software-factory-code", Track: "direct"})
 		store.AddTaskDeps(ctx, id, deps)
 	}
 	wf := &fakeWorkflows{}
@@ -484,9 +484,9 @@ func TestFailedDependencyKeepsTheCardWaiting(t *testing.T) {
 	for _, status := range []string{"queued", "waiting-human"} {
 		t.Run(status, func(t *testing.T) {
 			ctx := context.Background()
-			card := Task{ID: "t-c", Kind: "agent", Status: status, Lane: "ready", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
+			card := Task{ID: "t-c", Kind: "agent", Status: status, Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
 			r, store, _ := newActivityRunner(t, card, &prForgejo{labels: map[int64][]string{7: {"agent"}}})
-			store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "failed", Repository: "sf/repo", IssueNumber: 5, PlanKey: "links"})
+			store.CreateTask(ctx, Task{ID: "t-a", Kind: "agent", Status: "failed", Repository: "sf/repo", IssueNumber: 5, PlanKey: "links", Track: "direct"})
 			store.AddTaskDeps(ctx, "t-c", []string{"t-a"})
 			ask := func() DepState {
 				t.Helper()
@@ -517,8 +517,8 @@ func TestFailedDependencyKeepsTheCardWaiting(t *testing.T) {
 }
 
 // retryCard is linkshort's card links-api of plan t-plan (#1), as
-// CreateChildren files it.
-const retryCard = "Links API\n\nCard links-api of plan #1 (2 of 4), accepted by sebastian. Written by the planner.\n\n" +
+// fileChildren files it.
+const retryCard = "Links API\n\nCard links-api of plan #1 (2 of 4), filed for sebastian. Written by the planner.\n\n" +
 	"POST /api/links creates a link.\n\nDirectories (guidance, not a boundary): none\nDepends on: #4 (foundation)\nAcceptance:\n" +
 	"- POST /api/links answers 201\nSize: small"
 
@@ -537,7 +537,7 @@ func newRetryRig(t *testing.T) (*Runner, *fakeStore, *fakeObjectStore, *planForg
 	fj.next = 8
 	fj.branches = map[string]string{"main": "m1", "factory/t-a": "c7"}
 	card := func(id string, n int64, status, key, objective string) Task {
-		return Task{ID: id, Kind: "agent", Status: status, Lane: policy.LaneReady, Process: "spec", Repository: "linkshort/linkshort",
+		return Task{ID: id, Kind: "agent", Status: status, Track: policy.TrackDirect, Process: "spec", Repository: "linkshort/linkshort",
 			IssueNumber: n, Source: SourcePlan, Parent: "t-plan", PlanKey: key, Priority: 2, RiskClass: "standard", BudgetEUR: 2,
 			Author: "sebastian", AuthorWriter: true, SHA: "b0", Objective: objective}
 	}
@@ -556,11 +556,12 @@ func newRetryRig(t *testing.T) (*Runner, *fakeStore, *fakeObjectStore, *planForg
 }
 
 // Item 119: the retry of failed card A files its replacement A' (the same
-// plan, key, process, priority and author, in the backlog, the objective
-// with the line naming A and its reason) on a new issue as CreateChildren
-// files a card, takes A's key, its dependencies and its dependents, copies
-// its branch, wakes the dependents, and closes A's issue as the bot,
-// recorded.
+// plan, key, process, priority, author and base, queued on the direct
+// track with the project's direct class, the objective with the line
+// naming A and its reason) on a new issue labelled as fileChildren labels a
+// card, takes A's key, its dependencies and its dependents, copies its
+// branch, starts it, wakes the dependents, and closes A's issue as the
+// bot, recorded.
 func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 	const line = "Replaces #5, which failed: wall-clock cap reached"
 	for name, branch := range map[string]bool{"branch": true, "no branch": false} {
@@ -580,7 +581,8 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 			if len(cards) != 3 || n.ID != "t-33198a8c2c69" || cards["redirects"].ID != "t-b" {
 				t.Fatalf("plan cards %v, want the foundation, the replacement of A and B", slices.Sorted(maps.Keys(cards)))
 			}
-			if n.Status != "backlog" || n.Lane != policy.LaneBacklog || n.Process != "spec" || n.Source != SourcePlan || n.Parent != "t-plan" ||
+			if n.Status != "queued" || n.Track != policy.TrackDirect || !slices.Equal(n.RequiredCapabilities, []string{policy.ClassCoder}) ||
+				n.Process != "spec" || n.Source != SourcePlan || n.Parent != "t-plan" ||
 				n.Kind != "agent" || n.Priority != 2 || n.RiskClass != "standard" || n.BudgetEUR != 2 || n.Author != "sebastian" || !n.AuthorWriter ||
 				n.SHA != "b0" || n.IssueNumber != 9 || n.Repository != "linkshort/linkshort" || n.Objective != retryCard+"\n\n"+line {
 				t.Fatalf("replacement = %+v", n)
@@ -590,7 +592,7 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 			}
 			title, body, _ := strings.Cut(retryCard, "\n\n")
 			if is := fj.issues[9]; is.title != title || is.body != body+"\n\n"+line || is.poster != "factory-agent" ||
-				!slices.Equal(is.labels, []string{"backlog", "state/backlog"}) {
+				!slices.Equal(is.labels, []string{"agent", "state/queued"}) {
 				t.Fatalf("issue #9 = %+v", is)
 			}
 			if !slices.Equal(store.deps[n.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{n.ID}) {
@@ -613,15 +615,15 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 			}) {
 				t.Fatalf("intake events %+v, want factoryd's record of closing #5", store.intakeEvents)
 			}
-			if !slices.Equal(wf.signals, []string{"t-b dep_ended  #0: "}) {
-				t.Fatalf("signals %q, want dep_ended to B", wf.signals)
+			if !slices.Equal(wf.started, []string{n.ID}) || !slices.Equal(wf.signals, []string{"t-b dep_ended  #0: "}) {
+				t.Fatalf("started %q, signals %q; want the replacement started and dep_ended to B", wf.started, wf.signals)
 			}
 			want := []string{"POST issues", "PUT issues/9/labels", "GET fork branch factory/" + n.ID, "POST fork branches factory/" + n.ID,
 				"POST issues/5/comments", "PATCH issues/5"}
 			if !slices.Equal(fj.calls, want) {
 				t.Fatalf("forgejo calls\n%q\nwant\n%q", fj.calls, want)
 			}
-			if got := events(t, objects, n.ID); !slices.Equal(got, []string{"card_created alice"}) {
+			if got := events(t, objects, n.ID); !slices.Equal(got, []string{"card_created direct alice"}) {
 				t.Fatalf("replacement events %v", got)
 			}
 			tl, _ := objects.Get(ctx, "sessions/t-a/timeline.jsonl")
@@ -685,14 +687,14 @@ func TestPGStoreRetryCard(t *testing.T) {
 	}
 	defer s.Close()
 	for _, tk := range []Task{
-		{ID: "t-plan", Status: "done", IssueNumber: 1, Source: "webhook"},
-		{ID: "t-f", Status: "done", IssueNumber: 4, PlanKey: "foundation"},
-		{ID: "t-a", Status: "failed", IssueNumber: 5, PlanKey: "links"},
-		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, PlanKey: "redirects"},
+		{ID: "t-plan", Status: "done", IssueNumber: 1, Source: "webhook", Track: policy.TrackPlan},
+		{ID: "t-f", Status: "done", IssueNumber: 4, PlanKey: "foundation", Track: "direct"},
+		{ID: "t-a", Status: "failed", IssueNumber: 5, PlanKey: "links", Track: "direct"},
+		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, PlanKey: "redirects", Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if tk.ID != "t-plan" {
-			tk.Source, tk.Parent = SourcePlan, "t-plan"
+			tk.Source, tk.Parent, tk.Track = SourcePlan, "t-plan", policy.TrackDirect
 		}
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
@@ -705,7 +707,7 @@ func TestPGStoreRetryCard(t *testing.T) {
 		t.Fatal(err)
 	}
 	card := func(id, key string) Task {
-		return Task{ID: id, Status: "backlog", Lane: policy.LaneBacklog, BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
+		return Task{ID: id, Status: "queued", Track: policy.TrackDirect, BudgetEUR: 1, Repository: "sf/r", Kind: "agent",
 			Source: SourcePlan, Parent: "t-plan", PlanKey: key}
 	}
 	if ok, err := s.ReplaceFailedCard(ctx, "t-a", card("t-a2", "links")); !ok || err != nil {
@@ -714,7 +716,7 @@ func TestPGStoreRetryCard(t *testing.T) {
 	if a, _, _ := s.Task(ctx, "t-a"); a.PlanKey != "" || a.Status != "failed" {
 		t.Fatalf("A = %s with key %q, want failed without a key", a.Status, a.PlanKey)
 	}
-	if got, _, _ := s.Task(ctx, "t-a2"); got.PlanKey != "links" || got.Status != "backlog" {
+	if got, _, _ := s.Task(ctx, "t-a2"); got.PlanKey != "links" || got.Status != "queued" || got.Track != policy.TrackDirect {
 		t.Fatalf("replacement = %s with key %q", got.Status, got.PlanKey)
 	}
 	for _, again := range []struct{ of, id, key string }{{"t-a", "t-a3", "links"}, {"t-f", "t-f2", "foundation"}} {
@@ -743,7 +745,7 @@ func TestPGStoreRetryCard(t *testing.T) {
 		t.Fatalf("the replacement depends on %v, want [t-f]", on)
 	}
 	open, err := s.OpenDependencies(ctx, "t-b")
-	if err != nil || !slices.Equal(open, []Dependency{{TaskID: "t-a2", Issue: 9, Key: "links", Status: "backlog"}}) {
+	if err != nil || !slices.Equal(open, []Dependency{{TaskID: "t-a2", Issue: 9, Key: "links", Status: "queued"}}) {
 		t.Fatalf("B waits on %+v, %v; want the replacement #9", open, err)
 	}
 	if got, _ := s.WaitingDependents(ctx, "t-a"); len(got) != 0 {
@@ -825,7 +827,7 @@ func TestRetryResumesAfterAFailedStep(t *testing.T) {
 					onA = append(onA, c.body)
 				}
 			}
-			if fj.next != 9 || !slices.Equal(fj.issues[9].labels, []string{"backlog", "state/backlog"}) ||
+			if fj.next != 9 || !slices.Equal(fj.issues[9].labels, []string{"agent", "state/queued"}) ||
 				fj.branches["factory/"+replacement] != wantHead || fj.issues[5].state != "closed" || !slices.Equal(onA, []string{"factoryd: Retried as #9."}) {
 				t.Fatalf("after the second retry: %d issues, #9 labels %v, branch %q, #5 %s with %q",
 					fj.next, fj.issues[9].labels, fj.branches["factory/"+replacement], fj.issues[5].state, onA)
@@ -873,11 +875,11 @@ func TestPGStoreBoardKeepsABlockingFailedCard(t *testing.T) {
 	}
 	defer s.Close()
 	for _, tk := range []Task{
-		{ID: "t-plan", Status: "done", IssueNumber: 1},
-		{ID: "t-a", Status: "failed", IssueNumber: 5, PlanKey: "links"},
-		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, PlanKey: "redirects"},
-		{ID: "t-c", Status: "failed", IssueNumber: 7, PlanKey: "search"},
-		{ID: "t-d", Status: "done", IssueNumber: 8, PlanKey: "tags"},
+		{ID: "t-plan", Status: "done", IssueNumber: 1, Track: "direct"},
+		{ID: "t-a", Status: "failed", IssueNumber: 5, PlanKey: "links", Track: "direct"},
+		{ID: "t-b", Status: "waiting-deps", IssueNumber: 6, PlanKey: "redirects", Track: "direct"},
+		{ID: "t-c", Status: "failed", IssueNumber: 7, PlanKey: "search", Track: "direct"},
+		{ID: "t-d", Status: "done", IssueNumber: 8, PlanKey: "tags", Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind, tk.Source = 1, "sf/r", "agent", "webhook"
 		if tk.ID != "t-plan" {

@@ -42,35 +42,35 @@ func columnItems(t *testing.T, body, title string) []string {
 
 // screenRig is the code project with a card in every status, two pending
 // approval requests and a card of another project; the final cards
-// finished one, two and three minutes ago. Needs you holds, for
-// sebastian, oldest waiting first: approval 4 (4 h), t-me waiting on him
-// as its author (3 h), the escalated t-esc (2 h), approval 3 (1 h) and the
-// human task t-human (20 min).
+// finished one, two and three minutes ago. Needs you holds, for every
+// viewer, oldest waiting first: t-other waiting on alice as its author
+// (5 h), approval 4 (4 h), t-me waiting on sebastian (3 h), the escalated
+// t-esc (2 h), approval 3 (1 h) and the human task t-human (20 min).
 func screenRig(t *testing.T) (*rig, *http.Cookie) {
 	t.Helper()
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	now := time.Now()
 	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
-	task := func(id, status, lane string) factoryd.Task {
-		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: lane, Repository: "sf/code", Objective: id, CreatedAt: now}
+	task := func(id, status, track string) factoryd.Task {
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Track: track, Repository: "sf/code", Objective: id, CreatedAt: now}
 	}
-	esc := factoryd.BoardTask{Task: task("t-esc", "waiting-human", "ready"), Escalation: factoryd.AgentAsks + "which region?",
+	esc := factoryd.BoardTask{Task: task("t-esc", "waiting-human", "direct"), Escalation: factoryd.AgentAsks + "which region?",
 		EscalatedAt: now.Add(-2 * time.Hour), EscalationAlert: 7}
 	esc.IssueNumber = 12 // an answer goes on the issue
-	me := factoryd.BoardTask{Task: task("t-me", "waiting-poster", "ready")}
+	me := factoryd.BoardTask{Task: task("t-me", "waiting-poster", "direct")}
 	me.Author, me.GateSince = "sebastian", ago(3*time.Hour)
-	other := factoryd.BoardTask{Task: task("t-other", "waiting-poster", "ready")}
+	other := factoryd.BoardTask{Task: task("t-other", "waiting-poster", "direct")}
 	other.Author, other.GateSince = "alice", ago(5*time.Hour)
 	finished := func(id, status string, d time.Duration) factoryd.BoardTask {
-		k := factoryd.BoardTask{Task: task(id, status, "ready")}
+		k := factoryd.BoardTask{Task: task(id, status, "direct")}
 		k.CreatedAt, k.FinishedAt = now.Add(-time.Hour), ago(d)
 		return k
 	}
 	r.tasks.tasks = []factoryd.BoardTask{esc, me, other,
 		{Task: factoryd.Task{ID: "t-human", Kind: "human", Status: "queued", Repository: "sf/code", Objective: "rotate the key", CreatedAt: now.Add(-20 * time.Minute)}},
-		{Task: task("t-back", "backlog", "backlog")}, {Task: task("t-queue", "queued", "ready")}, {Task: task("t-deps", "waiting-deps", "ready"), WaitingOn: "#9"},
-		{Task: task("t-run", "running", "ready")}, {Task: task("t-close", "closing", "ready")}, {Task: task("t-rev", "in-review", "ready")},
+		{Task: task("t-queue", "queued", "direct")}, {Task: task("t-deps", "waiting-deps", "direct"), WaitingOn: "#9"},
+		{Task: task("t-run", "running", "direct")}, {Task: task("t-close", "closing", "direct")}, {Task: task("t-rev", "in-review", "direct")},
 		finished("t-done", "done", time.Minute), finished("t-fail", "failed", 2*time.Minute), finished("t-closed", "closed", 3*time.Minute),
 		{Task: factoryd.Task{ID: "t-elsewhere", Kind: "agent", Status: "running", Repository: "demo-app/demo-app", Objective: "elsewhere", CreatedAt: now}},
 	}
@@ -82,20 +82,20 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 // Ruling 255 as C8 amends it: the four columns are a view over the task
 // states. Every status lands in exactly one column, running, closing and
 // in review together in In progress, waiting on the author in Needs you
-// for the author and in Queued for anyone else; Needs you also holds the
-// human lane (the approval requests, the escalation with its answer form,
+// for every viewer, the author or not (roadmap 225: a person is the next
+// actor); Needs you also holds the human lane (the approval requests, the escalation with its answer form,
 // the human task), oldest waiting first; the headers count the column;
 // another project's card is on no column.
 func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	r, ck := screenRig(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	want := map[string][]string{
-		"Needs you":   {"approval 4", "t-me", "t-esc", "approval 3", "t-human"},
-		"Queued":      {"t-other", "t-back", "t-queue", "t-deps"},
+		"Needs you":   {"t-other", "approval 4", "t-me", "t-esc", "approval 3", "t-human"},
+		"Queued":      {"t-queue", "t-deps"},
 		"In progress": {"t-run", "t-close", "t-rev"},
 		"Done":        {"t-done", "t-fail", "t-closed"},
 	}
-	counts := map[string]string{"Needs you": "5", "Queued": "4", "In progress": "3", "Done": "3"}
+	counts := map[string]string{"Needs you": "6", "Queued": "2", "In progress": "3", "Done": "3"}
 	for title, items := range want {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("%s holds %v, want %v", title, got, items)
@@ -130,25 +130,29 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	if strings.Count(needs, `/answer" hx-post=`) != 1 {
 		t.Errorf("Needs you holds %d answer forms, want t-esc's", strings.Count(needs, `/answer" hx-post=`))
 	}
-	// the place names the column, so a card that changes column for its
-	// viewer swaps the board
-	if !strings.Contains(body, `data-card="t-me" data-place="waiting-poster ready  false false 0 0"`) {
-		t.Error("t-me's place does not name Needs you")
+	// the place names the column, so a card that changes column swaps the
+	// board
+	for _, id := range []string{"t-me", "t-other"} {
+		if !strings.Contains(body, `data-card="`+id+`" data-place="waiting-poster direct  false false 0 0"`) {
+			t.Errorf("%s's place does not name Needs you", id)
+		}
 	}
 
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "alice")
+	r.forgetWriters()
 	ak, _ := r.as(t, "alice")
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
+	// alice is not t-me's author, and t-me still needs a person
 	for title, items := range map[string][]string{
-		"Needs you": {"t-other", "approval 4", "t-esc", "approval 3", "t-human"},
-		"Queued":    {"t-me", "t-back", "t-queue", "t-deps"},
+		"Needs you": {"t-other", "approval 4", "t-me", "t-esc", "approval 3", "t-human"},
+		"Queued":    {"t-queue", "t-deps"},
 	} {
 		if got := columnItems(t, body, title); !slices.Equal(got, items) {
 			t.Errorf("alice: %s holds %v, want %v", title, got, items)
 		}
 	}
-	if !strings.Contains(body, `data-card="t-me" data-place="waiting-poster ready  false false 0 1"`) {
-		t.Error("alice: t-me's place does not name Queued")
+	if !strings.Contains(body, `data-card="t-me" data-place="waiting-poster direct  false false 0 0"`) {
+		t.Error("alice: t-me's place does not name Needs you")
 	}
 }
 
@@ -183,7 +187,7 @@ func TestNeedsYouCardShowsTheQuestionNotTheHistory(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	now := time.Now()
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-cap", Kind: "agent", Status: "waiting-human",
-		Lane: "ready", Repository: "sf/code", Objective: "the card", CreatedAt: now, IssueNumber: 13},
+		Track: "direct", Repository: "sf/code", Objective: "the card", CreatedAt: now, IssueNumber: 13},
 		Escalation: body, EscalatedAt: now.Add(-2 * time.Hour)}}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{"last: APIError: free headroom 0.000003 EUR, below the minimum call (status 402)",
@@ -227,7 +231,7 @@ func TestStatusLineFigures(t *testing.T) {
 	code := `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">2</b> working</span></span>
-<a href="#needs-you" class="cell needs on"><span><b class="n">5</b> need you</span></a>
+<a href="#needs-you" class="cell needs on"><span><b class="n">6</b> need you</span></a>
 <span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
 `
 	for _, query := range []string{"", "?view=wide"} {
@@ -358,8 +362,10 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 	if strings.Contains(body, "every project") || strings.Contains(body, `data-card="t-c2"`) {
 		t.Error("sebastian's board offers every project or shows linkshort's card")
 	}
+	// alice writes linkshort alone and reads the code project's repository
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
-	ak, _ := r.as(t, "alice")
+	r.c.cfg.HTTP = &http.Client{Transport: readerForgejo{http.DefaultTransport}}
+	ak, _ := memberLogin(t, r, "alice")
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), ak).Body.String()
 	if !strings.Contains(body, `<select id="project-filter" name="project">
 <option value="linkshort" selected>linkshort</option>
@@ -377,7 +383,9 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 		!strings.Contains(body, `<strong class="title" title="fix the cache">fix the cache</strong>`) {
 		t.Error("alice reading the code project does not follow its stream or links its cards to the drawer")
 	}
-	bk, _ := r.as(t, "bob")
+	// bob writes the infra project alone, which agents do not work on
+	r.repoWriters["sf/infra"] = []string{"bob"}
+	bk, _ := memberLogin(t, r, "bob")
 	body = r.do(httptest.NewRequest(http.MethodGet, "/", nil), bk).Body.String()
 	if !strings.Contains(body, `<p class="problem" role="alert">You write none of the projects agents work on.</p>`) ||
 		!strings.Contains(body, `data-project=""`) || strings.Contains(body, "status-line") || strings.Contains(body, "data-card") {
@@ -385,25 +393,25 @@ func TestBoardShowsOneProjectTheViewerWrites(t *testing.T) {
 	}
 }
 
-// The lane is a chip on every card of the five columns whose status is
-// another word, and the fine state a second chip in the pill's hues:
-// waiting on the author, retrying (the newest session ended for a retry),
-// waiting for a roll (its next session held while a roll waits for a
-// session gap), stale (no event for half an hour); failed and closed are the pill's own
-// words. The wide view's columns name the lane and the wait on the
-// author, so there a card wears only what the column leaves unsaid.
-func TestCardLaneAndFineChips(t *testing.T) {
+// The fine state is a chip in the pill's hues: waiting on the author,
+// retrying (the newest session ended for a retry), waiting for a roll
+// (its next session held while a roll waits for a session gap), stale
+// (no event for half an hour); failed and closed are the pill's own
+// words. No card wears a lane badge (roadmap 225). The wide view's
+// columns name the wait on the author, so there a card wears only what
+// the column leaves unsaid.
+func TestCardFineChips(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	now := time.Now()
-	task := func(id, status, lane string) factoryd.BoardTask {
-		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: lane, Repository: "sf/code", Objective: id, CreatedAt: now}}
+	task := func(id, status, track string) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Track: track, Repository: "sf/code", Objective: id, CreatedAt: now}}
 	}
-	other, stale := task("t-other", "waiting-poster", "ready"), task("t-stale", "running", "ready")
+	other, stale := task("t-other", "waiting-poster", "direct"), task("t-stale", "running", "direct")
 	other.Author, stale.CreatedAt = "alice", now.Add(-50*time.Minute)
-	r.tasks.tasks = []factoryd.BoardTask{task("t-lane", "queued", "ready"), task("t-back", "backlog", "backlog"), other, task("t-fail", "failed", "ready"),
-		task("t-closed", "closed", ""), task("t-done", "done", "ready"), stale, task("t-retry", "running", "ready"), task("t-again", "running", "ready"),
-		task("t-held", "running", "ready"), task("t-unheld", "running", "ready")}
+	r.tasks.tasks = []factoryd.BoardTask{task("t-lane", "queued", "direct"), other, task("t-fail", "failed", "direct"),
+		task("t-closed", "closed", ""), task("t-done", "done", "direct"), stale, task("t-retry", "running", "direct"), task("t-again", "running", "direct"),
+		task("t-held", "running", "direct"), task("t-unheld", "running", "direct")}
 	r.objects["sessions/t-retry/timeline.jsonl"] = []byte(`{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"retry_stronger"}
 `)
@@ -431,21 +439,17 @@ func TestCardLaneAndFineChips(t *testing.T) {
 	}
 	five := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	wide := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
-	// the default lane, ready, is no badge on the four-column board; the
-	// wide view's state columns name it
-	const ready = `<p class="chips"><span class="badge">ready</span> </p>`
 	for id, want := range map[string][4]string{
 		"t-lane":   {"", "", "", ""},
-		"t-back":   {"", "", "", ""},
-		"t-other":  {"", ready, `<span class="pill fine st-waiting hollow">waiting on the author</span>`, ""},
+		"t-other":  {"", "", `<span class="pill fine st-waiting hollow">waiting on the author</span>`, ""},
 		"t-fail":   {"", "", "", ""},
 		"t-closed": {"", "", "", ""},
 		"t-done":   {"", "", "", ""},
-		"t-stale":  {"", ready, `<span class="pill fine st-stale">stale</span>`, `<span class="pill fine st-stale">stale</span>`},
-		"t-retry":  {"", ready, `<span class="pill fine st-running">retrying</span>`, `<span class="pill fine st-running">retrying</span>`},
-		"t-again":  {"", ready, "", ""},
-		"t-held":   {"", ready, `<span class="pill fine st-waiting">waiting for a roll</span>`, `<span class="pill fine st-waiting">waiting for a roll</span>`},
-		"t-unheld": {"", ready, "", ""},
+		"t-stale":  {"", "", `<span class="pill fine st-stale">stale</span>`, `<span class="pill fine st-stale">stale</span>`},
+		"t-retry":  {"", "", `<span class="pill fine st-running">retrying</span>`, `<span class="pill fine st-running">retrying</span>`},
+		"t-again":  {"", "", "", ""},
+		"t-held":   {"", "", `<span class="pill fine st-waiting">waiting for a roll</span>`, `<span class="pill fine st-waiting">waiting for a roll</span>`},
+		"t-unheld": {"", "", "", ""},
 	} {
 		if chips, fine := lines(five, id); chips != want[0] || fine != want[2] {
 			t.Errorf("four columns, %s: chips %q, fine %q, want %q and %q", id, chips, fine, want[0], want[2])
@@ -464,7 +468,7 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	r.approvals.rows = nil
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "running", Lane: "ready", Repository: "sf/code", Objective: "t-wait", CreatedAt: time.Now()}}}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "running", Track: "direct", Repository: "sf/code", Objective: "t-wait", CreatedAt: time.Now()}}}
 	refused := `{"step":"session_start","attempt":1}
 {"step":"session_end","attempt":1,"outcome":"provider_refused"}
 {"step":"provider_refused","status":429,"reason":"budget exhausted","backoff_s":120}
@@ -500,7 +504,7 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 		t.Errorf("a held card after a refusal does not wait for the roll:\n%s", body)
 	}
 	// the sixth refusal asked a human: the card waits on them, not the provider
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-human", Lane: "ready", Repository: "sf/code", Objective: "t-wait", PRNumber: 5, CreatedAt: time.Now()}}}
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-human", Track: "direct", Repository: "sf/code", Objective: "t-wait", PRNumber: 5, CreatedAt: time.Now()}}}
 	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(refused)
 	r.c.mu.Lock()
 	r.c.checks = nil
@@ -510,21 +514,21 @@ func TestCardWaitingOnTheProvider(t *testing.T) {
 	}
 }
 
-// The wide view keeps the board as it was, the lanes of the project's
-// process first, under the human lane, with the status line; the view
-// rides on the poll, the script's swaps and every form, and the header's
-// switch names the other view.
-func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
+// The wide view keeps the board as it was, a column per state and no
+// lane column (roadmap 225), under the human lane, with the status line;
+// the view rides on the poll, the script's swaps and every form, and the
+// header's switch names the other view.
+func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
-	r.tasks.tasks = planTasks()
+	r.tasks.tasks = append(planTasks(), failedCard())
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&view=wide", nil), ck).Body.String()
 	var titles []string
 	for _, m := range regexp.MustCompile(`<h3 id="col-\d+">([^<]+) <span`).FindAllStringSubmatch(body, -1) {
 		titles = append(titles, m[1])
 	}
-	if want := []string{"Backlog", "Plan", "Ready", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
+	if want := []string{"Queued", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
 		t.Errorf("the wide view's columns are %v, want %v", titles, want)
 	}
 	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,
@@ -535,19 +539,19 @@ func TestWideViewKeepsTheLanesAndSurvivesThePoll(t *testing.T) {
 			t.Errorf("the wide view lacks %s", want)
 		}
 	}
-	if poll := r.do(httptest.NewRequest(http.MethodGet, "/board?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(poll, `data-lane="backlog"`) ||
+	if poll := r.do(httptest.NewRequest(http.MethodGet, "/board?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(poll, `data-holds="queued waiting-deps"`) ||
 		strings.Contains(poll, `class="lane five"`) {
 		t.Error("the wide view's poll answers the five columns")
 	}
-	if frag := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c2?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(frag,
+	if frag := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c7?project=linkshort&view=wide", nil), ck).Body.String(); !strings.Contains(frag,
 		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`) {
 		t.Errorf("the card under the wide view's query keeps no view on its forms: %s", frag)
 	}
 	form := url.Values{"csrf": {s.csrf}, "summary": {"the links"}, "project": {"linkshort"}, "view": {"wide"}}
 	req := post("/tasks/t-c2/summary", form)
 	req.Header.Set("HX-Request", "true")
-	if rec := r.do(req, ck); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-lane="backlog"`) {
-		t.Errorf("a form of the wide view answers %d without the lanes", rec.Code)
+	if rec := r.do(req, ck); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-holds="queued waiting-deps"`) {
+		t.Errorf("a form of the wide view answers %d without its state columns", rec.Code)
 	}
 	if rec := r.do(post("/tasks/t-c2/summary", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
 		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
@@ -615,7 +619,7 @@ func drawerRig(t *testing.T) (*rig, *http.Cookie) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-pr", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "Draw the drawer", IssueNumber: 21, PRNumber: 31}})
 	for i := range r.tasks.tasks {
 		if r.tasks.tasks[i].ID == "t-c4" {
-			r.tasks.tasks[i].Objective = "Links API\n\nCard links-api of plan #1 (3 of 4), accepted by sebastian. Written by the planner.\n\nBuild the links API.\nDepends on: #3"
+			r.tasks.tasks[i].Objective = "Links API\n\nCard links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.\n\nBuild the links API.\nDepends on: #3"
 		}
 	}
 	r.tasks.deps = map[string][]string{"t-c4": {"t-c3", "t-c5"}}
@@ -664,9 +668,9 @@ func TestDrawerOverview(t *testing.T) {
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
 			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
-		`<p class="provenance">Card links-api of plan #1 (3 of 4), accepted by sebastian. Written by the planner.</p>`,
+		`<p class="provenance">Card links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
-		`<li><span class="why">blocked by</span> <span class="pill st-backlog">backlog</span> ` + open("t-c3", "#3 k3"),
+		`<li><span class="why">blocked by</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 k3"),
 		`<li><span class="why">part of plan</span> <span class="pill st-done">done</span> ` + open("t-plan", "#1 Link shortener"),
 		`<a href="/tasks/t-c4/timeline">the full timeline</a>`,
 	} {
@@ -684,8 +688,8 @@ func TestDrawerOverview(t *testing.T) {
 		"<tr><td>foundation</td><td>foundation</td><td>Foundation</td><td>medium</td><td></td></tr>",
 		"<tr><td>links-api</td><td>feature</td><td>Links API</td><td>medium</td><td>foundation</td></tr>",
 		"<tr><td>integration</td><td>integration</td><td>Acceptance tests</td><td>small</td><td>foundation, links-api</td></tr>",
-		`<li><span class="why">child</span> <span class="pill st-backlog">backlog</span> ` + open("t-c2", "#2 k2"),
-		`<li><span class="why">child</span> <span class="pill st-backlog">backlog</span> ` + open("t-c3", "#3 k3"),
+		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c2", "#2 k2"),
+		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 k3"),
 		`<li><span class="why">child</span> <span class="pill st-waiting">waiting-deps</span> ` + open("t-c4", "#4 k4"),
 		`<li><span class="why">child</span> <span class="pill st-done">done</span> ` + open("t-c5", "#5 k5"),
 	} {
@@ -810,7 +814,7 @@ func TestDrawerChat(t *testing.T) {
 	for _, e := range []factoryd.Event{
 		{TaskID: "t-run", At: at("09:10"), Kind: factoryd.EventCardSteered, Actor: "alice", Detail: map[string]any{"text": "to the first session"}},
 		{TaskID: "t-run", At: at("10:03"), Kind: factoryd.EventCardSteered, Actor: "sebastian", Detail: map[string]any{"text": "Rebase first."}},
-		{TaskID: "t-run", At: at("10:03"), Kind: factoryd.EventCardMoved, Actor: "sebastian"},
+		{TaskID: "t-run", At: at("10:03"), Kind: factoryd.EventCardRetried, Actor: "sebastian"},
 		{TaskID: "t-pr", At: at("08:20"), Kind: factoryd.EventCardSteered, Actor: "sebastian", Detail: map[string]any{"text": "Use the grid."}},
 		{TaskID: "t-pr", At: at("08:31"), Kind: factoryd.EventCardSteered, Actor: "sebastian", Detail: map[string]any{"text": "too late"}},
 	} {
@@ -931,14 +935,14 @@ func TestDrawerRefusals(t *testing.T) {
 			t.Errorf("GET %s = %d, want %d", path, rec.Code, code)
 		}
 	}
-	ak, _ := r.as(t, "alice")
+	ak, _ := r.writerOf(t, "alice", "demo-app/demo-app")
 	for _, tab := range []string{"overview", "activity", "files", "chat"} {
 		if rec := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-run/drawer?tab="+tab, nil), ak); rec.Code != http.StatusForbidden {
 			t.Errorf("alice, no writer of the code project, opens %s: %d, want 403", tab, rec.Code)
 		}
 	}
 	before := r.events.count()
-	ak, as := r.as(t, "alice")
+	ak, as := memberLogin(t, r, "alice")
 	if rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {as.csrf}, "text": {"hello"}}), ak); rec.Code != http.StatusForbidden {
 		t.Errorf("alice steers t-run: %d, want 403", rec.Code)
 	}
@@ -1042,7 +1046,7 @@ func TestNeedsYouCardOpensItsDrawer(t *testing.T) {
 			t.Errorf("a writer's approval column lacks %q:\n%s", want, lane)
 		}
 	}
-	ak, _ := r.as(t, "alice") // alice reads every board but writes none
+	ak, _ := r.readerOfCode(t, "alice")
 	lane = col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ak).Body.String(), "Approvals")
 	if strings.Contains(lane, `class="open"`) || !strings.Contains(lane, ">Resource request</h4>") || !strings.Contains(lane, "Merge <a href=") {
 		t.Errorf("a reader's approval column links to a drawer that would refuse:\n%s", lane)
@@ -1061,7 +1065,7 @@ func TestColumnsHoldTheNewestCardOnTop(t *testing.T) {
 	now := time.Now()
 	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
 	task := func(id, status string, filed time.Duration) factoryd.Task {
-		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed)}
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Track: "direct", Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed)}
 	}
 	run := func(id string, filed, admitted time.Duration) factoryd.Task {
 		k := task(id, "running", filed)
@@ -1119,14 +1123,14 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 		count    string
 	}{
 		{"t-run", "In progress", []string{"t-run"}, "<b>1</b> of 3"},
-		{"t-run", "Queued", nil, "<b>0</b> of 4"},
-		{"t-run", "Needs you", nil, "<b>0</b> of 5"},
+		{"t-run", "Queued", nil, "<b>0</b> of 2"},
+		{"t-run", "Needs you", nil, "<b>0</b> of 6"},
 		{"is:failed", "Done", []string{"t-fail"}, "<b>1</b> of 3"},
-		{"is:blocked", "Queued", []string{"t-deps"}, "<b>1</b> of 4"},
-		{"status:queued", "Queued", []string{"t-queue"}, "<b>1</b> of 4"},
-		{"by:alice", "Queued", []string{"t-other"}, "<b>1</b> of 4"},
-		{"which region", "Needs you", []string{"t-esc"}, "<b>1</b> of 5"},
-		{"rotate key", "Needs you", []string{"t-human"}, "<b>1</b> of 5"},
+		{"is:blocked", "Queued", []string{"t-deps"}, "<b>1</b> of 2"},
+		{"status:queued", "Queued", []string{"t-queue"}, "<b>1</b> of 2"},
+		{"by:alice", "Needs you", []string{"t-other"}, "<b>1</b> of 6"},
+		{"which region", "Needs you", []string{"t-esc"}, "<b>1</b> of 6"},
+		{"rotate key", "Needs you", []string{"t-human"}, "<b>1</b> of 6"},
 		{"nothing-here", "Done", nil, "<b>0</b> of 3"},
 	} {
 		body := page(c.q)
@@ -1167,7 +1171,7 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 	// without a find the × is in place for the box's text to show it (CSS)
 	plain := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{findForm, `<input id="q" name="q" type="text" value="" placeholder="Find: a word, #612, plan:558"`,
-		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`, `>Needs you <span class="count">5</span></h3>`} {
+		`<a class="find-x" href="/?project=ai-software-factory-code" aria-label="Clear the find"`, `>Needs you <span class="count">6</span></h3>`} {
 		if !strings.Contains(plain, want) {
 			t.Errorf("without a find the board lacks %s", want)
 		}
@@ -1211,26 +1215,26 @@ func TestColumnMenusOrderAndShow(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	now := time.Now()
 	ago := func(d time.Duration) *time.Time { at := now.Add(-d); return &at }
-	task := func(id, status, lane string, filed time.Duration) factoryd.Task {
-		return factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: lane, Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed), BudgetEUR: 2}
+	task := func(id, status, track string, filed time.Duration) factoryd.Task {
+		return factoryd.Task{ID: id, Kind: "agent", Status: status, Track: track, Repository: "sf/code", Objective: id, CreatedAt: now.Add(-filed), BudgetEUR: 2}
 	}
 	plan := task("t-plan", "done", "plan", 10*time.Hour)
 	plan.IssueNumber, plan.FinishedAt = 7, ago(9*time.Hour)
-	qb := task("t-q-b", "queued", "ready", 3*time.Hour) // from plan #7
+	qb := task("t-q-b", "queued", "direct", 3*time.Hour) // from plan #7
 	qb.Parent, qb.Source = "t-plan", factoryd.SourcePlan
-	qc := task("t-q-c", "waiting-deps", "ready", 2*time.Hour)
-	qa := task("t-q-a", "queued", "ready", 30*time.Minute)
+	qc := task("t-q-c", "waiting-deps", "direct", 2*time.Hour)
+	qa := task("t-q-a", "queued", "direct", 30*time.Minute)
 	// build and planning filed inside the stale window, so with no event
 	// they wear no ring; verify is stale and near its budget
-	build := task("t-build", "running", "ready", 25*time.Minute)
+	build := task("t-build", "running", "direct", 25*time.Minute)
 	build.AdmittedAt, build.SpentEUR = ago(20*time.Minute), 0.5
-	verify := task("t-verify", "in-review", "ready", 4*time.Hour)
+	verify := task("t-verify", "in-review", "direct", 4*time.Hour)
 	verify.AdmittedAt, verify.SpentEUR = ago(time.Hour), 1.9
 	planning := task("t-planning", "running", "plan", 28*time.Minute)
 	planning.AdmittedAt, planning.SpentEUR = ago(24*time.Minute), 1
-	done := task("t-done", "done", "ready", 8*time.Hour)
+	done := task("t-done", "done", "direct", 8*time.Hour)
 	done.FinishedAt = ago(time.Hour)
-	fail := task("t-fail", "failed", "ready", 7*time.Hour)
+	fail := task("t-fail", "failed", "direct", 7*time.Hour)
 	fail.FinishedAt = ago(30 * time.Minute)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: qa}, {Task: qb}, {Task: qc, WaitingOn: "#9"}, {Task: build}, {Task: verify}, {Task: planning}, {Task: plan}, {Task: done}, {Task: fail}}
 	page := func(query string) string {
@@ -1314,7 +1318,7 @@ func TestDonePagesItsFinishedCards(t *testing.T) {
 	// t-d048, t-d049 and t-d050 share a stamp across the first page's end
 	fin := func(i int) *time.Time { at := now.Add(-time.Duration(i/3) * time.Minute); return &at }
 	task := func(id, status string, finished *time.Time) factoryd.BoardTask {
-		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Lane: "ready", Repository: "sf/code", Objective: id,
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Track: "direct", Repository: "sf/code", Objective: id,
 			CreatedAt: now.Add(-3 * time.Hour), FinishedAt: finished}}
 	}
 	ids := func(n, m int) []string {
@@ -1470,7 +1474,7 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 	r.tasks.mu.Lock()
 	for i := range 60 {
 		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{
-			ID: fmt.Sprintf("t-d%02d", i), Kind: "agent", Status: "done", Lane: "ready", Repository: "sf/code",
+			ID: fmt.Sprintf("t-d%02d", i), Kind: "agent", Status: "done", Track: "direct", Repository: "sf/code",
 			Objective: "a done card", CreatedAt: now.Add(-2 * time.Hour), FinishedAt: &at}})
 	}
 	r.tasks.mu.Unlock()

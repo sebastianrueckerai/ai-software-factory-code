@@ -49,10 +49,10 @@ const mustHave = {
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 new", "New"],
   escalation: ["Answer:", "or in your words below", "needs you", "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?"],
   poke: ["Inbox", "Why is the session store card waiting?", "1 needs you · 1 new", "archived", "restore", "Archive", "Delete…"],
-  compacted: ["4 earlier messages, compacted", "summary", "#11 stays in the backlog until the store is settled.",
+  compacted: ["4 earlier messages, compacted", "summary", "#11 waits until the store is settled.",
     "Why is the session store card waiting?"],
   wake: ["wake", "#603: Which store keeps the nightly board snapshots?"],
-  assisted: ["Inbox", "Board", "autonomy", "assisted", "Moved #8 to lane ready",
+  assisted: ["Inbox", "Board", "autonomy", "assisted", "Filed sf/code#8 on track direct.",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",

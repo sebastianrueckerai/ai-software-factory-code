@@ -63,7 +63,7 @@ func (r *Runner) planAcceptance(ctx context.Context, t Task) ([]string, error) {
 	if t.Source != SourcePlan || t.Parent == "" {
 		return nil, nil
 	}
-	p, err := r.acceptedPlan(ctx, t.Parent, t.ID)
+	p, err := r.filedPlan(ctx, t.Parent, t.ID)
 	if err != nil {
 		return nil, err
 	}

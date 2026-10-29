@@ -48,10 +48,9 @@ type taskReader interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 }
 
-// processLane are the process and lane a task's metrics carry, none where
-// its row holds none: a report task carries its parent's (the presort's
-// card waits in backlog, the screening's is in ready).
-func processLane(ctx context.Context, store taskReader, t Task) (process, lane string) {
+// processTrack are the process and track a task's metrics carry, none
+// where its row holds none: a report task carries its parent's.
+func processTrack(ctx context.Context, store taskReader, t Task) (process, track string) {
 	if t.Report() {
 		parent, ok, err := store.Task(ctx, t.Parent)
 		if err != nil {
@@ -61,7 +60,7 @@ func processLane(ctx context.Context, store taskReader, t Task) (process, lane s
 			t = parent
 		}
 	}
-	return cmp.Or(t.Process, "none"), cmp.Or(t.Lane, "none")
+	return cmp.Or(t.Process, "none"), cmp.Or(t.Track, "none")
 }
 
 // countOutcome records a finished task's outcome and cost; every path that
@@ -77,29 +76,29 @@ func countOutcome(ctx context.Context, m *telemetry.Metrics, store interface {
 		return
 	}
 	project, mergeRule := projectLabels(ctx, store, t.Repository)
-	process, lane := processLane(ctx, store, t)
+	process, track := processTrack(ctx, store, t)
 	alias := cmp.Or(t.ModelAlias, "none")
 	m.TaskOutcome.Add(ctx, 1, metric.WithAttributes(attribute.String("project", project),
 		attribute.String("state", final), attribute.String("model_alias", alias),
 		attribute.Int("attempts", t.Usage.Attempts), attribute.String("merge_rule", mergeRule),
-		attribute.String("process", process), attribute.String("lane", lane)))
+		attribute.String("process", process), attribute.String("track", track)))
 	outcome := final
 	if final == "done" && t.PRNumber != 0 {
 		outcome = "merged"
 	}
 	m.TaskCost.Record(ctx, t.SpentEUR, metric.WithAttributes(attribute.String("model_alias", alias), attribute.String("outcome", outcome),
-		attribute.String("process", process), attribute.String("lane", lane)))
+		attribute.String("process", process), attribute.String("track", track)))
 }
 
-// countReview records one review answer of a task in process and lane:
+// countReview records one review answer of a task in process and track:
 // none when the call gave no verdict, strict_improvement unset when the
 // answer left it out.
-func (r *Runner) countReview(ctx context.Context, rv Review, round int, process, lane string) {
+func (r *Runner) countReview(ctx context.Context, rv Review, round int, process, track string) {
 	strict := "unset"
 	if rv.StrictImprovement != nil {
 		strict = strconv.FormatBool(*rv.StrictImprovement)
 	}
 	r.cfg.Metrics.ReviewVerdict.Add(ctx, 1, metric.WithAttributes(attribute.String("verdict", cmp.Or(rv.Verdict, "none")),
 		attribute.String("strict_improvement", strict), attribute.Int("round", round),
-		attribute.String("process", process), attribute.String("lane", lane)))
+		attribute.String("process", process), attribute.String("track", track)))
 }

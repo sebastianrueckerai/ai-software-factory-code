@@ -63,7 +63,7 @@ func TestPokerAppendsLaterAsksToCardThread(t *testing.T) {
 	s := newCardThreadStore(t)
 	ctx := t.Context()
 	if err := s.CreateTask(ctx, Task{ID: "t-1", Kind: "agent", Repository: "sf/code", IssueNumber: 603,
-		Status: "waiting-human", Objective: "Session store"}); err != nil {
+		Status: "waiting-human", Objective: "Session store", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	thread, err := s.EnsureCardThread(ctx, "sf/code", "sebastian", "t-1")

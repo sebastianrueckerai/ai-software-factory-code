@@ -42,7 +42,7 @@ func audit() factoryd.RoutineView {
 	return factoryd.RoutineView{Project: "ai-software-factory-code",
 		Routine: policy.Routine{Name: "audit", Title: "Audit", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{Merges: 20}}},
 		State:   factoryd.RoutineState{Project: "ai-software-factory-code", Routine: "audit", Merges: 14}, MergesLeft: 6,
-		NextWords: "after 6 more merges", Lane: "queued"}
+		NextWords: "after 6 more merges", Column: "queued"}
 }
 
 // Every routine stands as a ghost at the foot of Queued, after the
@@ -56,9 +56,9 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 	bump.Last.Outcome, bump.Last.Ended = "filed", time.Time{}
 	r.routines.views = []factoryd.RoutineView{audit(), bump}
 	r.tasks.set("which store?",
-		factoryd.Task{ID: "t-603", Status: "waiting-human", Repository: "sf/code", IssueNumber: 603, Lane: policy.LaneReady},
-		factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Lane: policy.LaneReady},
-		factoryd.Task{ID: "t-792", Status: "queued", Repository: "sf/code", IssueNumber: 792, Lane: policy.LaneReady, Source: factoryd.SourceRoutine},
+		factoryd.Task{ID: "t-603", Status: "waiting-human", Repository: "sf/code", IssueNumber: 603, Track: policy.TrackDirect},
+		factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Track: policy.TrackDirect},
+		factoryd.Task{ID: "t-792", Status: "queued", Repository: "sf/code", IssueNumber: 792, Track: policy.TrackDirect, Source: factoryd.SourceRoutine},
 		factoryd.Task{ID: "t-781", Status: "waiting-human", Repository: "sf/code", IssueNumber: 781, Source: factoryd.SourceRoutine})
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String()
@@ -135,14 +135,14 @@ func TestBoardRoutinesFilter(t *testing.T) {
 	queuedAt := func(name string, next time.Duration) factoryd.RoutineView {
 		return factoryd.RoutineView{Project: "ai-software-factory-code",
 			Routine: policy.Routine{Name: name, Title: name, Files: policy.FilesAgent, Skill: "deps", Schedule: []policy.Trigger{{Cron: "0 6 * * 4"}}},
-			Next:    time.Now().Add(next), NextWords: "Thu 06:00", Lane: "queued"}
+			Next:    time.Now().Add(next), NextWords: "Thu 06:00", Column: "queued"}
 	}
 	deps, pass := queuedAt("dependency-update", 10*24*time.Hour), queuedAt("template-pass", 5*time.Hour)
 	onConfig := factoryd.RoutineView{Project: "ai-software-factory-code",
 		Routine: policy.Routine{Name: "on-config", Title: "On config", Files: policy.FilesAgent, Skill: "audit", Schedule: []policy.Trigger{{On: policy.OnConfigurationVersion}}},
-		Lane:    "queued"}
+		Column:  "queued"}
 	r.routines.views = []factoryd.RoutineView{deps, pass, onConfig, audit(), soonBump()}
-	r.tasks.set("", factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Lane: policy.LaneReady})
+	r.tasks.set("", factoryd.Task{ID: "t-455", Status: "queued", Repository: "sf/code", IssueNumber: 455, Track: policy.TrackDirect})
 	ck, s := r.loggedIn(t)
 	board := func(query string) (body, needs, queued string) {
 		t.Helper()
@@ -274,7 +274,7 @@ func TestGhostsInTheWideViewAndForAReader(t *testing.T) {
 		t.Fatal("the wide view: want the cell, no ghost, no control")
 	}
 
-	ak, _ := r.as(t, "anna")
+	ak, _ := r.readerOfCode(t, "anna")
 	rec := r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ak)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("anna's board = %d", rec.Code)

@@ -34,10 +34,10 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "t-hold", Status: "done", PRNumber: 7},
-		{ID: "t-era", Status: "done", PRNumber: 8},
-		{ID: "t-nopr", Status: "done", PRNumber: 0},
-		{ID: "t-merged", Status: "merged", PRNumber: 9},
+		{ID: "t-hold", Status: "done", PRNumber: 7, Track: "direct"},
+		{ID: "t-era", Status: "done", PRNumber: 8, Track: "direct"},
+		{ID: "t-nopr", Status: "done", PRNumber: 0, Track: "direct"},
+		{ID: "t-merged", Status: "merged", PRNumber: 9, Track: "direct"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -144,8 +144,8 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		t.Fatalf("truncate: %v", err)
 	}
 	for _, tk := range []Task{
-		{ID: "t-live", PRNumber: 7},
-		{ID: "t-wait", PRNumber: 8},
+		{ID: "t-live", PRNumber: 7, Track: "direct"},
+		{ID: "t-wait", PRNumber: 8, Track: "direct"},
 	} {
 		tk.Status, tk.BudgetEUR, tk.Repository, tk.Kind, tk.Objective = "merged", 1, "sf/r", "agent", "Feed page"
 		if err := s.CreateTask(ctx, tk); err != nil {
@@ -238,7 +238,7 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	tk := Task{ID: "t-hold", Status: "merged", PRNumber: 7, BudgetEUR: 1, Repository: "sf/r", Kind: "agent"}
+	tk := Task{ID: "t-hold", Status: "merged", PRNumber: 7, BudgetEUR: 1, Repository: "sf/r", Kind: "agent", Track: "direct"}
 	if err := s.CreateTask(ctx, tk); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
@@ -301,7 +301,7 @@ func seedMergedCards(t *testing.T, ctx context.Context) *PGStore {
 		{"t-nopr", "sf/r", "merged", "m-d", 0},
 		{"t-other", "sf/other", "merged", "m-e", 7},
 	} {
-		tk := Task{ID: c.id, PRNumber: c.pr, Status: c.status, BudgetEUR: 1, Repository: c.repo, Kind: "agent", Objective: "x"}
+		tk := Task{ID: c.id, PRNumber: c.pr, Status: c.status, BudgetEUR: 1, Repository: c.repo, Kind: "agent", Objective: "x", Track: "direct"}
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatalf("CreateTask %s: %v", c.id, err)
 		}
@@ -431,7 +431,7 @@ func TestRollIssueOfAMergedCard(t *testing.T) {
 		id, repo, status string
 		issue            int64
 	}{{"roll-old", "sf/r", "done", 1100}, {"roll-new", "sf/r", "running", 1162}} {
-		if err := s.CreateTask(ctx, Task{ID: r.id, Status: r.status, BudgetEUR: 1, Repository: r.repo, Kind: "agent", Source: SourceRoll, IssueNumber: r.issue, Objective: "roll"}); err != nil {
+		if err := s.CreateTask(ctx, Task{ID: r.id, Status: r.status, BudgetEUR: 1, Repository: r.repo, Kind: "agent", Source: SourceRoll, IssueNumber: r.issue, Objective: "roll", Track: "direct"}); err != nil {
 			t.Fatal(err)
 		}
 	}

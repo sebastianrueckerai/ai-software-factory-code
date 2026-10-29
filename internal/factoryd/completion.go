@@ -44,7 +44,7 @@ func (c *Completion) Complete(ctx context.Context, taskID string, finalStatus st
 	from := "merged"
 	if t.Status != "merged" {
 		from = "closing"
-		if err := c.Store.TransitionTask(ctx, taskID, []string{"backlog", "queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"}, "closing"); err != nil {
+		if err := c.Store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image", "closing"}, "closing"); err != nil {
 			return err
 		}
 	}

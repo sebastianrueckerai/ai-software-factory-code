@@ -72,7 +72,7 @@ func TestConfigCheck(t *testing.T) {
 	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
 		t.Fatalf("valid tree: exit %d: %s", code, stderr.String())
 	}
-	if want := dir + ": ok, 4 projects, 2 processes, 1 template\nopen cards per lane: checked by the running factoryd only\n"; stdout.String() != want {
+	if want := dir + ": ok, 4 projects, 2 processes, 1 template\nopen cards per track: checked by the running factoryd only\n"; stdout.String() != want {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
 	}
 
@@ -88,7 +88,7 @@ func TestConfigCheck(t *testing.T) {
 		"ladder model left out": {func(dir string) {
 			b, _ := os.ReadFile(filepath.Join(dir, "policy.yaml"))
 			write(t, filepath.Join(dir, "policy.yaml"), strings.Replace(string(b), "models: [small, big]", "models: [small]", 1))
-		}, []string{`policy.yaml: capability class "coder" does not allow the ladder model "big" (lane ready of processes/maintenance.yaml starts it)`}},
+		}, []string{`policy.yaml: capability class "coder" does not allow the ladder model "big" (track direct of processes/maintenance.yaml starts it)`}},
 		"a looser project file": {func(dir string) {
 			b, _ := os.ReadFile(filepath.Join(dir, "projects/demo-app.yaml"))
 			write(t, filepath.Join(dir, "projects/demo-app.yaml"), strings.Replace(string(b), "max_lease_hours: 2", "max_lease_hours: 48", 1))
@@ -141,7 +141,7 @@ func TestConfigCheckWarnsOnStaleSchemas(t *testing.T) {
 	}
 	want := "warning: factory/schema/policy.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)\n" +
 		"warning: factory/schema/process.schema.json differs from this factoryd's schema (factoryd opens a pull request for it)\n" +
-		"factory: ok, 4 projects, 2 processes, 1 template\nopen cards per lane: checked by the running factoryd only\n"
+		"factory: ok, 4 projects, 2 processes, 1 template\nopen cards per track: checked by the running factoryd only\n"
 	if stdout.String() != want || stderr.String() != "" {
 		t.Fatalf("stdout = %q, stderr = %q, want stdout %q", stdout.String(), stderr.String(), want)
 	}
@@ -157,19 +157,14 @@ func runExplain(t *testing.T, args ...string) (string, string, int) {
 
 func TestExplainSpecPlan(t *testing.T) {
 	const want = `process spec (processes/spec.yaml), card kind plan
- 1. card created: an issue labelled plan by a writer, or a card a writer moves from backlog to plan
- 2. lane plan: starts a task of class planner (session plan) at once
+ 1. card created on track plan: an issue labelled plan by a writer
+ 2. track plan: starts a task of class planner (session plan) once a work slot is free
  3. planner session on the stronger rung: answers a plan of 1 to 12 cards, one foundation first, one integration last
-      plan invalid -> back to the planner (step 3)
- 4. human card: the plan, for approvers to accept
-      a writer's comment -> back to the planner (step 3)
-      Reject -> end: failed; the issue closed -> end: closed
-      Accept plan (approvers) -> step 5
- 5. factoryd files one card per planned card in lane backlog, with their dependencies (card kind child)
+      plan invalid -> back to the planner (step 3); an open question -> human card: the last answer, or a writer's comment -> back to the planner (step 3), the issue closed -> end: closed
+ 4. a plan with no open question: factoryd files one card per planned card on track direct, with their dependencies (card kind child)
       a cycle or any finding -> back to the planner (step 3)
- 6. end: done
- later: Start plan (approvers) moves every card of this plan still in backlog to lane ready
- caps: every planner session counts against limits.sessions (3); at the cap -> human card (step 4)
+ 5. end: done
+ caps: every planner session counts against limits.sessions (3); at the cap -> human card
 `
 	if got, stderr, code := runExplain(t, "spec", "plan"); code != 0 || got != want {
 		t.Fatalf("exit %d, stderr %q, stdout:\n%s\nwant:\n%s", code, stderr, got, want)
@@ -178,27 +173,25 @@ func TestExplainSpecPlan(t *testing.T) {
 
 func TestExplainSpecChild(t *testing.T) {
 	const want = `process spec (processes/spec.yaml), card kind child
- 1. card created: by factoryd when an approver accepts a plan, in lane backlog, with the plan's dependencies
- 2. lane backlog: does not start
-      Start plan (approvers), or a writer's move -> step 3
- 3. lane ready: waits until every card it depends on is done ("waiting on #n")
-      a dependency ends failed or closed -> human card: an answer -> step 4, a close -> end: closed
- 4. lane ready: starts a task of class coder (session code)
- 5. stage screening: an outside account's card only; findings -> human card
- 6. coder session (at most 3 per task, limits.sessions)
- 7. stage policy: findings -> end: failed
- 8. stage migration: findings -> human card
- 9. stage reproduction: findings -> back to the coder (step 6)
-10. stage checks: findings -> back to the coder (step 6)
-11. stage review: findings -> back to the coder (step 6); no verdict -> human card
-12. stage audit: projects with audit: true only; findings -> human card
-13. merge queue (project): one pull request at a time; main merged in and the checks run again when main moved
-      a conflict or red checks -> back to the coder (step 6)
-14. stage approval: human card, or merge rule auto without one
-      request changes -> back to the coder (step 6); reject -> end: failed
-15. stage merge: a refusal -> human card; a conflict -> back to the coder (step 6)
-16. merged: waits until the chain runs the change live (done names the run that covers it)
-17. end: done; the cards that depend on this one may start
+ 1. card created: by factoryd from a plan with no open question, on track direct, with the plan's dependencies
+ 2. track direct: waits until every card it depends on is done ("waiting on #n")
+      a dependency ends failed or closed -> human card: an answer -> step 3, a close -> end: closed
+ 3. track direct: starts a task of class coder (session code)
+ 4. stage screening: an outside account's card only; findings -> human card
+ 5. coder session (at most 3 per task, limits.sessions)
+ 6. stage policy: findings -> end: failed
+ 7. stage migration: findings -> human card
+ 8. stage reproduction: findings -> back to the coder (step 5)
+ 9. stage checks: findings -> back to the coder (step 5)
+10. stage review: findings -> back to the coder (step 5); no verdict -> human card
+11. stage audit: projects with audit: true only; findings -> human card
+12. merge queue (project): one pull request at a time; main merged in and the checks run again when main moved
+      a conflict or red checks -> back to the coder (step 5)
+13. stage approval: human card, or merge rule auto without one
+      request changes -> back to the coder (step 5); reject -> end: failed
+14. stage merge: a refusal -> human card; a conflict -> back to the coder (step 5)
+15. merged: waits until the chain runs the change live (done names the run that covers it)
+16. end: done; the cards that depend on this one may start
  caps: every return to the coder counts against limits.sessions (3); at the cap -> human card
 `
 	if got, stderr, code := runExplain(t, "spec", "child"); code != 0 || got != want {
@@ -206,10 +199,10 @@ func TestExplainSpecChild(t *testing.T) {
 	}
 }
 
-func TestExplainMaintenanceBug(t *testing.T) {
-	const want = `process maintenance (processes/maintenance.yaml), card kind bug
- 1. card created: an issue labelled bug or agent, or with no lane label, from anyone
- 2. lane ready: starts a task of class coder (session code) at once
+func TestExplainMaintenanceDirect(t *testing.T) {
+	const want = `process maintenance (processes/maintenance.yaml), card kind direct
+ 1. card created on track direct: an issue with no track label, or labelled bug or agent, from anyone, or any card factoryd files
+ 2. track direct: starts a task of class coder (session code) once a work slot is free
  3. stage screening: an outside account's card only; findings -> human card
  4. coder session (at most 3 per task, limits.sessions)
  5. stage checks: findings -> back to the coder (step 4)
@@ -225,7 +218,7 @@ func TestExplainMaintenanceBug(t *testing.T) {
 14. end: done
  caps: every return to the coder counts against limits.sessions (3); at the cap -> human card
 `
-	if got, stderr, code := runExplain(t, "maintenance", "bug"); code != 0 || got != want {
+	if got, stderr, code := runExplain(t, "maintenance", "direct"); code != 0 || got != want {
 		t.Fatalf("exit %d, stderr %q, stdout:\n%s\nwant:\n%s", code, stderr, got, want)
 	}
 }
@@ -238,7 +231,7 @@ func TestExplainSwitchedOffAndMaxReturns(t *testing.T) {
 	s = strings.Replace(s, "{name: checks, on_findings: agent, enabled: true}", "{name: checks, on_findings: agent, enabled: true, max_returns: 2}", 1)
 	write(t, filepath.Join(dir, "processes/maintenance.yaml"), s)
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"config", "explain", "--tree", dir, "maintenance", "bug"}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"config", "explain", "--tree", dir, "maintenance", "direct"}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	for _, want := range []string{" 5. stage checks: findings -> back to the coder (step 4), at most 2 returns, then human card\n", " 8. stage reproduction: switched off\n"} {
@@ -250,10 +243,10 @@ func TestExplainSwitchedOffAndMaxReturns(t *testing.T) {
 
 func TestExplainRefusesKind(t *testing.T) {
 	got, stderr, code := runExplain(t, "maintenance", "plan")
-	if code != 1 || got != "" || stderr != "process maintenance has no lane plan: a plan card cannot enter it\n" {
+	if code != 1 || got != "" || stderr != "process maintenance has no plan track: a plan card cannot enter it\n" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, got, stderr)
 	}
-	for _, args := range [][]string{{"maintenance", "epic"}, {"nightly", "bug"}} {
+	for _, args := range [][]string{{"maintenance", "epic"}, {"maintenance", "bug"}, {"nightly", "direct"}} {
 		if _, stderr, code := runExplain(t, args...); code != 1 || stderr == "" {
 			t.Errorf("%v: exit %d, stderr %q", args, code, stderr)
 		}
@@ -291,7 +284,7 @@ func (s *emptyStore) Costs(context.Context, time.Time, time.Time) (policy.Costs,
 	return policy.Costs{}, nil
 }
 func (s *emptyStore) SweepHolds(context.Context) (int, error) { return 0, nil }
-func (s *emptyStore) OpenCardsByLane(context.Context) ([]factoryd.OpenCard, error) {
+func (s *emptyStore) OpenCardsByTrack(context.Context) ([]factoryd.OpenCard, error) {
 	return nil, nil
 }
 
@@ -345,7 +338,7 @@ func TestConfigCheckAndLoaderAgree(t *testing.T) {
 }
 
 // config check never consults a database (D1c): a head that drops the
-// lane plan, which the running factoryd refuses while cards sit there,
+// plan track, which the running factoryd refuses while cards sit on it,
 // passes, and the check says who judges the open cards.
 func TestConfigCheckSkipsOpenCards(t *testing.T) {
 	dir := tree(t)
@@ -354,17 +347,37 @@ func TestConfigCheckSkipsOpenCards(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	noPlan := strings.Replace(string(b), "  - name: plan\n    class: planner\n    moved_by: writers\n    plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}\n", "", 1)
+	noPlan := strings.Replace(string(b), "  plan:\n    class: planner\n    plan: {max_cards: 12, min_cards: 1, foundation: true, integration: true}\n", "", 1)
 	noPlan = strings.Replace(noPlan, "dependencies: {wait_until: done, on_failed: human}\n", "", 1)
-	if strings.Contains(noPlan, "name: plan") || strings.Contains(noPlan, "dependencies:") {
-		t.Fatalf("spec.yaml still holds the plan lane:\n%s", noPlan)
+	if strings.Contains(noPlan, "  plan:") || strings.Contains(noPlan, "dependencies:") {
+		t.Fatalf("spec.yaml still holds the plan track:\n%s", noPlan)
 	}
 	write(t, spec, noPlan)
 	var stdout, stderr bytes.Buffer
 	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
-	if want := dir + ": ok, 4 projects, 2 processes, 1 template\nopen cards per lane: checked by the running factoryd only\n"; stdout.String() != want {
+	if want := dir + ": ok, 4 projects, 2 processes, 1 template\nopen cards per track: checked by the running factoryd only\n"; stdout.String() != want {
 		t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+	}
+}
+
+// config check refuses a process file that still carries a lanes block,
+// by name: the schema removed it, so it is no key the decoder ignores.
+func TestConfigCheckRefusesALanesBlock(t *testing.T) {
+	dir := tree(t)
+	spec := filepath.Join(dir, "processes", "spec.yaml")
+	b, err := os.ReadFile(spec) // #nosec G304 -- the test's own temporary tree
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, spec, strings.Replace(string(b), "tracks:\n", "lanes:\n  - {name: backlog}\n  - {name: ready, class: coder, moved_by: writers}\ntracks:\n", 1))
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"config", "check", dir}, &stdout, &stderr); code != 1 {
+		t.Fatalf("exit %d, want 1; stdout %q", code, stdout.String())
+	}
+	want := dir + ": rejected:\nprocesses/spec.yaml: lanes: removed: whoever files a card sets its track, plan or direct, and the classes and the plan bounds sit under tracks\n"
+	if stderr.String() != want {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
 	}
 }

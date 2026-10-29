@@ -1,5 +1,5 @@
 name: Improvement
-about: A change you would like. It waits in the backlog until a writer moves it to ready.
+about: A change you would like. It files no card until a writer labels it agent or plan.
 labels: ["improvement"]
 body:
   - type: textarea

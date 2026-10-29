@@ -90,7 +90,7 @@ type queueHarness struct {
 func newQueueHarness(t *testing.T, queue string, checks func(sha string) ChecksResult, setup ...func(*gateHarness)) *queueHarness {
 	q := &queueHarness{ahead: func(int) int { return 0 }, sync: func(from string) SyncResult { return SyncResult{From: from, To: from} }}
 	q.gateHarness = newGateHarnessWith(t, TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}, setup...)
-	q.taskConfig = &TaskConfig{Process: "spec", Lane: policy.LaneReady, Class: policy.ClassCoder, Session: policy.SessionCode,
+	q.taskConfig = &TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: queue}
 	env := q.env
 	env.OnActivity(ActivityEnterQueue, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (int, error) {
@@ -167,7 +167,7 @@ func TestQueueOneAtATime(t *testing.T) {
 			if id == "b1" {
 				repo = "sf/other"
 			}
-			if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo}); err != nil {
+			if err := s.CreateTask(ctx, Task{ID: id, Status: "in-review", Repository: repo, Track: "direct"}); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -226,8 +226,8 @@ func TestQueueOneAtATime(t *testing.T) {
 	})
 
 	t.Run("activities", func(t *testing.T) {
-		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9}, newFakeKube(), &fakeObjectStore{})
-		store.CreateTask(context.Background(), Task{ID: "a2", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10})
+		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
+		store.CreateTask(context.Background(), Task{ID: "a2", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10, Track: "direct"})
 		ctx := context.Background()
 		if ahead, err := r.EnterQueue(ctx, "a1"); ahead != 0 || err != nil {
 			t.Fatalf("a1 ahead %d %v", ahead, err)
@@ -284,8 +284,8 @@ func TestQueueOneAtATime(t *testing.T) {
 	})
 
 	t.Run("paused", func(t *testing.T) {
-		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9}, newFakeKube(), &fakeObjectStore{})
-		store.CreateTask(context.Background(), Task{ID: "fix", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10})
+		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
+		store.CreateTask(context.Background(), Task{ID: "fix", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10, Track: "direct"})
 		store.pauses = map[string]QueuePause{"linkshort/linkshort": {Project: "linkshort/linkshort", RunID: 5, SHA: "red1", FixTask: "fix"}}
 		ctx := context.Background()
 		// the queue's head waits behind the pause; the fix card takes the turn
@@ -861,7 +861,7 @@ func TestQueueRedHeadGetsItsRerunsWhileMainMoves(t *testing.T) {
 // a link on the public Forgejo host; a foreign link in the log's tail
 // stays defanged and unlisted.
 func TestQueueLeftEscalationLinksTheJob(t *testing.T) {
-	task := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9}
+	task := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9, Track: "direct"}
 	runner, hub, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
 	runner.forgejo.PublicURL = "https://git.example"
 	red := checksResult(CombinedStatus{State: "failure", Statuses: []CommitStatus{
@@ -1037,8 +1037,8 @@ func TestQueueReleasedOnEveryExit(t *testing.T) {
 	}
 
 	t.Run("finish", func(t *testing.T) {
-		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9}, newFakeKube(), &fakeObjectStore{})
-		store.CreateTask(context.Background(), Task{ID: "a2", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10})
+		r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
+		store.CreateTask(context.Background(), Task{ID: "a2", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10, Track: "direct"})
 		ctx := context.Background()
 		for _, id := range []string{"a1", "a2"} {
 			if _, err := r.EnterQueue(ctx, id); err != nil {
@@ -1082,10 +1082,10 @@ func TestHealSignalsQueueHead(t *testing.T) {
 	in.Projects = codeRepoOnly{}
 	ctx := context.Background()
 	for _, tk := range []Task{
-		{ID: "a1", Status: "in-review", Kind: "agent", Repository: "linkshort/linkshort", Gate: GateMergeQueue},
-		{ID: "a2", Status: "in-review", Kind: "agent", Repository: "linkshort/linkshort", Gate: GateMergeQueue},
-		{ID: "b1", Status: "in-review", Kind: "agent", Repository: "sf/other", Gate: GateApproval},
-		{ID: "b2", Status: "in-review", Kind: "agent", Repository: "sf/other", Gate: GateMergeQueue},
+		{ID: "a1", Status: "in-review", Kind: "agent", Repository: "linkshort/linkshort", Gate: GateMergeQueue, Track: "direct"},
+		{ID: "a2", Status: "in-review", Kind: "agent", Repository: "linkshort/linkshort", Gate: GateMergeQueue, Track: "direct"},
+		{ID: "b1", Status: "in-review", Kind: "agent", Repository: "sf/other", Gate: GateApproval, Track: "direct"},
+		{ID: "b2", Status: "in-review", Kind: "agent", Repository: "sf/other", Gate: GateMergeQueue, Track: "direct"},
 	} {
 		store.CreateTask(ctx, tk)
 		store.SetGate(ctx, tk.ID, tk.Gate, time.Now())

@@ -113,7 +113,7 @@ func TestSplitOverBoundReturnsNilWhenBoundIsZero(t *testing.T) {
 // lines.
 func TestRunSplitRefusesAnOverBoundFileWithoutASession(t *testing.T) {
 	big := Task{ID: "t1", Status: "in-review", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, big, kube, &fakeObjectStore{})
 	hub.prFiles = `[{"filename":"web/app.ts","additions":1100,"deletions":0},{"filename":"api/links.go","additions":100,"deletions":0}]`
@@ -146,7 +146,7 @@ func TestRunSplitRefusesAnOverBoundFileWithoutASession(t *testing.T) {
 // is the card's plan revision; the card is in review again after it.
 func TestRunSplitReadsThePullRequest(t *testing.T) {
 	big := Task{ID: "t1", Status: "in-review", Objective: "Links\n\nThe links page and API.", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, big, kube, &fakeObjectStore{})
 	hub.prFiles = `[{"filename":"web/app.ts","additions":500,"deletions":0},{"filename":"web/app.css","additions":80,"deletions":0},` +
@@ -203,7 +203,7 @@ func TestRunSplitReadsThePullRequest(t *testing.T) {
 // bound, and the planner's answer becomes the card's plan revision.
 func TestRunSplitRunsTheSessionWhenAllFilesAreUnderBound(t *testing.T) {
 	big := Task{ID: "t1", Status: "in-review", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, store := newTestRunner(t, big, kube, &fakeObjectStore{})
 	hub.prFiles = `[{"filename":"web/app.ts","additions":500,"deletions":0},{"filename":"api/links.go","additions":520,"deletions":0}]`
@@ -261,7 +261,7 @@ func TestRunSplitRunsTheSessionWhenAllFilesAreUnderBound(t *testing.T) {
 // over-bound head is refused again without one.
 func TestRunSplitSpendsNoSessionOnAnOverBoundRefusal(t *testing.T) {
 	big := Task{ID: "t1", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
-		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5}
+		IssueNumber: 5, PRNumber: 9, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Track: "direct"}
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, big, kube, objects)
@@ -315,10 +315,10 @@ func asStrings(v any) []string {
 
 // FileSplit files the split's cards like a plan's, the member who split
 // the card their author, budgets by size, the dependencies among them, and
-// puts them into lane ready at main's head, where their workflows start,
+// queues them on the direct track at main's head, where their workflows start,
 // on the split card's image; the card's issue names them.
 func TestFileSplitStartsTheCards(t *testing.T) {
-	big := Task{ID: "t-big", Kind: "agent", Status: "in-review", Lane: policy.LaneReady, Process: "spec", Repository: "linkshort/linkshort",
+	big := Task{ID: "t-big", Kind: "agent", Status: "in-review", Track: policy.TrackDirect, Process: "spec", Repository: "linkshort/linkshort",
 		IssueNumber: 1, PRNumber: 9, Author: "alice", AuthorWriter: true, Priority: 2, Objective: "Links\n\nThe links page and API.", Image: "browser"}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {title: "Links", poster: "alice"}}, next: 1}
 	runner, _, store := newTestRunner(t, big, newFakeKube(), &fakeObjectStore{})
@@ -345,7 +345,7 @@ func TestFileSplitStartsTheCards(t *testing.T) {
 		eur   float64
 	}{{api, 2, 5}, {web, 3, 5}} {
 		k := c.card
-		if k.IssueNumber != c.issue || k.Status != "queued" || k.Lane != policy.LaneReady || k.SHA != "m1" || k.BudgetEUR != c.eur ||
+		if k.IssueNumber != c.issue || k.Status != "queued" || k.Track != policy.TrackDirect || k.SHA != "m1" || k.BudgetEUR != c.eur ||
 			k.Process != "spec" || k.Author != "sebastian" || !slices.Equal(k.RequiredCapabilities, []string{policy.ClassCoder}) || k.Image != "browser" {
 			t.Fatalf("card %s: %+v", k.PlanKey, k)
 		}
@@ -353,7 +353,7 @@ func TestFileSplitStartsTheCards(t *testing.T) {
 			t.Fatalf("labels of #%d: %v", c.issue, labels)
 		}
 	}
-	if !strings.HasPrefix(fj.issues[3].body, "Card web of the split of #1 (2 of 2), accepted by sebastian.") {
+	if !strings.HasPrefix(fj.issues[3].body, "Card web of the split of #1 (2 of 2), filed for sebastian.") {
 		t.Fatalf("body of #3:\n%s", fj.issues[3].body)
 	}
 	if deps := store.deps[web.ID]; !slices.Equal(deps, []string{api.ID}) || !slices.Equal(fj.issues[3].deps, []int64{2}) || store.deps[api.ID] != nil {
@@ -523,7 +523,7 @@ func TestSplitCancelledByTheGateSupervisorIsATry(t *testing.T) {
 // A split's escalation tells the member what answers it: the board's
 // approval card, not a reply on the issue.
 func TestSplitEscalationNamesTheBoard(t *testing.T) {
-	big := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9}
+	big := Task{ID: "t1", Kind: "agent", Status: "waiting-human", Objective: "Links", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, PRNumber: 9, Track: "direct"}
 	runner, hub, _ := newTestRunner(t, big, newFakeKube(), &fakeObjectStore{})
 	ask := splitFailed + "; approve, deny or split the pull request again. The findings:\n- plan: 4 cards; this process allows 2 to 3"
 	if _, err := execActivity(t, runner, ActivityEscalate, "t1", ask, []string(nil)); err != nil {

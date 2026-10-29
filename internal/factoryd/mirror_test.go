@@ -185,8 +185,8 @@ func TestPGStoreMirrors(t *testing.T) {
 // a GitHub pull request, and no other card's.
 func TestPGStoreClearGitHubFailures(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
-	for _, k := range []Task{{ID: "t-f", Repository: "demo-app/demo-app"}, {ID: "t-o", Repository: "demo-app/demo-app", GitHubPR: 4},
-		{ID: "t-x", Repository: "linkshort/linkshort"}} {
+	for _, k := range []Task{{ID: "t-f", Repository: "demo-app/demo-app", Track: "direct"}, {ID: "t-o", Repository: "demo-app/demo-app", GitHubPR: 4, Track: "direct"},
+		{ID: "t-x", Repository: "linkshort/linkshort", Track: "direct"}} {
 		k.Kind, k.Status = "agent", "done"
 		state := "failed: GitHub refused the pull request: GitHub answered 422 Validation Failed"
 		if k.GitHubPR > 0 {

@@ -36,47 +36,42 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   or promote. Other writers see the cards without those buttons (a POST
   gets 403) and may still deny (a writer of the request's project),
   request changes, reject and release. Each button's action is one
-  function in `internal/console/actions.go` (`doMoveCard`, `doApprove`,
+  function in `internal/console/actions.go` (`doApprove`, `doDeny`,
   …) with its checks, its Forgejo calls as the human and its one event
   row; the project agent's tools call the same functions. Forgejo's approvals whitelist on
   main stays the merge authority.
-- `/`: the agent lane (done and failed for 7 days, at most 300 tasks, open
-  ones first) in columns: the lanes of the shown projects' processes in
-  the fixed order backlog, plan, ready (a starting lane holds its `queued`
-  and `waiting-deps` cards), then Running, Waiting on a human, Waiting on
-  the author, In review, Done, Failed, Closed, where a card carries its
-  lane badge. `?project=<name>` (a select at the top) shows one project.
-  The human lane: approval requests, escalations with their reason, read
-  from the escalation's intake event, and an answer box, human tasks. htmx
+- `/`: the board (done and failed for 7 days, at most 300 tasks, open
+  ones first) in four columns: Needs you, Queued (`queued`,
+  `waiting-deps`, `waiting-image`), In progress and Done. `?view=wide`
+  shows one column per task state instead: Queued, Running, Waiting on a
+  human, Waiting for image, Waiting on the author, In review, Merged,
+  Done, Failed, Closed. `?project=<name>` (a select at the top) shows one
+  project. Needs you holds approval requests, escalations with their
+  reason, read from the escalation's intake event, and an answer box,
+  human tasks, and cards waiting on their author. htmx
   polls `/board` every 10 s. Above the columns the board names the
   configuration version factoryd runs with its commit, linked to the
   commit's tree in the infra repository, as `/policy` shows it. A card
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan's card `part of plan #n`.
-- Moving a card: a backlog card has one button per starting lane of its
-  process the viewer may use (`→ Plan`, `→ Ready`; intake's
-  `Intake.MayMove`, the `moved_by` rule, asked once a minute per
-  repository, user and `moved_by`, a failure kept too, so the poll never
-  waits on Forgejo per card; the lanes of the project's current process;
-  a plan's card never into plan),
-  `POST /cards/{id}/lane` adding the lane's label (`plan`, `agent`) with
-  the human's token; intake judges the label event. A refusal is a 403
-  with one sentence (`Lane ready takes cards from writers of <repo>.`).
-  `console.js` drops a dragged backlog card on a lane column by submitting
-  the same form. The new-task form's lane select (backlog, the chosen
-  project's starting lanes, ready by default, or the human lane) sets
-  `backlog`, `plan`, `agent` or `human` on the issue.
-- The plan card: a pending approval of kind `plan` shows the spec's first
-  lines, the summary and the cards (key, role, title, size, depends on,
-  factoryd's edges included); "Accept plan" (approvers:
-  `POST /tasks/{id}/plan/accept`, `AcceptPlan`, then `Plan revision <n>
-  accepted.` as the human; a stale revision shows `the plan changed to
-  revision <m>; reload` on the card), "Request changes" (a comment as the
-  human) and "Reject" (`RejectPlan`) for every writer. A done plan lists
-  its cards by issue and state, and "Start plan (n in backlog)" for
-  approvers who may move them into ready (`POST /tasks/{id}/start-plan`)
-  labels each backlog card `agent` as the human and answers the count. A
+- Filing a card: no card waits undecided and none moves between columns
+  by hand (roadmap 225). The new-task form's track select (Direct by
+  default, Plan, Human) sets `agent`, `plan` or `human` on the issue;
+  Plan is offered only for a project whose process has a plan track, and
+  a POST for one without is refused with one sentence. The intake files
+  a direct or plan card `queued` on its track, and the scheduler starts
+  it once a work slot is free.
+- The plan card: a pending approval of kind `plan` is the record of a
+  revision's open questions. It shows the spec's first lines, the
+  summary, the cards (key, role, title, size, depends on, factoryd's
+  edges included) and each open question with its choices and a free
+  answer, posted on the issue as the member. The answers go to the
+  planner, and its next revision with no open question files the cards,
+  `queued` on the direct track, and the plan card ends done. A stale
+  revision shows `the plan changed to revision <m>; reload` on the card.
+  "Request changes" posts a comment as the member, which the planner
+  revises the plan with. A done plan lists its cards by issue and state. A
   plan's escalation shows on its card only when newer than the pending
   request. The card's forms keep the project filter; a browser's form is
   answered with a redirect to the board, htmx with the board itself.
@@ -185,8 +180,8 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   one per console action,
   run as the human through `actions.go`, each refusing a card of another
   project; a tool the `chat.confirm` list names answers a proposal, which
-  `POST /projects/{name}/chat/proposals/{id}` runs, and `move_card`,
-  `comment`, `set_summary` and `set_accent` answer an undo token for
+  `POST /projects/{name}/chat/proposals/{id}` runs, and `comment`,
+  `set_summary` and `set_accent` answer an undo token for
   `POST /projects/{name}/chat/undo/{token}`. `new_card` takes an `image`,
   a name the project pins in force (`default` names none), which reaches
   the issue as an `Image:` line among the field lines (`Size:`, `Rung:`)
@@ -204,9 +199,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   on a tool card as a session's `request_tool` does (above), refused at
   the same cap; the card opens with who asked for which tool and why. A
   filing meets the chat's admission as `new_card`'s does (a wake files
-  nothing on a closed intake, and no ask files past the backlog cap; a
+  nothing on a closed intake, and no ask files past the queue cap; a
   join files nothing and meets neither) and writes a `card_filed` row
-  with the lane, title, image and tool. A project without agents offers
+  with the track, the reason for it, the title, image and tool. A project without agents offers
   neither `project_images` nor `request_image`. Proposals and
   undo tokens are the member's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
@@ -220,13 +215,12 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   and events stay the woken member's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no
-  card) and the cards of a plan it accepts. A filing whose `card_filed`
+  card) and the cards of a plan it files. A filing whose `card_filed`
   row cannot be written is closed with a comment and refused, naming the
   issue. Its comments, and so its answers to escalations, are
   `factory-chat`'s: the agent reads such an answer as the project agent's,
-  never a human's. The intake judges a label move by its Forgejo actor, so
-  a wake moves as `factory-chat`, a writer; lanes only approvers may move
-  are not for the agent's own moves. A review the agent decides, in a
+  never a human's. The intake judges a label by its Forgejo actor, so a
+  wake labels as `factory-chat`, a writer. A review the agent decides, in a
   wake or in a member's turn, goes out as `factory-chat` too: an approval
   posts none, a change request is `factory-chat`'s, which the intake
   trusts and signals and which blocks no later merge. A project without a chat
@@ -246,15 +240,14 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   block of `policy.yaml` or a project file (`model`, `monthly_eur`,
   `confirm`; defaults in `policy.DefaultChat`) sets the rest; a project
   file's keys replace the policy's, its `monthly_eur` at most the
-  policy's. By default the OK is asked for `new_card`, `request_image`, `move_card`,
+  policy's. By default the OK is asked for `new_card`, `request_image`,
   `answer` and `steer` (text injected into the board could otherwise make
   the agent answer a waiting card or message a running session as the
-  member), `start_plan`, `retry`, `accept_plan`, `request_changes`,
-  `reject_plan`, `approve_merge`, `deny_merge`, `invite`, `github_export`,
-  `github_sync`, `close`, `edit`, `grant_session` and `set_dependency`; `confirm: []` asks
-  for none. `accept_plan` without a revision takes the plan's newest, which
-  its proposal names with its sha256; a newer revision before Do it makes
-  it stale. `close` closes the card's issue as the member (the face's Close
+  member), `retry`, `request_changes`, `approve_merge`, `deny_merge`,
+  `invite`, `github_export`, `github_sync`, `close`, `edit`,
+  `grant_session` and `set_dependency`; `confirm: []` asks for none.
+  `new_card` takes a `track` (`direct`, `plan` or `human`) and a one-line
+  `track_reason`, both required. `close` closes the card's issue as the member (the face's Close
   button too), `edit` its title or body and the task's objective, which the
   next session's brief reads, `grant_session` answers a card at its session
   cap, and `set_dependency` adds or removes a dependency of a card that has

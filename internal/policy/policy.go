@@ -128,8 +128,8 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
 	"alert_verdict", "promote_resource", "release_resource",
-	"new_card", "request_image", "move_card", "answer", "comment", "tell_card", "steer", "retry", "start_plan", "accept_plan",
-	"request_changes", "reject_plan", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
+	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
+	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "ask", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
@@ -143,7 +143,7 @@ var VisionModels = []string{"vision"}
 
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
-	Confirm: []string{"new_card", "request_image", "move_card", "answer", "tell_card", "steer", "start_plan", "retry", "accept_plan", "request_changes", "reject_plan",
+	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "split_card",
 		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 
@@ -175,15 +175,15 @@ var AutonomyStates = []string{AutonomyManual, AutonomyAssisted, AutonomyAutonomo
 // AutonomyValues are the autonomy values a project file may name.
 var AutonomyValues = []string{AutonomyManual, AutonomyAssisted, AutonomyAutonomous}
 
-// DefaultBacklogCap bounds a project's unstarted filings when its file
-// sets no backlog_cap.
-const DefaultBacklogCap = 8
+// DefaultQueueCap bounds a project's unstarted filings when its file
+// sets no queue_cap.
+const DefaultQueueCap = 8
 
 // assistedOff are the tools that come off the confirm list at assisted:
 // the agent starts and files ready work itself, and every start and
 // filing still passes the ready check. routine_run files a routine's
 // card, as new_card files one, and request_image a tool card.
-var assistedOff = []string{"new_card", "request_image", "move_card", "start_plan", "accept_plan", "retry", "grant_session", "routine_run"}
+var assistedOff = []string{"new_card", "request_image", "retry", "grant_session", "routine_run"}
 
 // fullAutoOff are the always-confirm tools that come off at full auto:
 // merges follow the rule, and the agent judges alerts and writes documents.

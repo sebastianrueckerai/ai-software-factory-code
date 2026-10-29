@@ -2,7 +2,6 @@ package console
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -73,8 +72,8 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 
 // resolveChoice decides card id with choice as its state asks: a pending
 // merge approves on Approve, or runs a factory pull request's red checks
-// again on Re-run the checks, and a pending plan accepts on Accept, each
-// under the role its board button and chat tool need, a waiting
+// again on Re-run the checks, each under the role its board button and
+// chat tool need, a waiting
 // question takes the choice as the member's answer (its park, close or
 // fund acting as the board's button does), a choice card (the stall
 // card, the failed roll card) acts on it, another human-lane
@@ -119,15 +118,6 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 				return "", err
 			}
 			return c.doRerun(ctx, a, q.ID)
-		case q.Kind == factoryd.ApprovalPlan && choice == "Accept":
-			if err := c.admit(ctx, accessTable["accept_plan"], a, t.Repository, "task "+id); err != nil {
-				return "", err
-			}
-			var spec factoryd.PlanSpec
-			if err := json.Unmarshal(q.Spec, &spec); err != nil {
-				return "", refuse(http.StatusInternalServerError, "cannot read the plan's revision")
-			}
-			return c.doAcceptPlan(ctx, a, id, spec.Revision, spec.SHA256)
 		}
 	}
 	switch {
