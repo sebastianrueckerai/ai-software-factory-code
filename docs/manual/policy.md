@@ -85,7 +85,10 @@ intake, the approvers, the bounds of the other activities,
 
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
 (20m, the wall-clock cap across a task's sessions), `supervisor_calls`
-(3 per session), `supervisor_timeout` (6m per supervisor or review call,
+(decides nothing since plan E, kept so a pinned policy loads),
+`checkin_calls` (20, the model calls of one check-in conversation),
+`checkin_share` (10, the percent of the card's budget all its check-ins
+may spend), `supervisor_timeout` (6m per supervisor or review call,
 at most 15m), `stronger_after` (1: the second return from the same
 stage takes the stronger rung) and `steps` (200, also when absent: the
 model turns of one agent session, the worker's `STEPS`), `nudge_after` (3)

@@ -568,7 +568,7 @@ func TestCheckinSessionHandoverNeedsItsNote(t *testing.T) {
 	if chat.calls != 2 {
 		t.Fatalf("calls = %d, want one repair round", chat.calls)
 	}
-	if !strings.Contains(chat.gots[1].Input, "Your last answer was unreadable: a handover needs the note to the next session") {
+	if !strings.Contains(chat.gots[1].Input, "Your last answer was unreadable: a handover needs the note to the next session. Answer again as one JSON object.") {
 		t.Errorf("the repair round does not name the missing note:\n%s", chat.gots[1].Input)
 	}
 }

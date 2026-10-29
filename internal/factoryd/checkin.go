@@ -472,18 +472,12 @@ func foldFindingText(s string) string {
 	}), " ")
 }
 
-// parseCheckinAnswer reads the model's final answer against the ask: a
-// verdict for every finding the ask named — by its id, by its text exactly,
-// or by its text with whitespace and punctuation folded — none for a
-// finding it did not, and states and decision among the known ones. Every
-// verdict lands keyed by the ask's own text, whatever wording the answer
-// carried.
 // parseCheckinAnswer reads the model's final answer against the ask: the
-// moment's decisions, a message's guidance when it needs one, and — at the
-// gate — a verdict for every finding the ask named, by its id, by its text
-// exactly, or by its text with whitespace and punctuation folded, none for
-// a finding it did not. Every verdict lands keyed by the ask's own text,
-// whatever wording the answer carried.
+// moment's decisions, at the session moment a message's guidance and a
+// handover's note, and at the gate a verdict for every finding the ask
+// named, by its id, by its text exactly, or by its text with whitespace
+// and punctuation folded, none for a finding it did not. Every verdict
+// lands keyed by the ask's own text, whatever wording the answer carried.
 func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	var a checkinAnswer
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
@@ -624,7 +618,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			return CheckInOutcome{Decision: CheckHuman, Reason: reason, Record: rec}
 		}
 		repairs++
-		conv += "\n\nYour last answer was unreadable: " + perr.Error() + " Answer again as one JSON object."
+		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again as one JSON object."
 	}
 }
 
