@@ -35,15 +35,16 @@ const (
 // ReplanStep is the replan step's detail. Card is the card whose work goes
 // back (the cut card, or a direct card replanned as itself), Stops the
 // cards the replan stops, Revision the plan's newest revision at the ask
-// (0: none).
+// (0: none), Time when the step was written.
 type ReplanStep struct {
-	Origin   string   `json:"origin"`
-	By       string   `json:"by,omitempty"`
-	Comment  string   `json:"comment,omitempty"`
-	Card     string   `json:"card,omitempty"`
-	Work     string   `json:"work,omitempty"`
-	Stops    []string `json:"stops,omitempty"`
-	Revision int      `json:"revision"`
+	Origin   string    `json:"origin"`
+	By       string    `json:"by,omitempty"`
+	Comment  string    `json:"comment,omitempty"`
+	Card     string    `json:"card,omitempty"`
+	Work     string    `json:"work,omitempty"`
+	Stops    []string  `json:"stops,omitempty"`
+	Revision int       `json:"revision"`
+	Time     time.Time `json:"time"`
 }
 
 // replanRuns are the statuses of a plan whose replan runs.
@@ -160,6 +161,24 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	if err != nil {
 		return ReplanChildResult{}, err
 	}
+	work = sanitize.Inbound(work)
+	// a card the newest revision drops stops for that revision, whose
+	// plan may have ended since: it closes, and no second round follows
+	if newest, n, err := r.planAt(ctx, p.ID, 0); err != nil {
+		return ReplanChildResult{}, err
+	} else if newest != nil {
+		if drop, err := r.dropped(ctx, p.ID, k, *newest, map[int]*Plan{}); err != nil {
+			return ReplanChildResult{}, err
+		} else if drop {
+			if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", map[string]any{"work": work}); err != nil {
+				return ReplanChildResult{}, fmt.Errorf("record replan_stop: %w", err)
+			}
+			if err := r.moveDependents(ctx, k, p); err != nil {
+				return ReplanChildResult{}, err
+			}
+			return ReplanChildResult{Reason: droppedReason(n)}, nil
+		}
+	}
 	replannable, closed, err := r.planReplannable(ctx, p)
 	if err != nil {
 		return ReplanChildResult{}, err
@@ -172,7 +191,6 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: answer to go on with the card, or close it.",
 			p.IssueNumber, status)}, nil
 	}
-	work = sanitize.Inbound(work)
 	if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", map[string]any{"work": work}); err != nil {
 		return ReplanChildResult{}, fmt.Errorf("record replan_stop: %w", err)
 	}
@@ -214,8 +232,10 @@ type ReplanWait struct {
 	By, Comment string
 }
 
-// ReplanStopped tells whether the cards plan planID's pending replan stops
-// have ended, so its planner may run on what they left.
+// ReplanStopped tells whether the cards plan planID's pending replan stops,
+// and its started cards its newest revision drops (dropped), have ended,
+// so its planner may run on what they left and a revision may file on
+// their last pushes.
 func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, error) {
 	p, _, err := r.task(ctx, planID)
 	if err != nil {
@@ -225,11 +245,8 @@ func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, 
 	if err != nil {
 		return ReplanWait{}, err
 	}
-	if !pending {
-		return ReplanWait{Stopped: true}, nil
-	}
 	var w ReplanWait
-	if step.Origin == ReplanPerson {
+	if pending && step.Origin == ReplanPerson {
 		w.By, w.Comment = step.By, step.Comment
 	}
 	for _, id := range step.Stops {
@@ -241,8 +258,56 @@ func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, 
 			w.Open = append(w.Open, id)
 		}
 	}
+	newest, _, err := r.planAt(ctx, p.ID, 0)
+	if err != nil {
+		return ReplanWait{}, err
+	}
+	if newest != nil {
+		cards, err := r.store.PlanCards(ctx, p.ID)
+		if err != nil {
+			return ReplanWait{}, err
+		}
+		revisions := map[int]*Plan{}
+		for _, k := range cards {
+			if slices.Contains(w.Open, k.ID) {
+				continue
+			}
+			if drop, err := r.dropped(ctx, p.ID, k, *newest, revisions); err != nil {
+				return ReplanWait{}, err
+			} else if drop {
+				w.Open = append(w.Open, k.ID)
+			}
+		}
+	}
 	w.Stopped = len(w.Open) == 0
 	return w, nil
+}
+
+// dropped tells whether plan card k started, still runs (stoppable), and
+// has its key in the revision it started against but not in next, as
+// RevisionDrops judges a stale card: a delta card, in no revision, is
+// never dropped. revisions caches the plan's revisions read, by number.
+func (r *Runner) dropped(ctx context.Context, planID string, k Task, next Plan, revisions map[int]*Plan) (bool, error) {
+	holds := func(p *Plan) bool {
+		return p != nil && slices.ContainsFunc(p.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey })
+	}
+	if k.PlanKey == "" || k.PlanRevision == 0 || !stoppable(k) || holds(&next) {
+		return false, nil
+	}
+	ran, read := revisions[k.PlanRevision]
+	if !read {
+		var err error
+		if ran, _, err = r.planAt(ctx, planID, k.PlanRevision); err != nil {
+			return false, err
+		}
+		revisions[k.PlanRevision] = ran
+	}
+	return holds(ran), nil
+}
+
+// droppedReason closes a card the plan's revision drops.
+func droppedReason(revision int) string {
+	return fmt.Sprintf("the plan's revision %d drops it", revision)
 }
 
 // stopForReplan stops card k for plan p's replan: a live session is asked
@@ -711,18 +776,9 @@ func sameEntry(a, b PlanCard) bool {
 // asked on the plan's issue and steps each old card; a cut says on its
 // card's issue what it was cut into, at which session and spend, and
 // steps it. The plan's replanned step comes last, as it ends the pending
-// replan: a failure before it fails the filing, which runs again.
+// replan: a failure before it fails the filing, which runs again, and
+// writes the comments and the cut once.
 func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision int, next Plan, step ReplanStep, issues map[string]int64) error {
-	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
-	if err != nil {
-		return fmt.Errorf("the timeline of %s: %w", p.ID, err)
-	}
-	var asked struct {
-		Time time.Time `json:"time"`
-	}
-	if err := json.Unmarshal(openStep(tl, stepReplan, replanClosers...), &asked); err != nil {
-		return fmt.Errorf("the replan step of %s: %w", p.ID, err)
-	}
 	cards, err := r.oldCardsOf(ctx, p, step, true)
 	if err != nil {
 		return err
@@ -743,7 +799,7 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	count, held, named := map[string]int{}, map[string]bool{}, map[string]bool{}
 	for _, k := range cards {
 		stopped := k.ID == step.Card || slices.Contains(step.Stops, k.ID)
-		if k.CreatedAt.After(asked.Time) || k.Status == "closed" && k.FinishedAt != nil && k.FinishedAt.Before(asked.Time) && !stopped {
+		if k.CreatedAt.After(step.Time) || k.Status == "closed" && k.FinishedAt != nil && k.FinishedAt.Before(step.Time) && !stopped {
 			continue
 		}
 		f := fate{k: k, verdict: "dropped"}
@@ -776,13 +832,19 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	case step.Origin == ReplanCut && i >= 0:
 		note += fmt.Sprintf("\nThe cut of #%d: %s", cards[i].IssueNumber, sanitize.Inbound(step.Work))
 	}
-	r.commentOnce(ctx, p, repo, p.IssueNumber, "factoryd: "+r.untrusted(p, note))
+	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, "factoryd: "+r.untrusted(p, note)); err != nil {
+		return fmt.Errorf("comment the replan on #%d: %w", p.IssueNumber, err)
+	}
 	if step.Origin == ReplanCut && i >= 0 {
 		cut := cards[i]
 		session, spent := cut.Usage.Attempts, cut.SpentEUR
 		if cut.ID == p.ID {
 			// a direct card's switch set its counters to zero; its to_plan
 			// step kept them
+			tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+			if err != nil {
+				return fmt.Errorf("the timeline of %s: %w", p.ID, err)
+			}
 			sw := lastStep(tl, stepToPlan)
 			n, _ := sw["session"].(float64)
 			spent, _ = sw["spent"].(float64)
@@ -792,8 +854,11 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		for j, n := range cutInto {
 			refs[j] = fmt.Sprintf("#%d", n)
 		}
-		r.commentOnce(ctx, p, repo, cut.IssueNumber, fmt.Sprintf("factoryd: cut into %s at session %d, %.2f EUR spent.", strings.Join(refs, ", "), session, spent))
-		if err := r.timeline.Append(ctx, cut.ID, "cut", map[string]any{"into": cutInto, "session": session, "spent": spent}); err != nil {
+		body := fmt.Sprintf("factoryd: cut into %s at session %d, %.2f EUR spent.", strings.Join(refs, ", "), session, spent)
+		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, cut.IssueNumber, body); err != nil {
+			return fmt.Errorf("comment the cut on #%d: %w", cut.IssueNumber, err)
+		}
+		if _, err := r.timeline.AppendOnce(ctx, cut.ID, "cut", map[string]any{"into": cutInto, "session": session, "spent": spent}); err != nil {
 			return fmt.Errorf("record cut: %w", err)
 		}
 	}

@@ -784,7 +784,7 @@ func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revisio
 func (s *accBatchStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q factoryd.PlanQuestion) (int, bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool, error) {
+func (s *accBatchStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {

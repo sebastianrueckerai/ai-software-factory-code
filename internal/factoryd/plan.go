@@ -903,13 +903,17 @@ func cardFacts(c PlanCard) string {
 
 // cardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), filed for author, with the issues of the cards it depends on
-// (deps, their keys by issue), and start, the line on the old card's work
-// it starts from, after the facts ("" for none). The integration card
-// carries the plan's spec (piece 7: its brief already does), spec the
-// rendered spec block or "".
+// (deps, their keys by issue; a card not filed yet by its key alone), and
+// start, the line on the old card's work it starts from, after the facts
+// ("" for none). The integration card carries the plan's spec (piece 7:
+// its brief already does), spec the rendered spec block or "".
 func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency, spec, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
+		if d.Issue == 0 {
+			on = append(on, d.Key)
+			continue
+		}
 		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
 	directories, facts, _ := strings.Cut(cardFacts(c), "\n")
@@ -922,6 +926,20 @@ func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency,
 		body += "\n\nThe spec of the whole feature:\n" + spec
 	}
 	return body
+}
+
+// workLine is the start line of a card that starts from old card k's
+// work; goneLine its line when k's branch is gone.
+func workLine(k Task) string {
+	work := fmt.Sprintf("#%d", k.IssueNumber)
+	if k.PlanKey != "" {
+		work += " (" + k.PlanKey + ")"
+	}
+	return "Starts from the work of " + work + ", on this card's branch: finish what it holds, make it build green, and land it."
+}
+
+func goneLine(k Task) string {
+	return fmt.Sprintf("The branch of #%d is gone: start from main.", k.IssueNumber)
 }
 
 // planGuide is the planner's guide: the spec is the issue, the answer a
@@ -1256,12 +1274,13 @@ func (s *PGStore) PutPlanConfirmation(ctx context.Context, id string, revision i
 	return idx, true, nil
 }
 
-// PlanConfirmationAnswered tells whether any of plan task id's revisions
-// had its confirmation question answered: asked until answered once.
-func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool, error) {
-	var answered bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND answer IS NOT NULL)`, id).Scan(&answered)
-	return answered, err
+// PlanConfirmationAnswered is the newest of plan task id's revisions whose
+// confirmation question is answered, and whether there is one: a later
+// revision is judged against it.
+func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+	var revision sql.NullInt64
+	err := s.db.QueryRowContext(ctx, `SELECT max(revision) FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND answer IS NOT NULL`, id).Scan(&revision)
+	return int(revision.Int64), revision.Valid, err
 }
 
 // ConfirmationIndex is revision's confirmation question's index, and
@@ -1576,6 +1595,9 @@ func (t *taskRun) planLoop() (string, error) {
 	var findings []string
 	healed := st.Status == "waiting-human"
 	if healed {
+		if err := t.awaitFilingStops(); err != nil {
+			return t.finish("failed", "replan stops: "+errMessage(err))
+		}
 		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, 0, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
@@ -1755,6 +1777,9 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "a writer asked for changes while the planner ran", comments
 			continue
 		}
+		if err := t.awaitFilingStops(); err != nil {
+			return t.finish("failed", "replan stops: "+errMessage(err))
+		}
 		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, res.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
 		}
@@ -1779,10 +1804,11 @@ const (
 )
 
 // awaitReplanStops holds the run's first planner session (versionReplan)
-// until the cards a pending replan stops have ended, so the planner reads
-// what they left. Past replanStopsWait it records the cards still open
-// and lets the planner run. It keeps the person's name and note of the
-// replan for planComments.
+// until the cards a pending replan stops, and the started cards the
+// newest revision drops, have ended, so the planner reads what they left.
+// Past replanStopsWait it records the cards still open and lets the
+// planner run. It keeps the person's name and note of the replan for
+// planComments.
 func (t *taskRun) awaitReplanStops() error {
 	start := workflow.Now(t.ctx)
 	for {
@@ -1804,6 +1830,16 @@ func (t *taskRun) awaitReplanStops() error {
 			return err
 		}
 	}
+}
+
+// awaitFilingStops is awaitReplanStops before a revision files
+// (versionReplan): the cards it drops stop meanwhile, and a card that
+// starts from one's work copies its branch once its last push is in.
+func (t *taskRun) awaitFilingStops() error {
+	if t.replan < versionReplan {
+		return nil
+	}
+	return t.awaitReplanStops()
 }
 
 // plannerTime tells a plan card's agent time (versionPlannerRetry): short
@@ -2108,7 +2144,7 @@ func readsFinding(paths []string) string {
 // plan is stored as the task's next revision and held as the session's
 // answer, which RunPlan returns when the session ends.
 func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult, error) {
-	t, _, err := r.task(ctx, taskID)
+	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -2150,7 +2186,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	if st.prev != nil && n > st.revision {
 		r.recordCriteria(ctx, taskID, n, *st.prev, p)
-		r.restartChildren(ctx, t, n, p)
+		r.restartChildren(ctx, t, repo, n, p)
 	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
 	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha})
@@ -2235,17 +2271,24 @@ func replacesNothing(p Plan, id string) bool {
 
 // restartChildren runs the restart rules a new revision carries (piece
 // 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief, image, rung and size, one the new plan
-// drops ends closed with its issue unless it merged (Finish leaves a
-// merged card to its chain, which ends it done), a started open card the
-// new plan drops stops as for a replan, its work kept on its branch, a
-// started card it keeps runs on, and a final card never reopens.
-func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Plan) {
+// takes the new revision's brief, image, rung and size, with the line on
+// the old card's work it starts from kept, one the new plan drops ends
+// closed with its issue unless it merged (Finish leaves a merged card to
+// its chain, which ends it done), a started open card the new plan drops
+// (dropped) stops as for a replan, its work kept on its branch, a started
+// card it keeps runs on, and a final card never reopens.
+func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revision int, p Plan) {
 	cards, err := r.store.PlanCards(ctx, t.ID)
 	if err != nil {
 		log.Printf("plan %s revision %d: restart its cards: %v", t.ID, revision, err)
 		return
 	}
+	fork := r.forgejo.Fork(repo)
+	byRef := map[string]Task{fromRef(t): t}
+	for _, k := range cards {
+		byRef[fromRef(k)] = k
+	}
+	revisions := map[int]*Plan{}
 	edges := planEdges(p)
 	order := planOrder(p, edges)
 	place := map[string]int{}
@@ -2265,8 +2308,10 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Pl
 		}
 		c, ok := card[k.PlanKey]
 		if k.PlanRevision > 0 {
-			if !ok && stoppable(k) {
-				if _, err := r.stopForReplan(ctx, k, t, fmt.Sprintf("the plan's revision %d drops it", revision)); err != nil {
+			if drop, err := r.dropped(ctx, t.ID, k, p, revisions); err != nil {
+				log.Printf("card %s: the plan's revision %d: %v", k.ID, revision, err)
+			} else if drop {
+				if _, err := r.stopForReplan(ctx, k, t, droppedReason(revision)); err != nil {
 					log.Printf("card %s: the plan's revision %d drops it: %v", k.ID, revision, err)
 				}
 			}
@@ -2286,7 +2331,20 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Pl
 		if c.Role == RoleIntegration {
 			spec = specBlock(p)
 		}
-		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec, ""))
+		// the card's own branch is the old card's work it was filed on
+		start := ""
+		if from, named := byRef[c.From]; c.From != "" && named {
+			switch _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(k)); {
+			case errors.Is(err, ErrNotFound):
+				start = goneLine(from)
+			case err != nil:
+				log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
+				continue
+			default:
+				start = workLine(from)
+			}
+		}
+		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec, start))
 		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
@@ -2359,7 +2417,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 	// the round's hold-outs are drafted before a question is stored, a
 	// review model call and dry runs of minutes: the questions, the
 	// confirmation and the zone then reach Needs you as the plan waits
-	if confirm, err := r.confirms(ctx, t, rev.Revision, p); err != nil {
+	if confirm, err := r.confirms(ctx, t, p); err != nil {
 		return PlanRef{}, err
 	} else if confirm {
 		if err := r.askHoldouts(ctx, t, rev.Revision, p); err != nil {
@@ -2480,7 +2538,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // revision that changes the spec or a criterion (confirms). A plan
 // without criteria carries no spec to confirm.
 func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
-	if confirm, err := r.confirms(ctx, t, revision, p); err != nil || !confirm {
+	if confirm, err := r.confirms(ctx, t, p); err != nil || !confirm {
 		return err
 	}
 	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Choices: []string{"okay"}}
@@ -2493,28 +2551,40 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	return nil
 }
 
-// confirms reports whether plan p, revision of task t, asks the
-// confirmation: it carries criteria, and no revision's confirmation was
-// answered yet or p changes the spec or a criterion of the revision
-// before.
-func (r *Runner) confirms(ctx context.Context, t Task, revision int, p Plan) (bool, error) {
+// confirms reports whether plan p of task t asks the confirmation: it
+// carries criteria, and no revision's confirmation was answered yet or p
+// changes the spec or a criterion of the newest revision whose
+// confirmation was.
+func (r *Runner) confirms(ctx context.Context, t Task, p Plan) (bool, error) {
 	if len(p.Criteria) == 0 {
 		return false, nil
 	}
-	answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID)
-	if err != nil || !answered || revision < 2 {
+	confirmed, answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID)
+	if err != nil || !answered || confirmed < 1 {
 		return err == nil && !answered, err
 	}
-	prev, _, err := r.planAt(ctx, t.ID, revision-1)
+	prev, _, err := r.planAt(ctx, t.ID, confirmed)
 	return err == nil && prev != nil && specChanged(*prev, p), err
 }
 
 // specChanged tells whether next changes prev's spec, its outcome or its
-// glossary, or a criterion. A criterion changed under its own id cannot
-// occur: revisionFindings refuses it.
+// glossary, or a criterion, compared by value: revisions apart may hold
+// one id with two definitions.
 func specChanged(prev, next Plan) bool {
 	a, b := cmp.Or(prev.Spec, &Spec{}), cmp.Or(next.Spec, &Spec{})
-	return a.Outcome != b.Outcome || !slices.Equal(a.Glossary, b.Glossary) || len(criteriaDelta(prev, next)) > 0
+	if a.Outcome != b.Outcome || !slices.Equal(a.Glossary, b.Glossary) || len(prev.Criteria) != len(next.Criteria) {
+		return true
+	}
+	held := map[string]PlanCriterion{}
+	for _, c := range prev.Criteria {
+		held[c.ID] = c
+	}
+	for _, c := range next.Criteria {
+		if was, ok := held[c.ID]; !ok || was != c {
+			return true
+		}
+	}
+	return false
 }
 
 // confirmationQuestion is the confirmation question's text: what an
@@ -2589,8 +2659,16 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if err != nil {
 		return ChildrenResult{}, err
 	}
+	step, pending, err := r.pendingReplan(ctx, t)
+	if err != nil {
+		return ChildrenResult{}, err
+	}
+	old, err := r.oldCardsOf(ctx, t, step, pending)
+	if err != nil {
+		return ChildrenResult{}, err
+	}
 	author := cmp.Or(t.Author, r.forgejo.BotUser)
-	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha)
+	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha, old)
 	if err != nil {
 		return ChildrenResult{}, err
 	}
@@ -2604,10 +2682,6 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		return ChildrenResult{}, err
 	}
 	r.record(ctx, t.ID, "children_created", map[string]any{"revision": revision, "by": author, "issues": issues})
-	step, pending, err := r.pendingReplan(ctx, t)
-	if err != nil {
-		return ChildrenResult{}, err
-	}
 	if pending {
 		if err := r.recordReplan(ctx, t, repo, revision, p, step, byKey); err != nil {
 			return ChildrenResult{}, err
@@ -2624,21 +2698,17 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 // nest: a plan's card is never a plan). approver authors the cards, with
 // writer as its standing: a plan's are its card's, whose spec an outside
 // account may have written; the cards in filing order. A card whose from
-// names an old card starts from its work, unless a row of its key started
-// or ended: it files at the old card's base, and its branch is the old
-// card's before its issue exists; an old card whose branch is gone leaves
-// it to start from main.
-func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string) ([]Task, error) {
+// names one of old, the plan's record (oldCards), starts from its work,
+// unless a row of its key started or ended: it files at the old card's
+// base, and its branch is the old card's before its issue exists; an old
+// card whose branch is gone leaves it to start from main.
+func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
 	_, project, _ := v.ProjectOf(t.Repository)
 	direct, ok := v.Processes[process].Tracks.Track(policy.TrackDirect)
 	if !ok || direct.Class == "" {
 		return nil, terminalError("task %s: process %q has no direct track in configuration version %d", t.ID, process, v.ID)
-	}
-	old, err := r.oldCards(ctx, t)
-	if err != nil {
-		return nil, err
 	}
 	byRef, rows := map[string]Task{}, map[string]Task{}
 	for _, k := range old {
@@ -2669,17 +2739,13 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			continues = false
 		}
 		if continues {
-			work := fmt.Sprintf("#%d", from.IssueNumber)
-			if from.PlanKey != "" {
-				work += " (" + from.PlanKey + ")"
-			}
 			switch _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(from)); {
 			case errors.Is(err, ErrNotFound):
-				start, continues = fmt.Sprintf("The branch of #%d is gone: start from main.", from.IssueNumber), false
+				start, continues = goneLine(from), false
 			case err != nil:
 				return nil, fmt.Errorf("branch head of %s: %w", from.ID, err)
 			default:
-				base, start = from.SHA, "Starts from the work of "+work+", on this card's branch: finish what it holds, make it build green, and land it."
+				base, start = from.SHA, workLine(from)
 			}
 		}
 		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps, spec, start))

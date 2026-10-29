@@ -235,7 +235,7 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1"); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
@@ -273,7 +273,11 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1")
+		old, err := r.oldCards(ctx, plan)
+		if err != nil {
+			t.Fatal(err)
+		}
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1", old)
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("fileChildren = %+v, %v", cards, err)
 		}
@@ -316,6 +320,58 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 	}
 }
 
+// A rebrief keeps the start line of a card that started from an old
+// card's work, or found its branch gone, and names a dependency that has
+// no issue yet by its key.
+func TestRestartChildrenKeepsTheStartLine(t *testing.T) {
+	ctx := context.Background()
+	pinned := fixtureVersion(t)
+	r, store, _, fj := newPlanRunner(t, testPlan())
+	r.cfg.Policy = func() policy.Version { return pinned }
+	fj.branches = map[string]string{"factory/t-ui": "c7"}
+	for _, k := range []Task{
+		{ID: "t-ui", PlanKey: "ui", IssueNumber: 31, SHA: "b0", Status: "closed", PlanRevision: 1},
+		{ID: "t-api", PlanKey: "api", IssueNumber: 32, SHA: "b0", Status: "closed", PlanRevision: 1},
+	} {
+		k.Kind, k.Track, k.Source, k.Parent, k.Repository = "agent", policy.TrackDirect, SourcePlan, "t-plan", "linkshort/linkshort"
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	feature := func(key, from, brief string, deps ...string) PlanCard {
+		return PlanCard{Key: key, Role: RoleFeature, Title: key, Brief: brief, Size: "small", From: from, DependsOn: deps,
+			Acceptance: []PlanItem{{Text: key + " works"}}}
+	}
+	plan, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filed := Plan{Summary: "two", Cards: []PlanCard{feature("ui2", "ui", "Finish the UI."), feature("api2", "api", "Finish the API.")}}
+	old, err := r.oldCards(ctx, plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, "m1", old); err != nil {
+		t.Fatal(err)
+	}
+	next := Plan{Summary: "three", Cards: []PlanCard{
+		feature("ui2", "ui", "Finish the UI, then the footer.", "footer"), feature("api2", "api", "Finish the API and its docs."), feature("footer", "", "The footer."),
+	}}
+	r.restartChildren(ctx, plan, repo, 2, next)
+	cards := cardsByKey(t, store)
+	for key, want := range map[string][]string{
+		"ui2": {"Finish the UI, then the footer.", "Depends on: footer\n",
+			"Starts from the work of #31 (ui), on this card's branch: finish what it holds, make it build green, and land it."},
+		"api2": {"Finish the API and its docs.", "The branch of #32 is gone: start from main."},
+	} {
+		for _, w := range want {
+			if !strings.Contains(cards[key].Objective, w) {
+				t.Fatalf("%s's rebrief lacks %q:\n%s", key, w, cards[key].Objective)
+			}
+		}
+	}
+}
+
 // A started open card the revision drops is stopped for the replan: with
 // no live session its dependents wait on the plan and it ends closed with
 // the reason.
@@ -334,7 +390,11 @@ func TestRestartChildrenStopsADroppedStartedCard(t *testing.T) {
 	next := testPlan()
 	next.Cards = append(next.Cards[:1], next.Cards[2:]...)
 	next.Cards[1].DependsOn = nil
-	r.restartChildren(ctx, store.tasks["t-plan"], 2, next)
+	_, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.restartChildren(ctx, store.tasks["t-plan"], repo, 2, next)
 
 	if c := store.tasks[started.ID]; c.Status != "closed" {
 		t.Fatalf("the dropped started card is %s, want closed", c.Status)

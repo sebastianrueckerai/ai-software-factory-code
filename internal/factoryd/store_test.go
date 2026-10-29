@@ -3346,18 +3346,20 @@ func (s *fakeStore) PutPlanConfirmation(ctx context.Context, id string, revision
 	return len(s.questions[k]), true, nil
 }
 
-func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (bool, error) {
+func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+	newest, answered := 0, false
 	for k, kinds := range s.kinds {
-		if !strings.HasPrefix(k, id+" ") {
+		var revision int
+		if _, err := fmt.Sscanf(strings.TrimPrefix(k, id+" "), "%d", &revision); err != nil || !strings.HasPrefix(k, id+" ") {
 			continue
 		}
 		for i, kind := range kinds {
-			if kind == "confirmation" && s.questions[k][i].Answer != "" {
-				return true, nil
+			if kind == "confirmation" && s.questions[k][i].Answer != "" && (!answered || revision > newest) {
+				newest, answered = revision, true
 			}
 		}
 	}
-	return false, nil
+	return newest, answered, nil
 }
 
 func (s *fakeStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {

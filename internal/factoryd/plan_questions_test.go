@@ -76,8 +76,9 @@ func TestPlanQuestionsFormat(t *testing.T) {
 }
 
 // The store keeps a revision's questions in order and each answer once;
-// the confirmation question (piece 5) appends after them once, and its
-// answer ends the asking for every later revision.
+// the confirmation question (piece 5) appends after them once, and the
+// newest revision whose confirmation is answered is the one later
+// revisions are judged against.
 func TestPGStorePlanQuestions(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_questions"))
@@ -134,20 +135,37 @@ func TestPGStorePlanQuestions(t *testing.T) {
 			t.Fatalf("confirmation put %d: idx %d inserted %v (%v), want inserted %v at idx 3", i+1, idx, inserted, err, want)
 		}
 	}
-	if answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered {
-		t.Fatalf("answered %v (%v), want not yet", answered, err)
+	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered || rev != 0 {
+		t.Fatalf("answered %v at revision %d (%v), want not yet", answered, rev, err)
 	}
 	if err := s.AnswerPlanQuestion(ctx, "t-plan", 1, 3, "okay", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered {
-		t.Fatalf("answered %v (%v), want yes", answered, err)
+	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 1 {
+		t.Fatalf("answered %v at revision %d (%v), want revision 1", answered, rev, err)
 	}
 	if got, _ := s.PlanQuestions(ctx, "t-plan", 1); len(got) != 3 || got[2].Answer != "okay" {
 		t.Fatalf("questions with the confirmation %+v", got)
 	}
 	if open := must(s.OpenPlanQuestions(ctx, "t-plan", 1)); open != 0 {
 		t.Fatalf("%d open questions, want 0", open)
+	}
+	// a later revision's confirmation, asked again and answered, is the
+	// newest answered
+	if _, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary": "two"}`), "s2"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, "t-plan", 2, confirm); err != nil {
+		t.Fatal(err)
+	}
+	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 1 {
+		t.Fatalf("revision 2 asked: answered %v at revision %d (%v), want revision 1", answered, rev, err)
+	}
+	if err := s.AnswerPlanQuestion(ctx, "t-plan", 2, 1, "okay", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 2 {
+		t.Fatalf("revision 2 answered: answered %v at revision %d (%v), want revision 2", answered, rev, err)
 	}
 }
 
@@ -241,16 +259,16 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 	if !slices.Equal(rows, []string{"1 3 confirmation [okay]"}) {
 		t.Fatalf("confirmation rows %q", rows)
 	}
-	if answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered {
-		t.Fatalf("answered %v (%v), want not yet", answered, err)
+	if rev, answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered || rev != 0 {
+		t.Fatalf("answered %v at revision %d (%v), want not yet", answered, rev, err)
 	}
 	// the answer ends the asking: revision 2, filed with the answers, asks
 	// its questions again but no confirmation
 	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 3, "okay", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered {
-		t.Fatalf("answered %v (%v), want yes", answered, err)
+	if rev, answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 1 {
+		t.Fatalf("answered %v at revision %d (%v), want revision 1", answered, rev, err)
 	}
 	p2 := questionPlan()
 	p2.Summary = "Answered, the same plan again."

@@ -967,8 +967,8 @@ func (s *acceptanceStore) PutPlanConfirmation(context.Context, string, int, fact
 	return 0, false, nil
 }
 
-func (s *acceptanceStore) PlanConfirmationAnswered(context.Context, string) (bool, error) {
-	return false, nil
+func (s *acceptanceStore) PlanConfirmationAnswered(context.Context, string) (int, bool, error) {
+	return 0, false, nil
 }
 
 func (s *acceptanceStore) PutPlanCatches(context.Context, string, int, string, string, []string) (bool, error) {

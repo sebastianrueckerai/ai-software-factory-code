@@ -467,7 +467,8 @@ const holdoutFixSystem = `These drafted Go tests could not run on the repository
 
 // DecideHoldout is the console's okay or drop of hold-out idx of round
 // round of plan id, as a writer of its project: the round must be the
-// newest (ErrStalePlan) and its confirmation unanswered (ErrAnswered);
+// newest (ErrStalePlan) and no confirmation answered at it or after
+// (ErrAnswered), as a changed spec asks the confirmation again;
 // ErrHoldoutClick names a click the row's state takes not, ErrNoHoldout
 // a row the task does not hold.
 func DecideHoldout(ctx context.Context, store Store, taskID string, round, idx int, verb, by string) error {
@@ -481,11 +482,10 @@ func DecideHoldout(ctx context.Context, store Store, taskID string, round, idx i
 	if !ok || newest.Revision != round {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
-	if answered, err := store.PlanConfirmationAnswered(ctx, taskID); err != nil || answered {
-		if err == nil {
-			err = ErrAnswered
-		}
+	if confirmed, answered, err := store.PlanConfirmationAnswered(ctx, taskID); err != nil {
 		return err
+	} else if answered && confirmed >= round {
+		return ErrAnswered
 	}
 	state := map[string]string{"okay": HoldoutStored, "drop": HoldoutDropped}[verb]
 	if state == "" {

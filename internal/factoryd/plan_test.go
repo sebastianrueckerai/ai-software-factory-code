@@ -1091,51 +1091,69 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 }
 
-// A revision that changes a criterion asks the confirmation again, though
-// an earlier one was answered; one that keeps the spec and every
-// criterion asks nothing and files its cards (the spec, piece H 5).
+// A revision that changes the spec's outcome, its glossary or a
+// criterion against the newest confirmed revision asks the confirmation
+// again, though that one was answered: a revision a comment replaced
+// before anyone answered it does not count, and a criterion is compared
+// by value. One that keeps the spec and every criterion asks nothing and
+// files its cards (the spec, piece H 5).
 func TestConfirmsAgainOnAChangedSpec(t *testing.T) {
 	ctx := context.Background()
+	plan := func(edit func(p *Plan)) Plan {
+		p := testPlan()
+		edit(&p)
+		return p
+	}
+	added := func(p *Plan) {
+		p.Criteria = append(p.Criteria, PlanCriterion{ID: "clicks_counted", Kind: CriterionInvariant, Test: "go test ./internal/clicks passes"})
+	}
 	for _, tc := range []struct {
-		name string
-		edit func(p *Plan)
-		asks bool
+		name  string
+		later []Plan // the revisions after the confirmed revision 2, the last one requested
+		asks  bool
 	}{
-		{"one criterion added", func(p *Plan) {
-			p.Criteria = append(p.Criteria, PlanCriterion{ID: "clicks_counted", Kind: CriterionInvariant, Test: "go test ./internal/clicks passes"})
+		{"one criterion added", []Plan{plan(added)}, true},
+		{"the outcome changed", []Plan{plan(func(p *Plan) { p.Spec.Outcome = "A link shortener whose links expire." })}, true},
+		{"the glossary changed", []Plan{plan(func(p *Plan) { p.Spec.Glossary = append(p.Spec.Glossary, "expiry: when a link stops") })}, true},
+		{"a comment replaced the changed revision", []Plan{plan(added), plan(func(p *Plan) { added(p); p.Summary = "After a comment." })}, true},
+		{"a criterion redefined under its id", []Plan{
+			plan(func(p *Plan) { p.Criteria = p.Criteria[:1:1] }),
+			plan(func(p *Plan) { p.Criteria[1].Expected = "301" }),
 		}, true},
-		{"the same spec and criteria", func(p *Plan) { p.Summary = "The same plan, filed a third time." }, false},
+		{"the same spec and criteria", []Plan{plan(func(p *Plan) { p.Summary = "The same plan, filed a third time." })}, false},
 	} {
 		r, store, _, _ := newPlanRunner(t, testPlan())
 		store.tasks["t-plan"] = func(tk Task) Task { tk.Status = "running"; return tk }(store.tasks["t-plan"])
 		r.cfg.Workflows = &fakeWorkflows{}
-		add := func(p Plan) {
+		add := func(p Plan) int {
 			raw, sha, err := planSHA(p)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+			n, err := store.AddPlanRevision(ctx, "t-plan", raw, sha)
+			if err != nil {
 				t.Fatal(err)
 			}
+			return n
 		}
-		two := testPlan()
-		two.Summary = "The second revision."
-		add(two)
+		add(plan(func(p *Plan) { p.Summary = "The second revision." }))
 		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
 			t.Fatal(err)
 		}
 		if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, "okay", "alice"); err != nil {
 			t.Fatal(err)
 		}
-		three := testPlan()
-		tc.edit(&three)
-		add(three)
-		val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 3, int64(7))
+		last := 0
+		for _, p := range tc.later {
+			last = add(p)
+		}
+		val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", last, int64(7))
 		ref := getInto[PlanRef](t, val, err)
-		qs, _ := store.PlanQuestions(ctx, "t-plan", 3)
+		qs, _ := store.PlanQuestions(ctx, "t-plan", last)
+		confirmation := fmt.Sprintf("Confirmation of the spec and the criteria of plan revision %d:", last)
 		switch {
-		case tc.asks && (len(qs) != 1 || !strings.HasPrefix(qs[0].Text, "Confirmation of the spec and the criteria of plan revision 3:") || ref.Filed != nil):
-			t.Fatalf("%s: questions %+v, filed %v; want the confirmation and no card", tc.name, qs, ref.Filed)
+		case tc.asks && (len(qs) != 1 || !strings.HasPrefix(qs[0].Text, confirmation) || ref.Filed != nil):
+			t.Fatalf("%s: questions %+v, filed %v; want the confirmation of revision %d and no card", tc.name, qs, ref.Filed, last)
 		case !tc.asks && (len(qs) != 0 || len(ref.Filed) != 4):
 			t.Fatalf("%s: questions %+v, filed %v; want none and four cards", tc.name, qs, ref.Filed)
 		}
@@ -1256,7 +1274,8 @@ func (h *planHarness) planStarts() *[]time.Time {
 
 // A reopened plan's first planner session waits, every 15 seconds, until
 // the cards its replan stops have ended; after 10 minutes it records the
-// ones still open and plans anyway.
+// ones still open and plans anyway. Its filing asks once more, as the
+// cards its revision drops stop meanwhile.
 func TestReopenedPlanWaitsForItsStops(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.file = map[int]bool{1: true}
@@ -1266,8 +1285,10 @@ func TestReopenedPlanWaitsForItsStops(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(*asked) != 3 || len(*starts) != 1 || (*starts)[0].Sub(start) != 30*time.Second || (*starts)[0].Before((*asked)[2]) {
-		t.Fatalf("asked at %v, planner started at %v (start %v); want three asks, one session 30s in, after the third", *asked, *starts, start)
+	if len(*asked) != 4 || len(*starts) != 1 || (*starts)[0].Sub(start) != 30*time.Second || (*starts)[0].Before((*asked)[2]) ||
+		(*asked)[3].Sub(start) != 30*time.Second+planSession {
+		t.Fatalf("asked at %v, planner started at %v (start %v); want three asks, one session 30s in, after the third, and one ask as it ends",
+			*asked, *starts, start)
 	}
 	if slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "replan_stops_late" }) {
 		t.Fatalf("steps %+v, want no late stops", h.recorded)
@@ -1287,8 +1308,35 @@ func TestReopenedPlanWaitsForItsStops(t *testing.T) {
 			late = append(late, fmt.Sprintf("%v at %v", s.detail["open"], s.at.Sub(start)))
 		}
 	}
-	if !slices.Equal(late, []string{"[t-ui] at 10m0s"}) || len(*starts) != 1 || (*starts)[0].Sub(start) != 10*time.Minute || len(*asked) != 41 {
-		t.Fatalf("late steps %q, planner started at %v, %d asks; want [t-ui] at 10m, one session then, 41 asks", late, *starts, len(*asked))
+	if !slices.Equal(late, []string{"[t-ui] at 10m0s", "[t-ui] at 25m0s"}) || len(*starts) != 1 || (*starts)[0].Sub(start) != 10*time.Minute || len(*asked) != 82 {
+		t.Fatalf("late steps %q, planner started at %v, %d asks; want [t-ui] at 10m and at 25m, one session at 10m, 82 asks", late, *starts, len(*asked))
+	}
+}
+
+// The filing of a revision waits until the cards it drops have stopped:
+// a dropped card's live session pushes its last work before the card
+// that starts from it copies its branch.
+func TestPlanLoopWaitsForDroppedCardsBeforeFiling(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.file = map[int]bool{2: true}
+	asked := h.onReplanStopped(ReplanWait{Stopped: true}, ReplanWait{Open: []string{"t-ui"}}, ReplanWait{Open: []string{"t-ui"}}, ReplanWait{Stopped: true})
+	var requested []time.Duration
+	start := h.env.Now()
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRequestPlan {
+			requested = append(requested, h.env.Now().Sub(start))
+		}
+	})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	var at []time.Duration
+	for _, a := range *asked {
+		at = append(at, a.Sub(start))
+	}
+	if want := []time.Duration{0, planSession, planSession + 15*time.Second, planSession + 30*time.Second}; !slices.Equal(at, want) ||
+		!slices.Equal(requested, []time.Duration{planSession + 30*time.Second}) {
+		t.Fatalf("asked at %v, the filing at %v; want %v and the filing after the last", at, requested, want)
 	}
 }
 

@@ -1800,7 +1800,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			drops, newest, err := c.revisionDrops(ctx, t)
 			if err != nil {
 				log.Printf("console: the plan revisions of %s: %v", t.ID, err)
-				return "", refuse(http.StatusInternalServerError, "cannot read the plan's revisions; approve again")
+				return "", refuse(http.StatusInternalServerError, "Cannot read the plan's revisions. Approve again; if it fails again, replan the plan.")
 			}
 			if drops {
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge: deny the merge (deny_merge).", newest, t.PlanKey))

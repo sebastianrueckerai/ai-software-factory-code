@@ -327,6 +327,38 @@ func TestDecideHoldout(t *testing.T) {
 			t.Fatalf("a second click: %v", err)
 		}
 	})
+	t.Run("a confirmation asked again", func(t *testing.T) {
+		store := newStore(t)
+		for _, sha := range []string{"sha2", "sha3"} {
+			if _, err := store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"`+sha+`"}`), sha); err != nil {
+				t.Fatal(err)
+			}
+		}
+		confirm := func(revision int) {
+			if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", revision, PlanQuestion{Text: "Confirm the plan?"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AnswerPlanQuestion(ctx, "t-plan", revision, 1, "okay", "sebastian"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		confirm(2)
+		third := proposed()
+		third[0].Round = 3
+		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 3, third); err != nil {
+			t.Fatal(err)
+		}
+		if err := DecideHoldout(ctx, store, "t-plan", 3, 1, "okay", "sebastian"); err != nil {
+			t.Fatalf("revision 2 confirmed, round 3's hold-out: %v", err)
+		}
+		if rows, _ := store.PlanHoldouts(ctx, "t-plan"); rows[0].State != HoldoutStored {
+			t.Fatalf("row = %+v", rows[0])
+		}
+		confirm(3)
+		if err := DecideHoldout(ctx, store, "t-plan", 3, 1, "drop", "sebastian"); !errors.Is(err, ErrAnswered) {
+			t.Fatalf("revision 3 confirmed: %v", err)
+		}
+	})
 	t.Run("unrunnable takes only drop", func(t *testing.T) {
 		store := newStore(t)
 		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 1,

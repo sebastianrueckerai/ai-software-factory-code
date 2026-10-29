@@ -64,4 +64,15 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 	if fmt.Sprint(merged) != "[t-card pr 9 by sebastian]" {
 		t.Fatalf("merges = %q", merged)
 	}
+
+	// a revision that cannot be read refuses, and names what to do
+	r.tasks.plans["t-plan"][0].Plan = json.RawMessage(`{"cards":`)
+	rec = r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if want := "Cannot read the plan's revisions. Approve again; if it fails again, replan the plan."; rec.Code != http.StatusInternalServerError ||
+		!strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("an unreadable revision's approve = %d %q", rec.Code, rec.Body.String())
+	}
+	if len(merged) != 1 {
+		t.Fatalf("merges = %q, want the one before", merged)
+	}
 }

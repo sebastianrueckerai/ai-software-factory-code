@@ -14,15 +14,20 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// replanAt is replanRig's clock, the time of every timeline step.
+var replanAt = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
+
 // replanRig is plan p (issue 10, one session used) in status with
 // revisions stored, its child c (issue 12, running), the sibling s (issue
 // 13) waiting on c, and d (issue 14), a card c delegated, waiting on c
-// too, all on sf/repo; the issues carry the waits.
+// too, all on sf/repo; the issues carry the waits. Its timeline writes at
+// replanAt.
 func replanRig(t *testing.T, status string, revisions int) (*Runner, *fakeStore, *prForgejo) {
 	t.Helper()
 	fj := &prForgejo{labels: map[int64][]string{10: {LabelPlan, "state/" + status}}, deps: map[int64][]int64{13: {12}, 14: {12}}}
 	r, store, _ := newActivityRunner(t, Task{ID: "p", Kind: "agent", Track: policy.TrackPlan, Source: "webhook", Repository: "sf/repo",
 		IssueNumber: 10, Status: status, BudgetEUR: 5, Usage: TaskUsage{Attempts: 1}}, fj)
+	r.timeline.now = func() time.Time { return replanAt }
 	ctx := context.Background()
 	for _, c := range []Task{
 		{ID: "c", PlanKey: "api", IssueNumber: 12, Status: "running"},
@@ -106,7 +111,7 @@ func TestReplanChildCutsItsPlan(t *testing.T) {
 	if !slices.Equal(fj.deps[13], []int64{10}) || !slices.Equal(fj.deps[14], []int64{12}) {
 		t.Fatalf("issue dependencies %v, want #13 on #10 alone, #14 on #12 still", fj.deps)
 	}
-	want := []ReplanStep{{Origin: ReplanCut, Card: "c", Work: "w", Stops: []string{"c"}, Revision: 2}}
+	want := []ReplanStep{{Origin: ReplanCut, Card: "c", Work: "w", Stops: []string{"c"}, Revision: 2, Time: replanAt}}
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
 	}
@@ -252,7 +257,7 @@ func TestReplanChildReopensAFailedPlan(t *testing.T) {
 	if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Reason: "cut: plan #10 replans its work"}) {
 		t.Fatalf("answer %+v, want the cut", got)
 	}
-	want := []ReplanStep{{Origin: ReplanCut, Card: "c", Work: "w", Stops: []string{"c"}, Revision: 2}}
+	want := []ReplanStep{{Origin: ReplanCut, Card: "c", Work: "w", Stops: []string{"c"}, Revision: 2, Time: replanAt}}
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
 	}
@@ -405,7 +410,7 @@ func TestPendingReplanEndsAtARefusedSwitch(t *testing.T) {
 			t.Fatal(err)
 		}
 		step, pending, err := r.pendingReplan(ctx, store.tasks["p"])
-		if want := (ReplanStep{Origin: ReplanPerson, By: "ana", Comment: "too wide", Stops: []string{"s"}, Revision: 1}); err != nil || !pending || !reflect.DeepEqual(step, want) {
+		if want := (ReplanStep{Origin: ReplanPerson, By: "ana", Comment: "too wide", Stops: []string{"s"}, Revision: 1, Time: replanAt}); err != nil || !pending || !reflect.DeepEqual(step, want) {
 			t.Fatalf("the second replan: %+v pending %t, %v; want %+v", step, pending, err, want)
 		}
 	}
@@ -434,6 +439,65 @@ func TestReplanStoppedWaitsForTheStops(t *testing.T) {
 	store.tasks["c"] = c
 	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true, By: "ana", Comment: "too wide"}) {
 		t.Fatalf("every stop final: %+v, %v; want stopped with the note", got, err)
+	}
+}
+
+// addRevisions stores plan p's revisions, oldest first.
+func addRevisions(t *testing.T, store *fakeStore, plans ...string) {
+	t.Helper()
+	for i, plan := range plans {
+		if _, err := store.AddPlanRevision(context.Background(), "p", json.RawMessage(plan), fmt.Sprint("sha-", i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// The planner's filing also waits for the started open cards whose key
+// the newest revision drops, with no replan pending: restartChildren
+// stops them. A kept card, a delta card that no revision holds and a
+// dropped card that ended do not hold it.
+func TestReplanStoppedWaitsForDroppedCards(t *testing.T) {
+	ctx := context.Background()
+	r, store, _ := replanRig(t, "running", 0)
+	addRevisions(t, store, `{"cards":[{"key":"api"},{"key":"ui"}]}`, `{"cards":[{"key":"ui"}]}`)
+	for id, rev := range map[string]int{"c": 1, "s": 1} {
+		k := store.tasks[id]
+		k.PlanRevision = rev
+		store.tasks[id] = k
+	}
+	if err := store.CreateTask(ctx, Task{ID: "fix", PlanKey: "fix", IssueNumber: 18, Status: "running", PlanRevision: 2,
+		Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Open: []string{"c"}}) {
+		t.Fatalf("api dropped and running: %+v, %v; want c open", got, err)
+	}
+	c := store.tasks["c"]
+	c.Status = "closed"
+	store.tasks["c"] = c
+	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true}) {
+		t.Fatalf("the dropped card closed: %+v, %v; want stopped", got, err)
+	}
+}
+
+// A dropped card whose session stops after its plan ended done closes
+// for the revision that drops it: its waits move to the plan, and the
+// plan takes no replan step and no second round.
+func TestReplanChildOfADroppedCardClosesIt(t *testing.T) {
+	r, store, fj := replanRig(t, "done", 0)
+	addRevisions(t, store, `{"cards":[{"key":"api"},{"key":"ui"}]}`, `{"cards":[{"key":"ui"}]}`)
+	c := store.tasks["c"]
+	c.PlanRevision = 1
+	store.tasks["c"] = c
+	if got := replanChild(t, r, "c", "half the API"); got != (ReplanChildResult{Reason: "the plan's revision 2 drops it"}) {
+		t.Fatalf("ReplanChild = %+v, want closed for revision 2", got)
+	}
+	if p := store.tasks["p"]; p.Status != "done" || len(replanSteps(t, r, "p")) != 0 || len(reopens(r)) != 0 {
+		t.Fatalf("plan %s, steps %+v, reopens %+v; want it done and untouched", p.Status, replanSteps(t, r, "p"), reopens(r))
+	}
+	if len(stepsNamed(t, r, "c", "replan_stop")) != 1 || !slices.Equal(store.deps["s"], []string{"p"}) || !slices.Equal(fj.deps[13], []int64{10}) {
+		t.Fatalf("replan_stop %s, s waits on %v, issue #13 on %v; want one stop and the waits on the plan",
+			stepsNamed(t, r, "c", "replan_stop"), store.deps["s"], fj.deps[13])
 	}
 }
 
@@ -531,7 +595,7 @@ func TestReplanOfAPlanStopsItsStartedCards(t *testing.T) {
 	if want := "Plan #10 goes back to the planner: 2 cards stop, and their work stays on their branches."; err != nil || got != want {
 		t.Fatalf("Replan = %q, %v; want %q", got, err, want)
 	}
-	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "too wide", Stops: []string{"c", "w"}, Revision: 2}}
+	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "too wide", Stops: []string{"c", "w"}, Revision: 2, Time: replanAt}}
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
 	}
@@ -576,7 +640,7 @@ func TestReplanOfAPlansChildReplansItsPlan(t *testing.T) {
 	if want := "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch."; err != nil || got != want {
 		t.Fatalf("Replan = %q, %v; want %q", got, err, want)
 	}
-	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "too wide", Stops: []string{"c"}, Revision: 2}}
+	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "too wide", Stops: []string{"c"}, Revision: 2, Time: replanAt}}
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
 	}
@@ -744,7 +808,7 @@ func TestReplanOfAFailedPlan(t *testing.T) {
 	if want := "Plan #10 goes back to the planner: no card stops."; err != nil || got != want {
 		t.Fatalf("Replan = %q, %v; want %q", got, err, want)
 	}
-	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "too wide", Revision: 2}}
+	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "too wide", Revision: 2, Time: replanAt}}
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
 	}
@@ -1371,8 +1435,11 @@ func TestRecordReplanCounts(t *testing.T) {
 		Task{ID: "t-api2", PlanKey: "api2", IssueNumber: 51, Status: "queued", CreatedAt: at.Add(10 * time.Minute)},
 		Task{ID: "t-docs2", PlanKey: "docs2", IssueNumber: 52, Status: "queued", CreatedAt: at.Add(10 * time.Minute)})
 	next = Plan{Summary: "s", Cards: []PlanCard{feature("api2", "api"), feature("docs2", "")}}
-	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api2": 51, "docs2": 52}); err != nil {
-		t.Fatal(err)
+	// a filing retried after the plan's step failed records the cut once
+	for range 2 {
+		if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api2": 51, "docs2": 52}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"factoryd: cut into #51, #52 at session 3, 4.20 EUR spent."}) {
 		t.Fatalf("the cut card's comments %q", got)
@@ -1435,5 +1502,67 @@ func TestRecordReplanSkipsASizingSwitch(t *testing.T) {
 		if lines := stepsNamed(t, r, id, "replanned"); len(lines) != 0 {
 			t.Fatalf("%s's replanned steps %s", id, lines)
 		}
+	}
+}
+
+// stepFails fails the next put of task's timeline that appends step.
+type stepFails struct {
+	*fakeObjectStore
+	task, step string
+	fails      int
+}
+
+func (s *stepFails) Put(ctx context.Context, key string, body []byte) error {
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	var last struct{ Step string }
+	if s.fails > 0 && key == "sessions/"+s.task+"/timeline.jsonl" && json.Unmarshal([]byte(lines[len(lines)-1]), &last) == nil && last.Step == s.step {
+		s.fails--
+		return errors.New("the object store is down")
+	}
+	return s.fakeObjectStore.Put(ctx, key, body)
+}
+
+// The plan's replanned step ends the replan, so the filing fails when it
+// cannot be written, the replan stays pending, and the retry records it
+// once. A comment of the record that Forgejo refuses fails it too, before
+// that step.
+func TestRecordReplanFailureFailsTheFiling(t *testing.T) {
+	ctx := context.Background()
+	r, store, objects, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too wide"}); err != nil {
+		t.Fatal(err)
+	}
+	r.timeline.Objects = &stepFails{fakeObjectStore: objects, task: "t-plan", step: "replanned", fails: 1}
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7)); err == nil || !strings.Contains(err.Error(), "the object store is down") {
+		t.Fatalf("the filing with its replanned step failing: %v", err)
+	}
+	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || !pending {
+		t.Fatalf("after the failed step: pending %t, %v; want pending", pending, err)
+	}
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the retry: %+v", ref)
+	}
+	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
+		t.Fatalf("after the retry: pending %t, %v; want ended", pending, err)
+	}
+	want := "factoryd: replanned at revision 1: kept 0, changed 0, dropped 0, added 4.\nAsked by ana: too wide"
+	if got := commentsOn(fj, 1); len(slices.DeleteFunc(slices.Clone(got), func(c string) bool { return c != want })) != 1 {
+		t.Fatalf("the plan's comments %q, want the record once", got)
+	}
+
+	at := time.Now().Add(time.Hour).UTC()
+	r, store, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too wide"})
+	fj.failCall = "POST issues/1/comments"
+	p, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.recordReplan(ctx, p, repo, 2, Plan{Summary: "s"}, step, nil); err == nil {
+		t.Fatal("a record whose comment Forgejo refused succeeded")
+	}
+	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || !pending {
+		t.Fatalf("after the refused comment: pending %t, %v; want pending", pending, err)
 	}
 }
