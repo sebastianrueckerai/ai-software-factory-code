@@ -635,7 +635,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
-	if s.report == "" && !s.planner {
+	if s.report == "" {
 		supCfg.SizeLines, _ = cardLineBound(t.Size, s.policy.Risk.LargeLines)
 	}
 	if s.attempt == 1 && r.canClimb(s) {

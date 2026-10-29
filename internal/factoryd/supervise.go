@@ -271,9 +271,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 }
 
 // sizeTrip trips once per session when the card's diff passes the line
-// bound its size plans. A report session writes nothing.
+// bound its size plans.
 func (s *Supervisor) sizeTrip() *Trip {
-	if s.tripped != nil || s.sizeTripped || s.cfg.SizeLines <= 0 || s.cfg.ReadOnly || s.cardLines <= s.cfg.SizeLines {
+	if s.sizeTripped || s.cfg.SizeLines <= 0 || s.cardLines <= s.cfg.SizeLines {
 		return nil
 	}
 	s.sizeTripped = true

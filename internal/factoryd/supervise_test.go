@@ -1909,15 +1909,8 @@ func TestSizeTripIsOffWithoutABound(t *testing.T) {
 		t.Fatalf("SizeLines 0 tripped: %+v", trip)
 	}
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, SizeLines: -1}
-	if _, err := NewSupervisor(cfg, minute(0), minute(0)); err == nil {
-		t.Fatal("SizeLines -1 accepted")
-	}
-}
-
-func TestSizeTripIsOffInAReportSession(t *testing.T) {
-	s := sizeSupervisor(t, func(c *SupervisorConfig) { c.ReadOnly = true })
-	if trip := s.Event(cardDiffEvent(4000, 1000), minute(1)); trip != nil {
-		t.Fatalf("a report session tripped: %+v", trip)
+	if _, err := NewSupervisor(cfg, minute(0), minute(0)); err == nil || !strings.Contains(err.Error(), "SizeLines") {
+		t.Fatalf("SizeLines -1: err = %v, want a refusal naming SizeLines", err)
 	}
 }
 
