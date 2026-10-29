@@ -3635,6 +3635,60 @@ func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 	}
 }
 
+// cardDiffLine is the pod's checkpoint line with the card's diff against
+// main.
+func cardDiffLine(ins, del int) string {
+	return envLine(harness.Event{Kind: harness.EventCheckpoint, Time: time.Now(), Detail: map[string]any{
+		"card_diff": map[string]any{"files": 4, "insertions": ins, "deletions": del}}})
+}
+
+// A small card plans 300 lines under large_lines 1000: its diff of 350
+// asks the check-in with the size fact.
+func TestRunSessionAsksTheCheckinWhenTheCardPassesItsBound(t *testing.T) {
+	runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
+	tk := store.tasks["t2"]
+	tk.Size = "small"
+	store.tasks["t2"] = tk
+	version := testPolicyVersion()
+	version.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil,
+		cardDiffLine(250, 100)+"\n"+pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	want := "the card's diff is 350 changed lines (added plus deleted), over the 300 its size plans"
+	if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, want) {
+		t.Fatalf("chat = %d calls %+v, want one with %q", chat.calls, chat.gots, want)
+	}
+}
+
+// A report session changes no code: its card diff asks no check-in.
+func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance", Parent: "t-parent",
+		Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"r"}`}}}
+	runner.checkin = chat
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, cardDiffLine(4000, 1000)+"\n"+resultLine(true, `{"verdict": "clear"}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("chat = %d calls %+v, want none", chat.calls, chat.gots)
+	}
+}
+
 func TestRunSessionPassesTheContextCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()

@@ -36,6 +36,8 @@ const (
 	// (NudgeSent), or the provider's refusal of repeated calls
 	// (sessionResult); a redirect, no supervisor call
 	TripLoop TripKind = "loop"
+	// TripSize: the card's diff passed the line bound its size plans, once a session
+	TripSize TripKind = "size"
 )
 
 // loopNudges delivered nudges with no new file content in between end
@@ -84,6 +86,9 @@ type SupervisorConfig struct {
 	// an earlier session of the card already pushed work.
 	NoPushSpend float64
 	PriorPush   bool
+	// SizeLines is the line bound the card's size plans (cardLineBound);
+	// 0 = off.
+	SizeLines int
 }
 
 func (c SupervisorConfig) validate() error {
@@ -105,6 +110,9 @@ func (c SupervisorConfig) validate() error {
 	}
 	if c.NoPushSpend < 0 || c.NoPushSpend >= 1 {
 		return fmt.Errorf("supervisor: NoPushSpend must be a share from 0 up to under 1, is %v", c.NoPushSpend)
+	}
+	if c.SizeLines < 0 {
+		return fmt.Errorf("supervisor: SizeLines must be positive (0 = off), is %d", c.SizeLines)
 	}
 	return nil
 }
@@ -144,6 +152,9 @@ type Supervisor struct {
 	pushed  bool
 
 	spendTripped bool
+	// cardLines is the card's diff at the last checkpoint (the size trip)
+	cardLines   int
+	sizeTripped bool
 
 	reads []string // a report session's distinct read paths, in order
 }
@@ -190,6 +201,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	s.lastSeen = at
 	s.noteFinding(ev)
 	s.noteRead(ev)
+	if lines, ok := cardDiffSize(ev); ok {
+		s.cardLines = lines
+	}
 	if ev.Kind == harness.EventPushed {
 		s.pushed = true
 	}
@@ -250,8 +264,26 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if agent && !s.cfg.ReadOnly && at.Sub(s.noWriteFrom) >= s.cfg.NoWriteAfter {
 		return s.trip(&Trip{Kind: TripNoWrite, Detail: fmt.Sprintf("agent events for %s without a file write or edit", at.Sub(s.noWriteFrom).Round(time.Second))})
 	}
+	if trip := s.sizeTrip(); trip != nil {
+		return trip
+	}
 	return s.checkIn(at)
 }
+
+// sizeTrip trips once per session when the card's diff passes the line
+// bound its size plans. A report session writes nothing.
+func (s *Supervisor) sizeTrip() *Trip {
+	if s.tripped != nil || s.sizeTripped || s.cfg.SizeLines <= 0 || s.cfg.ReadOnly || s.cardLines <= s.cfg.SizeLines {
+		return nil
+	}
+	s.sizeTripped = true
+	return s.trip(&Trip{Kind: TripSize, Detail: fmt.Sprintf("the card's diff is %d changed lines (added plus deleted), over the %d its size plans",
+		s.cardLines, s.cfg.SizeLines)})
+}
+
+// CardLines is the card's changed lines at the last checkpoint, 0 before
+// any.
+func (s *Supervisor) CardLines() int { return s.cardLines }
 
 // newContent: the write ev records content the session has not written
 // before (ruling 280): a file change by its sha256, a moved shell diff by
@@ -286,6 +318,9 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 		return s.tripped
 	}
 	if trip := s.limits(now); trip != nil {
+		return trip
+	}
+	if trip := s.sizeTrip(); trip != nil {
 		return trip
 	}
 	if trip := s.checkIn(now); trip != nil {
@@ -442,7 +477,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
-	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush:
+	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize:
 		return false
 	case TripFlipFlop, TripChurn:
 		return s.messagedOnce
@@ -976,8 +1011,15 @@ func argsHash(args any) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func diffSize(ev harness.Event) (int, bool) {
-	diff, ok := ev.Detail["diff"].(map[string]any)
+func diffSize(ev harness.Event) (int, bool) { return changedLines(ev, "diff") }
+
+// cardDiffSize is the changed lines of the card's diff against main
+// (card_diff), beside the session's own diff.
+func cardDiffSize(ev harness.Event) (int, bool) { return changedLines(ev, "card_diff") }
+
+// changedLines is insertions plus deletions of the diff under key.
+func changedLines(ev harness.Event, key string) (int, bool) {
+	diff, ok := ev.Detail[key].(map[string]any)
 	if !ok {
 		return 0, false
 	}

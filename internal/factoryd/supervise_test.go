@@ -1818,3 +1818,118 @@ func TestCodingSessionKeepsNoReads(t *testing.T) {
 		t.Fatalf("Reads = %v, want none for a coding session", got)
 	}
 }
+
+func sizeSupervisor(t *testing.T, mutate func(*SupervisorConfig)) *Supervisor {
+	t.Helper()
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000,
+		NoWriteAfter: 100 * time.Hour, SizeLines: 600}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	s, err := NewSupervisor(cfg, minute(0), minute(0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// cardDiffEvent is a checkpoint whose card diff against main has ins
+// added and del deleted lines.
+func cardDiffEvent(ins, del int) harness.Event {
+	return harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{"card_diff": map[string]any{"files": 3, "insertions": ins, "deletions": del}}}
+}
+
+// 500 and 600 (at the bound) run on, 610 trips, and the card runs on past
+// it without a second trip.
+func TestSizeTripFiresOnceWhenTheCardDiffPassesTheBound(t *testing.T) {
+	s := sizeSupervisor(t, nil)
+	if got := s.CardLines(); got != 0 {
+		t.Fatalf("CardLines before any checkpoint = %d, want 0", got)
+	}
+	for i, ev := range []harness.Event{cardDiffEvent(400, 100), cardDiffEvent(300, 300)} {
+		if trip := s.Event(ev, minute(float64(i+1))); trip != nil {
+			t.Fatalf("checkpoint %d tripped: %+v", i+1, trip)
+		}
+	}
+	trip := s.Event(cardDiffEvent(450, 160), minute(3))
+	if trip == nil || trip.Kind != TripSize || trip.Detail != "the card's diff is 610 changed lines (added plus deleted), over the 600 its size plans" {
+		t.Fatalf("trip = %+v", trip)
+	}
+	s.Resume(minute(4))
+	if again := s.Event(cardDiffEvent(600, 300), minute(5)); again != nil {
+		t.Fatalf("tripped twice in a session: %+v", again)
+	}
+	if got := s.CardLines(); got != 900 {
+		t.Fatalf("CardLines = %d, want 900", got)
+	}
+}
+
+func TestSizeTripReadsTheCardDiffNotTheSessionDiff(t *testing.T) {
+	s := sizeSupervisor(t, nil)
+	if trip := s.Event(diffEvent(400, 300), minute(1)); trip != nil {
+		t.Fatalf("the session's diff of 700 lines tripped: %+v", trip)
+	}
+	if got := s.CardLines(); got != 0 {
+		t.Fatalf("CardLines = %d, want 0 without a card diff", got)
+	}
+}
+
+// A later session's first checkpoint already holds the earlier sessions'
+// work: it is no baseline.
+func TestSizeTripFiresOnTheFirstCheckpointOfALaterSession(t *testing.T) {
+	s := sizeSupervisor(t, nil)
+	trip := s.Event(cardDiffEvent(500, 200), minute(1))
+	if trip == nil || trip.Kind != TripSize || trip.Detail != "the card's diff is 700 changed lines (added plus deleted), over the 600 its size plans" {
+		t.Fatalf("trip = %+v", trip)
+	}
+}
+
+// A checkpoint the pod made during a check-in counts for no detector, but
+// the card's size it reports holds: the next tick trips.
+func TestSizeTripSeesACheckpointQueuedBehindAnAnswer(t *testing.T) {
+	s := sizeSupervisor(t, func(c *SupervisorConfig) { c.CheckIn = time.Hour })
+	t1 := minute(60)
+	if trip := s.Tick(t1); trip == nil || trip.Kind != TripCheckIn {
+		t.Fatalf("setup trip = %+v, want check_in", trip)
+	}
+	s.Resume(t1)
+	queued := cardDiffEvent(500, 200)
+	queued.Time = t1.Add(-time.Second)
+	if trip := s.Event(queued, t1.Add(time.Second)); trip != nil {
+		t.Fatalf("the queued checkpoint tripped: %+v", trip)
+	}
+	if trip := s.Tick(t1.Add(2 * time.Second)); trip == nil || trip.Kind != TripSize {
+		t.Fatalf("tick after the queued checkpoint = %+v, want size", trip)
+	}
+}
+
+func TestSizeTripIsOffWithoutABound(t *testing.T) {
+	s := sizeSupervisor(t, func(c *SupervisorConfig) { c.SizeLines = 0 })
+	if trip := s.Event(cardDiffEvent(4000, 1000), minute(1)); trip != nil {
+		t.Fatalf("SizeLines 0 tripped: %+v", trip)
+	}
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000, SizeLines: -1}
+	if _, err := NewSupervisor(cfg, minute(0), minute(0)); err == nil {
+		t.Fatal("SizeLines -1 accepted")
+	}
+}
+
+func TestSizeTripIsOffInAReportSession(t *testing.T) {
+	s := sizeSupervisor(t, func(c *SupervisorConfig) { c.ReadOnly = true })
+	if trip := s.Event(cardDiffEvent(4000, 1000), minute(1)); trip != nil {
+		t.Fatalf("a report session tripped: %+v", trip)
+	}
+}
+
+// A size trip after the supervisor's message is no evidence of being stuck.
+func TestSizeTripIsNeverStuck(t *testing.T) {
+	s := sizeSupervisor(t, nil)
+	if trip := s.Tick(minute(600)); trip == nil || trip.Kind != TripNoProgress {
+		t.Fatalf("setup trip = %+v, want no_progress", trip)
+	}
+	s.Messaged(minute(601))
+	trip := s.Event(cardDiffEvent(500, 200), minute(602))
+	if trip == nil || trip.Kind != TripSize || trip.Stuck != "" {
+		t.Fatalf("trip = %+v, want size, not stuck", trip)
+	}
+}
