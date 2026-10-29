@@ -925,7 +925,12 @@ func busyScene(now time.Time) labScene {
 	drawer.PRNumber, drawer.Gate, drawer.GateSince, drawer.SpentEUR, drawer.ModelAlias = 609, factoryd.GateSession, at(37*time.Minute), 1.72, "big"
 	tl := pushedTimeline(drawer.CreatedAt, "small", "acceptance")
 	s2 := ago(37 * time.Minute)
-	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(s2), "session": "s-2", "model": "big", "attempt": 2})
+	tl = append(tl, map[string]any{"step": "session_start", "time": stamp(s2), "session": "s-2", "model": "big", "attempt": 2},
+		// the runner's check-in decision beside its supervisor-trip alert
+		// 40: redirect, the trip's guidance its alert carries as diagnosis
+		map[string]any{"step": "checkin", "time": stamp(s2.Add(time.Minute)), "session": "s-2", "detector": "no_write",
+			"trip": "no write in 8 min", "digest": "read console.css twice, wrote nothing", "decision": "redirect",
+			"guidance": "stop rereading console.css; run the failing acceptance test", "reason": "", "called": true})
 	s.objects["sessions/"+drawer.ID+"/timeline.jsonl"] = jsonl(tl...)
 	said := func(d time.Duration, text string) map[string]any {
 		return map[string]any{"time": stamp(s2.Add(d)), "kind": "model_call", "detail": map[string]any{"text": text, "cost": 0.02}}
@@ -1033,7 +1038,7 @@ func busyScene(now time.Time) labScene {
 	s.alerts = []factoryd.Alert{
 		{ID: 41, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: esc.ID, RaisedAt: ago(28 * time.Minute)},
 		{ID: 40, Kind: factoryd.AlertSupervisorTrip, Source: "no_write", TaskID: drawer.ID, RaisedAt: ago(58 * time.Minute),
-			ResolvedAt: at(57 * time.Minute), Verdict: factoryd.VerdictReal, ResolvedBy: "supervisor",
+			ResolvedAt: at(57 * time.Minute), Verdict: factoryd.VerdictReal, ResolvedBy: "checkin",
 			Detail: map[string]any{"action": "redirect", "diagnosis": "stop rereading console.css; run the failing acceptance test"}},
 		{ID: 39, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: review.ID, RaisedAt: ago(3 * time.Hour), BoundS: 600,
 			ResolvedAt: at(170 * time.Minute), Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor",
@@ -1660,5 +1665,19 @@ func TestSeedSceneProject(t *testing.T) {
 	}
 	if _, ok := r.resources.standing["demo-app/demo-app"]; !ok {
 		t.Fatalf("empty scene: standing keyed %v", slices.Collect(maps.Keys(r.resources.standing)))
+	}
+}
+
+// The busy scene's drawer card 606 carries its session supervisor's
+// check-in: the Activity tab shows the redirect its no_write trip's alert
+// is resolved by. The plan children's titles join this test with the card
+// that fixes them.
+func TestBusySceneCheckinAndChildTitles(t *testing.T) {
+	r := newRig(t)
+	r.seedScene(busyScene(time.Now()))
+	ck, _ := r.loggedIn(t)
+	activity := drawer(t, r, ck, labID(606), "activity")
+	if want := `<td>checkin</td><td><strong>redirect</strong>: stop rereading console.css; run the failing acceptance test</td>`; !strings.Contains(activity, want) {
+		t.Errorf("card 606's activity lacks %s:\n%s", want, activity)
 	}
 }
