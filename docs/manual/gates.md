@@ -254,6 +254,17 @@ edit or patch tool call, or a checkpoint whose diff changed: a file
 written through the shell) or the session's start (the policy's
 `supervisor` section, read at each session start, 300 by default); a
 tick or the worker's checkpoint never trips it, silence is the stall's.
+The size trip (`size`) trips once per session, when the card's diff
+(`card_diff` in the worker's checkpoint: added plus deleted lines against
+main) passes the bound its size plans: 30, 60 or 100 percent of the
+policy's `risk.large_lines` (300, 600 and 1,000 lines by default) for a
+small, medium or large card, and the large bound for a card with no
+size. Its check-in
+asks one question: will the rest of the card fit its bound, its budget and
+its time? Nothing it answers cuts the card. The session's brief states the
+bound in its facts line: "This card is planned at most N changed lines
+(size S)", or, for a card with no size, "This card has no size, so it is
+planned at most N changed lines, the policy's large_lines."
 The check-in (ruling 216) trips at every `check_in` of the task's agent
 time (`policy.Time`), counted from the task's start, so it continues
 across sessions. Its detail is "scheduled check-in, no detector
@@ -277,8 +288,13 @@ the statement. A handover on it is `retry_stronger` with the note: the
 session climbs in place when it can, else the next session starts on the
 stronger rung (the same model at the top) from the note. A check-in that
 cannot answer (a refused call, no model) gives `retry_stronger` on a
-stuck trip and `continue` on any other. The stall, the clock and
-`spend_no_push` are never stuck. A conversation gets
+stuck trip and `continue` on any other. The stall, the clock,
+`spend_no_push` and the size trip are never stuck.
+The statement of a check-in at a session's start or in a running session
+ends with the pace line: "Pace of the card: N changed lines so far
+against its bound of M; X EUR spent, Y left; A minutes of agent time
+spent, B left; session I of J." Where no diff was measured, the line says
+the changed lines are not measured at this moment. A conversation gets
 `limits.checkin_calls` (20) calls, the last without tools, then a human.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
