@@ -370,6 +370,14 @@ func TestRestartChildrenKeepsTheStartLine(t *testing.T) {
 			}
 		}
 	}
+
+	// a branch read that fails still rebriefs, without the line
+	fj.failCall = "GET /api/v1/repos/factory-agent/linkshort/branches/factory/" + cards["ui2"].ID
+	next.Cards[0].Brief = "Finish the UI, the footer and the header."
+	r.restartChildren(ctx, plan, repo, 3, next)
+	if got := cardsByKey(t, store)["ui2"].Objective; !strings.Contains(got, "Finish the UI, the footer and the header.") || strings.Contains(got, "Starts from") {
+		t.Fatalf("ui2's rebrief after a failed branch read:\n%s", got)
+	}
 }
 
 // A started open card the revision drops is stopped for the replan: with

@@ -1156,15 +1156,18 @@ const (
 	versionSizing workflow.Version = 1
 	// versionReplan (change id "replan", roadmap 336): a plan's first
 	// planner session of a run waits for the cards its pending replan
-	// stops (awaitReplanStops), and the plan loop takes the replan's own
-	// note on the issue for no writer's change request (planComments). A
+	// stops (awaitReplanStops), each filing of a revision, the healed one
+	// too, waits for those and the started cards the newest revision drops
+	// (awaitFilingStops), and the plan loop takes the replan's own note on
+	// the issue for no writer's change request (planComments). A
 	// direct card's switch records its replan step first (replanToPlan); a
 	// session stopped for a replan cuts the card in place, or its plan's
 	// child goes back to its plan (replanCut); a person's replan wakes a
 	// direct card's waits for a person and its approval wait
 	// (switchFromWait), and is taken after a roll hold too. A run from
-	// before neither waits nor knows the note, takes to_plan only before a
-	// session, and asks a person about a replan stop.
+	// before neither waits, before a session or a filing, nor knows the
+	// note, takes to_plan only before a session, and asks a person about a
+	// replan stop.
 	versionReplan workflow.Version = 1
 )
 

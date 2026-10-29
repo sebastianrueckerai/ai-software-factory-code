@@ -1769,16 +1769,16 @@ func (t *taskRun) planLoop() (string, error) {
 			reason, findings = "the planner filed no plan", append(res.Findings, comments...)
 			continue
 		}
-		// a writer's comment made while the session ran asks for changes
-		// before the revision may file its cards
+		if err := t.awaitFilingStops(); err != nil {
+			return t.finish("failed", "replan stops: "+errMessage(err))
+		}
+		// a writer's comment made while the session ran, or while the
+		// filing waited, asks for changes before the revision may file
 		if final, why, comments := t.planCommentsWhole(floor); final != "" {
 			return t.finish(final, why)
 		} else if len(comments) > 0 {
 			reason, findings = "a writer asked for changes while the planner ran", comments
 			continue
-		}
-		if err := t.awaitFilingStops(); err != nil {
-			return t.finish("failed", "replan stops: "+errMessage(err))
 		}
 		if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, res.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 			return t.finish("failed", "request plan: "+errMessage(err))
@@ -2331,15 +2331,15 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 		if c.Role == RoleIntegration {
 			spec = specBlock(p)
 		}
-		// the card's own branch is the old card's work it was filed on
+		// the card's own branch is the old card's work it was filed on; a
+		// read that fails rebriefs it without the line
 		start := ""
 		if from, named := byRef[c.From]; c.From != "" && named {
 			switch _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(k)); {
 			case errors.Is(err, ErrNotFound):
 				start = goneLine(from)
 			case err != nil:
-				log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
-				continue
+				log.Printf("card %s: the plan's revision %d rebriefs it without its start line: %v", k.ID, revision, err)
 			default:
 				start = workLine(from)
 			}

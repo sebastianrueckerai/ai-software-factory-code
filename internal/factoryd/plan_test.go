@@ -1313,6 +1313,22 @@ func TestReopenedPlanWaitsForItsStops(t *testing.T) {
 	}
 }
 
+// A writer's comment that arrives while the filing waits for the dropped
+// cards asks for changes: the planner goes back with it, and only its
+// next revision files.
+func TestPlanLoopTakesACommentDuringTheFilingWait(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.file = map[int]bool{1: true, 2: true}
+	h.onReplanStopped(ReplanWait{Stopped: true}, ReplanWait{Open: []string{"t-ui"}}, ReplanWait{Open: []string{"t-ui"}}, ReplanWait{Stopped: true})
+	h.signalAfter(planSession+10*time.Second, SignalHumanComment, TaskSignal{Author: "bob", Body: "and split the API", Comment: 71})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer bob asked for changes to the plan: and split the API"}) || !slices.Equal(h.requests, []int{2}) {
+		t.Fatalf("RunPlan findings %q, requests %v; want the comment in the second session and revision 2 filed alone", h.plans, h.requests)
+	}
+}
+
 // The filing of a revision waits until the cards it drops have stopped:
 // a dropped card's live session pushes its last work before the card
 // that starts from it copies its branch.
@@ -1795,6 +1811,33 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	}
 	if u := h.usage[len(h.usage)-1]; u.Attempts != 4 || u.ExtraAttempts != 1 {
 		t.Fatalf("usage %+v", u)
+	}
+}
+
+// A healed run's filing waits, as every filing does, until the cards the
+// newest revision drops have stopped: the healed RequestPlan starts only
+// after the ask that finds them stopped.
+func TestPlanLoopHealedFilingWaitsForTheStops(t *testing.T) {
+	h := newPlanHarness(t)
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.file = map[int]bool{1: true}
+	asked := h.onReplanStopped(ReplanWait{Open: []string{"t-ui"}}, ReplanWait{Open: []string{"t-ui"}}, ReplanWait{Stopped: true})
+	var requested []time.Duration
+	start := h.env.Now()
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRequestPlan {
+			requested = append(requested, h.env.Now().Sub(start))
+		}
+	})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" || len(h.plans) != 0 {
+		t.Fatalf("finals %v, plans %q", h.finals, h.plans)
+	}
+	var at []time.Duration
+	for _, a := range *asked {
+		at = append(at, a.Sub(start))
+	}
+	if want := []time.Duration{0, 15 * time.Second, 30 * time.Second}; !slices.Equal(at, want) || !slices.Equal(requested, []time.Duration{30 * time.Second}) {
+		t.Fatalf("asked at %v, the healed filing at %v; want %v and the filing after the last", at, requested, want)
 	}
 }
 
