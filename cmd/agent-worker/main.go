@@ -306,7 +306,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	// one arrives within the wait, is the brief's first section
 	s.brief.Handover = checkin.waitBrief(log)
 	if s.env.report == "" {
-		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base); err != nil {
+		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base, s.mainHead); err != nil {
 			return s, startError{"checkpoint store", err}
 		}
 	}
@@ -1152,14 +1152,14 @@ type diffStat struct{ Files, Insertions, Deletions int }
 // could still write to a fresh repo while it exists; what it could plant
 // there runs with the rights it already has.
 type checkpointer struct {
-	e                 workerEnv
-	work, store, base string
+	e                       workerEnv
+	work, store, base, fork string
 	// stage runs the checkpoint's git commands. It defaults to the worker's
 	// own runGitCtx; only a test replaces it, to make one staging step fail.
 	stage func(ctx context.Context, dir string, env []string, args ...string) (string, error)
 }
 
-func newCheckpointer(agentRepo string, e workerEnv, base string) (*checkpointer, error) {
+func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*checkpointer, error) {
 	store, err := os.MkdirTemp(filepath.Dir(agentRepo), ".ckpt-base-")
 	if err != nil {
 		return nil, err
@@ -1167,7 +1167,7 @@ func newCheckpointer(agentRepo string, e workerEnv, base string) (*checkpointer,
 	if _, err := e.git(store, "init", "-q"); err != nil {
 		return nil, err
 	}
-	if _, err := e.git(store, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/base"); err != nil {
+	if _, err := e.git(store, "fetch", "-q", "--no-tags", uploadPack, agentRepo, "+HEAD:refs/heads/base", "+"+mainHead+":refs/heads/main"); err != nil {
 		return nil, err
 	}
 	if got, err := e.git(store, "rev-parse", "refs/heads/base"); err != nil {
@@ -1175,27 +1175,31 @@ func newCheckpointer(agentRepo string, e workerEnv, base string) (*checkpointer,
 	} else if got != base {
 		return nil, fmt.Errorf("checkpoint base = %s, want %s", got, base)
 	}
-	return &checkpointer{e: e, work: agentRepo, store: store, base: base}, nil
+	fork, err := e.git(store, "merge-base", "refs/heads/main", base)
+	if err != nil {
+		return nil, fmt.Errorf("checkpoint store: %w", err)
+	}
+	return &checkpointer{e: e, work: agentRepo, store: store, base: base, fork: fork}, nil
 }
 
 // maxPatch bounds the diff text a checkpoint carries.
 const maxPatch = 8 << 10
 
-func (c *checkpointer) diff(ctx context.Context) (diffStat, string, error) {
+func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch string, err error) {
 	tmp, err := os.MkdirTemp(filepath.Dir(c.work), ".ckpt-")
 	if err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
 	}
 	defer os.RemoveAll(tmp)
 	if _, err := c.e.runGitCtx(ctx, tmp, nil, "init", "-q"); err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
 	}
 	gitDir := filepath.Join(tmp, ".git")
 	if err := os.WriteFile(filepath.Join(gitDir, "objects", "info", "alternates"), []byte(filepath.Join(c.store, ".git", "objects")+"\n"), 0o600); err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
 	}
 	if err := os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
 	}
 	env := []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + c.work}
 	run := c.stage
@@ -1203,7 +1207,7 @@ func (c *checkpointer) diff(ctx context.Context) (diffStat, string, error) {
 		run = c.e.runGitCtx
 	}
 	if _, err := run(ctx, tmp, env, "read-tree", c.base); err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
 	}
 	// A file the agent removes between read-tree and add makes git add -A
 	// exit 128 (fatal: unable to stat). Ignore it: the index reflects the
@@ -1213,16 +1217,20 @@ func (c *checkpointer) diff(ctx context.Context) (diffStat, string, error) {
 	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
 	short, err := run(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
 	}
-	patch, err := run(ctx, tmp, env, append(diff, c.base)...)
+	cardShort, err := run(ctx, tmp, env, append(diff, "--shortstat", c.fork)...)
 	if err != nil {
-		return diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", err
+	}
+	patch, err = run(ctx, tmp, env, append(diff, c.base)...)
+	if err != nil {
+		return diffStat{}, diffStat{}, "", err
 	}
 	if len(patch) > maxPatch {
 		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}
-	return parseShortstat(short), patch, nil
+	return parseShortstat(short), parseShortstat(cardShort), patch, nil
 }
 
 var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)
@@ -1252,7 +1260,7 @@ const checkpointEvery = 15 * time.Second
 func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(harness.Event), log func(string, ...any)) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
-	last := diffStat{}
+	var last, lastCard diffStat
 	for {
 		select {
 		case <-ctx.Done():
@@ -1260,7 +1268,7 @@ func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(
 		case <-tick.C:
 		}
 		measure, cancel := context.WithTimeout(ctx, time.Minute)
-		stat, patch, err := c.diff(measure)
+		stat, card, patch, err := c.diff(measure)
 		cancel()
 		if err != nil {
 			if ctx.Err() == nil {
@@ -1268,13 +1276,14 @@ func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(
 			}
 			continue
 		}
-		if stat == last {
+		if stat == last && card == lastCard {
 			continue
 		}
-		last = stat
+		last, lastCard = stat, card
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventCheckpoint, Detail: map[string]any{
-			"diff":  map[string]any{"files": stat.Files, "insertions": stat.Insertions, "deletions": stat.Deletions},
-			"patch": patch,
+			"diff":      map[string]any{"files": stat.Files, "insertions": stat.Insertions, "deletions": stat.Deletions},
+			"card_diff": map[string]any{"files": card.Files, "insertions": card.Insertions, "deletions": card.Deletions},
+			"patch":     patch,
 		}})
 	}
 }

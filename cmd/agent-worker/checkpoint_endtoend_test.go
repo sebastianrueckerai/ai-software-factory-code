@@ -49,11 +49,11 @@ func TestCheckpointCarriesTreeAfterFileRemovedEndToEnd(t *testing.T) {
 	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
 	run("clone", "-q", seed, dir)
 	e := workerEnv{taskID: "t1", branch: "factory/t1"}
-	base, _, err := prepareRepo(dir, e)
+	base, mainHead, err := prepareRepo(dir, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ck, err := newCheckpointer(dir, e, base)
+	ck, err := newCheckpointer(dir, e, base, mainHead)
 	if err != nil {
 		t.Fatal(err)
 	}

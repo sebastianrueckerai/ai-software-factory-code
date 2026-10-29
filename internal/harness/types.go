@@ -92,8 +92,9 @@ type EventKind string
 //     output length, a file change's size after the change (neither is
 //     bytes written); file_change names its tool (write, edit, patch)
 //   - checkpoint from the worker: diff {files, insertions, deletions}
-//     against the base commit (git diff --shortstat) and patch, the diff
-//     text capped; the adapter's own checkpoints (a model step starting)
+//     against the base commit (git diff --shortstat), card_diff, the same
+//     numbers against the merge base with main, and patch, the diff text
+//     capped; the adapter's own checkpoints (a model step starting)
 //     carry no detail
 //   - supervisor (factoryd): detector, trip, digest summary, decision,
 //     guidance, reason

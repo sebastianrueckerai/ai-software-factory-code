@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -1475,16 +1476,16 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
 	run("clone", "-q", seed, dir)
 	e := workerEnv{taskID: "t1", branch: "factory/t1"}
-	base, _, err := prepareRepo(dir, e)
+	base, mainHead, err := prepareRepo(dir, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ck, err := newCheckpointer(dir, e, base)
+	ck, err := newCheckpointer(dir, e, base, mainHead)
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if stat, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
+	if stat, _, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
 		t.Fatalf("untouched tree: stat = %+v, err = %v, want an empty diff", stat, err)
 	}
 
@@ -1492,7 +1493,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("1\nX\n3\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n1\nn2\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "brief.json"), []byte("{}\n"), 0o600)
-	stat, patch, err := ck.diff(ctx)
+	stat, _, patch, err := ck.diff(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1529,7 +1530,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n[diff]\n\texternal = %s\n[filter \"spy\"]\n\tclean = %s\n", hooks, spy, spy, spy)
 	cfg.Close()
 
-	stat, _, err = ck.diff(ctx)
+	stat, _, _, err = ck.diff(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1590,11 +1591,11 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
 	run("clone", "-q", seed, dir)
 	e := workerEnv{taskID: "t1", branch: "factory/t1"}
-	base, _, err := prepareRepo(dir, e)
+	base, mainHead, err := prepareRepo(dir, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ck, err := newCheckpointer(dir, e, base)
+	ck, err := newCheckpointer(dir, e, base, mainHead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1614,7 +1615,7 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 		}
 		return e.runGitCtx(ctx, d, env, args...)
 	}
-	stat, patch, err := ck.diff(context.Background())
+	stat, _, patch, err := ck.diff(context.Background())
 	if err != nil {
 		t.Fatalf("diff with a vanished file: %v", err)
 	}
@@ -1639,11 +1640,11 @@ func TestCheckpointLoopEmitsOnlyChanges(t *testing.T) {
 		}
 	}
 	e := workerEnv{branch: "b"}
-	base, _, err := prepareRepo(dir, e)
+	base, mainHead, err := prepareRepo(dir, e)
 	if err != nil {
 		t.Fatal(err)
 	}
-	ck, err := newCheckpointer(dir, e, base)
+	ck, err := newCheckpointer(dir, e, base, mainHead)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1885,5 +1886,79 @@ func TestLoadEnvCodingSessionCarriesNoWritingGuide(t *testing.T) {
 	}
 	if e.report != "" {
 		t.Fatalf("a coding session carries guide %q; work sessions get none", e.report)
+	}
+}
+
+// A card's later session starts on the branch an earlier one pushed. The
+// checkpoint's diff is that session's work; card_diff is the card's whole
+// diff against the merge base with main.
+func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		resume   bool
+		wantDiff map[string]any
+		wantCard map[string]any
+	}{
+		{"session 2", true,
+			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
+			map[string]any{"files": 2, "insertions": 5, "deletions": 0}},
+		{"session 1", false,
+			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
+			map[string]any{"files": 1, "insertions": 2, "deletions": 0}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			run := func(args ...string) string {
+				t.Helper()
+				out, err := exec.Command("git", args...).CombinedOutput()
+				if err != nil {
+					t.Fatalf("git %v: %v: %s", args, err, out)
+				}
+				return strings.TrimSpace(string(out))
+			}
+			commit := []string{"-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c"}
+			seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+			run("init", "-q", "-b", "main", seed)
+			run(append([]string{"-C", seed}, append(commit, "--allow-empty")...)...)
+			run("-C", seed, "checkout", "-q", "-b", "factory/x")
+			os.WriteFile(filepath.Join(seed, "f.txt"), []byte("x\ny\nz\n"), 0o644)
+			run("-C", seed, "add", "f.txt")
+			run(append([]string{"-C", seed}, commit...)...)
+			c1 := run("-C", seed, "rev-parse", "HEAD")
+			run("-C", seed, "checkout", "-q", "main")
+			run("clone", "-q", seed, dir)
+			run("-C", dir, "fetch", "-q", "origin", "factory/x")
+			e := workerEnv{branch: "b"}
+			if tc.resume {
+				e.repoSHA = c1
+			}
+			base, mainHead, err := prepareRepo(dir, e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ck, err := newCheckpointer(dir, e, base, mainHead)
+			if err != nil {
+				t.Fatal(err)
+			}
+			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\nb\n"), 0o644)
+			events := make(chan harness.Event, 10)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				ck.loop(ctx, 20*time.Millisecond, func(ev harness.Event) { events <- ev }, t.Logf)
+			}()
+			var ev harness.Event
+			select {
+			case ev = <-events:
+			case <-time.After(10 * time.Second):
+				t.Fatal("no checkpoint")
+			}
+			cancel()
+			<-done
+			if !reflect.DeepEqual(ev.Detail["diff"], tc.wantDiff) || !reflect.DeepEqual(ev.Detail["card_diff"], tc.wantCard) {
+				t.Fatalf("diff = %v, card_diff = %v; want %v, %v", ev.Detail["diff"], ev.Detail["card_diff"], tc.wantDiff, tc.wantCard)
+			}
+		})
 	}
 }
