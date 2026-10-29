@@ -360,7 +360,10 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 			"kind human names a claim only a person settles, with the evidence the approver will see.",
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item.",
-		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition.",
+		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
+			"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
+			`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
+			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays.",
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
 	} {
 		if !strings.Contains(got, want) {
@@ -2198,6 +2201,39 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	}
 	if _, ok := runner.takeFiled("t-plan"); ok {
 		t.Fatal("a refused filing held for the session")
+	}
+}
+
+// A replan's revision is checked at filing: one that keeps the key of a
+// card that ended closed is refused with the finding, and nothing is
+// stored.
+func TestFilePlanRefusesABrokenReplan(t *testing.T) {
+	ctx := context.Background()
+	p := testPlan()
+	p.Cards = slices.Insert(p.Cards, 3, PlanCard{Key: "cli", Role: RoleFeature, Title: "A command line", Brief: "cmd/cli creates links.",
+		Directories: []string{"cmd/cli"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestCLICreate in cmd/cli exits 0"}}, Size: "small"})
+	r, store, _, _, _ := fileRig(t, p)
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 5 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	cli := cardsByKey(t, store)["cli"]
+	cli.Status, cli.PlanRevision = "closed", 1
+	store.tasks[cli.ID] = cli
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too wide", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	p.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
+	want := `card cli ended closed: leave its key out, and add a card with "from": "cli" to go on from its work`
+	if err != nil || res.Revision != 0 || !slices.Contains(res.Findings, want) {
+		t.Fatalf("the replan: %+v, %v, want the finding %q", res, err, want)
+	}
+	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 1 {
+		t.Fatalf("a refused replan landed as revision %d", rev.Revision)
 	}
 }
 

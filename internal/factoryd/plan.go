@@ -167,6 +167,10 @@ type PlanCard struct {
 	// Image is the project's pinned image the card runs on; "" for the
 	// project's default
 	Image string `json:"image,omitempty"`
+	// From is the old card whose work the card starts from: its key, or
+	// #<issue> of a card the findings name without a key (the plan card's
+	// own work after a direct card's cut or replan)
+	From string `json:"from,omitempty"`
 }
 
 // PlanRevision is one valid plan of a plan task, as stored.
@@ -941,6 +945,9 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"kind human names a claim only a person settles, with the evidence the approver will see. " +
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
 		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
+		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
+		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
+		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	g += imagesLine(pins)
 	if shape.Foundation {
@@ -2117,19 +2124,21 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		return PlanResult{Findings: found}, nil
 	}
 	// the revision this one changes, when there is one: the amendment
-	// rules judge the pair (piece 10)
-	var old Plan
+	// rules judge the pair (piece 10), the replan rules the revision
+	// against the plan's record of cards
 	prev, ok, err := r.store.PlanRevision(ctx, taskID, 0)
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if ok {
-		if err := json.Unmarshal(prev.Plan, &old); err != nil {
-			return PlanResult{}, terminalError("plan %s revision %d: %v", taskID, prev.Revision, err)
-		}
-		if found := revisionFindings(old, p); len(found) > 0 {
-			return PlanResult{Findings: found}, nil
-		}
+	st, err := r.replanState(ctx, t)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	if st.prev != nil {
+		found = revisionFindings(*st.prev, p)
+	}
+	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
+		return PlanResult{Findings: found}, nil
 	}
 	raw, sha, err := planSHA(p)
 	if err != nil {
@@ -2140,7 +2149,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		return PlanResult{}, err
 	}
 	if ok && n > prev.Revision {
-		r.recordCriteria(ctx, taskID, n, old, p)
+		r.recordCriteria(ctx, taskID, n, *st.prev, p)
 		r.restartChildren(ctx, t, n, p)
 	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})

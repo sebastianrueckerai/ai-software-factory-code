@@ -985,3 +985,186 @@ func TestMayReplan(t *testing.T) {
 		}
 	}
 }
+
+// replanFixture is a plan's record at revision 2: api merged, ui started
+// open at revision 1, docs never started (revision 2 rebriefed it), cli
+// closed, int the integration card merged. clean is a revision that keeps
+// api and ui verbatim, drops docs, changes cli into cli2 and adds the new
+// integration card int2.
+func replanFixture() (st replanState, clean Plan) {
+	revision := func(docs string) Plan {
+		return Plan{Summary: "the record", Cards: []PlanCard{replanCard("api", RoleFeature, "the api"), replanCard("ui", RoleFeature, "the ui"),
+			replanCard("docs", RoleFeature, docs), replanCard("cli", RoleFeature, "the cli"), replanCard("int", RoleIntegration, "the whole")}}
+	}
+	rev1, rev2 := revision("the docs"), revision("the docs, rebriefed")
+	st = replanState{prev: &rev2, plan: Task{ID: "t-plan", IssueNumber: 10},
+		old: []Task{
+			{ID: "t-api", PlanKey: "api", IssueNumber: 11, Status: "done", MergeCommit: "m-api", PlanRevision: 1},
+			{ID: "t-cli", PlanKey: "cli", IssueNumber: 14, Status: "closed", PlanRevision: 1},
+			{ID: "t-docs", PlanKey: "docs", IssueNumber: 13, Status: "queued"},
+			{ID: "t-int", PlanKey: "int", IssueNumber: 15, Status: "done", MergeCommit: "m-int", PlanRevision: 2},
+			{ID: "t-ui", PlanKey: "ui", IssueNumber: 12, Status: "running", PlanRevision: 1},
+		},
+		started: map[string]PlanCard{"ui": rev1.Cards[1]},
+		merged:  map[string]bool{"t-api": true, "t-int": true}}
+	clean = Plan{Summary: "the replan", Cards: []PlanCard{rev2.Cards[0], rev2.Cards[1], fromCard("cli2", "cli"),
+		replanCard("int2", RoleIntegration, "the whole again")}}
+	return st, clean
+}
+
+func replanCard(key, role, brief string) PlanCard {
+	return PlanCard{Key: key, Role: role, Title: key, Brief: brief, Directories: []string{key + "/"},
+		Acceptance: []PlanItem{{Criterion: "all_green", Text: "go test ./... passes"}}, Size: "small"}
+}
+
+func fromCard(key, from string) PlanCard {
+	c := replanCard(key, RoleFeature, "goes on from "+from)
+	c.From = from
+	return c
+}
+
+// A revision keeps, changes or drops each old card by key and from, and
+// each broken rule answers its own finding.
+func TestReplanFindings(t *testing.T) {
+	// the clean revision filed: cli2 and int2 are cards of the record
+	filed := func(st *replanState, p *Plan) {
+		st.prev = &Plan{Cards: slices.Clone(p.Cards)}
+		st.old = append(st.old, Task{ID: "t-cli2", PlanKey: "cli2", IssueNumber: 16, Status: "queued"},
+			Task{ID: "t-int2", PlanKey: "int2", IssueNumber: 17, Status: "queued"})
+	}
+	ownWork := func(st *replanState) {
+		st.old = append(st.old, st.plan)
+		st.cut, st.cutWork = "t-plan", true
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(st *replanState, p *Plan)
+		want []string
+	}{
+		{"a clean revision", func(*replanState, *Plan) {}, nil},
+		{"R1 a from of no old card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("web", "nope")) },
+			[]string{"card web: from nope names no card of this plan's record; name an old card's key, or #<issue> of a card the findings list"}},
+		{"R2 a from of a merged card", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("api2", "api")) },
+			[]string{"card api2: from api, which merged: its work is on main, so start from main and leave from out"}},
+		{"R3 two cards from one", func(_ *replanState, p *Plan) { p.Cards = append(p.Cards, fromCard("cli3", "cli")) },
+			[]string{"cards cli2 and cli3: both start from cli; one card carries an old card's work"}},
+		{"R4 a closed card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[3]) },
+			[]string{`card cli ended closed: leave its key out, and add a card with "from": "cli" to go on from its work`}},
+		{"R5 a merged card left out", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] },
+			[]string{"card api merged: keep its key; a later card changes its work"}},
+		{"R6 the merged integration card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[4]) },
+			[]string{"card int is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again"}},
+		{"R7 a started card changed", func(_ *replanState, p *Plan) { p.Cards[1].Brief = "the ui, wider" },
+			[]string{"card ui started against revision 1: keep its entry as it was, or leave its key out to stop it"}},
+		{"R8 the cut card's work unnamed", func(st *replanState, _ *Plan) { st.cut, st.cutWork = "t-ui", true },
+			[]string{`the cut card #12 holds work on its branch: name it in the "from" of the card that lands it`}},
+		{"R8 the cut card's work named", func(st *replanState, p *Plan) {
+			st.cut, st.cutWork = "t-ui", true
+			p.Cards[1] = fromCard("ui2", "ui")
+		}, nil},
+		{"a cut card with no work", func(st *replanState, _ *Plan) { st.cut = "t-ui" }, nil},
+		{"R9 a kept key names from", func(st *replanState, p *Plan) {
+			p.Cards[2] = st.prev.Cards[2]
+			p.Cards[2].From = "cli"
+		}, []string{"card docs: keeps an old key and names from; a card that starts from another card's work takes a new key"}},
+		{"the plan card's own work named by its issue", func(st *replanState, p *Plan) {
+			ownWork(st)
+			p.Cards = append(p.Cards, fromCard("web", "#10"))
+		}, nil},
+		{"R8 the plan card's own work unnamed", func(st *replanState, _ *Plan) { ownWork(st) },
+			[]string{`the cut card #10 holds work on its branch: name it in the "from" of the card that lands it`}},
+		{"a second clean revision keeps cli2's from", filed, nil},
+		{"R9 a kept key's from changed", func(st *replanState, p *Plan) {
+			filed(st, p)
+			p.Cards[2].From = "ui"
+		}, []string{"card cli2: keeps an old key and names from; a card that starts from another card's work takes a new key"}},
+		{"a kept from whose card left the record", func(st *replanState, p *Plan) {
+			p.Cards = append(p.Cards, fromCard("web", "#10"))
+			filed(st, p)
+		}, nil},
+	} {
+		st, p := replanFixture()
+		tc.edit(&st, &p)
+		if got := replanFindings(st, p); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: findings %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The replan's state reads the record: each started open card's entry in
+// the revision it started against, a delta card's none; the merged cards;
+// the cut card and whether its branch holds work; and the plan card itself
+// among the old cards when its replan is its own.
+func TestReplanState(t *testing.T) {
+	ctx := context.Background()
+	r, store, fj := replanRig(t, "running", 0)
+	fj.head = "h1"
+	rev := func(api string) json.RawMessage {
+		return json.RawMessage(planJSON(t, Plan{Cards: []PlanCard{replanCard("api", RoleFeature, api), replanCard("ui", RoleFeature, "the ui"),
+			replanCard("docs", RoleFeature, "the docs")}}))
+	}
+	for i, raw := range []json.RawMessage{rev("the api"), rev("the api, rebriefed")} {
+		if _, err := store.AddPlanRevision(ctx, "p", raw, fmt.Sprint("sha-", i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	c := store.tasks["c"]
+	c.PlanRevision = 1
+	store.tasks["c"] = c
+	for _, k := range []Task{
+		{ID: "m", PlanKey: "docs", IssueNumber: 16, Status: "done", MergeCommit: "m1", PlanRevision: 1},
+		{ID: "x", PlanKey: "fix", IssueNumber: 17, Status: "running", PlanRevision: 2},
+	} {
+		k.Kind, k.Track, k.Source, k.Parent, k.Repository = "agent", policy.TrackDirect, SourcePlan, "p", "sf/repo"
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "c", "stops": []string{"c"}, "revision": 2}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.replanState(ctx, store.tasks["p"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old []string
+	for _, k := range st.old {
+		old = append(old, k.ID)
+	}
+	if st.prev == nil || st.prev.Cards[0].Brief != "the api, rebriefed" || st.plan.ID != "p" || !slices.Equal(old, []string{"c", "m", "s", "x"}) {
+		t.Fatalf("state: prev %+v, plan %s, old %v", st.prev, st.plan.ID, old)
+	}
+	if len(st.started) != 1 || st.started["api"].Brief != "the api" {
+		t.Fatalf("started = %+v, want api's entry of revision 1 alone", st.started)
+	}
+	if !reflect.DeepEqual(st.merged, map[string]bool{"m": true}) || st.cut != "c" || !st.cutWork {
+		t.Fatalf("merged %v, cut %q, work %t", st.merged, st.cut, st.cutWork)
+	}
+
+	// a direct card's own replan: the card is among the old cards, a
+	// person's replan cuts nothing
+	r, store, fj = replanRig(t, "running", 0)
+	fj.branchGone = true
+	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "card": "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = r.replanState(ctx, store.tasks["p"]); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(st.old); st.prev != nil || n != 3 || st.old[n-1].ID != "p" || st.cut != "" || st.cutWork {
+		t.Fatalf("a direct card's replan: prev %+v, old %+v, cut %q, work %t", st.prev, st.old, st.cut, st.cutWork)
+	}
+	if old, err := r.oldCards(ctx, store.tasks["p"]); err != nil || len(old) != 3 {
+		t.Fatalf("oldCards = %+v, %v", old, err)
+	}
+
+	// a cut of a direct card whose branch is gone holds no work
+	r, store, fj = replanRig(t, "running", 0)
+	fj.branchGone = true
+	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "p"}); err != nil {
+		t.Fatal(err)
+	}
+	if st, err = r.replanState(ctx, store.tasks["p"]); err != nil || st.cut != "p" || st.cutWork {
+		t.Fatalf("a cut with its branch gone: cut %q, work %t, %v", st.cut, st.cutWork, err)
+	}
+}

@@ -1009,6 +1009,24 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		// GateReproduction runs the repro block at base and head
 		"must bring its own test",
 		"the factory runs it at the base",
+		// replanFindings, R1
+		"names no card of this plan's record",
+		// replanFindings, R2
+		"start from main and leave from out",
+		// replanFindings, R3
+		"one card carries an old card's work",
+		// replanFindings, R4
+		"and add a card with",
+		// replanFindings, R5
+		"keep its key; a later card changes its work",
+		// replanFindings, R6
+		"the revision's new integration card checks",
+		// replanFindings, R7
+		"keep its entry as it was",
+		// replanFindings, R8
+		"of the card that lands it",
+		// replanFindings, R9
+		"takes a new key",
 	}
 	for name, g := range guides {
 		for _, rule := range rules {

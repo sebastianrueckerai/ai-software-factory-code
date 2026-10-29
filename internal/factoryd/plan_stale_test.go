@@ -66,11 +66,13 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 	}
 }
 
-// Piece 10's recording rule and restart rules: an amendment that replaces
-// links_crud under a new id, drops redirect_302 and its citing card, and
-// rebriefs the foundation records each criterion's fate, closes the
-// dropped card with its issue, rebriefs every card that never started,
-// and leaves a started card and a final one alone.
+// Piece 10's recording rule and restart rules. The amendment replaces
+// links_crud under a new id, drops redirect_302 and its citing card,
+// rebriefs the foundation, and changes the started links-api by a new
+// card, links-api-2, that starts from its work. It records each
+// criterion's fate, closes the dropped card that never started with its
+// issue, rebriefs every card that never started, and leaves a started
+// card and a final one alone.
 func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := fileRig(t, testPlan())
@@ -96,12 +98,18 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	amend.Criteria = append(amend.Criteria[:1], amend.Criteria[2:]...) // redirect_302 goes
 	amend.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
 	amend.Cards = append(amend.Cards[:2], amend.Cards[3:]...) // the redirects card goes
+	amend.Cards[1].Key, amend.Cards[1].From = "links-api-2", "links-api"
 	amend.Cards[1].Acceptance[0].Criterion = "links_crud_v2"
 	amend.Cards[2].Acceptance = []PlanItem{amend.Cards[2].Acceptance[0], amend.Cards[2].Acceptance[1]}
 	amend.Cards[2].Acceptance[1].Criterion = "links_crud_v2"
 	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend))
 	if err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v, findings %q", res, err, res.Findings)
+	}
+	rev, _, _ := store.PlanRevision(ctx, "t-plan", 2)
+	var stored Plan
+	if err := json.Unmarshal(rev.Plan, &stored); err != nil || len(stored.Cards) != 3 || stored.Cards[1].Key != "links-api-2" || stored.Cards[1].From != "links-api" {
+		t.Fatalf("revision 2 = %s, %v: want links-api-2 from links-api in links-api's place", rev.Plan, err)
 	}
 
 	catch, _ := store.PlanCatches(ctx, "t-plan")
@@ -139,7 +147,8 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 }
 
 // A card that never started takes the new revision's image with its
-// brief; a started one keeps the image it runs on.
+// brief; a started one keeps the image it runs on, and a revision that
+// changes its image is refused.
 func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := fileRig(t, testPlan())
@@ -157,7 +166,7 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	store.tasks[started.ID] = started
 
 	amend := testPlan()
-	amend.Cards[1].Image, amend.Cards[2].Image = "browser", "browser"
+	amend.Cards[1].Image = "browser"
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v", res, err)
 	}
@@ -167,6 +176,23 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	}
 	if got := cards["redirects"].Image; got != "" {
 		t.Errorf("the started card's image %q, want its own", got)
+	}
+	amend.Cards[2].Image = "browser"
+	refusedStartedChange(t, r, store, amend)
+}
+
+// refusedStartedChange files p, which changes the entry of the started
+// card redirects: the one finding is R7's, and no revision 3 is stored.
+func refusedStartedChange(t *testing.T, r *Runner, store *fakeStore, p Plan) {
+	t.Helper()
+	ctx := context.Background()
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
+	want := []string{"card redirects started against revision 1: keep its entry as it was, or leave its key out to stop it"}
+	if err != nil || !slices.Equal(res.Findings, want) {
+		t.Fatalf("a started card's entry changed: %+v, %v, want the findings %q", res, err, want)
+	}
+	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
+		t.Fatalf("a refused amendment landed as revision %d", rev.Revision)
 	}
 }
 
@@ -192,7 +218,8 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 }
 
 // A card that never started takes the new revision's rung and size with
-// its brief, which states them; a started one keeps its own.
+// its brief, which states them; a started one keeps its own, and a
+// revision that changes them is refused.
 func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := fileRig(t, testPlan())
@@ -207,9 +234,7 @@ func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {
 	store.tasks[started.ID] = started
 
 	amend := testPlan()
-	for _, i := range []int{1, 2} {
-		amend.Cards[i].Size, amend.Cards[i].Rung, amend.Cards[i].RungReason = "medium", RungFrontier, "the store's schema moves"
-	}
+	amend.Cards[1].Size, amend.Cards[1].Rung, amend.Cards[1].RungReason = "medium", RungFrontier, "the store's schema moves"
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v", res, err)
 	}
@@ -220,6 +245,8 @@ func TestFilePlanAmendmentRefreshesAnUnstartedCardsRungAndSize(t *testing.T) {
 	if c := cards["redirects"]; c.Rung != "" || c.Size != "small" {
 		t.Errorf("the started card: rung %q, size %q, want its own", c.Rung, c.Size)
 	}
+	amend.Cards[2].Size, amend.Cards[2].Rung, amend.Cards[2].RungReason = "medium", RungFrontier, "the store's schema moves"
+	refusedStartedChange(t, r, store, amend)
 }
 
 // planJSON marshals v or fails the test.

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"reflect"
 	"slices"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -489,4 +490,191 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 	default:
 		return "", err
 	}
+}
+
+// oldCards are plan p's record of cards a revision keeps, changes or
+// drops: its cards, and p itself while its pending replan is its own (a
+// direct card's replan or cut), whose work the findings name by issue.
+func (r *Runner) oldCards(ctx context.Context, p Task) ([]Task, error) {
+	cards, err := r.store.PlanCards(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	step, pending, err := r.pendingReplan(ctx, p)
+	if err != nil {
+		return nil, err
+	}
+	if pending && step.Card == p.ID {
+		cards = append(cards, p)
+	}
+	return cards, nil
+}
+
+// replanState is what a revision of plan is judged against: the revision
+// before (nil: none), the old cards, each started open card's entry in
+// the revision it started against by key, the pending cut's card and
+// whether its branch holds a commit past its base, and the old cards
+// with a merge commit by id.
+type replanState struct {
+	prev    *Plan
+	old     []Task
+	started map[string]PlanCard
+	plan    Task
+	cut     string
+	cutWork bool
+	merged  map[string]bool
+}
+
+// replanState reads plan p's record for replanFindings.
+func (r *Runner) replanState(ctx context.Context, p Task) (replanState, error) {
+	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}}
+	var err error
+	if st.prev, err = r.planAt(ctx, p.ID, 0); err != nil {
+		return replanState{}, err
+	}
+	if st.old, err = r.oldCards(ctx, p); err != nil {
+		return replanState{}, err
+	}
+	for _, k := range st.old {
+		if k.MergeCommit != "" {
+			st.merged[k.ID] = true
+		}
+		if k.PlanKey == "" || k.PlanRevision == 0 || !stoppable(k) {
+			continue
+		}
+		at, err := r.planAt(ctx, p.ID, k.PlanRevision)
+		if err != nil {
+			return replanState{}, err
+		}
+		if at == nil {
+			continue
+		}
+		if i := slices.IndexFunc(at.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey }); i >= 0 {
+			st.started[k.PlanKey] = at.Cards[i]
+		}
+	}
+	step, pending, err := r.pendingReplan(ctx, p)
+	if err != nil {
+		return replanState{}, err
+	}
+	if pending && step.Origin == ReplanCut {
+		st.cut = step.Card
+		head, err := r.BranchHead(ctx, step.Card)
+		if err != nil {
+			return replanState{}, err
+		}
+		st.cutWork = head != ""
+	}
+	return st, nil
+}
+
+// planAt is plan task id's revision n decoded, the newest for 0; nil
+// when there is none.
+func (r *Runner) planAt(ctx context.Context, id string, n int) (*Plan, error) {
+	rev, ok, err := r.store.PlanRevision(ctx, id, n)
+	if err != nil || !ok {
+		return nil, err
+	}
+	var p Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return nil, terminalError("plan %s revision %d: %v", id, rev.Revision, err)
+	}
+	return &p, nil
+}
+
+// fromRef is how a revision's from names old card k: its key, or
+// #<issue> for a card without one.
+func fromRef(k Task) string {
+	if k.PlanKey != "" {
+		return k.PlanKey
+	}
+	return fmt.Sprintf("#%d", k.IssueNumber)
+}
+
+// replanFindings judges revision next against the plan's record st: a
+// card is kept by its key, changed by a new card whose from names it, and
+// dropped by leaving its key out. A from the revision before held for the
+// same key was judged at its filing.
+func replanFindings(st replanState, next Plan) []string {
+	old := map[string]Task{}
+	for _, k := range st.old {
+		old[fromRef(k)] = k
+	}
+	prev := map[string]PlanCard{}
+	if st.prev != nil {
+		for _, c := range st.prev.Cards {
+			prev[c.Key] = c
+		}
+	}
+	kept := map[string]PlanCard{}
+	adds := false
+	for _, c := range next.Cards {
+		kept[c.Key] = c
+		_, held := prev[c.Key]
+		adds = adds || !held
+	}
+	var found []string
+	first := map[string]string{}
+	for _, c := range next.Cards {
+		if c.From == "" {
+			continue
+		}
+		if a, ok := first[c.From]; ok {
+			found = append(found, fmt.Sprintf("cards %s and %s: both start from %s; one card carries an old card's work", a, c.Key, c.From))
+		} else {
+			first[c.From] = c.Key
+		}
+		was, held := prev[c.Key]
+		if held && was.From == c.From {
+			continue
+		}
+		if held {
+			found = append(found, "card "+c.Key+": keeps an old key and names from; a card that starts from another card's work takes a new key")
+		}
+		switch k, ok := old[c.From]; {
+		case !ok:
+			found = append(found, fmt.Sprintf("card %s: from %s names no card of this plan's record; name an old card's key, or #<issue> of a card the findings list", c.Key, c.From))
+		case st.merged[k.ID]:
+			found = append(found, fmt.Sprintf("card %s: from %s, which merged: its work is on main, so start from main and leave from out", c.Key, c.From))
+		}
+	}
+	for _, k := range st.old {
+		if k.PlanKey == "" {
+			continue
+		}
+		c, keeps := kept[k.PlanKey]
+		_, held := prev[k.PlanKey]
+		integration := st.prev != nil && roleOf(*st.prev, k.PlanKey) == RoleIntegration
+		switch {
+		case keeps && (k.Status == "closed" || k.Status == "failed"):
+			found = append(found, fmt.Sprintf(`card %s ended %s: leave its key out, and add a card with "from": "%s" to go on from its work`, k.PlanKey, k.Status, k.PlanKey))
+		case st.merged[k.ID] && integration && keeps && adds:
+			found = append(found, "card "+k.PlanKey+" is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again")
+		case st.merged[k.ID] && !integration && held && !keeps:
+			found = append(found, "card "+k.PlanKey+" merged: keep its key; a later card changes its work")
+		}
+		if entry, ok := st.started[k.PlanKey]; ok && keeps && !sameEntry(c, entry) {
+			found = append(found, fmt.Sprintf("card %s started against revision %d: keep its entry as it was, or leave its key out to stop it", k.PlanKey, k.PlanRevision))
+		}
+	}
+	if st.cutWork {
+		if i := slices.IndexFunc(st.old, func(k Task) bool { return k.ID == st.cut }); i >= 0 {
+			ref := fromRef(st.old[i])
+			if !slices.ContainsFunc(next.Cards, func(c PlanCard) bool { return c.From == ref }) {
+				found = append(found, fmt.Sprintf(`the cut card #%d holds work on its branch: name it in the "from" of the card that lands it`, st.old[i].IssueNumber))
+			}
+		}
+	}
+	return found
+}
+
+// sameEntry tells whether a and b are one card entry; a list left out is
+// an empty one.
+func sameEntry(a, b PlanCard) bool {
+	if !slices.Equal(a.Directories, b.Directories) || !slices.Equal(a.DependsOn, b.DependsOn) || !slices.Equal(a.Acceptance, b.Acceptance) {
+		return false
+	}
+	a.Directories, a.DependsOn, a.Acceptance = nil, nil, nil
+	b.Directories, b.DependsOn, b.Acceptance = nil, nil, nil
+	return reflect.DeepEqual(a, b)
 }
