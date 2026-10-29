@@ -329,7 +329,7 @@ func RetryID(id string) string {
 // RetryPlanCard files failed plan card taskID again for by (item 119). One
 // transaction puts the replacement in its place, once: the key, the
 // dependencies and the dependents; its base stays the failed card's. Then
-// the replacement gets its issue as CreateChildren files a card's and the
+// the replacement gets its issue as fileChildren files a card's and the
 // failed card's branch, if any, to start from; the dependents wake, and the
 // failed card's issue closes as factoryd's recorded close. Each step after
 // the transaction is safe to repeat: a retry that stopped is finished by

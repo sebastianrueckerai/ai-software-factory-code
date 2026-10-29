@@ -30,6 +30,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
@@ -268,6 +269,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		Image:          s.env.image,
 	}
 	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
+	resolveDocLinks(log, &s.brief, s.env.docsDir)
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
 		return s, startError{"repository map", err}
 	}
@@ -680,6 +682,36 @@ func docsState(ws, docsDir string) (cloned bool, failed string) {
 	default:
 		return false, err.Error()
 	}
+}
+
+// resolveDocLinks sets the brief's DocLinks from the clone at docsDir
+// when the brief has one (factoryd.InboundBrief drops them for an
+// untrusted author's card). A clone it cannot walk leaves them nil.
+func resolveDocLinks(log func(string, ...any), brief *harness.TaskBrief, docsDir string) {
+	if !brief.Docs {
+		return
+	}
+	var tree []string
+	err := filepath.WalkDir(docsDir, func(p string, d fs.DirEntry, err error) error {
+		switch {
+		case err != nil:
+			return err
+		case d.IsDir() && d.Name() == ".git":
+			return filepath.SkipDir
+		case p == docsDir, d.Type()&fs.ModeSymlink != 0:
+			return nil
+		}
+		rel, err := filepath.Rel(docsDir, p)
+		if err == nil {
+			tree = append(tree, filepath.ToSlash(rel))
+		}
+		return err
+	})
+	if err != nil {
+		log("document links: %v", err)
+		return
+	}
+	brief.DocLinks = doclinks.Lines(brief.Objective, tree, docsDir)
 }
 
 // cloneBase clones the task's repository at its base, with the head of a

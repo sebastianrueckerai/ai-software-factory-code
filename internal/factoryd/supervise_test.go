@@ -1107,8 +1107,8 @@ func TestShellWriteCountsAsWrite(t *testing.T) {
 }
 
 // A delivered message arms the stuck rule: the next detector trip without
-// a write since ends the session as retry_stronger, decided already; a
-// write disarms it; a check-in never ends it.
+// a write since carries the stuck line as its last finding and goes to the
+// check-in; a write disarms it; a check-in is never stuck.
 func TestSupervisorStuckAfterMessage(t *testing.T) {
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2,
 		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
@@ -1124,10 +1124,11 @@ func TestSupervisorStuckAfterMessage(t *testing.T) {
 	s.Resume(minute(45))
 	s.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(46))
 	trip := s.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(46))
-	if trip == nil || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
-		t.Fatalf("trip = %+v, want repetition decided retry_stronger", trip)
+	stuck := "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change"
+	if trip == nil || trip.Kind != TripRepetition || trip.decided != nil || trip.Stuck != stuck {
+		t.Fatalf("trip = %+v, want repetition for the check-in with the stuck line", trip)
 	}
-	if last := trip.Findings[len(trip.Findings)-1]; last != "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change" {
+	if last := trip.Findings[len(trip.Findings)-1]; last != stuck {
 		t.Fatalf("finding = %q", last)
 	}
 
@@ -1137,8 +1138,246 @@ func TestSupervisorStuckAfterMessage(t *testing.T) {
 	s2.Messaged(minute(1))
 	s2.Event(fileEvent("a.go", "1"), minute(2))
 	s2.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(3))
-	if trip := s2.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(3)); trip == nil || trip.decided != nil {
-		t.Fatalf("trip after a write = %+v, want one for the supervisor", trip)
+	if trip := s2.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(3)); trip == nil || trip.decided != nil || trip.Stuck != "" {
+		t.Fatalf("trip after a write = %+v, want one for the supervisor, not stuck", trip)
+	}
+}
+
+// The pod runs on during a check-in: the calls it made before the message
+// reached it wait in the stream and count for no detector after it.
+func TestEventsBeforeTheMessageDoNotCount(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "a"})), minute(1))
+	if trip := s.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("first trip = %+v, want repetition", trip)
+	}
+	s.Messaged(minute(2))
+	for i := range 3 {
+		if trip := s.Event(podAt(1.5, toolEvent("read", map[string]any{"filePath": fmt.Sprint("stale", i)})), minute(2.1)); trip != nil {
+			t.Fatalf("read %d made before the message tripped: %+v", i+1, trip)
+		}
+	}
+	if !s.lastSeen.Equal(minute(2.1)) {
+		t.Fatalf("last seen %s after the stale reads, want minute 2.1", s.lastSeen)
+	}
+	if trip := s.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(2.2)); trip != nil || s.sinceChange != 1 {
+		t.Fatalf("read without a time: trip %+v, count %d; want none and 1", trip, s.sinceChange)
+	}
+	trip := s.Event(podAt(3, toolEvent("read", map[string]any{"filePath": "d"})), minute(3))
+	if trip == nil || trip.Kind != TripRepetition || trip.Detail != "2 tool calls and commands without a file change" ||
+		trip.decided != nil || trip.Stuck != "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change" {
+		t.Fatalf("trip = %+v, want repetition on two reads after the message, stuck, for the check-in", trip)
+	}
+
+	// the wall-clock cap and the cheap cap still hold for a stale event
+	s2, _ := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 3 * time.Minute, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour},
+		minute(0), minute(0))
+	s2.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "a"})), minute(1))
+	s2.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1))
+	s2.Messaged(minute(2))
+	if trip := s2.Event(podAt(1.5, toolEvent("read", map[string]any{"filePath": "a"})), minute(3)); trip == nil || trip.Kind != TripWallClock {
+		t.Fatalf("stale read at the cap = %+v, want wall_clock", trip)
+	}
+	s3, _ := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour,
+		CheapCap: 8 * time.Minute}, minute(0), minute(0))
+	s3.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "a"})), minute(1))
+	s3.Event(podAt(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1))
+	s3.Messaged(minute(2))
+	trip = s3.Event(podAt(1.5, toolEvent("read", map[string]any{"filePath": "a"})), minute(8))
+	if trip == nil || trip.Kind != TripCheapCap || trip.Detail != "the cheap rung's 8m0s passed without a push" ||
+		trip.decided == nil || trip.decided.Action != ActionRetryStronger {
+		t.Fatalf("stale read at the cheap cap = %+v, want cheap_cap with the climb decided", trip)
+	}
+}
+
+// The judge's continue answers for what the pod did during its
+// conversation: calls stamped before the answer count for nothing, the
+// count after it starts from zero, and a write stamped after the message
+// takes the message whenever it arrives.
+func TestEventsBeforeTheAnswerDoNotCount(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	read := func(m float64, path string) harness.Event { return podAt(m, readEvent(path)) }
+	stuck := "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change"
+	answered := func() *Supervisor {
+		s, _ := NewSupervisor(cfg, minute(0), minute(0))
+		s.Event(read(1, "a"), minute(1))
+		s.Event(read(1, "b"), minute(1))
+		s.Messaged(minute(2))
+		s.Event(read(3, "c"), minute(3))
+		if trip := s.Event(read(3, "d"), minute(3)); trip == nil || trip.Stuck != stuck {
+			t.Fatalf("trip after the message = %+v, want repetition, stuck", trip)
+		}
+		s.Resume(minute(5))
+		return s
+	}
+
+	s := answered()
+	for i := range 3 {
+		if trip := s.Event(read(4, fmt.Sprint("queued", i)), minute(5.1)); trip != nil {
+			t.Fatalf("read %d made during the conversation tripped: %+v", i+1, trip)
+		}
+	}
+	if trip := s.Event(read(6, "e"), minute(6)); trip != nil || s.sinceChange != 1 {
+		t.Fatalf("first read after the answer: trip %+v, count %d; want none and 1", trip, s.sinceChange)
+	}
+	if trip := s.Event(read(6, "f"), minute(6)); trip == nil || trip.Kind != TripRepetition || trip.Stuck != stuck {
+		t.Fatalf("second read after the answer = %+v, want repetition, stuck", trip)
+	}
+
+	s2 := answered()
+	s2.Event(podAt(4, fileEvent("a.go", "h1")), minute(5.1))
+	s2.Event(read(6, "e"), minute(6))
+	if trip := s2.Event(read(6, "f"), minute(6)); trip == nil || trip.Kind != TripRepetition || trip.Stuck != "" {
+		t.Fatalf("trip after a write made during the conversation = %+v, want repetition, not stuck", trip)
+	}
+}
+
+// podAt is ev as the pod stamped it, at minute m.
+func podAt(m float64, ev harness.Event) harness.Event {
+	ev.Time = minute(m)
+	return ev
+}
+
+// A write the pod made during the check-in is progress like any write; only
+// the stuck rule wants one after the message's delivery.
+func TestAWriteBeforeTheMessageIsStillAWrite(t *testing.T) {
+	const check = "go test ./..."
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	read := func(m float64, path string) harness.Event { return podAt(m, readEvent(path)) }
+
+	// the stuck rule stays armed: two reads after the message trip, stuck
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(read(1, "a"), minute(1))
+	s.Event(read(1, "b"), minute(1))
+	s.Messaged(minute(2))
+	if trip := s.Event(podAt(1.5, fileEvent("a.go", "h1")), minute(2.1)); trip != nil || !s.noWriteFrom.Equal(minute(2.1)) {
+		t.Fatalf("stale write: trip %+v, no_write anchor %s; want none and minute 2.1", trip, s.noWriteFrom)
+	}
+	s.Event(read(3, "c"), minute(3))
+	trip := s.Event(read(3, "d"), minute(3))
+	if trip == nil || trip.Kind != TripRepetition || trip.decided != nil ||
+		trip.Stuck != "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change" {
+		t.Fatalf("trip = %+v, want repetition, stuck, for the check-in", trip)
+	}
+
+	// new content clears the nudges: two before the check-in, the third
+	// after the message is a nudge, no loop
+	s2 := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	for _, p := range []string{"/w/a.go", "/w/b.go"} {
+		if trip := nudgeOn(t, s2, readEvent(p)); trip != nil {
+			t.Fatalf("nudge on %s tripped: %+v", p, trip)
+		}
+	}
+	if trip := s2.Tick(minute(30)); trip == nil || trip.Kind != TripNoProgress {
+		t.Fatalf("tick = %+v, want no_progress", trip)
+	}
+	s2.Messaged(minute(31))
+	s2.Event(podAt(30.5, fileEvent("a.go", "h1")), minute(31))
+	for range 3 {
+		if trip := s2.Event(read(32, "/w/c.go"), minute(32)); trip != nil {
+			t.Fatalf("read after the message tripped: %+v", trip)
+		}
+	}
+	n := s2.TakeNudge()
+	if n == nil {
+		t.Fatal("no nudge after three reads of c.go")
+	}
+	if trip := s2.NudgeSent(*n); trip != nil {
+		t.Fatalf("third nudge after new content = %+v, want no loop", trip)
+	}
+
+	// the flip-flop memory sees it: h1, h2, then h1 again during the
+	// check-in; after the message h2 is a return, and the check that was
+	// failing then fails again
+	s3, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s3.Event(podAt(0.5, fileEvent("a.go", "h1")), minute(0.5))
+	s3.Event(podAt(0.6, fileEvent("a.go", "h2")), minute(0.6))
+	s3.Event(read(1, "a"), minute(1))
+	s3.Event(read(1, "b"), minute(1))
+	s3.Messaged(minute(2))
+	s3.Event(podAt(1.5, fileEvent("a.go", "h1")), minute(2.1))
+	s3.Event(podAt(3, cmdEvent(check, 1, "FAIL: TestLinks")), minute(3))
+	if trip := s3.Event(podAt(4, fileEvent("a.go", "h2")), minute(4)); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	trip = s3.Event(podAt(5, cmdEvent(check, 1, "FAIL: TestLinks")), minute(5))
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided != nil ||
+		trip.Stuck != "stuck after the supervisor's message: flip_flop: after a.go returned to a content it had before, `"+check+"` failed again, unchanged" {
+		t.Fatalf("trip = %+v, want flip_flop, stuck, for the check-in", trip)
+	}
+}
+
+// A check that newly passes during the check-in is progress like a write:
+// it resets churn and proves a pending return held; a subagent's command
+// stays no evidence. A checkpoint made then still sets the diff's baseline.
+func TestProgressBeforeTheAnswerCounts(t *testing.T) {
+	const check = "go test ./..."
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour, Churn: 3}
+	read := func(m float64, path string) harness.Event { return podAt(m, readEvent(path)) }
+	failing := func() *Supervisor {
+		s, _ := NewSupervisor(cfg, minute(0), minute(0))
+		s.Event(podAt(1, fileEvent("a.go", "h1")), minute(1))
+		s.Event(podAt(1, fileEvent("a.go", "h2")), minute(1))
+		s.Event(podAt(2, cmdEvent(check, 1, "FAIL: TestLinks")), minute(2))
+		if trip := s.Event(read(2, "a"), minute(2)); trip == nil || trip.Kind != TripRepetition {
+			t.Fatalf("trip = %+v, want repetition", trip)
+		}
+		s.Resume(minute(5))
+		return s
+	}
+
+	s := failing()
+	s.Event(podAt(4, cmdEvent(check, 0, "ok")), minute(5.1))
+	if trip := s.Event(podAt(6, fileEvent("a.go", "h3")), minute(6)); trip != nil {
+		t.Fatalf("write after a pass made during the conversation = %+v, want none", trip)
+	}
+
+	sub := failing()
+	pass := podAt(4, cmdEvent(check, 0, "ok"))
+	pass.Detail["subagent"] = true
+	sub.Event(pass, minute(5.1))
+	trip := sub.Event(podAt(6, fileEvent("a.go", "h3")), minute(6))
+	if trip == nil || trip.Kind != TripChurn ||
+		trip.Detail != "3 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes" {
+		t.Fatalf("write after a subagent's pass = %+v, want churn", trip)
+	}
+
+	// h1, h2, a failing check, h1 again: a return; the check passes during
+	// the conversation, so failing twice after the message is no circle
+	ffCfg := cfg
+	ffCfg.RepetitionEvents, ffCfg.Churn = 3, 1000
+	ff, _ := NewSupervisor(ffCfg, minute(0), minute(0))
+	ff.Event(podAt(0.5, fileEvent("a.go", "h1")), minute(0.5))
+	ff.Event(podAt(0.6, fileEvent("a.go", "h2")), minute(0.6))
+	ff.Event(podAt(0.7, cmdEvent(check, 1, "FAIL: TestLinks")), minute(0.7))
+	ff.Event(podAt(0.8, fileEvent("a.go", "h1")), minute(0.8))
+	ff.Event(read(1, "a"), minute(1))
+	ff.Event(read(1, "b"), minute(1))
+	if trip := ff.Event(read(1, "c"), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
+	}
+	ff.Messaged(minute(2))
+	ff.Event(podAt(1.5, cmdEvent(check, 0, "ok")), minute(2.1))
+	ff.Event(podAt(3, cmdEvent(check, 1, "FAIL: TestLinks")), minute(3))
+	if trip := ff.Event(podAt(4, cmdEvent(check, 1, "FAIL: TestLinks")), minute(4)); trip != nil {
+		t.Fatalf("a failure after the held return = %+v, want none", trip)
+	}
+
+	// no checkpoint before the answer: the one made during the conversation
+	// is the baseline, no write, and the next moved diff is a write
+	b, _ := NewSupervisor(cfg, minute(0), minute(0))
+	b.Event(read(1, "a"), minute(1))
+	if trip := b.Event(read(1, "b"), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("trip = %+v, want repetition", trip)
+	}
+	b.Resume(minute(2))
+	if trip := b.Event(podAt(1.5, diffEvent(3, 0)), minute(2.1)); trip != nil || !b.noWriteFrom.Equal(minute(0)) {
+		t.Fatalf("stale baseline: trip %+v, no_write anchor %s; want none and minute 0", trip, b.noWriteFrom)
+	}
+	b.Event(read(2.5, "c"), minute(2.5))
+	if trip := b.Event(podAt(3, diffEvent(5, 0)), minute(3)); trip != nil || b.sinceChange != 0 || !b.noWriteFrom.Equal(minute(3)) {
+		t.Fatalf("moved diff after the stale baseline: trip %+v, count %d, no_write anchor %s; want none, 0 and minute 3", trip, b.sinceChange, b.noWriteFrom)
 	}
 }
 
@@ -1178,8 +1417,8 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 		}
 	}
 	trip = s2.Event(toolEvent("read", map[string]any{"filePath": "m23"}), minute(45.5))
-	if trip == nil || trip.Kind != TripRepetition || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
-		t.Fatalf("24th read: %+v, want repetition decided retry_stronger", trip)
+	if trip == nil || trip.Kind != TripRepetition || trip.decided != nil || trip.Stuck == "" {
+		t.Fatalf("24th read: %+v, want repetition, stuck, for the check-in", trip)
 	}
 	// the trace counters start afresh too: a repeated call counted before
 	// the message does not trip same_call after it
@@ -1205,6 +1444,83 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 	}
 }
 
+func subagentEvent(tool string, args map[string]any) harness.Event {
+	ev := toolEvent(tool, args)
+	ev.Detail["subagent"] = true
+	return ev
+}
+
+// A subagent's run counts once for repetition, as the session's task call:
+// its reads add nothing, its writes still reset the count.
+func TestSubagentCallsCountOnce(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 3, NoWriteAfter: time.Hour}
+	read := func(path string) harness.Event { return toolEvent("read", map[string]any{"filePath": path}) }
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	for i := range 5 {
+		if trip := s.Event(subagentEvent("read", map[string]any{"filePath": fmt.Sprintf("s%d.go", i)}), minute(1)); trip != nil {
+			t.Fatalf("subagent read %d tripped: %+v", i, trip)
+		}
+	}
+	if trip := s.Event(read("a.go"), minute(2)); trip != nil {
+		t.Fatalf("the first own read tripped: %+v", trip)
+	}
+	s.Event(read("b.go"), minute(2))
+	trip := s.Event(read("c.go"), minute(2))
+	if trip == nil || trip.Kind != TripRepetition || trip.Detail != "3 tool calls and commands without a file change" {
+		t.Fatalf("trip = %+v, want repetition at the third own call", trip)
+	}
+
+	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s2.Event(read("a.go"), minute(1))
+	s2.Event(read("b.go"), minute(1))
+	write := fileEvent("a.go", "h1")
+	write.Detail["subagent"] = true
+	s2.Event(write, minute(2))
+	for _, path := range []string{"c.go", "d.go"} {
+		if trip := s2.Event(read(path), minute(3)); trip != nil {
+			t.Fatalf("a read after the subagent's write tripped: %+v", trip)
+		}
+	}
+}
+
+// A nudge or trip about a subagent's call would reach the main agent, which
+// did not make it: six identical subagent reads, past the nudge (3 in a row)
+// and same_call (4), leave no trace; six identical own reads after them get
+// the nudge at the third and the trip at the sixth.
+func TestSubagentCallsFeedNoTraceDetector(t *testing.T) {
+	s := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	t0 := time.Unix(0, 0)
+	args := map[string]any{"filePath": "/w/a.go"}
+	for i := range 6 {
+		if trip := s.Event(subagentEvent("read", args), t0); trip != nil {
+			t.Fatalf("subagent read %d tripped: %+v", i, trip)
+		}
+		if n := s.TakeNudge(); n != nil {
+			t.Fatalf("subagent read %d nudged: %+v", i, n)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		if trip := s.Event(toolEvent("read", args), t0); trip != nil {
+			t.Fatalf("own read %d tripped: %+v", i, trip)
+		}
+		n := s.TakeNudge()
+		if i != 3 {
+			if n != nil {
+				t.Fatalf("own read %d nudged: %+v", i, n)
+			}
+			continue
+		}
+		if n == nil || n.Tool != "read" || n.Count != 3 {
+			t.Fatalf("nudge = %+v, want read after 3", n)
+		}
+		s.NudgeSent(*n)
+	}
+	trip := s.Event(toolEvent("read", args), t0)
+	if trip == nil || trip.Kind != TripSameCall || trip.Detail != "read: the same call 3 times in a row after 1 nudge" {
+		t.Fatalf("the sixth own read: trip = %+v, want same_call", trip)
+	}
+}
+
 // Silence after a message is no circle: a command running over 5 minutes
 // trips no_progress, which the supervisor is asked about (review I2).
 func TestNoProgressAfterMessageAsks(t *testing.T) {
@@ -1220,7 +1536,7 @@ func TestNoProgressAfterMessageAsks(t *testing.T) {
 }
 
 // Ruling 224: flip_flop and churn after a delivered message are circles,
-// not progress, although they write: they end the session too.
+// not progress, although they write: they are stuck too.
 func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 	const check = "go test ./..."
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour}
@@ -1235,17 +1551,18 @@ func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 		t.Fatalf("the return itself tripped: %+v", trip)
 	}
 	trip := s.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(5))
-	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
-		t.Fatalf("trip = %+v, want flip_flop decided retry_stronger", trip)
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided != nil ||
+		trip.Stuck != "stuck after the supervisor's message: flip_flop: after a.go returned to a content it had before, `"+check+"` failed again, unchanged" {
+		t.Fatalf("trip = %+v, want flip_flop, stuck, for the check-in", trip)
 	}
-	// without a message the supervisor is asked
+	// without a message the supervisor is asked, not stuck
 	s2, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s2.Event(fileEvent("a.go", "h1"), minute(2))
 	s2.Event(fileEvent("a.go", "h2"), minute(3))
 	s2.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(3))
 	s2.Event(fileEvent("a.go", "h1"), minute(4))
-	if trip := s2.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(5)); trip == nil || trip.decided != nil {
-		t.Fatalf("trip = %+v, want flip_flop for the supervisor", trip)
+	if trip := s2.Event(cmdEvent(check, 1, "FAIL: TestLinks"), minute(5)); trip == nil || trip.decided != nil || trip.Stuck != "" {
+		t.Fatalf("trip = %+v, want flip_flop for the supervisor, not stuck", trip)
 	}
 }
 
@@ -1279,10 +1596,9 @@ func TestUndoAfterAMessageLeavesTheCardWhereItIs(t *testing.T) {
 
 // Roadmap 184: the circle's other half. The same return as the undo
 // above, but now the check that was failing when the file returned fails
-// again after it, unchanged: the flip-flop trips, and the stuck rule —
-// a message was delivered — moves the card to the frontier tier
-// (retry_stronger), not to the supervisor.
-func TestARefailAfterAReturnMovesTheCardToTheFrontierTier(t *testing.T) {
+// again after it, unchanged: the flip-flop trips, stuck — a message was
+// delivered — and the check-in judges it with the stuck line.
+func TestARefailAfterAReturnIsStuck(t *testing.T) {
 	const check = "go test ./..."
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: time.Hour, Churn: 1000}
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
@@ -1296,8 +1612,8 @@ func TestARefailAfterAReturnMovesTheCardToTheFrontierTier(t *testing.T) {
 		t.Fatalf("the return itself tripped: %+v", trip)
 	}
 	trip := s.Event(cmdEvent(check, 1, "FAIL: TestMain"), minute(7))
-	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
-		t.Fatalf("trip = %+v decided=%+v, want flip_flop decided retry_stronger (the frontier tier)", trip, trip.decided)
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided != nil || trip.Stuck == "" {
+		t.Fatalf("trip = %+v, want flip_flop, stuck, for the check-in", trip)
 	}
 	if !strings.Contains(trip.Detail, "main.go") || !strings.Contains(trip.Detail, check) {
 		t.Fatalf("detail = %q, want the path and the command", trip.Detail)
@@ -1350,9 +1666,8 @@ func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
 
 // Ruling 224: a circle of writes is not progress. A message must not clear
 // the alternation memory, so an agent that flips a file back and forth
-// across messages and refails its check trips flip_flop and the stuck rule
-// ends the session (round 2's drill 4: 38 minutes of message loops on one
-// alternating file).
+// across messages and refails its check trips flip_flop, stuck (round 2's
+// drill 4: 38 minutes of message loops on one alternating file).
 func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
 	const check = "go test ./..."
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2,
@@ -1370,10 +1685,11 @@ func TestSupervisorFlipFlopSpansTheMessage(t *testing.T) {
 		t.Fatalf("the return itself tripped: %+v", trip)
 	}
 	trip := s.Event(cmdEvent(check, 1, "FAIL: TestStats"), minute(5))
-	if trip == nil || trip.Kind != TripFlipFlop || trip.decided == nil || trip.decided.Action != ActionRetryStronger {
-		t.Fatalf("flip back across the message = %+v, want flip_flop decided retry_stronger", trip)
+	stuck := "stuck after the supervisor's message: flip_flop: after stats_test.go returned to a content it had before, `" + check + "` failed again, unchanged"
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided != nil || trip.Stuck != stuck {
+		t.Fatalf("flip back across the message = %+v, want flip_flop, stuck, for the check-in", trip)
 	}
-	if last := trip.Findings[len(trip.Findings)-1]; last != "stuck after the supervisor's message: flip_flop: after stats_test.go returned to a content it had before, `"+check+"` failed again, unchanged" {
+	if last := trip.Findings[len(trip.Findings)-1]; last != stuck {
 		t.Fatalf("finding = %q", last)
 	}
 }

@@ -707,6 +707,39 @@ func TestOpencodeToolCallCarriesArguments(t *testing.T) {
 	}
 }
 
+// A subagent's tool calls reach the supervisor marked, on the served line
+// and on every event parsed from it; the session's own calls carry no mark.
+func TestSubagentToolCallsAreMarked(t *testing.T) {
+	m := &serveMapper{session: "s-main", sessions: map[string]bool{"s-main": true}}
+	m.event([]byte(`{"type":"session.created","properties":{"info":{"id":"s-child","parentID":"s-main"}}}`), time.UnixMilli(5))
+	out := m.event([]byte(`{"type":"message.part.updated","properties":{"part":{"sessionID":"s-child","type":"tool","tool":"read","state":{"status":"completed"}}}}`), time.UnixMilli(5))
+	var line map[string]any
+	if err := json.Unmarshal(out.line, &line); err != nil || line["subagent"] != true {
+		t.Fatalf("a subagent's line = %s (%v), want \"subagent\": true", out.line, err)
+	}
+	if events := parseLines(&opencodeParser{}, string(out.line)); len(events) != 1 || events[0].Kind != harness.EventToolCall || events[0].Detail["subagent"] != true {
+		t.Fatalf("a subagent's events = %+v, want one tool call marked subagent", events)
+	}
+	for _, part := range []string{
+		`{"tool":"bash","state":{"status":"completed","input":{"command":"ls"},"output":""}}`,
+		`{"tool":"edit","state":{"status":"completed","input":{"filePath":"/nonexistent/a.go"}}}`,
+		`{"tool":"read","state":{"status":"error","error":"no such file","input":{"filePath":"b.go"}}}`,
+	} {
+		events := parseLines(&opencodeParser{}, `{"type":"tool_use","timestamp":1,"subagent":true,"part":`+part+`}`)
+		if len(events) != 1 || events[0].Detail["subagent"] != true {
+			t.Fatalf("%s: events = %+v, want one marked subagent", part, events)
+		}
+	}
+	out = m.event([]byte(`{"type":"message.part.updated","properties":{"part":{"sessionID":"s-main","type":"tool","tool":"read","state":{"status":"completed"}}}}`), time.UnixMilli(5))
+	events := parseLines(&opencodeParser{}, string(out.line))
+	if len(events) != 1 {
+		t.Fatalf("the session's own events = %+v, want one tool call", events)
+	}
+	if _, marked := events[0].Detail["subagent"]; marked {
+		t.Fatalf("the session's own events = %+v, want one tool call without the subagent key", events)
+	}
+}
+
 // The findings, a request for changes among them, stand above the human's
 // answers, so an old answer cannot outrank a newer request; each answer says
 // its date and the question it answered.
@@ -759,6 +792,36 @@ func TestBriefOpensWithTheHandover(t *testing.T) {
 	}
 	if plain := briefText(harness.TaskBrief{Objective: "o"}, "T"); strings.Contains(plain, "HANDOVER") {
 		t.Fatalf("brief without a handover = %q", plain)
+	}
+}
+
+// The card's document links, resolved by the worker, follow the line on
+// the document repository in factoryd's own words, outside the issue's
+// markers; a brief without them has no such section.
+func TestBriefListsTheDocumentLinks(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o", Docs: true, DocLinks: []string{"../plans/x.md is /workspace/docs/docs/plans/x.md"}}, "T")
+	want := "is at /workspace/docs, text files only, for reading; changes go in /workspace/repo.\n" +
+		"Documents the issue links:\n- ../plans/x.md is /workspace/docs/docs/plans/x.md\n\n" +
+		"The task is the issue's text between the lines <<<ISSUE-T and ISSUE-T>>>."
+	if !strings.Contains(got, want) {
+		t.Fatalf("brief =\n%s\nwant it to hold\n%s", got, want)
+	}
+	if got := briefText(harness.TaskBrief{Objective: "o", Docs: true}, "T"); strings.Contains(got, "Documents the issue links") {
+		t.Fatalf("brief without links = %q", got)
+	}
+}
+
+// The document links repeat the author's link targets outside the
+// issue's markers, so only a writer's brief carries them.
+func TestBriefListsTheDocumentLinksOfAWritersCardOnly(t *testing.T) {
+	for standing, want := range map[string]bool{
+		harness.StandingWriter: true, harness.StandingOutside: false, harness.StandingTelemetry: false, "": false,
+	} {
+		got := objectiveText(harness.TaskBrief{Objective: "o", Author: "a", AuthorStanding: standing, Docs: true,
+			DocLinks: []string{"../plans/x.md is /workspace/docs/docs/plans/x.md"}})
+		if strings.Contains(got, "Documents the issue links:\n- ../plans/x.md is") != want {
+			t.Errorf("standing %q: brief =\n%s\nwant the document links: %v", standing, got, want)
+		}
 	}
 }
 

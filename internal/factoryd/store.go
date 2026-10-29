@@ -190,9 +190,6 @@ type TaskUsage struct {
 	ExtraAttempts int           // one per human answer
 	// PosterAttempts are the ExtraAttempts the issue author's answers bought
 	PosterAttempts int
-	// ExtraCheckin widens the check-in call cap once per answer a human
-	// gave at the cap (versionCheckinRaise)
-	ExtraCheckin int
 	// LastUncounted: the last session got no model answer and took no
 	// attempt, so an answer after it buys agent time alone
 	// (versionSessionLadder)
@@ -394,9 +391,6 @@ type Store interface {
 	// card: the call costs of the task's purpose checkin rows (spend_eur
 	// holds the task's running total at each row, not a per-row cost).
 	CheckinSpent(ctx context.Context, taskID string) (float64, error)
-	// CheckinCalls is how many calls the task's check-in conversations made
-	// on the card, every purpose checkin row of the task.
-	CheckinCalls(ctx context.Context, taskID string) (int, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -875,7 +869,7 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -886,7 +880,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckin, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1110,8 +1104,8 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
-		last_uncounted = $7, retry_time_ns = $8, extra_checkin = $9, extra_checkin_share = $10 WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckin, u.ExtraCheckinShare)
+		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -1172,14 +1166,6 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
 		taskID, policy.PurposeCheckin).Scan(&eur)
 	return eur, err
-}
-
-func (s *PGStore) CheckinCalls(ctx context.Context, taskID string) (int, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM audit WHERE task_id = $1 AND kind = $2`,
-		taskID, policy.PurposeCheckin).Scan(&n)
-	return n, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar

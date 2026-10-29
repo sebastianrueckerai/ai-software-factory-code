@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -350,6 +351,67 @@ func refuseCarry(title, body string, carry int64) error {
 	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
 }
 
+// refuseDocLinks refuses a card whose text, its title and body, links
+// relatively to no path or to several of the document repository's whole
+// tree at HEAD. The agent's pod resolves the same links against its docs
+// clone, which holds only the text files, so a link to an image passes
+// here and the pod's brief names it not among the text files. Without the
+// document repository, its token or its tree there is no check: the check
+// helps the agent correct a link, a docs outage must not block filing.
+func (c *Console) refuseDocLinks(ctx context.Context, docRepo, text string) error {
+	const codePathAsText = " A path in the code repository goes in as text, not as a link."
+	links := doclinks.Links(text)
+	if docRepo == "" || c.cfg.DocsToken == "" || len(links) == 0 {
+		return nil
+	}
+	repo, err := factoryd.SplitRepo(docRepo)
+	var tree []string
+	if err == nil {
+		tree, err = c.docTree(ctx, repo)
+	}
+	if err != nil {
+		log.Printf("console: check the card's document links against %s: %v", docRepo, err)
+		return nil
+	}
+	for _, l := range links {
+		switch m := doclinks.Resolve(l, tree); len(m) {
+		case 0:
+			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s resolves to no file in the document repository %s: name the path from the repository's root."+codePathAsText, l, repo))
+		case 1:
+		default:
+			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s matches %d files in the document repository %s (%s): name one path from the repository's root."+codePathAsText,
+				l, len(m), repo, strings.Join(m[:min(len(m), 3)], ", ")))
+		}
+	}
+	return nil
+}
+
+// refuseCard is new_card's judgement of the card with in's title and
+// body, at the proposal and at the run: the filing flags, a carry ask
+// without carry_pr and a link to no document.
+func (t *turn) refuseCard(in toolInput, body string) error {
+	if flags := filingFlags(in.Title, body); len(flags) > 0 {
+		return refuse(http.StatusBadRequest, flaggedCard(flags))
+	}
+	if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
+		return err
+	}
+	return t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, factoryd.IssueObjective(in.Title, body))
+}
+
+// cardBody is the issue body new_card files from in, before its
+// attachments: the body and the acceptance items.
+func cardBody(in toolInput) string {
+	body := in.Body
+	if len(in.Acceptance) > 0 {
+		body += "\n\nAcceptance:"
+		for _, a := range in.Acceptance {
+			body += "\n- " + a
+		}
+	}
+	return body
+}
+
 // describe is one line saying what a proposal of tool with in would do,
 // an approve_merge's with its warning; a card of another project refuses it, and so do an
 // approve_merge or a deny_merge without a pending merge request and a
@@ -370,7 +432,8 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if _, err := pinnedImage(t.p, in.Image); err != nil {
 			return "", err
 		}
-		if err := refuseCarry(in.Title, in.Body, in.CarryPR); err != nil {
+		// the run's text but for the attachments line, which the console writes
+		if err := t.refuseCard(*in, cardBody(*in)); err != nil {
 			return "", err
 		}
 	}
@@ -1215,22 +1278,13 @@ var tools = []chatTool{
 			if err := refuseTrack(in); err != nil {
 				return "", nil, err
 			}
-			body := in.Body
-			if len(in.Acceptance) > 0 {
-				body += "\n\nAcceptance:"
-				for _, a := range in.Acceptance {
-					body += "\n- " + a
-				}
-			}
+			body := cardBody(in)
 			ups, err := t.assets(in.Attachments)
 			if err != nil {
 				return "", nil, err
 			}
 			body = withAssets(body, ups)
-			if flags := filingFlags(in.Title, body); len(flags) > 0 {
-				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
-			}
-			if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
+			if err := t.refuseCard(in, body); err != nil {
 				return "", nil, err
 			}
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)

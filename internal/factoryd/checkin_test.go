@@ -488,23 +488,88 @@ func TestParseCheckinAnswerNamesTheFinding(t *testing.T) {
 	})
 }
 
-func TestCheckinRunnerLimits(t *testing.T) {
-	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}
+// The conversation's last call carries no tools and asks for the answer,
+// and every tool answer before it tells the judge the calls it has left.
+func TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{
-		{ToolName: "grep", ToolArgs: map[string]any{"pattern": "a"}},
-		{ToolName: "grep", ToolArgs: map[string]any{"pattern": "b"}},
-		{ToolName: "grep", ToolArgs: map[string]any{"pattern": "c"}},
+		{ToolName: "card_facts"},
+		{Text: `{"decision":"continue","reason":"research"}`},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
-		scriptedTools{out: map[string]string{"grep": "one line"}}, 2, 1.5, 1, 2000)
+		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000)
+	if len(chat.gots) != 2 {
+		t.Fatalf("calls = %d, want the tool round and the answer", len(chat.gots))
+	}
+	if chat.gots[0].Tools == nil {
+		t.Error("the first call carries no tools")
+	}
+	if chat.gots[1].Tools != nil {
+		t.Errorf("the last call carries tools %v, want none", chat.gots[1].Tools)
+	}
+	if !strings.HasSuffix(chat.gots[1].Input, "\n\nThis is your last call: answer now with the JSON object, no tool.") {
+		t.Errorf("the last call's input does not end on the ask for the answer:\n%s", chat.gots[1].Input)
+	}
+	if !strings.Contains(chat.gots[1].Input, "\n(calls left 1)") {
+		t.Errorf("the tool answer does not name the calls left:\n%s", chat.gots[1].Input)
+	}
+	if out.Decision != "continue" {
+		t.Fatalf("outcome = %+v, want the last call's continue", out)
+	}
+}
+
+// A tool asked for on the last call is never run: the conversation ends
+// at the call cap's human ask under spend.
+func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
+		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000)
 	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached" {
 		t.Fatalf("outcome = %+v, want the cap's human ask under spend", out)
 	}
 	if chat.calls != 2 {
-		t.Fatalf("calls = %d, want the third call refused by the runner", chat.calls)
+		t.Fatalf("calls = %d, want both calls made", chat.calls)
 	}
-	if out.Record.ToolCalls != 2 {
-		t.Errorf("tool calls = %d, want 2", out.Record.ToolCalls)
+	if out.Record.ToolCalls != 1 {
+		t.Errorf("tool calls = %d, want 1: the last call's tool never ran", out.Record.ToolCalls)
+	}
+}
+
+// An unreadable answer on the last call leaves no room for the repair
+// round: the outcome is the unreadable answer's human ask, not the cap's.
+func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000)
+	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || out.Reason == "check-in call cap reached" {
+		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
+	}
+	if out.ReasonKind != "" || out.Record.Reason != out.Reason {
+		t.Fatalf("outcome kind %q, record reason %q; want no spend kind and the reason recorded", out.ReasonKind, out.Record.Reason)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("calls = %d, want the one call", chat.calls)
+	}
+}
+
+// At the session moment a handover with no note is the shape of a refused
+// call: the repair round asks again, and the handover with its note stands.
+func TestCheckinSessionHandoverNeedsItsNote(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripChurn}}
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"handover","reason":"the agent circles"}`},
+		{Text: `{"decision":"handover","reason":"the agent circles","handover":"start from the failing test"}`},
+	}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+	if out.Decision != CheckHandover || out.Handover != "start from the failing test" {
+		t.Fatalf("outcome = %+v, want the second answer's handover", out)
+	}
+	if chat.calls != 2 {
+		t.Fatalf("calls = %d, want one repair round", chat.calls)
+	}
+	if !strings.Contains(chat.gots[1].Input, "Your last answer was unreadable: a handover needs the note to the next session. Answer again as one JSON object.") {
+		t.Errorf("the repair round does not name the missing note:\n%s", chat.gots[1].Input)
 	}
 }
 
@@ -667,6 +732,46 @@ func TestCheckinStatementMoments(t *testing.T) {
 	}
 }
 
+// A stuck trip's statement names the stuck rule that held after the
+// delivered guidance, in the factory's words only, and what a handover
+// does on it: the work moves to the stronger model off the top rung, and
+// on it the next session starts from the note. The check-in decides with
+// both.
+func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
+	const detail = `tool read called 3 times with the same arguments {"filePath":"/w/a.go"} after 2 nudges`
+	const stuck = "stuck after the supervisor's message: same_call: " + detail
+	const climb = "- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n"
+	const top = "- on this trip a handover ends the session, and the next session starts from your note.\n"
+	statement := func(trip TripReport, messages ...string) string {
+		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-4", Trip: &trip, Messages: messages},
+			[]byte("the tail"), 7, 1.5, 2000)
+	}
+	got := statement(TripReport{Detector: TripSameCall, Detail: detail, Stuck: stuck, Climbs: true}, "stop reading")
+	if want := "Guidance delivered to the agent this session:\n- stop reading\n" +
+		"Stuck rule: after the message, the same_call detector tripped with no file written since.\n" + climb; !strings.Contains(got, want) {
+		t.Fatalf("stuck statement lacks %q:\n%s", want, got)
+	}
+	if n := strings.Count(got, detail); n != 1 {
+		t.Fatalf("the trip's detail appears %d times, want once, in the opening line:\n%s", n, got)
+	}
+	got = statement(TripReport{Detector: TripSameCall, Detail: detail, Stuck: stuck}, "stop reading")
+	if want := "Stuck rule: after the message, the same_call detector tripped with no file written since.\n" + top; !strings.Contains(got, want) || strings.Contains(got, climb) {
+		t.Fatalf("stuck statement on the top rung lacks %q or names the climb:\n%s", want, got)
+	}
+	got = statement(TripReport{Detector: TripChurn, Detail: "4 writes to the same file in 6 minutes", Stuck: "stuck after the supervisor's message: churn: 4 writes to the same file in 6 minutes", Climbs: true}, "stop reading")
+	if want := "- stop reading\nStuck rule: after a message, the churn detector tripped.\n" + climb; !strings.Contains(got, want) {
+		t.Fatalf("churn statement lacks %q:\n%s", want, got)
+	}
+	if got := statement(TripReport{Detector: TripRepetition, Detail: "60 tool calls and commands without a file change", Climbs: true}, "stop reading"); strings.Contains(got, "Stuck rule:") ||
+		strings.Contains(got, climb) || strings.Contains(got, top) {
+		t.Fatalf("statement without the stuck fact names it:\n%s", got)
+	}
+	if got := statement(TripReport{Detector: TripSameCall, Detail: detail, Stuck: stuck, Climbs: true}); strings.Contains(got, "Guidance delivered") ||
+		!strings.Contains(got, "Stuck rule: after the message, the same_call detector tripped with no file written since.\n"+climb) {
+		t.Fatalf("stuck statement without messages lists guidance or lacks the stuck rule:\n%s", got)
+	}
+}
+
 // The gate persona is today's constant; the session and dead personas name
 // their own answer shapes and none of the gate's verdict vocabulary.
 func TestCheckinSystemPerMoment(t *testing.T) {
@@ -710,6 +815,11 @@ func TestParseCheckinAnswerMoments(t *testing.T) {
 	a, err = parseCheckinAnswer(`{"decision":"handover","handover":"the state is on the branch"}`, session)
 	if err != nil || len(a.Findings) != 0 {
 		t.Fatalf("handover = (%+v, %v), want it to parse with no findings", a, err)
+	}
+	for _, text := range []string{`{"decision":"handover","reason":"stuck"}`, `{"decision":"handover","handover":" "}`} {
+		if _, err := parseCheckinAnswer(text, session); err == nil || err.Error() != "a handover needs the note to the next session" {
+			t.Errorf("the session ask's %s = %v, want the missing note named", text, err)
+		}
 	}
 	for _, text := range []string{
 		`{"decision":"dropped_all"}`,

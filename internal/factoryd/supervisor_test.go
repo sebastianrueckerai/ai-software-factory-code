@@ -60,6 +60,30 @@ func TestDigestCollectsCommandsFilesErrorsAndDiff(t *testing.T) {
 	}
 }
 
+// A subagent's commands and tool calls count where the session's do; the
+// parenthesis names how many of the tool calls the subagents made.
+func TestDigestNamesSubagentCalls(t *testing.T) {
+	t0 := time.Unix(0, 0)
+	d, own := newDigestBuilder(t0), newDigestBuilder(t0)
+	for _, path := range []string{"a.go", "b.go", "c.go"} {
+		d.add(toolEvent("read", map[string]any{"filePath": path}), t0)
+		own.add(toolEvent("read", map[string]any{"filePath": path}), t0)
+	}
+	d.add(subagentEvent("read", map[string]any{"filePath": "d.go"}), t0)
+	d.add(subagentEvent("grep", map[string]any{"pattern": "x"}), t0)
+	cmd := cmdEvent("ls", 0, "")
+	cmd.Detail["subagent"] = true
+	d.add(cmd, t0)
+	want := "1 commands (0 failed), 0 files changed 0 times, 5 other tool calls (2 by subagents), diff 0 files +0/-0"
+	if s := d.digest().Summary(); s != want {
+		t.Fatalf("summary = %q\nwant      %q", s, want)
+	}
+	want = "0 commands (0 failed), 0 files changed 0 times, 3 other tool calls, diff 0 files +0/-0"
+	if s := own.digest().Summary(); s != want {
+		t.Fatalf("summary without subagents = %q\nwant                       %q", s, want)
+	}
+}
+
 func TestDigestKeepsTheLastCommandsAndErrors(t *testing.T) {
 	t0 := time.Unix(0, 0)
 	d := newDigestBuilder(t0)

@@ -322,8 +322,9 @@ type Limits struct {
 	// ReviewParts). Size it to the review model's context window: about 257
 	// tokens a KiB. Absent: DefaultReviewDiffKiB.
 	ReviewDiffKiB int `yaml:"review_diff_kib,omitempty" json:"review_diff_kib"`
-	// CheckinCalls is how many model calls the check-in agent gets per
-	// card, all moments and rounds together. Absent: DefaultCheckinCalls.
+	// CheckinCalls is how many model calls one check-in conversation gets;
+	// its last call carries no tools and asks for the answer. Absent:
+	// DefaultCheckinCalls.
 	CheckinCalls int `yaml:"checkin_calls,omitempty" json:"checkin_calls,omitempty"`
 	// CheckinShare is the most percent of the card's budget the check-in's
 	// calls may spend. Absent: DefaultCheckinShare.
@@ -400,7 +401,7 @@ func (l Limits) ContextCap() int { return cmp.Or(l.ContextTokens, DefaultContext
 // The check-in agent's limits of a policy without the keys, and of a
 // version pinned before they existed (the escalation ladder's plan D).
 const (
-	DefaultCheckinCalls         = 12
+	DefaultCheckinCalls         = 20
 	DefaultCheckinShare         = 10
 	DefaultCheckinTailKiB       = 24
 	DefaultCheckinHandoverChars = 2000

@@ -1901,11 +1901,9 @@ func TestCheckinSpendResumeReVerifiesOpenPR(t *testing.T) {
 	}
 }
 
-// An answer to a check-in stopped at its call cap buys the card extra
-// check-in calls beside the session: the next session runs instead of
-// stopping at the same cap before any model call, and a card with no
-// pull request leaves the loop.
-func TestCheckinCallCapAnswerBuysExtraCalls(t *testing.T) {
+// An answer to a check-in stopped at its call cap buys the session, and a
+// card with no pull request leaves the loop.
+func TestCheckinCallCapAnswerBuysTheSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
 		ReasonKind: CheckSpend, Reason: "check-in call cap reached",
@@ -1920,15 +1918,11 @@ func TestCheckinCallCapAnswerBuysExtraCalls(t *testing.T) {
 	if len(h.sessions) != 2 {
 		t.Fatalf("sessions = %d, want the stopped one and the one the answer bought", len(h.sessions))
 	}
-	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
-		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
-	}
 }
 
 // A run restarted on a check-in stopped at its call cap with no pull
-// request does the same: the answer buys the wider cap beside the
-// session, and the session runs.
-func TestCheckinCallCapResumeBuysExtraCalls(t *testing.T) {
+// request does the same: the answer buys the session, and it runs.
+func TestCheckinCallCapResumeBuysTheSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: check-in call cap reached",
 		Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
@@ -1943,16 +1937,12 @@ func TestCheckinCallCapResumeBuysExtraCalls(t *testing.T) {
 	if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
-		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
-	}
 }
 
 // A run restarted on a check-in stopped at its call cap with the pull
-// request open takes the grant too, never the spend case's verify of the
-// open head: the answer records the wider cap beside the session it buys,
-// and that session runs.
-func TestCheckinCallCapResumeWithOpenPRBuysExtraCalls(t *testing.T) {
+// request open buys the session too, never the spend case's verify of the
+// open head, and that session runs.
+func TestCheckinCallCapResumeWithOpenPRBuysTheSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: check-in call cap reached",
 		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
@@ -1967,16 +1957,12 @@ func TestCheckinCallCapResumeWithOpenPRBuysExtraCalls(t *testing.T) {
 	if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v: the answer buys the session, not a verify of c2", steps, want)
 	}
-	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
-		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
-	}
 }
 
-// A check-in stopped at its call cap with the pull request open grants
-// the card the wider cap beside the session (versionCheckinRaise): the
-// answer buys the session, never the spend case's verify of the head,
-// and the conversation the raise buys runs.
-func TestCheckinCallCapLiveWithOpenPRGrantsAndBuys(t *testing.T) {
+// A check-in stopped at its call cap with the pull request open
+// (versionCheckinRaise): the answer buys the session, never the spend
+// case's verify of the head, and that session runs.
+func TestCheckinCallCapLiveWithOpenPRBuysTheSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
 	var steps []string
@@ -2006,9 +1992,6 @@ func TestCheckinCallCapLiveWithOpenPRGrantsAndBuys(t *testing.T) {
 	if want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards",
 		"session 3 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v: the answer buys the session, no verify of c1", steps, want)
-	}
-	if !slices.ContainsFunc(h.usage, func(u TaskUsage) bool { return u.ExtraCheckin == 1 }) {
-		t.Fatalf("usage = %+v, want the answer's extra check-in calls recorded", h.usage)
 	}
 }
 
