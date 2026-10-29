@@ -1274,7 +1274,11 @@ type becomePlanCall struct {
 	states string
 }
 
-var toPlanTooBig = PlanSwitch{Reason: "too big", Work: "w"}
+// toPlanTooBig is ana's to_plan; toPlanAsked the switch it asks for.
+var (
+	toPlanTooBig = TaskSignal{Author: "ana", Body: "too big"}
+	toPlanAsked  = PlanSwitch{Reason: "too big", Work: "Asked by ana."}
+)
 
 func becomeSwitched() (PlanSwitchResult, error) { return PlanSwitchResult{Switched: true}, nil }
 
@@ -1305,9 +1309,9 @@ func toPlanHarness(t *testing.T, become func() (PlanSwitchResult, error), sessio
 	return h, &calls
 }
 
-// toPlanAfter delivers to_plan with sw d into the run.
-func (h *planHarness) toPlanAfter(d time.Duration, sw PlanSwitch) {
-	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(SignalToPlan, sw) }, d)
+// toPlanAfter delivers a person's to_plan, sig, d into the run.
+func (h *planHarness) toPlanAfter(d time.Duration, sig TaskSignal) {
+	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(SignalToPlan, sig) }, d)
 }
 
 // A direct card that gets to_plan before its first session turns
@@ -1319,7 +1323,7 @@ func TestDirectCardSwitchesToThePlanLoopOnTheSignal(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if want := []becomePlanCall{{"t1", toPlanTooBig, "running"}}; !slices.Equal(*calls, want) {
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) {
 		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
 	}
 	if len(h.sessions) != 0 || len(h.plans) != 1 || len(h.configPins) != 2 {
@@ -1337,7 +1341,7 @@ func TestDirectCardSwitchesBetweenSessions(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if want := []becomePlanCall{{"t1", toPlanTooBig, "running running"}}; !slices.Equal(*calls, want) {
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running running"}}; !slices.Equal(*calls, want) {
 		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
 	}
 	if len(h.sessions) != 1 || len(h.plans) != 1 {
@@ -1345,11 +1349,12 @@ func TestDirectCardSwitchesBetweenSessions(t *testing.T) {
 	}
 }
 
-// A to_plan that came while the card waited on a person at the session cap
-// is taken once the answer has the card running again, the status
-// BecomePlan accepts.
+// A run from before versionReplan takes a to_plan that came while the card
+// waited on a person at the session cap once the answer has the card
+// running again, the status BecomePlan accepts.
 func TestDirectCardSwitchesAfterThePersonsWait(t *testing.T) {
 	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s4", "c4")})
+	h.env.OnGetVersion("replan", workflow.DefaultVersion, versionReplan).Return(workflow.DefaultVersion)
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
 	h.toPlanAfter(30*time.Minute, toPlanTooBig)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
@@ -1359,7 +1364,7 @@ func TestDirectCardSwitchesAfterThePersonsWait(t *testing.T) {
 	if want := []string{capReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations %q, want %q", h.escalated, want)
 	}
-	if want := []becomePlanCall{{"t1", toPlanTooBig, "running"}}; !slices.Equal(*calls, want) {
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) {
 		t.Fatalf("BecomePlan calls %+v, want %+v: set running before the switch", *calls, want)
 	}
 	if len(h.sessions) != 0 || len(h.plans) != 1 {
@@ -1412,6 +1417,7 @@ func TestDirectCardKeepsRunningWhenTheSwitchIsRefused(t *testing.T) {
 func TestDirectCardBeforeTheChangeLeavesToPlanUnread(t *testing.T) {
 	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
 	h.env.OnGetVersion("direct-to-plan", workflow.DefaultVersion, versionDirectToPlan).Return(workflow.DefaultVersion)
+	h.env.OnGetVersion("replan", workflow.DefaultVersion, versionReplan).Return(workflow.DefaultVersion)
 	h.toPlanAfter(30*time.Second, toPlanTooBig)
 	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {

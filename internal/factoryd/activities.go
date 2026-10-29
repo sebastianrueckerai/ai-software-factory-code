@@ -282,14 +282,21 @@ func (r *Runner) EnsureIssue(ctx context.Context, taskID string) error {
 }
 
 // SetState moves the task to running (a session starts) or in-review (its
-// pull request is open) and mirrors the state onto the issue.
+// pull request is open), or a running task back to the wait a refused
+// switch to the plan track woke it from, and mirrors the state onto the
+// issue.
 func (r *Runner) SetState(ctx context.Context, taskID, state string) error {
 	from := map[string][]string{
 		"running": {"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"},
 		// waiting-human: a human answered a gate's escalation and the gate runs
 		// again; waiting-poster: a cap right after the author's answer
 		// verifies the branch's head
-		"in-review": {"running", "in-review", "waiting-human", "waiting-poster"},
+		"in-review":      {"running", "in-review", "waiting-human", "waiting-poster"},
+		"queued":         {"running"},
+		"waiting-deps":   {"running"},
+		"waiting-human":  {"running"},
+		"waiting-poster": {"running"},
+		"waiting-image":  {"running"},
 	}[state]
 	if from == nil {
 		return terminalError("unknown task state %q", state)

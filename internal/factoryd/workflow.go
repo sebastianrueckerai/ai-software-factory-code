@@ -1154,7 +1154,13 @@ const (
 	// planner session of a run waits for the cards its pending replan
 	// stops (awaitReplanStops), and the plan loop takes the replan's own
 	// note on the issue for no writer's change request (planComments). A
-	// run from before neither waits nor knows the note.
+	// direct card's switch records its replan step first (replanToPlan); a
+	// session stopped for a replan cuts the card in place, or its plan's
+	// child goes back to its plan (replanCut); a person's replan wakes a
+	// direct card's waits for a person and its approval wait
+	// (switchFromWait), and is taken after a roll hold too. A run from
+	// before neither waits nor knows the note, takes to_plan only before a
+	// session, and asks a person about a replan stop.
 	versionReplan workflow.Version = 1
 )
 
@@ -1270,6 +1276,8 @@ type taskRun struct {
 	replan            workflow.Version // a plan's run waits for its replan's stops and knows its note (versionReplan)
 	replanBy          string           // the pending replan's person (versionReplan)
 	replanNote        string           // the pending replan's note (versionReplan)
+	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)
+	switched          *programEnd      // the run's end once the card switched to the plan track, which finish returns (switchToPlan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1327,6 +1335,9 @@ type verdict struct {
 	// rerun: a human asked to run a factory pull request's red checks
 	// again (versionFactoryPRActions)
 	rerun bool
+	// reask: a refused switch to the plan track voided the approval
+	// request, which is asked again (versionReplan)
+	reask bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1493,6 +1504,16 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v16 >= versionStages {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
 			t.checkinVerdicts = st.CheckinVerdicts
+		}
+		// a person's replan pending at the start: a reopened final card
+		// switches before its closed pull request ends it; a merge not yet
+		// recorded on the row takes none
+		if t.replans() && !st.Skip && !st.Merged && st.Status != "closing" {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, why, done := t.switchFromWait(sw, step, st.Status); done {
+					return t.finish(final, why)
+				}
+			}
 		}
 		if t.waitsForDependencies(st, u) {
 			final, why, answer := t.awaitDependencies(st)
@@ -1698,8 +1719,7 @@ func (t *taskRun) lifecycle() (string, error) {
 					return t.finish("failed", "set running: "+errMessage(err))
 				}
 				sw := *toPlan
-				var asked PlanSwitch
-				if workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&asked) {
+				if asked, _, ok := t.takeToPlan(); ok {
 					sw = sw.and(asked)
 				}
 				if final, switched, err := t.switchToPlan(sw); switched {
@@ -1787,14 +1807,23 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		// only here is the card running, a status BecomePlan accepts: a
 		// to_plan that waited behind a person's wait is not refused
-		var sw PlanSwitch
-		if t.directToPlan >= versionDirectToPlan && workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&sw) {
-			if final, switched, err := t.switchToPlan(sw); switched {
-				return final, err
+		if t.directToPlan >= versionDirectToPlan {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, switched, err := t.replanToPlan(step, sw); switched {
+					return final, err
+				}
 			}
 		}
 		if v, decided := t.awaitRollHold(); decided {
 			return t.finish(v.final, v.reason)
+		}
+		// a replan that came during the roll hold goes before the session
+		if t.replan >= versionReplan {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, switched, err := t.replanToPlan(step, sw); switched {
+					return final, err
+				}
+			}
 		}
 		began := workflow.Now(t.ctx)
 		var res SessionResult
@@ -2052,6 +2081,20 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish("failed", "supervisor escalated: "+res.Reason)
 			}
 			if final, why := held(t.awaitHuman(res.Reason, res.Choices)); final != "" {
+				return t.finish(final, why)
+			}
+			buy()
+			continue
+		case OutcomeReplan:
+			ask := "The check-in asks to send this card back to the planner: " + res.Reason + " Replan it on the board, or answer to go on."
+			if t.replan >= versionReplan {
+				final, refused, done, err := t.replanCut(res)
+				if done {
+					return final, err
+				}
+				ask = refused
+			}
+			if final, why := held(t.awaitHuman(ask, nil)); final != "" {
 				return t.finish(final, why)
 			}
 			buy()
@@ -2615,7 +2658,8 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
 // task, a reviewer requests changes, a member re-runs a factory pull
-// request's checks (versionFactoryPRActions), or an approval merges the
+// request's checks (versionFactoryPRActions), a person's replan sends a
+// direct card to the planner (versionReplan), or an approval merges the
 // pull request as factory-merge. An approval over findings the card
 // showed adjudicates them (versionAdjudicated). A merge Forgejo refuses
 // keeps the wait, but a queue head's red checks take it back through its
@@ -2639,6 +2683,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		if t.factoryActions() {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalRerunChecks), func(workflow.ReceiveChannel, bool) {})
 		}
+		if t.replans() {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalToPlan), func(workflow.ReceiveChannel, bool) {})
+		}
 		if retry != nil {
 			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
@@ -2654,6 +2701,14 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		if t.factoryActions() && t.drainReruns() {
 			return verdict{rerun: true, reason: "the checks run again"}
+		}
+		if t.replans() {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, why, done := t.switchFromWait(sw, step, "in-review"); done {
+					return verdict{final: final, reason: why}
+				}
+				return verdict{reask: true, reason: "the switch to the planner was refused"}
+			}
 		}
 		if t.v8 < versionGatesPinned {
 			approver = ""
@@ -3529,19 +3584,33 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 }
 
 // awaitAnswer is awaitHumanUntil's wait for the answer to the escalation
-// asked last, which asked question.
+// asked last, which asked question. A person's replan of a direct coding
+// card ends it with the switch to the planner (versionReplan).
 func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, answer []string) {
 	if end != nil {
 		end.start(t)
 		defer end.stop()
 	}
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
+	replans := t.replans()
+	if replans {
+		wake = append(wake, SignalToPlan)
+	}
 	// at is where the wait's next answer goes in t.answers, newest first:
 	// a burst reads in the order it was written (versionAnswerBurst)
 	at := 0
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.decided(); stop {
 			return nil, true
+		}
+		// before the comments: a switch records those that came with it
+		// as written before it
+		if replans {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, why, stop = t.switchFromWait(sw, step, "waiting-human"); stop {
+					return nil, true
+				}
+			}
 		}
 		var sig TaskSignal
 		for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
@@ -3906,6 +3975,10 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 // closing is finished at once), so no task is left running or closing
 // with its credentials live.
 func (t *taskRun) finish(final, reason string) (string, error) {
+	if t.switched != nil {
+		// the plan program finished the card; a wait it ran in returns here
+		return t.switched.final, t.switched.err
+	}
 	if final == "done" && t.rolling && t.rollout >= versionRollout {
 		final, reason = t.awaitRollout(reason)
 	}

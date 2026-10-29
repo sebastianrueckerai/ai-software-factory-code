@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -174,8 +175,8 @@ func TestBecomePlanRefuses(t *testing.T) {
 		tracks policy.Tracks
 		want   string
 	}{
-		"open pull request": {change: func(c *Task) { c.PRNumber = 12 }, tracks: specTracks,
-			want: "Card #7 has an open pull request, so its work cannot go back to the planner: close the pull request first."},
+		"merged": {change: func(c *Task) { c.PRNumber, c.MergeCommit = 12, "abc" }, tracks: specTracks,
+			want: "Card #7 merged, so its work is on main: file a new card for what is still missing."},
 		"a plan's child":     {change: func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "t-plan", "api" }, tracks: specTracks},
 		"a roll":             {change: func(c *Task) { c.Source = SourceRoll }, tracks: specTracks},
 		"a human card":       {change: func(c *Task) { c.Kind, c.Status, c.Track, c.RequiredCapabilities = "human", "waiting-human", "", nil }, tracks: specTracks},
@@ -226,8 +227,8 @@ func (s racingStore) SwitchToPlan(ctx context.Context, id string, capabilities [
 }
 
 // A row that moved on before the switch is refused by what moved it, with
-// nothing written: a card closed meanwhile by its status, one that got a
-// pull request meanwhile by the pull request.
+// nothing written: a card closed meanwhile by its status, one that merged
+// meanwhile by its merge.
 func TestBecomePlanAfterARace(t *testing.T) {
 	for name, tc := range map[string]struct {
 		change func(*Task)
@@ -235,8 +236,8 @@ func TestBecomePlanAfterARace(t *testing.T) {
 	}{
 		"closed meanwhile": {func(c *Task) { c.Status = "closed" },
 			"Card #7 is closed, so its work cannot go back to the planner: switch it while it is queued, waiting on its dependencies or running."},
-		"a pull request meanwhile": {func(c *Task) { c.PRNumber = 12 },
-			"Card #7 has an open pull request, so its work cannot go back to the planner: close the pull request first."},
+		"merged meanwhile": {func(c *Task) { c.PRNumber, c.MergeCommit = 12, "abc" },
+			"Card #7 merged, so its work is on main: file a new card for what is still missing."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, objects, fj := becomePlanRig(t, directCard(), specTracks)
@@ -260,5 +261,58 @@ func TestBecomePlanAfterAnEarlierAttemptSwitched(t *testing.T) {
 	if steps := toPlanSteps(t, objects); len(steps) != 1 || store.tasks["t1"].Usage != (TaskUsage{}) ||
 		!slices.Equal(fj.labels[7], []string{LabelPlan, "state/running"}) {
 		t.Fatalf("to_plan steps %v, usage %+v, labels %q", steps, store.tasks["t1"].Usage, fj.labels[7])
+	}
+}
+
+// A card with an open pull request turns plan-track: the row keeps no
+// pull request, the pull request closes with a note that the branch
+// stays, its pending merge approval is denied, the card leaves the merge
+// queue, the planner's session is funded, and the to_plan step names the
+// pull request. A refused switch closes and denies nothing.
+func TestBecomePlanClosesAnOpenPullRequest(t *testing.T) {
+	note := "factoryd: card #7 went back to the planner; its branch stays."
+	rig := func(status string) (*Runner, *fakeStore, *fakeObjectStore, *prForgejo) {
+		card := directCard()
+		card.PRNumber, card.Status = 12, status
+		r, store, objects, fj := becomePlanRig(t, card, specTracks)
+		fj.pulls = map[int64]string{12: `{"number":12,"state":"open","head":{"sha":"c7"},"base":{"ref_name":"main"}}`}
+		store.approvals = []ApprovalRequest{{ID: 1, TaskID: "t1", Kind: ApprovalMerge, Status: "pending"}}
+		store.queue = []queueEntry{{"sf/repo", "t1", time.Now()}}
+		v := r.cfg.Policy()
+		v.Document.Budget.TaskDefaultEUR = 5
+		r.cfg.Policy = func() policy.Version { return v }
+		return r, store, objects, fj
+	}
+
+	r, store, objects, fj := rig("running")
+	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); got != (PlanSwitchResult{Switched: true}) {
+		t.Fatalf("BecomePlan = %+v, want switched", got)
+	}
+	if card := store.tasks["t1"]; card.Track != policy.TrackPlan || card.PRNumber != 0 {
+		t.Fatalf("card track %q, pull request %d; want plan, 0", card.Track, card.PRNumber)
+	}
+	if !slices.Equal(fj.closed, []int64{12}) || !slices.Contains(fj.comments, note) {
+		t.Fatalf("closed %v, comments %q; want 12 closed with %q", fj.closed, fj.comments, note)
+	}
+	if a := store.approvals[0]; a.Status != "denied" || a.DecidedBy != FactoryDecider || a.DecisionNote != note {
+		t.Fatalf("approval %+v, want denied by factoryd with %q", a, note)
+	}
+	if got := fundings(store, "t1"); len(got) != 1 || got[0].Detail["amount_eur"] != 5.0 || store.tasks["t1"].BudgetEUR != 5 {
+		t.Fatalf("fundings %+v, budget %v; want one of 5 EUR, the budget 5", got, store.tasks["t1"].BudgetEUR)
+	}
+	if steps := toPlanSteps(t, objects); len(steps) != 1 || steps[0]["pr"] != 12.0 {
+		t.Fatalf("to_plan steps %v, want one naming pull request 12", steps)
+	}
+	if len(store.queue) != 0 {
+		t.Fatalf("merge queue %+v, want t1 gone", store.queue)
+	}
+
+	r, store, _, fj = rig("in-review")
+	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); got.Switched || got.Refused == "" {
+		t.Fatalf("BecomePlan = %+v, want refused", got)
+	}
+	if len(fj.closed) != 0 || store.approvals[0].Status != "pending" || len(fundings(store, "t1")) != 0 || len(store.queue) != 1 || store.tasks["t1"].PRNumber != 12 {
+		t.Fatalf("closed %v, approval %+v, fundings %d, queue %+v, pull request %d; want nothing changed",
+			fj.closed, store.approvals[0], len(fundings(store, "t1")), store.queue, store.tasks["t1"].PRNumber)
 	}
 }

@@ -25,6 +25,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -1391,12 +1392,13 @@ func (s *PGStore) SetTaskIssue(ctx context.Context, id string, issue int64) erro
 }
 
 // switchToPlan sends a direct card's work to the planner
-// (versionDirectToPlan): BecomePlan turns it plan-track and the program
-// runs again, which TaskConfig now gives session mode plan. The writers'
-// comments the direct run left unread are recorded as ignored, so the plan
-// loop does not take them as written while the planner ran. A refusal is
-// recorded on the timeline and the direct lifecycle goes on (switched
-// false).
+// (versionDirectToPlan): BecomePlan turns it plan-track, without the pull
+// request it had, and the program runs again, which TaskConfig now gives
+// session mode plan. The writers' comments the direct run left unread are
+// recorded as ignored, so the plan loop does not take them as written
+// while the planner ran. A refusal is recorded on the timeline, kept in
+// t.planRefused, and the direct lifecycle goes on (switched false). The
+// end of a switched run is kept in t.switched for a wait's caller.
 func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err error) {
 	if t.directToPlan < versionDirectToPlan {
 		return "", false, nil
@@ -1404,14 +1406,17 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 	var res PlanSwitchResult
 	if err := workflow.ExecuteActivity(t.short, ActivityBecomePlan, t.taskID, sw).Get(t.ctx, &res); err != nil {
 		final, err := t.finish("failed", "become plan: "+errMessage(err))
+		t.switched = &programEnd{final, err}
 		return final, true, err
 	}
 	if !res.Switched {
+		t.planRefused = res.Refused
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "to_plan_refused", map[string]any{"reason": res.Refused}).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record to_plan_refused", "task", t.taskID, "error", err)
 		}
 		return "", false, nil
 	}
+	t.pr = PullRequest{}
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
 		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment, "ignored": "written before the card went to the planner"}
@@ -1420,7 +1425,104 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 		}
 	}
 	final, err = t.program()
+	t.switched = &programEnd{final, err}
 	return final, true, err
+}
+
+// programEnd is how a run's program ended.
+type programEnd struct {
+	final string
+	err   error
+}
+
+// replans tells a run whose waits take a person's replan (versionReplan):
+// a direct agent card's coding run, not a roll's, a factory pull request
+// card's or a plan child's.
+func (t *taskRun) replans() bool {
+	return t.replan >= versionReplan && t.cfg.Task.Session == policy.SessionCode && t.cfg.Task.Track == policy.TrackDirect &&
+		t.source != SourcePlan && !slices.Contains(unboundSources, t.source)
+}
+
+// takeToPlan takes a pending to_plan, a person's replan of the card: the
+// switch it asks for and the replan step it records.
+func (t *taskRun) takeToPlan() (sw PlanSwitch, step ReplanStep, ok bool) {
+	var sig TaskSignal
+	if !workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&sig) {
+		return PlanSwitch{}, ReplanStep{}, false
+	}
+	return PlanSwitch{Reason: sig.Body, Work: "Asked by " + sig.Author + "."},
+		ReplanStep{Origin: ReplanPerson, By: sig.Author, Comment: sig.Body, Card: t.taskID}, true
+}
+
+// replanToPlan is switchToPlan of a replan: the replan step goes on the
+// card's own timeline first (versionReplan), for the planner's record.
+func (t *taskRun) replanToPlan(step ReplanStep, sw PlanSwitch) (final string, switched bool, err error) {
+	if t.replan >= versionReplan {
+		detail := map[string]any{"origin": step.Origin, "card": step.Card}
+		if step.By != "" {
+			detail["by"] = step.By
+		}
+		if step.Comment != "" {
+			detail["comment"] = step.Comment
+		}
+		if step.Work != "" {
+			detail["work"] = step.Work
+		}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, stepReplan, detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record replan", "task", t.taskID, "error", err)
+		}
+	}
+	return t.switchToPlan(sw)
+}
+
+// switchFromWait sends a card a person's replan woke in a wait to the
+// planner: the card runs, a status BecomePlan accepts, and switches. A
+// switched card's final ends the wait (done); a refused switch moves the
+// card back to back and the wait goes on. The plan program's error comes
+// back through the caller's finish.
+func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (final, why string, done bool) {
+	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
+		return "failed", "set running: " + errMessage(err), true
+	}
+	if final, switched, _ := t.replanToPlan(step, sw); switched {
+		return cmp.Or(final, "failed"), "the card went to the planner", true
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, back).Get(t.ctx, nil); err != nil {
+		return "failed", "set " + back + ": " + errMessage(err), true
+	}
+	return "", "", false
+}
+
+// replanCut sends a card whose session stopped for a replan
+// (OutcomeReplan) to the planner: a direct card, cut by the check-in or
+// stopped by a person, turns plan-track and the plan loop runs on; a
+// plan's child goes back to its plan and ends closed. done with the run's
+// end, else refused says why not, for a person.
+func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool, err error) {
+	if t.source == SourcePlan {
+		var rc ReplanChildResult
+		if err := workflow.ExecuteActivity(t.short, ActivityReplanChild, t.taskID, res.Replan).Get(t.ctx, &rc); err != nil {
+			final, err := t.finish("failed", "replan child: "+errMessage(err))
+			return final, "", true, err
+		}
+		if rc.Refused != "" {
+			return "", rc.Refused, false, nil
+		}
+		final, err := t.finish("closed", rc.Reason)
+		return final, "", true, err
+	}
+	reason, work := sanitize.Inbound(res.Reason), sanitize.Inbound(res.Replan)
+	sw, step := PlanSwitch{Reason: "cut: " + reason, Work: work}, ReplanStep{Origin: ReplanCut, Card: t.taskID, Work: work}
+	if res.Trip == string(TripReplan) {
+		var ok bool
+		if sw, step, ok = t.takeToPlan(); !ok {
+			sw, step = PlanSwitch{Reason: reason, Work: work}, ReplanStep{Origin: ReplanPerson, Comment: reason, Card: t.taskID}
+		}
+	}
+	if final, switched, err := t.replanToPlan(step, sw); switched {
+		return final, "", true, err
+	}
+	return "", t.planRefused, false, nil
 }
 
 // planLoop is the program of a task of session mode plan: planner sessions

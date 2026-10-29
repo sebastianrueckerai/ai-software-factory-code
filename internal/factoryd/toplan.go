@@ -43,19 +43,22 @@ const workSoFarFinding = "work so far on this card, which ran as a direct card b
 var switchableStatuses = []string{"queued", "waiting-deps", "running"}
 
 // BecomePlan turns direct card taskID plan-track. The row moves first, to
-// the plan track with the plan class, and nothing is written before it: a
-// refusal leaves the card as it was. Then each attempt that finds the card
-// plan-track completes what is missing: the to_plan step with the
-// planner's block, the session counters at zero (the plan loop has caps of
-// its own), the issue labelled plan in place of agent. Its only caller is
-// the direct lifecycle, so a card found plan-track is one an earlier
-// attempt moved.
+// the plan track with the plan class and without its pull request, and
+// nothing is written before it: a refusal leaves the card as it was. Then
+// each attempt that finds the card plan-track completes what is missing:
+// the to_plan step with the planner's block, the session counters at zero
+// (the plan loop has caps of its own), the open pull request closed with
+// its branch kept, its merge approvals denied, the card out of the merge
+// queue, money for the planner's session, the issue labelled plan in place
+// of agent. Its only caller is the direct lifecycle, so a card found
+// plan-track is one an earlier attempt moved.
 func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanSwitchResult{}, err
 	}
 	var work string
+	var pr int64 // the pull request the switch took off the row
 	if t.Track != policy.TrackPlan {
 		p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
 		if err != nil {
@@ -79,6 +82,8 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 			if t.Track != policy.TrackPlan {
 				return PlanSwitchResult{Refused: cmp.Or(planRefusal(t, planTrack), statusRefusal(t))}, nil
 			}
+		} else {
+			pr = t.PRNumber
 		}
 	}
 	tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
@@ -91,11 +96,28 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 				return PlanSwitchResult{}, err
 			}
 		}
-		if _, err := r.timeline.AppendOnce(ctx, taskID, stepToPlan, map[string]any{"reason": sw.Reason, "work_so_far": work}); err != nil {
+		detail := map[string]any{"reason": sw.Reason, "work_so_far": work}
+		if pr != 0 {
+			detail["pr"] = pr
+		}
+		if _, err := r.timeline.AppendOnce(ctx, taskID, stepToPlan, detail); err != nil {
 			return PlanSwitchResult{}, fmt.Errorf("record %s: %w", stepToPlan, err)
 		}
 	}
 	if err := r.store.SetTaskUsage(ctx, taskID, TaskUsage{}); err != nil {
+		return PlanSwitchResult{}, err
+	}
+	note := fmt.Sprintf("factoryd: card #%d went back to the planner; its branch stays.", t.IssueNumber)
+	if err := cleanup(taskID, "close its pull request", r.closeTaskPullRequest(ctx, repo, t, note)); err != nil {
+		return PlanSwitchResult{}, err
+	}
+	if err := r.store.ResolveApprovals(ctx, taskID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
+		return PlanSwitchResult{}, err
+	}
+	if err := r.leaveQueue(ctx, taskID, "the card went back to the planner"); err != nil {
+		return PlanSwitchResult{}, err
+	}
+	if err := r.fundPlanner(ctx, t); err != nil {
 		return PlanSwitchResult{}, err
 	}
 	if t.IssueNumber != 0 {
@@ -154,8 +176,8 @@ func planRefusal(t Task, planTrack bool) string {
 		return card + " belongs to a plan" + cannotPlan + "revise the plan instead."
 	case t.Unbound():
 		return card + " is a " + t.Source + " card" + cannotPlan + "let it finish or close it."
-	case t.PRNumber != 0:
-		return card + " has an open pull request" + cannotPlan + "close the pull request first."
+	case t.MergeCommit != "":
+		return card + " merged, so its work is on main: file a new card for what is still missing."
 	case !slices.Contains(switchableStatuses, t.Status):
 		return statusRefusal(t)
 	case !planTrack:

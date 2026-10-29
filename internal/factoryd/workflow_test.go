@@ -4182,3 +4182,316 @@ func TestWorkflowMidSessionHandoverBeforeAnAskIsTimelineOnly(t *testing.T) {
 		t.Fatalf("handover steps = %+v, want s3's note on the timeline for the ask's round to read", h.recorded)
 	}
 }
+
+// activityOrder records the activities the run starts, in order, a
+// RecordStep with its step.
+func (h *workflowHarness) activityOrder() *[]string {
+	var order []string
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, args converter.EncodedValues) {
+		name := info.ActivityType.Name
+		if name == ActivityRecordStep {
+			var id, step string
+			if err := args.Get(&id, &step); err == nil {
+				name += " " + step
+			}
+		}
+		order = append(order, name)
+	})
+	return &order
+}
+
+// replanSteps are the details of the replan steps recorded, in order.
+func (h *workflowHarness) replanSteps() []map[string]any {
+	var out []map[string]any
+	for _, s := range h.recorded {
+		if s.step == stepReplan {
+			out = append(out, s.detail)
+		}
+	}
+	return out
+}
+
+// beforeBecomePlan says the replan step ran right before BecomePlan.
+func beforeBecomePlan(order []string) bool {
+	i := slices.Index(order, ActivityBecomePlan)
+	return i > 0 && order[i-1] == ActivityRecordStep+" "+stepReplan
+}
+
+func becomeRefused(why string) func() (PlanSwitchResult, error) {
+	return func() (PlanSwitchResult, error) { return PlanSwitchResult{Refused: why}, nil }
+}
+
+// The check-in's replan of a direct card cuts it in place: the replan step
+// of the cut, then BecomePlan with the check-in's reason and text, then the
+// plan loop; no second coding session.
+func TestCheckinReplanSwitchesADirectCard(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched,
+		timedSession{res: SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"}})
+	order := h.activityOrder()
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	want := map[string]any{"origin": ReplanCut, "card": "t1", "work": "R"}
+	if got := h.replanSteps(); len(got) != 1 || !reflect.DeepEqual(got[0], want) || !beforeBecomePlan(*order) {
+		t.Fatalf("replan steps %v, activities %q; want %v right before BecomePlan", got, *order, want)
+	}
+	if want := []becomePlanCall{{"t1", PlanSwitch{Reason: "cut: two packages", Work: "R"}, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.sessions) != 1 || len(h.plans) != 1 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 1, 1", len(h.sessions), len(h.plans))
+	}
+}
+
+// A person's replan stops the running session; the stop takes the
+// person's to_plan, sent before it: their name and note, no cut. With no
+// to_plan pending the stop's own reason and text stand in.
+func TestPersonsReplanOfARunningDirectCard(t *testing.T) {
+	stop := SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: string(TripReplan), Reason: "replanned by ana: too big", Replan: "replanned by ana: too big"}
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{took: 10 * time.Minute, res: stop})
+	h.toPlanAfter(5*time.Minute, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	want := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too big", "card": "t1"}
+	if got := h.replanSteps(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("replan steps %v, want %v", got, want)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+
+	h, calls = toPlanHarness(t, becomeSwitched, timedSession{took: 10 * time.Minute, res: stop})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	want = map[string]any{"origin": ReplanPerson, "comment": "replanned by ana: too big", "card": "t1"}
+	if got := h.replanSteps(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("replan steps %v, want %v", got, want)
+	}
+	if want := []becomePlanCall{{"t1", PlanSwitch{Reason: "replanned by ana: too big", Work: "replanned by ana: too big"}, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+}
+
+// onReplanChild answers ReplanChild with res and records the work of each
+// call.
+func (h *workflowHarness) onReplanChild(res ReplanChildResult) *[]string {
+	var works []string
+	h.env.OnActivity(ActivityReplanChild, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, childID, work string) (ReplanChildResult, error) {
+			works = append(works, work)
+			return res, nil
+		})
+	return &works
+}
+
+// The check-in's replan of a plan's child goes to its plan: the child ends
+// closed with ReplanChild's reason and turns no plan-track. A plan that
+// cannot take it asks a person with the refusal, whose answer buys the
+// next session.
+func TestCheckinReplanClosesAPlansChild(t *testing.T) {
+	cut := SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"}
+	h := newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	became := h.onBecomePlan(PlanSwitchResult{Switched: true})
+	works := h.onReplanChild(ReplanChildResult{Reason: "cut: plan #10 replans its work"})
+	h.onSessions(cut)
+	if final := h.run(t); final != "closed" || h.finals[0][1] != "cut: plan #10 replans its work" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(*works, []string{"R"}) || *became != 0 || len(h.sessions) != 1 {
+		t.Fatalf("ReplanChild works %q, BecomePlan calls %d, sessions %d; want [R], 0, 1", *works, *became, len(h.sessions))
+	}
+
+	refused := "Plan #10 is closed, so this card's work cannot go back to its planner: answer to go on with the card, or close it."
+	h = newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	became = h.onBecomePlan(PlanSwitchResult{Switched: true})
+	h.onReplanChild(ReplanChildResult{Refused: refused})
+	h.onSessions(cut, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(h.escalated, []string{refused}) || len(h.sessions) != 2 || *became != 0 {
+		t.Fatalf("escalated %q, sessions %d, BecomePlan calls %d; want the refusal, 2, 0", h.escalated, len(h.sessions), *became)
+	}
+}
+
+// A person's replan wakes a card that waits on a person: running, the
+// replan step, BecomePlan, the plan loop. A comment that came with it
+// answers nothing: the switch records it as ignored. A refused switch
+// moves the card back to waiting-human, and a later comment answers the
+// wait.
+func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
+	noPush := SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: noPush})
+	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	order := h.activityOrder()
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+		t.Fatalf("escalations %q, want the session cap's", h.escalated)
+	}
+	want := map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too big", "card": "t1"}
+	if got := h.replanSteps(); len(got) != 1 || !reflect.DeepEqual(got[0], want) || !beforeBecomePlan(*order) {
+		t.Fatalf("replan steps %v, activities %q; want %v right before BecomePlan", got, *order, want)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.sessions) != 1 || len(h.plans) != 1 || len(h.plans[0]) != 0 {
+		t.Fatalf("coding sessions %d, planner sessions %q; want 1, one with no findings", len(h.sessions), h.plans)
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool {
+		return s.step == "signal" && cmpOrAny(s.detail["comment"]) == "602" && s.detail["ignored"] == "written before the card went to the planner"
+	}) {
+		t.Fatalf("steps %+v, want comment 602 recorded as written before the card went to the planner", h.recorded)
+	}
+
+	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
+	h, calls = toPlanHarness(t, becomeRefused(refused), timedSession{res: noPush}, timedSession{res: pushed("s2", "c2")})
+	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(h.states[:3], []string{"running", "running", "waiting-human"}) || len(*calls) != 1 {
+		t.Fatalf("states %q, BecomePlan calls %d; want running, running, waiting-human first, one call", h.states, len(*calls))
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "to_plan_refused" && s.detail["reason"] == refused }) {
+		t.Fatalf("steps %+v, want to_plan_refused with %q", h.recorded, refused)
+	}
+	if len(h.sessions) != 2 || len(h.plans) != 0 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 2, 0", len(h.sessions), len(h.plans))
+	}
+}
+
+// onRequestApproval records the head of each RequestApproval call.
+func (h *workflowHarness) onRequestApproval() *[]string {
+	var heads []string
+	h.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, in ApprovalInput) error {
+			heads = append(heads, in.Commit)
+			return nil
+		})
+	return &heads
+}
+
+// A person's replan wakes the approval wait: the switch runs, and the old
+// pull request's close after it leaves the plan loop running. A refused
+// switch moves the card back to in-review and asks for the approval
+// again, which the move to running had voided. A roll's and a plan
+// child's approval wait leave the signal untaken.
+func TestReplanWakesTheApprovalWait(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(time.Hour+2*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running in-review running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.replanSteps()) != 1 || len(h.plans) != 1 {
+		t.Fatalf("replan steps %v, planner sessions %d; want one each", h.replanSteps(), len(h.plans))
+	}
+
+	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
+	h, calls = toPlanHarness(t, becomeRefused(refused), timedSession{res: pushed("s1", "c1")})
+	asked := h.onRequestApproval()
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if !slices.Equal(h.states, []string{"running", "in-review", "running", "in-review"}) || len(*calls) != 1 || !slices.Equal(*asked, []string{"c1", "c1"}) {
+		t.Fatalf("states %q, BecomePlan calls %d, approval requests on %q; want running, in-review, running, in-review, 1, [c1 c1]", h.states, len(*calls), *asked)
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "to_plan_refused" && s.detail["reason"] == refused }) {
+		t.Fatalf("steps %+v, want to_plan_refused with %q", h.recorded, refused)
+	}
+
+	g, _ := newRollHarness(t, "r1")
+	g.state.Source = SourceRoll
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	became := g.onBecomePlan(PlanSwitchResult{Switched: true})
+	g.signalAfter(30*time.Minute, SignalToPlan, toPlanTooBig)
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || *became != 0 {
+		t.Fatalf("roll: finals %v, BecomePlan calls %d; want done, 0", g.finals, *became)
+	}
+
+	g = newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.state.Source = SourcePlan
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	became = g.onBecomePlan(PlanSwitchResult{Switched: true})
+	g.signalAfter(30*time.Minute, SignalToPlan, toPlanTooBig)
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || *became != 0 {
+		t.Fatalf("plan child: finals %v, BecomePlan calls %d; want done, 0", g.finals, *became)
+	}
+}
+
+// A replan that comes during a roll hold switches the card when the hold
+// ends, before any session.
+func TestReplanDuringTheRollHoldSwitchesBeforeTheSession(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.env.OnGetVersion("roll-gap", workflow.DefaultVersion, versionRollNoGap).Return(versionRollGap)
+	h.env.OnActivity(ActivityAwaitRollHold, mock.Anything, "t1").After(10 * time.Minute).Return(nil)
+	h.toPlanAfter(5*time.Minute, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) || len(h.sessions) != 0 {
+		t.Fatalf("BecomePlan calls %+v, coding sessions %d; want %+v, 0", *calls, len(h.sessions), want)
+	}
+}
+
+// A final card reopened for a replan switches before its closed pull
+// request ends it; a pull request that merged takes no replan.
+func TestReopenedFinalCardSwitchesFirst(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state = RunState{Status: "queued", PRClosed: true}
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+
+	h, calls = toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state = RunState{Status: "queued", Merged: true}
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" || len(*calls) != 0 {
+		t.Fatalf("finals %v, BecomePlan calls %d; want merged, 0", h.finals, len(*calls))
+	}
+}
+
+// A run from before versionReplan takes the check-in's replan as a
+// question for a person, whose answer buys the next session.
+func TestReplanOutcomeBelowTheVersionAsksAPerson(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched,
+		timedSession{res: SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"}},
+		timedSession{res: pushed("s2", "c2")})
+	h.env.OnGetVersion("replan", workflow.DefaultVersion, versionReplan).Return(workflow.DefaultVersion)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	want := "The check-in asks to send this card back to the planner: two packages Replan it on the board, or answer to go on."
+	if !slices.Equal(h.escalated, []string{want}) || len(h.sessions) != 2 || len(*calls) != 0 || len(h.replanSteps()) != 0 {
+		t.Fatalf("escalated %q, sessions %d, BecomePlan calls %d, replan steps %d; want [%q], 2, 0, 0", h.escalated, len(h.sessions), len(*calls), len(h.replanSteps()), want)
+	}
+}

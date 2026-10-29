@@ -674,10 +674,10 @@ func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
 
 func (s *fakeStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	t, ok := s.tasks[id]
-	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.PRNumber != 0 || !slices.Contains(switchableStatuses, t.Status) {
+	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.MergeCommit != "" || !slices.Contains(switchableStatuses, t.Status) {
 		return false, nil
 	}
-	t.Track, t.RequiredCapabilities = policy.TrackPlan, capabilities
+	t.Track, t.RequiredCapabilities, t.PRNumber = policy.TrackPlan, capabilities, 0
 	s.tasks[id] = t
 	return true, nil
 }
@@ -2086,9 +2086,9 @@ func TestPGStoreTaskImage(t *testing.T) {
 	}
 }
 
-// SwitchToPlan moves a running direct card with no pull request to the plan
-// track with the planner's class, once; a card with a pull request, a
-// plan's card and an ended card stay as they are.
+// SwitchToPlan moves a running direct card that did not merge to the plan
+// track with the planner's class, once, and drops its open pull request's
+// number; a merged card, a plan's card and an ended card stay as they are.
 func TestSwitchToPlan(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -2104,6 +2104,7 @@ func TestSwitchToPlan(t *testing.T) {
 	for _, c := range []Task{
 		{ID: "t-run", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder},
 		{ID: "t-pr", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder, PRNumber: 3},
+		{ID: "t-merged", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder, PRNumber: 4},
 		{ID: "t-done", Status: "done", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder},
 		{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "plan", RequiredCapabilities: planner},
 	} {
@@ -2115,10 +2116,14 @@ func TestSwitchToPlan(t *testing.T) {
 		Parent: "t-plan", PlanKey: "ui", RequiredCapabilities: coder}); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.SetTaskMergeCommit(ctx, "t-merged", "abc"); err != nil {
+		t.Fatal(err)
+	}
 	for _, tc := range []struct {
 		id       string
 		switched bool
-	}{{"t-run", true}, {"t-pr", false}, {"t-card", false}, {"t-done", false}, {"t-run", false}} {
+		pr       int64
+	}{{"t-run", true, 0}, {"t-pr", true, 0}, {"t-merged", false, 4}, {"t-card", false, 0}, {"t-done", false, 0}, {"t-run", false, 0}} {
 		switched, err := s.SwitchToPlan(ctx, tc.id, planner)
 		if err != nil {
 			t.Fatalf("SwitchToPlan(%s): %v", tc.id, err)
@@ -2128,11 +2133,12 @@ func TestSwitchToPlan(t *testing.T) {
 			t.Fatalf("Task(%s) = %v, %v", tc.id, ok, err)
 		}
 		track, caps := "direct", coder
-		if tc.id == "t-run" {
+		if tc.id == "t-run" || tc.id == "t-pr" {
 			track, caps = "plan", planner
 		}
-		if switched != tc.switched || got.Track != track || !slices.Equal(got.RequiredCapabilities, caps) {
-			t.Fatalf("SwitchToPlan(%s) = %v; track %q, capabilities %q; want %v, %s, %q", tc.id, switched, got.Track, got.RequiredCapabilities, tc.switched, track, caps)
+		if switched != tc.switched || got.Track != track || !slices.Equal(got.RequiredCapabilities, caps) || got.PRNumber != tc.pr {
+			t.Fatalf("SwitchToPlan(%s) = %v; track %q, capabilities %q, pull request %d; want %v, %s, %q, %d",
+				tc.id, switched, got.Track, got.RequiredCapabilities, got.PRNumber, tc.switched, track, caps, tc.pr)
 		}
 	}
 }

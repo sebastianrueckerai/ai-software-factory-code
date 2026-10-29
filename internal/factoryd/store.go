@@ -439,8 +439,9 @@ type Store interface {
 	// a human; false when it was not a queued agent task.
 	ToHumanLane(ctx context.Context, id string) (bool, error)
 	// SwitchToPlan moves direct card id to the plan track with
-	// capabilities: a card of no plan, with no pull request, queued,
-	// waiting on its dependencies or running. False when no row changed.
+	// capabilities and without its pull request's number: a card of no
+	// plan, not merged, queued, waiting on its dependencies or running.
+	// False when no row changed.
 	SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error)
 	// ProjectByRepository is the project row of repository (owner/name).
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
@@ -1144,8 +1145,8 @@ func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []st
 	if err != nil {
 		return false, err
 	}
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', required_capabilities = $2::jsonb
-		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND pr_number = 0 AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', required_capabilities = $2::jsonb, pr_number = 0
+		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND merge_commit = '' AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
 	if err != nil {
 		return false, err
 	}

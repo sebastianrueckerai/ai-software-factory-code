@@ -1193,6 +1193,29 @@ func TestSetStateMovesTaskAndMirrorsLabel(t *testing.T) {
 	}
 }
 
+// A running card goes back to the wait a refused switch to the plan track
+// woke it from, mirrored on its issue; a card that is not running does not.
+func TestSetStateMovesARunningCardBackToItsWait(t *testing.T) {
+	for _, state := range []string{"queued", "waiting-deps", "waiting-human", "waiting-poster", "waiting-image"} {
+		fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
+		task := prTask
+		task.Status = "running"
+		r, store, _ := newActivityRunner(t, task, fj)
+		if _, err := execActivity(t, r, ActivitySetState, "t1", state); err != nil {
+			t.Fatalf("SetState %s: %v", state, err)
+		}
+		if got, _, _ := store.Task(context.Background(), "t1"); got.Status != state || !slices.Equal(fj.labels[4], []string{"agent", "state/" + state}) {
+			t.Fatalf("status %q, labels %v; want %s, agent + state/%s", got.Status, fj.labels[4], state, state)
+		}
+	}
+	task := prTask
+	task.Status = "in-review"
+	r, _, _ := newActivityRunner(t, task, &prForgejo{})
+	if _, err := execActivity(t, r, ActivitySetState, "t1", "waiting-human"); err == nil || !isTerminal(err) {
+		t.Fatalf("an in-review card moved to waiting-human: err = %v, want terminal", err)
+	}
+}
+
 func TestEnsureIssueRequiresLinkedIssueAndOpensTimeline(t *testing.T) {
 	task := prTask
 	task.CreatedAt = time.Date(2026, 9, 28, 7, 0, 0, 0, time.UTC)

@@ -264,12 +264,12 @@ func TestSizingTakesAPersonsSwitchIntoItsOwn(t *testing.T) {
 	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
 	h.taskConfig, h.state.Source = sizedConfig(), "webhook"
 	h.env.OnActivity(ActivitySizeCard, mock.Anything, "t1").After(10*time.Minute).Return(SizeResult{ToPlan: &sizedMedium}, nil)
-	h.toPlanAfter(time.Minute, PlanSwitch{Reason: "a person asks for a plan", Work: "split the store work"})
+	h.toPlanAfter(5*time.Minute, TaskSignal{Author: "ana", Body: "a person asks for a plan"})
 
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	joined := PlanSwitch{Reason: "medium, not small: touches the store; a person asks for a plan", Work: "w\nsplit the store work"}
+	joined := PlanSwitch{Reason: "medium, not small: touches the store; a person asks for a plan", Work: "w\nAsked by ana."}
 	if want := []becomePlanCall{{"t1", joined, "running"}}; !slices.Equal(*calls, want) {
 		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
 	}

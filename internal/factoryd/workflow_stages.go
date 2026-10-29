@@ -1062,7 +1062,8 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // adjudicates (versionAdjudicated). A factory pull request's red checks
 // run again at a human's word (versionFactoryPRActions): an empty commit
 // on its head (RerunChecks), the checks stage waits for them, and the new
-// head comes back here.
+// head comes back here. A refused switch to the plan track asks for the
+// approval again (versionReplan).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	v, stop, red := t.headGreen(commit, g, &card)
 	if stop {
@@ -1095,8 +1096,11 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 	}
 	t.approvalRequested = workflow.Now(t.ctx)
-	if v = t.awaitApproval(commit, covered); !v.rerun && !v.moved {
+	if v = t.awaitApproval(commit, covered); !v.rerun && !v.moved && !v.reask {
 		return v
+	}
+	if v.reask {
+		return t.approve(commit, g, review, earlier, card, covered)
 	}
 	if v.moved {
 		// the merge was refused on a head the agent moved past its gates
