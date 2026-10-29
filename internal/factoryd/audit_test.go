@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -226,9 +227,12 @@ func TestAuditPromptsCarryTheChecklist(t *testing.T) {
 // part 2 carries its diff and part under the part prompt.
 func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 	diff := diffFile("a.go", 30<<10, "\tgo func() {") + diffFile("b.go", 30<<10)
-	ll := &fakeLiteLLM{contents: []string{
-		`{"verdict":"findings","findings":[{"item":"network egress","file":"a.go","line":1,"why":"a new host"}]}`,
-		`{"verdict":"findings","findings":[{"item":"RBAC and ServiceAccounts","file":"b.go","line":1,"why":"a new Role"}]}`}}
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		if strings.Contains(user, "part 1 of 2") {
+			return `{"verdict":"findings","findings":[{"item":"network egress","file":"a.go","line":1,"why":"a new host"}]}`
+		}
+		return `{"verdict":"findings","findings":[{"item":"RBAC and ServiceAccounts","file":"b.go","line":1,"why":"a new Role"}]}`
+	}}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
@@ -236,6 +240,7 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 2 {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
+	chats := byPart(ll)
 	for i, want := range []struct {
 		part, prompt string
 		keys         []string
@@ -243,14 +248,14 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 		{`"part":"file 1 of 2, part 1 of 2"`, auditPrompt, []string{"concurrency", "diff", "head", "part", "pull_request", "repository"}},
 		{`"part":"file 2 of 2, part 2 of 2"`, auditPartPrompt, []string{"diff", "part"}},
 	} {
-		if user := userMessage(ll.chats[i]); !strings.Contains(user, want.part) {
+		if user := userMessage(chats[i]); !strings.Contains(user, want.part) {
 			t.Fatalf("call %d lacks its part", i+1)
 		}
-		if keys := inputKeys(t, ll.chats[i]); !slices.Equal(keys, want.keys) || systemMessage(ll.chats[i]) != want.prompt {
-			t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(ll.chats[i]) == want.prompt, want.keys)
+		if keys := inputKeys(t, chats[i]); !slices.Equal(keys, want.keys) || systemMessage(chats[i]) != want.prompt {
+			t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(chats[i]) == want.prompt, want.keys)
 		}
 	}
-	if user := userMessage(ll.chats[0]); !strings.Contains(user, `"concurrency":"`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
+	if user := userMessage(chats[0]); !strings.Contains(user, `"concurrency":"`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
 		t.Fatal("the first call lacks the whole diff's concurrency summary")
 	}
 }
@@ -259,7 +264,12 @@ func TestGateAuditReadsTheDiffInParts(t *testing.T) {
 // findings stay.
 func TestGateAuditPartWithoutAVerdict(t *testing.T) {
 	diff := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
-	ll := &fakeLiteLLM{contents: []string{"LGTM", `{"verdict":"findings","findings":[{"item":"secrets","file":"b.go","line":1,"why":"w"}]}`}}
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		if strings.Contains(user, "part 1 of 2") {
+			return "LGTM"
+		}
+		return `{"verdict":"findings","findings":[{"item":"secrets","file":"b.go","line":1,"why":"w"}]}`
+	}}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
@@ -271,13 +281,37 @@ func TestGateAuditPartWithoutAVerdict(t *testing.T) {
 
 // Four parts: four calls, no finding.
 func TestGateAuditReadsFourParts(t *testing.T) {
-	diff := diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
-	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	r, _ := newAuditRunner(t, &gateForgejo{diff: fourParts}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	if len(res.Findings) != 0 || len(ll.chats) != 4 {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
+	}
+}
+
+// The four parts' calls wait on the gateway at once, and the findings
+// stay in part order whatever order the answers came in. The gateway
+// counts the calls at once: the secret pre-check over 160 KiB takes over a
+// second under the race detector, so the activity's time says nothing.
+func TestGateAuditPartsRunInParallel(t *testing.T) {
+	ll := &fakeLiteLLM{delay: 200 * time.Millisecond, answer: func(user string) string {
+		for k, file := range []string{"a.go", "b.go", "c.go", "d.go"} {
+			if strings.Contains(user, fmt.Sprintf("part %d of 4", k+1)) {
+				return `{"verdict":"findings","findings":[{"item":"network egress","file":"` + file + `","line":1,"why":"a new host"}]}`
+			}
+		}
+		return "no part"
+	}}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: fourParts}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	var want []AuditFinding
+	for _, file := range []string{"a.go", "b.go", "c.go", "d.go"} {
+		want = append(want, AuditFinding{Item: "network egress", File: file, Line: 1, Why: "a new host"})
+	}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 4 || ll.peak != 4 {
+		t.Fatalf("audit = %+v after %d calls, %d at once: want the four parts' findings in order, four calls at once", res, len(ll.chats), ll.peak)
 	}
 }
 

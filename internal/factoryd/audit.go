@@ -122,12 +122,12 @@ func parseAudit(content string) ([]AuditFinding, string) {
 // for a project that switches it on under the task's pinned version: a
 // deterministic scan of the added lines for secret shapes, then the audit
 // model the policy names for the task's class, through the gateway on the
-// task's account, one call for each part of the diff, a file larger than
-// a part cut by hunks, the first with the concurrency summary of the whole
-// diff. An answer without a verdict is a finding. The
-// findings go to the card and the timeline, never to the pull request,
-// which the agent reads. An audit beside the checks wait (gates.Beside)
-// starts its gate at its own schedule.
+// task's account, one call for each part of the diff (callAll runs them in
+// parallel), a file larger than a part cut by hunks, the first with the
+// concurrency summary of the whole diff. An answer without a verdict is a
+// finding. The findings go to the card and the timeline, never to the
+// pull request, which the agent reads. An audit beside the checks wait
+// (gates.Beside) starts its gate at its own schedule.
 func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
 	stopBeats := beatUntilDone(ctx, "audit")
 	defer stopBeats()
@@ -171,34 +171,38 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
 	parts := diffParts(prFiles, reviewDiffMax)
-	boundByParts(ctx, len(parts))
 	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(prFiles))}
 	if len(parts) > 1 {
 		first.Part = partLabel(parts, 0, len(prFiles))
 	}
+	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
-		label, prompt, in := "", auditPrompt, any(first)
-		if len(parts) > 1 {
-			label = fmt.Sprintf("part %d of %d: ", i+1, len(parts))
-		}
+		calls[i] = reviewCall{Label: fmt.Sprintf("part %d of %d", i+1, len(parts)), Prompt: auditPrompt, Input: first}
 		if i > 0 {
-			prompt, in = auditPartPrompt, auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
+			calls[i].Prompt, calls[i].Input = auditPartPrompt, auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
 		}
-		content, deployment, err := r.supervisor.Chat(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, prompt, in)
-		if ctx.Err() != nil {
-			return AuditResult{}, ctx.Err()
+	}
+	boundByParts(ctx, (len(calls)+reviewParallel-1)/reviewParallel)
+	results, err := r.callAll(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, calls)
+	if err != nil {
+		return AuditResult{}, err
+	}
+	for i, got := range results {
+		label := ""
+		if len(calls) > 1 {
+			label = calls[i].Label + ": "
 		}
-		res.Deployment = cmp.Or(deployment, res.Deployment)
+		res.Deployment = cmp.Or(got.Deployment, res.Deployment)
 		var refusal *policy.Refusal
 		switch {
-		case errors.As(err, &refusal):
+		case errors.As(got.Err, &refusal):
 			noVerdict(label + "the audit call was refused by the gateway (" + refusal.Decision + "): " + refusal.Reason)
-		case err != nil:
-			noVerdict(label + "the audit call failed: " + err.Error())
+		case got.Err != nil:
+			noVerdict(label + "the audit call failed: " + got.Err.Error())
 		default:
-			found, why := parseAudit(content)
+			found, why := parseAudit(got.Content)
 			if why != "" {
-				noVerdict(fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(content)))
+				noVerdict(fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content)))
 			}
 			for _, f := range found {
 				f.File = scrub.String(f.File)

@@ -921,7 +921,8 @@ func TestModelReviewSendsEachLastFindingToItsPart(t *testing.T) {
 	var second struct {
 		LastFindings []string `json:"last_findings"`
 	}
-	if json.Unmarshal([]byte(userMessage(ll.chats[0])), &first) != nil || json.Unmarshal([]byte(userMessage(ll.chats[1])), &second) != nil {
+	chats := byPart(ll)
+	if json.Unmarshal([]byte(userMessage(chats[0])), &first) != nil || json.Unmarshal([]byte(userMessage(chats[1])), &second) != nil {
 		t.Fatal("unreadable review input")
 	}
 	if first.LastReview.Summary != "s" || !slices.Equal(first.LastReview.Findings, []string{"a.go:3: unchecked error", "the change lacks a test"}) ||

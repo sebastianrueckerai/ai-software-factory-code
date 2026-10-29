@@ -1186,11 +1186,11 @@ func combineReviews(parts []Review) Review {
 // task's; round 0 is an activity scheduled before the workflow passed it,
 // whose earlier holds every earlier review. The diff is read whole, in one
 // call when it fits limits.review_diff_kib, else in parts of that size,
-// one call each, a file larger than a part cut by hunks; the call on the
-// first part carries the brief, the gates and the concurrency summary of
-// the whole diff. No answer (a gateway refusal such as refused_budget, a
-// failed call, an invalid answer) is a note,
-// which the review stage puts on the card as a finding
+// one call each (callAll runs them in parallel), a file larger than a part
+// cut by hunks; the call on the first part carries the brief, the gates
+// and the concurrency summary of the whole diff. No answer (a gateway
+// refusal such as refused_budget, a failed call, an invalid answer) is a
+// note, which the review stage puts on the card as a finding
 // (versionReviewVerdict); concerns are findings under the review stage's
 // on_findings (ruling 177).
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
@@ -1244,7 +1244,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	var rv Review
 	read := ""
 	parts := diffParts(files, pinned.Limits.ReviewDiffBytes())
-	boundByParts(ctx, len(parts))
 	names := newNameIndex(parts)
 	last, lastFindings := lastReview(earlier, parts)
 	first := reviewInput{
@@ -1258,7 +1257,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if criteria != nil {
 		first.Criteria = criteriaBlock(criteria.plan)
 	}
-	var answers []Review
+	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
 		prompt, in := reviewPromptFor(gates), any(first)
 		if i == 0 && criteria != nil {
@@ -1271,14 +1270,19 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		if last != nil && len(last.Verdicts) > 0 {
 			prompt = reviewWithDrops(prompt, i > 0, last, lastFindings[i])
 		}
-		content, _, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, prompt, in)
-		if ctx.Err() != nil {
-			return Review{}, ctx.Err()
-		}
-		a := reviewAnswer(content, err)
+		calls[i] = reviewCall{Label: fmt.Sprintf("part %d of %d", i+1, len(parts)), Prompt: prompt, Input: in}
+	}
+	boundByParts(ctx, (len(calls)+reviewParallel-1)/reviewParallel)
+	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
+	if err != nil {
+		return Review{}, err
+	}
+	var answers []Review
+	for i, res := range results {
+		a := reviewAnswer(res.Content, res.Err)
 		if a.Verdict == "" {
-			if len(parts) > 1 {
-				a.Note = fmt.Sprintf("part %d of %d: %s", i+1, len(parts), a.Note)
+			if len(calls) > 1 {
+				a.Note = calls[i].Label + ": " + a.Note
 			}
 			rv = a
 			break

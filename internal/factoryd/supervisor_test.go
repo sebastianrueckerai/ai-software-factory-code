@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -162,18 +163,33 @@ func TestCommandLineIsCutWhereAModelReadsIt(t *testing.T) {
 // gateway's model route, which factoryd calls with the gateway-factoryd
 // token, the task and the purpose.
 type fakeLiteLLM struct {
+	mu       sync.Mutex
 	chats    []map[string]any
 	auth     []string
 	tasks    []string
 	purposes []string
 	status   int
 	decision string // X-Gateway-Decision of a refusal
+	// crowded: refuse only a call that shared the gateway with another
+	// during its delay
+	crowded  bool
 	content  string
-	contents []string // answers in order; past the last, content
+	contents []string // answers in order of arrival; past the last, content
+	// answer, when set, is the content for a call's user message
+	answer   func(user string) string
 	delay    time.Duration
+	inFlight int    // chat calls in the handler now
+	peak     int    // the most chat calls in the handler at once
 	keys     string // /key/list body; empty = no keys
 	// deployment is the gateway's deployment header on an answer
 	deployment string
+}
+
+// running is the number of chat calls in the handler now.
+func (f *fakeLiteLLM) running() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.inFlight
 }
 
 func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
@@ -190,16 +206,36 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			}
 			io.WriteString(w, f.keys)
 		case "/v1/chat/completions":
+			f.mu.Lock()
 			f.chats = append(f.chats, body)
+			n := len(f.chats)
+			f.inFlight++
+			f.peak = max(f.peak, f.inFlight)
+			shared := f.inFlight > 1
+			f.mu.Unlock()
 			select {
 			case <-time.After(f.delay):
 			case <-r.Context().Done():
+				f.mu.Lock()
+				f.inFlight--
+				f.mu.Unlock()
 				return
 			}
+			f.mu.Lock()
+			f.inFlight--
+			shared = shared || len(f.chats) > n
 			f.auth = append(f.auth, r.Header.Get("Authorization"))
 			f.tasks = append(f.tasks, r.Header.Get(gateway.HeaderFactoryTask))
 			f.purposes = append(f.purposes, r.Header.Get(gateway.HeaderFactoryPurpose))
-			if f.status != 0 {
+			content := f.content
+			if n <= len(f.contents) {
+				content = f.contents[n-1]
+			}
+			f.mu.Unlock()
+			if f.answer != nil {
+				content = f.answer(userMessage(body))
+			}
+			if f.status != 0 && (!f.crowded || shared) {
 				if f.decision != "" {
 					w.Header().Set(gateway.HeaderDecision, f.decision)
 				}
@@ -209,10 +245,6 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			}
 			if f.deployment != "" {
 				w.Header().Set(gateway.HeaderDeployment, f.deployment)
-			}
-			content := f.content
-			if n := len(f.chats) - 1; n < len(f.contents) {
-				content = f.contents[n]
 			}
 			out, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}})
 			w.Write(out)

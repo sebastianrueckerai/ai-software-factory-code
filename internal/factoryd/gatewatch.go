@@ -134,9 +134,9 @@ type GateWatch struct {
 	interceptor.WorkerInterceptorBase
 	Store GateStore
 	// Bound is activity's bound under the policy version pin, the one its
-	// task started under (0: the version in force); parts: the calls a
-	// model review or an audit reads its diff in, policy.ReviewParts until
-	// it read the diff (boundByParts).
+	// task started under (0: the version in force); parts: the waves of
+	// calls a model review or an audit makes, policy.ReviewParts until it
+	// read the diff (boundByParts).
 	Bound func(ctx context.Context, activity string, pin int64, parts int) time.Duration
 	// Signal delivers a trip to the workflow; nil = the alert only.
 	Signal func(ctx context.Context, workflowID string, trip GateTrip) error
@@ -273,12 +273,13 @@ func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 // partsKey carries an activity's call to rebound in its context.
 type partsKey struct{}
 
-// boundByParts bounds the running model review or audit by the parts its
-// diff reads in, one call each (policy.Document.PartsBound), once it read
-// the diff and before the first call.
-func boundByParts(ctx context.Context, parts int) {
+// boundByParts bounds the running model review or audit by the waves its
+// calls run in, reviewParallel at once, one call's timeout each
+// (policy.Document.PartsBound), once it read the diff and before the
+// first call.
+func boundByParts(ctx context.Context, waves int) {
 	if f, ok := ctx.Value(partsKey{}).(func(int)); ok {
-		f(parts)
+		f(waves)
 	}
 }
 

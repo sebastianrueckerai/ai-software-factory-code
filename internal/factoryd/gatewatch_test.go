@@ -246,21 +246,20 @@ func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
 	}
 }
 
-// The model review and the audit tell their watch the parts their diff
-// reads in before the first call: two files of 30 KiB are two parts, read
-// after the watch bound the run at policy.ReviewParts parts; four parts
-// are told as four.
-func TestReviewAndAuditBoundThemselvesByTheirParts(t *testing.T) {
-	two := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
-	four := diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
+// The model review and the audit tell their watch the waves their calls
+// run in, reviewParallel at once, before the first call: four files of
+// 40 KiB are four parts in one wave, told after the watch bound the run
+// at policy.ReviewParts; five parts are two waves.
+func TestReviewAndAuditBoundThemselvesByTheirWaves(t *testing.T) {
+	five := fourParts + diffFile("e.go", 40<<10)
 	for _, tc := range []struct {
 		name, activity, diff, answer string
 		want                         []int
 	}{
-		{"a review of two parts", ActivityModelReview, two, `{"verdict":"approve","summary":"ok"}`, []int{3, 2}},
-		{"a review of four parts", ActivityModelReview, four, `{"verdict":"approve","summary":"ok"}`, []int{3, 4}},
-		{"an audit of two parts", ActivityGateAudit, two, `{"verdict":"clear"}`, []int{3, 2}},
-		{"an audit of four parts", ActivityGateAudit, four, `{"verdict":"clear"}`, []int{3, 4}},
+		{"a review of four parts", ActivityModelReview, fourParts, `{"verdict":"approve","summary":"ok"}`, []int{3, 1}},
+		{"a review of five parts", ActivityModelReview, five, `{"verdict":"approve","summary":"ok"}`, []int{3, 2}},
+		{"an audit of four parts", ActivityGateAudit, fourParts, `{"verdict":"clear"}`, []int{3, 1}},
+		{"an audit of five parts", ActivityGateAudit, five, `{"verdict":"clear"}`, []int{3, 2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := newAuditRunner(t, &gateForgejo{diff: tc.diff}, &fakeLiteLLM{content: tc.answer}, true)
@@ -281,7 +280,7 @@ func TestReviewAndAuditBoundThemselvesByTheirParts(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 			if !slices.Equal(parts, tc.want) {
-				t.Fatalf("bounds asked for %v parts, want %v", parts, tc.want)
+				t.Fatalf("bounds asked for %v waves, want %v", parts, tc.want)
 			}
 		})
 	}

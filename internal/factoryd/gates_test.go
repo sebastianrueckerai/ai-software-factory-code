@@ -614,18 +614,19 @@ func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
 }
 
 // A task at its budget cap: the gateway refuses the review with
-// refused_budget, which becomes the review's note on the pull request and
-// the card; an upstream error and an invalid answer are notes too. None
-// fails the gate.
+// refused_budget, and again on the one retry, which becomes the review's
+// note on the pull request and the card; an upstream error and an invalid
+// answer are notes too, after one call. None fails the gate.
 func TestModelReviewNotes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		model *fakeLiteLLM
 		note  string
+		calls int
 	}{
-		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid"},
+		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 1},
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
-			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR"},
-		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502"},
+			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
+		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 1},
 	} {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{diff: "d"}
@@ -636,8 +637,8 @@ func TestModelReviewNotes(t *testing.T) {
 			if rv.Verdict != "" || !strings.HasPrefix(rv.Note, tc.note) {
 				t.Fatalf("review = %+v, want a note starting %q", rv, tc.note)
 			}
-			if len(tc.model.chats) != 1 || tc.model.purposes[0] != "review" {
-				t.Fatalf("calls = %d, want one review call", len(tc.model.chats))
+			if len(tc.model.chats) != tc.calls || tc.model.purposes[0] != "review" {
+				t.Fatalf("calls = %d, want %d review calls", len(tc.model.chats), tc.calls)
 			}
 			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.note) {
 				t.Fatalf("comments = %q", fj.comments)
@@ -721,7 +722,12 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			fj := &gateForgejo{diff: diff}
 			r, _, _ := newGateRunner(t, gateTask, fj)
-			ll := &fakeLiteLLM{contents: []string{`{"verdict":"approve","summary":"first","strict_improvement":true}`, tc.second}}
+			ll := &fakeLiteLLM{answer: func(user string) string {
+				if strings.Contains(user, "part 1 of 2") {
+					return `{"verdict":"approve","summary":"first","strict_improvement":true}`
+				}
+				return tc.second
+			}}
 			r.supervisor = testSupervisorModel(ll.srv(t).URL)
 			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}})
 			rv := getInto[Review](t, val, err)
@@ -732,6 +738,7 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 			if len(ll.chats) != 2 {
 				t.Fatalf("calls = %d, want 2", len(ll.chats))
 			}
+			chats := byPart(ll)
 			for i, want := range []struct {
 				part, file, other, prompt string
 				keys                      []string
@@ -741,19 +748,19 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
-				user := userMessage(ll.chats[i])
+				user := userMessage(chats[i])
 				if !strings.Contains(user, want.part) || !strings.Contains(user, want.file) || strings.Contains(user, want.other) ||
 					!strings.Contains(user, `"files":"a.go +2 -0 (part 1)\nb.go +1 -0 (part 2)"`) {
 					t.Fatalf("call %d lacks its part, its file or the file list, or carries the other file's diff: %s", i+1, user[:min(len(user), 2000)])
 				}
-				if keys := inputKeys(t, ll.chats[i]); !slices.Equal(keys, want.keys) || systemMessage(ll.chats[i]) != want.prompt {
-					t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(ll.chats[i]) == want.prompt, want.keys)
+				if keys := inputKeys(t, chats[i]); !slices.Equal(keys, want.keys) || systemMessage(chats[i]) != want.prompt {
+					t.Fatalf("call %d reads %v under its prompt %t, want %v", i+1, keys, systemMessage(chats[i]) == want.prompt, want.keys)
 				}
 			}
-			if first := userMessage(ll.chats[0]); !strings.Contains(first, `"concurrency":"`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
+			if first := userMessage(chats[0]); !strings.Contains(first, `"concurrency":"`+concurrencyHead+`\na.go:1 goroutine: go func() {"`) {
 				t.Fatalf("the first call lacks the whole diff's concurrency summary: %s", first[:min(len(first), 2000)])
 			}
-			if second := userMessage(ll.chats[1]); !strings.Contains(second, `"objective":"Add a make check target"`) {
+			if second := userMessage(chats[1]); !strings.Contains(second, `"objective":"Add a make check target"`) {
 				t.Fatalf("the second call lacks the objective: %s", second[:min(len(second), 2000)])
 			}
 			if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Read in 2 parts, 2 files, 60 KiB.") || !strings.Contains(fj.comments[0], "Verdict: **"+tc.verdict+"**") {
@@ -782,24 +789,99 @@ func TestModelReviewOfOnePartHasNoLabel(t *testing.T) {
 	}
 }
 
-// A part without a verdict ends the review with its note, naming the
-// part; no later part is read.
-func TestModelReviewPartWithoutAVerdictIsTheNote(t *testing.T) {
-	fj := &gateForgejo{diff: diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10) + diffFile("c.go", 30<<10)}
+// fourParts is four files of 40 KiB: four parts of the default 48 KiB.
+var fourParts = diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
+
+// byPart are the recorded calls of a diff in parts in the order of their
+// parts: parallel calls arrive in any order.
+func byPart(ll *fakeLiteLLM) []map[string]any {
+	part := func(chat map[string]any) int {
+		var k int
+		if label := chatPart(chat); strings.Contains(label, "part ") {
+			fmt.Sscanf(label[strings.LastIndex(label, "part "):], "part %d", &k)
+		}
+		return k
+	}
+	return slices.SortedFunc(slices.Values(ll.chats), func(a, b map[string]any) int { return part(a) - part(b) })
+}
+
+// chatPart is the part label of a recorded call's input.
+func chatPart(chat map[string]any) string {
+	var in struct {
+		Part string `json:"part"`
+	}
+	json.Unmarshal([]byte(userMessage(chat)), &in)
+	return in.Part
+}
+
+// One part answers invalid: the note names that part, and every part's
+// call is made.
+func TestModelReviewNamesTheInvalidPart(t *testing.T) {
+	fj := &gateForgejo{diff: fourParts}
 	r, _, _ := newGateRunner(t, gateTask, fj)
-	ll := &fakeLiteLLM{contents: []string{`{"verdict":"concerns","summary":"s","findings":["a.go: x"]}`, "LGTM"}, content: `{"verdict":"approve","summary":"ok"}`}
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		if strings.Contains(user, "part 3 of 4") {
+			return "LGTM"
+		}
+		return `{"verdict":"approve","summary":"ok"}`
+	}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 2 of 3: model review answer invalid") || len(ll.chats) != 2 {
+	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review answer invalid") || len(ll.chats) != 4 {
 		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
+	}
+}
+
+// The four parts wait on the gateway at once: four calls of 200 ms take
+// about one call's time, not 800 ms.
+func TestModelReviewPartsRunInParallel(t *testing.T) {
+	fj := &gateForgejo{diff: fourParts}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`, delay: 200 * time.Millisecond}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	began := time.Now()
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	took := time.Since(began)
+	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || took >= 600*time.Millisecond || ll.peak != 4 {
+		t.Fatalf("review = %+v after %s, %d calls at once: want approve in under 600 ms, four calls at once", rv, took, ll.peak)
+	}
+	var parts []string
+	for _, chat := range byPart(ll) {
+		parts = append(parts, chatPart(chat))
+	}
+	if want := []string{"file 1 of 4, part 1 of 4", "file 2 of 4, part 2 of 4", "file 3 of 4, part 3 of 4", "file 4 of 4, part 4 of 4"}; !slices.Equal(parts, want) {
+		t.Fatalf("calls on %q, want %q", parts, want)
+	}
+}
+
+// A budget too small for four calls at once: the refused parts run again
+// one by one, and the refusal there is the note on part 1. A note is no
+// verdict, so the change does not merge without a human.
+func TestModelReviewBudgetTooSmallIsANote(t *testing.T) {
+	fj := &gateForgejo{diff: fourParts}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedBudget}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, "part 1 of 4: model review refused by the gateway (refused_budget)") {
+		t.Fatalf("review = %+v", rv)
+	}
+	if len(ll.chats) < 2 || len(ll.chats) > reviewParallel+1 {
+		t.Fatalf("%d calls, want the first pass and one call of the retry", len(ll.chats))
+	}
+	normal := PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}
+	ok, _, unmet := AutoMerge(GateResults{Policy: normal, ChecksPassed: true, Reproduction: ReproResult{Ran: true, BaseExit: 2}}, rv, "api")
+	if ok || !slices.Contains(unmet, "no model review verdict: "+rv.Note) {
+		t.Fatalf("AutoMerge = %t, unmet %q: want no merge without the review's verdict", ok, unmet)
 	}
 }
 
 // Four files of 40 KiB are four parts of the default 48 KiB: four calls,
 // no cap, no note.
 func TestModelReviewReadsADiffBeyondThreeParts(t *testing.T) {
-	fj := &gateForgejo{diff: diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)}
+	fj := &gateForgejo{diff: fourParts}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
@@ -826,7 +908,7 @@ func TestModelReviewReadsOneBigFileByHunks(t *testing.T) {
 	if rv.Verdict != "approve" || len(ll.chats) != 2 {
 		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
 	}
-	if first := userMessage(ll.chats[0]); !strings.Contains(first, `"part":"file 1 of 1 (big.go, piece 1 of 2), part 1 of 2"`) || strings.Count(first, `@@ -`) != 4 {
+	if first := userMessage(byPart(ll)[0]); !strings.Contains(first, `"part":"file 1 of 1 (big.go, piece 1 of 2), part 1 of 2"`) || strings.Count(first, `@@ -`) != 4 {
 		t.Fatalf("first call = %.300s", first)
 	}
 }
@@ -871,10 +953,11 @@ func TestModelReviewPartsReadTheOtherPartsNames(t *testing.T) {
 	if len(ll.chats) != 2 {
 		t.Fatalf("calls = %d, want 2", len(ll.chats))
 	}
-	if first := userMessage(ll.chats[0]); !strings.Contains(first, `"names_in_other_parts":"functions: useIt"`) {
+	chats := byPart(ll)
+	if first := userMessage(chats[0]); !strings.Contains(first, `"names_in_other_parts":"functions: useIt"`) {
 		t.Fatalf("part 1 lacks part 2's names: %s", first[:min(len(first), 600)])
 	}
-	if second := userMessage(ll.chats[1]); !strings.Contains(second, `"names_in_other_parts":"functions: TasksByPR"`) {
+	if second := userMessage(chats[1]); !strings.Contains(second, `"names_in_other_parts":"functions: TasksByPR"`) {
 		t.Fatalf("part 2 lacks part 1's names: %s", second[:min(len(second), 600)])
 	}
 }
