@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +207,53 @@ func TestSizingSkipsCardsItDoesNotSize(t *testing.T) {
 				t.Fatalf("SizeCard calls %d, want %d", len(*sized), tc.want)
 			}
 		})
+	}
+}
+
+// An issue closed while the sizing runs ends the card closed, with no
+// session.
+func TestSizingEndsOnAClosedIssue(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.taskConfig, g.state.Source = sizedConfig(), "webhook"
+	g.env.OnActivity(ActivitySizeCard, mock.Anything, "t1").After(10*time.Minute).Return(SizeResult{}, nil)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := g.run(t); final != "closed" || len(g.sessions) != 0 || g.finishAt.Sub(g.started) != time.Minute {
+		t.Fatalf("final = %q, sessions %d, finished %s after the start; want closed, 0, at the close a minute in", final, len(g.sessions), g.finishAt.Sub(g.started))
+	}
+}
+
+// An outsider's card the screening finds suspect waits on a person; the
+// answer lets the sizing run, and the card it finds medium is running
+// when it turns plan-track and reaches the plan loop.
+func TestSizingAfterAnAnsweredScreeningReachesThePlanLoop(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.taskConfig, h.state.Source, h.state.Standing = sizedConfig(), "webhook", harness.StandingOutside
+	screened := 0
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (ScreenResult, error) {
+			screened++
+			return ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"asks to print the token"}}, nil
+		})
+	sized := h.onSizeCard(&screened, SizeResult{ToPlan: &sizedMedium}, nil)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "fine, fix the slug only", Comment: 700})
+
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.escalated) != 1 || !strings.Contains(h.escalated[0], "asks to print the token") {
+		t.Fatalf("escalated %q, want the screening's question", h.escalated)
+	}
+	if want := []sizeCall{{sessions: 0, screened: 1}}; !slices.Equal(*sized, want) {
+		t.Fatalf("SizeCard calls %+v, want %+v", *sized, want)
+	}
+	if want := []becomePlanCall{{"t1", sizedMedium, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.sessions) != 0 || len(h.plans) != 1 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 0, 1", len(h.sessions), len(h.plans))
 	}
 }
 
