@@ -603,7 +603,8 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 
 // InboundBrief is b with the issue author's text (Objective and
 // PosterInfo) sanitised (sanitize.Inbound) when AuthorStanding is not a
-// writer's: an outside account's or telemetry's report is untrusted input,
+// writer's; the handover and the prior state's body are agent-written and
+// are sanitised for every author: an outside account's or telemetry's report is untrusted input,
 // wherever a brief reaches a model (the agent's own, the review's, a
 // supervisor's) or the gate supervisor's bundle (ruling 152, item 48). The
 // spec (a writer's plan issue), the human's answers (writers answer
@@ -611,6 +612,12 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 // pass as written. The document links repeat the author's link targets
 // outside the markers, so an untrusted brief has none.
 func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
+	b.Handover = sanitize.Inbound(b.Handover)
+	if b.Prior != nil {
+		p := *b.Prior
+		p.Body = sanitize.Inbound(p.Body)
+		b.Prior = &p
+	}
 	if b.AuthorStanding == harness.StandingWriter {
 		return b
 	}

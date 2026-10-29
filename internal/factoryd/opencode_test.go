@@ -1377,3 +1377,23 @@ func TestBriefTextShowsThePriorStateDatedAndFenced(t *testing.T) {
 		t.Fatalf("brief without prior has STATE text:\n%s", got)
 	}
 }
+
+func TestInboundBriefSanitisesThePriorBodyAndHandoverForEveryAuthor(t *testing.T) {
+	for _, standing := range []string{harness.StandingWriter, harness.StandingOutside} {
+		prior := &harness.PriorState{Heading: "h", Body: "plain <!-- hidden-body --> text", Reports: []string{"r.md"}}
+		in := harness.TaskBrief{AuthorStanding: standing, Handover: "note <!-- hidden-note --> end", Prior: prior}
+		got := InboundBrief(in)
+		if strings.Contains(got.Handover, "hidden") || strings.Contains(got.Prior.Body, "hidden") {
+			t.Errorf("%s: handover %q, body %q keep hidden text", standing, got.Handover, got.Prior.Body)
+		}
+		if !strings.HasPrefix(got.Handover, "note ") || !strings.HasPrefix(got.Prior.Body, "plain ") || got.Prior.Heading != "h" || got.Prior.Reports[0] != "r.md" {
+			t.Errorf("%s: plain text changed: %q, %+v", standing, got.Handover, got.Prior)
+		}
+		if !strings.Contains(prior.Body, "hidden-body") {
+			t.Errorf("%s: the caller's Prior was mutated", standing)
+		}
+		if text := objectiveText(in); strings.Contains(text, "hidden") {
+			t.Errorf("%s: the brief text keeps hidden text:\n%s", standing, text)
+		}
+	}
+}

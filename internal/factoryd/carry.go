@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -91,7 +92,7 @@ func workingState(record []byte, from carryFrom) *carryState {
 		commit = commit[:8]
 	}
 	heading := fmt.Sprintf("From session %s, stopped at %s UTC because %s, branch at commit %s. Written before your session started. Where they differ from the code on the branch, the code is right.",
-		from.Session, last.UTC().Format("15:04"), textutil.Truncate(from.Stop, carryStopBytes), commit)
+		from.Session, last.UTC().Format("15:04"), textutil.Truncate(strings.Join(strings.Fields(sanitize.Inbound(from.Stop)), " "), carryStopBytes), commit)
 	if from.DeadEnd {
 		heading += " The check-in judged this approach wrong; the todo list below is the dead end's, not a plan to follow."
 	}

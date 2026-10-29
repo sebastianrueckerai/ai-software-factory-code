@@ -203,7 +203,7 @@ func (c *checkinServe) landPrior(in *harness.BriefPush) error {
 }
 
 func badSession(session string) bool {
-	return session == "" || strings.Contains(session, "/") || strings.Contains(session, "..")
+	return session == "" || session == "." || strings.Contains(session, "/") || strings.Contains(session, "..")
 }
 
 var errOutside = errors.New("outside the workspace")

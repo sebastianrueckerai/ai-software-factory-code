@@ -421,6 +421,8 @@ func TestBriefEndpointLandsTheReportsOutsideTheRepo(t *testing.T) {
 		"session empty":        `{"prior":{"session":""},"files":[{"Name":"r.md","Text":"x"}]}`,
 		"name dotdot":          `{"prior":{"session":"s-1"},"files":[{"Name":"../x","Text":"x"}]}`,
 		"name with a slash":    `{"prior":{"session":"s-1"},"files":[{"Name":"a/b","Text":"x"}]}`,
+		"name dot":             `{"prior":{"session":"s-1"},"files":[{"Name":"r.md","Text":"x"},{"Name":".","Text":"x"}]}`,
+		"session dot":          `{"prior":{"session":"."},"files":[{"Name":"r.md","Text":"x"}]}`,
 		"name empty":           `{"prior":{"session":"s-1"},"files":[{"Name":"","Text":"x"}]}`,
 		"files without prior":  `{"files":[{"Name":"r.md","Text":"x"}]}`,
 	} {
