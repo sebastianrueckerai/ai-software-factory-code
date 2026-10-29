@@ -290,11 +290,13 @@ stronger rung (the same model at the top) from the note. A check-in that
 cannot answer (a refused call, no model) gives `retry_stronger` on a
 stuck trip and `continue` on any other. The stall, the clock,
 `spend_no_push` and the size trip are never stuck.
-The statement of a check-in at a session's start or in a running session
-ends with the pace line: "Pace of the card: N changed lines so far
-against its bound of M; X EUR spent, Y left; A minutes of agent time
-spent, B left; session I of J." Where no diff was measured, the line says
-the changed lines are not measured at this moment. A conversation gets
+The statement of a coding session's check-in, at the session's start or
+while it runs, carries the pace line: "Pace of the card: N changed lines
+so far against its bound of M; X EUR spent, Y left; A minutes of agent
+time spent, B left; session I of J." Neither figure left goes below 0.
+Before a checkpoint has measured the card's diff, the line says the
+changed lines are not measured at this moment. A report or plan
+session's statement carries no pace line. A conversation gets
 `limits.checkin_calls` (20) calls, the last without tools, then a human.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
@@ -358,7 +360,8 @@ container states and last 100 log lines (`RunSession`,
 or the review model and its last `model_review` step (`ModelReview`). Every string of the bundle goes
 through `internal/redact` with the task's git tokens, the factory's one
 scrubber (the gateway's audit records and the worker's git errors use it
-too); its 32-character rule also takes long URL paths and commit ids.
+too); its 32-character rule takes a run that holds a digit, a `+` or an
+`=` and is no commit id, sha256 digest or lowercase path.
 The reads have a minute. The `supervisor_model` answers through the gateway
 on the task's account (purpose
 `gate-supervisor`): `wait` (the attempt's bound is extended once by its

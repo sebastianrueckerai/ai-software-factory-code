@@ -386,8 +386,9 @@ token's task, a constant) and go out as they are. Every other string goes
 through the scrubber first (the upstream-body rule is the gateway's, the rest `internal/redact`): a PEM block becomes `[pem redacted]`; the
 gateway's own keys (`LITELLM_MASTER_KEY`, the tool keys, `FACTORYD_TOKEN`,
 `HETZNER_AGENT_KEY`), URL userinfo, bearer and basic credentials, JWTs,
-`sk-` keys and any run of 32 or more key characters become `[redacted]`
-(which also catches long paths and digests; Postgres keeps them); and the
+`sk-` keys and any run of 32 or more key characters that holds a digit, a
+`+` or an `=` and is no commit id, sha256 digest or lowercase path become
+`[redacted]` (Postgres keeps the whole text); and the
 body an upstream error carries (`provider answered <status>: ...`, `key
 generate|block: status <status>: ...`, `unreadable prediction: ...`)
 becomes `[body dropped]`, keeping the gateway's own `; cost not reported,

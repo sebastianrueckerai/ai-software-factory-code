@@ -13,7 +13,8 @@
   service account (so its own LiteLLM key), one gVisor pod, supervision
   (wall-clock cap, stall, reading without writing, same failure, same
   call, flip-flop, churn and no-write detectors, the check-in; see [Supervision](gates.md#supervision)) and
-  a session record in S3; `sessions/<task>/timeline.jsonl` records the
+  a session record in S3, every string of it scrubbed by `internal/redact`
+  with factoryd's boot secrets; `sessions/<task>/timeline.jsonl` records the
   task's whole path. Spend settlement against LiteLLM and the orphan
   sweep run beside it. Runs with `strategy: Recreate`; a restart loses
   nothing: a stopping pod stops its running sessions gracefully (the
