@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"maps"
@@ -73,6 +74,22 @@ func (tl *Timeline) recordEvent(ctx context.Context, taskID, event string, detai
 		log.Printf("task %s: event %s: %v", taskID, event, err)
 	}
 	tl.RecordRow(ctx, taskID, event, FactoryDecider, ViaFactoryd, detail)
+}
+
+// hasEvent tells whether taskID's timeline holds event. An unreadable
+// timeline reads as no.
+func (tl *Timeline) hasEvent(ctx context.Context, taskID, event string) bool {
+	body, err := tl.Objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return false
+	}
+	for _, line := range bytes.Split(body, []byte("\n")) {
+		var e map[string]any
+		if json.Unmarshal(line, &e) == nil && e["step"] == StepEvent && e["event"] == event {
+			return true
+		}
+	}
+	return false
 }
 
 // RecordRow writes event as an events row: the task's repository and issue

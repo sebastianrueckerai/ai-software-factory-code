@@ -652,7 +652,11 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "closed" }) || r.planClosed(ctx, parent) {
 			return
 		}
-		r.closePlan(ctx, t, repo, 0, "factoryd: every card of this plan is done; the plan is closed.")
+		comment := "factoryd: every card of this plan is done or closed; the plan is closed."
+		if r.timeline.hasEvent(ctx, parent, EventAllChildrenDone) {
+			comment = ""
+		}
+		r.closePlan(ctx, t, repo, 0, comment)
 		return
 	}
 	integration, err := integrationCard(ctx, r.store, parent, p)
@@ -685,11 +689,13 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 }
 
-// closePlan says why plan t closed on its issue and records plan_closed
+// closePlan says why plan t closed on its issue, unless comment is empty, and records plan_closed
 // with the plan's count of criteria. A close whose row failed runs again
 // on the next pass; the issue still hears of it once.
 func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int, comment string) {
-	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
+	if comment != "" {
+		r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
+	}
 	r.timeline.recordEvent(ctx, t.ID, EventPlanClosed, map[string]any{"criteria": criteria})
 	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
 }

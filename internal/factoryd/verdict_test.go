@@ -453,7 +453,7 @@ func commentBodies(fj *planForgejo) []string {
 func TestPlanCloseCheckClosesAPlanWithoutCriteria(t *testing.T) {
 	ctx := context.Background()
 	r, _, objs, fj := planWithoutCriteria(t, "done", "done", "closed")
-	want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}
+	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
 	r.planCloseCheck(ctx, "t-plan")
 	if n := planCloses(t, objs); n != 1 {
 		t.Fatalf("plan_closed with criteria 0 recorded %d times, want 1", n)
@@ -467,6 +467,18 @@ func TestPlanCloseCheckClosesAPlanWithoutCriteria(t *testing.T) {
 	}
 	if got := commentBodies(fj); !slices.Equal(got, want) {
 		t.Errorf("the second check: comments = %q, want %q", got, want)
+	}
+}
+
+// The comment that every card is done already told the issue; the close
+// records itself and adds no second comment.
+func TestPlanCloseCheckAddsNoCommentAfterAllChildrenDone(t *testing.T) {
+	ctx := context.Background()
+	r, _, objs, fj := planWithoutCriteria(t, "done", "done")
+	r.timeline.recordEvent(ctx, "t-plan", EventAllChildrenDone, map[string]any{"cards": 2})
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 || len(fj.comments) != 0 {
+		t.Fatalf("plan_closed %d times, comments %q; want 1 and none", n, commentBodies(fj))
 	}
 }
 
@@ -488,7 +500,7 @@ func TestCriteriaPassVisitsOpenGroups(t *testing.T) {
 	if got := openPlans(t, s); !slices.Equal(got, []string{"t-plan"}) {
 		t.Fatalf("open groups = %v, want t-plan", got)
 	}
-	want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}
+	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
 	for pass := 1; pass <= 2; pass++ {
 		r.CriteriaPass(ctx)
 		if n, rows := planCloses(t, objs), closeRows(s); n != 1 || rows != 1 {
@@ -520,7 +532,7 @@ func TestCriteriaPassRetriesALostCloseRow(t *testing.T) {
 			t.Fatalf("pass %d: rows %d, open groups %v; want 1 and none", pass, rows, open)
 		}
 	}
-	if want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
+	if want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
 		t.Errorf("comments = %q, want %q", commentBodies(fj), want)
 	}
 }
