@@ -32,6 +32,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -177,6 +178,10 @@ type Runner struct {
 	// Imager verifies a project image before a pod runs it
 	// (verifyProjectImage); set before the worker starts.
 	Imager *Imager
+	// Scrub scrubs every session record. NewRunner's knows no secret
+	// value; factoryd sets the one built from its boot secrets before the
+	// worker starts.
+	Scrub *redact.Scrubber
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
@@ -364,7 +369,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
-		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now()}
+		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New()}
 	return runner, nil
 }
 
@@ -556,9 +561,9 @@ const workerTerminationGrace = 60
 func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpec, deadline time.Time, progress func(events int), workerStop <-chan struct{}, live *LiveSession) (out sessionOutcome, err error) {
 	var recorder *SessionRecorder
 	if live != nil {
-		recorder, err = ResumeSessionRecorder(ctx, r.store, r.objects, t.ID, s.id)
+		recorder, err = ResumeSessionRecorder(ctx, r.store, r.objects, r.Scrub, t.ID, s.id)
 	} else {
-		recorder, err = NewSessionRecorder(ctx, r.store, r.objects, t.ID, s.id, s.parent, s.model)
+		recorder, err = NewSessionRecorder(ctx, r.store, r.objects, r.Scrub, t.ID, s.id, s.parent, s.model)
 	}
 	if err != nil {
 		return out, err

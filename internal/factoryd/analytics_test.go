@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 func wantSums(t *testing.T, got, want map[string]float64) {
@@ -154,7 +155,7 @@ func TestSessionRecorderKeepsTheModelAlias(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "running", Track: "direct"})
 	for _, model := range []string{"factory/small", "factory/big"} {
-		if _, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, "t1", "s-"+model, "", model); err != nil {
+		if _, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, redact.New(), "t1", "s-"+model, "", model); err != nil {
 			t.Fatal(err)
 		}
 	}

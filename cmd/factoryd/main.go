@@ -273,7 +273,11 @@ func main() {
 	// OAuth tokens are (roadmap 273)
 	store.SetSealKey([]byte(consoleSessionKey))
 	registryReadToken := mustSecret("REGISTRY_READ_TOKEN")
+	telegramKey := optionalSecret("TELEGRAM_BOT_KEY")
+	discordSecret, discordToken := optionalSecret("DISCORD_CLIENT_SECRET"), optionalSecret("DISCORD_BOT_TOKEN")
+	docsToken := optionalSecret("FORGEJO_DOCS_TOKEN")
 	scrub := redact.New(bootSecrets...)
+	runner.Scrub = scrub
 	taskWorker := worker.New(temporal, factoryd.TaskQueue, workerOptions(scrub, gates, openActivities,
 		&factoryd.ActivitySpans{Tracer: otelProviders.Tracer.Tracer("factoryd")}))
 	taskWorker.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run,
@@ -505,7 +509,7 @@ func main() {
 	var messengers *console.Messengers
 	var telegram *factoryd.Telegram
 	var discord *factoryd.Discord
-	if key := optionalSecret("TELEGRAM_BOT_KEY"); key != "" {
+	if key := telegramKey; key != "" {
 		telegram = &factoryd.Telegram{Token: key, PublicURL: publicURL, Store: store}
 		if err := telegram.Boot(ctx, publicURL); err != nil {
 			log.Printf("messengers: telegram boot: %v", err)
@@ -513,8 +517,7 @@ func main() {
 		messengers = &console.Messengers{Secret: factoryd.TelegramSecret(key), Update: telegram.Update,
 			Store: store, TelegramName: telegram.Name}
 	}
-	if id, secret, token := env("DISCORD_CLIENT_ID", ""), optionalSecret("DISCORD_CLIENT_SECRET"),
-		optionalSecret("DISCORD_BOT_TOKEN"); id != "" || secret != "" || token != "" {
+	if id, secret, token := env("DISCORD_CLIENT_ID", ""), discordSecret, discordToken; id != "" || secret != "" || token != "" {
 		if id == "" || secret == "" || token == "" {
 			log.Print("messengers: discord needs DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET and DISCORD_BOT_TOKEN together")
 		} else {
@@ -610,7 +613,7 @@ func main() {
 		InfraRepo:  configRepo,
 		InfraToken: forgejo.Seeded[policy.SecretConfig],
 		ChatToken:  func(p factoryd.Project) string { return forgejo.Access(p).Chat },
-		DocsToken:  optionalSecret("FORGEJO_DOCS_TOKEN"),
+		DocsToken:  docsToken,
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())
 		},

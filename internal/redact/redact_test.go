@@ -25,6 +25,28 @@ func TestStringKeepsCommitsDigestsAndPaths(t *testing.T) {
 	}
 }
 
+// A run of 32 or more key characters is a key only when it holds a digit,
+// a + or an =: a long identifier and a path in any case are text.
+func TestStringKeysHoldADigitAPlusOrAnEquals(t *testing.T) {
+	s := New()
+	for in, want := range map[string]string{
+		`go test ./internal/factoryd/ -run TestWorkingStateCutsOnRuneBoundaries -count=1`: `go test ./internal/factoryd/ -run TestWorkingStateCutsOnRuneBoundaries -count=1`,
+		`wrote /workspace/repo/web/src/components/ProjectBoardDrawer.tsx`:                 `wrote /workspace/repo/web/src/components/ProjectBoardDrawer.tsx`,
+		`wrote src/main/java/com/example/service/OrderService.java`:                       `wrote src/main/java/com/example/service/OrderService.java`,
+		`- [pending] name it TestSizeTripSeesACheckpointQueuedBehindAnAnswer`:             `- [pending] name it TestSizeTripSeesACheckpointQueuedBehindAnAnswer`,
+		`key Xk9vB2mQ7pL4sT8wZ1cF6hJ3nR5yU0eAgDiK2oPq set`:                                `key [redacted] set`,
+		`key Xk9vB2mQ7pL4sT8wZ1cF6hJ3nR5yU0eA/gD+iK2o set`:                                `key [redacted] set`,
+		`key abcdefghijklmnop+qrstuvwxyzABCDEFGH set`:                                     `key [redacted] set`,
+		`key abcdefghijklmnopqrstuvwxyzABCDEF== set`:                                      `key [redacted] set`,
+		`secret wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY rejected`:                        `secret [redacted] rejected`,
+		`head 3f786850e387550fdab836ed7e6dc881de23001b pushed`:                            `head 3f786850e387550fdab836ed7e6dc881de23001b pushed`,
+	} {
+		if got := s.String(in); got != want {
+			t.Errorf("String(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestStringRemovesKeys(t *testing.T) {
 	s := New("hunter2-master", "short")
 	for in, want := range map[string]string{

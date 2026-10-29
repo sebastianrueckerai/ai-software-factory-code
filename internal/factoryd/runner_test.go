@@ -34,6 +34,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // fakeKube scripts the Kubernetes seam: pods are created with a phase and a
@@ -3687,6 +3688,26 @@ func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
 	}
 	if chat.calls != 0 {
 		t.Fatalf("chat = %d calls %+v, want none", chat.calls, chat.gots)
+	}
+}
+
+// The session record is scrubbed with the runner's scrubber: a boot
+// secret no generic rule knows is masked by its value.
+func TestRunSessionRecordMasksTheBootSecrets(t *testing.T) {
+	const secret = "boot-object-storage-secret"
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
+	runner.Scrub = redact.New(secret)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
+		envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": "env", "exit": 0, "output": "the key " + secret + " is in use"}})+"\n"+
+			pushedLine("c0ffee")+"\n"+resultLine(true, "done"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := string(objGet(objects, "sessions/t1/"+res.SessionID+".jsonl"))
+	if strings.Contains(rec, secret) || !strings.Contains(rec, `"output":"the key [redacted] is in use"`) {
+		t.Fatalf("record = %s, want the boot secret masked", rec)
 	}
 }
 

@@ -61,7 +61,7 @@ var _ ObjectStore = (*fakeObjectStore)(nil)
 func TestSessionRecorderStreamsHistoryToS3(t *testing.T) {
 	store := newFakeStore()
 	objects := &fakeObjectStore{}
-	r, err := NewSessionRecorder(context.Background(), store, objects, "t1", "s1", "s0", "factory/small")
+	r, err := NewSessionRecorder(context.Background(), store, objects, redact.New(), "t1", "s1", "s0", "factory/small")
 	if err != nil {
 		t.Fatalf("NewSessionRecorder: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSessionRecorderStreamsHistoryToS3(t *testing.T) {
 
 func TestSessionRecorderSnapshotGoesToPostgres(t *testing.T) {
 	store := newFakeStore()
-	r, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, "t1", "s1", "", "factory/small")
+	r, err := NewSessionRecorder(context.Background(), store, &fakeObjectStore{}, redact.New(), "t1", "s1", "", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSessionRecorderSnapshotGoesToPostgres(t *testing.T) {
 // the history so far, whole, as a copy the caller cannot corrupt.
 func TestTranscript(t *testing.T) {
 	objects := &fakeObjectStore{}
-	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/small")
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, redact.New(), "t1", "s1", "", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestTranscript(t *testing.T) {
 
 func TestSessionRecorderMasksSecretsBeforeStoring(t *testing.T) {
 	objects := &fakeObjectStore{}
-	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/small")
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, redact.New(), "t1", "s1", "", "factory/small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,5 +183,39 @@ func TestSessionRecorderMasksSecretsBeforeStoring(t *testing.T) {
 	}
 	if stored, _ := objects.Get(context.Background(), "sessions/t1/s1.jsonl"); string(stored) != got {
 		t.Fatal("the stored object differs from the transcript")
+	}
+}
+
+// The scrub keeps what the record is read for: an acceptance command that
+// names a long test still proves the card through the stored record, and a
+// path with capitals and a long identifier in a todo stay as written.
+func TestSessionRecorderKeepsIdentifiersAndPaths(t *testing.T) {
+	objects := &fakeObjectStore{}
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, redact.New(), "t1", "s1", "", "factory/small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	command := "go test ./internal/factoryd/ -run TestWorkingStateCutsOnRuneBoundaries -count=1"
+	path := "/workspace/repo/web/src/components/ProjectBoardDrawer.tsx"
+	todo := "name it TestSizeTripSeesACheckpointQueuedBehindAnAnswer"
+	for _, ev := range []harness.Event{
+		{Kind: harness.EventCommand, Detail: map[string]any{"command": command, "exit": 0}},
+		{Kind: harness.EventFileChange, Detail: map[string]any{"path": path}},
+		{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "todowrite", "args": map[string]any{"todos": []any{map[string]any{"status": "pending", "content": todo}}}}},
+	} {
+		if err := r.Record(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := string(r.Transcript())
+	for _, want := range []string{`"command":"` + command + `"`, `"path":"` + path + `"`, `"content":"` + todo + `"`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("record lacks %s:\n%s", want, got)
+		}
+	}
+	runner := &Runner{timeline: &Timeline{Objects: objects}}
+	hit := acceptanceHit(runner.sessionTranscript(context.Background(), "t1", "s1"), []string{command})
+	if hit == nil || hit.Command != command || hit.Exit != 0 {
+		t.Fatalf("acceptance hit = %+v, want %q with exit 0", hit, command)
 	}
 }

@@ -14,30 +14,32 @@ import (
 // SessionRecorder keeps the two session records: the full event history as
 // one JSONL object per session under sessions/<task-id>/, re-PUT on every
 // event so a killed session leaves its partial history durable in S3; and
-// the compact restart state (findings + resume blob) in Postgres.
+// the compact restart state (findings + resume blob) in Postgres. Every
+// event is scrubbed with scrub before it is kept.
 type SessionRecorder struct {
 	store   Store
 	objects ObjectStore
+	scrub   *redact.Scrubber
 	taskID  string
 	id      string
 	history bytes.Buffer
 }
 
-func NewSessionRecorder(ctx context.Context, store Store, objects ObjectStore, taskID, sessionID, parentSessionID, model string) (*SessionRecorder, error) {
+func NewSessionRecorder(ctx context.Context, store Store, objects ObjectStore, scrub *redact.Scrubber, taskID, sessionID, parentSessionID, model string) (*SessionRecorder, error) {
 	if err := store.InsertSession(ctx, Session{ID: sessionID, TaskID: taskID, ParentSessionID: parentSessionID, Model: aliasOf(model)}); err != nil {
 		return nil, err
 	}
-	return &SessionRecorder{store: store, objects: objects, taskID: taskID, id: sessionID}, nil
+	return &SessionRecorder{store: store, objects: objects, scrub: scrub, taskID: taskID, id: sessionID}, nil
 }
 
 // ResumeSessionRecorder continues a session's record from its object: a
 // reattached session appends to the same history.
-func ResumeSessionRecorder(ctx context.Context, store Store, objects ObjectStore, taskID, sessionID string) (*SessionRecorder, error) {
+func ResumeSessionRecorder(ctx context.Context, store Store, objects ObjectStore, scrub *redact.Scrubber, taskID, sessionID string) (*SessionRecorder, error) {
 	body, err := objects.Get(ctx, "sessions/"+taskID+"/"+sessionID+".jsonl")
 	if err != nil {
 		return nil, err
 	}
-	r := &SessionRecorder{store: store, objects: objects, taskID: taskID, id: sessionID}
+	r := &SessionRecorder{store: store, objects: objects, scrub: scrub, taskID: taskID, id: sessionID}
 	r.history.Write(body)
 	return r, nil
 }
@@ -45,7 +47,7 @@ func ResumeSessionRecorder(ctx context.Context, store Store, objects ObjectStore
 // Record appends the event to the session history and ships the whole object.
 // Every string in the event's detail is scrubbed first.
 func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
-	ev.Detail = scrubDetail(ev.Detail)
+	ev.Detail = scrubDetail(r.scrub, ev.Detail)
 	line, err := json.Marshal(ev)
 	if err != nil {
 		return err
@@ -55,11 +57,9 @@ func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
 	return r.objects.Put(ctx, "sessions/"+r.taskID+"/"+r.id+".jsonl", r.history.Bytes())
 }
 
-var recordScrubber = redact.New()
-
 // scrubDetail is a copy of d with every string value, nested ones included,
 // scrubbed. Digests under a key ending "sha256" are not secrets and stay.
-func scrubDetail(d map[string]any) map[string]any {
+func scrubDetail(scrub *redact.Scrubber, d map[string]any) map[string]any {
 	if d == nil {
 		return nil
 	}
@@ -69,21 +69,21 @@ func scrubDetail(d map[string]any) map[string]any {
 			out[k] = v
 			continue
 		}
-		out[k] = scrubValue(v)
+		out[k] = scrubValue(scrub, v)
 	}
 	return out
 }
 
-func scrubValue(v any) any {
+func scrubValue(scrub *redact.Scrubber, v any) any {
 	switch v := v.(type) {
 	case string:
-		return recordScrubber.String(v)
+		return scrub.String(v)
 	case map[string]any:
-		return scrubDetail(v)
+		return scrubDetail(scrub, v)
 	case []any:
 		out := make([]any, len(v))
 		for i, e := range v {
-			out[i] = scrubValue(e)
+			out[i] = scrubValue(scrub, e)
 		}
 		return out
 	}

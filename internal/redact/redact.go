@@ -1,5 +1,6 @@
 // Package redact is the factory's one scrubber for text that leaves a
-// process: audit log records, git errors, the gate supervisor's bundle.
+// process: audit log records, git errors, the gate supervisor's bundle,
+// the session record.
 package redact
 
 import (
@@ -9,8 +10,8 @@ import (
 
 // Scrubber replaces PEM blocks, the configured secrets, URL userinfo,
 // bearer and basic credentials, JWTs, sk- keys and any run of 32 or more
-// key characters that is not a commit id, a sha256 digest or a lowercase path
-// with a marker.
+// key characters that holds a digit, a + or an = and is not a commit id, a
+// sha256 digest or a lowercase path with a marker.
 type Scrubber struct {
 	secrets []string
 }
@@ -22,7 +23,8 @@ var (
 	// shortWord is a credential position holding a word ("missing bearer
 	// token"), not a credential
 	shortWord = regexp.MustCompile(`^[A-Za-z]{1,7}$`)
-	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|(?:sha256:)?[\w+/=-]{32,}`)
+	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}`)
+	longRun   = regexp.MustCompile(`(?:sha256:)?[\w+/=-]{32,}`)
 	// gitSHA and digest are what the 32-character rule keeps: a commit id,
 	// an image or blob digest
 	gitSHA    = regexp.MustCompile(`^[0-9a-f]{40}$`)
@@ -59,8 +61,11 @@ func (s *Scrubber) String(v string) string {
 		}
 		return p[1] + " [redacted]"
 	})
-	return keyLike.ReplaceAllStringFunc(v, func(m string) string {
-		if gitSHA.MatchString(m) || digest.MatchString(m) || repoPath(m) {
+	v = keyLike.ReplaceAllString(v, "[redacted]")
+	return longRun.ReplaceAllStringFunc(v, func(m string) string {
+		// a long identifier or a path holds none of the three; a random key
+		// of 32 characters almost always does
+		if !strings.ContainsAny(strings.TrimPrefix(m, "sha256:"), "0123456789+=") || gitSHA.MatchString(m) || digest.MatchString(m) || repoPath(m) {
 			return m
 		}
 		return "[redacted]"
