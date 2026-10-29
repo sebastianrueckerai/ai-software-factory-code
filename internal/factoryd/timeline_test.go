@@ -204,3 +204,34 @@ func TestApprovalGateSampleCarriesItsSignal(t *testing.T) {
 		t.Fatalf("gates %v, want %v", got, want)
 	}
 }
+
+// AppendOnce records a step once however many callers race to it: the
+// check and the write are one step under the task's lock.
+func TestTimelineAppendOnceRecordsOneStepUnderRace(t *testing.T) {
+	objects := &fakeObjectStore{}
+	tl := &Timeline{Objects: objects}
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	var wrote atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := tl.AppendOnce(ctx, "t1", "to_plan", map[string]any{"reason": "big"})
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				wrote.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	body, _ := objects.Get(ctx, "sessions/t1/timeline.jsonl")
+	if lines := strings.Count(string(body), "\n"); lines != 1 || wrote.Load() != 1 {
+		t.Fatalf("%d lines, %d callers wrote; want 1 and 1", lines, wrote.Load())
+	}
+	if ok, err := tl.AppendOnce(ctx, "t1", "other", nil); err != nil || !ok {
+		t.Fatalf("a different step: wrote %t, err %v; want written", ok, err)
+	}
+}

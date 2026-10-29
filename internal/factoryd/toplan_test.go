@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -132,6 +133,19 @@ func TestBecomePlanCompletesAfterAFailedLabelWrite(t *testing.T) {
 		!slices.Equal(fj.labels[7], []string{LabelPlan, "state/running"}) || store.tasks["t1"].Usage != (TaskUsage{}) {
 		t.Fatalf("%d to_plan steps, %d label writes, labels %q, usage %+v; want 1, 2 (one refused), [plan state/running], zero",
 			steps, writes, fj.labels[7], store.tasks["t1"].Usage)
+	}
+}
+
+// Forgejo refusing the relabel does not fail a card that is plan-track
+// already: the label only mirrors the row.
+func TestBecomePlanSurvivesARefusedRelabel(t *testing.T) {
+	r, store, objects, fj := becomePlanRig(t, directCard(), specTracks)
+	fj.labelFail, fj.labelStatus = 1, http.StatusForbidden
+	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "split by the check-in"}); got != (PlanSwitchResult{Switched: true}) {
+		t.Fatalf("BecomePlan = %+v, want switched", got)
+	}
+	if store.tasks["t1"].Track != policy.TrackPlan || len(toPlanSteps(t, objects)) != 1 {
+		t.Fatalf("track %q, steps %v; want plan and one step", store.tasks["t1"].Track, toPlanSteps(t, objects))
 	}
 }
 

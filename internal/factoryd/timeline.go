@@ -70,10 +70,25 @@ func (tl *Timeline) lock(taskID string) (unlock func()) {
 
 func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[string]any) error {
 	defer tl.lock(taskID)()
+	_, err := tl.append(ctx, taskID, step, detail, false)
+	return err
+}
+
+// AppendOnce appends the step unless the timeline holds one already, the
+// check and the write under one lock; it tells whether it wrote.
+func (tl *Timeline) AppendOnce(ctx context.Context, taskID, step string, detail map[string]any) (bool, error) {
+	defer tl.lock(taskID)()
+	return tl.append(ctx, taskID, step, detail, true)
+}
+
+func (tl *Timeline) append(ctx context.Context, taskID, step string, detail map[string]any, once bool) (bool, error) {
 	key := "sessions/" + taskID + "/timeline.jsonl"
 	prev, err := tl.Objects.Get(ctx, key)
 	if err != nil {
-		return err
+		return false, err
+	}
+	if once && lastStep(prev, step) != nil {
+		return false, nil
 	}
 	now := time.Now().UTC()
 	if tl.now != nil {
@@ -85,13 +100,13 @@ func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[
 	entry["step"] = step
 	line, err := json.Marshal(entry)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := tl.Objects.Put(ctx, key, slices.Concat(prev, line, []byte("\n"))); err != nil {
-		return err
+		return false, err
 	}
 	tl.gate(ctx, step, detail, now)
-	return nil
+	return true, nil
 }
 
 // gate emits the duration of the gate a step ends (StepGates) when the

@@ -80,7 +80,7 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 				return PlanSwitchResult{}, err
 			}
 		}
-		if err := r.timeline.Append(ctx, taskID, stepToPlan, map[string]any{"reason": sw.Reason, "work_so_far": work}); err != nil {
+		if _, err := r.timeline.AppendOnce(ctx, taskID, stepToPlan, map[string]any{"reason": sw.Reason, "work_so_far": work}); err != nil {
 			return PlanSwitchResult{}, fmt.Errorf("record %s: %w", stepToPlan, err)
 		}
 	}
@@ -88,23 +88,32 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 		return PlanSwitchResult{}, err
 	}
 	if t.IssueNumber != 0 {
-		labels, err := r.forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
-		if err != nil {
+		if err := r.relabelPlan(ctx, repo, t); err != nil {
 			return PlanSwitchResult{}, err
-		}
-		if slices.Contains(labels, LabelAgent) || !slices.Contains(labels, LabelPlan) {
-			next := []string{LabelPlan}
-			for _, l := range labels {
-				if l != LabelAgent && l != LabelPlan {
-					next = append(next, l)
-				}
-			}
-			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, next); err != nil {
-				return PlanSwitchResult{}, err
-			}
 		}
 	}
 	return PlanSwitchResult{Switched: true}, nil
+}
+
+// relabelPlan labels card t's issue plan in place of agent. The label only
+// mirrors the row, so Forgejo's refusal is logged and other errors retry.
+func (r *Runner) relabelPlan(ctx context.Context, repo Repo, t Task) error {
+	labels, err := r.forgejo.IssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	if err != nil {
+		return cleanup(t.ID, "read the issue's labels", err)
+	}
+	if slices.Contains(labels, LabelAgent) || !slices.Contains(labels, LabelPlan) {
+		next := []string{LabelPlan}
+		for _, l := range labels {
+			if l != LabelAgent && l != LabelPlan {
+				next = append(next, l)
+			}
+		}
+		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, next); err != nil {
+			return cleanup(t.ID, "relabel the issue plan", err)
+		}
+	}
+	return nil
 }
 
 // workSoFar is the planner's input block of card taskID: the head of its
