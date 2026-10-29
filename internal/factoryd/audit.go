@@ -125,7 +125,10 @@ func parseAudit(content string) ([]AuditFinding, string) {
 // task's account, one call for each part of the diff (callAll runs them in
 // parallel), a file larger than a part cut by hunks, the first with the
 // concurrency summary of the whole diff. An answer without a verdict is a
-// finding. The findings go to the card and the timeline, never to the
+// finding, and a refused or failed call one for its reason that names its
+// parts; the parts' findings keep the first maxJoinedFindings. A diff the
+// card cannot pay for, or past maxDiffRead, is one finding and no call.
+// The findings go to the card and the timeline, never to the
 // pull request, which the agent reads. An audit beside the checks wait
 // (gates.Beside) starts its gate at its own schedule.
 func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
@@ -206,6 +209,11 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
+	// a refused or failed call is one finding for each reason, which names
+	// its parts: the retry gives every part after a refusal that refusal
+	var gaps []string
+	gapParts := map[string][]int{}
+	var found []AuditFinding
 	for i, got := range results {
 		label := ""
 		if len(calls) > 1 {
@@ -213,22 +221,39 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}
 		res.Deployment = cmp.Or(got.Deployment, res.Deployment)
 		var refusal *policy.Refusal
+		gap := ""
 		switch {
 		case errors.As(got.Err, &refusal):
-			noVerdict(label + "the audit call was refused by the gateway (" + refusal.Decision + "): " + refusal.Reason)
+			gap = "the audit call was refused by the gateway (" + refusal.Decision + "): " + refusal.Reason
 		case got.Err != nil:
-			noVerdict(label + "the audit call failed: " + got.Err.Error())
+			gap = "the audit call failed: " + got.Err.Error()
 		default:
-			found, why := parseAudit(got.Content)
+			parsed, why := parseAudit(got.Content)
 			if why != "" {
-				noVerdict(fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content)))
+				found = append(found, AuditFinding{Item: auditNoVerdict, Why: fmt.Sprintf("%s%s (an answer of %d bytes)", label, why, len(got.Content))})
 			}
-			for _, f := range found {
+			for _, f := range parsed {
 				f.File = scrub.String(f.File)
-				res.Findings = append(res.Findings, f)
+				found = append(found, f)
 			}
+			continue
 		}
+		if gapParts[gap] == nil {
+			gaps = append(gaps, gap)
+		}
+		gapParts[gap] = append(gapParts[gap], i)
 	}
+	for _, gap := range gaps {
+		if len(calls) > 1 {
+			gap = partsNamed(gapParts[gap], len(calls)) + ": " + gap
+		}
+		noVerdict(gap)
+	}
+	if n := len(found); n > maxJoinedFindings {
+		found = append(found[:maxJoinedFindings], AuditFinding{Item: fmt.Sprintf("... and %d more", n-maxJoinedFindings),
+			Why: fmt.Sprintf("the card lists the first %d of the parts' findings", maxJoinedFindings)})
+	}
+	res.Findings = append(res.Findings, found...)
 	stopBeats()
 	return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
 }

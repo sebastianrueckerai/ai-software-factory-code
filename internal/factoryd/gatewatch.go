@@ -339,22 +339,34 @@ func activityBeside(args []any) bool {
 // PinnedBound is GateWatch.Bound: the bound of the version pin (read with
 // read), the current version for 0 or a version it cannot read, since a
 // bound only decides when to alert. A roll's waits end at their own bound
-// (gapBound), so theirs is that and rollWaitSlack.
+// (gapBound), so theirs is that and rollWaitSlack. A review's or an
+// audit's stays fanOutTripMargin under its attempt's reviewActivityMax, so
+// the watch trips, and the supervisor decides, before Temporal ends it.
 func PinnedBound(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) func(ctx context.Context, activity string, pin int64, waves int) time.Duration {
 	return func(ctx context.Context, activity string, pin int64, waves int) time.Duration {
 		if activity == ActivityAwaitSessionGap || activity == ActivityAwaitRollHold {
 			return gapBound(current()) + rollWaitSlack
 		}
+		doc := current().Document
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)
 			if err == nil && ok {
-				return v.Document.PartsBound(activity, waves)
+				doc = v.Document
+			} else {
+				log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
 			}
-			log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
 		}
-		return current().Document.PartsBound(activity, waves)
+		bound := doc.PartsBound(activity, waves)
+		if activity == ActivityModelReview || activity == ActivityGateAudit {
+			bound = min(bound, reviewActivityMax-fanOutTripMargin)
+		}
+		return bound
 	}
 }
+
+// fanOutTripMargin is how long before its attempt's end a review's or an
+// audit's gate watch trips at the latest.
+const fanOutTripMargin = 10 * time.Minute
 
 // gateEnd is the detail of a step that ends gate, with the gate's start
 // when the task's row is in it (GateWatch put it there when the gate's

@@ -399,6 +399,32 @@ func TestPinnedBoundFollowsManyWaves(t *testing.T) {
 	}
 }
 
+// A review's or an audit's bound stays ten minutes under the six hours
+// Temporal gives its attempt, so the watch trips and the supervisor
+// decides before the attempt is ended: 100 waves at 5 min would be
+// 502 minutes, and are 350. Sixty waves, 302 minutes, fit; a session's
+// bound is its own.
+func TestPinnedBoundStaysUnderTheFanOutsAttempt(t *testing.T) {
+	v := testPolicyVersion()
+	v.Document.Limits.SupervisorTimeout, v.Document.Limits.AgentTime = 5*time.Minute, 400*time.Minute
+	bound := PinnedBound(func() policy.Version { return v },
+		func(context.Context, int64) (policy.Version, bool, error) { return v, false, nil })
+	for _, tc := range []struct {
+		activity string
+		waves    int
+		want     time.Duration
+	}{
+		{ActivityModelReview, 100, 350 * time.Minute},
+		{ActivityGateAudit, 100, 350 * time.Minute},
+		{ActivityModelReview, 60, 302 * time.Minute},
+		{ActivityRunSession, 100, 401 * time.Minute},
+	} {
+		if got := bound(context.Background(), tc.activity, 0, tc.waves); got != tc.want {
+			t.Errorf("bound(%s, %d waves) = %s, want %s", tc.activity, tc.waves, got, tc.want)
+		}
+	}
+}
+
 // The watch hands the bound the pin of the activity's input.
 func TestActivityPin(t *testing.T) {
 	for _, tc := range []struct {

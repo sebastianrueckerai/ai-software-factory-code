@@ -172,6 +172,23 @@ func TestCallAllCancelReturnsContextError(t *testing.T) {
 	}
 }
 
+func TestPartsNamed(t *testing.T) {
+	for _, tc := range []struct {
+		at   []int
+		n    int
+		want string
+	}{
+		{[]int{2}, 9, "part 3 of 9"},
+		{[]int{2, 3, 4}, 9, "parts 3 to 5 of 9"},
+		{[]int{0, 5}, 6, "parts 1 and 6 of 6"},
+		{[]int{0, 2, 3, 4, 8}, 9, "parts 1, 3 to 5 and 9 of 9"},
+	} {
+		if got := partsNamed(tc.at, tc.n); got != tc.want {
+			t.Errorf("partsNamed(%v, %d) = %q, want %q", tc.at, tc.n, got, tc.want)
+		}
+	}
+}
+
 // heapPeak runs f and samples the heap every 2 ms: the most it held above
 // what it held before f.
 func heapPeak(f func()) uint64 {

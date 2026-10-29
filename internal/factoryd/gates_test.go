@@ -993,8 +993,9 @@ func TestModelReviewPartsRunInParallel(t *testing.T) {
 }
 
 // A budget too small for four calls at once: the refused parts run again
-// one by one, and the refusal there is the note on part 1. A note is no
-// verdict, so the change does not merge without a human.
+// one by one, and the refusal there, which the retry gives every part, is
+// the note on parts 1 to 4. A note is no verdict, so the change does not
+// merge without a human.
 func TestModelReviewBudgetTooSmallIsANote(t *testing.T) {
 	fj := &gateForgejo{diff: fourParts}
 	r, _, _ := newGateRunner(t, gateTask, fj)
@@ -1002,7 +1003,7 @@ func TestModelReviewBudgetTooSmallIsANote(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, "part 1 of 4: model review refused by the gateway (refused_budget)") {
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, "parts 1 to 4 of 4: model review refused by the gateway (refused_budget)") {
 		t.Fatalf("review = %+v", rv)
 	}
 	if len(ll.chats) < 2 || len(ll.chats) > reviewParallel+1 {
@@ -1117,6 +1118,33 @@ func TestCombineReviews(t *testing.T) {
 				t.Fatalf("strict = %v, want %v", got.StrictImprovement, tc.strict)
 			}
 		})
+	}
+}
+
+// Ten parts of ten findings and a 999-byte summary each: the joined
+// findings keep the first 50 and a line for the other 50, and the claims
+// on those 50 alone; the summaries, 1,001 bytes a part with the
+// separator, keep 8 KiB cut on a rune: eight whole and 61 of the ninth's
+// three-byte runes, 8,191 bytes.
+func TestCombineReviewsCapsTheJoinedParts(t *testing.T) {
+	summary := strings.Repeat("€", 333)
+	var parts []Review
+	for k := range 10 {
+		p := Review{Verdict: "concerns", Summary: summary, Claims: []Claim{{Finding: 3, Kind: ClaimUndefined, Symbol: fmt.Sprint("S", k)}}}
+		for i := range 10 {
+			p.Findings = append(p.Findings, fmt.Sprintf("part %d finding %d", k+1, i+1))
+		}
+		parts = append(parts, p)
+	}
+	got := combineReviews(parts)
+	if len(got.Findings) != 51 || got.Findings[49] != "part 5 finding 10" || got.Findings[50] != "... and 50 more" {
+		t.Fatalf("%d findings, the 50th %q, the last %q", len(got.Findings), got.Findings[min(49, len(got.Findings)-1)], got.Findings[len(got.Findings)-1])
+	}
+	if want := []int{3, 13, 23, 33, 43}; len(got.Claims) != len(want) || got.Claims[4].Finding != 43 || got.Claims[4].Symbol != "S4" {
+		t.Fatalf("claims = %+v, want those on findings %v", got.Claims, want)
+	}
+	if want := strings.Repeat(summary+"\n\n", 8) + strings.Repeat("€", 61); got.Summary != want {
+		t.Fatalf("summary of %d bytes, want %d", len(got.Summary), len(want))
 	}
 }
 

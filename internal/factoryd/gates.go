@@ -1080,6 +1080,11 @@ const (
 	maxReviewSummary  = 1000
 	maxReviewFindings = 10
 	maxReviewFinding  = 1000
+	// the parts' findings and summaries joined: what the result, the pull
+	// request comment and the fix session's brief carry of any number of
+	// parts
+	maxJoinedFindings = 50
+	maxJoinedSummary  = 8 << 10
 )
 
 // parseReview validates the model's verdict: one JSON object, a known
@@ -1172,7 +1177,9 @@ func reviewAnswer(content string, err error) Review {
 // combineReviews joins the verdicts of a diff's parts: concerns with every
 // part's findings when any part has concerns, else approve; a strict
 // improvement only when every part says so. The claims renumber to the
-// joined findings.
+// joined findings. The findings keep the first maxJoinedFindings and a
+// line that counts the rest, the claims those findings'; the joined
+// summaries keep maxJoinedSummary bytes.
 func combineReviews(parts []Review) Review {
 	rv := Review{Verdict: "approve"}
 	var summaries []string
@@ -1191,6 +1198,11 @@ func combineReviews(parts []Review) Review {
 		strict = strict && p.StrictImprovement != nil && *p.StrictImprovement
 	}
 	rv.Summary = strings.Join(summaries, "\n\n")
+	rv.Summary = rv.Summary[:runeCut(rv.Summary, maxJoinedSummary)]
+	if n := len(rv.Findings); n > maxJoinedFindings {
+		rv.Findings = append(rv.Findings[:maxJoinedFindings], fmt.Sprintf("... and %d more", n-maxJoinedFindings))
+		rv.Claims = slices.DeleteFunc(rv.Claims, func(c Claim) bool { return c.Finding >= maxJoinedFindings })
+	}
 	if asked {
 		rv.StrictImprovement = &strict
 	}
@@ -1326,8 +1338,16 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	for i, res := range results[:len(parts)] {
 		a := reviewAnswer(res.Content, res.Err)
 		if a.Verdict == "" {
-			if calls[i].Label != "" {
-				a.Note = calls[i].Label + ": " + a.Note
+			if len(parts) > 1 {
+				// the parts after it that share its note, a refusal the
+				// retry gave them all, are named with it
+				var at []int
+				for k := i; k < len(parts); k++ {
+					if reviewAnswer(results[k].Content, results[k].Err).Note == a.Note {
+						at = append(at, k)
+					}
+				}
+				a.Note = partsNamed(at, len(parts)) + ": " + a.Note
 			}
 			rv = a
 			break

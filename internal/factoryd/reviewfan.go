@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -147,6 +149,32 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose, what stri
 			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0), what), nil
 	}
 	return "", nil
+}
+
+// partsNamed names the parts at, 0-based and ascending, of n: "part 3 of
+// 9", "parts 3 to 5 of 9", "parts 1, 3 to 5 and 9 of 9".
+func partsNamed(at []int, n int) string {
+	var runs []string
+	for i := 0; i < len(at); {
+		j := i
+		for j+1 < len(at) && at[j+1] == at[j]+1 {
+			j++
+		}
+		run := strconv.Itoa(at[i] + 1)
+		if j > i {
+			run += " to " + strconv.Itoa(at[j]+1)
+		}
+		runs = append(runs, run)
+		i = j + 1
+	}
+	list, word := runs[len(runs)-1], "parts"
+	if len(runs) > 1 {
+		list = strings.Join(runs[:len(runs)-1], ", ") + " and " + list
+	}
+	if len(at) == 1 {
+		word = "part"
+	}
+	return fmt.Sprintf("%s %s of %d", word, list, n)
 }
 
 // refusedForHeadroom: the gateway refused the call for the smallest of

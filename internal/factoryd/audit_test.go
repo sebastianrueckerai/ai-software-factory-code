@@ -234,6 +234,49 @@ func TestGateAuditTheCardCannotPayForIsOneFinding(t *testing.T) {
 	}
 }
 
+// thirtyParts is thirty files of 40 KiB: thirty parts of the audit's 48 KiB.
+func thirtyParts() string {
+	var b strings.Builder
+	for i := range 30 {
+		b.WriteString(diffFile(fmt.Sprintf("f%02d.go", i), 40<<10))
+	}
+	return b.String()
+}
+
+// A budget refused for every call: the retry gives all thirty parts the
+// one refusal, which is one finding naming them.
+func TestGateAuditOfThirtyRefusedPartsIsOneFinding(t *testing.T) {
+	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedBudget}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: thirtyParts()}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: auditNoVerdict, Why: "parts 1 to 30 of 30: the audit call was refused by the gateway (refused_budget): task headroom 0.000000 EUR"}}
+	if !slices.Equal(res.Findings, want) || len(ll.chats) > reviewParallel+1 {
+		t.Fatalf("audit = %+v after %d calls, want %+v", res, len(ll.chats), want)
+	}
+}
+
+// Six parts of ten findings each: the parts' findings keep the first 50
+// and one that counts the other 10.
+func TestGateAuditCapsThePartsFindings(t *testing.T) {
+	var ten []string
+	for i := range 10 {
+		ten = append(ten, fmt.Sprintf(`{"item":"network egress","file":"f.go","line":%d,"why":"a new host"}`, i+1))
+	}
+	ll := &fakeLiteLLM{content: `{"verdict":"findings","findings":[` + strings.Join(ten, ",") + `]}`}
+	diff := ""
+	for i := range 6 {
+		diff += diffFile(fmt.Sprintf("f%02d.go", i), 40<<10)
+	}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	last := AuditFinding{Item: "... and 10 more", Why: "the card lists the first 50 of the parts' findings"}
+	if len(res.Findings) != 51 || res.Findings[49].Line != 10 || res.Findings[50] != last || len(ll.chats) != 6 {
+		t.Fatalf("%d findings after %d calls, the last %+v, want 51 ending %+v", len(res.Findings), len(ll.chats), res.Findings[len(res.Findings)-1], last)
+	}
+}
+
 // A file over the audit's 48 KiB part is cut by hunks: two calls, no
 // finding.
 func TestGateAuditReadsABigFileInPieces(t *testing.T) {
