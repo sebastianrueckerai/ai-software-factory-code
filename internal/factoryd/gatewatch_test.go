@@ -387,6 +387,18 @@ func TestPinnedBound(t *testing.T) {
 	}
 }
 
+// A review of 25 waves at a supervisor_timeout of 5 min is bound at
+// 25 x 5 + 2 = 127 minutes.
+func TestPinnedBoundFollowsManyWaves(t *testing.T) {
+	v := testPolicyVersion()
+	v.Document.Limits.SupervisorTimeout = 5 * time.Minute
+	bound := PinnedBound(func() policy.Version { return v },
+		func(context.Context, int64) (policy.Version, bool, error) { return v, false, nil })
+	if got := bound(context.Background(), ActivityModelReview, 0, 25); got != 127*time.Minute {
+		t.Fatalf("bound = %s, want 2h7m0s", got)
+	}
+}
+
 // The watch hands the bound the pin of the activity's input.
 func TestActivityPin(t *testing.T) {
 	for _, tc := range []struct {

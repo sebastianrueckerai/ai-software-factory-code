@@ -890,13 +890,10 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[str
 	return requestEmptyDirs(pod)
 }
 
-// The model review reads a diff in parts of limits.review_diff_kib, one
-// call each (a diff within the limit is one call); the audit in parts of
-// reviewDiffMax.
-const (
-	reviewDiffMax = policy.DefaultReviewDiffKiB << 10
-	reviewChunks  = policy.ReviewParts
-)
+// The model review reads a diff in as many parts of limits.review_diff_kib
+// as it needs, one call each (a diff within the limit is one call); the
+// audit in parts of reviewDiffMax.
+const reviewDiffMax = policy.DefaultReviewDiffKiB << 10
 
 // reviewRepeat is the review prompt's instruction on an earlier review
 // whose findings went back to the agent; reviewWithDrops replaces it with

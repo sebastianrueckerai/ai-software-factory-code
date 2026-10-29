@@ -2833,7 +2833,7 @@ const MaxReproTimeout = 15 * time.Minute
 // requestPlanOptions: asking for a plan also drafts hold-outs, which is
 // two model calls and up to two dry runs; it heartbeats while they run.
 func requestPlanOptions() workflow.ActivityOptions {
-	budget := 2*(reviewChunks*policy.MaxSupervisorTimeout) + 2*(MaxReproTimeout+10*time.Minute) + 10*time.Minute
+	budget := 2*(policy.ReviewParts*policy.MaxSupervisorTimeout) + 2*(MaxReproTimeout+10*time.Minute) + 10*time.Minute
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
 		StartToCloseTimeout:    budget,
@@ -2850,7 +2850,7 @@ func requestPlanOptions() workflow.ActivityOptions {
 // (each bounded as a review) and at most one dry run (bounded as a
 // reproduction); it heartbeats while it works.
 func holdoutOptions() workflow.ActivityOptions {
-	budget := 3*(reviewChunks*policy.MaxSupervisorTimeout) + reproActivityTimeout + 10*time.Minute
+	budget := 3*(policy.ReviewParts*policy.MaxSupervisorTimeout) + reproActivityTimeout + 10*time.Minute
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
 		StartToCloseTimeout:    budget,
@@ -2863,15 +2863,18 @@ func holdoutOptions() workflow.ActivityOptions {
 	}
 }
 
-// reviewOptions: one review or audit makes up to reviewChunks calls, each
-// bounded by the policy's supervisor_timeout, at most
-// policy.MaxSupervisorTimeout; it heartbeats, so a cancel reaches the call
-// and a lost worker is noticed.
+// reviewActivityMax bounds one attempt of a review or audit, whatever the
+// parts of its diff: the heartbeat finds a lost worker and a cancel reaches
+// the calls; the gate watch alerts at the parts' bound (boundByParts).
+const reviewActivityMax = 6 * time.Hour
+
+// reviewOptions: one review or audit makes a call for each part of its
+// diff; it heartbeats.
 func reviewOptions() workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
-		StartToCloseTimeout:    reviewChunks*policy.MaxSupervisorTimeout + 2*time.Minute,
-		ScheduleToCloseTimeout: 3*reviewChunks*policy.MaxSupervisorTimeout + 10*time.Minute,
+		StartToCloseTimeout:    reviewActivityMax,
+		ScheduleToCloseTimeout: 3 * reviewActivityMax,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,
 			MaximumAttempts:        3,

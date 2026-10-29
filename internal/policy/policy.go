@@ -318,8 +318,8 @@ type Limits struct {
 	// DefaultSameCall.
 	SameCall int `yaml:"same_call,omitempty" json:"same_call"`
 	// ReviewDiffKiB is the most diff, in KiB, one model review call reads,
-	// and the size of a part when a bigger diff reads in parts (at most
-	// ReviewParts). Size it to the review model's context window: about 257
+	// and the size of a part when a bigger diff reads in parts, as many
+	// as it needs. Size it to the review model's context window: about 257
 	// tokens a KiB. Absent: DefaultReviewDiffKiB.
 	ReviewDiffKiB int `yaml:"review_diff_kib,omitempty" json:"review_diff_kib"`
 	// CheckinCalls is how many model calls one check-in conversation gets;
@@ -505,8 +505,8 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 // MaxSupervisorTimeout is the longest supervisor_timeout a policy may set.
 const MaxSupervisorTimeout = 15 * time.Minute
 
-// ReviewParts is the most model calls one model review or audit makes,
-// one per part of the diff.
+// ReviewParts is the parts a model review or audit is bound for before it
+// has read its diff; once it has, the bound follows the diff's waves.
 const ReviewParts = 3
 
 // MaxAgentTime is the longest agent_time a policy, class, process or

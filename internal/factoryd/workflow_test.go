@@ -3087,11 +3087,13 @@ func TestWorkflowShortActivitiesRetryForADay(t *testing.T) {
 	}
 }
 
-// The review and the audit make up to three calls of at most 15 minutes
-// in one attempt: 3 x 15 + 2 = 47 minutes per attempt, and three attempts
-// within 3 x 45 + 10 = 145 minutes.
-func TestReviewOptionsHoldThreeCalls(t *testing.T) {
-	if opts := reviewOptions(); opts.StartToCloseTimeout != 47*time.Minute || opts.ScheduleToCloseTimeout != 145*time.Minute || opts.RetryPolicy.MaximumAttempts != 3 {
+// The review and the audit make as many calls as their diff has parts, so
+// the activity carries no cap of its own beyond a day's quarter: the
+// heartbeat finds a lost worker, and the gate bound raises the alert.
+func TestReviewOptionsHaveNoPartCap(t *testing.T) {
+	opts := reviewOptions()
+	if opts.StartToCloseTimeout != 6*time.Hour || opts.ScheduleToCloseTimeout != 18*time.Hour ||
+		opts.HeartbeatTimeout != 2*time.Minute || opts.RetryPolicy.MaximumAttempts != 3 {
 		t.Fatalf("review options = %+v", opts)
 	}
 }
