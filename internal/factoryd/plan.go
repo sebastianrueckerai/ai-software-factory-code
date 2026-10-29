@@ -1382,7 +1382,9 @@ func (s *PGStore) SetTaskIssue(ctx context.Context, id string, issue int64) erro
 
 // switchToPlan sends a direct card's work to the planner
 // (versionDirectToPlan): BecomePlan turns it plan-track and the program
-// runs again, which TaskConfig now gives session mode plan. A refusal is
+// runs again, which TaskConfig now gives session mode plan. The writers'
+// comments the direct run left unread are recorded as ignored, so the plan
+// loop does not take them as written while the planner ran. A refusal is
 // recorded on the timeline and the direct lifecycle goes on (switched
 // false).
 func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err error) {
@@ -1399,6 +1401,13 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 			workflow.GetLogger(t.ctx).Warn("record to_plan_refused", "task", t.taskID, "error", err)
 		}
 		return "", false, nil
+	}
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
+		detail := map[string]any{"signal": SignalHumanComment, "author": sig.Author, "comment": sig.Comment, "ignored": "written before the card went to the planner"}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
+		}
 	}
 	final, err = t.program()
 	return final, true, err

@@ -1178,17 +1178,24 @@ func TestPlanLoopCleanRevisionFilesInTheSameStep(t *testing.T) {
 	}
 }
 
+// becomePlanCall is a BecomePlan call; states are the SetState calls
+// before it, in order.
 type becomePlanCall struct {
 	taskID string
 	sw     PlanSwitch
+	states string
 }
 
-// toPlanHarness is the plan harness on a direct coding card whose first
-// session pushes and whose pull request merges an hour in. Reconcile takes
-// a minute, and to_plan with sw arrives half-way through it, before the
-// lifecycle's loop top. BecomePlan records its calls and answers become; a
-// switch turns TaskConfig to the plan card's.
-func toPlanHarness(t *testing.T, sw PlanSwitch, become func() (PlanSwitchResult, error)) (*planHarness, *[]becomePlanCall) {
+var toPlanTooBig = PlanSwitch{Reason: "too big", Work: "w"}
+
+func becomeSwitched() (PlanSwitchResult, error) { return PlanSwitchResult{Switched: true}, nil }
+
+// toPlanHarness is the plan harness on a direct coding card: RunSession
+// answers sessions, the pull request's checks are green, Reconcile takes a
+// minute. BecomePlan records its calls and answers become; a switch turns
+// TaskConfig to the plan card's and zeroes the usage Reconcile reads, as
+// the activity does.
+func toPlanHarness(t *testing.T, become func() (PlanSwitchResult, error), sessions ...timedSession) (*planHarness, *[]becomePlanCall) {
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.file = map[int]bool{1: true}
 	plan := h.taskConfig
@@ -1198,34 +1205,98 @@ func toPlanHarness(t *testing.T, sw PlanSwitch, become func() (PlanSwitchResult,
 	var calls []becomePlanCall
 	h.env.OnActivity(ActivityBecomePlan, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
-			calls = append(calls, becomePlanCall{taskID, sw})
+			calls = append(calls, becomePlanCall{taskID, sw, strings.Join(h.states, " ")})
 			res, err := become()
 			if res.Switched {
-				h.taskConfig = plan
+				h.taskConfig, h.state.Usage = plan, TaskUsage{}
 			}
 			return res, err
 		})
-	h.onSessions(pushed("s1", "c1"))
+	h.onTimedSessions(sessions...)
 	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(SignalToPlan, sw) }, 30*time.Second)
-	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	return h, &calls
 }
 
+// toPlanAfter delivers to_plan with sw d into the run.
+func (h *planHarness) toPlanAfter(d time.Duration, sw PlanSwitch) {
+	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(SignalToPlan, sw) }, d)
+}
+
 // A direct card that gets to_plan before its first session turns
-// plan-track and runs the plan loop: no coding session, one planner
-// session, whose clean revision files its cards.
+// plan-track once it is running and runs the plan loop: no coding session,
+// one planner session, whose clean revision files its cards.
 func TestDirectCardSwitchesToThePlanLoopOnTheSignal(t *testing.T) {
-	sw := PlanSwitch{Reason: "too big", Work: "w"}
-	h, calls := toPlanHarness(t, sw, func() (PlanSwitchResult, error) { return PlanSwitchResult{Switched: true}, nil })
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if !slices.Equal(*calls, []becomePlanCall{{"t1", sw}}) {
-		t.Fatalf("BecomePlan calls %+v, want one for t1 with %+v", *calls, sw)
+	if want := []becomePlanCall{{"t1", toPlanTooBig, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
 	}
 	if len(h.sessions) != 0 || len(h.plans) != 1 || len(h.configPins) != 2 {
 		t.Fatalf("coding sessions %d, planner sessions %d, TaskConfig reads %d; want 0, 1, 2", len(h.sessions), len(h.plans), len(h.configPins))
+	}
+}
+
+// A direct card that gets to_plan between two sessions switches before the
+// second: the session that ended without a push stays the only coding one.
+func TestDirectCardSwitchesBetweenSessions(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched,
+		timedSession{took: 10 * time.Minute, res: SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}},
+		timedSession{res: pushed("s2", "c2")})
+	h.toPlanAfter(5*time.Minute, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanTooBig, "running running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v", *calls, want)
+	}
+	if len(h.sessions) != 1 || len(h.plans) != 1 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 1, 1", len(h.sessions), len(h.plans))
+	}
+}
+
+// A to_plan that came while the card waited on a person at the session cap
+// is taken once the answer has the card running again, the status
+// BecomePlan accepts.
+func TestDirectCardSwitchesAfterThePersonsWait(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s4", "c4")})
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []string{capReached + "\nlast: no session produced a result"}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("escalations %q, want %q", h.escalated, want)
+	}
+	if want := []becomePlanCall{{"t1", toPlanTooBig, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("BecomePlan calls %+v, want %+v: set running before the switch", *calls, want)
+	}
+	if len(h.sessions) != 0 || len(h.plans) != 1 {
+		t.Fatalf("coding sessions %d, planner sessions %d; want 0, 1", len(h.sessions), len(h.plans))
+	}
+}
+
+// A writer's comment the direct card left unread before its switch is
+// recorded as ignored and sends no planner session back: the planner runs
+// once, with no findings.
+func TestSwitchToPlanDropsTheCommentsBeforeIt(t *testing.T) {
+	h, _ := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.signalAfter(20*time.Second, SignalHumanComment, TaskSignal{Author: "alice", Body: "also cover the CLI", Comment: 700})
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 1 || h.plans[0] != nil {
+		t.Fatalf("RunPlan findings %q, want one session with none", h.plans)
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool {
+		return s.step == "signal" && s.detail["signal"] == SignalHumanComment && s.detail["author"] == "alice" &&
+			cmpOrAny(s.detail["comment"]) == "700" && s.detail["ignored"] == "written before the card went to the planner"
+	}) {
+		t.Fatalf("steps %+v, want alice's comment 700 recorded as written before the card went to the planner", h.recorded)
 	}
 }
 
@@ -1233,8 +1304,10 @@ func TestDirectCardSwitchesToThePlanLoopOnTheSignal(t *testing.T) {
 // its session, its pull request, its merge.
 func TestDirectCardKeepsRunningWhenTheSwitchIsRefused(t *testing.T) {
 	refused := "Card #1 has an open pull request, so its work cannot go back to the planner: close the pull request first."
-	h, calls := toPlanHarness(t, PlanSwitch{Reason: "too big", Work: "w"},
-		func() (PlanSwitchResult, error) { return PlanSwitchResult{Refused: refused}, nil })
+	h, calls := toPlanHarness(t, func() (PlanSwitchResult, error) { return PlanSwitchResult{Refused: refused}, nil },
+		timedSession{res: pushed("s1", "c1")})
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
 		t.Fatalf("finals %v", h.finals)
 	}
@@ -1246,11 +1319,28 @@ func TestDirectCardKeepsRunningWhenTheSwitchIsRefused(t *testing.T) {
 	}
 }
 
+// A run from before versionDirectToPlan leaves to_plan unread: no
+// BecomePlan, the card's session, its merge.
+func TestDirectCardBeforeTheChangeLeavesToPlanUnread(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.env.OnGetVersion("direct-to-plan", workflow.DefaultVersion, versionDirectToPlan).Return(workflow.DefaultVersion)
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(*calls) != 0 || len(h.sessions) != 1 || len(h.plans) != 0 || len(h.configPins) != 1 {
+		t.Fatalf("BecomePlan calls %d, coding sessions %d, planner sessions %d, TaskConfig reads %d; want 0, 1, 0, 1",
+			len(*calls), len(h.sessions), len(h.plans), len(h.configPins))
+	}
+}
+
 // A BecomePlan that fails for good ends the task failed with its error.
 func TestSwitchToPlanFailsTheTaskWhenTheActivityFails(t *testing.T) {
-	h, _ := toPlanHarness(t, PlanSwitch{Reason: "too big", Work: "w"}, func() (PlanSwitchResult, error) {
+	h, _ := toPlanHarness(t, func() (PlanSwitchResult, error) {
 		return PlanSwitchResult{}, temporal.NewNonRetryableApplicationError("card t1 not found", errTerminal, nil)
-	})
+	}, timedSession{res: pushed("s1", "c1")})
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
 	if final := h.run(t); final != "failed" || h.finals[0][1] != "become plan: card t1 not found" {
 		t.Fatalf("finals %v", h.finals)
 	}

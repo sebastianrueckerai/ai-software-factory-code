@@ -1702,12 +1702,6 @@ func (t *taskRun) lifecycle() (string, error) {
 					t.gateFindings = true
 				}
 			}
-			var sw PlanSwitch
-			if t.directToPlan >= versionDirectToPlan && workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&sw) {
-				if final, switched, err := t.switchToPlan(sw); switched {
-					return final, err
-				}
-			}
 		}
 		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
 		if t.keepWork >= versionKeepWork && remaining < least {
@@ -1724,6 +1718,14 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
+		}
+		// only here is the card running, a status BecomePlan accepts: a
+		// to_plan that waited behind a person's wait is not refused
+		var sw PlanSwitch
+		if t.directToPlan >= versionDirectToPlan && workflow.GetSignalChannel(t.ctx, SignalToPlan).ReceiveAsync(&sw) {
+			if final, switched, err := t.switchToPlan(sw); switched {
+				return final, err
+			}
 		}
 		if v, decided := t.awaitRollHold(); decided {
 			return t.finish(v.final, v.reason)
