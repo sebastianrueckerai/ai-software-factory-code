@@ -1676,13 +1676,14 @@ func TestFinishDeletesOnlyMergedBranches(t *testing.T) {
 		"done merged":        {withPR(withStatus(prTask, "in-review"), 12), merged, "done", []string{fork}, nil},
 		"closed unmerged":    {withPR(withStatus(prTask, "in-review"), 12), open, "closed", nil, []int64{12}},
 		"closed no pull":     {withStatus(prTask, "running"), "", "closed", nil, nil},
+		"closed in review after a merge": {withPR(withStatus(prTask, "in-review"), 12), merged, "closed", []string{fork}, nil},
 		"closed after merge": {withPR(withStatus(prTask, "merged"), 12), merged, "closed", []string{fork}, nil},
 	} {
 		fj := &prForgejo{issueOff: true, pulls: map[int64]string{}}
 		if tc.pull != "" {
 			fj.pulls[12] = tc.pull
 		}
-		r, _, _ := newActivityRunner(t, tc.task, fj)
+		r, store, _ := newActivityRunner(t, tc.task, fj)
 		var err error
 		if name == "closed after merge" {
 			err = r.CloseMerged(context.Background(), "t1", "sebastian")
@@ -1694,6 +1695,9 @@ func TestFinishDeletesOnlyMergedBranches(t *testing.T) {
 		}
 		if !slices.Equal(fj.deleted, tc.deleted) || !slices.Equal(fj.closed, tc.closed) {
 			t.Fatalf("%s: deleted = %v, closed = %v; want %v, %v", name, fj.deleted, fj.closed, tc.deleted, tc.closed)
+		}
+		if name == "closed in review after a merge" && store.tasks["t1"].MergeCommit != "m1" {
+			t.Fatalf("%s: merge commit = %q, want m1", name, store.tasks["t1"].MergeCommit)
 		}
 	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 )
@@ -20,7 +19,6 @@ func (r *Runner) SweepBranches(ctx context.Context, now time.Time) error {
 	var errs []error
 	for name, p := range r.cfg.Policy().Tree.Projects {
 		if err := r.sweepProjectBranches(ctx, p.Repository, now); err != nil {
-			log.Printf("branch sweep: project %s: %v", name, err)
 			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
 		}
 	}
