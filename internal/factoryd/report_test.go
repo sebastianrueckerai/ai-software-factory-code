@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -443,5 +444,95 @@ func TestWritingGuideRidesWithHumanFacingSteps(t *testing.T) {
 	}
 	if guide := (&Runner{cfg: testRunnerConfig()}).reportGuide(); !strings.Contains(guide, writingguide.Guide) {
 		t.Error("the screening guide carries no writing guide")
+	}
+}
+
+func TestParseSizing(t *testing.T) {
+	long := strings.Repeat("a", 400)
+	manyFiles := make([]string, 60)
+	for i := range manyFiles {
+		manyFiles[i] = "f.go"
+	}
+	manyJSON, _ := json.Marshal(manyFiles)
+	for name, tc := range map[string]struct {
+		text string
+		want sizeVerdict
+		ok   bool
+	}{
+		"fenced": {"I read it.\n```json\n{\"size\": \"medium\", \"reason\": \"touches the scheduler and the store\", \"files\": [\"internal/a.go\", \" \", \"internal/b.go\"]}\n```",
+			sizeVerdict{"medium", "touches the scheduler and the store", []string{"internal/a.go", "internal/b.go"}}, true},
+		"no reason":    {`{"size": "small"}`, sizeVerdict{Size: "small", Reason: "the sizing named no reason"}, true},
+		"unknown size": {`{"size": "huge", "reason": "x"}`, sizeVerdict{}, false},
+		"no object":    {"it is big", sizeVerdict{}, false},
+		"cut object":   {`{"size": `, sizeVerdict{}, false},
+		"long reason":  {`{"size": "large", "reason": "` + long + `"}`, sizeVerdict{Size: "large", Reason: strings.Repeat("a", 300) + "…"}, true},
+		"many files":   {`{"size": "large", "reason": "r", "files": ` + string(manyJSON) + `}`, sizeVerdict{"large", "r", manyFiles[:50]}, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, ok := parseSizing(tc.text)
+			if ok != tc.ok || !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("parseSizing = %+v, %v; want %+v, %v", got, ok, tc.want, tc.ok)
+			}
+		})
+	}
+}
+
+func TestSizingGuideNamesTheBounds(t *testing.T) {
+	g := sizingGuide(sizeLines(1000))
+	for _, want := range []string{"You size one card before any coding session runs on it.", "small is at most 300, medium at most 600, large anything more.", `{"size": "small|medium|large"`, writingguide.Guide} {
+		if !strings.Contains(g, want) {
+			t.Fatalf("guide lacks %q:\n%s", want, g)
+		}
+	}
+	if !strings.HasPrefix(g, "You size one card before any coding session runs on it.") {
+		t.Fatalf("guide starts %q", g[:40])
+	}
+	if g := sizingGuide(sizeLines(500)); !strings.Contains(g, "small is at most 150, medium at most 300,") {
+		t.Fatalf("guide at 500 lines:\n%s", g)
+	}
+}
+
+func TestSizingTaskIsAReportOutsideTheWorkBound(t *testing.T) {
+	task := Task{ID: "t1", Status: "queued", Repository: "sf/r", Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect}
+	if !task.Report() || !task.Unbound() {
+		t.Fatalf("Report %v, Unbound %v, want both", task.Report(), task.Unbound())
+	}
+	runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
+	val, err := execActivity(t, runner, ActivityReconcile, "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st RunState
+	if err := val.Get(&st); err != nil || !st.Report || st.Stronger {
+		t.Fatalf("sizing task state = %+v %v, want Report and not Stronger", st, err)
+	}
+}
+
+func TestRunReportOfASizingTaskCarriesTheSizingGuide(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "the slug breaks on BAD000", Repository: "sf/r", SHA: "abc123", Process: "maintenance",
+		Parent: "t-parent", Source: SourceSizing, Track: policy.TrackDirect, Author: "visitor", RequiredCapabilities: []string{policy.ClassAnalyzer}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	answer := `{"size": "small", "reason": "one handler", "files": []}`
+	logs := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": answer}}) + "\n" + resultLine(true, answer)
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, logs)
+	if err := <-done; err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	guide := podEnv(kube.podAt(0))["REPORT_GUIDE"]
+	if !strings.HasPrefix(guide, "You size one card before any coding session runs on it.") || !strings.Contains(guide, "small is at most 300,") {
+		t.Fatalf("REPORT_GUIDE = %q", guide)
+	}
+	if got, _, _ := store.Task(context.Background(), "t1"); got.AgentSummary != answer {
+		t.Fatalf("report kept = %q", got.AgentSummary)
 	}
 }

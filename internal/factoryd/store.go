@@ -155,7 +155,7 @@ func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 
 // Report tells a report task (ruling 185) by its source: a plan's cards
 // have a parent too and are no report.
-func (t Task) Report() bool { return t.Source == SourceScreening }
+func (t Task) Report() bool { return t.Source == SourceScreening || t.Source == SourceSizing }
 
 // Standing is the issue author's standing (ruling 152); "" for a task
 // from before authors were kept.
@@ -831,7 +831,7 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 }
 
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'presort') DO NOTHING`); err != nil {
+	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing') DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)

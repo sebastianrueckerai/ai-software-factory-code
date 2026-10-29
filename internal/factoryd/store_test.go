@@ -2854,6 +2854,21 @@ func TestPGStoreReportTasksAndScreeningAlerts(t *testing.T) {
 	if got, ok, err := s.ReportOf(ctx, "t-parent", SourceScreening); err != nil || !ok || got.ID != "t-report" {
 		t.Fatalf("report of: %+v %v %v", got, ok, err)
 	}
+	sizing := report
+	sizing.ID, sizing.Source = "t-sizing", SourceSizing
+	if got, err := s.OpenReportTask(ctx, sizing); err != nil || got.ID != "t-sizing" {
+		t.Fatalf("open sizing: %+v %v, want a second row", got, err)
+	}
+	sizing.ID = "t-sizing-2"
+	if got, err := s.OpenReportTask(ctx, sizing); err != nil || got.ID != "t-sizing" {
+		t.Fatalf("open sizing again: %+v %v, want the first sizing row", got, err)
+	}
+	if _, ok, _ := s.Task(ctx, "t-sizing-2"); ok {
+		t.Fatal("a second sizing row exists")
+	}
+	if got, ok, err := s.ReportOf(ctx, "t-parent", SourceSizing); err != nil || !ok || got.ID != "t-sizing" {
+		t.Fatalf("sizing report of: %+v %v %v", got, ok, err)
+	}
 	if _, ok, err := s.ReportOf(ctx, "t-parent", "webhook"); err != nil || ok {
 		t.Fatalf("no report of another source: %v %v", ok, err)
 	}
