@@ -108,8 +108,10 @@ func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
 	}
 }
 
-// The sizing step is a note on the run it falls in: the size and why, or
-// that the card runs as filed; a card that carries a pull request has none.
+// The sizing step is a note on the run it falls in: the size and why, the
+// filer's size where no sizing ran, or that the card runs as filed; a card
+// that carries a pull request has none. No note claims the planner took
+// the card.
 func TestRunsOfACardsLifeNotesTheSizing(t *testing.T) {
 	at := func(h, m int) time.Time { return time.Date(2026, 10, 29, h, m, 0, 0, time.UTC) }
 	task := factoryd.Task{ID: "t-s", Kind: "agent", Status: "running", Track: "direct", CreatedAt: at(10, 0)}
@@ -118,12 +120,16 @@ func TestRunsOfACardsLifeNotesTheSizing(t *testing.T) {
 		step map[string]any
 		want string
 	}{
-		{map[string]any{"size": "medium", "plan": true, "reason": "touches the scheduler and the store"},
-			"sized medium, not small, so the planner takes it: touches the scheduler and the store"},
+		{map[string]any{"size": "medium", "filed": "", "sized": "medium", "plan": true, "reason": "touches the scheduler and the store"},
+			"sized medium, not small: touches the scheduler and the store"},
+		{map[string]any{"size": "large", "filed": "large", "plan": true, "reason": "its filer sized it large"},
+			"filed large, not small, so no sizing ran"},
 		{map[string]any{"size": "small", "sized": "small", "plan": false, "reason": "one handler and its test"},
 			"sized small: one handler and its test"},
 		{map[string]any{"size": "", "plan": false, "reason": "the sizing task t-s ended failed"},
 			"not sized, it runs as filed: the sizing task t-s ended failed"},
+		{map[string]any{"reason": "the sizing step failed: boom"},
+			"not sized, it runs as filed: the sizing step failed: boom"},
 		{map[string]any{"skipped": "the card carries pull request #9, whose work exists"}, ""},
 	} {
 		tc.step["step"] = factoryd.StepSizing
@@ -132,5 +138,23 @@ func TestRunsOfACardsLifeNotesTheSizing(t *testing.T) {
 		if len(runs) == 0 || runs[0].Kind != "queued" || runs[0].At() != "10:00" || runs[0].Duration() != "4 min" || runs[0].Note() != tc.want {
 			t.Errorf("step %v: runs %+v, want queued 10:00 for 4 min with note %q", tc.step, runs, tc.want)
 		}
+	}
+}
+
+// A refused switch is a note of its own on the run it falls in, after the
+// sizing's: the card runs on as filed.
+func TestRunsOfACardsLifeNotesARefusedSwitch(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 29, h, m, 0, 0, time.UTC) }
+	task := factoryd.Task{ID: "t-s", Kind: "agent", Status: "running", Track: "direct", CreatedAt: at(10, 0)}
+	events := []factoryd.Event{{TaskID: "t-s", Kind: factoryd.EventTaskStatus, At: at(10, 4), Detail: map[string]any{"status": "running"}}}
+	refused := "Card #1 is closed, so its work cannot go back to the planner: switch it while it is queued, waiting on its dependencies or running."
+	steps := []map[string]any{
+		{"step": factoryd.StepSizing, "time": at(10, 3).Format(time.RFC3339), "size": "medium", "sized": "medium", "plan": true, "reason": "two packages"},
+		{"step": "to_plan_refused", "time": at(10, 5).Format(time.RFC3339), "reason": refused},
+	}
+	runs := runsOf(task, events, steps, nil, at(10, 30))
+	if len(runs) != 2 || runs[0].Note() != "sized medium, not small: two packages" ||
+		runs[1].Kind != "building" || runs[1].Note() != "the switch to the planner was refused: "+refused {
+		t.Fatalf("runs %+v, want queued with the sizing, then building with the refusal", runs)
 	}
 }

@@ -38,19 +38,21 @@ func (r run) Duration() string { return minutes(time.Duration(r.Minutes) * time.
 // Note is the run's notes on one line.
 func (r run) Note() string { return strings.Join(r.Notes, " · ") }
 
-// sizingNote is the sizing step's note on its run: the size and why, "" for
-// a step that was skipped.
+// sizingNote is the sizing step's note on its run: the size and why, the
+// filer's size where no sizing ran, "" for a step that was skipped.
 func sizingNote(m map[string]any) string {
-	reason := textAt(m, "reason")
-	switch size := textAt(m, "sized"); {
+	sized, plan, reason := textAt(m, "sized"), m["plan"] == true, textAt(m, "reason")
+	switch {
 	case textAt(m, "skipped") != "":
 		return ""
-	case m["plan"] == true:
-		return fmt.Sprintf("sized %s, not small, so the planner takes it: %s", textAt(m, "size"), reason)
-	case size != "":
-		return fmt.Sprintf("sized %s: %s", size, reason)
+	case sized == "" && plan:
+		return "filed " + textAt(m, "size") + ", not small, so no sizing ran"
+	case sized == "":
+		return "not sized, it runs as filed: " + reason
+	case plan:
+		return "sized " + sized + ", not small: " + reason
 	}
-	return "not sized, it runs as filed: " + reason
+	return "sized " + sized + ": " + reason
 }
 
 // Costs is whether the run shows a cost: a building or planning run.
@@ -153,6 +155,8 @@ func runsOf(t factoryd.Task, events []factoryd.Event, steps []map[string]any, ca
 			pts = append(pts, point{at: at, order: 2, note: "held for a roll"})
 		case factoryd.StepSizing:
 			pts = append(pts, point{at: at, order: 2, note: sizingNote(m)})
+		case "to_plan_refused":
+			pts = append(pts, point{at: at, order: 2, note: "the switch to the planner was refused: " + textAt(m, "reason")})
 		}
 	}
 	sort.SliceStable(pts, func(i, j int) bool {
