@@ -1,7 +1,7 @@
 // Package doclinks resolves the relative markdown links of a card's text
 // against the files of the project's document repository. The text's own
-// location is unknown, so a link matches every file whose path ends in the
-// link with its leading ../ and ./ removed.
+// location is unknown, so a link with its leading ../ and ./ removed names
+// the file at that path, else every file whose path ends in it.
 package doclinks
 
 import (
@@ -44,16 +44,19 @@ func Links(text string) []string {
 	return out
 }
 
-// Resolve is the sorted paths of tree that are the link, or end in it,
-// without its leading ../ and ./.
+// Resolve is the path of tree that is the link without its leading ../
+// and ./, else the sorted paths that end in it.
 func Resolve(link string, tree []string) []string {
 	rel := path.Clean(link)
 	for strings.HasPrefix(rel, "../") {
 		rel = rel[len("../"):]
 	}
+	if slices.Contains(tree, rel) {
+		return []string{rel}
+	}
 	var out []string
 	for _, p := range tree {
-		if p == rel || strings.HasSuffix(p, "/"+rel) {
+		if strings.HasSuffix(p, "/"+rel) {
 			out = append(out, p)
 		}
 	}

@@ -51,6 +51,9 @@ func TestResolve(t *testing.T) {
 		{"./../../plans/./x.md", plans, []string{"docs/plans/x.md"}},
 		{"lans/x.md", plans, nil},
 		{"gone.md", plans, nil},
+		{"README.md", []string{"docs/README.md", "README.md", "a/README.md"}, []string{"README.md"}},
+		{"../README.md", []string{"docs/README.md", "README.md"}, []string{"README.md"}},
+		{"plans/x.md", []string{"docs/plans/x.md", "plans/x.md"}, []string{"plans/x.md"}},
 	} {
 		if got := Resolve(c.link, c.tree); !slices.Equal(got, c.want) {
 			t.Errorf("Resolve(%q) = %q, want %q", c.link, got, c.want)
@@ -69,6 +72,7 @@ func TestLines(t *testing.T) {
 		{"[gone](gone.md)", plans, []string{"gone.md is not among the text files at /workspace/docs"}},
 		{"[x](x.md)", []string{"a/x.md", "b/x.md"}, []string{"x.md matches 2 files: a/x.md, b/x.md"}},
 		{"[r](r.md)", []string{"d/r.md", "c/r.md", "b/r.md", "a/r.md"}, []string{"r.md matches 4 files: a/r.md, b/r.md, c/r.md"}},
+		{"[read me](README.md)", []string{"docs/README.md", "README.md"}, []string{"README.md is /workspace/docs/README.md"}},
 		{"[plan](../plans/x.md) then [gone](gone.md)", plans,
 			[]string{"../plans/x.md is /workspace/docs/docs/plans/x.md", "gone.md is not among the text files at /workspace/docs"}},
 		{"no links", plans, nil},

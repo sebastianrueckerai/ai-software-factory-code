@@ -359,6 +359,7 @@ func refuseCarry(title, body string, carry int64) error {
 // document repository, its token or its tree there is no check: the check
 // helps the agent correct a link, a docs outage must not block filing.
 func (c *Console) refuseDocLinks(ctx context.Context, docRepo, text string) error {
+	const codePathAsText = " A path in the code repository goes in as text, not as a link."
 	links := doclinks.Links(text)
 	if docRepo == "" || c.cfg.DocsToken == "" || len(links) == 0 {
 		return nil
@@ -375,10 +376,10 @@ func (c *Console) refuseDocLinks(ctx context.Context, docRepo, text string) erro
 	for _, l := range links {
 		switch m := doclinks.Resolve(l, tree); len(m) {
 		case 0:
-			return refuse(http.StatusBadRequest, fmt.Sprintf("the link %s resolves to no file in the document repository %s: name the path from the repository's root", l, repo))
+			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s resolves to no file in the document repository %s: name the path from the repository's root."+codePathAsText, l, repo))
 		case 1:
 		default:
-			return refuse(http.StatusBadRequest, fmt.Sprintf("the link %s matches %d files in the document repository %s (%s): name one path from the repository's root",
+			return refuse(http.StatusBadRequest, fmt.Sprintf("The link %s matches %d files in the document repository %s (%s): name one path from the repository's root."+codePathAsText,
 				l, len(m), repo, strings.Join(m[:min(len(m), 3)], ", ")))
 		}
 	}
