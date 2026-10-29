@@ -316,3 +316,38 @@ func TestBecomePlanClosesAnOpenPullRequest(t *testing.T) {
 			fj.closed, store.approvals[0], len(fundings(store, "t1")), store.queue, store.tasks["t1"].PRNumber)
 	}
 }
+
+// A card parked on an image leaves the park when it turns plan-track: no
+// task dependency on the tool card, none on its issue. A retry leaves
+// nothing more.
+func TestBecomePlanLeavesTheImagePark(t *testing.T) {
+	r, store, _, fj := becomePlanRig(t, directCard(), specTracks)
+	store.tasks["t-tool"] = Task{ID: "t-tool", Kind: "agent", Status: "running", Repository: "sf/repo", IssueNumber: 50}
+	store.parks = map[string]ImagePark{"t1": {Task: "t1", Target: "ffmpeg", Tool: "ffmpeg", ToolTask: "t-tool", CreatedAt: time.Now()}}
+	store.deps = map[string][]string{"t1": {"t-tool"}}
+	fj.deps = map[int64][]int64{7: {50}}
+	for i := range 2 {
+		if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); got != (PlanSwitchResult{Switched: true}) {
+			t.Fatalf("call %d: BecomePlan = %+v, want switched", i+1, got)
+		}
+		if len(store.deps["t1"]) != 0 || len(fj.deps[7]) != 0 {
+			t.Fatalf("call %d: task dependencies %q, issue dependencies %v; want none", i+1, store.deps["t1"], fj.deps[7])
+		}
+	}
+}
+
+// SupersedeApproval denies the card's pending merge approval with the
+// reason, and only that.
+func TestSupersedeApprovalDeniesTheMergeApproval(t *testing.T) {
+	r, store, _, _ := becomePlanRig(t, directCard(), specTracks)
+	store.approvals = []ApprovalRequest{{ID: 1, TaskID: "t1", Kind: ApprovalMerge, Status: "pending"}, {ID: 2, TaskID: "t1", Kind: "budget", Status: "pending"}}
+	if _, err := execActivity(t, r, ActivitySupersedeApproval, "t1", "superseded: ana asked to send the card back to the planner"); err != nil {
+		t.Fatal(err)
+	}
+	if a := store.approvals[0]; a.Status != "denied" || a.DecidedBy != FactoryDecider || a.DecisionNote != "superseded: ana asked to send the card back to the planner" {
+		t.Fatalf("merge approval %+v, want denied by factoryd with the reason", a)
+	}
+	if store.approvals[1].Status != "pending" {
+		t.Fatalf("budget approval %+v, want pending", store.approvals[1])
+	}
+}

@@ -1085,22 +1085,24 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 	if t.rolling && t.rollGap == versionRollGap {
 		whyHuman = append(slices.Clip(whyHuman), RollGapNote)
 	}
-	// an approval signalled before this request (for an earlier head) is
-	// not one of this one
-	var sig TaskSignal
-	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
-		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
+	for {
+		// an approval signalled before this request (for an earlier head)
+		// is not one of this one
+		var sig TaskSignal
+		for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
+			t.recordIgnored(SignalApproved, sig, "sent before this approval request")
+		}
+		if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
+			Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}).Get(t.ctx, nil); err != nil {
+			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
+		}
+		t.approvalRequested = workflow.Now(t.ctx)
+		if v = t.awaitApproval(commit, covered); !v.reask {
+			break
+		}
 	}
-	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
-		Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}).Get(t.ctx, nil); err != nil {
-		return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
-	}
-	t.approvalRequested = workflow.Now(t.ctx)
-	if v = t.awaitApproval(commit, covered); !v.rerun && !v.moved && !v.reask {
+	if !v.rerun && !v.moved {
 		return v
-	}
-	if v.reask {
-		return t.approve(commit, g, review, earlier, card, covered)
 	}
 	if v.moved {
 		// the merge was refused on a head the agent moved past its gates
@@ -1224,7 +1226,17 @@ func (t *taskRun) awaitSuspect(reasons []string) (final, why string, findings []
 // awaitScreening waits on the human who reads a suspect screening asked
 // with reason and judges the screening alert (judgeScreening).
 func (t *taskRun) awaitScreening(reason string) (final, why string, answer []string) {
-	return t.judgeScreening(t.awaitHuman(reason, nil))
+	return t.screeningWait(func() (string, string, []string) { return t.awaitHuman(reason, nil) })
+}
+
+// screeningWait runs wait, a wait on the screening's human, and judges the
+// screening alert by its end. A replan does not end it: the human's
+// judgment stays the gate on an outsider's text.
+func (t *taskRun) screeningWait(wait func() (string, string, []string)) (final, why string, answer []string) {
+	t.screening = true
+	final, why, answer = wait()
+	t.screening = false
+	return t.judgeScreening(final, why, answer)
 }
 
 // judgeScreening judges the screening alert by how the wait on its human

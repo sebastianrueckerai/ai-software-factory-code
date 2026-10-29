@@ -672,12 +672,14 @@ func (t *taskRun) parkOnImage(tool, need string) (final, why string, answer, not
 }
 
 // awaitImage holds the card parked on p.Target, at no cost, until the
-// imager's image_ready of this park or a terminal signal; imageWait after
-// since it asks a human, whose answer ends the park on the card's image as
-// it is, while the image's arrival ends that wait too. asked: a healed
-// run's question of that ask, asked again. A park the imager woke already
-// ends at once. The image's arrival puts the card on it (ImageArrived);
-// every other end leaves the park (leavePark).
+// imager's image_ready of this park, a terminal signal or a person's
+// replan of a direct card (versionReplan); imageWait after since it asks a
+// human, whose answer ends the park on the card's image as it is, while
+// the image's arrival ends that wait too. asked: a healed run's question
+// of that ask, asked again. A park the imager woke already ends at once.
+// The image's arrival puts the card on it (ImageArrived); a switch to the
+// planner left the park already (BecomePlan); every other end leaves the
+// park (leavePark).
 func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final, why string, answer, notes []string) {
 	ready := &imageReady{park: p}
 	ready.start(t)
@@ -692,6 +694,9 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed} {
 				sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 			}
+			if t.replans() {
+				sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalToPlan), func(workflow.ReceiveChannel, bool) {})
+			}
 			ready.add(sel)
 			sel.AddFuture(timer, func(workflow.Future) { expired = true })
 			sel.Select(t.ctx)
@@ -699,6 +704,15 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 				cancel()
 				t.leavePark(p)
 				return final, why, nil, nil
+			}
+			if t.replans() {
+				// the switch leaves the park (BecomePlan)
+				if sw, step, ok := t.takeToPlan(); ok {
+					if final, why, done := t.switchFromWait(sw, step, "waiting-image"); done {
+						cancel()
+						return final, why, nil, nil
+					}
+				}
 			}
 		}
 		cancel()
@@ -714,7 +728,9 @@ func (t *taskRun) awaitImage(p ImagePark, since time.Time, asked string) (final,
 			final, why, answer = t.awaitHumanUntil(imageWaitAsk(p), nil, ready)
 		}
 		if final != "" || ready.sig == nil {
-			t.leavePark(p)
+			if t.switched == nil {
+				t.leavePark(p)
+			}
 			return final, why, answer, nil
 		}
 	}

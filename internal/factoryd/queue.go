@@ -280,8 +280,8 @@ func (t *taskRun) queued() bool {
 
 // turn waits, at no cost, for the task's turn in its project's merge
 // queue, then merges main into head (SyncWithMain). stop ends the stages
-// with v (a terminal signal, a change request, a conflict, a failed
-// activity).
+// with v (a terminal signal, a change request, a person's replan
+// (versionReplan), a conflict, a failed activity).
 func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 	for {
 		var ahead int
@@ -296,6 +296,9 @@ func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 		for _, n := range []string{SignalQueueTurn, SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested} {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
+		if t.replans() {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalToPlan), func(workflow.ReceiveChannel, bool) {})
+		}
 		sel.AddFuture(workflow.NewTimer(timerCtx, queueRecheck), func(workflow.Future) {})
 		sel.Select(t.ctx)
 		cancel()
@@ -306,6 +309,13 @@ func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 		}
 		if changes := t.drainChanges(); len(changes) > 0 {
 			return sync, verdict{findings: changes, reason: "changes requested", requested: true}, true
+		}
+		if t.replans() {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, why, done := t.switchFromWait(sw, step, "in-review"); done {
+					return sync, verdict{final: final, reason: why}, true
+				}
+			}
 		}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivitySyncWithMain, t.taskID, t.pr.Number, head).Get(t.ctx, &sync); err != nil {

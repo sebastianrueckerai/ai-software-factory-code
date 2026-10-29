@@ -1288,6 +1288,13 @@ func becomeSwitched() (PlanSwitchResult, error) { return PlanSwitchResult{Switch
 // TaskConfig to the plan card's and zeroes the usage Reconcile reads, as
 // the activity does.
 func toPlanHarness(t *testing.T, become func() (PlanSwitchResult, error), sessions ...timedSession) (*planHarness, *[]becomePlanCall) {
+	h, calls := directCardHarness(t, become, sessions...)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	return h, calls
+}
+
+// directCardHarness is toPlanHarness with no checks answered.
+func directCardHarness(t *testing.T, become func() (PlanSwitchResult, error), sessions ...timedSession) (*planHarness, *[]becomePlanCall) {
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.file = map[int]bool{1: true}
 	plan := h.taskConfig
@@ -1305,7 +1312,6 @@ func toPlanHarness(t *testing.T, become func() (PlanSwitchResult, error), sessio
 			return res, err
 		})
 	h.onTimedSessions(sessions...)
-	h.onChecks(ChecksResult{State: ChecksSuccess})
 	return h, &calls
 }
 

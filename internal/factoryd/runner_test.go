@@ -138,10 +138,12 @@ func (k *fakeKube) DeleteNamespace(ctx context.Context, name string) error {
 	delete(k.namespaces, name)
 	k.deletedNs = append(k.deletedNs, name)
 	k.ops = append(k.ops, "delete namespace "+name)
-	for key := range k.pods {
+	for key, p := range k.pods {
 		if strings.HasPrefix(key, name+"/") {
 			delete(k.pods, key)
-			k.deletedPods = append(k.deletedPods, key)
+			if !p.deleted {
+				k.deletedPods = append(k.deletedPods, key)
+			}
 		}
 	}
 	return nil
@@ -280,15 +282,25 @@ func (k *fakeKube) DeletePod(ctx context.Context, namespace, name string) error 
 		k.onDeletePod()
 	}
 	close(p.term)
-	// a worker whose log is cut or goes on after its SIGTERM is still
-	// inside its grace period: the pod stays until the rest of its log has
-	// been read
-	if (strings.Contains(p.logs, cutLogs) || strings.Contains(p.logs, sigtermLogs)) && p.phase == "Running" {
+	// a worker whose log is cut, goes on after its SIGTERM or is not written
+	// yet is still inside its grace period: the pod stays until the rest of
+	// its log has been read
+	if (!logsWritten(p) || strings.Contains(p.logs, cutLogs) || strings.Contains(p.logs, sigtermLogs)) && p.phase == "Running" {
 		p.deleted = true
 		return nil
 	}
 	delete(k.pods, namespace+"/"+name)
 	return nil
+}
+
+// logsWritten says p's scripted log is written.
+func logsWritten(p *fakePod) bool {
+	select {
+	case <-p.logsReady:
+		return true
+	default:
+		return false
+	}
 }
 
 func (k *fakeKube) PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error) {
@@ -3739,6 +3751,9 @@ func TestRunSessionCheckinReplanStopsTheSession(t *testing.T) {
 func TestRunSessionOfAPersonsReplanSkipsTheCheckin(t *testing.T) {
 	runner, hub, kube, _, chat, store, objects := liveRig(t)
 	runner.stopWait = 10 * time.Second
+	// the replan reaches the session before the worker printed a line: its
+	// log is written only once the pod's deletion has begun
+	kube.onDeletePod = func() { go kube.scriptPods(0, stoppedWorker("t2")) }
 	delivered := make(chan error, 1)
 	go func() {
 		deadline := time.Now().Add(5 * time.Second)
@@ -3751,7 +3766,7 @@ func TestRunSessionOfAPersonsReplanSkipsTheCheckin(t *testing.T) {
 			time.Sleep(5 * time.Millisecond)
 		}
 	}()
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, stoppedWorker("t2"))
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

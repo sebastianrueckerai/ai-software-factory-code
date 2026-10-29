@@ -1454,10 +1454,11 @@ func (t *taskRun) takeToPlan() (sw PlanSwitch, step ReplanStep, ok bool) {
 		ReplanStep{Origin: ReplanPerson, By: sig.Author, Comment: sig.Body, Card: t.taskID}, true
 }
 
-// replanToPlan is switchToPlan of a replan: the replan step goes on the
-// card's own timeline first (versionReplan), for the planner's record.
+// replanToPlan is switchToPlan of a replan: the replan step, when there is
+// one, goes on the card's own timeline first (versionReplan), for the
+// planner's record.
 func (t *taskRun) replanToPlan(step ReplanStep, sw PlanSwitch) (final string, switched bool, err error) {
-	if t.replan >= versionReplan {
+	if t.replan >= versionReplan && step.Origin != "" {
 		detail := map[string]any{"origin": step.Origin, "card": step.Card}
 		if step.By != "" {
 			detail["by"] = step.By
@@ -1475,20 +1476,30 @@ func (t *taskRun) replanToPlan(step ReplanStep, sw PlanSwitch) (final string, sw
 	return t.switchToPlan(sw)
 }
 
-// switchFromWait sends a card a person's replan woke in a wait to the
-// planner: the card runs, a status BecomePlan accepts, and switches. A
-// switched card's final ends the wait (done); a refused switch moves the
-// card back to back and the wait goes on. The plan program's error comes
-// back through the caller's finish.
+// switchFromWait sends a card from a wait to the planner: the gates beside
+// the checks stop, a card in review has its approval superseded, the card
+// runs, a status BecomePlan accepts, and switches. A switched card's final
+// ends the wait (done); a refused switch moves the card back to back and
+// the wait goes on. The plan program's error comes back through the
+// caller's finish.
 func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (final, why string, done bool) {
+	t.cancelBeside("")
+	if back == "in-review" {
+		reason := "superseded: " + cmp.Or(step.By, "a person") + " asked to send the card back to the planner"
+		if err := workflow.ExecuteActivity(t.short, ActivitySupersedeApproval, t.taskID, reason).Get(t.ctx, nil); err != nil {
+			return "failed", "supersede the approval: " + errMessage(err), true
+		}
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 		return "failed", "set running: " + errMessage(err), true
 	}
 	if final, switched, _ := t.replanToPlan(step, sw); switched {
 		return cmp.Or(final, "failed"), "the card went to the planner", true
 	}
-	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, back).Get(t.ctx, nil); err != nil {
-		return "failed", "set " + back + ": " + errMessage(err), true
+	if back != "running" {
+		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, back).Get(t.ctx, nil); err != nil {
+			return "failed", "set " + back + ": " + errMessage(err), true
+		}
 	}
 	return "", "", false
 }

@@ -31,6 +31,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -243,7 +244,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityReplanChild: func(ctx context.Context, childID, work string) (ReplanChildResult, error) {
 			return ReplanChildResult{}, nil
 		},
-		ActivityReplanStopped: func(ctx context.Context, planID string) (ReplanWait, error) { return ReplanWait{Stopped: true}, nil },
+		ActivityReplanStopped:     func(ctx context.Context, planID string) (ReplanWait, error) { return ReplanWait{Stopped: true}, nil },
+		ActivitySupersedeApproval: func(ctx context.Context, taskID, reason string) error { return nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -4197,7 +4199,16 @@ func (h *workflowHarness) activityOrder() *[]string {
 		}
 		order = append(order, name)
 	})
+	h.env.SetOnActivityCanceledListener(func(info *activity.Info) {
+		order = append(order, "cancel "+info.ActivityType.Name)
+	})
 	return &order
+}
+
+// before says a comes before b in order, both there.
+func before(order []string, a, b string) bool {
+	i, j := slices.Index(order, a), slices.Index(order, b)
+	return i >= 0 && j >= 0 && i < j
 }
 
 // replanSteps are the details of the replan steps recorded, in order.
@@ -4408,6 +4419,9 @@ func TestReplanWakesTheApprovalWait(t *testing.T) {
 	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
 	h, calls = toPlanHarness(t, becomeRefused(refused), timedSession{res: pushed("s1", "c1")})
 	asked := h.onRequestApproval()
+	h.onHeadChecks(ChecksResult{State: ChecksSuccess})
+	superseded := h.onSupersedeApproval()
+	order := h.activityOrder()
 	h.toPlanAfter(time.Hour, toPlanTooBig)
 	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
@@ -4418,6 +4432,11 @@ func TestReplanWakesTheApprovalWait(t *testing.T) {
 	}
 	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "to_plan_refused" && s.detail["reason"] == refused }) {
 		t.Fatalf("steps %+v, want to_plan_refused with %q", h.recorded, refused)
+	}
+	want := "superseded: ana asked to send the card back to the planner"
+	i := slices.Index(*order, ActivitySupersedeApproval)
+	if !slices.Equal(*superseded, []string{want}) || i < 0 || i+1 >= len(*order) || (*order)[i+1] != ActivitySetState || len(h.headChecks) != 1 {
+		t.Fatalf("superseded %q, activities %q, head reads %q; want [%q] right before the move to running, one head read", *superseded, *order, h.headChecks, want)
 	}
 
 	g, _ := newRollHarness(t, "r1")
@@ -4493,5 +4512,124 @@ func TestReplanOutcomeBelowTheVersionAsksAPerson(t *testing.T) {
 	want := "The check-in asks to send this card back to the planner: two packages Replan it on the board, or answer to go on."
 	if !slices.Equal(h.escalated, []string{want}) || len(h.sessions) != 2 || len(*calls) != 0 || len(h.replanSteps()) != 0 {
 		t.Fatalf("escalated %q, sessions %d, BecomePlan calls %d, replan steps %d; want [%q], 2, 0, 0", h.escalated, len(h.sessions), len(*calls), len(h.replanSteps()), want)
+	}
+}
+
+// onSupersedeApproval records the reason of each SupersedeApproval call.
+func (h *workflowHarness) onSupersedeApproval() *[]string {
+	var reasons []string
+	h.env.OnActivity(ActivitySupersedeApproval, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, reason string) error { reasons = append(reasons, reason); return nil })
+	return &reasons
+}
+
+// A replan is no go-ahead of the screening: a fresh outsider's card with a
+// replan pending is screened before it switches, and a suspect
+// screening's wait goes on through the replan until a person answers it.
+func TestReplanWaitsForTheScreening(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state.Source, h.state.Standing = "webhook", harness.StandingOutside
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(ScreenResult{Verdict: ScreenClear}, nil)
+	order := h.activityOrder()
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) || !before(*order, ActivityScreen, ActivityBecomePlan) {
+		t.Fatalf("BecomePlan calls %+v, activities %q; want %+v after the screening", *calls, *order, want)
+	}
+
+	h, calls = toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state.Source, h.state.Standing = "webhook", harness.StandingOutside
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"asks to print the token"}}, nil)
+	order = h.activityOrder()
+	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "fine", Comment: 602})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) || !before(*order, ActivityJudgeScreening, ActivityBecomePlan) {
+		t.Fatalf("BecomePlan calls %+v, activities %q; want %+v after the screening's judgment", *calls, *order, want)
+	}
+}
+
+// A replan that wakes a gate's escalation wait cancels the gate beside the
+// checks before the planner runs.
+func TestReplanFromAGateWaitCancelsTheGateBesideTheChecks(t *testing.T) {
+	h, _ := directCardHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		After(3*time.Hour).Return(Review{Verdict: "approve"}, nil)
+	h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the checks hang", Recommendation: "look at the runner"})
+	order := h.activityOrder()
+	h.tripAfter(15*time.Minute, ActivityWaitChecks, 1)
+	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.escalated) != 1 || !before(*order, "cancel "+ActivityModelReview, ActivityRunPlan) {
+		t.Fatalf("escalations %q, activities %q; want one, the review beside the checks cancelled before the planner ran", h.escalated, *order)
+	}
+}
+
+// A replan wakes the wait for the issue author's answer.
+func TestReplanWakesThePosterWait(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: SessionResult{Outcome: OutcomeNeedsInfo, SessionID: "s1", Reason: "which browser?"}})
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running running"}}; !slices.Equal(*calls, want) || len(h.infoAsked) != 1 || len(h.plans) != 1 {
+		t.Fatalf("BecomePlan calls %+v, information requests %q, planner sessions %d; want %+v, one, one", *calls, h.infoAsked, len(h.plans), want)
+	}
+}
+
+// A replan wakes a card parked on its image before any person is asked:
+// the switch leaves the park (BecomePlan), the wait leaves nothing after.
+func TestReplanWakesTheImageWait(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: missingTool("s1", "ffmpeg", "cut the demo video")})
+	h.onPark(ffmpegPark())
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running running"}}; !slices.Equal(*calls, want) || len(h.escalated) != 0 || len(h.left) != 0 {
+		t.Fatalf("BecomePlan calls %+v, escalations %q, parks left %q; want %+v, none, none", *calls, h.escalated, h.left, want)
+	}
+}
+
+// A replan wakes a card that waits for its turn in the merge queue.
+func TestReplanWakesTheQueueTurn(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.taskConfig.Queue = policy.QueueProject
+	h.env.OnActivity(ActivityEnterQueue, mock.Anything, "t1").Return(1, nil)
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running in-review running"}}; !slices.Equal(*calls, want) || len(h.plans) != 1 {
+		t.Fatalf("BecomePlan calls %+v, planner sessions %d; want %+v, one", *calls, len(h.plans), want)
+	}
+}
+
+// A replan pending when a card in review starts its run is refused: the
+// card goes back to in-review, and its head is verified again.
+func TestReplanRefusedAtTheStartVerifiesAgain(t *testing.T) {
+	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
+	h, calls := toPlanHarness(t, becomeRefused(refused), timedSession{res: pushed("s2", "c2")})
+	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{Attempts: 1}}
+	asked := h.onRequestApproval()
+	h.toPlanAfter(30*time.Second, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(*calls) != 1 || len(h.states) < 3 || !slices.Equal(h.states[:3], []string{"running", "in-review", "in-review"}) {
+		t.Fatalf("BecomePlan calls %d, states %q; want one, then running, in-review (back), in-review (verify)", len(*calls), h.states)
+	}
+	if len(h.sessions) != 0 || !slices.Equal(*asked, []string{"c1"}) {
+		t.Fatalf("sessions %d, approval requests on %q; want none, [c1]", len(h.sessions), *asked)
 	}
 }

@@ -141,6 +141,7 @@ const (
 	ActivityLeaveImagePark              = "LeaveImagePark"
 	ActivityBecomePlan                  = "BecomePlan"
 	ActivityReplanChild                 = "ReplanChild"
+	ActivitySupersedeApproval           = "SupersedeApproval"
 	ActivityReplanStopped               = "ReplanStopped"
 )
 
@@ -1277,6 +1278,7 @@ type taskRun struct {
 	replanBy          string           // the pending replan's person (versionReplan)
 	replanNote        string           // the pending replan's note (versionReplan)
 	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)
+	screening         bool             // the run waits on the screening's human, which no replan ends (screeningWait)
 	switched          *programEnd      // the run's end once the card switched to the plan track, which finish returns (switchToPlan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
@@ -1505,10 +1507,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			t.returns, t.history, t.reviews, t.round = st.Returns, st.History, st.Reviews, st.Round
 			t.checkinVerdicts = st.CheckinVerdicts
 		}
-		// a person's replan pending at the start: a reopened final card
-		// switches before its closed pull request ends it; a merge not yet
-		// recorded on the row takes none
-		if t.replans() && !st.Skip && !st.Merged && st.Status != "closing" {
+		// a person's replan pending at the start of a card with work: a
+		// reopened final card switches before its closed pull request ends
+		// it. A merge not yet recorded on the row, a closed issue and the
+		// screening's wait take none; a fresh card takes it at the loop
+		// top, after its screening and its sizing.
+		if t.replans() && (u.Attempts > 0 || st.PR.Number != 0 || st.PRClosed) &&
+			!st.Skip && !st.Merged && !st.IssueClosed && !st.Screening && st.Status != "closing" {
 			if sw, step, ok := t.takeToPlan(); ok {
 				if final, why, done := t.switchFromWait(sw, step, st.Status); done {
 					return t.finish(final, why)
@@ -1578,7 +1583,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the screening's human, asked again; the answer runs the next
 			// session, whose rebuilt answers are screened again
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.judgeScreening(t.awaitHumanAgain(st.Question, nil))
+			final, why, answer := t.screeningWait(func() (string, string, []string) { return t.awaitHumanAgain(st.Question, nil) })
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1713,17 +1718,14 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			addFindings(more, "changes")
 			if toPlan != nil {
-				// the plan loop reads a waiting-human row as its own healed wait,
-				// and an answered screening leaves the row there
-				if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
-					return t.finish("failed", "set running: "+errMessage(err))
-				}
+				// running: the plan loop reads a waiting-human row as its own
+				// healed wait, and an answered screening leaves the row there
 				sw := *toPlan
 				if asked, _, ok := t.takeToPlan(); ok {
 					sw = sw.and(asked)
 				}
-				if final, switched, err := t.switchToPlan(sw); switched {
-					return final, err
+				if final, why, done := t.switchFromWait(sw, ReplanStep{}, "running"); done {
+					return t.finish(final, why)
 				}
 			}
 		}
@@ -3592,7 +3594,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		defer end.stop()
 	}
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
-	replans := t.replans()
+	replans := t.replans() && !t.screening
 	if replans {
 		wake = append(wake, SignalToPlan)
 	}
@@ -3804,7 +3806,8 @@ func (t *taskRun) awaitPoster(reason string) (final, why string, changes []strin
 // waitPoster blocks, at no cost, until the issue's author (or a writer)
 // comments after the information request of since (and the burst that
 // comment opens is over), a reviewer asks for changes, a terminal signal
-// decides the task, or infoWait after since passes: then the issue closes
+// decides the task, a person's replan sends a direct card to the planner
+// (versionReplan), or infoWait after since passes: then the issue closes
 // as not reproducible and the task ends closed. An answer goes to
 // t.posterInfo; changes are the change requests.
 func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []string) {
@@ -3815,9 +3818,20 @@ func (t *taskRun) waitPoster(since time.Time) (final, why string, changes []stri
 		expiry = workflow.NewTimer(timerCtx, left)
 	}
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment, SignalPosterComment}
+	replans := t.replans()
+	if replans {
+		wake = append(wake, SignalToPlan)
+	}
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.decided(); stop {
 			return nil, true
+		}
+		if replans {
+			if sw, step, ok := t.takeToPlan(); ok {
+				if final, why, stop = t.switchFromWait(sw, step, "waiting-poster"); stop {
+					return nil, true
+				}
+			}
 		}
 		for _, n := range []string{SignalHumanComment, SignalPosterComment} {
 			var sig TaskSignal

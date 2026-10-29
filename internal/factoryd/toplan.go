@@ -49,9 +49,9 @@ var switchableStatuses = []string{"queued", "waiting-deps", "running"}
 // the to_plan step with the planner's block, the session counters at zero
 // (the plan loop has caps of its own), the open pull request closed with
 // its branch kept, its merge approvals denied, the card out of the merge
-// queue, money for the planner's session, the issue labelled plan in place
-// of agent. Its only caller is the direct lifecycle, so a card found
-// plan-track is one an earlier attempt moved.
+// queue and its image park, money for the planner's session, the issue
+// labelled plan in place of agent. Its only caller is the direct
+// lifecycle, so a card found plan-track is one an earlier attempt moved.
 func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -117,6 +117,13 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 	if err := r.leaveQueue(ctx, taskID, "the card went back to the planner"); err != nil {
 		return PlanSwitchResult{}, err
 	}
+	if p, ok, err := r.store.ImagePark(ctx, taskID); err != nil {
+		return PlanSwitchResult{}, err
+	} else if ok && p.ToolTask != "" {
+		if err := cleanup(taskID, "leave its image park", r.LeaveImagePark(ctx, taskID, p.ToolTask)); err != nil {
+			return PlanSwitchResult{}, err
+		}
+	}
 	if err := r.fundPlanner(ctx, t); err != nil {
 		return PlanSwitchResult{}, err
 	}
@@ -126,6 +133,12 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 		}
 	}
 	return PlanSwitchResult{Switched: true}, nil
+}
+
+// SupersedeApproval denies card taskID's pending merge approval with
+// reason: a replan of the card in review supersedes it, refused or not.
+func (r *Runner) SupersedeApproval(ctx context.Context, taskID, reason string) error {
+	return r.store.ResolveApprovals(ctx, taskID, ApprovalMerge, "denied", FactoryDecider, reason)
 }
 
 // relabelPlan labels card t's issue plan in place of agent. The label only
