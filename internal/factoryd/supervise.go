@@ -404,8 +404,10 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 		for i, p := range a.Parts {
 			parts[i] = fmt.Sprintf("%d. %s", i+1, p)
 		}
-		// the parts are bounded already: the reason is cut so they always follow it
-		return s.trip(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: " + textutil.Truncate(a.Reason, 1000) + ". Its parts: " + strings.Join(parts, "; ")})
+		// one line: the parts are bounded already, and the reason is cut so
+		// they always follow it
+		why := strings.TrimSuffix(oneLine(a.Reason), ".")
+		return s.trip(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: " + textutil.Truncate(why, 1000) + ". Its parts: " + strings.Join(parts, "; ")})
 	}
 	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: action, Reason: a.reason(), Choices: a.Choices, Tool: a.Tool, Need: a.Need}})
 }

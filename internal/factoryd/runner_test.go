@@ -3953,6 +3953,169 @@ func TestCutDuringACheckinThatStopsTheSessionIsDropped(t *testing.T) {
 	}
 }
 
+// An escalation after a held cut, in the same conversation, cuts the
+// conversation and wins as any escalation does; the held cut is dropped.
+func TestAnEscalationAfterAHeldCutWins(t *testing.T) {
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"message","guidance":"try another way"}`})
+	runner.stopWait = 5 * time.Second
+	withPlanTrack(store)
+	chat.delay = 20 * time.Second
+	asked := make(chan error, 2)
+	chat.onCall = func() {
+		if chat.calls == 1 {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			asked <- runner.EscalateSession(ctx, "t2", cutAsk)
+			asked <- runner.EscalateSession(ctx, "t2", licenseAsk)
+		}
+	}
+	stopped := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": false}}) + "\n" +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped: work in progress pushed at c-wip") + "\n"
+	began := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24)+stopped)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cut, esc := <-asked, <-asked; cut != nil || esc != nil {
+		t.Fatalf("the cut = %v, the escalation = %v; want both taken", cut, esc)
+	}
+	if took := time.Since(began); took > 10*time.Second || chat.calls != 1 {
+		t.Fatalf("took %s over %d calls: the escalation did not cut the conversation", took, chat.calls)
+	}
+	if res.Outcome != OutcomeEscalate || !strings.HasPrefix(res.Reason, "The agent asks: Which license applies?") || res.Commit != "c-wip" {
+		t.Fatalf("result = %+v, want the agent's escalation with the work in progress", res)
+	}
+	if got := logs.String(); !strings.Contains(got, "task t2: the agent's cut during the check-in for repetition is dropped: the session stops") {
+		t.Fatalf("log = %q, want the dropped cut", got)
+	}
+}
+
+// A second cut during the hold replaces the first: the check-in judges
+// the newer ask alone.
+func TestASecondCutDuringACheckinReplacesTheFirst(t *testing.T) {
+	runner, _, _, _, chat, store, _ := liveRig(t,
+		CheckinResponse{Text: `{"decision":"continue","reason":"the reads differ each time"}`},
+		CheckinResponse{Text: `{"decision":"continue","reason":"the card is one card"}`})
+	withPlanTrack(store)
+	second := AgentAsk{Kind: AskCut, Reason: "a store, a UI and a CLI", Parts: []string{"the store", "the UI", "the CLI"}}
+	asked := make(chan error, 2)
+	chat.onCall = func() {
+		if chat.calls == 1 {
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			asked <- runner.EscalateSession(ctx, "t2", cutAsk)
+			asked <- runner.EscalateSession(ctx, "t2", second)
+		}
+	}
+	logs := commands(0, 24) + pushedLine("c1") + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first, again := <-asked, <-asked; first != nil || again != nil {
+		t.Fatalf("the cuts = %v and %v, want both taken", first, again)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c1" {
+		t.Fatalf("result = %+v, want the session run on to its push", res)
+	}
+	if chat.calls != 2 || !strings.Contains(chat.gots[1].Input, "the detector agent_cut tripped (the agent asks to cut the card: a store, a UI and a CLI. Its parts: 1. the store; 2. the UI; 3. the CLI)") ||
+		strings.Contains(chat.gots[1].Input, cutDetail) {
+		t.Fatalf("chat = %d calls %+v, want the repetition's and then the second cut's alone", chat.calls, chat.gots)
+	}
+}
+
+// The check-in's continue on the agent's cut answers the agent: the
+// check-in's reason reaches it as a message, and the session runs on.
+func TestRunSessionCutContinueAnswersTheAgent(t *testing.T) {
+	runner, _, _, worker, chat, store, objects := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is one store."}`})
+	withPlanTrack(store)
+	const want = "POST /message The check-in keeps this card whole: the rest is one store. Finish it as one card."
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	delivered := make(chan error, 1)
+	go func() {
+		defer cancel()
+		deadline := time.Now().Add(10 * time.Second)
+		err := ErrNoLiveSession
+		for errors.Is(err, ErrNoLiveSession) && time.Now().Before(deadline) {
+			if err = runner.EscalateSession(t.Context(), "t2", cutAsk); errors.Is(err, ErrNoLiveSession) {
+				time.Sleep(5 * time.Millisecond)
+			}
+		}
+		delivered <- err
+		for time.Now().Before(deadline) {
+			worker.mu.Lock()
+			found := slices.Contains(worker.texts, want)
+			worker.mu.Unlock()
+			if found {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, hangLogs)
+	if err := <-delivered; err != nil {
+		t.Fatalf("EscalateSession = %v", err)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if !slices.Contains(texts, want) || chat.calls != 1 {
+		t.Fatalf("worker got %q after %d calls, want the check-in's reason as a message", texts, chat.calls)
+	}
+	if step := timelineStep(t, objects, "t2", "checkin"); step["detector"] != "agent_cut" || step["decision"] != "continue" {
+		t.Fatalf("check-in step = %v, want the cut's continue", step)
+	}
+}
+
+// A reattached session reads its project again: a card with a plan track
+// takes the agent's cut after the reattach too.
+func TestRunSessionReattachedSessionTakesACut(t *testing.T) {
+	runner, _, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"replan","reason":"the two parts hold"}`})
+	runner.stopWait = 10 * time.Second
+	withPlanTrack(store)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	logs := loopFailure(1) + sigtermLogs + pushedLine("c-wip") + "\n" + resultLine(false, "stopped; work in progress pushed at c-wip") + "\n"
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	delivered := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := runner.EscalateSession(t.Context(), "t2", cutAsk)
+			if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+				delivered <- err
+				if err != nil {
+					// a refused cut leaves the session held at its stop: end it
+					kube.DeletePod(context.Background(), first.Namespace, first.Pod)
+				}
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	res, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("the cut of the reattached session = %v, want taken", err)
+	}
+	if res.SessionID != first.SessionID || res.Outcome != OutcomeReplan || res.Trip != string(TripAgentCut) || res.Commit != "c-wip" || chat.calls != 1 {
+		t.Fatalf("result = %+v after %d calls, want the reattached session's replan on the cut", res, chat.calls)
+	}
+}
+
 // request_cut is offered only where the card can be cut: a coding
 // session of a direct card whose project has a plan track, never a card
 // without one or a report.

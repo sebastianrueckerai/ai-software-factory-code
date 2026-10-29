@@ -484,19 +484,32 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   deletes the project's `sf/sandbox-<project>.*` packages and its image
   rows.
 - `request_cut` (`reason`, 1 to 4000 bytes, and `parts`, 2 to 5, each one
-  line of 1 to 400 bytes): free, through the class's tool list
-  (`request_cut: {}`). The agent asks to cut its card when the work is
-  bigger than one card should be. The session goes on: factoryd records
-  an `agent_cut` intake event, and the session's check-in judges the ask
-  (trip `agent_cut`, its reason cut at 1000 bytes, then the numbered
-  parts). Its `replan` stops the session and sends the card to the
-  planner with the parts; `continue` or `message` lets the card finish as
-  one card. A cut that arrives during a check-in on another trip waits
-  for that answer and is judged next; an answer that stops the session
-  drops it. Only a coding session whose card the planner can cut may ask:
-  a plan's child, or a direct card whose project's process has a plan
-  track. factoryd refuses any other session's ask ("this card cannot be
-  cut: finish it as it is, or ask a person with escalate_to_human").
+  line of 1 to 400 bytes without control characters; one check,
+  `policy.CutAskRefusal`, at the gateway and in factoryd): free, through
+  the class's tool list (`request_cut: {}`). The agent asks to cut its
+  card when the work is bigger than one card should be. The session goes
+  on: factoryd records an `agent_cut` intake event, and the session's
+  check-in judges the ask (trip `agent_cut`: the reason on one line, cut
+  at 1000 bytes, then the numbered parts). Its answer:
+  - `replan` stops the session and sends the card to the planner with
+    the parts.
+  - `continue` lets the card finish as one card. The agent gets the
+    check-in's reason as a message: "The check-in keeps this card whole:
+    <reason>. Finish it as one card."
+  - `message` lets it finish too, with the check-in's guidance.
+  - `handover` and `human` stop the session as on any trip, and so does a
+    check-in share already spent, which asks a person.
+
+  A cut that arrives during a check-in on another trip does not cut that
+  conversation. It waits for the answer and is judged next. A later cut
+  replaces it, an escalation still cuts the conversation and wins, and an
+  answer that stops the session drops it. Only a coding session whose
+  card the planner can cut may ask: a plan's child, or a direct card whose
+  project's process has a plan track. Report and planner sessions cannot
+  be cut, nor cards of the unbound sources (`roll`, `github-sync`,
+  `schema-copy`, `template-update`, `revert`, `screening`, `sizing`).
+  factoryd refuses any other session's ask ("this card cannot be cut:
+  finish it as it is, or ask a person with escalate_to_human").
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

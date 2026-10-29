@@ -361,6 +361,7 @@ func TestEscalationHandlerCut(t *testing.T) {
 		"a part on two lines": `{"task_id":"t-run","kind":"cut","reason":"r","parts":["the\nstore","b"]}`,
 		"a long reason":       fmt.Sprintf(`{"task_id":"t-run","kind":"cut","reason":%q,"parts":["a","b"]}`, strings.Repeat("r", 4001)),
 		"a long part":         fmt.Sprintf(`{"task_id":"t-run","kind":"cut","reason":"r","parts":[%q,"b"]}`, strings.Repeat("a", 401)),
+		"a part with a tab":   `{"task_id":"t-run","kind":"cut","reason":"r","parts":["the\tstore","b"]}`,
 	} {
 		if code := post(&fakeSessions{}, body); code != http.StatusBadRequest {
 			t.Errorf("%s = %d, want 400", name, code)

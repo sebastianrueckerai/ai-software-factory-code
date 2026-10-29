@@ -1968,6 +1968,15 @@ func TestAgentCutGoesToTheCheckin(t *testing.T) {
 		t.Fatalf("findings = %q, want no stuck line on the agent's cut", trip.Findings)
 	}
 
+	// line breaks fold to spaces, and a closing period gives way to the parts'
+	for _, reason := range []string{"a store\nand a UI.", "a store\r\nand a UI. "} {
+		s, _ = NewSupervisor(cfg, minute(0), minute(0))
+		if got, want := s.AgentAsk(AgentAsk{Kind: AskCut, Reason: reason, Parts: parts}).Detail,
+			"the agent asks to cut the card: a store and a UI. Its parts: 1. the store; 2. the UI"; got != want {
+			t.Fatalf("detail of %q = %q, want %q", reason, got, want)
+		}
+	}
+
 	s, _ = NewSupervisor(cfg, minute(0), minute(0))
 	long := strings.Repeat("r", 3000)
 	if got, want := s.AgentAsk(AgentAsk{Kind: AskCut, Reason: long, Parts: parts}).Detail,

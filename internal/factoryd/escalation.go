@@ -13,6 +13,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -66,13 +67,6 @@ const (
 	maxNeed = 600
 )
 
-// maxCutParts bounds the parts a cut proposes, maxCutPart the bytes of
-// one, as the gateway does.
-const (
-	maxCutParts = 5
-	maxCutPart  = 400
-)
-
 // validate checks the fields of its kind, as the gateway does.
 func (a AgentAsk) validate() error {
 	switch a.Kind {
@@ -83,9 +77,8 @@ func (a AgentAsk) validate() error {
 		}
 		return nil
 	case AskCut:
-		if a.Reason == "" || len(a.Reason) > maxEscalationText || len(a.Parts) < 2 || len(a.Parts) > maxCutParts ||
-			slices.ContainsFunc(a.Parts, func(p string) bool { return p == "" || len(p) > maxCutPart || strings.ContainsAny(p, "\r\n") }) {
-			return fmt.Errorf("reason (at most %d bytes) and 2 to %d parts (each one line of at most %d bytes) are required", maxEscalationText, maxCutParts, maxCutPart)
+		if refusal := policy.CutAskRefusal(a.Reason, a.Parts); refusal != "" {
+			return errors.New(refusal)
 		}
 		return nil
 	}

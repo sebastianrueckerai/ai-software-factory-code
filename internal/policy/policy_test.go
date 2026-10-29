@@ -222,6 +222,36 @@ func TestRequestCutIsAFreeTool(t *testing.T) {
 	}
 }
 
+// A cut's ask holds a reason of 1 to 4000 bytes and 2 to 5 parts, each one
+// line of 1 to 400 bytes without control characters; anything else is
+// refused with the bounds.
+func TestCutAskRefusal(t *testing.T) {
+	const refusal = "reason (at most 4000 bytes) and 2 to 5 parts (each one line of at most 400 bytes without control characters) are required"
+	five := []string{strings.Repeat("a", 400), strings.Repeat("b", 400), strings.Repeat("c", 400), strings.Repeat("d", 400), strings.Repeat("e", 400)}
+	for name, tc := range map[string]struct {
+		reason string
+		parts  []string
+		want   string
+	}{
+		"two parts":           {"a store and a UI", []string{"the store", "the UI"}, ""},
+		"the bounds":          {strings.Repeat("r", 4000), five, ""},
+		"a reason on lines":   {"a store\nand a UI", []string{"the store", "the UI"}, ""},
+		"no reason":           {"", []string{"a", "b"}, refusal},
+		"a long reason":       {strings.Repeat("r", 4001), []string{"a", "b"}, refusal},
+		"one part":            {"r", []string{"a"}, refusal},
+		"six parts":           {"r", []string{"a", "b", "c", "d", "e", "f"}, refusal},
+		"an empty part":       {"r", []string{"a", ""}, refusal},
+		"a long part":         {"r", []string{strings.Repeat("a", 401), "b"}, refusal},
+		"a part on two lines": {"r", []string{"the\nstore", "b"}, refusal},
+		"a part with a tab":   {"r", []string{"the\tstore", "b"}, refusal},
+		"a part with a bell":  {"r", []string{"the store\u0007", "b"}, refusal},
+	} {
+		if got := CutAskRefusal(tc.reason, tc.parts); got != tc.want {
+			t.Errorf("%s = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
 func TestToolCap(t *testing.T) {
 	d, err := Parse([]byte(withTools))
 	if err != nil {

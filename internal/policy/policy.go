@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strings"
 	"time"
+	"unicode"
 )
 
 // Document is policy.yaml, schema version 1: budgets, limits, capability
@@ -987,6 +989,27 @@ const SourceToolRequest = "tool_request"
 // project runs.
 func OffersTool(tool string, namespaces []string) bool {
 	return tool != ToolDeploymentHealth || len(namespaces) > 0
+}
+
+// The bounds of a cut's ask: its reason's bytes, how many parts, and the
+// bytes of one part.
+const (
+	maxCutReason = 4000
+	maxCutParts  = 5
+	maxCutPart   = 400
+)
+
+// CutAskRefusal is the refusal of a request_cut whose reason or parts
+// break the bounds, the gateway's and factoryd's one check; "" when they
+// hold.
+func CutAskRefusal(reason string, parts []string) string {
+	bad := func(p string) bool {
+		return p == "" || len(p) > maxCutPart || strings.ContainsFunc(p, unicode.IsControl)
+	}
+	if reason == "" || len(reason) > maxCutReason || len(parts) < 2 || len(parts) > maxCutParts || slices.ContainsFunc(parts, bad) {
+		return fmt.Sprintf("reason (at most %d bytes) and 2 to %d parts (each one line of at most %d bytes without control characters) are required", maxCutReason, maxCutParts, maxCutPart)
+	}
+	return ""
 }
 
 // FreeTools are the tools a class lists without caps.

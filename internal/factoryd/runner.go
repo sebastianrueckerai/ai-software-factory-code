@@ -847,17 +847,17 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		// the agent's cut during the conversation does not cut it: the
 		// answer stands, and the cut is the next trip of a session that runs
-		// on. A stopping session drops it.
+		// on. A later cut replaces it; a stopping session drops it.
 		var held *AgentAsk
-		defer func() {
+		defer func(judged TripKind) {
 			switch {
 			case held == nil:
 			case end:
-				log.Printf("task %s: the agent's cut during the check-in for %s is dropped: the session stops", t.ID, trip.Kind)
+				log.Printf("task %s: the agent's cut during the check-in for %s is dropped: the session stops", t.ID, judged)
 			default:
 				end, err = onTrip(sup.AgentAsk(*held))
 			}
-		}()
+		}(trip.Kind)
 		// the conversation never outlives the session: the deadline cuts
 		// it, and factoryd stopping cuts it, its answer unread
 		callCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -878,19 +878,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				defer close(answered)
 				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started)
 			}()
-			// asks is nil once a cut is held: a second ask waits in the
-			// gateway until the hold ends
-			asks, answering := escalations, true
-			for answering {
+			for answering := true; answering; {
 				select {
 				case <-answered:
 					answering = false
 					select {
-					case e := <-asks:
+					case e := <-escalations:
 						esc = &e
 					default:
 					}
-				case e := <-asks:
+				case e := <-escalations:
 					esc = &e
 					if e.Kind != AskCut {
 						cancel()
@@ -905,7 +902,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					return true, shutdown()
 				}
 				if esc != nil && esc.Kind == AskCut {
-					held, esc, asks = esc, nil, nil
+					held, esc = esc, nil
 				}
 			}
 		}
@@ -936,6 +933,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case d.Action == ActionContinue:
 			sup.Resume(time.Now())
 			r.commentDecision(ctx, t, s, trip, d, out.digest, "")
+			if trip.Kind == TripAgentCut {
+				// the agent was told the check-in judges its cut: it hears
+				// the answer, and a failed delivery leaves it working on
+				note := keepWhole(d.Reason)
+				if err := r.message(ctx, t, s, ns, podName, note); err != nil {
+					log.Printf("task %s: tell the agent its card stays whole: %v", t.ID, err)
+				} else {
+					messages = append(messages, note)
+				}
+			}
 			return false, nil
 		case d.Action == ActionRetryStronger && r.canClimb(s):
 			// the climb in place (roadmap 222, item 5): the session goes on
@@ -1045,6 +1052,15 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 		}
 	}
+}
+
+// keepWhole is the agent's answer when the check-in judges its cut and
+// lets the session go on: the check-in's reason, and what to do.
+func keepWhole(reason string) string {
+	if reason = strings.TrimSuffix(strings.TrimSpace(reason), "."); reason != "" {
+		reason = ": " + reason
+	}
+	return "The check-in keeps this card whole" + reason + ". Finish it as one card."
 }
 
 // checkinBlock runs the check-in the workflow asked of the session's

@@ -433,18 +433,11 @@ var (
 	cutSchema      = plainArrays[RequestCutIn]()
 )
 
-// maxQuestion bounds an escalation's question and reason, an information
-// request's fields and a cut's reason; maxRecommendation the
-// recommendation.
+// maxQuestion bounds an escalation's question and reason and an
+// information request's fields; maxRecommendation the recommendation.
 const (
 	maxQuestion       = 4000
 	maxRecommendation = 2000
-)
-
-// maxCutParts bounds the parts a cut proposes, maxCutPart the bytes of one.
-const (
-	maxCutParts = 5
-	maxCutPart  = 400
 )
 
 // maxChoices and maxChoicesBytes bound the choices passed on to factoryd,
@@ -931,10 +924,8 @@ func (s *Server) requestCut(ctx context.Context, c *toolCaller, in RequestCutIn)
 	for i, p := range in.Parts {
 		parts[i] = strings.TrimSpace(p)
 	}
-	if why == "" || len(why) > maxQuestion || len(parts) < 2 || len(parts) > maxCutParts ||
-		slices.ContainsFunc(parts, func(p string) bool { return p == "" || len(p) > maxCutPart || strings.ContainsAny(p, "\r\n") }) {
-		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
-			"reason (at most %d bytes) and 2 to %d parts (each one line of at most %d bytes) are required", maxQuestion, maxCutParts, maxCutPart))
+	if refusal := policy.CutAskRefusal(why, parts); refusal != "" {
+		return s.refuseTool(c, tool, "refused_arguments", refusal)
 	}
 	return s.handOver(ctx, c, tool, Escalation{Kind: KindCut, Reason: why, Parts: parts}, "cut_requested",
 		"asked to cut the card; the check-in judges it. Go on with the work until it answers.")

@@ -925,9 +925,10 @@ func TestRequestCut(t *testing.T) {
 		"an empty part":       {"reason": "r", "parts": []string{"a", " "}},
 		"a long reason":       {"reason": strings.Repeat("r", 4001), "parts": []string{"a", "b"}},
 		"a long part":         {"reason": "r", "parts": []string{strings.Repeat("a", 401), "b"}},
+		"a part with a tab":   {"reason": "r", "parts": []string{"the\tstore", "b"}},
 	} {
 		if text, isErr := e.call(t, policy.ToolRequestCut, args); !isErr || !strings.Contains(text, "refused_arguments") ||
-			!strings.Contains(text, "reason (at most 4000 bytes) and 2 to 5 parts (each one line of at most 400 bytes) are required") {
+			!strings.Contains(text, "reason (at most 4000 bytes) and 2 to 5 parts (each one line of at most 400 bytes without control characters) are required") {
 			t.Errorf("%s = %q, want refused_arguments naming the bounds", name, text)
 		}
 	}
