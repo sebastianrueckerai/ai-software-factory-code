@@ -70,7 +70,7 @@ own (a roll, a factory pull request's card) the process of the task's
 project, with the row's track, its stages, merge queue and dependency
 block, and the session mode of the track's class, or of a report task's
 own class, which chooses the program: `code` the lifecycle, `report` the
-screening, `plan` the plan loop); and in every session, report session,
+screening and the sizing, `plan` the plan loop); and in every session, report session,
 gate-supervisor call and model review the agent time, `steps`, the check-in limits,
 `supervisor_timeout` and the `no_write` detector, the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,

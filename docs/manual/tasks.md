@@ -137,23 +137,23 @@ its checks and the review wait, with no new session. Before the first
 session of a direct card that a person or the chat filed (source `webhook`
 or `api`) in a process with a plan track, and that carries no pull request,
 the sizing step runs (change id `sizing`, gate `sizing`, `SizeCard`). A
-filed `medium` or `large` runs no session: the card goes to the planner.
-Otherwise an `analyzer` report task of source `sizing` reads the issue and
-the repository and answers a size, a reason and the files. The filer's size
-is a floor, and none counts as small. The step is recorded first. Then
-the size is written, and the budget with it only if it still is the budget
-the filing gave and nothing has raised it since, so a retry completes the
-write and never undoes a raise. A `small` card runs the coder.
-A `medium` or `large` card turns plan-track through `BecomePlan`, and the
-planner starts from the files the sizing named. If `BecomePlan` refuses, the
-card runs as filed. If the sizing fails or
+writer's filed `medium` or `large` runs no session: the card goes to the
+planner. Otherwise an `analyzer` report task of source `sizing` reads the
+issue and the repository and answers a size, a reason and the files; an
+outsider's filed size is no floor. The step is recorded first, then the
+size is written, so a retry completes the write. The sizing sets the size,
+not the budget: the card keeps the budget its filing gave it. A `small`
+card runs the coder. A `medium` or `large` card turns plan-track through
+`BecomePlan`, and the planner starts from the files the sizing named. A
+`to_plan` a person sent during the sizing joins that switch. If
+`BecomePlan` refuses, the card runs as filed. If the sizing fails or
 answers no size, the card runs as filed, and the Time section shows the
 size and the reason, or why there is none. Then: up to
 `limits.sessions` (3) attempts, each `SetState running` then
 `RunSession`, the first on `MODEL` (default `factory/small`), or
 on `STRONGER_MODEL` when the task is a coding card (`session: code`) of
-a project whose file sets `model: stronger` (the planner and the
-screening keep their own rungs); every session starts from the task branch's head on the fork when the
+a project whose file sets `model: stronger` (the planner, the screening
+and the sizing keep their own rungs); every session starts from the task branch's head on the fork when the
 branch exists, else from the base SHA. After a pushed commit
 `OpenPullRequest` (head `factory-agent:factory/<id>`, base `main`,
 `Closes #<issue>`, reusing an open PR for that fork branch and recording
