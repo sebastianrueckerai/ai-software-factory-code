@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // SessionRecorder keeps the two session records: the full event history as
@@ -41,7 +43,9 @@ func ResumeSessionRecorder(ctx context.Context, store Store, objects ObjectStore
 }
 
 // Record appends the event to the session history and ships the whole object.
+// Every string in the event's detail is scrubbed first.
 func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
+	ev.Detail = scrubDetail(ev.Detail)
 	line, err := json.Marshal(ev)
 	if err != nil {
 		return err
@@ -49,6 +53,41 @@ func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
 	r.history.Write(line)
 	r.history.WriteByte('\n')
 	return r.objects.Put(ctx, "sessions/"+r.taskID+"/"+r.id+".jsonl", r.history.Bytes())
+}
+
+var recordScrubber = redact.New()
+
+// scrubDetail is a copy of d with every string value, nested ones included,
+// scrubbed. Digests under a key ending "sha256" are not secrets and stay.
+func scrubDetail(d map[string]any) map[string]any {
+	if d == nil {
+		return nil
+	}
+	out := make(map[string]any, len(d))
+	for k, v := range d {
+		if strings.HasSuffix(k, "sha256") {
+			out[k] = v
+			continue
+		}
+		out[k] = scrubValue(v)
+	}
+	return out
+}
+
+func scrubValue(v any) any {
+	switch v := v.(type) {
+	case string:
+		return recordScrubber.String(v)
+	case map[string]any:
+		return scrubDetail(v)
+	case []any:
+		out := make([]any, len(v))
+		for i, e := range v {
+			out[i] = scrubValue(e)
+		}
+		return out
+	}
+	return v
 }
 
 // Snapshot persists the compact restart state a resumed session continues from.

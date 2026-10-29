@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 type fakeObjectStore struct {
@@ -150,5 +151,37 @@ func TestTranscript(t *testing.T) {
 	got[0] = 'X'
 	if again := r.Transcript(); !bytes.Equal(again, want) {
 		t.Fatalf("a mutated transcript reached the history: %q", again)
+	}
+}
+
+func TestSessionRecorderMasksSecretsBeforeStoring(t *testing.T) {
+	objects := &fakeObjectStore{}
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, "t1", "s1", "", "factory/small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "sk-abcdefghijklmnop1234"
+	hash := strings.Repeat("ab", 32)
+	for _, ev := range []harness.Event{
+		{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "task", "result": "found it, key " + key, "args": map[string]any{"prompt": "use " + key}, "args_sha256": hash}},
+		{Kind: harness.EventCommand, Detail: map[string]any{"command": "env", "output": "TOKEN=" + key + "\n"}},
+		{Kind: harness.EventToolCall, Detail: map[string]any{"tool": "task", "result": "found 3 files"}},
+	} {
+		if err := r.Record(context.Background(), ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := string(r.Transcript())
+	if strings.Contains(got, key) {
+		t.Fatalf("a key shape reached the record: %s", got)
+	}
+	masked := redact.New().String(key)
+	for _, want := range []string{`"result":"found it, key ` + masked + `"`, `"prompt":"use ` + masked + `"`, `"output":"TOKEN=` + masked + `\n"`, `"result":"found 3 files"`, `"args_sha256":"` + hash + `"`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("record lacks %s:\n%s", want, got)
+		}
+	}
+	if stored, _ := objects.Get(context.Background(), "sessions/t1/s1.jsonl"); string(stored) != got {
+		t.Fatal("the stored object differs from the transcript")
 	}
 }
