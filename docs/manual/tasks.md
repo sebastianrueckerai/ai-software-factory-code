@@ -34,8 +34,11 @@ as its capabilities, its row keeps its track and its process
 bound (the admission below). An issue that files no card is read again by
 every label event and every heal pass: a writer's `agent` or `plan` label,
 or the removal of `backlog`, files it then, its author still the poster.
-A card's track never changes after its filing: a label event on a card
-moves nothing, and only retries a queued card's workflow start that failed.
+A label event on a card moves nothing, and only retries a queued card's
+workflow start that failed. A running direct card turns plan-track only
+through `BecomePlan` (signal `to_plan`, change id `direct-to-plan`), between
+sessions: the card keeps its row and its issue, takes the plan class, and
+its issue gets the `plan` label in place of `agent`.
 An issue whose reproduction command breaks the sandbox rule files a
 person's card instead, which asks the poster to file it again with a
 command that keeps the rule. Forgejo 15 applies whatever labels its
@@ -145,9 +148,10 @@ combined status, which Forgejo records on the base repository
 its PR closed unmerged, the ladder exhausted) closes its open PR, found
 by number or, when none was recorded, by its branch on the fork, and
 then comments the reason on it once (the comment follows the close, so a
-retried close never repeats it). A done or closed task's branch on the
-fork is deleted; a failed task's stays for a retry until a writer, or
-factoryd's recorded close, closes its issue, which deletes it then.
+retried close never repeats it). The branch on the
+fork is deleted only for a task whose pull request merged. The branch of
+any other task, failed or closed, stays so that a refile can build on it,
+and an hourly pass (`SweepBranches`) deletes it once the task ended 30 days ago.
 Close and delete happen before the task turns final and
 retry through a Forgejo outage, so no failed task keeps an open PR; one
 Forgejo refuses (a 4xx, which no retry fixes) is logged and the task
