@@ -829,7 +829,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		// the judge says whether the session is stuck, code picks the model
 		// (rulings 216, 224): a stuck trip's handover is the stuck rule's climb
 		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
-			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck)}, false
+			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover}, false
 		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
@@ -875,7 +875,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.decision = &d
 			stop(trip)
 			if d.Action == ActionRetryStronger {
-				note = fmt.Sprintf("The session stopped on %s: %s. The next session resumes on the stronger model from the work in progress.", trip.Kind, d.Reason)
+				note = fmt.Sprintf("The session stopped on %s: %s. The next session resumes on the stronger model from the work in progress.", trip.Kind, cmp.Or(trip.Stuck, d.Reason))
 			}
 		}
 		// a session that finished and pushed during the conversation goes to
@@ -1361,7 +1361,7 @@ func (r *Runner) commentDecision(ctx context.Context, t Task, s sessionSpec, tri
 	if d.Guidance != "" {
 		body += "\nGuidance: " + d.Guidance
 	}
-	if d.Reason != "" {
+	if d.Reason != "" && d.Reason != d.Guidance {
 		body += "\nReason: " + d.Reason
 	}
 	if note != "" {

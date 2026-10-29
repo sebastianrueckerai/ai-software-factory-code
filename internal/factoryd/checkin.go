@@ -211,6 +211,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 			if ask.Trip.Stuck != "" {
 				fmt.Fprintf(&b, "- stuck rule: %s\n", ask.Trip.Stuck)
+				b.WriteString("- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n")
 			}
 		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")

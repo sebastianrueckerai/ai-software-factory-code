@@ -370,8 +370,8 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	if !strings.Contains(chat.gots[1].Input, "Guidance delivered to the agent this session:\n- use the store's New\n- stuck rule: "+stuck+"\n") {
 		t.Fatalf("second statement misses the guidance and the stuck line:\n%s", chat.gots[1].Input)
 	}
-	if len(res.Findings) == 0 || res.Findings[0] != stuck {
-		t.Fatalf("findings = %q, want the stuck line first", res.Findings)
+	if len(res.Findings) == 0 || res.Findings[0] != stuck || !slices.Contains(res.Findings, "supervisor guidance: "+note) {
+		t.Fatalf("findings = %q, want the stuck line first and the judge's note as guidance", res.Findings)
 	}
 	tl := string(objGet(objects, "sessions/t2/timeline.jsonl"))
 	if !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"guidance":"use the store's New"`) {
@@ -381,9 +381,10 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	if step["decision"] != CheckHandover || step["called"] != true || step["reason"] != note || step["detector"] != "repetition" {
 		t.Fatalf("last check-in step = %v, want the judge's handover with its note", step)
 	}
-	stopped := "The session stopped on repetition: " + note + ". The next session resumes on the stronger model from the work in progress."
-	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") || !strings.Contains(hub.comments[1], stopped) {
-		t.Fatalf("comments = %q, want the message and the stop with %q", hub.comments, stopped)
+	stopped := "\nGuidance: " + note + "\n\nThe session stopped on repetition: " + stuck + ". The next session resumes on the stronger model from the work in progress."
+	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") || !strings.Contains(hub.comments[1], stopped) ||
+		strings.Contains(hub.comments[1], "\nReason: ") {
+		t.Fatalf("comments = %q, want the message and the stop with %q, the note once", hub.comments, stopped)
 	}
 }
 
@@ -430,8 +431,41 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 		t.Fatalf("last check-in step = %v, want the judge's handover", step)
 	}
 	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") ||
-		!strings.Contains(hub.comments[1], "The session continues on the stronger model from here, without a new session.") {
+		!strings.Contains(hub.comments[1], "\nGuidance: switch to the edit\n\nThe session continues on the stronger model from here, without a new session.") {
 		t.Fatalf("comments = %q, want the message and the climb", hub.comments)
+	}
+}
+
+// Only a stuck trip's handover climbs: the judge's human answer on a stuck
+// trip asks the human, on the start rung too, with no switch of model.
+func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"human","reason_kind":"goal_conflict","reason":"the objective asks for two stores"}`},
+	}}
+	runner.checkin = chat
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	logs := commands(0, 24) + commands(24, 24) + resultLine(false, "stopped")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
+	if err != nil || res.Outcome != OutcomeCheckinHuman || res.Reason != "the objective asks for two stores" || res.Model != "factory/small" ||
+		res.CheckIn == nil || res.CheckIn.Decision != CheckHuman || res.CheckIn.ReasonKind != CheckGoalConflict {
+		t.Fatalf("result = (%+v, %v), want the human's ask on the start rung", res, err)
+	}
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if want := []string{"POST /brief ", "POST /message use the store's New"}; !slices.Equal(texts, want) {
+		t.Fatalf("worker got %q, want %q: no climb", texts, want)
+	}
+	if store.tasks["t2"].ModelAlias == "big" {
+		t.Fatal("model_alias moved to the stronger alias")
+	}
+	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); strings.Contains(tl, `"step":"model_switched"`) {
+		t.Fatalf("timeline = %s, want no model_switched", tl)
 	}
 }
 
@@ -529,7 +563,7 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 		t.Fatalf("third statement = %q, want both messages and the stuck line", chat.gots[2].Input)
 	}
 	if n := len(hub.comments); n != 3 || !strings.Contains(hub.comments[0], "**message**") || !strings.Contains(hub.comments[1], "**message**") ||
-		!strings.Contains(hub.comments[2], "The session stopped on repetition: two messages did not stop the listing; start from the test's setup. The next session resumes") {
+		!strings.Contains(hub.comments[2], "The session stopped on repetition: stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change. The next session resumes on the stronger model from the work in progress.") {
 		t.Fatalf("comments = %q, want the two messages and the stop", hub.comments)
 	}
 }

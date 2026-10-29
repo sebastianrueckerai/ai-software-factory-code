@@ -668,23 +668,24 @@ func TestCheckinStatementMoments(t *testing.T) {
 }
 
 // A stuck trip's statement shows the stuck fact after the delivered
-// guidance: the check-in decides with it.
+// guidance, and what a handover does on it: the check-in decides with both.
 func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 	const detail = "60 tool calls and commands without a file change"
 	const stuck = "stuck after the supervisor's message: repetition: " + detail
+	const climb = "- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n"
 	statement := func(trip TripReport, messages ...string) string {
 		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-4", Trip: &trip, Messages: messages},
 			[]byte("the tail"), 7, 1.5, 2000)
 	}
 	got := statement(TripReport{Detector: TripRepetition, Detail: detail, Stuck: stuck}, "stop reading")
-	if want := "Guidance delivered to the agent this session:\n- stop reading\n- stuck rule: " + stuck + "\n"; !strings.Contains(got, want) {
+	if want := "Guidance delivered to the agent this session:\n- stop reading\n- stuck rule: " + stuck + "\n" + climb; !strings.Contains(got, want) {
 		t.Fatalf("stuck statement lacks %q:\n%s", want, got)
 	}
-	if got := statement(TripReport{Detector: TripRepetition, Detail: detail}, "stop reading"); strings.Contains(got, "stuck rule:") {
+	if got := statement(TripReport{Detector: TripRepetition, Detail: detail}, "stop reading"); strings.Contains(got, "stuck rule:") || strings.Contains(got, climb) {
 		t.Fatalf("statement without the stuck fact names it:\n%s", got)
 	}
 	if got, want := statement(TripReport{Detector: TripRepetition, Detail: detail, Stuck: stuck}),
-		"Guidance delivered to the agent this session:\n- stuck rule: "+stuck+"\n"; !strings.Contains(got, want) {
+		"Guidance delivered to the agent this session:\n- stuck rule: "+stuck+"\n"+climb; !strings.Contains(got, want) {
 		t.Fatalf("stuck statement without messages lacks %q:\n%s", want, got)
 	}
 }
