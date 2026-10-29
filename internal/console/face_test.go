@@ -47,10 +47,11 @@ func titleOf(t *testing.T, body, id string) string {
 	return strings.TrimSuffix(title, "</a>")
 }
 
-// The face's title: a writer's summary, else a planned card's key, else
-// the objective's first paragraph — the title as the issue was filed, in
-// full; only a title longer than 80 runes is shortened, at a word boundary
-// with an ellipsis, never mid-word.
+// The face's title: a writer's summary, else the objective's first
+// paragraph — the title as the issue was filed, in full; only a title
+// longer than 80 runes is shortened, at a word boundary with an
+// ellipsis, never mid-word. A plan child without a summary shows its
+// objective's headline; its key sits on the plan chip.
 func TestCardFaceTitle(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -59,7 +60,7 @@ func TestCardFaceTitle(t *testing.T) {
 		task factoryd.Task
 		want string
 	}{
-		{"plan key", factoryd.Task{PlanKey: "web-pages", Objective: "Build the pages. All of them."}, "web-pages"},
+		{"plan key", factoryd.Task{PlanKey: "web-pages", Objective: "Build the pages. All of them."}, "Build the pages. All of them."},
 		{"a writer's summary", factoryd.Task{PlanKey: "web-pages", Objective: "Fix the cache.", HumanSummary: "the cache, at last"}, "the cache, at last"},
 		{"no full stop, a long body first sentence", factoryd.Task{Objective: factoryd.IssueObjective("Merge approval only on a green staged head",
 			"A merge approval request reaches the merge gate after its checks pass, and the approver should see a green staged head before approving it.")}, "Merge approval only on a green staged head"},
@@ -204,6 +205,31 @@ func TestCardFaceChips(t *testing.T) {
 	wait := faceOf(t, body, "t-wait")
 	if !strings.Contains(wait, `<span class="chip waiting">waiting on #7</span>`) || strings.Contains(wait, "blocked by") {
 		t.Errorf("a card in waiting-deps shows not exactly its waiting chip:\n%s", wait)
+	}
+}
+
+// A plan child's chip carries its key after the plan reference: "from
+// plan #1 · links-api"; a parent that has no issue number yet keeps the
+// chip with the key alone.
+func TestPlanChildChipCarriesTheKey(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "running", Track: "plan", Process: "spec", Objective: "Link shortener",
+			Repository: "linkshort/linkshort", IssueNumber: 1}},
+		{Task: factoryd.Task{ID: "t-c4", Kind: "agent", Status: "running", Track: "direct", Process: "spec", Objective: "Links API",
+			Repository: "linkshort/linkshort", IssueNumber: 4, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "links-api"}},
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · links-api</span>`) {
+		t.Errorf("t-c4's face lacks its plan chip with the key:\n%s", face)
+	}
+	// the parent filed before its issue: the chip keeps the key alone
+	r.tasks.tasks[0].IssueNumber = 0
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">links-api</span>`) || strings.Contains(face, "from plan") {
+		t.Errorf("the child of a plan without an issue number lacks the key alone on its chip:\n%s", face)
 	}
 }
 

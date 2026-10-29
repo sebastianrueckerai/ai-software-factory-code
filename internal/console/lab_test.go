@@ -1670,8 +1670,9 @@ func TestSeedSceneProject(t *testing.T) {
 
 // The busy scene's drawer card 606 carries its session supervisor's
 // check-in: the Activity tab shows the redirect its no_write trip's alert
-// is resolved by. The plan children's titles join this test with the card
-// that fixes them.
+// is resolved by. The plan children of plan #531 show their objective's
+// headline as their title, their key on the plan chip; no face shows a
+// bare key.
 func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 	r := newRig(t)
 	r.seedScene(busyScene(time.Now()))
@@ -1679,5 +1680,29 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 	activity := drawer(t, r, ck, labID(606), "activity")
 	if want := `<td>checkin</td><td><strong>redirect</strong>: stop rereading console.css; run the failing acceptance test</td>`; !strings.Contains(activity, want) {
 		t.Errorf("card 606's activity lacks %s:\n%s", want, activity)
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, tc := range []struct {
+		issue int64
+		title string
+	}{
+		{533, "Drawer: the Files tab lists the pull request&#39;s changes"},
+		{532, "Drawer: the Overview tab"},
+		{534, "Drawer: the session&#39;s chat"},
+		{535, "Drawer: the Activity tab"},
+	} {
+		if got := titleOf(t, body, labID(tc.issue)); got != tc.title {
+			t.Errorf("child #%d's title %q, want its headline %q", tc.issue, got, tc.title)
+		}
+	}
+	// the one child still in play wears its key on the plan chip; the
+	// finished children's rows have none
+	if got := strings.Count(body, `<span class="chip plan">from plan #531 · drawer-files</span>`); got != 1 {
+		t.Errorf("%d chips read from plan #531 · drawer-files, want the queued child's one", got)
+	}
+	for _, key := range []string{"drawer-files", "drawer-overview", "drawer-chat", "drawer-activity"} {
+		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {
+			t.Errorf("%d faces title child %s by its bare key", n, key)
+		}
 	}
 }
