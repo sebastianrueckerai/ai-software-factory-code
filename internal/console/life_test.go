@@ -107,3 +107,30 @@ func TestRunsOfACardsLifeNoteAWithdrawnQuestion(t *testing.T) {
 		}
 	}
 }
+
+// The sizing step is a note on the run it falls in: the size and why, or
+// that the card runs as filed; a card that carries a pull request has none.
+func TestRunsOfACardsLifeNotesTheSizing(t *testing.T) {
+	at := func(h, m int) time.Time { return time.Date(2026, 10, 29, h, m, 0, 0, time.UTC) }
+	task := factoryd.Task{ID: "t-s", Kind: "agent", Status: "running", Track: "direct", CreatedAt: at(10, 0)}
+	events := []factoryd.Event{{TaskID: "t-s", Kind: factoryd.EventTaskStatus, At: at(10, 4), Detail: map[string]any{"status": "running"}}}
+	for _, tc := range []struct {
+		step map[string]any
+		want string
+	}{
+		{map[string]any{"size": "medium", "plan": true, "reason": "touches the scheduler and the store"},
+			"sized medium, not small, so the planner takes it: touches the scheduler and the store"},
+		{map[string]any{"size": "small", "sized": "small", "plan": false, "reason": "one handler and its test"},
+			"sized small: one handler and its test"},
+		{map[string]any{"size": "", "plan": false, "reason": "the sizing task t-s ended failed"},
+			"not sized, it runs as filed: the sizing task t-s ended failed"},
+		{map[string]any{"skipped": "the card carries pull request #9, whose work exists"}, ""},
+	} {
+		tc.step["step"] = factoryd.StepSizing
+		tc.step["time"] = at(10, 3).Format(time.RFC3339)
+		runs := runsOf(task, events, []map[string]any{tc.step}, nil, at(10, 30))
+		if len(runs) == 0 || runs[0].Kind != "queued" || runs[0].At() != "10:00" || runs[0].Duration() != "4 min" || runs[0].Note() != tc.want {
+			t.Errorf("step %v: runs %+v, want queued 10:00 for 4 min with note %q", tc.step, runs, tc.want)
+		}
+	}
+}

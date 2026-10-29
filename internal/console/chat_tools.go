@@ -1265,7 +1265,7 @@ var tools = []chatTool{
 				"description": "the acceptance tests, one line each"},
 			"track":        enum("how the card's work runs", policy.TrackDirect, policy.TrackPlan, factoryd.LabelHuman),
 			"track_reason": str("why that track, one line"),
-			"size":         enum("the card's size, which sets its budget", policy.CardSizes...),
+			"size":         enum("the card's size, if you know it", policy.CardSizes...),
 			"rung":         enum("the model rung it starts on", factoryd.RungCheap, factoryd.RungFrontier),
 			"rung_reason":  str("why that rung, one line"),
 			"image":        str("a pinned sandbox image to run on, none for the default"),
@@ -1814,7 +1814,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
-  new_card's tracks: direct builds at once, plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
+  new_card's tracks: direct builds a small change at once: the factory sizes every direct card before its first session, and one that is not small turns plan-track; plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.

@@ -364,6 +364,19 @@ func TestChatNewCardSize(t *testing.T) {
 		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "size": "large", "thread": int64(1)}})
 }
 
+// A new_card call without a size files: the sizing step sizes the card
+// before its first session.
+func TestChatNewCardFilesWithoutASize(t *testing.T) {
+	r, g := newWritesRig(t)
+	before := r.events.count()
+	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change"}`
+	_, done, _ := proposeAndDo(t, r, g, "new_card", args)
+	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count")
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
+		Detail: map[string]any{"track": "direct", "reason": "one small change", "title": "Cache metrics", "thread": int64(1)}})
+}
+
 // new_card files nothing without a track or the one line why: the
 // proposal refuses a call that names no track, one of the old lanes, or
 // a blank track_reason, so the agent corrects it before Do it, and the

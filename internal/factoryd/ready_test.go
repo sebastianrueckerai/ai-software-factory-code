@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -38,9 +37,8 @@ func TestReadyFindings(t *testing.T) {
 		t.Errorf("a large card: findings %v, want none", got)
 	}
 	got := ReadyFindings(key, "a body", "", nil)
-	want := `card t-key: size "": want small, medium or large` + "; card t-key: 0 acceptance tests; want 1 to 10"
-	if len(got) != 2 || strings.Join(got, "; ") != want {
-		t.Errorf("findings = %v, want %q", got, want)
+	if want := "card t-key: 0 acceptance tests; want 1 to 10"; len(got) != 1 || got[0] != want {
+		t.Errorf("findings = %v, want [%q]", got, want)
 	}
 	got = ReadyFindings(key, "b", "huge", []string{"x"})
 	if len(got) != 1 || got[0] != "card t-key: size huge: split it; a card is one package, one page or one set of endpoints" {
