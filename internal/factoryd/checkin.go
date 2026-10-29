@@ -252,7 +252,11 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 		if ask.Trip.Detector == TripSize {
-			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction. Answer replan if it will not.\n")
+			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction.")
+			if ask.Replan {
+				b.WriteString(" Answer replan if it will not.")
+			}
+			b.WriteString("\n")
 		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
 	case CheckInDead:

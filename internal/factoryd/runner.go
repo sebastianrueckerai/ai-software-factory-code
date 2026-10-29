@@ -467,6 +467,9 @@ type sessionSpec struct {
 	sessions int
 	// planner marks a plan card's session: its warning says file the plan
 	planner bool
+	// planTrack: the card's project follows a process with a plan track,
+	// so a direct card's rest can go to the planner
+	planTrack bool
 	// facts is factoryd's FACTS line for the brief
 	facts string
 	// agentTime and checkIn are the task's resolved values (policy.Time,
@@ -657,7 +660,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
-	if cuttable(t, s) {
+	if sizeBounded(t, s) {
 		supCfg.SizeLines, _ = cardLineBound(t.Size, s.policy.Risk.LargeLines)
 	}
 	if s.attempt == 1 && r.canClimb(s) {
@@ -1053,11 +1056,18 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 		Attempt: s.attempt, Sessions: s.sessions}
 }
 
-// cuttable: the planner can cut the rest of the session's card into
-// smaller cards. A report and a planner session are not cut, nor a card
-// outside the work bound.
-func cuttable(t Task, s sessionSpec) bool {
+// sizeBounded: the session codes a card the work bound covers, so the
+// card's diff has the line bound its size plans. A report and a planner
+// session write no card's code.
+func sizeBounded(t Task, s sessionSpec) bool {
 	return s.report == "" && !s.planner && t.Kind == "agent" && !t.Unbound()
+}
+
+// cuttable: the planner can cut the rest of the session's card into
+// smaller cards: a plan's child goes back to its plan, a direct card only
+// where its project's process has a plan track.
+func cuttable(t Task, s sessionSpec) bool {
+	return sizeBounded(t, s) && (t.Source == SourcePlan || s.planTrack)
 }
 
 // checkinLive is the mid-session check-in: a detector tripped, and the

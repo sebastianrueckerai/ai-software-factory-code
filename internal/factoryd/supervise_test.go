@@ -1937,12 +1937,12 @@ func TestAPersonsReplanIsDecided(t *testing.T) {
 		t.Fatalf("setup trip = %+v, want repetition", trip)
 	}
 	s.Messaged(minute(2))
-	if s.stuck(&Trip{Kind: TripReplan}) {
-		t.Fatal("a person's replan after a message is stuck")
-	}
 	trip := s.AgentAsk(AgentAsk{Kind: AskReplan, Reason: "replanned by ana: two parts"})
 	if trip.Kind != TripReplan || trip.Detail != "a person asked for the replan" || trip.Stuck != "" || trip.decided == nil ||
 		trip.decided.Action != ActionReplan || trip.decided.Reason != "replanned by ana: two parts" {
 		t.Fatalf("trip = %+v (decided %+v), want the person's decided replan", trip, trip.decided)
+	}
+	if slices.ContainsFunc(trip.Findings, func(f string) bool { return strings.HasPrefix(f, "stuck after") }) {
+		t.Fatalf("findings = %q, want no stuck line on a person's replan", trip.Findings)
 	}
 }

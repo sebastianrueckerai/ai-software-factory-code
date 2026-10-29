@@ -646,6 +646,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
 	}
+	project, _, err := r.store.ProjectByRepository(ctx, t.Repository)
+	if err != nil {
+		return SessionResult{}, named("project", err)
+	}
+	_, s.planTrack = trackClass(project, policy.TrackPlan)
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
@@ -995,17 +1000,24 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	return res
 }
 
-// replanText is the planner's text of a replan: the check-in's names the
-// trip it judged, with its reason and guidance; a person's is their reason.
+// replanText is the planner's text of a replan, cut at
+// maxHandoverMessage: the check-in's names the trip it judged, with its
+// reason and guidance; a person's is their reason. Only the size trip's
+// detail is quoted: factoryd's own line counts. Every other detail can
+// quote the agent's calls.
 func replanText(trip *Trip, d Decision) string {
 	if trip.Kind == TripReplan {
-		return d.Reason
+		return textutil.Truncate(d.Reason, maxHandoverMessage)
 	}
-	text := fmt.Sprintf("The check-in decided replan after the %s trip (%s): %s", trip.Kind, trip.Detail, d.Reason)
+	after := string(trip.Kind) + " trip"
+	if trip.Kind == TripSize {
+		after += " (" + trip.Detail + ")"
+	}
+	text := "The check-in decided replan after the " + after + ": " + d.Reason
 	if d.Guidance != "" {
 		text += "\nIts guidance: " + d.Guidance
 	}
-	return text
+	return textutil.Truncate(text, maxHandoverMessage)
 }
 
 // OverHoldCall is a model call the gateway booked beyond its hold (COST

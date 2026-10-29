@@ -3691,12 +3691,16 @@ func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
 	}
 }
 
-// A small card past its bound: the check-in's replan stops the session,
-// its work in progress pushed and kept, and the result carries the text
-// the planner cuts the rest from.
+// A small card past its bound, in a project whose process has a plan
+// track: the check-in's replan stops the session, its work in progress
+// pushed and kept, and the result carries the text the planner cuts the
+// rest from.
 func TestRunSessionCheckinReplanStopsTheSession(t *testing.T) {
 	runner, hub, kube, _, chat, store, objects := liveRig(t, CheckinResponse{Text: `{"decision":"replan","reason":"the rest is two packages"}`})
 	runner.stopWait = 10 * time.Second
+	project := seedProject("sf/repo")
+	project.Process, project.Tracks = "spec", specTracks
+	store.projects = []Project{project}
 	tk := store.tasks["t2"]
 	tk.Size = "small"
 	store.tasks["t2"] = tk
@@ -3776,48 +3780,84 @@ func TestRunSessionOfAPersonsReplanSkipsTheCheckin(t *testing.T) {
 	}
 }
 
-// A report session's card is not cut: its check-in is offered no replan.
+// A report session is not cut, even on a card that can be: the hold-out
+// audit runs on a plan's integration card, and its check-in is offered no
+// replan.
 func TestRunSessionOfAReportOffersNoReplan(t *testing.T) {
-	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance", Parent: "t-parent",
-		Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
-	kube := newFakeKube()
-	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
-	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
-		t.Fatal(err)
-	}
+	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
+		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
+	r, kube, store := settleRig(t, row)
+	card := store.tasks["t1"]
+	card.BudgetEUR = 2 // the check-in's share of it pays the conversation
+	store.tasks["t1"] = card
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
-	runner.checkin = chat
-	done := make(chan error)
-	go func() {
-		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
-		done <- err
-	}()
-	awaitPod(t, kube, done)
-	kube.scriptPods(0, loopFailure(1)+loopFailure(2)+loopFailure(3)+resultLine(true, `{"verdict": "clear"}`))
-	if err := <-done; err != nil {
+	r.checkin = chat
+	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
+	if _, err := settle(t, r, kube, reds,
+		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock"},
+		loopFailure(1)+loopFailure(2)+loopFailure(3)+sessionLog("the test names the hinge")); err != nil {
 		t.Fatal(err)
 	}
 	if chat.calls != 1 {
-		t.Fatalf("chat = %d calls %+v, want the check-in on same_failure", chat.calls, chat.gots)
+		t.Fatalf("chat = %d calls %+v, want the audit's check-in on same_failure", chat.calls, chat.gots)
 	}
 	if got := chat.gots[0]; strings.Contains(got.System, "|replan") || strings.Contains(got.Input, "- replan:") {
 		t.Fatalf("a report's check-in is offered replan:\n%s\n%s", got.System, got.Input)
 	}
 }
 
-// Only a bound agent card's coding session can be cut.
+// A direct card whose project's process has no plan track cannot be cut:
+// its size trip still asks the check-in, which is offered no replan, and a
+// replan answer is refused and asked again.
+func TestRunSessionOfACardWithoutAPlanTrackOffersNoReplan(t *testing.T) {
+	runner, _, _, _, chat, store, _ := liveRig(t,
+		CheckinResponse{Text: `{"decision":"replan","reason":"the rest is two packages"}`},
+		CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
+	tk := store.tasks["t2"]
+	tk.Size = "small"
+	store.tasks["t2"] = tk
+	version := testPolicyVersion()
+	version.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil,
+		cardDiffLine(250, 100)+"\n"+pushedLine("c0ffee")+"\n"+resultLine(true, "done"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c0ffee" {
+		t.Fatalf("result = %+v, want the session run on to its push", res)
+	}
+	if chat.calls != 2 {
+		t.Fatalf("chat = %d calls %+v, want the refused replan and the answer after it", chat.calls, chat.gots)
+	}
+	first := chat.gots[0]
+	if !strings.Contains(first.Input, "over the 300 its size plans") || strings.Contains(first.System, "|replan") ||
+		strings.Contains(first.Input, "- replan:") || strings.Contains(first.Input, "Answer replan") {
+		t.Fatalf("the size trip's check-in offers replan:\n%s\n%s", first.System, first.Input)
+	}
+	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan".`) {
+		t.Fatalf("second call = %s, want the replan refused", chat.gots[1].Input)
+	}
+}
+
+// Only a bound agent card's coding session can be cut, and only where a
+// planner can take its rest: a plan's child, or a direct card whose
+// project's process has a plan track.
 func TestCuttable(t *testing.T) {
-	card := Task{Kind: "agent", Source: SourcePlan}
+	child, direct := Task{Kind: "agent", Source: SourcePlan}, Task{Kind: "agent"}
 	for name, tc := range map[string]struct {
 		t    Task
 		s    sessionSpec
 		want bool
 	}{
-		"a coding session":       {card, sessionSpec{}, true},
-		"a report session":       {card, sessionSpec{report: "the guide"}, false},
-		"a planner session":      {card, sessionSpec{planner: true}, false},
-		"a human card":           {Task{Kind: "human"}, sessionSpec{}, false},
-		"an unbound sizing card": {Task{Kind: "agent", Source: SourceSizing}, sessionSpec{}, false},
+		"a plan's child":                     {child, sessionSpec{}, true},
+		"a direct card with a plan track":    {direct, sessionSpec{planTrack: true}, true},
+		"a direct card without a plan track": {direct, sessionSpec{}, false},
+		"a report session":                   {child, sessionSpec{report: "the guide"}, false},
+		"a planner session":                  {child, sessionSpec{planner: true}, false},
+		"a human card":                       {Task{Kind: "human"}, sessionSpec{planTrack: true}, false},
+		"an unbound sizing card":             {Task{Kind: "agent", Source: SourceSizing}, sessionSpec{planTrack: true}, false},
 	} {
 		if got := cuttable(tc.t, tc.s); got != tc.want {
 			t.Errorf("%s: cuttable = %v, want %v", name, got, tc.want)

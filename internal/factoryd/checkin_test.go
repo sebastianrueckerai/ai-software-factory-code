@@ -980,9 +980,15 @@ func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
 // will not fit.
 func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
 	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction. Answer replan if it will not."
-	got := checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true,
-		Trip: &TripReport{Detector: TripSize, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
-	if !strings.Contains(got, question) {
+	statement := func(replan bool) string {
+		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: replan,
+			Trip: &TripReport{Detector: TripSize, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
+	}
+	if got := statement(true); !strings.Contains(got, question) {
 		t.Fatalf("size statement lacks the replan question:\n%s", got)
+	}
+	got := statement(false)
+	if !strings.Contains(got, "Answer message if the agent should wrap up, with the instruction.\n") || strings.Contains(got, "Answer replan") {
+		t.Fatalf("size statement of a card that cannot be cut offers replan:\n%s", got)
 	}
 }

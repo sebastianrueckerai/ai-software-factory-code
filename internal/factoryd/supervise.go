@@ -483,7 +483,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
-	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize, TripReplan:
+	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize:
 		return false
 	case TripFlipFlop, TripChurn:
 		return s.messagedOnce
