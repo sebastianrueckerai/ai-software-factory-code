@@ -1673,11 +1673,11 @@ func TestFinishDeletesOnlyMergedBranches(t *testing.T) {
 		deleted []string
 		closed  []int64
 	}{
-		"done merged":        {withPR(withStatus(prTask, "in-review"), 12), merged, "done", []string{fork}, nil},
-		"closed unmerged":    {withPR(withStatus(prTask, "in-review"), 12), open, "closed", nil, []int64{12}},
-		"closed no pull":     {withStatus(prTask, "running"), "", "closed", nil, nil},
+		"done merged":                    {withPR(withStatus(prTask, "in-review"), 12), merged, "done", []string{fork}, nil},
+		"closed unmerged":                {withPR(withStatus(prTask, "in-review"), 12), open, "closed", nil, []int64{12}},
+		"closed no pull":                 {withStatus(prTask, "running"), "", "closed", nil, nil},
 		"closed in review after a merge": {withPR(withStatus(prTask, "in-review"), 12), merged, "closed", []string{fork}, nil},
-		"closed after merge": {withPR(withStatus(prTask, "merged"), 12), merged, "closed", []string{fork}, nil},
+		"closed after merge":             {withPR(withStatus(prTask, "merged"), 12), merged, "closed", []string{fork}, nil},
 	} {
 		fj := &prForgejo{issueOff: true, pulls: map[int64]string{}}
 		if tc.pull != "" {
