@@ -155,6 +155,12 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	return true, tx.Commit()
 }
 
+func (s *PGStore) MoveDependents(ctx context.Context, from, to string) error {
+	_, err := s.db.ExecContext(ctx, `WITH moved AS (DELETE FROM task_deps WHERE depends_on = $1 RETURNING task_id)
+		INSERT INTO task_deps (task_id, depends_on) SELECT task_id, $2 FROM moved WHERE task_id <> $2 ON CONFLICT DO NOTHING`, from, to)
+	return err
+}
+
 // Dependencies tells the workflow where the card's dependencies stand. A
 // card that has to wait enters waiting-deps in gate dependencies (once:
 // the gate keeps the wait's start), also a healed one in waiting-human

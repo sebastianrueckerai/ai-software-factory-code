@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"testing"
 	"time"
@@ -9,11 +10,12 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// recordingWorkflows records the starts, signals and routines' runs that
-// reached the workflow layer.
+// recordingWorkflows records the starts, signals, reopens and routines'
+// runs that reached the workflow layer.
 type recordingWorkflows struct {
 	starts      []string
 	signals     []string
+	reopens     []reopenCall
 	routineRuns []RoutineRunInput
 }
 
@@ -24,6 +26,11 @@ func (w *recordingWorkflows) Start(ctx context.Context, taskID string) error {
 
 func (w *recordingWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
 	w.signals = append(w.signals, taskID)
+	return nil
+}
+
+func (w *recordingWorkflows) Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error {
+	w.reopens = append(w.reopens, reopenCall{taskID, signal, sig})
 	return nil
 }
 
@@ -62,6 +69,25 @@ func TestBoundedStartStaysQueuedOverTheBound(t *testing.T) {
 	}
 	if q, _, _ := store.Task(ctx, "t-q"); q.AdmittedAt != nil {
 		t.Fatal("a card over the bound was stamped admitted")
+	}
+}
+
+// A plan's reopen and a direct card's replan pass the bound: a queued
+// card over it, never admitted, reaches the workflow with its signal.
+func TestBoundedLetsReopenPass(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+	sig := TaskSignal{Author: "ana", Body: "too big"}
+	if err := bounded.Reopen(ctx, "t-q", SignalToPlan, sig); err != nil {
+		t.Fatal(err)
+	}
+	if want := []reopenCall{{"t-q", SignalToPlan, sig}}; !reflect.DeepEqual(rec.reopens, want) {
+		t.Fatalf("reopens = %+v, want %+v", rec.reopens, want)
+	}
+	if q, _, _ := store.Task(ctx, "t-q"); q.AdmittedAt != nil || len(rec.starts) != 0 {
+		t.Fatalf("admitted at %v, starts %v; want the reopen alone", q.AdmittedAt, rec.starts)
 	}
 }
 

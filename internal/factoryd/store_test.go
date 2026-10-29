@@ -182,6 +182,37 @@ func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (b
 	return true, nil
 }
 
+func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) error {
+	for id, deps := range s.deps {
+		if slices.Contains(deps, from) {
+			deps = slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to })
+			if id != to {
+				deps = append(deps, to)
+			}
+			s.deps[id] = deps
+		}
+	}
+	return nil
+}
+
+// FundCard raises task id's budget by eur and records e with the raise in
+// its detail; bounds are the console's, which no factoryd caller passes.
+func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
+	t, ok := s.tasks[id]
+	if !ok {
+		return 0, 0, ErrNotFound
+	}
+	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
+	s.tasks[id] = t
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, eur
+	_, err = s.Record(ctx, e)
+	return from, t.BudgetEUR, err
+}
+
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},

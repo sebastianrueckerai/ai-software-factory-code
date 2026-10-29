@@ -766,6 +766,10 @@ func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]str
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) error { panic("unused") }
+func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+	panic("unused")
+}
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
 	panic("unused")
 }
@@ -1099,6 +1103,11 @@ func (w batchWorkflows) StartRoutineRun(context.Context, factoryd.RoutineRunInpu
 
 func (w batchWorkflows) Signal(_ context.Context, taskID, signal string, sig factoryd.TaskSignal) error {
 	w.rig.noteSignal(fmt.Sprintf("%s %s %d %d by %s", signal, taskID, sig.Revision, sig.Index, sig.Author))
+	return nil
+}
+
+func (w batchWorkflows) Reopen(_ context.Context, taskID, signal string, sig factoryd.TaskSignal) error {
+	w.rig.noteSignal(fmt.Sprintf("reopen %s %s by %s", taskID, signal, sig.Author))
 	return nil
 }
 

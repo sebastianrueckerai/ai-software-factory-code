@@ -47,7 +47,7 @@ func seedVerdictPlan(t *testing.T, plan, integrationID, status string) *fakeStor
 	if _, err := s.AddPlanRevision(context.Background(), plan, b, "sha"); err != nil {
 		t.Fatal(err)
 	}
-	s.tasks[plan] = Task{ID: plan, Repository: "sf/code", IssueNumber: 7, Source: SourceChat}
+	s.tasks[plan] = Task{ID: plan, Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: "done"}
 	s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: plan, Source: SourcePlan, PlanKey: "foundation", Status: "done"}
 	s.tasks[integrationID] = Task{ID: integrationID, Repository: "sf/code", Parent: plan, Source: SourcePlan, PlanKey: "integration", Status: status}
 	return s
@@ -971,6 +971,63 @@ func TestCriteriaPassRetriesALostCloseRow(t *testing.T) {
 	}
 	if want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
 		t.Errorf("comments = %q, want %q", commentBodies(fj), want)
+	}
+}
+
+// Finding 6: the minute pass leaves a plan under its replan alone, queued
+// or done with the step pending: it neither closes it, nor asks its gap,
+// nor drafts a delta card. Once the replan filed, it closes as before.
+func TestCriteriaPassLeavesAPlanUnderReplan(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, fj := planWithoutCriteria(t, "done", "closed")
+	mergeCard(s, "card-1")
+	setStatus := func(status string) {
+		p := s.tasks["t-plan"]
+		p.Status = status
+		s.tasks["t-plan"] = p
+	}
+	setStatus("queued")
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "card-2"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, status := range []string{"queued", "done"} {
+		setStatus(status)
+		r.CriteriaPass(ctx)
+		if n, rows := planCloses(t, objs), closeRows(s); n != 0 || rows != 0 || len(fj.comments) != 0 {
+			t.Fatalf("plan %s under replan: plan_closed %d times, rows %d, comments %q; want none", status, n, rows, commentBodies(fj))
+		}
+	}
+	if err := r.timeline.Append(ctx, "t-plan", "replanned", nil); err != nil {
+		t.Fatal(err)
+	}
+	r.CriteriaPass(ctx)
+	if n, rows := planCloses(t, objs), closeRows(s); n != 1 || rows != 1 {
+		t.Fatalf("the replan filed: plan_closed %d times, rows %d; want 1 and 1", n, rows)
+	}
+
+	// a criteria plan with a gap and a delta due: no question, no model call
+	// (the runner's supervisor fails the test on any)
+	cr, _, _ := newTestRunner(t, Task{ID: "t-other", Kind: "agent", Track: policy.TrackDirect, Repository: "sf/code"}, newFakeKube(), &fakeObjectStore{})
+	cs := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	cr.store = cs
+	p := cs.tasks["t-plan"]
+	p.Status, p.RequiredCapabilities = "queued", []string{policy.ClassCoder}
+	cs.tasks["t-plan"] = p
+	if err := cr.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "t-int"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cs.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cs.PutPlanCatches(ctx, "t-plan", 1, CatchDelta, FinderApprover, []string{"c3 grant 9"}); err != nil {
+		t.Fatal(err)
+	}
+	cr.CriteriaPass(ctx)
+	if pending, _ := cs.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("pending = %+v, want no gap question under the replan", pending)
 	}
 }
 

@@ -137,13 +137,25 @@ func issueLabels(t *testing.T, f *Forgejo, issueNumber int64) []string {
 	return names
 }
 
-// fakeWorkflows records workflow starts and signals.
+// fakeWorkflows records workflow starts, signals and reopens.
 type fakeWorkflows struct {
 	started     []string
 	signals     []string // "<task> <signal> <author> #<pr>: <body>"
 	err         error    // returned by Signal when set
 	onStart     func(taskID string)
 	routineRuns []RoutineRunInput
+	reopens     []reopenCall
+}
+
+// reopenCall is a Workflows.Reopen a fake took.
+type reopenCall struct {
+	taskID, signal string
+	sig            TaskSignal
+}
+
+func (w *fakeWorkflows) Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error {
+	w.reopens = append(w.reopens, reopenCall{taskID, signal, sig})
+	return nil
 }
 
 func (w *fakeWorkflows) Start(ctx context.Context, taskID string) error {

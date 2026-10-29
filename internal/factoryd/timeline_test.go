@@ -235,3 +235,52 @@ func TestTimelineAppendOnceRecordsOneStepUnderRace(t *testing.T) {
 		t.Fatalf("a different step: wrote %t, err %v; want written", ok, err)
 	}
 }
+
+// AppendUnlessPending writes a step again only once a closer followed the
+// last one, and two racing callers write it once.
+func TestAppendUnlessPending(t *testing.T) {
+	objects := &fakeObjectStore{}
+	tl := &Timeline{Objects: objects}
+	ctx := context.Background()
+	replans := func() int {
+		body, _ := objects.Get(ctx, "sessions/t1/timeline.jsonl")
+		return strings.Count(string(body), `"step":"replan"`)
+	}
+	want := func(wrote bool, n int) {
+		t.Helper()
+		ok, err := tl.AppendUnlessPending(ctx, "t1", "replan", map[string]any{"origin": "cut"}, "replanned", "to_plan_refused")
+		if err != nil || ok != wrote || replans() != n {
+			t.Fatalf("wrote %t (%v), %d replan steps; want %t and %d", ok, err, replans(), wrote, n)
+		}
+	}
+	want(true, 1)
+	want(false, 1)
+	for i, closer := range []string{"replanned", "to_plan_refused"} {
+		if err := tl.Append(ctx, "t1", closer, nil); err != nil {
+			t.Fatal(err)
+		}
+		want(true, i+2)
+	}
+
+	raced := &Timeline{Objects: &fakeObjectStore{}}
+	var wg sync.WaitGroup
+	var wrote atomic.Int32
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			ok, err := raced.AppendUnlessPending(ctx, "t1", "replan", nil, "replanned", "to_plan_refused")
+			if err != nil {
+				t.Error(err)
+			}
+			if ok {
+				wrote.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	body, _ := raced.Objects.Get(ctx, "sessions/t1/timeline.jsonl")
+	if n := strings.Count(string(body), "\n"); n != 1 || wrote.Load() != 1 {
+		t.Fatalf("racing callers: %d lines, %d wrote; want 1 and 1", n, wrote.Load())
+	}
+}

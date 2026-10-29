@@ -140,6 +140,8 @@ const (
 	ActivityImageArrived                = "ImageArrived"
 	ActivityLeaveImagePark              = "LeaveImagePark"
 	ActivityBecomePlan                  = "BecomePlan"
+	ActivityReplanChild                 = "ReplanChild"
+	ActivityReplanStopped               = "ReplanStopped"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -580,6 +582,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
 	run.directToPlan = workflow.GetVersion(ctx, "direct-to-plan", workflow.DefaultVersion, versionDirectToPlan)
 	run.sizing = workflow.GetVersion(ctx, "sizing", workflow.DefaultVersion, versionSizing)
+	run.replan = workflow.GetVersion(ctx, "replan", workflow.DefaultVersion, versionReplan)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1147,6 +1150,12 @@ const (
 	// small turns plan-track (switchToPlan). A run from before sizes
 	// nothing.
 	versionSizing workflow.Version = 1
+	// versionReplan (change id "replan", roadmap 336): a plan's first
+	// planner session of a run waits for the cards its pending replan
+	// stops (awaitReplanStops), and the plan loop takes the replan's own
+	// note on the issue for no writer's change request (planComments). A
+	// run from before neither waits nor knows the note.
+	versionReplan workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1258,6 +1267,9 @@ type taskRun struct {
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
 	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
+	replan            workflow.Version // a plan's run waits for its replan's stops and knows its note (versionReplan)
+	replanBy          string           // the pending replan's person (versionReplan)
+	replanNote        string           // the pending replan's note (versionReplan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)

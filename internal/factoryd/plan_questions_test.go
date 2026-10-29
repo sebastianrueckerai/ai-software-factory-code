@@ -301,7 +301,8 @@ func TestRequestPlanSplitsTheCatches(t *testing.T) {
 	}
 }
 
-// signalLog keeps every signal with its payload; err fails each.
+// signalLog keeps every signal with its payload, and every reopen; err
+// fails each signal.
 type signalLog struct {
 	got []string
 	err error
@@ -309,6 +310,10 @@ type signalLog struct {
 
 func (w *signalLog) Start(context.Context, string) error                    { return nil }
 func (w *signalLog) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
+func (w *signalLog) Reopen(_ context.Context, taskID, name string, _ TaskSignal) error {
+	w.got = append(w.got, "reopen "+taskID+" "+name)
+	return nil
+}
 func (w *signalLog) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
 	if w.err != nil {
 		return w.err

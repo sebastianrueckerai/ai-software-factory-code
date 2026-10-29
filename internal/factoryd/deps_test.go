@@ -996,3 +996,50 @@ func TestContinuedCardResumesOnTheBranch(t *testing.T) {
 		t.Fatalf("BranchHead = %q, %v; want c7", head, err)
 	}
 }
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). Every edge
+// onto the cut card moves onto its plan; one its dependent already had
+// stays once.
+func TestMoveDependents(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_move_deps"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, tk := range []Task{
+		{ID: "p", Status: "queued", IssueNumber: 1, Source: "webhook", Track: policy.TrackPlan},
+		{ID: "c", Status: "running", IssueNumber: 2, Track: policy.TrackDirect, Source: SourcePlan},
+		{ID: "s1", Status: "waiting-deps", IssueNumber: 3, Track: policy.TrackDirect, Source: SourcePlan},
+		{ID: "s2", Status: "waiting-deps", IssueNumber: 4, Track: policy.TrackDirect, Source: SourcePlan},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, deps := range map[string][]string{"s1": {"c"}, "s2": {"c", "p"}} {
+		if err := s.AddTaskDeps(ctx, id, deps); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.MoveDependents(ctx, "c", "p"); err != nil {
+		t.Fatalf("MoveDependents: %v", err)
+	}
+	var edges []string
+	rows, err := s.db.QueryContext(ctx, `SELECT task_id || '>' || depends_on FROM task_deps ORDER BY 1`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var e string
+		if err := rows.Scan(&e); err != nil {
+			t.Fatal(err)
+		}
+		edges = append(edges, e)
+	}
+	if want := []string{"s1>p", "s2>p"}; !slices.Equal(edges, want) {
+		t.Fatalf("edges %v, want %v", edges, want)
+	}
+}

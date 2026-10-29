@@ -916,6 +916,34 @@ func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Ta
 	return false, nil
 }
 
+func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for id, deps := range s.deps {
+		if slices.Contains(deps, from) {
+			deps = slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to })
+			if id != to {
+				deps = append(deps, to)
+			}
+			s.deps[id] = deps
+		}
+	}
+	return nil
+}
+
+func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok {
+		return 0, 0, factoryd.ErrNotFound
+	}
+	from := t.BudgetEUR
+	t.BudgetEUR += eur
+	s.tasks[id] = t
+	return from, t.BudgetEUR, nil
+}
+
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {
 	return 0, nil
 }

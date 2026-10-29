@@ -505,7 +505,7 @@ func (b *imageBook) Task(_ context.Context, id string) (Task, bool, error) {
 }
 
 // imageSignals records the imager's signals as "<task> <signal> <image>:
-// <refusal>".
+// <refusal>", and a reopen as "reopen <task> <signal>".
 type imageSignals struct {
 	mu  sync.Mutex
 	got []string
@@ -513,6 +513,12 @@ type imageSignals struct {
 
 func (w *imageSignals) Start(context.Context, string) error                    { return nil }
 func (w *imageSignals) StartRoutineRun(context.Context, RoutineRunInput) error { return nil }
+func (w *imageSignals) Reopen(_ context.Context, taskID, name string, _ TaskSignal) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.got = append(w.got, "reopen "+taskID+" "+name)
+	return nil
+}
 func (w *imageSignals) Signal(_ context.Context, taskID, name string, sig TaskSignal) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()

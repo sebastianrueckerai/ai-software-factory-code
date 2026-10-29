@@ -25,6 +25,9 @@ const DeliveryRetention = 30 * 24 * time.Hour
 type Workflows interface {
 	Start(ctx context.Context, taskID string) error
 	Signal(ctx context.Context, taskID, name string, sig TaskSignal) error
+	// Reopen starts a new run of the task's workflow after any end, with
+	// signal when it is not "".
+	Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error
 	StartRoutineRun(ctx context.Context, in RoutineRunInput) error
 }
 
@@ -64,6 +67,29 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 	}
 	if err == nil {
 		log.Printf("task %s: signal %s from %s delivered", taskID, name, sig.Author)
+	}
+	return err
+}
+
+// Reopen starts a new run of the task's workflow, whatever ended the last
+// one: a plan's replan, or a direct card's that already ended. With
+// signal, the run starts with it (SignalWithStartWorkflow), and a run
+// that runs takes the signal; without, a run that runs is not an error.
+func (w TemporalWorkflows) Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error {
+	opts := startOptions(taskID)
+	opts.WorkflowIDReusePolicy = enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE
+	var err error
+	if signal != "" {
+		_, err = w.Client.SignalWithStartWorkflow(ctx, WorkflowID(taskID), signal, sig, opts, "TaskWorkflow", taskID)
+	} else {
+		_, err = w.Client.ExecuteWorkflow(ctx, opts, "TaskWorkflow", taskID)
+	}
+	var started *serviceerror.WorkflowExecutionAlreadyStarted
+	if errors.As(err, &started) {
+		return nil
+	}
+	if err == nil {
+		log.Printf("task %s: workflow %s reopened", taskID, WorkflowID(taskID))
 	}
 	return err
 }

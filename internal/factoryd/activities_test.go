@@ -58,8 +58,9 @@ type prForgejo struct {
 	refuse        bool                // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
 	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
 	pulls         map[int64]string    // GET /pulls/{n} bodies
-	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it
+	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it, or opens it with state open
 	issuesClosed  []int64             // PATCH /issues/{n} closes
+	reopened      []int64             // PATCH /issues/{n} with state open
 	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
 	open          []map[string]any    // open pull requests
 	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
@@ -158,7 +159,13 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
 			var n int64
 			fmt.Sscanf(p, "/issues/%d", &n)
-			f.issuesClosed, f.issueOff = append(f.issuesClosed, n), true
+			var body struct{ State string }
+			json.NewDecoder(r.Body).Decode(&body)
+			if body.State == "open" {
+				f.reopened, f.issueOff = append(f.reopened, n), false
+			} else {
+				f.issuesClosed, f.issueOff = append(f.issuesClosed, n), true
+			}
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):

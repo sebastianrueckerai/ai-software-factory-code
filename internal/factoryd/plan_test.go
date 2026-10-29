@@ -1176,6 +1176,96 @@ func TestPlanLoopCleanRevisionFilesInTheSameStep(t *testing.T) {
 	}
 }
 
+// onReplanStopped answers ReplanStopped with answers in order, the last
+// repeating, and records when each was asked.
+func (h *planHarness) onReplanStopped(answers ...ReplanWait) *[]time.Time {
+	var asked []time.Time
+	h.env.OnActivity(ActivityReplanStopped, mock.Anything, "t1").Return(
+		func(ctx context.Context, planID string) (ReplanWait, error) {
+			asked = append(asked, h.env.Now())
+			return answers[min(len(asked), len(answers))-1], nil
+		})
+	return &asked
+}
+
+// planStarts records when each planner session started.
+func (h *planHarness) planStarts() *[]time.Time {
+	var starts []time.Time
+	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+		if info.ActivityType.Name == ActivityRunPlan {
+			starts = append(starts, h.env.Now())
+		}
+	})
+	return &starts
+}
+
+// A reopened plan's first planner session waits, every 15 seconds, until
+// the cards its replan stops have ended; after 10 minutes it records the
+// ones still open and plans anyway.
+func TestReopenedPlanWaitsForItsStops(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
+	asked := h.onReplanStopped(ReplanWait{}, ReplanWait{}, ReplanWait{Stopped: true})
+	starts := h.planStarts()
+	start := h.env.Now()
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(*asked) != 3 || len(*starts) != 1 || (*starts)[0].Sub(start) != 30*time.Second || (*starts)[0].Before((*asked)[2]) {
+		t.Fatalf("asked at %v, planner started at %v (start %v); want three asks, one session 30s in, after the third", *asked, *starts, start)
+	}
+	if slices.ContainsFunc(h.recorded, func(s recordedStep) bool { return s.step == "replan_stops_late" }) {
+		t.Fatalf("steps %+v, want no late stops", h.recorded)
+	}
+
+	h = newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
+	asked = h.onReplanStopped(ReplanWait{Open: []string{"t-ui"}})
+	starts = h.planStarts()
+	start = h.env.Now()
+	if final := h.run(t); final != "done" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	var late []string
+	for _, s := range h.recorded {
+		if s.step == "replan_stops_late" {
+			late = append(late, fmt.Sprintf("%v at %v", s.detail["open"], s.at.Sub(start)))
+		}
+	}
+	if !slices.Equal(late, []string{"[t-ui] at 10m0s"}) || len(*starts) != 1 || (*starts)[0].Sub(start) != 10*time.Minute || len(*asked) != 41 {
+		t.Fatalf("late steps %q, planner started at %v, %d asks; want [t-ui] at 10m, one session then, 41 asks", late, *starts, len(*asked))
+	}
+}
+
+// The person's note of a replan, posted on the plan's issue as theirs,
+// is the replan's own words, not a writer asking for changes: the
+// revision files. Another comment of theirs sends the planner back.
+func TestPlanLoopIgnoresTheReplansOwnNote(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.file = map[int]bool{1: true}
+	h.onReplanStopped(ReplanWait{Stopped: true, By: "ana", Comment: "too wide"})
+	h.signalAfter(2*time.Minute, SignalHumanComment, TaskSignal{Author: "ana", Body: "too wide\n", Comment: 70})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" || len(h.plans) != 1 {
+		t.Fatalf("finals %v, %d planner sessions; want revision 1 filed after one", h.finals, len(h.plans))
+	}
+	if !slices.ContainsFunc(h.recorded, func(s recordedStep) bool {
+		return s.step == "signal" && fmt.Sprint(s.detail["comment"]) == "70" && s.detail["ignored"] == "the replan's own note"
+	}) {
+		t.Fatalf("steps %+v, want comment 70 ignored as the replan's own note", h.recorded)
+	}
+
+	h = newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.file = map[int]bool{1: true, 2: true}
+	h.onReplanStopped(ReplanWait{Stopped: true, By: "ana", Comment: "too wide"})
+	h.signalAfter(2*time.Minute, SignalHumanComment, TaskSignal{Author: "ana", Body: "and split the API", Comment: 71})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer ana asked for changes to the plan: and split the API"}) {
+		t.Fatalf("RunPlan findings %q, want the comment in the second session", h.plans)
+	}
+}
+
 // becomePlanCall is a BecomePlan call; states are the SetState calls
 // before it, in order.
 type becomePlanCall struct {

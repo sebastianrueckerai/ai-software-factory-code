@@ -1389,6 +1389,12 @@ func (f *Forgejo) CloseIssue(ctx context.Context, owner, repo string, number int
 	return err
 }
 
+// ReopenIssue opens issue number again as the bot.
+func (f *Forgejo) ReopenIssue(ctx context.Context, owner, repo string, number int64) error {
+	_, err := f.call(ctx, http.MethodPatch, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d", owner, repo, number), mustJSON(map[string]string{"state": "open"}), http.StatusCreated)
+	return err
+}
+
 // CreateIssueComment posts a comment on an issue: the workflow uses it to
 // record why a task's attempts were exhausted or it otherwise failed, on
 // the same issue task 42 filed at intake.

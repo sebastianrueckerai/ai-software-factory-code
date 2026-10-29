@@ -178,6 +178,11 @@ func (w *fakeStarter) StartRoutineRun(ctx context.Context, in factoryd.RoutineRu
 	return nil
 }
 
+func (w *fakeStarter) Reopen(ctx context.Context, taskID, signal string, sig factoryd.TaskSignal) error {
+	*w.events = append(*w.events, "reopen-workflow")
+	return nil
+}
+
 func postCreateTask(h http.HandlerFunc, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/tasks", strings.NewReader(body))
 	rec := httptest.NewRecorder()

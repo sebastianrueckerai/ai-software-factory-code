@@ -747,6 +747,21 @@ func (r *Runner) planClosed(ctx context.Context, id string) bool {
 	return closed
 }
 
+// planAtRest says plan t is done with no replan pending: the minute pass
+// neither closes, asks about nor drafts for a plan under its replan. A
+// failed read counts as under replan until the next pass.
+func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
+	if t.Status != "done" {
+		return false
+	}
+	_, pending, err := r.pendingReplan(ctx, t)
+	if err != nil {
+		log.Printf("plan %s: the pending replan: %v", t.ID, err)
+		return false
+	}
+	return !pending
+}
+
 // planCloseCheck is the plan-close rule (piece 8): a plan closes when
 // every criterion is met or waived, a plan without criteria when every
 // card is done or closed. When its cards are all final and a criterion
@@ -758,6 +773,9 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
+		return
+	}
+	if !r.planAtRest(ctx, t) {
 		return
 	}
 	p, _, err := planOfStore(ctx, r.store, parent, "")
@@ -906,6 +924,14 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 // draftDue drafts the plan's unanswered delta dues: the delta catches no
 // filed or refused catch marks.
 func (r *Runner) draftDue(ctx context.Context, parent string) {
+	t, repo, err := r.task(ctx, parent)
+	if err != nil {
+		log.Printf("plan %s: the delta round: %v", parent, err)
+		return
+	}
+	if !r.planAtRest(ctx, t) {
+		return
+	}
 	catches, err := r.store.PlanCatches(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the delta dues: %v", parent, err)
@@ -928,11 +954,6 @@ func (r *Runner) draftDue(ctx context.Context, parent string) {
 		}
 	}
 	if len(due) == 0 {
-		return
-	}
-	t, repo, err := r.task(ctx, parent)
-	if err != nil {
-		log.Printf("plan %s: the delta round: %v", parent, err)
 		return
 	}
 	r.draftDelta(ctx, t, repo, due)

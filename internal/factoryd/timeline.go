@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log"
@@ -70,7 +71,7 @@ func (tl *Timeline) lock(taskID string) (unlock func()) {
 
 func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[string]any) error {
 	defer tl.lock(taskID)()
-	_, err := tl.append(ctx, taskID, step, detail, false)
+	_, err := tl.append(ctx, taskID, step, detail, nil)
 	return err
 }
 
@@ -78,16 +79,44 @@ func (tl *Timeline) Append(ctx context.Context, taskID, step string, detail map[
 // check and the write under one lock; it tells whether it wrote.
 func (tl *Timeline) AppendOnce(ctx context.Context, taskID, step string, detail map[string]any) (bool, error) {
 	defer tl.lock(taskID)()
-	return tl.append(ctx, taskID, step, detail, true)
+	return tl.append(ctx, taskID, step, detail, func(prev []byte) bool { return lastStep(prev, step) != nil })
 }
 
-func (tl *Timeline) append(ctx context.Context, taskID, step string, detail map[string]any, once bool) (bool, error) {
+// AppendUnlessPending appends the step unless the timeline's last one of
+// its name has none of closers after it, the check and the write under
+// one lock; it tells whether it wrote.
+func (tl *Timeline) AppendUnlessPending(ctx context.Context, taskID, step string, detail map[string]any, closers ...string) (bool, error) {
+	defer tl.lock(taskID)()
+	return tl.append(ctx, taskID, step, detail, func(prev []byte) bool { return openStep(prev, step, closers...) != nil })
+}
+
+// openStep is the timeline's last line of step when none of closers
+// follows it, nil when there is none.
+func openStep(timeline []byte, step string, closers ...string) []byte {
+	var open []byte
+	for line := range bytes.SplitSeq(timeline, []byte("\n")) {
+		var m struct {
+			Step string `json:"step"`
+		}
+		switch {
+		case json.Unmarshal(line, &m) != nil:
+		case m.Step == step:
+			open = line
+		case slices.Contains(closers, m.Step):
+			open = nil
+		}
+	}
+	return open
+}
+
+// append writes the step unless skip, given the timeline so far, says no.
+func (tl *Timeline) append(ctx context.Context, taskID, step string, detail map[string]any, skip func(prev []byte) bool) (bool, error) {
 	key := "sessions/" + taskID + "/timeline.jsonl"
 	prev, err := tl.Objects.Get(ctx, key)
 	if err != nil {
 		return false, err
 	}
-	if once && lastStep(prev, step) != nil {
+	if skip != nil && skip(prev) {
 		return false, nil
 	}
 	now := time.Now().UTC()

@@ -555,6 +555,12 @@ type Store interface {
 	// False, and nothing changed, when id is no failed card holding the
 	// key.
 	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
+	// MoveDependents points every task waiting on from at to instead; a
+	// task that waits on to already keeps that one edge.
+	MoveDependents(ctx context.Context, from, to string) error
+	// FundCard raises task id's budget by eur and writes e, its card_funded
+	// row (PGStore.FundCard).
+	FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error)
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)

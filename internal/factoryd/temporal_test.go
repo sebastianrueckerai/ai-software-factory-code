@@ -149,6 +149,43 @@ func TestTemporalSignalStartsTheWorkflowWhenNoneRuns(t *testing.T) {
 	}
 }
 
+// A reopen starts a new run of a completed workflow, with its signal when
+// it has one; a run that runs already is no error.
+func TestTemporalReopenStartsANewRun(t *testing.T) {
+	c := &mocks.Client{}
+	var opts []client.StartWorkflowOptions
+	c.On("ExecuteWorkflow", mock.Anything, mock.Anything, "TaskWorkflow", "t1").
+		Run(func(args mock.Arguments) { opts = append(opts, args.Get(1).(client.StartWorkflowOptions)) }).Return(nil, nil)
+	var sig TaskSignal
+	c.On("SignalWithStartWorkflow", mock.Anything, "task-t1", SignalToPlan, mock.Anything, mock.Anything, "TaskWorkflow", "t1").
+		Run(func(args mock.Arguments) {
+			sig = args.Get(3).(TaskSignal)
+			opts = append(opts, args.Get(4).(client.StartWorkflowOptions))
+		}).Return(nil, nil)
+	w := TemporalWorkflows{Client: c}
+	if err := w.Reopen(context.Background(), "t1", "", TaskSignal{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Reopen(context.Background(), "t1", SignalToPlan, TaskSignal{Author: "ana", Body: "too big"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(opts) != 2 || sig != (TaskSignal{Author: "ana", Body: "too big"}) {
+		t.Fatalf("starts %+v, signal %+v; want one plain start and one with the signal", opts, sig)
+	}
+	for _, o := range opts {
+		if o.ID != "task-t1" || o.TaskQueue != TaskQueue || o.WorkflowIDReusePolicy != enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE {
+			t.Fatalf("options %+v, want a new run of task-t1 allowed after any end", o)
+		}
+	}
+
+	running := &mocks.Client{}
+	running.On("ExecuteWorkflow", mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+		Return(nil, serviceerror.NewWorkflowExecutionAlreadyStarted("running", "", ""))
+	if err := (TemporalWorkflows{Client: running}).Reopen(context.Background(), "t1", "", TaskSignal{}); err != nil {
+		t.Fatalf("a reopen of a running run = %v, want nil", err)
+	}
+}
+
 // captureLog redirects the standard logger into a buffer for one test.
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()

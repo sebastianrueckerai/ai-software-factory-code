@@ -240,6 +240,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityBecomePlan: func(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
 			return PlanSwitchResult{}, nil
 		},
+		ActivityReplanChild: func(ctx context.Context, childID, work string) (ReplanChildResult, error) {
+			return ReplanChildResult{}, nil
+		},
+		ActivityReplanStopped: func(ctx context.Context, planID string) (ReplanWait, error) { return ReplanWait{Stopped: true}, nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

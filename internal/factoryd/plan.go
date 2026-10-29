@@ -1483,6 +1483,7 @@ func (t *taskRun) planLoop() (string, error) {
 	// the comment the running or next session answers: writers' comments
 	// newer than it ask for changes
 	floor := t.escalation
+	stopsAwaited := t.replan < versionReplan
 	for {
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts {
 			ask = t.sessionCapCard(reason, findings)
@@ -1537,6 +1538,12 @@ func (t *taskRun) planLoop() (string, error) {
 		if v, decided := t.awaitRollHold(); decided {
 			final, why, _ := closedBeforeStart(v.final, v.reason)
 			return t.finish(final, why)
+		}
+		if !stopsAwaited {
+			if err := t.awaitReplanStops(); err != nil {
+				return t.finish("failed", "replan stops: "+errMessage(err))
+			}
+			stopsAwaited = true
 		}
 		began := workflow.Now(t.ctx)
 		var res PlanResult
@@ -1637,6 +1644,41 @@ func (t *taskRun) planLoop() (string, error) {
 	}
 }
 
+// replanStopsWait bounds the wait of a replan's planner for the cards the
+// replan stops; replanStopsPoll is how often it asks.
+const (
+	replanStopsWait = 10 * time.Minute
+	replanStopsPoll = 15 * time.Second
+)
+
+// awaitReplanStops holds the run's first planner session (versionReplan)
+// until the cards a pending replan stops have ended, so the planner reads
+// what they left. Past replanStopsWait it records the cards still open
+// and lets the planner run. It keeps the person's name and note of the
+// replan for planComments.
+func (t *taskRun) awaitReplanStops() error {
+	start := workflow.Now(t.ctx)
+	for {
+		var w ReplanWait
+		if err := workflow.ExecuteActivity(t.short, ActivityReplanStopped, t.taskID).Get(t.ctx, &w); err != nil {
+			return err
+		}
+		t.replanBy, t.replanNote = w.By, w.Comment
+		if w.Stopped {
+			return nil
+		}
+		if workflow.Now(t.ctx).Sub(start) >= replanStopsWait {
+			if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "replan_stops_late", map[string]any{"open": w.Open}).Get(t.ctx, nil); err != nil {
+				workflow.GetLogger(t.ctx).Warn("record replan_stops_late", "task", t.taskID, "error", err)
+			}
+			return nil
+		}
+		if err := workflow.Sleep(t.ctx, replanStopsPoll); err != nil {
+			return err
+		}
+	}
+}
+
 // plannerTime tells a plan card's agent time (versionPlannerRetry): short
 // when less is left than a session needs, retry when its one automatic
 // top-up to half the cap is still to come and half the cap is enough for a
@@ -1678,8 +1720,9 @@ func planRequested(ref *PlanRef) (final, why string, findings []string, stop boo
 }
 
 // planComments takes the writers' comments signalled so far: each newer
-// than floor, the comment the session answered, asks for changes. heard
-// are the comments that ask.
+// than floor, the comment the session answered, asks for changes, except
+// the note of the replan that reopened the plan, posted as its person's
+// (versionReplan). heard are the comments that ask.
 func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalHumanComment).ReceiveAsync(&sig) {
@@ -1687,6 +1730,8 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 		switch {
 		case sig.Comment <= floor:
 			detail["ignored"] = "older than the plan or question the planner answered"
+		case t.replan >= versionReplan && t.replanBy != "" && sig.Author == t.replanBy && strings.TrimSpace(sig.Body) == strings.TrimSpace(t.replanNote):
+			detail["ignored"] = "the replan's own note"
 		default:
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)

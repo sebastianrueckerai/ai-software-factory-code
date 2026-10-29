@@ -463,9 +463,10 @@ func (b *memProjectBook) Project(_ context.Context, name string) (factoryd.Proje
 }
 
 type acceptanceWorkflows struct {
-	mu      sync.Mutex
-	started []string
-	onStart func(taskID string)
+	mu       sync.Mutex
+	started  []string
+	reopened []string
+	onStart  func(taskID string)
 }
 
 func (w *acceptanceWorkflows) Start(_ context.Context, taskID string) error {
@@ -484,6 +485,13 @@ func (w *acceptanceWorkflows) StartRoutineRun(context.Context, factoryd.RoutineR
 }
 
 func (w *acceptanceWorkflows) Signal(_ context.Context, taskID, name string, sig factoryd.TaskSignal) error {
+	return nil
+}
+
+func (w *acceptanceWorkflows) Reopen(_ context.Context, taskID, _ string, _ factoryd.TaskSignal) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.reopened = append(w.reopened, taskID)
 	return nil
 }
 
