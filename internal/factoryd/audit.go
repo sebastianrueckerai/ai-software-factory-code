@@ -170,11 +170,11 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		res.Findings = append(res.Findings, AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
-	files, parts := prFiles, diffParts(prFiles, reviewDiffMax)
+	parts := diffParts(prFiles, reviewDiffMax)
 	boundByParts(ctx, len(parts))
-	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files))}
+	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(prFiles))}
 	if len(parts) > 1 {
-		first.Part = partLabel(parts, 0, len(files))
+		first.Part = partLabel(parts, 0, len(prFiles))
 	}
 	for i, part := range parts {
 		label, prompt, in := "", auditPrompt, any(first)
@@ -182,7 +182,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			label = fmt.Sprintf("part %d of %d: ", i+1, len(parts))
 		}
 		if i > 0 {
-			prompt, in = auditPartPrompt, auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(files))}
+			prompt, in = auditPartPrompt, auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
 		}
 		content, deployment, err := r.supervisor.Chat(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, prompt, in)
 		if ctx.Err() != nil {

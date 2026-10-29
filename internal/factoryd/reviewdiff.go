@@ -116,17 +116,16 @@ var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@
 // fits. Each piece starts with f's header, then whole hunks while they fit.
 // A hunk that does not fit beside the header is split at line boundaries
 // into sub-hunks with recomputed headers, and a line that does not fit is
-// cut at rune boundaries into lines that keep its prefix.
+// cut at rune boundaries into lines that keep its prefix. A file without a
+// hunk, or with a header too large to leave room for one, is cut at rune
+// boundaries into pieces that have no header.
 func cutFile(f fileDiff, limit int) []fileDiff {
 	if len(f.Text) <= limit {
 		return []fileDiff{f}
 	}
 	var texts []string
 	if at := strings.Index(f.Text, "\n@@ "); at < 0 || at+1+subHeaderRoom+8 > limit {
-		for rest := f.Text; rest != ""; {
-			n := runeCut(rest, limit)
-			texts, rest = append(texts, rest[:n]), rest[n:]
-		}
+		texts = cutRaw(f.Text, limit)
 	} else {
 		header, rest := f.Text[:at+1], f.Text[at+1:]
 		var cur strings.Builder
@@ -175,7 +174,7 @@ func splitHunk(hunk string, room int) []string {
 	head, body, _ := strings.Cut(hunk, "\n")
 	m := hunkHeader.FindStringSubmatch(head)
 	if m == nil {
-		return []string{hunk}
+		return cutRaw(hunk, room)
 	}
 	num := func(s string, absent int) int {
 		if s == "" {
@@ -195,7 +194,7 @@ func splitHunk(hunk string, room int) []string {
 	}
 	var out []string
 	var lines strings.Builder
-	oldN, newN := 0, 0
+	oldN, newN, oldAdv, newAdv := 0, 0, 0, 0
 	flush := func() {
 		if lines.Len() == 0 {
 			return
@@ -207,9 +206,9 @@ func splitHunk(hunk string, room int) []string {
 			return next
 		}
 		out = append(out, fmt.Sprintf("@@ -%d,%d +%d,%d @@\n%s", at(nextOld, oldN), oldN, at(nextNew, newN), newN, lines.String()))
-		nextOld, nextNew = nextOld+oldN, nextNew+newN
+		nextOld, nextNew = nextOld+oldAdv, nextNew+newAdv
 		lines.Reset()
-		oldN, newN = 0, 0
+		oldN, newN, oldAdv, newAdv = 0, 0, 0, 0
 	}
 	room -= subHeaderRoom
 	for _, l := range strings.SplitAfter(body, "\n") {
@@ -225,25 +224,48 @@ func splitHunk(hunk string, room int) []string {
 				pieces, payload = append(pieces, l[:1]+payload[:n]+"\n"), payload[n:]
 			}
 		}
-		for _, p := range pieces {
+		for k, p := range pieces {
 			if lines.Len()+len(p) > room {
 				flush()
 			}
 			lines.WriteString(p)
+			// the fragments of a cut line count in the header, the line
+			// itself advances the numbering once, after its last fragment
+			last := k == len(pieces)-1
 			switch p[0] {
 			case '+':
 				newN++
+				newAdv += b2i(last)
 			case '-':
 				oldN++
+				oldAdv += b2i(last)
 			case '\\':
 			default:
 				oldN++
 				newN++
+				oldAdv += b2i(last)
+				newAdv += b2i(last)
 			}
 		}
 	}
 	flush()
 	return out
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// cutRaw cuts s at rune boundaries into chunks of at most limit bytes.
+func cutRaw(s string, limit int) (chunks []string) {
+	for s != "" {
+		n := runeCut(s, limit)
+		chunks, s = append(chunks, s[:n]), s[n:]
+	}
+	return chunks
 }
 
 // runeCut is how many bytes of s, at most limit and at least one rune, end
@@ -372,7 +394,8 @@ func partLabel(parts [][]fileDiff, i, all int) string {
 
 // fileList renders every entry of groups, one line each with its added
 // and removed lines and its group, at most maxListLines; the entries past
-// them are one line a directory. unit names a group: "part" or "card".
+// them are one line a directory, at most maxListDirs, then one line for the
+// rest. unit names a group: "part" or "card".
 func fileList(groups [][]fileDiff, unit string) string {
 	type dirTotal struct {
 		files, added, removed, from, to int
@@ -407,8 +430,16 @@ func fileList(groups [][]fileDiff, unit string) string {
 			lines = append(lines, fmt.Sprintf("%s +%d -%d (%s %d)", name, f.Added, f.Removed, unit, k+1))
 		}
 	}
-	for _, d := range dirs {
+	for k, d := range dirs {
 		t := totals[d]
+		if k == maxListDirs {
+			var rest dirTotal
+			for _, d := range dirs[k:] {
+				rest.files += totals[d].files
+			}
+			lines = append(lines, fmt.Sprintf("and %s with %s", textutil.Plural(len(dirs)-k, "more directory", "more directories"), textutil.Plural(rest.files, "file", "files")))
+			break
+		}
 		span := fmt.Sprintf("%ss %d to %d", unit, t.from, t.to)
 		if t.from == t.to {
 			span = fmt.Sprintf("%s %d", unit, t.from)
@@ -493,6 +524,7 @@ var siteKinds = []struct {
 
 const (
 	maxListLines = 200
+	maxListDirs  = 50
 	maxSiteText  = 200
 )
 

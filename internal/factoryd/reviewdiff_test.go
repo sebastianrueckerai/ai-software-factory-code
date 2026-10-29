@@ -125,6 +125,8 @@ func TestPackFiles(t *testing.T) {
 		"five of 10":  {[]int{10, 10, 10, 10, 10}, "[[f1 f2 f3 f4] [f5]]"},
 		"exactly 48":  {[]int{48, 1}, "[[f1] [f2]]"},
 		"none":        {nil, "[]"},
+		"60 then 10":  {[]int{60, 10}, "[[f1] [f2]]"},
+		"49 alone":    {[]int{49}, "[[f1]]"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := fmt.Sprint(paths(packFiles(sized(tc.kib...), 48<<10))); got != tc.chunks {
@@ -165,6 +167,64 @@ func TestConcurrencySiteKinds(t *testing.T) {
 		case kind != "" && (len(got) != 1 || got[0].Kind != kind || got[0].Line != 2):
 			t.Errorf("%q: sites %+v, want one %s at line 2", text, got, kind)
 		}
+	}
+}
+
+const concurrencyTestDiff = "diff --git a/w.go b/w.go\n" +
+	"--- a/w.go\n" +
+	"+++ b/w.go\n" +
+	"@@ -10,3 +10,4 @@ func run() {\n" +
+	" \tx := 1\n" +
+	" \ty := 2\n" +
+	"+\tgo func() {\n" +
+	" \tz := 3\n" +
+	"@@ -18,2 +19,3 @@\n" +
+	" \ta := 1\n" +
+	"+\tch := make(chan int, 1)\n" +
+	" \tb := 2\n" +
+	"@@ -28,3 +30,3 @@\n" +
+	" \tc := 1\n" +
+	"-\tgo worker()\n" +
+	"+\tvar mu sync.Mutex\n" +
+	" \td := 2\n" +
+	"@@ -36,6 +38,9 @@\n" +
+	" \tg := 0\n" +
+	" \te := 1\n" +
+	"+\tselect {\n" +
+	"+\tdefault:\n" +
+	" \tf := 2\n" +
+	" \th := 3\n" +
+	" \ti := 4\n" +
+	"+\tatomic.AddInt64(&n, 1)\n" +
+	" \tj := 5\n"
+
+func TestConcurrencySites(t *testing.T) {
+	got := concurrencySites(splitDiff(concurrencyTestDiff))
+	want := []site{
+		{File: "w.go", Line: 12, Kind: "goroutine", Text: "go func() {"},
+		{File: "w.go", Line: 20, Kind: "channel", Text: "ch := make(chan int, 1)"},
+		{File: "w.go", Line: 31, Kind: "lock", Text: "var mu sync.Mutex"},
+		{File: "w.go", Line: 40, Kind: "select", Text: "select {"},
+		{File: "w.go", Line: 45, Kind: "atomic", Text: "atomic.AddInt64(&n, 1)"},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("sites = %+v, want %+v", got, want)
+	}
+	block := "every goroutine, channel, lock, select and atomic the diff adds, with file and line:\n" +
+		"w.go:12 goroutine: go func() {\n" +
+		"w.go:20 channel: ch := make(chan int, 1)\n" +
+		"w.go:31 lock: var mu sync.Mutex\n" +
+		"w.go:40 select: select {\n" +
+		"w.go:45 atomic: atomic.AddInt64(&n, 1)"
+	if b := concurrencyBlock(got); b != block {
+		t.Fatalf("block = %q, want %q", b, block)
+	}
+	aGo := concurrencySites(splitDiff(splitTestDiff[:strings.Index(splitTestDiff, "diff --git a/old_test.go")]))
+	if len(aGo) != 1 || aGo[0].Kind != "lock" || aGo[0].Line != 6 {
+		t.Fatalf("a.go's sites = %+v, want its one sync.Mutex at line 6", aGo)
+	}
+	if got := concurrencySites(splitDiff("diff --git a/c.md b/c.md\n--- a/c.md\n+++ b/c.md\n@@ -1 +1 @@\n-a\n+b\n")); len(got) != 0 || concurrencyBlock(got) != "none" {
+		t.Fatalf("sites = %+v, block %q", got, concurrencyBlock(got))
 	}
 }
 
@@ -325,9 +385,11 @@ func TestCutFileSplitsOneHugeHunk(t *testing.T) {
 		lines = append(lines, l)
 		b.WriteString(l + "\n")
 	}
+	// the file header is 50 bytes, a sub-hunk keeps 80 for its header, so
+	// 49152 - 50 - 80 = 49022 bytes hold 1225 lines of 40: 1225, 1225 and 550.
 	pieces := cutFile(parseFileDiff(b.String()), 48<<10)
-	if len(pieces) < 3 {
-		t.Fatalf("%d pieces, want at least 3", len(pieces))
+	if len(pieces) != 3 || pieces[0].Added != 1225 || pieces[1].Added != 1225 || pieces[2].Added != 550 {
+		t.Fatalf("%d pieces: %+v", len(pieces), pieces)
 	}
 	before := 0
 	var joined []string
@@ -425,5 +487,48 @@ func TestFileListNamesAPiece(t *testing.T) {
 	got := fileList([][]fileDiff{{{Path: "big.go", Piece: 2, Pieces: 3, Added: 5}}}, "part")
 	if want := "big.go piece 2 of 3 +5 -0 (part 1)"; got != want {
 		t.Fatalf("list = %q, want %q", got, want)
+	}
+}
+
+// A hunk header the cutter cannot read is cut like a file without hunks:
+// within the limit.
+func TestCutFileCutsAHunkItCannotRead(t *testing.T) {
+	f := parseFileDiff("diff --git a/n.go b/n.go\n--- a/n.go\n+++ b/n.go\n@@ garbled @@\n+" + strings.Repeat("x", 150<<10) + "\n")
+	pieces := cutFile(f, 48<<10)
+	if len(pieces) < 4 {
+		t.Fatalf("%d pieces, want at least 4", len(pieces))
+	}
+	for i, p := range pieces {
+		if len(p.Text) > 48<<10 {
+			t.Fatalf("piece %d is %d bytes", i+1, len(p.Text))
+		}
+	}
+}
+
+// A cut line is one line: the line after it keeps its true number. Old
+// line 1 is the context, the giant line is new line 2, "c2" is old line 2
+// and new line 3; the last sub-hunk holds the giant line's last fragment
+// and c2, and its header is -2,1 +2,2.
+func TestCutFileNumbersAfterAGiantLine(t *testing.T) {
+	f := parseFileDiff("diff --git a/n.go b/n.go\n--- a/n.go\n+++ b/n.go\n@@ -1,2 +1,3 @@\n c1\n+" + strings.Repeat("€", 100<<10/3) + "\n c2\n")
+	pieces := cutFile(f, 48<<10)
+	last := pieces[len(pieces)-1].Text
+	hunk := last[strings.LastIndex(last, "\n@@ ")+1:]
+	if !strings.HasPrefix(hunk, "@@ -2,1 +2,2 @@\n+") || !strings.HasSuffix(hunk, "\n c2\n") {
+		t.Fatalf("last hunk = %.40q ... %q", hunk, hunk[len(hunk)-8:])
+	}
+}
+
+func TestFileListBoundsTheDirectoryTail(t *testing.T) {
+	var files []fileDiff
+	for i := range 1000 {
+		files = append(files, fileDiff{Path: fmt.Sprintf("d%03d/f.go", i), Added: 1})
+	}
+	list := fileList([][]fileDiff{files}, "part")
+	lines := strings.Split(list, "\n")
+	// 200 file lines, 50 directory lines, one closing line: files 201 to 1000
+	// are 800 directories, 750 of them past the bound.
+	if len(lines) != 251 || lines[249] != "d249/ 1 file +1 -0 (part 1)" || lines[250] != "and 750 more directories with 750 files" {
+		t.Fatalf("%d lines, last %q", len(lines), lines[len(lines)-1])
 	}
 }
