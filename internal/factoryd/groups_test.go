@@ -3,9 +3,12 @@ package factoryd
 import (
 	"context"
 	"reflect"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -26,11 +29,12 @@ func TestGroupOf(t *testing.T) {
 	}
 }
 
-// The open groups on main: p1 (three children, two merged, the merge
-// events' earliest 09:00 although c3 finished at 09:05) and p5 (a merge
-// commit and no event, so its child's finish) in sf/r, p4 (merged by a
-// person: an event and no merge commit) in sf/q. p2 has no merged child,
-// p3 is closed, d1 is a direct card.
+// The open groups on main: p6 (its merge the day before p1's, so the
+// plan ids' order is not the groups'), p1 (three children, two merged,
+// the merge events' earliest 09:00 although c3 finished at 09:05) and p5
+// (a merge commit and no event, so its child's finish) in sf/r, p4
+// (merged by a person: an event and no merge commit) in sf/q. p2 has no
+// merged child, p3 is closed, d1 is a direct card.
 func TestOpenGroups(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_groups"))
@@ -52,14 +56,17 @@ func TestOpenGroups(t *testing.T) {
 			('c6', 1, 0, 'merged', 'sf/q', 'agent', 'plan', 'p4', 'direct', 'one', 41, '', '2026-10-03T12:05:00Z'),
 			('d1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'direct', NULL, 9, 'mno', '2026-10-01T06:00:00Z'),
 			('p5', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 5, '', '2026-09-30T00:00:00Z'),
-			('c7', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'p5', 'direct', 'one', 51, 'ghi', '2026-10-02T00:00:00Z')`,
+			('c7', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'p5', 'direct', 'one', 51, 'ghi', '2026-10-02T00:00:00Z'),
+			('p6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 6, '', '2026-09-29T00:00:00Z'),
+			('c8', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'pqr', '2026-09-30T18:05:00Z')`,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
 			('2026-10-01T10:00:00Z', 'sf/r', 'c1', 11, 'pull_request_merged', 'factory-merge', 'factoryd'),
 			('2026-10-01T09:00:00Z', 'sf/r', 'c3', 13, 'pull_request_merged', 'factory-merge', 'factoryd'),
 			('2026-10-01T07:00:00Z', 'sf/r', 'c5', 31, 'pull_request_merged', 'factory-merge', 'factoryd'),
 			('2026-10-02T08:00:00Z', 'sf/r', 'p3', 3, 'plan_closed', 'factoryd', 'factoryd'),
 			('2026-10-03T12:00:00Z', 'sf/q', 'c6', 41, 'pull_request_merged', 'sebastian', 'webhook'),
-			('2026-10-01T06:00:00Z', 'sf/r', 'd1', 9, 'pull_request_merged', 'factory-merge', 'factoryd')`,
+			('2026-10-01T06:00:00Z', 'sf/r', 'd1', 9, 'pull_request_merged', 'factory-merge', 'factoryd'),
+			('2026-09-30T18:00:00Z', 'sf/r', 'c8', 61, 'pull_request_merged', 'factory-merge', 'factoryd')`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)
@@ -76,6 +83,8 @@ func TestOpenGroups(t *testing.T) {
 	}
 	want := map[string][]Group{
 		"sf/r": {
+			{Plan: "p6", Issue: 6, Repository: "sf/r", FirstMerge: time.Date(2026, 9, 30, 18, 0, 0, 0, time.UTC),
+				Children: map[string]int{"merged": 1}},
 			{Plan: "p1", Issue: 1, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC),
 				Children: map[string]int{"done": 1, "queued": 1, "merged": 1}},
 			{Plan: "p5", Issue: 5, Repository: "sf/r", FirstMerge: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC),
@@ -88,5 +97,102 @@ func TestOpenGroups(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OpenGroups =\n%+v\nwant\n%+v", got, want)
+	}
+	for plan, want := range map[string]bool{"p3": true, "p1": false} {
+		if closed, err := s.PlanClosed(ctx, plan); err != nil || closed != want {
+			t.Errorf("PlanClosed(%s) = %v, %v; want %v", plan, closed, err, want)
+		}
+	}
+}
+
+const planClosedBackfill = "factoryd/20261104100000_plan_closed_backfill.sql"
+
+// The backfill closes, quietly, each plan without criteria whose cards
+// are all done or closed: #509, #558, #852 (its failed card was retried
+// and let go of its key) and #1305 (its newest revision dropped the
+// criteria). #1293 keeps its own close. Open stay #1300 (a queued card),
+// #1301 (a failed card), #1302 (a merged card waiting for its chain),
+// #1303 (no card yet), #1304 (its newest revision holds criteria) and the
+// direct card d-1 with its delegated card done. A second run adds nothing.
+func TestPlanClosedBackfill(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_closed_backfill"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, parent_task, track, plan_key, issue_number, finished_at) VALUES
+			('t-509', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 509, now()),
+			('c-509a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-509', 'direct', 'a', 600, now()),
+			('c-509b', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-509', 'direct', 'b', 601, now()),
+			('t-558', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 558, now()),
+			('c-558a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-558', 'direct', 'a', 602, now()),
+			('c-558b', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 't-558', 'direct', 'b', 603, now()),
+			('t-852', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 852, now()),
+			('c-852old', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 't-852', 'direct', NULL, 604, now()),
+			('c-852a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-852', 'direct', 'a', 605, now()),
+			('t-1293', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1293, now()),
+			('c-1293a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1293', 'direct', 'a', 1294, now()),
+			('t-1300', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1300, now()),
+			('c-1300a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1300', 'direct', 'a', 1310, now()),
+			('c-1300b', 1, 0, 'queued', 'sf/r', 'agent', 'plan', 't-1300', 'direct', 'b', 1311, NULL),
+			('t-1301', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1301, now()),
+			('c-1301a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1301', 'direct', 'a', 1312, now()),
+			('c-1301b', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 't-1301', 'direct', 'b', 1313, now()),
+			('t-1302', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1302, now()),
+			('c-1302a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1302', 'direct', 'a', 1314, now()),
+			('c-1302b', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 't-1302', 'direct', 'b', 1315, now()),
+			('t-1303', 1, 0, 'waiting-human', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1303, NULL),
+			('t-1304', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1304, now()),
+			('c-1304a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1304', 'direct', 'a', 1316, now()),
+			('t-1305', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1305, now()),
+			('c-1305a', 1, 0, 'done', 'sf/r', 'agent', 'plan', 't-1305', 'direct', 'a', 1317, now()),
+			('d-1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'direct', NULL, 1320, now()),
+			('g-1', 1, 0, 'done', 'sf/r', 'agent', 'delegate', 'd-1', 'direct', NULL, 1321, now())`,
+		`INSERT INTO plan_revisions (task_id, revision, plan, sha256) VALUES
+			('t-509', 1, '{"summary": "links"}', 's1'),
+			('t-1304', 1, '{"summary": "x"}', 's2'),
+			('t-1304', 2, '{"summary": "x", "criteria": [{"id": "c1", "kind": "test", "test": "go test ./..."}]}', 's3'),
+			('t-1305', 1, '{"summary": "y", "criteria": [{"id": "c1", "kind": "test", "test": "go test ./..."}]}', 's4'),
+			('t-1305', 2, '{"summary": "y"}', 's5')`,
+		`INSERT INTO events (repository, task_id, issue_number, kind, actor, via, detail) VALUES
+			('sf/r', 't-1293', 1293, 'plan_closed', 'factoryd', 'factoryd', '{"criteria": 3}')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	want := []string{
+		"t-1293 1293 factoryd factoryd {\"criteria\": 3}",
+		"t-1305 1305 factoryd factoryd {\"backfill\": true, \"criteria\": 0}",
+		"t-509 509 factoryd factoryd {\"backfill\": true, \"criteria\": 0}",
+		"t-558 558 factoryd factoryd {\"backfill\": true, \"criteria\": 0}",
+		"t-852 852 factoryd factoryd {\"backfill\": true, \"criteria\": 0}",
+	}
+	for run := 1; run <= 2; run++ {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE name = $1`, planClosedBackfill); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Migrate(ctx, s.db); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || issue_number || ' ' || actor || ' ' || via || ' ' || detail::text
+			FROM events WHERE kind = 'plan_closed' ORDER BY task_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for rows.Next() {
+			var r string
+			if err := rows.Scan(&r); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, r)
+		}
+		rows.Close()
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: plan_closed rows\n%s\nwant\n%s", run, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
 	}
 }

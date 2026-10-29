@@ -28,6 +28,12 @@ type Group struct {
 	Children map[string]int
 }
 
+func (s *PGStore) PlanClosed(ctx context.Context, plan string) (bool, error) {
+	var closed bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE task_id = $1 AND kind = 'plan_closed')`, plan).Scan(&closed)
+	return closed, err
+}
+
 func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH merged AS (
 			SELECT c.parent_task AS plan,

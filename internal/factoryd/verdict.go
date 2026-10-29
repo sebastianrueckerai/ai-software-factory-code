@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -615,16 +614,15 @@ type CriteriaSpec struct {
 	Task     string `json:"task"`
 }
 
-// planClosed says the plan task's timeline already holds the plan's close.
+// planClosed says plan id has its plan_closed row, the fact the open
+// groups read. A failed read counts as closed until the next pass.
 func (r *Runner) planClosed(ctx context.Context, id string) bool {
-	if r.timeline == nil || r.timeline.Objects == nil {
-		return false
-	}
-	b, err := r.timeline.Objects.Get(ctx, "sessions/"+id+"/timeline.jsonl")
+	closed, err := r.store.PlanClosed(ctx, id)
 	if err != nil {
-		return false
+		log.Printf("plan %s: the close row: %v", id, err)
+		return true
 	}
-	return bytes.Contains(b, []byte(`"event":"`+EventPlanClosed+`"`))
+	return closed
 }
 
 // planCloseCheck is the plan-close rule (piece 8): a plan closes when
@@ -688,7 +686,8 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 }
 
 // closePlan says why plan t closed on its issue and records plan_closed
-// with the plan's count of criteria.
+// with the plan's count of criteria. A close whose row failed runs again
+// on the next pass; the issue still hears of it once.
 func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int, comment string) {
 	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
 	r.timeline.recordEvent(ctx, t.ID, EventPlanClosed, map[string]any{"criteria": criteria})

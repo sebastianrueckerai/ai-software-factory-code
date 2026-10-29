@@ -106,7 +106,7 @@ type fakeStore struct {
 	routineStates map[string]RoutineState
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
-	closed        map[string]bool // the plans with a plan_closed event
+	closed        map[string]bool // the plans with a plan_closed event row
 }
 
 func (s *fakeStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -179,7 +179,7 @@ func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (b
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},
-		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}}
+		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]bool{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -281,6 +281,10 @@ func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) 
 		}
 	}
 	return out, nil
+}
+
+func (s *fakeStore) PlanClosed(ctx context.Context, plan string) (bool, error) {
+	return s.closed[plan], nil
 }
 
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
@@ -688,6 +692,9 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 // doc_written rows are read back.
 func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	s.events = append(s.events, e)
+	if e.Kind == EventPlanClosed {
+		s.closed[e.TaskID] = true
+	}
 	return int64(len(s.events)), nil
 }
 

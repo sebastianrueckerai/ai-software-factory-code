@@ -282,7 +282,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	objs := &fakeObjectStore{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs}}
+	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}}
 	r.CriteriaPass(ctx)
 	body, err := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
 	if err != nil {
@@ -376,9 +376,59 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {state: "open"}}}
 	objs := &fakeObjectStore{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs},
+	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
 		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	return r, s, objs, fj
+}
+
+// mergeCard gives card id of s a merge commit and its finish.
+func mergeCard(s *fakeStore, id string) {
+	finished := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	card := s.tasks[id]
+	card.MergeCommit, card.FinishedAt = "abc", &finished
+	s.tasks[id] = card
+}
+
+// closeRows counts t-plan's plan_closed event rows.
+func closeRows(s *fakeStore) int {
+	n := 0
+	for _, e := range s.events {
+		if e.TaskID == "t-plan" && e.Kind == EventPlanClosed {
+			n++
+		}
+	}
+	return n
+}
+
+// openPlans are the plans of s's open groups, every repository's.
+func openPlans(t *testing.T, s *fakeStore) []string {
+	t.Helper()
+	groups, err := s.OpenGroups(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, open := range groups {
+		for _, g := range open {
+			out = append(out, g.Plan)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// flakyRecorder fails its first fails rows, then records them in s.
+type flakyRecorder struct {
+	fails int
+	s     *fakeStore
+}
+
+func (f *flakyRecorder) Record(ctx context.Context, e Event) (int64, error) {
+	if f.fails > 0 {
+		f.fails--
+		return 0, errors.New("events table down")
+	}
+	return f.s.Record(ctx, e)
 }
 
 // planCloses counts the plan_closed events of t-plan's timeline that
@@ -434,20 +484,41 @@ func TestPlanCloseCheckKeepsAPlanWithoutCriteriaOpen(t *testing.T) {
 func TestCriteriaPassVisitsOpenGroups(t *testing.T) {
 	ctx := context.Background()
 	r, s, objs, fj := planWithoutCriteria(t, "done")
-	finished := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	card := s.tasks["card-1"]
-	card.MergeCommit, card.FinishedAt = "abc", &finished
-	s.tasks["card-1"] = card
-	groups, err := s.OpenGroups(ctx)
-	if err != nil {
-		t.Fatal(err)
+	mergeCard(s, "card-1")
+	if got := openPlans(t, s); !slices.Equal(got, []string{"t-plan"}) {
+		t.Fatalf("open groups = %v, want t-plan", got)
 	}
-	if g := groups["linkshort/linkshort"]; len(g) != 1 || g[0].Plan != "t-plan" {
-		t.Fatalf("open groups = %+v, want t-plan's", groups)
+	want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}
+	for pass := 1; pass <= 2; pass++ {
+		r.CriteriaPass(ctx)
+		if n, rows := planCloses(t, objs), closeRows(s); n != 1 || rows != 1 {
+			t.Fatalf("pass %d: plan_closed on the timeline %d times, as rows %d times; want 1 and 1", pass, n, rows)
+		}
+		if got := openPlans(t, s); len(got) != 0 {
+			t.Errorf("pass %d: open groups = %v, want none", pass, got)
+		}
+		if got := commentBodies(fj); !slices.Equal(got, want) {
+			t.Errorf("pass %d: comments = %q, want %q", pass, got, want)
+		}
 	}
+}
+
+// A close whose events row failed leaves the group open; the next pass
+// writes the row, and the issue hears of the close once.
+func TestCriteriaPassRetriesALostCloseRow(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, fj := planWithoutCriteria(t, "done")
+	mergeCard(s, "card-1")
+	r.timeline.Events = &flakyRecorder{fails: 1, s: s}
 	r.CriteriaPass(ctx)
-	if n := planCloses(t, objs); n != 1 {
-		t.Fatalf("plan_closed with criteria 0 recorded %d times, want 1", n)
+	if n, rows, open := planCloses(t, objs), closeRows(s), openPlans(t, s); n != 1 || rows != 0 || !slices.Equal(open, []string{"t-plan"}) {
+		t.Fatalf("the failed row: plan_closed on the timeline %d times, rows %d, open groups %v; want 1, 0, t-plan", n, rows, open)
+	}
+	for pass := 2; pass <= 3; pass++ {
+		r.CriteriaPass(ctx)
+		if rows, open := closeRows(s), openPlans(t, s); rows != 1 || len(open) != 0 {
+			t.Fatalf("pass %d: rows %d, open groups %v; want 1 and none", pass, rows, open)
+		}
 	}
 	if want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
 		t.Errorf("comments = %q, want %q", commentBodies(fj), want)

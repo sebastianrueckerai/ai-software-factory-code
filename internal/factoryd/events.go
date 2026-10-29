@@ -48,9 +48,11 @@ const (
 	// plan's criterion (the spec-intake concept, pieces 7 and 8): detail
 	// {"approval", "criteria", "verb"} or {"criterion", "verdict"}.
 	EventCriterionDecided = "criterion_decided"
-	// EventPlanClosed records a plan's close: every criterion met or
-	// waived (the spec-intake concept, piece 8): detail {"criteria"}. A
-	// quiet record, no poke.
+	// EventPlanClosed records a plan's close (the spec-intake concept,
+	// piece 8): every criterion met or waived, or, for a plan without
+	// criteria, every card done or closed. Detail {"criteria"}, the plan's
+	// count, with "backfill": true on a close the schema wrote for a plan
+	// that ended before the second rule. A quiet record, no poke.
 	EventPlanClosed = "plan_closed"
 )
 
