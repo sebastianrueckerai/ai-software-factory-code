@@ -124,11 +124,14 @@ type Supervisor struct {
 	traces      *traceDetectors
 	findings    []string
 	tripped     *Trip
-	// messaged: a supervisor's message was delivered and no file written
-	// since; the next detector trip is stuck (the stuck rule).
-	// messagedOnce: a message was delivered in this session.
+	// messaged: a supervisor's message was delivered (at messagedAt) and
+	// no file written since; the next detector trip is stuck (the stuck
+	// rule). messagedOnce: a message was delivered in this session.
 	messaged, messagedOnce bool
 	messagedAt             time.Time
+	// answeredAt is the supervisor's last answer (a message, a continue, a
+	// climb): it covers what the pod did before it
+	answeredAt time.Time
 	// nudges are the nudges delivered since the last new file content;
 	// seen is the content the session wrote, by newContent's key
 	nudges []Nudge
@@ -193,10 +196,9 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	// a file written through a shell shows only as a changed diff
 	write := ev.Kind == harness.EventFileChange || s.traces.diffMoved(ev)
 	// the pod runs on during a check-in and its lines wait in the stream:
-	// what it did before the message reached it, by its own clock, counts
-	// for no detector, but a write is progress whenever it was made
-	stale := !s.messagedAt.IsZero() && !ev.Time.IsZero() && ev.Time.Before(s.messagedAt)
-	if stale && !write {
+	// what it did before the answer, by its own clock, counts for no
+	// detector, but a write is progress whenever it was made
+	if podBefore(ev, s.answeredAt) && !write {
 		return s.limits(at)
 	}
 	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
@@ -212,7 +214,7 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	case write:
 		s.sinceChange = 0
 		s.noWriteFrom = at
-		if !stale {
+		if !podBefore(ev, s.messagedAt) {
 			s.messaged = false // the stuck rule wants a write after the delivery
 		}
 		if s.newContent(ev) {
@@ -385,8 +387,15 @@ func (s *Supervisor) nudgeUndelivered(n Nudge, err error) *Trip {
 	return s.trip(t)
 }
 
-// Resume clears the trip after the supervisor answered continue and resets
-// the detector that tripped; the time the supervisor took is not silence.
+// podBefore: the pod stamped ev before t (neither zero).
+func podBefore(ev harness.Event, t time.Time) bool {
+	return !t.IsZero() && !ev.Time.IsZero() && ev.Time.Before(t)
+}
+
+// Resume clears the trip after the supervisor answered (a continue, a
+// climb, a message) and resets the detector that tripped; the time the
+// supervisor took is not silence, and the calls the pod made before the
+// answer count for no detector.
 func (s *Supervisor) Resume(now time.Time) {
 	switch s.tripped.Kind {
 	case TripRepetition:
@@ -396,7 +405,7 @@ func (s *Supervisor) Resume(now time.Time) {
 	default:
 		s.traces.reset(s.tripped)
 	}
-	s.lastSeen = now
+	s.lastSeen, s.answeredAt = now, now
 	s.tripped = nil
 }
 

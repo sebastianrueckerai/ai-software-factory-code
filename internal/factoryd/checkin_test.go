@@ -712,26 +712,43 @@ func TestCheckinStatementMoments(t *testing.T) {
 	}
 }
 
-// A stuck trip's statement shows the stuck fact after the delivered
-// guidance, and what a handover does on it: the check-in decides with both.
+// A stuck trip's statement names the stuck rule that held after the
+// delivered guidance, in the factory's words only, and what a handover
+// does on it: the work moves to the stronger model off the top rung, and
+// on it the next session starts from the note. The check-in decides with
+// both.
 func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
-	const detail = "60 tool calls and commands without a file change"
-	const stuck = "stuck after the supervisor's message: repetition: " + detail
+	const detail = `tool read called 3 times with the same arguments {"filePath":"/w/a.go"} after 2 nudges`
+	const stuck = "stuck after the supervisor's message: same_call: " + detail
 	const climb = "- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n"
+	const top = "- on this trip a handover ends the session, and the next session starts from your note.\n"
 	statement := func(trip TripReport, messages ...string) string {
 		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-4", Trip: &trip, Messages: messages},
 			[]byte("the tail"), 7, 1.5, 2000)
 	}
-	got := statement(TripReport{Detector: TripRepetition, Detail: detail, Stuck: stuck}, "stop reading")
-	if want := "Guidance delivered to the agent this session:\n- stop reading\n- stuck rule: " + stuck + "\n" + climb; !strings.Contains(got, want) {
+	got := statement(TripReport{Detector: TripSameCall, Detail: detail, Stuck: stuck, Climbs: true}, "stop reading")
+	if want := "Guidance delivered to the agent this session:\n- stop reading\n" +
+		"Stuck rule: after the message, the same_call detector tripped with no file written since.\n" + climb; !strings.Contains(got, want) {
 		t.Fatalf("stuck statement lacks %q:\n%s", want, got)
 	}
-	if got := statement(TripReport{Detector: TripRepetition, Detail: detail}, "stop reading"); strings.Contains(got, "stuck rule:") || strings.Contains(got, climb) {
+	if n := strings.Count(got, detail); n != 1 {
+		t.Fatalf("the trip's detail appears %d times, want once, in the opening line:\n%s", n, got)
+	}
+	got = statement(TripReport{Detector: TripSameCall, Detail: detail, Stuck: stuck}, "stop reading")
+	if want := "Stuck rule: after the message, the same_call detector tripped with no file written since.\n" + top; !strings.Contains(got, want) || strings.Contains(got, climb) {
+		t.Fatalf("stuck statement on the top rung lacks %q or names the climb:\n%s", want, got)
+	}
+	got = statement(TripReport{Detector: TripChurn, Detail: "4 writes to the same file in 6 minutes", Stuck: "stuck after the supervisor's message: churn: 4 writes to the same file in 6 minutes", Climbs: true}, "stop reading")
+	if want := "- stop reading\nStuck rule: after a message, the churn detector tripped.\n" + climb; !strings.Contains(got, want) {
+		t.Fatalf("churn statement lacks %q:\n%s", want, got)
+	}
+	if got := statement(TripReport{Detector: TripRepetition, Detail: "60 tool calls and commands without a file change", Climbs: true}, "stop reading"); strings.Contains(got, "Stuck rule:") ||
+		strings.Contains(got, climb) || strings.Contains(got, top) {
 		t.Fatalf("statement without the stuck fact names it:\n%s", got)
 	}
-	if got, want := statement(TripReport{Detector: TripRepetition, Detail: detail, Stuck: stuck}),
-		"Guidance delivered to the agent this session:\n- stuck rule: "+stuck+"\n"+climb; !strings.Contains(got, want) {
-		t.Fatalf("stuck statement without messages lacks %q:\n%s", want, got)
+	if got := statement(TripReport{Detector: TripSameCall, Detail: detail, Stuck: stuck, Climbs: true}); strings.Contains(got, "Guidance delivered") ||
+		!strings.Contains(got, "Stuck rule: after the message, the same_call detector tripped with no file written since.\n"+climb) {
+		t.Fatalf("stuck statement without messages lists guidance or lacks the stuck rule:\n%s", got)
 	}
 }
 

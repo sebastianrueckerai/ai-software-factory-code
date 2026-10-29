@@ -1191,6 +1191,48 @@ func TestEventsBeforeTheMessageDoNotCount(t *testing.T) {
 	}
 }
 
+// The judge's continue answers for what the pod did during its
+// conversation: calls stamped before the answer count for nothing, the
+// count after it starts from zero, and a write stamped after the message
+// takes the message whenever it arrives.
+func TestEventsBeforeTheAnswerDoNotCount(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	read := func(m float64, path string) harness.Event { return podAt(m, readEvent(path)) }
+	stuck := "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change"
+	answered := func() *Supervisor {
+		s, _ := NewSupervisor(cfg, minute(0), minute(0))
+		s.Event(read(1, "a"), minute(1))
+		s.Event(read(1, "b"), minute(1))
+		s.Messaged(minute(2))
+		s.Event(read(3, "c"), minute(3))
+		if trip := s.Event(read(3, "d"), minute(3)); trip == nil || trip.Stuck != stuck {
+			t.Fatalf("trip after the message = %+v, want repetition, stuck", trip)
+		}
+		s.Resume(minute(5))
+		return s
+	}
+
+	s := answered()
+	for i := range 3 {
+		if trip := s.Event(read(4, fmt.Sprint("queued", i)), minute(5.1)); trip != nil {
+			t.Fatalf("read %d made during the conversation tripped: %+v", i+1, trip)
+		}
+	}
+	if trip := s.Event(read(6, "e"), minute(6)); trip != nil || s.sinceChange != 1 {
+		t.Fatalf("first read after the answer: trip %+v, count %d; want none and 1", trip, s.sinceChange)
+	}
+	if trip := s.Event(read(6, "f"), minute(6)); trip == nil || trip.Kind != TripRepetition || trip.Stuck != stuck {
+		t.Fatalf("second read after the answer = %+v, want repetition, stuck", trip)
+	}
+
+	s2 := answered()
+	s2.Event(podAt(4, fileEvent("a.go", "h1")), minute(5.1))
+	s2.Event(read(6, "e"), minute(6))
+	if trip := s2.Event(read(6, "f"), minute(6)); trip == nil || trip.Kind != TripRepetition || trip.Stuck != "" {
+		t.Fatalf("trip after a write made during the conversation = %+v, want repetition, not stuck", trip)
+	}
+}
+
 // podAt is ev as the pod stamped it, at minute m.
 func podAt(m float64, ev harness.Event) harness.Event {
 	ev.Time = minute(m)

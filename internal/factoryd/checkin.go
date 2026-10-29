@@ -204,14 +204,23 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString("- message: guidance carries the exact instruction the agent should take next.\n")
 		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
 		b.WriteString("- human: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
-		if len(ask.Messages) > 0 || ask.Trip.Stuck != "" {
+		if len(ask.Messages) > 0 {
 			b.WriteString("Guidance delivered to the agent this session:\n")
 			for _, m := range ask.Messages {
 				fmt.Fprintf(&b, "- %s\n", m)
 			}
-			if ask.Trip.Stuck != "" {
-				fmt.Fprintf(&b, "- stuck rule: %s\n", ask.Trip.Stuck)
+		}
+		if ask.Trip.Stuck != "" {
+			// the kind only: the trip's detail can quote the agent's call
+			if k := ask.Trip.Detector; k == TripFlipFlop || k == TripChurn {
+				fmt.Fprintf(&b, "Stuck rule: after a message, the %s detector tripped.\n", k)
+			} else {
+				fmt.Fprintf(&b, "Stuck rule: after the message, the %s detector tripped with no file written since.\n", k)
+			}
+			if ask.Trip.Climbs {
 				b.WriteString("- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n")
+			} else {
+				b.WriteString("- on this trip a handover ends the session, and the next session starts from your note.\n")
 			}
 		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")

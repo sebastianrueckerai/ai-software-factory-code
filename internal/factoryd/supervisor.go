@@ -215,6 +215,9 @@ type TripReport struct {
 	Detector TripKind `json:"detector"`
 	Detail   string   `json:"detail"`
 	Stuck    string   `json:"stuck,omitempty"`
+	// Climbs: a handover on a stuck trip moves the work to the stronger
+	// model (the session is not on it yet)
+	Climbs bool `json:"climbs,omitempty"`
 }
 
 // SupervisorModel is factoryd's model client: every call it makes (the

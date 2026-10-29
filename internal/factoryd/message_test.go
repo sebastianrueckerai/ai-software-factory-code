@@ -370,7 +370,9 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 		t.Fatalf("check-in conversations = %d, want 2: the stuck trip asks too", chat.calls)
 	}
 	stuck := "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change"
-	if !strings.Contains(chat.gots[1].Input, "Guidance delivered to the agent this session:\n- use the store's New\n- stuck rule: "+stuck+"\n") {
+	if !strings.Contains(chat.gots[1].Input, "Guidance delivered to the agent this session:\n- use the store's New\n"+
+		"Stuck rule: after the message, the repetition detector tripped with no file written since.\n"+
+		"- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n") {
 		t.Fatalf("second statement misses the guidance and the stuck line:\n%s", chat.gots[1].Input)
 	}
 	if len(res.Findings) == 0 || res.Findings[0] != stuck || !slices.Contains(res.Findings, "supervisor guidance: "+note) {
@@ -467,6 +469,56 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 	}
 }
 
+// The climb is the judge's answer and covers what the pod did during its
+// conversation, as the message does: the 24 commands stamped between the
+// message and the climb wait in the stream and count for nothing after it.
+// Of the 24 stamped after the climb, the 24th (ls 95) trips, stuck (no
+// write since the message); on the stronger rung the judge's handover
+// stops the session, and the snapshot's findings are ls 76 to ls 95 and
+// the stuck line.
+func TestCommandsQueuedDuringTheClimbDoNotCount(t *testing.T) {
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"handover","handover":"switch to the edit"}`},
+		{Text: `{"decision":"handover","handover":"the stronger model lists the tree too"}`},
+	}}
+	runner.checkin = chat
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	during := time.Now().Add(time.Second)
+	chat.onCall = func() {
+		if chat.calls != 2 {
+			return
+		}
+		// the message came before this call: the commands stamped at during
+		// follow it, and the climb after this call follows them
+		if !time.Now().Before(during) {
+			t.Error("the run reached the stuck trip's conversation only after the stamp meant to follow the message")
+		}
+		time.Sleep(time.Until(during) + 10*time.Millisecond)
+	}
+	logs := commands(0, 24) + commands(24, 24) + commandsAt(48, 24, during) + commandsAt(72, 24, during.Add(time.Hour)) +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
+	if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || res.Model != "factory/big" || chat.calls != 3 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want retry_stronger on the stronger model after 3", res, err, chat.calls)
+	}
+	stuck := "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change"
+	if f := store.sessions[res.SessionID].Findings; len(f) != 21 || f[0] != "ran `ls 76` (exit 0)" || f[19] != "ran `ls 95` (exit 0)" || f[20] != stuck {
+		t.Fatalf("snapshot findings = %q, want ls 76 to ls 95 and the stuck line: the trip at the 24th command after the climb", f)
+	}
+	climb := "- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n"
+	top := "- on this trip a handover ends the session, and the next session starts from your note.\n"
+	if !strings.Contains(chat.gots[1].Input, climb) || strings.Contains(chat.gots[1].Input, top) {
+		t.Fatalf("the start rung's stuck statement = %s, want the climb's handover line", chat.gots[1].Input)
+	}
+	if !strings.Contains(chat.gots[2].Input, top) || strings.Contains(chat.gots[2].Input, climb) {
+		t.Fatalf("the stronger rung's stuck statement = %s, want the top rung's handover line", chat.gots[2].Input)
+	}
+}
+
 // Only a stuck trip's handover climbs: the judge's human answer on a stuck
 // trip asks the human, on the start rung too, with no switch of model.
 func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
@@ -497,6 +549,69 @@ func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
 	}
 	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); strings.Contains(tl, `"step":"model_switched"`) {
 		t.Fatalf("timeline = %s, want no model_switched", tl)
+	}
+}
+
+// A stuck trip whose judge gives no answer (its provider refuses the
+// call, or no model is under the check-in's purpose) takes the stuck
+// rule's climb with the stuck line as its reason: in place on the start
+// rung, else a stop on retry_stronger whose comment says why.
+func TestStuckTripWithoutAJudgedAnswerClimbs(t *testing.T) {
+	stuck := "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change"
+	logs := func(end string) string { return commands(0, 24) + commands(24, 24) + end }
+	for _, unjudged := range []string{"refused", "no alias"} {
+		rig := func(t *testing.T) (*Runner, *forgejoHub, *fakeWorkerEndpoint, *scriptedChat) {
+			runner, hub, _, worker, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"message","guidance":"use the store's New"}`})
+			if unjudged == "no alias" {
+				noAlias := testPolicyVersion()
+				cl := noAlias.Document.Classes["coder"]
+				cl.ReviewModel = ""
+				noAlias.Document.Classes["coder"] = cl
+				inForce := runner.cfg.Policy
+				var gone atomic.Bool
+				runner.cfg.Policy = func() policy.Version {
+					if gone.Load() {
+						return noAlias
+					}
+					return inForce()
+				}
+				chat.onCall = func() { gone.Store(true) }
+			}
+			return runner, hub, worker, chat
+		}
+		calls := map[string]int{"refused": 2, "no alias": 1}[unjudged]
+
+		t.Run(unjudged+", climb", func(t *testing.T) {
+			runner, _, worker, chat := rig(t)
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil,
+				logs(pushedLine("c1")+"\n"+resultLine(true, "pushed")))
+			if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" || res.Model != "factory/big" || chat.calls != calls {
+				t.Fatalf("result = (%+v, %v) after %d calls, want c1 pushed on the stronger model after %d", res, err, chat.calls, calls)
+			}
+			worker.mu.Lock()
+			texts := slices.Clone(worker.texts)
+			worker.mu.Unlock()
+			want := []string{"POST /brief ", "POST /message use the store's New",
+				"POST /message factoryd: this session continues on the stronger model, big: " + stuck + ". Carry on from where you are."}
+			if !slices.Equal(texts, want) {
+				t.Fatalf("worker got %q, want %q", texts, want)
+			}
+		})
+
+		t.Run(unjudged+", stop", func(t *testing.T) {
+			runner, hub, _, chat := rig(t)
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				logs(pushedLine("c-wip")+"\n"+resultLine(false, "stopped")))
+			if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || res.Commit != "c-wip" ||
+				res.Summary != "check-in: retry_stronger after repetition: 24 tool calls and commands without a file change" ||
+				res.CheckIn != nil || len(res.Findings) == 0 || res.Findings[0] != stuck || chat.calls != calls {
+				t.Fatalf("result = (%+v, %v) after %d calls, want retry_stronger on the stuck line after %d", res, err, chat.calls, calls)
+			}
+			stopped := "The session stopped on repetition: " + stuck + ". The next session resumes on the stronger model from the work in progress."
+			if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") || !strings.Contains(hub.comments[1], stopped) {
+				t.Fatalf("comments = %q, want the message and the stop with %q", hub.comments, stopped)
+			}
+		})
 	}
 }
 
@@ -585,11 +700,11 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 	if strings.Contains(chat.gots[0].Input, "use the store's New") {
 		t.Fatal("the first conversation already saw the message")
 	}
-	if !strings.Contains(chat.gots[1].Input, "use the store's New") || strings.Contains(chat.gots[1].Input, "stuck rule:") {
+	if !strings.Contains(chat.gots[1].Input, "use the store's New") || strings.Contains(chat.gots[1].Input, "Stuck rule:") {
 		t.Fatalf("second statement = %q, want the first message carried and no stuck line after the write", chat.gots[1].Input)
 	}
 	want := "Guidance delivered to the agent this session:\n- use the store's New\n- call New once in the test's setup\n" +
-		"- stuck rule: stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change\n"
+		"Stuck rule: after the message, the repetition detector tripped with no file written since.\n"
 	if !strings.Contains(chat.gots[2].Input, want) {
 		t.Fatalf("third statement = %q, want both messages and the stuck line", chat.gots[2].Input)
 	}

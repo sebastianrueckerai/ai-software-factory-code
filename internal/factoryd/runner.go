@@ -1024,11 +1024,13 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	}
 	alias := r.callModel(t, policy.PurposeCheckin)
 	if alias == "" {
-		log.Printf("task %s: no model under the check-in's purpose: the session runs on over %s", t.ID, trip.Kind)
-		return Decision{Action: ActionContinue, Reason: "no model under the check-in's purpose"}, nil, false
+		d := unjudged(trip, "no model under the check-in's purpose")
+		log.Printf("task %s: no model under the check-in's purpose: %s over %s", t.ID, d.Action, trip.Kind)
+		return d, nil, false
 	}
+	climbs := r.cfg.Models.Stronger != "" && s.model != r.cfg.Models.Stronger
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
-		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck}, Messages: messages, Gates: s.lastGates}
+		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
@@ -1042,10 +1044,19 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	case CheckHandover:
 		if out.Handover == "" && len(out.Verdicts) == 0 {
 			// the refusal shape: the round runs as if no check-in existed
-			return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
+			return unjudged(trip, out.Reason), &out, false
 		}
 	}
 	return Decision{Action: ActionEscalate, Reason: cmp.Or(out.Handover, out.Reason)}, &out, true
+}
+
+// unjudged is a trip's decision when the check-in gives no answer: the
+// session runs on, but a stuck trip takes the stuck rule's climb.
+func unjudged(trip *Trip, reason string) Decision {
+	if trip.Stuck != "" {
+		return Decision{Action: ActionRetryStronger, Reason: trip.Stuck}
+	}
+	return Decision{Action: ActionContinue, Reason: reason}
 }
 
 // checkinBudget is what is left of the card's check-in share of its

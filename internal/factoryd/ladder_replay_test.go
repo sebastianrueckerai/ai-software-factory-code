@@ -506,13 +506,14 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 			res.Summary != "pushed branch factory/t1 at c1" {
 			t.Fatalf("the session's result = %+v, want the climbed session's own push", res)
 		}
-		if !strings.Contains(l.chat.gots[0].Input, "flip_flop") || strings.Contains(l.chat.gots[0].Input, "stuck rule:") {
+		if !strings.Contains(l.chat.gots[0].Input, "flip_flop") || strings.Contains(l.chat.gots[0].Input, "Stuck rule:") {
 			t.Fatalf("the first ask's statement = %.80s, want the flip_flop trip named, not stuck", l.chat.gots[0].Input)
 		}
 		// 15 file changes, the default churn: a.go three times, f0.go to f11.go
-		stuck := "stuck after the supervisor's message: churn: 15 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes"
-		if !strings.Contains(l.chat.gots[1].Input, "Guidance delivered to the agent this session:\n- "+correction+"\n- stuck rule: "+stuck+"\n") {
-			t.Fatalf("the second ask's statement = %s, want the correction and the stuck line", l.chat.gots[1].Input)
+		tripped := "the detector churn tripped (15 file changes since the diff against the base last grew (largest: 0 lines), and no command newly passes)"
+		if !strings.Contains(l.chat.gots[1].Input, tripped) || !strings.Contains(l.chat.gots[1].Input, "Guidance delivered to the agent this session:\n- "+correction+"\n"+
+			"Stuck rule: after a message, the churn detector tripped.\n- on this trip a handover moves the work to the stronger model, with your note as its next instruction.\n") {
+			t.Fatalf("the second ask's statement = %s, want the churn trip, the correction and the stuck rule", l.chat.gots[1].Input)
 		}
 		l.worker.mu.Lock()
 		defer l.worker.mu.Unlock()
