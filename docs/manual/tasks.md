@@ -34,9 +34,11 @@ as its capabilities, its row keeps its track and its process
 bound (the admission below). An issue that files no card is read again by
 every label event and every heal pass: a writer's `agent` or `plan` label,
 or the removal of `backlog`, files it then, its author still the poster.
-A label event on a card moves nothing, and only retries a queued card's
-workflow start that failed. A running direct card turns plan-track only
-through `BecomePlan` (signal `to_plan`, change id `direct-to-plan`), between
+A label event moves no card's track, and only retries a queued card's
+workflow start that failed. The sizing step moves a direct card that is not
+small to the plan track before its first session. A running direct card
+turns plan-track only through `BecomePlan` (signal `to_plan`, change id
+`direct-to-plan`), which the sizing step and the signal both use, between
 sessions: the card keeps its row and its issue, takes the plan class, and
 its issue gets the `plan` label in place of `agent`.
 An issue whose reproduction command breaks the sandbox rule files a
@@ -131,7 +133,22 @@ instead. Every run first calls `Reconcile`: a task already done or
 failed does nothing; a merged PR finishes it done; an interrupted
 completion (`closing`), a closed issue or a PR closed without merge
 finish it failed; an open PR is adopted, and the run goes straight to
-its checks and the review wait, with no new session. Then: up to
+its checks and the review wait, with no new session. Before the first
+session of a direct card that a person or the chat filed (source `webhook`
+or `api`) in a process with a plan track, and that carries no pull request,
+the sizing step runs (change id `sizing`, gate `sizing`, `SizeCard`). A
+filed `medium` or `large` runs no session: the card goes to the planner.
+Otherwise an `analyzer` report task of source `sizing` reads the issue and
+the repository and answers a size, a reason and the files. The filer's size
+is a floor, and none counts as small. The step is recorded first. Then
+the size is written, and the budget with it only if it still is the budget
+the filing gave and nothing has raised it since, so a retry completes the
+write and never undoes a raise. A `small` card runs the coder.
+A `medium` or `large` card turns plan-track through `BecomePlan`, and the
+planner starts from the files the sizing named. If `BecomePlan` refuses, the
+card runs as filed. If the sizing fails or
+answers no size, the card runs as filed, and the Time section shows the
+size and the reason, or why there is none. Then: up to
 `limits.sessions` (3) attempts, each `SetState running` then
 `RunSession`, the first on `MODEL` (default `factory/small`), or
 on `STRONGER_MODEL` when the task is a coding card (`session: code`) of
