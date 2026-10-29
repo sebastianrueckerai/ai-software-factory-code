@@ -149,7 +149,8 @@ type Review struct {
 	// Criteria are the plan's criteria verdicts (the spec-intake concept,
 	// piece 7), answered only by the review that sees the whole feature:
 	// the integration card's, or a delta card's. Behaviours are the
-	// feature's behaviours the same review notes.
+	// feature's behaviours the same review notes. Both come from that
+	// review's own calls (planCalls), never from a review answer.
 	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
 	Behaviours []string           `json:"behaviours,omitempty"`
 }
@@ -982,9 +983,6 @@ type reviewInput struct {
 	Concurrency string            `json:"concurrency"`
 	Gates       reviewGates       `json:"gates"`
 	LastReview  *Review           `json:"last_review,omitempty"`
-	// Criteria is the plan's criteria block when this review answers the
-	// plan's criteria, "" when it does not.
-	Criteria string `json:"criteria,omitempty"`
 }
 
 // reviewPartInput is the call on each later part: of the whole change only
@@ -1073,7 +1071,7 @@ func parseReview(content string) Review {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
 	}
 	invalid := func(why string) Review {
-		return Review{Note: "model review answer invalid (" + why + "): " + textutil.Truncate(content, 300)}
+		return Review{Note: invalidNote(why, content)}
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.DisallowUnknownFields()
@@ -1096,6 +1094,12 @@ func parseReview(content string) Review {
 	if rv.Dropped != nil {
 		return invalid("dropped is not an answer field")
 	}
+	if rv.Criteria != nil {
+		return invalid("criteria is not an answer field")
+	}
+	if rv.Behaviours != nil {
+		return invalid("behaviours is not an answer field")
+	}
 	if rv.Summary = textutil.Truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
 		return invalid("no summary")
 	}
@@ -1114,32 +1118,33 @@ func parseReview(content string) Review {
 		}
 	}
 	rv.Findings, rv.Claims = findings, claims
-	var criteria []CriterionVerdict
-	for _, v := range rv.Criteria {
-		if v.Criterion = strings.TrimSpace(v.Criterion); v.Criterion != "" {
-			criteria = append(criteria, v)
-		}
-	}
-	rv.Criteria = criteria
-	var behaviours []string
-	for _, b := range rv.Behaviours {
-		if b = strings.TrimSpace(b); b != "" && len(behaviours) < maxReviewFindings {
-			behaviours = append(behaviours, b)
-		}
-	}
-	rv.Behaviours = behaviours
 	return rv
+}
+
+// invalidNote is the note on a review call's answer that does not parse,
+// why naming the problem.
+func invalidNote(why, content string) string {
+	return "model review answer invalid (" + why + "): " + textutil.Truncate(content, 300)
+}
+
+// callNote says why a review call has no answer: the gateway refused it,
+// or it failed; "" when it answered.
+func callNote(err error) string {
+	var refusal *policy.Refusal
+	switch {
+	case errors.As(err, &refusal):
+		return "model review refused by the gateway (" + refusal.Decision + "): " + refusal.Reason
+	case err != nil:
+		return "model review failed: " + textutil.Truncate(err.Error(), 500)
+	}
+	return ""
 }
 
 // reviewAnswer is one review call's answer: the parsed verdict, or a note
 // for a refusal or a failed call.
 func reviewAnswer(content string, err error) Review {
-	var refusal *policy.Refusal
-	switch {
-	case errors.As(err, &refusal):
-		return Review{Note: "model review refused by the gateway (" + refusal.Decision + "): " + refusal.Reason}
-	case err != nil:
-		return Review{Note: "model review failed: " + textutil.Truncate(err.Error(), 500)}
+	if note := callNote(err); note != "" {
+		return Review{Note: note}
 	}
 	return parseReview(content)
 }
@@ -1169,9 +1174,6 @@ func combineReviews(parts []Review) Review {
 	if asked {
 		rv.StrictImprovement = &strict
 	}
-	if len(parts) > 0 {
-		rv.Criteria, rv.Behaviours = parts[0].Criteria, parts[0].Behaviours
-	}
 	return rv
 }
 
@@ -1185,9 +1187,13 @@ func combineReviews(parts []Review) Review {
 // call when it fits limits.review_diff_kib, else in parts of that size,
 // one call each (callAll runs them in parallel), a file larger than a part
 // cut by hunks; the call on the first part carries the brief, the gates
-// and the concurrency summary of the whole diff. No answer (a gateway
-// refusal such as refused_budget, a failed call, an invalid answer) is a
-// note, which the review stage puts on the card as a finding
+// and the concurrency summary of the whole diff. A review that answers the
+// plan's criteria (criteriaContext) adds the feature's calls along the
+// plan (planCalls): one per criterion over the diffs of the cards that
+// cite it, every delta card's and the card's own, and one for the
+// feature's behaviours. No answer of any call (a gateway refusal such as
+// refused_budget, a failed call, an invalid answer) is a note, which the
+// review stage puts on the card as a finding
 // (versionReviewVerdict); concerns are findings under the review stage's
 // on_findings (ruling 177).
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
@@ -1229,55 +1235,58 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	files, diff := prFiles, joinFiles(prFiles)
+	diff := joinFiles(prFiles)
 	criteria := r.criteriaContext(ctx, t)
+	var feature []featureCard
 	if criteria != nil {
-		whole, err := r.wholeFeatureDiff(ctx, t, repo, criteria.plan, diff)
-		if err != nil {
+		if feature, err = r.featureCards(ctx, t, repo, criteria.plan); err != nil {
 			return Review{}, err
 		}
-		files, diff = splitDiff(whole), whole
 	}
 	var rv Review
 	read := ""
-	parts := diffParts(files, pinned.Limits.ReviewDiffBytes())
+	limit := pinned.Limits.ReviewDiffBytes()
+	parts := diffParts(prFiles, limit)
 	names := newNameIndex(parts)
 	last, lastFindings := lastReview(earlier, parts)
 	first := reviewInput{
 		Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
-		PR:    pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files)),
+		PR:    pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(prFiles)),
 		Gates: reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction, Audit: gates.Audit}, LastReview: last,
 	}
 	if len(parts) > 1 {
-		first.Part, first.Files, first.Names = partLabel(parts, 0, len(files)), fileList(parts, "part"), names.Others(0)
-	}
-	if criteria != nil {
-		first.Criteria = criteriaBlock(criteria.plan)
+		first.Part, first.Files, first.Names = partLabel(parts, 0, len(prFiles)), fileList(parts, "part"), names.Others(0)
 	}
 	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
 		prompt, in := reviewPromptFor(gates), any(first)
-		if i == 0 && criteria != nil {
-			prompt += reviewCriteria
-		}
 		if i > 0 {
 			prompt, in = reviewPartPrompt, reviewPartInput{Objective: first.Brief.Objective, Diff: joinFiles(part),
-				Part: partLabel(parts, i, len(files)), Files: first.Files, Names: names.Others(i), LastFindings: lastFindings[i]}
+				Part: partLabel(parts, i, len(prFiles)), Files: first.Files, Names: names.Others(i), LastFindings: lastFindings[i]}
 		}
 		if last != nil && len(last.Verdicts) > 0 {
 			prompt = reviewWithDrops(prompt, i > 0, last, lastFindings[i])
 		}
-		calls[i] = reviewCall{Label: fmt.Sprintf("part %d of %d", i+1, len(parts)), Prompt: prompt, Input: in}
+		calls[i] = reviewCall{Prompt: prompt, Input: in}
+		if len(parts) > 1 {
+			calls[i].Label = fmt.Sprintf("part %d of %d", i+1, len(parts))
+		}
+	}
+	var of []int
+	if criteria != nil {
+		title, brief := cardText(criteria.plan, t)
+		more, at := planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles}, limit)
+		calls, of = append(calls, more...), at
 	}
 	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
 	if err != nil {
 		return Review{}, err
 	}
 	var answers []Review
-	for i, res := range results {
+	for i, res := range results[:len(parts)] {
 		a := reviewAnswer(res.Content, res.Err)
 		if a.Verdict == "" {
-			if len(calls) > 1 {
+			if calls[i].Label != "" {
 				a.Note = calls[i].Label + ": " + a.Note
 			}
 			rv = a
@@ -1285,16 +1294,22 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		answers = append(answers, a)
 	}
+	var verdicts []CriterionVerdict
+	var behaviours []string
+	if rv.Note == "" && criteria != nil {
+		verdicts, behaviours, rv.Note = readPlanCalls(criteria.plan, calls[len(parts):], of, results[len(parts):])
+	}
 	if rv.Note == "" {
 		rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), diff)
 		if criteria != nil {
+			rv.Criteria, rv.Behaviours = verdicts, behaviours
 			findings := len(rv.Findings)
 			r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)
 			if len(rv.Findings) > findings && rv.Verdict == "approve" {
 				rv.Verdict = "concerns"
 			}
 		}
-		read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(files), "file", "files"), kib(len(diff)))
+		read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(prFiles), "file", "files"), kib(len(diff)))
 	}
 	stopBeats()
 	if ctx.Err() != nil {

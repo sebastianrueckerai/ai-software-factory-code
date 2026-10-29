@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"net/http"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -209,19 +212,351 @@ func TestRecordHumanCriteria(t *testing.T) {
 	}
 }
 
-func TestParseReviewCriteriaAnswer(t *testing.T) {
-	answer := `{"verdict": "concerns", "summary": "one criterion is not met", "findings": [],
-	"criteria": [{"criterion": "c1", "verdict": "unmet", "evidence": "go test exits 1", "fix": "planner"}, {"criterion": "", "verdict": "met"}],
-	"behaviours": [" the door opens only for a key that fits ", ""]}`
-	rv := parseReview(answer)
-	if rv.Note != "" {
-		t.Fatalf("note: %s", rv.Note)
+// featurePlan is a plan with the criteria c1 and c2 and three cards: A
+// cites c1, B cites c2, and I, the integration card, cites both.
+func featurePlan() Plan {
+	return Plan{
+		Summary: "the feature",
+		Criteria: []PlanCriterion{
+			{ID: "c1", Kind: CriterionTest, Test: "TestA in ./a"},
+			{ID: "c2", Kind: CriterionTest, Test: "TestB in ./b"},
+		},
+		Cards: []PlanCard{
+			{Key: "A", Role: RoleFeature, Title: "Card A title", Brief: "build a", Acceptance: []PlanItem{{Criterion: "c1", Text: "go test ./a"}}},
+			{Key: "B", Role: RoleFeature, Title: "Card B title", Brief: "build b", Acceptance: []PlanItem{{Criterion: "c2", Text: "go test ./b"}}},
+			{Key: "I", Role: RoleIntegration, Title: "Card I title", Brief: "wire a and b",
+				Acceptance: []PlanItem{{Criterion: "c1", Text: "go test ./a"}, {Text: "an extra check"}, {Criterion: "c2", Text: "go test ./b"}}},
+		},
 	}
-	if len(rv.Criteria) != 1 || rv.Criteria[0].Criterion != "c1" || rv.Criteria[0].Fix != "planner" {
-		t.Errorf("criteria = %v", rv.Criteria)
+}
+
+// markedFile is a new file's diff that defines function fn and adds the
+// comment line marker, which only the diff text holds.
+func markedFile(path, fn, marker string) string {
+	return fmt.Sprintf("diff --git a/%s b/%s\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1,2 @@\n+func %s() {}\n+// %s\n", path, path, path, fn, marker)
+}
+
+// featureRunner is a gate runner whose task t1 is card key of plan t-plan
+// (featurePlan) with pull request 9. cards files the other cards, the
+// plan's and those no plan revision holds, by key with their pull
+// request's number; diffs are the pull requests' diffs by number.
+func featureRunner(t *testing.T, key string, cards map[string]int64, diffs map[int64]string) (*Runner, *fakeStore) {
+	t.Helper()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey, task.IssueNumber = SourcePlan, "t-plan", key, 9
+	r, store, _ := newGateRunner(t, task, &gateForgejo{diffs: diffs})
+	b, err := json.Marshal(featurePlan())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if fmt.Sprint(rv.Behaviours) != fmt.Sprint([]string{"the door opens only for a key that fits"}) {
-		t.Errorf("behaviours = %v", rv.Behaviours)
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	for k, pr := range cards {
+		store.tasks["t-"+k] = Task{ID: "t-" + k, Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: k, PRNumber: pr,
+			Objective: "Card " + k + " title\n\nthe card's body", Status: "done"}
+	}
+	return r, store
+}
+
+// featureDiffs are the diffs of I (9), A (11) and B (12), one marked file
+// each.
+var featureDiffs = map[int64]string{
+	9:  markedFile("i.go", "FromI", "MARK-I"),
+	11: markedFile("a.go", "FromA", "MARK-A"),
+	12: markedFile("b.go", "FromB", "MARK-B"),
+}
+
+// callOf names a recorded call by its input: review, the criterion's id,
+// or behaviours.
+func callOf(user string) string {
+	var in struct {
+		Criterion *PlanCriterion  `json:"criterion"`
+		Criteria  json.RawMessage `json:"criteria"`
+	}
+	json.Unmarshal([]byte(user), &in)
+	switch {
+	case in.Criterion != nil:
+		return in.Criterion.ID
+	case in.Criteria != nil:
+		return "behaviours"
+	}
+	return "review"
+}
+
+// featureAnswer answers the card's own review approve, c1 met, c2 unmet
+// with fix card, and the behaviours with one sentence.
+func featureAnswer(user string) string {
+	switch callOf(user) {
+	case "c1":
+		return `{"verdict":"met","evidence":"TestA covers a.go","fix":"card"}`
+	case "c2":
+		return `{"verdict":"unmet","evidence":"b.go never registers its route","fix":"card"}`
+	case "behaviours":
+		return `{"behaviours":["a request to /a answers from FromA"]}`
+	}
+	return `{"verdict":"approve","summary":"the wiring is sound","strict_improvement":true}`
+}
+
+// featureCalls are the recorded calls' user messages by callOf.
+func featureCalls(ll *fakeLiteLLM) map[string][]string {
+	out := map[string][]string{}
+	for _, chat := range ll.chats {
+		user := userMessage(chat)
+		out[callOf(user)] = append(out[callOf(user)], user)
+	}
+	return out
+}
+
+// The integration card's review reads its own diff in one call, then each
+// criterion in a call of its own over the diffs of the cards that cite it
+// and its own, then the behaviours: four calls. The verdicts land as the
+// integration card's rows, and the unmet one is a finding.
+func TestIntegrationReviewMakesOneCallPerCriterion(t *testing.T) {
+	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
+	ll := &fakeLiteLLM{answer: featureAnswer}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	calls := featureCalls(ll)
+	if len(ll.chats) != 4 || len(calls["review"]) != 1 || len(calls["c1"]) != 1 || len(calls["c2"]) != 1 || len(calls["behaviours"]) != 1 {
+		t.Fatalf("%d calls, by kind %v: want the own review, c1, c2 and behaviours", len(ll.chats), slices.Sorted(maps.Keys(calls)))
+	}
+	if own := calls["review"][0]; !strings.Contains(own, "+++ b/i.go") || strings.Contains(own, "a.go") || strings.Contains(own, "b.go") || strings.Contains(own, `"criteria"`) {
+		t.Fatalf("the own review reads more than its own diff: %s", own)
+	}
+	for id, want := range map[string]struct{ in, out string }{"c1": {"a.go", "b.go"}, "c2": {"b.go", "a.go"}} {
+		user := calls[id][0]
+		if !strings.Contains(user, "+++ b/"+want.in) || !strings.Contains(user, "+++ b/i.go") || strings.Contains(user, want.out) {
+			t.Fatalf("call %s reads %s and i.go and not %s? %s", id, want.in, want.out, user)
+		}
+	}
+	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Evidence: "TestA covers a.go", Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "unmet", Evidence: "b.go never registers its route", Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+	}
+	if fmt.Sprint(rows) != fmt.Sprint(want) {
+		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
+	}
+	if rv.Verdict != "concerns" || !slices.Contains(rv.Findings, "criterion c2 not met (unmet): b.go never registers its route") {
+		t.Fatalf("review = %+v, want concerns with the c2 finding", rv)
+	}
+}
+
+// The behaviours call reads every card's files, the names they add and
+// the cards' titles, and no line of any diff.
+func TestBehavioursCallReadsNoDiffText(t *testing.T) {
+	r, _ := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
+	ll := &fakeLiteLLM{answer: featureAnswer}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); !slices.Equal(rv.Behaviours, []string{"a request to /a answers from FromA"}) {
+		t.Fatalf("review = %+v, want the behaviour", rv)
+	}
+	calls := featureCalls(ll)["behaviours"]
+	if len(calls) != 1 {
+		t.Fatalf("%d behaviours calls, want 1", len(calls))
+	}
+	user := calls[0]
+	for _, want := range []string{"a.go +2 -0 (card 1)", "b.go +2 -0 (card 2)", "i.go +2 -0 (card 3)", `"names":"functions: FromA, FromB, FromI"`, "Card A title", "Card B title", "Card I title"} {
+		if !strings.Contains(user, want) {
+			t.Fatalf("the behaviours call lacks %q: %s", want, user)
+		}
+	}
+	for _, marker := range []string{"MARK-A", "MARK-B", "MARK-I"} {
+		if strings.Contains(user, marker) {
+			t.Fatalf("the behaviours call reads diff text %s: %s", marker, user)
+		}
+	}
+}
+
+// A's 130 KiB do not fit one part of 48 KiB: c1 reads in parts, each named,
+// and the worst part's verdict stands.
+func TestCriterionOverOnePartReadsInParts(t *testing.T) {
+	diffs := maps.Clone(featureDiffs)
+	diffs[11] = hunkFile("a.go", 13, 10<<10).Text
+	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, diffs)
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		var in struct {
+			Part string `json:"part"`
+		}
+		json.Unmarshal([]byte(user), &in)
+		if callOf(user) == "c1" {
+			if strings.HasSuffix(in.Part, ", part 2 of 4") {
+				return `{"verdict":"unmet","evidence":"a.go drops the empty input","fix":"card"}`
+			}
+			return `{"verdict":"met","evidence":"this part holds no gap","fix":"card"}`
+		}
+		return featureAnswer(user)
+	}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); rv.Note != "" {
+		t.Fatalf("review = %+v", rv)
+	}
+	calls := featureCalls(ll)["c1"]
+	if len(calls) < 3 {
+		t.Fatalf("%d c1 calls, want 3 or more", len(calls))
+	}
+	labelled := regexp.MustCompile(`, part \d+ of 4$`)
+	for _, user := range calls {
+		var in struct {
+			Part  string `json:"part"`
+			Files string `json:"files"`
+		}
+		json.Unmarshal([]byte(user), &in)
+		if !labelled.MatchString(in.Part) || !strings.Contains(in.Files, "i.go +2 -0 (part 4)") {
+			t.Fatalf("a c1 call without its part label or the file list: part %q, files %q", in.Part, in.Files)
+		}
+	}
+	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
+	if len(rows) != 2 || rows[0].Criterion != "c1" || rows[0].Verdict != "unmet" {
+		t.Fatalf("rows = %v, want c1 unmet, the worst of its parts", rows)
+	}
+}
+
+// A card no plan revision holds arrived by a delta round: its review
+// answers the criteria, and every criterion call reads every delta card's
+// diff, D's here.
+func TestDeltaCardReviewGetsEveryCriterionCall(t *testing.T) {
+	diffs := map[int64]string{
+		9:  markedFile("e.go", "FromE", "MARK-E"),
+		11: featureDiffs[11], 12: featureDiffs[12], 13: featureDiffs[9],
+		14: markedFile("d.go", "FromD", "MARK-D"),
+	}
+	r, _ := featureRunner(t, "E", map[string]int64{"A": 11, "B": 12, "I": 13, "D": 14}, diffs)
+	ll := &fakeLiteLLM{answer: featureAnswer}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	if rv := getInto[Review](t, val, err); rv.Note != "" {
+		t.Fatalf("review = %+v", rv)
+	}
+	calls := featureCalls(ll)
+	for _, id := range []string{"c1", "c2"} {
+		if len(calls[id]) != 1 || !strings.Contains(calls[id][0], "+++ b/d.go") || !strings.Contains(calls[id][0], "+++ b/e.go") {
+			t.Fatalf("call %s does not read the delta card D's diff and its own: %v", id, calls[id])
+		}
+	}
+}
+
+// A call without an answer is the review's note, named by its call.
+func TestIntegrationReviewNamesTheCallWithoutAnAnswer(t *testing.T) {
+	for _, call := range []string{"c2", "behaviours"} {
+		t.Run(call, func(t *testing.T) {
+			r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
+			ll := &fakeLiteLLM{answer: func(user string) string {
+				if callOf(user) == call {
+					return "LGTM"
+				}
+				return featureAnswer(user)
+			}}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			want := map[string]string{"c2": "criterion c2: model review answer invalid", "behaviours": "behaviours: model review answer invalid"}[call]
+			if rv := getInto[Review](t, val, err); rv.Verdict != "" || !strings.HasPrefix(rv.Note, want) {
+				t.Fatalf("review = %+v, want a note starting %q", rv, want)
+			}
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+				t.Fatalf("rows = %v, want none without every answer", rows)
+			}
+		})
+	}
+}
+
+// A task at its budget cap: every call is refused, and the note is the
+// own review's, which reads one part and so names none. No verdict row is
+// written.
+func TestIntegrationReviewBudgetRefusalIsANote(t *testing.T) {
+	r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, featureDiffs)
+	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedBudget}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, "model review refused by the gateway (refused_budget)") {
+		t.Fatalf("review = %+v", rv)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("rows = %v, want none", rows)
+	}
+}
+
+func TestCitingListsCardsByAcceptance(t *testing.T) {
+	p := featurePlan()
+	for id, want := range map[string][]string{"c1": {"A", "I"}, "c2": {"B", "I"}, "c9": nil} {
+		if got := citing(p, id); !slices.Equal(got, want) {
+			t.Errorf("citing(%s) = %v, want %v", id, got, want)
+		}
+	}
+}
+
+func TestCombineCriterion(t *testing.T) {
+	a, b := strings.Repeat("a", 600), strings.Repeat("b", 600)
+	for name, tc := range map[string]struct {
+		parts []CriterionVerdict
+		want  CriterionVerdict
+	}{
+		"met, partial": {[]CriterionVerdict{{Verdict: "met", Evidence: "x"}, {Verdict: "partial", Evidence: "y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "partial", Evidence: "x | y"}},
+		"met, unmet, partial": {[]CriterionVerdict{{Verdict: "met", Evidence: "x"}, {Verdict: "unmet", Evidence: "y"}, {Verdict: "partial", Evidence: "z"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "x | y | z"}},
+		"card, planner": {[]CriterionVerdict{{Verdict: "unmet", Fix: "card", Evidence: "x"}, {Verdict: "partial", Fix: "planner", Evidence: "y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Fix: "planner", Evidence: "x | y"}},
+		"planner, card": {[]CriterionVerdict{{Verdict: "unmet", Fix: "planner", Evidence: "x"}, {Verdict: "unmet", Fix: "card", Evidence: "y"}},
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Fix: "planner", Evidence: "x | y"}},
+		"human":      {[]CriterionVerdict{{Evidence: "x"}, {Evidence: "y"}}, CriterionVerdict{Criterion: "c1", Evidence: "x | y"}},
+		"over a cap": {[]CriterionVerdict{{Verdict: "met", Evidence: a}, {Verdict: "met", Evidence: b}}, CriterionVerdict{Criterion: "c1", Verdict: "met", Evidence: a + " | " + b[:397]}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := combineCriterion("c1", tc.parts); got != tc.want {
+				t.Fatalf("combineCriterion =\n%+v\nwant\n%+v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseCriterionAnswer(t *testing.T) {
+	test, human := PlanCriterion{ID: "c1", Kind: CriterionTest}, PlanCriterion{ID: "c2", Kind: CriterionHuman}
+	for name, tc := range map[string]struct {
+		c       PlanCriterion
+		content string
+		want    CriterionVerdict
+		problem string
+	}{
+		"valid": {test, `{"verdict":"unmet","evidence":" TestA fails on empty input ","fix":"planner"}`,
+			CriterionVerdict{Criterion: "c1", Verdict: "unmet", Evidence: "TestA fails on empty input", Fix: "planner"}, ""},
+		"fenced": {test, "```json\n{\"verdict\":\"met\",\"evidence\":\"TestA passes\",\"fix\":\"card\"}\n```",
+			CriterionVerdict{Criterion: "c1", Verdict: "met", Evidence: "TestA passes", Fix: "card"}, ""},
+		"unknown verdict": {test, `{"verdict":"done","evidence":"x","fix":"card"}`, CriterionVerdict{}, `unknown verdict "done"`},
+		"no verdict":      {test, `{"evidence":"x"}`, CriterionVerdict{}, `unknown verdict ""`},
+		"not json":        {test, "LGTM", CriterionVerdict{}, "invalid character"},
+		"extra field":     {test, `{"verdict":"met","evidence":"x","criterion":"c1"}`, CriterionVerdict{}, `unknown field "criterion"`},
+		"human keeps evidence": {human, `{"verdict":"met","evidence":"open the list page","fix":"card"}`,
+			CriterionVerdict{Criterion: "c2", Evidence: "open the list page"}, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, problem := parseCriterionAnswer(tc.content, tc.c)
+			if tc.problem != "" {
+				if !strings.Contains(problem, tc.problem) {
+					t.Fatalf("problem = %q, want it to name %q", problem, tc.problem)
+				}
+				return
+			}
+			if problem != "" || got != tc.want {
+				t.Fatalf("parseCriterionAnswer = %+v, %q; want %+v", got, problem, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseBehavioursAnswer(t *testing.T) {
+	if got, problem := parseBehavioursAnswer(`{"behaviours":["a link redirects with 302","a missing link answers 404"]}`); problem != "" ||
+		!slices.Equal(got, []string{"a link redirects with 302", "a missing link answers 404"}) {
+		t.Fatalf("parseBehavioursAnswer = %v, %q", got, problem)
+	}
+	if _, problem := parseBehavioursAnswer(`{"behaviours":["x"],"verdict":"met"}`); !strings.Contains(problem, `unknown field "verdict"`) {
+		t.Fatalf("problem = %q, want the unknown field named", problem)
 	}
 }
 

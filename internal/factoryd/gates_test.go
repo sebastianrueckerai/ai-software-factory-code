@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -57,6 +58,9 @@ type gateForgejo struct {
 	raw map[string]string
 	// rawRefs are the refs of the raw file reads, in order
 	rawRefs []string
+	// diffs are other pull requests' diffs by number; 9's is diff unless
+	// diffs holds one
+	diffs map[int64]string
 }
 
 func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
@@ -67,9 +71,19 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 		switch p := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"); {
 		case r.Method == "GET" && p == "/pulls/9/files":
 			servePage(w, r, 2, f.files...)
-		case r.Method == "GET" && p == "/pulls/9.diff":
+		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/") && strings.HasSuffix(p, ".diff"):
+			n, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/pulls/"), ".diff"), 10, 64)
+			d, ok := f.diffs[n]
+			switch {
+			case !ok && n == 9:
+				d = f.diff
+			case !ok:
+				w.WriteHeader(http.StatusNotFound)
+				io.WriteString(w, `{"message":"Not Found"}`)
+				return
+			}
 			time.Sleep(f.diffDelay)
-			io.WriteString(w, f.diff)
+			io.WriteString(w, d)
 		case r.Method == "POST" && p == "/pulls/9/reviews":
 			var body map[string]any
 			json.NewDecoder(r.Body).Decode(&body)
@@ -444,6 +458,8 @@ func TestParseReview(t *testing.T) {
 		"a note smuggled":      {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
 		"an overrule smuggled": {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
 		"a drop smuggled":      {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
+		"criteria smuggled":    {`{"verdict":"approve","summary":"s","criteria":[{"criterion":"c1","verdict":"met"}]}`, Review{}, "criteria is not an answer field", false},
+		"behaviours smuggled":  {`{"verdict":"approve","summary":"s","behaviours":["it works"]}`, Review{}, "behaviours is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := parseReview(tc.in)
