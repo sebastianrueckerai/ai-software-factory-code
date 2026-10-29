@@ -3,7 +3,6 @@ package factoryd
 import (
 	"context"
 	"log"
-	"slices"
 	"time"
 )
 
@@ -25,12 +24,11 @@ func (s *Sender) note(what string, err error) {
 }
 
 // sendLimit caps one pass's sends, editWindow is how long a sent row
-// stays editable, writersTTL is how long the writer lists stand, and
-// startEvents bounds the events a settle derivation reads.
+// stays editable, and startEvents bounds the events a settle derivation
+// reads.
 const (
 	sendLimit   = 50
 	editWindow  = 7 * 24 * time.Hour
-	writersTTL  = 10 * time.Minute
 	startEvents = 500
 )
 
@@ -40,13 +38,12 @@ type Sender struct {
 	Telegram  *Telegram
 	Discord   *Discord
 	PublicURL string
-	// Lists names every project's writers by repository: the console's
-	// own lists, one source for both halves.
-	Lists func(ctx context.Context) (own string, writers map[string][]string, err error)
+	// Writes reports whether login writes repository's code, for a
+	// project of any agents (Intake.Writes): the check the console's
+	// notification levels are set under.
+	Writes func(ctx context.Context, repository, login string) (bool, error)
 
-	lists   map[string][]string
-	listsAt time.Time
-	last    map[string]time.Time // a telegram chat's last send
+	last map[string]time.Time // a telegram chat's last send
 }
 
 // Loop runs one pass every until the context ends.
@@ -105,12 +102,12 @@ func (s *Sender) sendOne(ctx context.Context, names map[string]string, d Deliver
 			return
 		}
 	}
-	writers, err := s.writers(ctx)
+	writes, err := s.Writes(ctx, d.Repository, d.Login)
 	if err != nil {
-		s.note("hold the row for the writer lists", s.Store.DeferDelivery(ctx, d.ID, 30*time.Second))
+		s.note("hold the row for the writers", s.Store.DeferDelivery(ctx, d.ID, 30*time.Second))
 		return
 	}
-	if !slices.Contains(writers[d.Repository], d.Login) {
+	if !writes {
 		log.Printf("messengers: %s writes %s no more; their level and row are gone", d.Login, d.Repository)
 		s.note("drop the lost level", s.Store.DeleteNotifyLevel(ctx, d.Login, d.Repository))
 		s.note("drop the unentitled row", s.Store.DropDelivery(ctx, d.ID))
@@ -258,19 +255,6 @@ func (s *Sender) settleState(ctx context.Context, d Delivery) (PokeSettle, error
 		return PokeSettle{}, err
 	}
 	return SettleOf(d.message(), events, cardWaits, ApprovalWaits(pending, d.TaskID)), nil
-}
-
-// writers serves the writer lists, cached for their TTL.
-func (s *Sender) writers(ctx context.Context) (map[string][]string, error) {
-	if s.lists != nil && time.Since(s.listsAt) < writersTTL {
-		return s.lists, nil
-	}
-	_, lists, err := s.Lists(ctx)
-	if err != nil {
-		return nil, err
-	}
-	s.lists, s.listsAt = lists, time.Now()
-	return lists, nil
 }
 
 // message is the row's inbox half, as the settle rule reads it.

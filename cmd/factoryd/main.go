@@ -520,7 +520,7 @@ func main() {
 		}
 	}
 	if telegram != nil || discord != nil {
-		sender := &factoryd.Sender{Store: store, Telegram: telegram, Discord: discord, PublicURL: publicURL, Lists: lists}
+		sender := &factoryd.Sender{Store: store, Telegram: telegram, Discord: discord, PublicURL: publicURL, Writes: webhookIntake.Writes}
 		go sender.Loop(ctx, 5*time.Second)
 	} else {
 		// no venue configured: the panel still shows, naming what is

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -220,8 +221,9 @@ func TestSender(t *testing.T) {
 	sd := &Sender{Store: s, PublicURL: "https://console.example",
 		Telegram: &Telegram{Token: "bot-key", BaseURL: api.URL},
 		Discord:  &Discord{BotToken: "bot-token", BaseURL: discordAPI.URL},
-		Lists: func(context.Context) (string, map[string][]string, error) {
-			return "", map[string][]string{"sf/code": {"bob", "alice", "carla", "dana", "eric", "gina", "hana", "judy", "ira"}, "sf/other": {"bob"}}, nil
+		Writes: func(_ context.Context, repository, login string) (bool, error) {
+			writers := map[string][]string{"sf/code": {"bob", "alice", "carla", "dana", "eric", "gina", "hana", "judy", "ira"}, "sf/other": {"bob"}}
+			return slices.Contains(writers[repository], login), nil
 		}}
 	if err := sd.Pass(ctx); err != nil {
 		t.Fatal(err)
@@ -290,12 +292,12 @@ func TestSender(t *testing.T) {
 		t.Fatalf("the rate row sent: %d calls", n)
 	}
 
-	// unreadable writer lists hold every row back
+	// an unreadable writer check holds every row back
 	held := msg("sf/code", "the run finished again", MessagePoke, "T-7", when)
 	queue(held, ira)
 	blind := &Sender{Store: s, PublicURL: "https://console.example",
 		Telegram: &Telegram{Token: "bot-key", BaseURL: api.URL},
-		Lists:    func(context.Context) (string, map[string][]string, error) { return "", nil, errors.New("no lists") }}
+		Writes:   func(context.Context, string, string) (bool, error) { return false, errors.New("no writers") }}
 	if err := blind.Pass(ctx); err != nil {
 		t.Fatal(err)
 	}
