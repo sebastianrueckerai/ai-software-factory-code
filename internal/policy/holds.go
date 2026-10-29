@@ -23,6 +23,15 @@ const MinCallTokens = 1024
 // a person takes one hold besides: factoryd's call that writes its brief.
 var holdStatuses = []string{"running", "in-review"}
 
+// LedgerRef is a model call's ref on its hold and ledger row: the alias of
+// an agent's call, purpose/alias of factoryd's.
+func LedgerRef(purpose, alias string) string {
+	if purpose == "" {
+		return alias
+	}
+	return purpose + "/" + alias
+}
+
 // HoldTTL bounds a hold a crashed caller never released; SweepHolds books
 // an expired hold at its full amount.
 const HoldTTL = time.Hour
@@ -262,7 +271,7 @@ func TakeHold(ctx context.Context, db *sql.DB, r HoldRequest) (Hold, error) {
 	case KindResource:
 		h, err = FitResource(free, r)
 	default:
-		if err := calibrate(ctx, tx, &r); err != nil {
+		if err := Calibrate(ctx, tx, &r); err != nil {
 			return Hold{}, err
 		}
 		h, err = Fit(free, r)
@@ -281,9 +290,10 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// calibrate reads what Fit prices model call r from: r's task's newest
-// settled call on r.Ref with usage (Earlier) and the ref's cache floor.
-func calibrate(ctx context.Context, q rowQuerier, r *HoldRequest) error {
+// Calibrate reads what Fit prices model call r from, as TakeHold does:
+// r's task's newest settled call on r.Ref with usage (Earlier) and the
+// ref's cache floor.
+func Calibrate(ctx context.Context, q rowQuerier, r *HoldRequest) error {
 	err := q.QueryRowContext(ctx,
 		`SELECT prompt_tokens, body_bytes FROM ledger WHERE task_id = $1 AND kind = 'model' AND ref = $2 AND prompt_tokens > 0 AND body_bytes > 0
 		 ORDER BY id DESC LIMIT 1`, r.TaskID, r.Ref).Scan(&r.Earlier.PromptTokens, &r.Earlier.BodyBytes)
@@ -424,7 +434,7 @@ func ReadOpening(ctx context.Context, q *sql.DB, taskID, ref string) (Opening, e
 			r, ok := calibrated[c.Ref]
 			if !ok {
 				r = HoldRequest{TaskID: taskID, Ref: c.Ref}
-				if err := calibrate(ctx, q, &r); err != nil {
+				if err := Calibrate(ctx, q, &r); err != nil {
 					return Opening{}, err
 				}
 				calibrated[c.Ref] = r

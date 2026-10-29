@@ -316,7 +316,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	req := policy.HoldRequest{
-		TaskID: task.ID, Kind: policy.KindModel, Ref: ledgerRef(purpose, chatReq.Model), Session: id.Session,
+		TaskID: task.ID, Kind: policy.KindModel, Ref: policy.LedgerRef(purpose, chatReq.Model), Session: id.Session,
 		Bytes: len(body) + bodySlack - chatReq.image.stripped, ImageTokens: chatReq.image.tokens, Price: price, WantOut: chatReq.WantOut,
 		DayEUR:   pv.Document.Budget.DayEUR,
 		MonthEUR: pv.Document.Budget.MonthEUR,
@@ -336,7 +336,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 			return
 		}
-		req.Ref, req.PremiumEUR = ledgerRef(purpose, policy.Big), 0
+		req.Ref, req.PremiumEUR = policy.LedgerRef(purpose, policy.Big), 0
 		hold, err = s.opts.Store.TakeHold(ctx, req)
 	}
 	if errors.As(err, &refusal) {
@@ -398,15 +398,6 @@ func (s *Server) price(ctx context.Context, pv *policy.Version, task Task, alias
 		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, alias, err)
 	}
 	return price, err
-}
-
-// ledgerRef is a model call's ref on its hold and ledger row: the alias of
-// an agent's call, purpose/alias of factoryd's.
-func ledgerRef(purpose, alias string) string {
-	if purpose == "" {
-		return alias
-	}
-	return purpose + "/" + alias
 }
 
 // identify is the caller: factoryd by the gateway-factoryd token, with

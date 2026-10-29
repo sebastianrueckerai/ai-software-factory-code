@@ -395,6 +395,9 @@ type Store interface {
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
 	Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error)
+	// Calibrate is model call r with what the gateway prices its hold from
+	// (policy.Calibrate).
+	Calibrate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, error)
 	// Opening is how the newest sessions opened on ref, read for the task
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)

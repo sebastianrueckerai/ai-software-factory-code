@@ -718,6 +718,76 @@ func TestModelReviewOfADiffPastTheBoundIsANote(t *testing.T) {
 	}
 }
 
+// fundedReview is a review runner of fourParts whose card has budget EUR
+// free, the gateway pricing big's input at in and its output at out a
+// token: each of the four calls holds 9,000 output tokens (the
+// supervisor's limit) and its request's bytes as prompt tokens, or fewer
+// where earlier calibrates them.
+func fundedReview(t *testing.T, budget, in, out float64, earlier map[string]policy.Usage) (*Runner, *gateForgejo, *fakeLiteLLM) {
+	t.Helper()
+	fj := &gateForgejo{diff: fourParts}
+	task := gateTask
+	task.BudgetEUR = budget
+	r, store, _ := newGateRunner(t, task, fj)
+	store.earlier = earlier
+	r.cfg.Prices = stubPrices{price: policy.Price{In: in, Out: out}}
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	return r, fj, ll
+}
+
+// A review the card cannot pay for is not started: four calls of 9,000
+// output tokens at 1e-5 EUR hold 0.36 EUR (their 1e-9 EUR a byte of
+// request adds under 0.001), past the 0.30 EUR free, so no call is made
+// and the note names the calls, the estimate, the headroom and the act.
+// At 0.40 EUR free the four calls run.
+func TestModelReviewTheCardCannotPayForIsANote(t *testing.T) {
+	for name, tc := range map[string]struct {
+		budget float64
+		calls  int
+		note   string
+	}{
+		"0.30 EUR": {0.30, 0, "model review not run: its 4 calls would hold about 0.36 EUR at the gateway, and the card has 0.30 EUR free. " +
+			"Fund the card (Fund on the board) so the review can run, or review the change yourself."},
+		"0.40 EUR": {0.40, 4, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, fj, ll := fundedReview(t, tc.budget, 1e-9, 1e-5, nil)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			rv := getInto[Review](t, val, err)
+			if rv.Note != tc.note || len(ll.chats) != tc.calls {
+				t.Fatalf("review = %+v after %d calls, want the note %q after %d", rv, len(ll.chats), tc.note, tc.calls)
+			}
+			if tc.note != "" && (len(fj.comments) != 1 || !strings.Contains(fj.comments[0], tc.note)) {
+				t.Fatalf("comments = %q", fj.comments)
+			}
+		})
+	}
+}
+
+// The estimate reads the requests' bytes as the gateway does: four parts
+// of 40 KiB of diff each are over 160 KiB of request, over 0.16 EUR at
+// 1e-6 EUR a byte uncalibrated, past 0.15 EUR free. The task's earlier
+// review call on review/big, 1 prompt token for 100 bytes, calibrates
+// them to 1.25 hundredths of that, and the four calls run.
+func TestModelReviewEstimateIsTheGatewaysHold(t *testing.T) {
+	for name, tc := range map[string]struct {
+		earlier map[string]policy.Usage
+		calls   int
+	}{
+		"uncalibrated": {nil, 0},
+		"calibrated":   {map[string]policy.Usage{"review/big": {PromptTokens: 1, BodyBytes: 100}}, 4},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, ll := fundedReview(t, 0.15, 1e-6, 0, tc.earlier)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			if rv := getInto[Review](t, val, err); len(ll.chats) != tc.calls || (tc.calls == 0) != strings.Contains(rv.Note, "and the card has 0.15 EUR free") {
+				t.Fatalf("review = %+v after %d calls, want %d", rv, len(ll.chats), tc.calls)
+			}
+		})
+	}
+}
+
 // A policy that names no review model for the task's class: no call, a
 // note.
 func TestModelReviewWithoutAReviewModel(t *testing.T) {

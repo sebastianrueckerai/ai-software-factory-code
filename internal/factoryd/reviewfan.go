@@ -3,11 +3,14 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // reviewParallel is the most review or audit calls of one activity that
@@ -100,6 +103,50 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 		return nil, ctx.Err()
 	}
 	return results, nil
+}
+
+// unfunded says why the card's free headroom cannot pay for calls, before
+// the first is made; "" when it can, or when their model has no price,
+// whose calls the gateway refuses itself. The need is the calls' holds as
+// the gateway takes them: Fit on each call's request, calibrated as
+// TakeHold calibrates, with the headroom unbounded, summed. what names
+// the calls' activity, "the review" or "the audit".
+func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose, what string, calls []reviewCall) (string, error) {
+	if r.cfg.Prices == nil || model == "" {
+		return "", nil
+	}
+	alias := aliasOf(model)
+	price, err := r.price(ctx, alias)
+	if err != nil {
+		return "", nil
+	}
+	limit, err := r.supervisor.Budget.OutputLimit()
+	if err != nil {
+		return "", err
+	}
+	req, err := r.store.Calibrate(ctx, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: policy.LedgerRef(purpose, alias), Price: price, WantOut: limit})
+	if err != nil {
+		return "", err
+	}
+	inf, need := math.Inf(1), 0.0
+	for _, c := range calls {
+		body, err := chatBody(model, c.Prompt, c.Input(), limit)
+		if err != nil {
+			return "", err
+		}
+		req.Bytes = len(body)
+		h, _ := policy.Fit(policy.Free{Task: inf, Day: inf, Month: inf, Project: inf}, req)
+		need += h.EUR
+	}
+	own, _, err := r.store.Free(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	if free := own.Free(); need > free {
+		return fmt.Sprintf("its %s would hold about %.2f EUR at the gateway, and the card has %.2f EUR free. Fund the card (Fund on the board) so %s can run, or review the change yourself.",
+			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0), what), nil
+	}
+	return "", nil
 }
 
 // refusedForHeadroom: the gateway refused the call for the smallest of

@@ -513,6 +513,10 @@ func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.
 		policy.Free{Task: headroom, Day: inf, Month: inf, Project: inf}, nil
 }
 
+func (s *acceptanceStore) Calibrate(_ context.Context, r policy.HoldRequest) (policy.HoldRequest, error) {
+	return r, nil
+}
+
 func (s *acceptanceStore) Opening(context.Context, string, string) (policy.Opening, error) {
 	return policy.Opening{}, nil
 }

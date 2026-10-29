@@ -1313,6 +1313,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		more, at := planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles}, limit)
 		calls, of = append(calls, more...), at
 	}
+	if why, err := r.unfunded(ctx, t.ID, model, policy.PurposeReview, "the review", calls); err != nil {
+		return Review{}, err
+	} else if why != "" {
+		return notRun(why)
+	}
 	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
 	if err != nil {
 		return Review{}, err

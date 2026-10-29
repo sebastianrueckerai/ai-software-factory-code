@@ -83,8 +83,10 @@ type fakeStore struct {
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
-	held      map[string]policy.TaskFree
-	capsFree  *policy.Free
+	held     map[string]policy.TaskFree
+	capsFree *policy.Free
+	// earlier is Calibrate's earlier call by ref
+	earlier   map[string]policy.Usage
 	openings  map[string]policy.Opening
 	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
@@ -1055,6 +1057,11 @@ func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.Task
 	}
 	f.Task = tf.Free()
 	return tf, f, nil
+}
+
+func (s *fakeStore) Calibrate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, error) {
+	r.Earlier = s.earlier[r.Ref]
+	return r, nil
 }
 
 func (s *fakeStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {

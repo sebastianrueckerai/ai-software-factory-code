@@ -250,6 +250,16 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 	})
 }
 
+// chatBody is the body of Chat's call: input, compact JSON, as the user
+// message.
+func chatBody(alias, system string, input any, limit int) ([]byte, error) {
+	user, err := json.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	return chatPayload(alias, system, user, limit)
+}
+
 // Chat is one JSON-mode call of alias through the gateway on the task's
 // account for purpose, with system as the system prompt and input,
 // compact JSON, as the user message, cut after timeout (the task's
@@ -265,11 +275,7 @@ func (m *SupervisorModel) Chat(ctx context.Context, taskID, alias, purpose strin
 	if err != nil {
 		return "", "", err
 	}
-	user, err := json.Marshal(input)
-	if err != nil {
-		return "", "", err
-	}
-	payload, err := chatPayload(alias, system, user, limit)
+	payload, err := chatBody(alias, system, input, limit)
 	if err != nil {
 		return "", "", err
 	}
