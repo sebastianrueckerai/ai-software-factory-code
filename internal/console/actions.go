@@ -1254,6 +1254,40 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), nil
 }
 
+// doReplan sends card id, or the plan it belongs to, back to the planner
+// for the member, note saying why. Only once factoryd accepts does the
+// note go on the card's issue as the member, in the words the replan step
+// holds: the plan loop knows that comment for the replan's own, not a
+// writer's ask. factoryd carries the words, so a failed post is logged.
+func (c *Console) doReplan(ctx context.Context, a actor, id, note string) (string, error) {
+	note = strings.TrimSpace(note)
+	if note == "" || len(note) > 64<<10 {
+		return "", refuse(http.StatusBadRequest, "A replan needs a comment saying why: the planner reads it.")
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	said, err := c.cfg.Replan(ctx, t.ID, a.s.user, note)
+	var no factoryd.ErrNoReplan
+	switch {
+	case errors.As(err, &no):
+		return "", refuse(http.StatusConflict, no.Error())
+	case err != nil:
+		log.Printf("console: %s replans %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Card #%d could not go back to the planner: see the factoryd log, then replan it again.", t.IssueNumber))
+	}
+	comment := factoryd.ReplanComment(note)
+	if t.IssueNumber != 0 {
+		if err := c.comment(ctx, a, t, comment, nil); err != nil {
+			log.Printf("console: %s replanned %s, its note not posted on #%d: %v", a.s.user, t.ID, t.IssueNumber, err)
+		}
+	}
+	log.Printf("console: %s replanned %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
+	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardReplanned, map[string]any{"comment": comment})
+	return said, nil
+}
+
 // acceptanceEvidence is card id's newest acceptance green (roadmap 208):
 // the row factoryd recorded when one of its sessions ran one of its
 // plan's acceptance commands and it exited 0, as AcceptanceEvidence says

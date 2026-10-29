@@ -505,6 +505,9 @@ type card struct {
 	// nil hides the button; Evidence is the newest green run, the button's
 	// title.
 	AcceptanceClose *acceptanceCloseForm
+	// Replan is the drawer's Replan of a card that may go back to the
+	// planner, for an approver.
+	Replan *replanForm
 	// Total is the task's time so far, or in all once it finished; GateAge
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
@@ -862,6 +865,13 @@ type acceptanceCloseForm struct{ CSRF, Evidence string }
 
 // retry is a failed plan card's Retry button.
 type retry struct{ CSRF string }
+
+// replanForm is the drawer's Replan; Group: the card is a plan or a
+// plan's card, so its plan goes back.
+type replanForm struct {
+	CSRF  string
+	Group bool
+}
 
 type column struct {
 	Title string
@@ -1747,6 +1757,9 @@ type boardView struct {
 	mergePended map[string]bool
 	unchecked   bool // a writers check failed, logged once per render
 	problems    []string
+	// planTrack names the repositories whose project's process has a plan
+	// track.
+	planTrack map[string]bool
 }
 
 // viewOf reads what every card of a render shares, and the projects agents
@@ -1780,6 +1793,10 @@ func (c *Console) projectsOf(r *http.Request, f boardFilter) (*boardView, []fact
 	all, err := c.coderProjects(ctx)
 	if err != nil {
 		return v, nil, fmt.Errorf("projects: %w", err)
+	}
+	v.planTrack = map[string]bool{}
+	for _, p := range all {
+		_, v.planTrack[p.Repository] = p.Tracks.Track(policy.TrackPlan)
 	}
 	return v, all, nil
 }
@@ -1870,6 +1887,9 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if t.Status == "failed" && t.Source == factoryd.SourcePlan && t.Parent != "" && (t.PlanKey != "" || retried && replacement.IssueNumber == 0) &&
 		v.approves(t.Repository) {
 		k.Retry = &retry{CSRF: v.csrf}
+	}
+	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
+		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
 	}
 	if v.escalated(t) {
 		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert

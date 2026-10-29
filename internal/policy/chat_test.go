@@ -18,7 +18,7 @@ func TestChatDefaults(t *testing.T) {
 	}
 	want := ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 		Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
-			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency",
+			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 			"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 	if got := tree.Document.ChatOf(tree.Projects["linkshort"]); !reflect.DeepEqual(got, want) {
 		t.Fatalf("ChatOf(linkshort) = %+v, want %+v", got, want)

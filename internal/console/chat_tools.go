@@ -1490,6 +1490,13 @@ var tools = []chatTool{
 			note, err := t.c.doSetDependency(t.r.Context(), t.a, in.TaskID, in.DependsOn, in.Remove)
 			return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
 		}},
+	{name: "replan", title: "Replan a card", write: true,
+		params: map[string]any{"task_id": taskParam, "note": str("why it goes back: the planner reads it")}, required: []string{"task_id", "note"},
+		about: "Send a card or its plan back to the planner, which plans on top of what was built.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note)
+			return note, nil, err
+		}},
 	{name: "read_doc", title: "Read a document",
 		params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
 			"from":  stepParam("the first line to read"),

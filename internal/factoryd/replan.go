@@ -380,6 +380,13 @@ type ErrNoReplan string
 
 func (e ErrNoReplan) Error() string { return string(e) }
 
+// ReplanComment is a person's replan comment as the replan step holds it,
+// sanitised and cut. The console posts these words on the issue, so the
+// plan loop knows the comment for the replan's own note.
+func ReplanComment(s string) string {
+	return textutil.Truncate(sanitize.Inbound(s), maxHandoverMessage)
+}
+
 // MayReplan tells whether a person may send card t back to the planner: an
 // agent card in the work bound that is a plan, a plan's child, or a direct
 // card that did not merge, where its project's process has a plan track
@@ -399,7 +406,7 @@ func (r *Runner) Replan(ctx context.Context, taskID string, ask ReplanAsk) (stri
 	if err != nil {
 		return "", err
 	}
-	ask.Comment = textutil.Truncate(sanitize.Inbound(ask.Comment), maxHandoverMessage)
+	ask.Comment = ReplanComment(ask.Comment)
 	switch {
 	case t.Kind != "agent":
 		return "", ErrNoReplan(personCardRefusal(t))

@@ -24,6 +24,13 @@ func (c *Console) acceptanceCloseCard(w http.ResponseWriter, r *http.Request) {
 	c.showNote(w, r, c.doCloseAcceptance)
 }
 
+// replanCard is the drawer's Replan (doReplan, on the form's note).
+func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {
+	c.showNote(w, r, func(ctx context.Context, a actor, id string) (string, error) {
+		return c.doReplan(ctx, a, id, r.PostFormValue("note"))
+	})
+}
+
 // planAnswer posts a writer's answer to a question of the plan
 // (doAnswerPlanQuestion).
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {

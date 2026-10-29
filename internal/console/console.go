@@ -244,6 +244,11 @@ type Config struct {
 	// acceptance commands green (roadmap 208) closes on the fact, no
 	// answer owed.
 	CloseCardDone func(ctx context.Context, taskID, by, evidence string) error
+	// Replan sends card taskID, or the plan it belongs to, back to the
+	// planner for by with comment saying why (factoryd's Runner.Replan),
+	// and answers the note for the person; a card or plan that takes no
+	// replan answers factoryd.ErrNoReplan.
+	Replan func(ctx context.Context, taskID, by, comment string) (string, error)
 	// AnswerWhole signals card taskID's workflow that comment, which the
 	// answer box posted for by, is a whole answer
 	// (factoryd.SignalAnswerWhole): the card resumes on it without the
@@ -479,6 +484,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
+		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
 		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},

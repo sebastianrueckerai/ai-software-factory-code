@@ -132,7 +132,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
-	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency",
+	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "ask", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}
@@ -146,7 +146,7 @@ var VisionModels = []string{"vision"}
 // DefaultChat is the chat block of a policy without one.
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
-		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency",
+		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
