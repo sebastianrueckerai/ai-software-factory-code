@@ -66,6 +66,28 @@ type TaskBrief struct {
 	// Image is what the session's project image holds; nil when it runs
 	// the factory's image.
 	Image *imagegen.Manifest `json:"image,omitempty"`
+	// Prior is the previous session's working state, which factoryd copied
+	// from its record; nil for a first session.
+	Prior *PriorState `json:"prior,omitempty"`
+}
+
+// PriorState is the previous session's working state as factoryd copied it.
+type PriorState struct {
+	Session string   `json:"session"`
+	Heading string   `json:"heading"`           // factoryd's words: the date, the reason, the commit
+	Body    string   `json:"body"`              // agent-written content: todo list, report excerpts, files
+	Dir     string   `json:"dir,omitempty"`     // set by the worker: where the full reports sit
+	Reports []string `json:"reports,omitempty"` // their file names, set by the worker
+}
+
+// ReportFile is one full subagent report the worker writes beside the brief.
+type ReportFile struct{ Name, Text string }
+
+// BriefPush is what factoryd pushes to a worker before the conversation begins.
+type BriefPush struct {
+	Handover string       `json:"handover"`
+	Prior    *PriorState  `json:"prior,omitempty"`
+	Files    []ReportFile `json:"files,omitempty"`
 }
 
 // Author standings (ruling 152).

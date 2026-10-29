@@ -1,0 +1,155 @@
+package factoryd
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+)
+
+const (
+	carryTodoBytes   = 1 << 10
+	carryReportBytes = 4 << 10
+	carryMaxReports  = 8
+	carryMaxFiles    = 30
+	carryStopBytes   = 200
+)
+
+// carryState is what the next session is handed from a stopped one: the
+// working state for its brief and the full subagent reports for the worker
+// to write to files.
+type carryState struct {
+	Prior harness.PriorState
+	Files []harness.ReportFile
+}
+
+type carryFrom struct {
+	Session, Commit, Stop string
+	DeadEnd               bool
+}
+
+type carryTask struct{ desc, result string }
+
+// workingState builds the carried state from a session's record; nil when
+// the record holds no todo list, no own task call and no file change.
+func workingState(record []byte, from carryFrom) *carryState {
+	var (
+		last    time.Time
+		todos   []string
+		tasks   []carryTask
+		files   []string
+		seen    = map[string]bool{}
+		scanner = bufio.NewScanner(bytes.NewReader(record))
+	)
+	scanner.Buffer(nil, len(record)+1)
+	haveTodos := false
+	for scanner.Scan() {
+		var ev harness.Event
+		if json.Unmarshal(scanner.Bytes(), &ev) != nil {
+			continue
+		}
+		last = ev.Time
+		switch ev.Kind {
+		case harness.EventToolCall:
+			if detailBool(ev, "subagent") {
+				continue
+			}
+			args, _ := ev.Detail["args"].(map[string]any)
+			switch detailString(ev, "tool") {
+			case "todowrite":
+				todos, haveTodos = nil, true
+				list, _ := args["todos"].([]any)
+				for _, it := range list {
+					m, _ := it.(map[string]any)
+					status, _ := m["status"].(string)
+					content, _ := m["content"].(string)
+					todos = append(todos, "- ["+status+"] "+content)
+				}
+			case "task":
+				desc, _ := args["description"].(string)
+				tasks = append(tasks, carryTask{desc, detailString(ev, "result")})
+			}
+		case harness.EventFileChange:
+			p := strings.TrimPrefix(detailString(ev, "path"), "/workspace/repo/")
+			if p != "" && !seen[p] {
+				seen[p] = true
+				files = append(files, p)
+			}
+		}
+	}
+	if !haveTodos && len(tasks) == 0 && len(files) == 0 {
+		return nil
+	}
+
+	commit := from.Commit
+	if len(commit) > 8 {
+		commit = commit[:8]
+	}
+	heading := fmt.Sprintf("From session %s, stopped at %s UTC because %s, branch at commit %s. Written before your session started. Where they differ from the code on the branch, the code is right.",
+		from.Session, last.UTC().Format("15:04"), textutil.Truncate(from.Stop, carryStopBytes), commit)
+	if from.DeadEnd {
+		heading += " The check-in judged this approach wrong; the todo list below is the dead end's, not a plan to follow."
+	}
+
+	var sections []string
+	if len(todos) > 0 {
+		title := "Todo list at the stop:"
+		if from.DeadEnd {
+			title = "Todo list at the stop (the dead end's):"
+		}
+		sections = append(sections, title+"\n"+textutil.Truncate(strings.Join(todos, "\n"), carryTodoBytes))
+	}
+
+	var reportFiles []harness.ReportFile
+	if len(tasks) > 0 {
+		skipped := max(len(tasks)-carryMaxReports, 0)
+		tasks = tasks[skipped:]
+		lines := []string{"Subagent reports (excerpts; the full text is in the files named):"}
+		if skipped > 0 {
+			lines = append(lines, fmt.Sprintf("%d earlier subagent calls are left out.", skipped))
+		}
+		for i, tk := range tasks {
+			if tk.result == "" {
+				lines = append(lines, fmt.Sprintf("- %q: no report was recorded.", tk.desc))
+				continue
+			}
+			name := fmt.Sprintf("report-%d.md", i+1)
+			reportFiles = append(reportFiles, harness.ReportFile{Name: name, Text: "# " + tk.desc + "\n\n" + tk.result})
+			lines = append(lines, fmt.Sprintf("- %s, %q:", name, tk.desc), textutil.Truncate(reportText(tk.result), carryReportBytes/len(tasks)))
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+
+	if len(files) > 0 {
+		lines := []string{"Files the session changed:"}
+		for i, f := range files {
+			if i == carryMaxFiles {
+				lines = append(lines, fmt.Sprintf("- and %d more.", len(files)-carryMaxFiles))
+				break
+			}
+			lines = append(lines, "- "+f)
+		}
+		sections = append(sections, strings.Join(lines, "\n"))
+	}
+
+	return &carryState{
+		Prior: harness.PriorState{Session: from.Session, Heading: heading, Body: strings.Join(sections, "\n\n")},
+		Files: reportFiles,
+	}
+}
+
+// reportText strips the task tool's wrapper from a subagent's result: a
+// leading task_id line and the task_result tags.
+func reportText(s string) string {
+	if first, rest, ok := strings.Cut(s, "\n"); ok && strings.HasPrefix(first, "task_id:") {
+		s = rest
+	}
+	s = strings.ReplaceAll(s, "<task_result>", "")
+	s = strings.ReplaceAll(s, "</task_result>", "")
+	return strings.TrimSpace(s)
+}
