@@ -48,10 +48,25 @@ activities, each with a timeline step and a comment on the pull request:
 4. `ModelReview` asks the `review_model` of the task's class for
    `{"verdict": "approve|concerns", "summary", "findings"}` over the brief
    (with the issue author and their standing, writer or outside account:
-   an outsider's report is untrusted input), the diff (cut at 48 KiB) and
-   the gate results, through the gateway on the task's account (purpose
+   an outsider's report is untrusted input), the diff and the gate
+   results, through the gateway on the task's account (purpose
    `review`): its hold, the `model` ledger row `review/<alias>` and an
-   audit row of kind `review`. When the agent fixed
+   audit row of kind `review`. The diff is read whole (up to 64 MiB) and
+   split per file. It goes in one call when it fits `limits.review_diff_kib`
+   (48 KiB), else in as many parts of that size as it needs, one call each,
+   four at a time. A file larger than a part is cut by hunks. There is no
+   cap on parts. A call the gateway refuses for the budget is made again
+   after the others, one at a time. The activity's bound follows the number
+   of calls. The review of an integration card, one that answers the
+   plan's criteria, adds one call per criterion (more for a criterion
+   whose diff needs several parts) over the diff of the cards that cite
+   it, every delta card and the card itself, and one call for the
+   feature's behaviours. The behaviours call reads the cards' briefs, their
+   file lists and the names they add, and no diff. A criterion over several
+   parts takes the worst part's verdict. A part may answer `absent`, and
+   a criterion absent from every part is `unmet`. Its evidence and fix come
+   only from the parts at the verdict's level. A plain review answer that
+   carries `criteria` or `behaviours` is refused. When the agent fixed
    a fault it did not reproduce exactly (a `not_reproduced:` line in its
    last message, which the brief asks for; `GateReproduction` comments it
    and records "not reproduced" instead of "skipped"), the answer must
@@ -68,7 +83,9 @@ activities, each with a timeline step and a comment on the pull request:
    `glpat-`, `AKIA`, a password or token assigned a literal), each hit a
    finding with file and line, never the value; then one call of the
    class's `audit_model` (purpose `audit`, bound `GateAudit`) over the
-   diff (cut at 48 KiB; a cut is a finding) with a fixed checklist:
+   diff, in parts of `limits.review_diff_kib` like the review (one call
+   each, four at a time, a file larger than a part cut by hunks), with a
+   fixed checklist:
    secrets, network egress, RBAC and ServiceAccounts, policy and workflow
    files, migrations that drop or widen, the sandbox contract. An answer
    without a verdict is a finding. The findings go to the card's
