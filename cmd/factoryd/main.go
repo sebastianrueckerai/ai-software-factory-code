@@ -360,10 +360,17 @@ func main() {
 	go func() {
 		// nudged is the stale sweep's memory of its signals, task id → when
 		nudged := map[string]time.Time{}
+		var lastBranchSweep time.Time
 		for {
 			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			runner.CriteriaPass(ctx)
+			if now := time.Now(); now.Sub(lastBranchSweep) >= time.Hour {
+				lastBranchSweep = now
+				if err := runner.SweepBranches(ctx, now); err != nil {
+					log.Printf("branch sweep: %v", err)
+				}
+			}
 			// SigNoz's rules evaluate every minute, so its list changes no
 			// faster: a sweep a minute heals a lost resolve before a card's
 			// first model call or a promotion's check reads the row

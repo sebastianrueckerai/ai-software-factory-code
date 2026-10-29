@@ -1840,20 +1840,18 @@ func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 	}
 }
 
-// A trusted close of a failed card's issue deletes the card's branch on the
-// bot's fork, which Finish keeps for a retry, and signals nothing: the
-// workflow is over. A done card's branch went at its end; a running card's
-// close is its workflow's signal, as before.
-func TestClosingAFailedCardDeletesItsBranch(t *testing.T) {
-	branch := "DELETE /api/v1/repos/factory-agent/ai-software-factory-code/branches/factory/t1"
+// A trusted close of a failed card's issue keeps the card's branch on the
+// bot's fork, where the sweep ends it, and signals nothing: the workflow is
+// over. A running card's close is its workflow's signal, as before.
+func TestClosingAFailedCardKeepsItsBranch(t *testing.T) {
 	for _, tc := range []struct {
 		status, closer string
 		recorded       bool
 		deletes        []string
 		signals        []string
 	}{
-		{status: "failed", closer: "sebastian", deletes: []string{branch}},
-		{status: "failed", closer: "factory-agent", recorded: true, deletes: []string{branch}},
+		{status: "failed", closer: "sebastian"},
+		{status: "failed", closer: "factory-agent", recorded: true},
 		{status: "failed", closer: "factory-agent"},
 		{status: "failed", closer: "mallory"},
 		{status: "done", closer: "sebastian", signals: []string{"t1 issue_closed sebastian #0: "}},

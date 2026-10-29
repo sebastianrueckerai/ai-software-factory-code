@@ -2195,14 +2195,14 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	// a malformed repository still completes the task, only uncommented
 	repo, repoErr := SplitRepo(t.Repository)
 	state := final
-	if final == "done" && !afterMerge && repoErr == nil && t.PRNumber > 0 {
-		merged, err := r.cardMerged(ctx, repo, t)
-		if err != nil {
+	merged := afterMerge
+	if !afterMerge && final != "failed" && repoErr == nil && t.PRNumber > 0 {
+		if merged, err = r.cardMerged(ctx, repo, t); err != nil {
 			return err
 		}
-		if merged && endsMerged(t, r.cfg.Policy().Tree) {
-			state = "merged"
-		}
+	}
+	if final == "done" && !afterMerge && merged && endsMerged(t, r.cfg.Policy().Tree) {
+		state = "merged"
 	}
 	if t.Source == SourceRoll {
 		if err := r.ClearRollHold(ctx, taskID, final == "done"); err != nil {
@@ -2229,7 +2229,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if final == "done" || final == "closed" {
+		if merged {
 			fork := r.forgejo.Fork(repo)
 			if err := cleanup(taskID, "delete its branch", r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, taskBranch(t))); err != nil {
 				return err

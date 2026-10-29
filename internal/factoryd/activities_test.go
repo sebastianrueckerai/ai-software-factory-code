@@ -53,6 +53,7 @@ type prForgejo struct {
 	parents       map[string][]string // commit → its parents, first first; unlisted commits answer base
 	closed        []int64             // PATCH /pulls/{n} closes
 	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
+	branches      []string            // GET /branches lists these names
 	branchGone    bool                // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
 	refuse        bool                // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
 	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
@@ -175,6 +176,12 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			io.WriteString(w, `{}`)
 		case r.Method == "GET" && p == "/pulls":
 			json.NewEncoder(w).Encode(f.open)
+		case r.Method == "GET" && p == "/branches":
+			list := []map[string]string{}
+			for _, name := range f.branches {
+				list = append(list, map[string]string{"name": name})
+			}
+			json.NewEncoder(w).Encode(list)
 		case r.Method == "GET" && strings.HasPrefix(p, "/branches/"):
 			if f.branchGone {
 				http.NotFound(w, r)
@@ -1605,18 +1612,21 @@ func TestFinishCompletesPastARefusedCleanup(t *testing.T) {
 	}
 }
 
-// A finished task's branch on the fork goes with it (its PR is merged or
-// closed by then); a branch already gone is done.
+// A finished task's branch on the fork goes with it only when its work
+// merged; a branch already gone is done, an unmerged one is kept.
 func TestFinishDeletesTheForkBranch(t *testing.T) {
+	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m1","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	open := `{"number":12,"state":"open","merged":false,"head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
 	for name, tc := range map[string]struct {
 		fj      *prForgejo
 		deleted []string
 	}{
-		"deleted":      {&prForgejo{}, []string{"factory-agent/repo factory/t1"}},
-		"already gone": {&prForgejo{branchGone: true}, nil},
+		"merged":       {&prForgejo{pulls: map[int64]string{12: merged}}, []string{"factory-agent/repo factory/t1"}},
+		"already gone": {&prForgejo{pulls: map[int64]string{12: merged}, branchGone: true}, nil},
+		"unmerged":     {&prForgejo{pulls: map[int64]string{12: open}}, nil},
 	} {
 		fj := tc.fj
-		r, store, _ := newActivityRunner(t, withStatus(prTask, "in-review"), fj)
+		r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged"); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
@@ -1642,16 +1652,41 @@ func TestFinishFailedKeepsBranch(t *testing.T) {
 	}
 }
 
-// done and closed delete the task's branch on the fork.
-func TestFinishDoneDeletesBranch(t *testing.T) {
-	for _, final := range []string{"done", "closed"} {
-		fj := &prForgejo{issueOff: true}
-		r, _, _ := newActivityRunner(t, withStatus(prTask, "in-review"), fj)
-		if _, err := execActivity(t, r, ActivityFinish, "t1", final, "x"); err != nil {
-			t.Fatalf("%s: %v", final, err)
+// A done card with a merged pull request and a closed merged card delete
+// the task's branch on the fork; a closed card whose pull request never
+// merged keeps it.
+func TestFinishDeletesOnlyMergedBranches(t *testing.T) {
+	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m1","head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	open := `{"number":12,"state":"open","merged":false,"head":{"ref":"factory/t1","sha":"c7","repo":{"full_name":"factory-agent/repo"}}}`
+	fork := "factory-agent/repo factory/t1"
+	for name, tc := range map[string]struct {
+		task    Task
+		pull    string
+		final   string
+		deleted []string
+		closed  []int64
+	}{
+		"done merged":        {withPR(withStatus(prTask, "in-review"), 12), merged, "done", []string{fork}, nil},
+		"closed unmerged":    {withPR(withStatus(prTask, "in-review"), 12), open, "closed", nil, []int64{12}},
+		"closed no pull":     {withStatus(prTask, "running"), "", "closed", nil, nil},
+		"closed after merge": {withPR(withStatus(prTask, "merged"), 12), merged, "closed", []string{fork}, nil},
+	} {
+		fj := &prForgejo{issueOff: true, pulls: map[int64]string{}}
+		if tc.pull != "" {
+			fj.pulls[12] = tc.pull
 		}
-		if !slices.Equal(fj.deleted, []string{"factory-agent/repo factory/t1"}) {
-			t.Fatalf("%s: deleted = %v, want the task's branch on the fork", final, fj.deleted)
+		r, _, _ := newActivityRunner(t, tc.task, fj)
+		var err error
+		if name == "closed after merge" {
+			err = r.CloseMerged(context.Background(), "t1", "sebastian")
+		} else {
+			_, err = execActivity(t, r, ActivityFinish, "t1", tc.final, "x")
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if !slices.Equal(fj.deleted, tc.deleted) || !slices.Equal(fj.closed, tc.closed) {
+			t.Fatalf("%s: deleted = %v, closed = %v; want %v, %v", name, fj.deleted, fj.closed, tc.deleted, tc.closed)
 		}
 	}
 }

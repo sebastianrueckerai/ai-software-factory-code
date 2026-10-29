@@ -1256,25 +1256,11 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 		return nil // endPRCard closed the issue and ends the card itself
 	case t.Kind == "human":
 		return in.finishHumanTask(ctx, t, "done", "", closer, nil)
-	case t.Status == "failed":
-		return in.deleteFailedBranch(ctx, t)
-	case t.Status == "merged":
+	case t.Status == "failed", t.Status == "merged":
 		return nil
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
-}
-
-// deleteFailedBranch: Finish keeps a failed task's branch on the fork for a
-// retry; its issue's close gives it up. The workflow is over, so nothing is
-// signalled.
-func (in *Intake) deleteFailedBranch(ctx context.Context, t Task) error {
-	repo, err := SplitRepo(t.Repository)
-	if err != nil {
-		return err
-	}
-	fork := in.Forgejo.Fork(repo)
-	return in.Forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, taskBranch(t))
 }
 
 // CloseCard is the console's Close of card id, which has no issue, for
