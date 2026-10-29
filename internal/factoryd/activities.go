@@ -957,6 +957,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			res.Outcome, res.DeadEnd = OutcomeRedirect, d.Judged
 		case d.Action == ActionRetryStronger:
 			res.Outcome, res.DeadEnd = OutcomeRetryStronger, d.Judged
+		case d.Action == ActionReplan:
+			res.Outcome, res.Reason, res.Replan = OutcomeReplan, d.Reason, replanText(out.trip, *d)
 		default:
 			res.Outcome, res.Choices = OutcomeEscalate, d.Choices
 			res.Reason = fmt.Sprintf("%s\n\nDetector: %s (%s)\nProgress: %s", d.Reason, out.trip.Kind, out.trip.Detail, out.digest)
@@ -991,6 +993,19 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		res.Outcome = OutcomeNotStarted
 	}
 	return res
+}
+
+// replanText is the planner's text of a replan: the check-in's names the
+// trip it judged, with its reason and guidance; a person's is their reason.
+func replanText(trip *Trip, d Decision) string {
+	if trip.Kind == TripReplan {
+		return d.Reason
+	}
+	text := fmt.Sprintf("The check-in decided replan after the %s trip (%s): %s", trip.Kind, trip.Detail, d.Reason)
+	if d.Guidance != "" {
+		text += "\nIts guidance: " + d.Guidance
+	}
+	return text
 }
 
 // OverHoldCall is a model call the gateway booked beyond its hold (COST

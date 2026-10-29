@@ -3691,6 +3691,140 @@ func TestRunSessionOfAReportNeverTripsSize(t *testing.T) {
 	}
 }
 
+// A small card past its bound: the check-in's replan stops the session,
+// its work in progress pushed and kept, and the result carries the text
+// the planner cuts the rest from.
+func TestRunSessionCheckinReplanStopsTheSession(t *testing.T) {
+	runner, hub, kube, _, chat, store, objects := liveRig(t, CheckinResponse{Text: `{"decision":"replan","reason":"the rest is two packages"}`})
+	runner.stopWait = 10 * time.Second
+	tk := store.tasks["t2"]
+	tk.Size = "small"
+	store.tasks["t2"] = tk
+	version := testPolicyVersion()
+	version.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil,
+		cardDiffLine(250, 100)+"\n"+stoppedWorker("t2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if chat.calls != 1 || !strings.Contains(chat.gots[0].System, "|replan") || !strings.Contains(chat.gots[0].Input, "- replan:") {
+		t.Fatalf("chat = %d calls %+v, want one conversation offered replan", chat.calls, chat.gots)
+	}
+	want := "The check-in decided replan after the size trip (the card's diff is 350 changed lines (added plus deleted), over the 300 its size plans): the rest is two packages"
+	if res.Outcome != OutcomeReplan || res.Reason != "the rest is two packages" || res.Trip != string(TripSize) || res.Replan != want || res.Commit != "c-wip" {
+		t.Fatalf("result = %+v, want the replan with its text and the work in progress c-wip", res)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"decision":"replan"`) {
+		t.Fatalf("timeline = %s, want the check-in's replan step", tl)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "**replan** after the size detector tripped") {
+		t.Fatalf("comments = %q, want the check-in's replan on the issue", hub.comments)
+	}
+}
+
+// A person's replan stops the running session on their word: no check-in
+// is asked, no detector's alert is raised, the step is recorded and the
+// work in progress kept.
+func TestRunSessionOfAPersonsReplanSkipsTheCheckin(t *testing.T) {
+	runner, hub, kube, _, chat, store, objects := liveRig(t)
+	runner.stopWait = 10 * time.Second
+	delivered := make(chan error, 1)
+	go func() {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			err := runner.EscalateSession(t.Context(), "t2", AgentAsk{Kind: AskReplan, Reason: "replanned by ana: x"})
+			if !errors.Is(err, ErrNoLiveSession) || time.Now().After(deadline) {
+				delivered <- err
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, stoppedWorker("t2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatalf("EscalateSession = %v", err)
+	}
+	if res.Outcome != OutcomeReplan || res.Reason != "replanned by ana: x" || res.Trip != string(TripReplan) || res.Replan != "replanned by ana: x" || res.Commit != "c-wip" {
+		t.Fatalf("result = %+v, want the person's replan with the work in progress c-wip", res)
+	}
+	if chat.calls != 0 {
+		t.Fatalf("check-in conversations = %d, want none", chat.calls)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the worker was not stopped")
+	}
+	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(tl, `"step":"checkin"`) || !strings.Contains(tl, `"detector":"replan"`) {
+		t.Fatalf("timeline = %s, want the person's replan step", tl)
+	}
+	if alerts := store.alertRows(); len(alerts) != 0 {
+		t.Fatalf("alerts = %+v, want none: a person's replan trips no detector", alerts)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(hub.comments) != 0 {
+		t.Fatalf("comments = %q, want none: a person's decision is recorded, not commented", hub.comments)
+	}
+}
+
+// A report session's card is not cut: its check-in is offered no replan.
+func TestRunSessionOfAReportOffersNoReplan(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance", Parent: "t-parent",
+		Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
+	runner.checkin = chat
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, loopFailure(1)+loopFailure(2)+loopFailure(3)+resultLine(true, `{"verdict": "clear"}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("chat = %d calls %+v, want the check-in on same_failure", chat.calls, chat.gots)
+	}
+	if got := chat.gots[0]; strings.Contains(got.System, "|replan") || strings.Contains(got.Input, "- replan:") {
+		t.Fatalf("a report's check-in is offered replan:\n%s\n%s", got.System, got.Input)
+	}
+}
+
+// Only a bound agent card's coding session can be cut.
+func TestCuttable(t *testing.T) {
+	card := Task{Kind: "agent", Source: SourcePlan}
+	for name, tc := range map[string]struct {
+		t    Task
+		s    sessionSpec
+		want bool
+	}{
+		"a coding session":       {card, sessionSpec{}, true},
+		"a report session":       {card, sessionSpec{report: "the guide"}, false},
+		"a planner session":      {card, sessionSpec{planner: true}, false},
+		"a human card":           {Task{Kind: "human"}, sessionSpec{}, false},
+		"an unbound sizing card": {Task{Kind: "agent", Source: SourceSizing}, sessionSpec{}, false},
+	} {
+		if got := cuttable(tc.t, tc.s); got != tc.want {
+			t.Errorf("%s: cuttable = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
 // The session record is scrubbed with the runner's scrubber: a boot
 // secret no generic rule knows is masked by its value.
 func TestRunSessionRecordMasksTheBootSecrets(t *testing.T) {

@@ -45,11 +45,14 @@ type AgentAsk struct {
 	Need           string   `json:"need,omitempty"`
 }
 
-// AgentAsk kinds.
+// AgentAsk kinds. AskReplan is a person's stop of the running session
+// for the card's replan (Reason: the text for the planner); only factoryd
+// sends it, so the endpoint refuses it.
 const (
 	AskEscalation = "escalation"
 	AskInfo       = "info_request"
 	AskTool       = "missing_tool"
+	AskReplan     = "replan"
 )
 
 // maxTool and maxNeed bound a tool request's tool and need, in
@@ -91,10 +94,12 @@ func (a AgentAsk) validate() error {
 
 // reason is the ask as the workflow carries it: an escalation's reason
 // (its first line the question, escalationQuestion), the information
-// request's text, or a tool request as a run from before the tool park
-// asks a human.
+// request's text, a tool request as a run from before the tool park
+// asks a human, or a person's replan's own reason.
 func (a AgentAsk) reason() string {
 	switch a.Kind {
+	case AskReplan:
+		return a.Reason
 	case AskInfo:
 		return agentAsksAuthor + a.Question + "\nTried: " + a.Tried + "\nNeeds: " + a.Needs
 	case AskTool:

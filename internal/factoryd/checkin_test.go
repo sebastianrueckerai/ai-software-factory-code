@@ -775,17 +775,17 @@ func TestCheckinStatementNamesTheStuckRule(t *testing.T) {
 // The gate persona is today's constant; the session and dead personas name
 // their own answer shapes and none of the gate's verdict vocabulary.
 func TestCheckinSystemPerMoment(t *testing.T) {
-	if checkinSystemFor(CheckInGate) != checkinSystem {
+	if checkinSystemFor(CheckInGate, false) != checkinSystem {
 		t.Fatal("the gate persona is not today's constant")
 	}
-	session := checkinSystemFor(CheckInSession)
+	session := checkinSystemFor(CheckInSession, false)
 	if !strings.Contains(session, `{"decision":"continue|message|handover|human","guidance":"..."`) {
 		t.Fatalf("session persona lacks the answer's shape:\n%s", session)
 	}
 	if !strings.Contains(session, `"message" needs guidance`) || !strings.Contains(session, `"handover" stops the session`) {
 		t.Fatalf("session persona does not carry the message and handover rules:\n%s", session)
 	}
-	dead := checkinSystemFor(CheckInDead)
+	dead := checkinSystemFor(CheckInDead, false)
 	if !strings.Contains(dead, `{"decision":"handover|human","reason_kind":"..."`) {
 		t.Fatalf("dead persona lacks the answer's shape:\n%s", dead)
 	}
@@ -923,9 +923,9 @@ func TestPaceLineFloorsTheMinutesLeftAtZero(t *testing.T) {
 }
 
 func TestCheckinStatementOfASizeTripAsksWhetherTheRestFits(t *testing.T) {
-	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should cut scope or wrap up, with the instruction. Nothing here cuts the card."
+	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time?"
 	statement := func(detector TripKind) string {
-		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1",
+		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true,
 			Trip: &TripReport{Detector: detector, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
 	}
 	if got := statement(TripSize); !strings.Contains(got, question) {
@@ -933,5 +933,56 @@ func TestCheckinStatementOfASizeTripAsksWhetherTheRestFits(t *testing.T) {
 	}
 	if got := statement(TripRepetition); strings.Contains(got, "The size trip asks") {
 		t.Fatalf("repetition statement carries the size question:\n%s", got)
+	}
+}
+
+// The session check-in offers replan only where the card can be cut: the
+// rule after the human line, the persona's answer shape, and the parser
+// all follow the ask's Replan.
+func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
+	const rule = "- replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards; the first one lands what the branch holds. Say why in reason; guidance may name the parts.\n"
+	statement := func(replan bool) string {
+		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: replan,
+			Trip: &TripReport{Detector: TripRepetition, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
+	}
+	if got := statement(true); !strings.Contains(got, "with why.\n"+rule) {
+		t.Fatalf("a cuttable card's statement lacks the replan rule right after the human line:\n%s", got)
+	}
+	if got := statement(false); strings.Contains(got, "- replan:") {
+		t.Fatalf("an uncuttable card's statement offers replan:\n%s", got)
+	}
+	if got := checkinSystemFor(CheckInSession, true); !strings.Contains(got, `{"decision":"continue|message|handover|human|replan","guidance":"..."`) {
+		t.Fatalf("a cuttable card's persona lacks replan in its answer shape:\n%s", got)
+	}
+	if got := checkinSystemFor(CheckInSession, false); strings.Contains(got, "|replan") {
+		t.Fatalf("an uncuttable card's persona offers replan:\n%s", got)
+	}
+	for _, moment := range []string{CheckInGate, CheckInDead} {
+		if checkinSystemFor(moment, true) != checkinSystemFor(moment, false) {
+			t.Errorf("the %s persona follows replan", moment)
+		}
+	}
+
+	const answer = `{"decision":"replan","reason":"two packages left"}`
+	a, err := parseCheckinAnswer(answer, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true})
+	if err != nil || a.Decision != CheckReplan || a.Reason != "two packages left" {
+		t.Fatalf("replan offered = (%+v, %v), want it to parse with its reason", a, err)
+	}
+	if _, err := parseCheckinAnswer(answer, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1"}); err == nil || err.Error() != `unknown decision "replan"` {
+		t.Fatalf("replan not offered = %v, want unknown decision", err)
+	}
+	if _, err := parseCheckinAnswer(`{"decision":"replan","reason":""}`, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true}); err == nil || err.Error() != "a replan needs its reason" {
+		t.Fatalf("replan without a reason = %v, want the missing reason named", err)
+	}
+}
+
+// The size trip's question has the card's own answer: replan when the rest
+// will not fit.
+func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
+	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction. Answer replan if it will not."
+	got := checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true,
+		Trip: &TripReport{Detector: TripSize, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
+	if !strings.Contains(got, question) {
+		t.Fatalf("size statement lacks the replan question:\n%s", got)
 	}
 }

@@ -3278,3 +3278,20 @@ func TestSessionResultPushBeatsCheckin(t *testing.T) {
 		t.Fatalf("mid-session handover on a trip: %+v", res)
 	}
 }
+
+// A replan's result carries the planner's text: the check-in's names the
+// trip it judged and its guidance, a person's is their own reason.
+func TestSessionResultOfAReplan(t *testing.T) {
+	size := &Trip{Kind: TripSize, Detail: "the card's diff is 700 changed lines (added plus deleted), over the 600 its size plans"}
+	res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{trip: size, commit: "c-wip",
+		decision: &Decision{Action: ActionReplan, Reason: "the rest is two packages", Guidance: "store first, then the handler"}})
+	want := "The check-in decided replan after the size trip (the card's diff is 700 changed lines (added plus deleted), over the 600 its size plans): the rest is two packages\nIts guidance: store first, then the handler"
+	if res.Outcome != OutcomeReplan || res.Reason != "the rest is two packages" || res.Replan != want || res.Trip != "size" || res.Commit != "c-wip" {
+		t.Fatalf("the check-in's replan: %+v", res)
+	}
+	person := &Trip{Kind: TripReplan, Detail: "a person asked for the replan", decided: &Decision{Action: ActionReplan, Reason: "replanned by ana: two parts"}}
+	res = sessionResult(sessionSpec{id: "s2"}, sessionOutcome{trip: person, commit: "c-wip", decision: person.decided})
+	if res.Outcome != OutcomeReplan || res.Reason != "replanned by ana: two parts" || res.Replan != "replanned by ana: two parts" || res.Trip != "replan" {
+		t.Fatalf("a person's replan: %+v", res)
+	}
+}

@@ -262,6 +262,10 @@ const (
 	// evidence (CheckIn carries the verdicts); the round verifies again
 	// instead of buying a session.
 	OutcomeCheckinDropped SessionOutcome = "checkin_dropped"
+	// OutcomeReplan: the check-in or a person stopped the session for the
+	// card's replan (Replan carries the text for the planner); its work is
+	// pushed and kept.
+	OutcomeReplan SessionOutcome = "replan"
 )
 
 // StepProviderRefused is the timeline step of a task waiting on the model
@@ -376,6 +380,8 @@ type SessionResult struct {
 	// Tool and Need are a missing_tool session's request_tool.
 	Tool string `json:",omitempty"`
 	Need string `json:",omitempty"`
+	// Replan is a replan session's text for the planner (replanText).
+	Replan string `json:",omitempty"`
 }
 
 type PullRequest struct {

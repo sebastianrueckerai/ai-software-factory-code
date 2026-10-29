@@ -1926,3 +1926,23 @@ func TestSizeTripIsNeverStuck(t *testing.T) {
 		t.Fatalf("trip = %+v, want size, not stuck", trip)
 	}
 }
+
+// A person's replan is decided: the session stops on it without a
+// check-in, with the person's reason, and it is never the stuck rule's.
+func TestAPersonsReplanIsDecided(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	if trip := s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("setup trip = %+v, want repetition", trip)
+	}
+	s.Messaged(minute(2))
+	if s.stuck(&Trip{Kind: TripReplan}) {
+		t.Fatal("a person's replan after a message is stuck")
+	}
+	trip := s.AgentAsk(AgentAsk{Kind: AskReplan, Reason: "replanned by ana: two parts"})
+	if trip.Kind != TripReplan || trip.Detail != "a person asked for the replan" || trip.Stuck != "" || trip.decided == nil ||
+		trip.decided.Action != ActionReplan || trip.decided.Reason != "replanned by ana: two parts" {
+		t.Fatalf("trip = %+v (decided %+v), want the person's decided replan", trip, trip.decided)
+	}
+}

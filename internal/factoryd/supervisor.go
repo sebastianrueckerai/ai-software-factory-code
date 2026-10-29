@@ -31,6 +31,9 @@ const (
 	ActionEscalate      SupervisorAction = "escalate"
 	ActionRedirect      SupervisorAction = "redirect"
 	ActionRetryStronger SupervisorAction = "retry_stronger"
+	// ActionReplan stops the session, its work pushed and kept, and the
+	// planner cuts the card's remaining work into smaller cards.
+	ActionReplan SupervisorAction = "replan"
 )
 
 type Decision struct {

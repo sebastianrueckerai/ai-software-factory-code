@@ -38,6 +38,9 @@ const (
 	TripLoop TripKind = "loop"
 	// TripSize: the card's diff passed the line bound its size plans, once a session
 	TripSize TripKind = "size"
+	// TripReplan: a person asked for the card's replan; decided already,
+	// no supervisor call
+	TripReplan TripKind = "replan"
 )
 
 // loopNudges delivered nudges with no new file content in between end
@@ -379,20 +382,22 @@ const (
 
 // AgentAsk trips on the agent's own escalate_to_human, request_info or
 // request_tool: an escalation with its question, the information request,
-// or the tool request with its tool and need, the supervisor model not
-// asked.
+// or the tool request with its tool and need; or on a person's replan with
+// its reason. The supervisor model is not asked.
 func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	kind, detail := TripAgentEscalation, "the agent called escalate_to_human"
+	kind, detail, action := TripAgentEscalation, "the agent called escalate_to_human", ActionEscalate
 	switch a.Kind {
 	case AskInfo:
 		kind, detail = TripAgentInfoRequest, "the agent called request_info"
 	case AskTool:
 		kind, detail = TripAgentToolRequest, "the agent called request_tool"
+	case AskReplan:
+		kind, detail, action = TripReplan, "a person asked for the replan", ActionReplan
 	}
-	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: ActionEscalate, Reason: a.reason(), Choices: a.Choices, Tool: a.Tool, Need: a.Need}})
+	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: action, Reason: a.reason(), Choices: a.Choices, Tool: a.Tool, Need: a.Need}})
 }
 
 // TakeNudge is the nudge the last event earned, once.
@@ -478,7 +483,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
-	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize:
+	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize, TripReplan:
 		return false
 	case TripFlipFlop, TripChurn:
 		return s.messagedOnce

@@ -194,6 +194,7 @@ func TestEscalationHandler(t *testing.T) {
 		"long recommendation": {&fakeSessions{}, fmt.Sprintf(`{"task_id":"t-run","kind":"escalation","question":"q","reason":"r","recommendation":%q}`, strings.Repeat("x", 2001)), http.StatusBadRequest},
 		"info without needs":  {&fakeSessions{}, `{"task_id":"t-run","kind":"info_request","question":"q","tried":"t"}`, http.StatusBadRequest},
 		"unknown kind":        {&fakeSessions{}, `{"task_id":"t-run","kind":"chat","question":"q","reason":"r","recommendation":"x"}`, http.StatusBadRequest},
+		"replan":              {&fakeSessions{}, `{"task_id":"t-run","kind":"replan","question":"q","reason":"r","recommendation":"x"}`, http.StatusBadRequest},
 		"no kind":             {&fakeSessions{}, `{"task_id":"t-run","question":"q","reason":"r","recommendation":"x"}`, http.StatusBadRequest},
 		"not json":            {&fakeSessions{}, `nope`, http.StatusBadRequest},
 	} {

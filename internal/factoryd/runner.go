@@ -657,7 +657,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
-	if s.report == "" {
+	if cuttable(t, s) {
 		supCfg.SizeLines, _ = cardLineBound(t.Size, s.policy.Risk.LargeLines)
 	}
 	if s.attempt == 1 && r.canClimb(s) {
@@ -1053,6 +1053,13 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 		Attempt: s.attempt, Sessions: s.sessions}
 }
 
+// cuttable: the planner can cut the rest of the session's card into
+// smaller cards. A report and a planner session are not cut, nor a card
+// outside the work bound.
+func cuttable(t Task, s sessionSpec) bool {
+	return s.report == "" && !s.planner && t.Kind == "agent" && !t.Unbound()
+}
+
 // checkinLive is the mid-session check-in: a detector tripped, and the
 // check-in decides over the running session from the transcript it reads
 // factoryd-side. Nothing is pushed to the pod — the coding agent needs no
@@ -1078,7 +1085,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
-		Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
+		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
@@ -1089,6 +1096,8 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
 	case "message":
 		return Decision{Action: ActionMessage, Guidance: out.Guidance, Reason: out.Reason}, &out, false
+	case CheckReplan:
+		return Decision{Action: ActionReplan, Reason: out.Reason, Guidance: out.Guidance}, &out, false
 	case CheckHandover:
 		if out.Handover == "" && len(out.Verdicts) == 0 {
 			// the refusal shape: the round runs as if no check-in existed
@@ -1384,8 +1393,8 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		detail["session"] = s.id
 		r.record(ctx, t.ID, "checkin", detail)
 	}
-	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripCheckIn {
-		return // the agent's question (the workflow's escalation or info_request alert) or no detector
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripCheckIn || trip.Kind == TripReplan {
+		return // the agent's question (the workflow's escalation or info_request alert), a person's replan, or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}

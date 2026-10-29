@@ -46,12 +46,14 @@ const (
 	CheckRemark    = "remark"
 )
 
-// The check-in's decision: hand a note to the next session, ask a human, or
-// drop every finding and verify the commit again.
+// The check-in's decision: hand a note to the next session, ask a human,
+// drop every finding and verify the commit again, or inside a session of a
+// card that can be cut, have the planner cut its rest.
 const (
 	CheckHandover   = "handover"
 	CheckHuman      = "human"
 	CheckDroppedAll = "dropped_all"
+	CheckReplan     = "replan"
 )
 
 // The reason kinds of a human ask: only a human can act.
@@ -103,7 +105,10 @@ type CheckInAsk struct {
 	Trip          *TripReport `json:",omitempty"`
 	Messages      []string    `json:",omitempty"`
 	Stop          string      `json:",omitempty"`
-	Pace          *Pace       `json:"-"`
+	// Replan: the session's card can be cut (cuttable), so the decision
+	// replan is offered
+	Replan bool  `json:",omitempty"`
+	Pace   *Pace `json:"-"`
 }
 
 // Pace is how far the card has come against what it has: its changed lines
@@ -224,6 +229,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		b.WriteString("- message: guidance carries the exact instruction the agent should take next.\n")
 		fmt.Fprintf(&b, "- handover: the session stops; the note to the next session is at most %d characters.\n", handoverCap)
 		b.WriteString("- human: if only a human can act — a goal conflict, spend above policy, a policy class, access the factory lacks — stop and say which, with why.\n")
+		if ask.Replan {
+			b.WriteString("- replan: the session stops, its work is pushed and kept, and the planner cuts the card's remaining work into smaller cards; the first one lands what the branch holds. Say why in reason; guidance may name the parts.\n")
+		}
 		if len(ask.Messages) > 0 {
 			b.WriteString("Guidance delivered to the agent this session:\n")
 			for _, m := range ask.Messages {
@@ -244,7 +252,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 		if ask.Trip.Detector == TripSize {
-			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should cut scope or wrap up, with the instruction. Nothing here cuts the card.\n")
+			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should wrap up, with the instruction. Answer replan if it will not.\n")
 		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
 	case CheckInDead:
@@ -410,11 +418,16 @@ type CheckinTool = OperatorTool
 const checkinSystem = `You are the factory's check-in at a gate return. Judge each finding on evidence you gathered yourself, never on the say-so of the finding or of the session before it. You never edit anything. Your final answer is one JSON object and nothing else: {"findings":[{"id":"f1","verdict":"confirmed|dropped|remark","evidence":"..."}],"decision":"handover|human|dropped_all","reason_kind":"...","reason":"...","handover":"..."}. Each finding is named by the id the findings list gave it, f1 on down, not by its text. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 
 // checkinSystemFor is the moment's persona: the gate's, or the one that
-// fits what the moment decides.
-func checkinSystemFor(moment string) string {
+// fits what the moment decides. Inside a session, replan offers the
+// decision replan; every other moment ignores it.
+func checkinSystemFor(moment string, replan bool) string {
 	switch moment {
 	case CheckInSession:
-		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"continue|message|handover|human","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. "message" needs guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
+		decisions := "continue|message|handover|human"
+		if replan {
+			decisions += "|" + CheckReplan
+		}
+		return `You are the factory's check-in inside a running session: its detectors tripped and you decide what happens next, on evidence you gather yourself from the live workspace and the session's record. You never edit anything. Your final answer is one JSON object and nothing else: {"decision":"` + decisions + `","guidance":"...","reason_kind":"...","reason":"...","handover":"..."}. "message" needs guidance: the exact instruction the agent should take next. "handover" stops the session: write the note the next session starts from. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	case CheckInDead:
 		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|human","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	}
@@ -499,11 +512,12 @@ func foldFindingText(s string) string {
 }
 
 // parseCheckinAnswer reads the model's final answer against the ask: the
-// moment's decisions, at the session moment a message's guidance and a
-// handover's note, and at the gate a verdict for every finding the ask
-// named, by its id, by its text exactly, or by its text with whitespace
-// and punctuation folded, none for a finding it did not. Every verdict
-// lands keyed by the ask's own text, whatever wording the answer carried.
+// moment's decisions, at the session moment a message's guidance, a
+// handover's note and a replan's reason (replan only where the ask offers
+// it), and at the gate a verdict for every finding the ask named, by its
+// id, by its text exactly, or by its text with whitespace and punctuation
+// folded, none for a finding it did not. Every verdict lands keyed by the
+// ask's own text, whatever wording the answer carried.
 func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	var a checkinAnswer
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
@@ -511,13 +525,17 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	}
 	switch ask.Moment {
 	case CheckInSession:
-		switch a.Decision {
-		case "continue", "message", CheckHandover, CheckHuman:
+		switch {
+		case a.Decision == "continue", a.Decision == "message", a.Decision == CheckHandover, a.Decision == CheckHuman:
+		case a.Decision == CheckReplan && ask.Replan:
 		default:
 			return a, fmt.Errorf("unknown decision %q", a.Decision)
 		}
 		if a.Decision == "message" && strings.TrimSpace(a.Guidance) == "" {
 			return a, fmt.Errorf("a message needs its guidance")
+		}
+		if a.Decision == CheckReplan && strings.TrimSpace(a.Reason) == "" {
+			return a, fmt.Errorf("a replan needs its reason")
 		}
 		// a note-less handover is the shape of a refused call (checkinLive)
 		if a.Decision == CheckHandover && strings.TrimSpace(a.Handover) == "" {
@@ -602,7 +620,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		if last {
 			conv += "\n\nThis is your last call: answer now with the JSON object, no tool."
 		}
-		req := CheckinRequest{System: checkinSystemFor(ask.Moment), Input: conv}
+		req := CheckinRequest{System: checkinSystemFor(ask.Moment, ask.Replan), Input: conv}
 		if !last {
 			req.Tools = checkinToolsFor(ask.Moment)
 		}
