@@ -517,13 +517,14 @@ type card struct {
 	EscalationAlert    int64  // the escalation's open alert
 	WaitingOn          string // a card in waiting-deps: the issues it waits on
 	PlanIssue          int64  // a plan's card: the plan's issue
+	PlanKey            string // a plan's card: its key in the plan, on the face's plan chip
 	Plan               []card // a done plan's cards, which its drawer lists
 	Retry              *retry // a failed plan card's Retry, for an approver
 	Activity           string // the task's newest event as one line, or the escalation's question
 	WaitingForActivity bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
-	// one, the plan key of a planned card, else the objective's first
-	// paragraph, the title as the issue was filed.
+	// one, else the objective's first paragraph, the title as the issue
+	// was filed.
 	Title string
 	// StatusClass is the pill's class, one hue per state.
 	StatusClass string
@@ -1453,12 +1454,8 @@ func (c *Console) card(t factoryd.Task) card {
 	}
 	k.StatusClass = statusClass(t.Status)
 	k.Stage, k.StageAge = stage(t, end)
-	k.Title = cmp.Or(t.HumanSummary, func() string {
-		if t.PlanKey != "" {
-			return t.PlanKey
-		}
-		return factoryd.TitleClause(t.Objective)
-	}())
+	k.Title = cmp.Or(t.HumanSummary, factoryd.TitleClause(t.Objective))
+	k.PlanKey = t.PlanKey
 	if t.BudgetEUR > 0 {
 		k.NearBudget = nearBudget(t.SpentEUR, t.BudgetEUR)
 	}
@@ -3238,8 +3235,8 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 	ctx := r.Context()
 	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs, Note: note}
 	// the drawer's head carries the title as filed, whole: the objective's
-	// first line, unless a writer's summary or a plan key names the card
-	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" && bt.PlanKey == "" {
+	// first line, unless a writer's summary names the card
+	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" {
 		d.Card.Title = headline
 	}
 	problem := func(what string, err error) {

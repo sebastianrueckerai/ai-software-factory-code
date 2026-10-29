@@ -34,7 +34,7 @@
 <thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
 <tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>
 </table>{{end}}{{with .Card.Plan}}<ul class="children" aria-label="The plan's cards">{{range .}}<li>{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.IssueNumber}}</a>{{else}}{{.ID}}{{end}} {{.Status}}</li>{{end}}</ul>{{end}}</div></details>
-{{else if .Card.PlanIssue}}<details class="sec" data-sec="plan"><summary>The plan</summary><div class="sec-body"><p>part of plan <span class="ref-plain">#{{.Card.PlanIssue}}</span></p></div></details>
+{{else if or .Card.PlanIssue .Card.PlanKey}}<details class="sec" data-sec="plan"><summary>The plan</summary><div class="sec-body"><p>{{if .Card.PlanIssue}}part of plan <span class="ref-plain">#{{.Card.PlanIssue}}</span>{{with .Card.PlanKey}} · {{.}}{{end}}{{else}}{{.Card.PlanKey}}{{end}}</p></div></details>
 {{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The plan<span class="hint">—</span></p></div>
 {{end}}{{with .Merge}}<details class="sec" data-sec="reviews"><summary>Reviews and audit<span class="hint">PR #{{.PRNumber}}</span></summary><div class="sec-body"><h4>Reviews and audit of <a href="{{.PRURL}}" target="_blank" rel="noopener">PR #{{.PRNumber}}</a></h4>
 {{template "merge-facts" .}}{{template "split" .}}</div></details>

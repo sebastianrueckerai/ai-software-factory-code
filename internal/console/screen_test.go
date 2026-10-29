@@ -666,13 +666,13 @@ func TestDrawerOverview(t *testing.T) {
 	card := drawer(t, r, ck, "t-c4", "")
 	for _, want := range []string{
 		`<div class="drawer-content" data-drawer="t-c4">`,
-		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a> - <h2 tabindex="-1">k4</h2></div>`,
+		`<div class="dr-title"><a class="dr-ref" href="https://git.example/linkshort/linkshort/issues/4" target="_blank" rel="noopener" data-tip="the issue">#4</a> - <h2 tabindex="-1">Links API</h2></div>`,
 		`<nav class="tabs" role="tablist" aria-label="The card's tabs">` + tab("t-c4", "overview", "Overview", true) +
 			tab("t-c4", "chat", "Session", false) + tab("t-c4", "activity", "Activity", false) + tab("t-c4", "files", "Files", false) + `</nav>`,
 		`<dt>Task</dt><dd>Links API</dd>`, `<details class="sec" data-sec="time"><summary>Time<span class="hint">`,
 		`<p class="provenance">Card links-api of plan #1 (3 of 4), filed for sebastian. Written by the planner.</p>`,
 		"<p class=\"objective-body\">Build the links API.\nDepends on: #3</p>",
-		`<li><span class="why">blocked by</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 k3"),
+		`<li><span class="why">blocked by</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 card 3"),
 		`<li><span class="why">part of plan</span> <span class="pill st-done">done</span> ` + open("t-plan", "#1 Link shortener"),
 		`<a href="/tasks/t-c4/timeline">the full timeline</a>`,
 	} {
@@ -690,10 +690,10 @@ func TestDrawerOverview(t *testing.T) {
 		"<tr><td>foundation</td><td>foundation</td><td>Foundation</td><td>medium</td><td></td></tr>",
 		"<tr><td>links-api</td><td>feature</td><td>Links API</td><td>medium</td><td>foundation</td></tr>",
 		"<tr><td>integration</td><td>integration</td><td>Acceptance tests</td><td>small</td><td>foundation, links-api</td></tr>",
-		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c2", "#2 k2"),
-		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 k3"),
-		`<li><span class="why">child</span> <span class="pill st-waiting">waiting-deps</span> ` + open("t-c4", "#4 k4"),
-		`<li><span class="why">child</span> <span class="pill st-done">done</span> ` + open("t-c5", "#5 k5"),
+		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c2", "#2 card 2"),
+		`<li><span class="why">child</span> <span class="pill st-queued">queued</span> ` + open("t-c3", "#3 card 3"),
+		`<li><span class="why">child</span> <span class="pill st-waiting">waiting-deps</span> ` + open("t-c4", "#4 Links API"),
+		`<li><span class="why">child</span> <span class="pill st-done">done</span> ` + open("t-c5", "#5 card 5"),
 	} {
 		if !strings.Contains(plan, want) {
 			t.Errorf("the plan's overview lacks %s", want)

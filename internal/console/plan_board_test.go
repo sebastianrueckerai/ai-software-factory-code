@@ -100,8 +100,8 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
 	for title, want := range map[string][]string{
-		"Queued":       {`title="k2"`, `title="k3"`, `title="k4"`, `<span class="chip waiting">waiting on #3, #5</span>`, "Another spec"},
-		"Done":         {"Link shortener", `title="k5"`},
+		"Queued":       {`title="card 2"`, `title="card 3"`, `title="card 4"`, `<span class="chip waiting">waiting on #3, #5</span>`, "Another spec"},
+		"Done":         {"Link shortener", `title="card 5"`},
 		"code Queued":  {"an improvement"},
 		"code Running": {"fix the cache"},
 	} {
@@ -116,13 +116,13 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 			}
 		}
 	}
-	// the plan's three cards still in play wear the chip; its done card's
-	// row has none, and its drawer names the plan
-	if got := strings.Count(body, `<span class="chip plan">from plan #1</span>`); got != 3 {
-		t.Errorf("%d cards read from plan #1, want its 3 cards in play", got)
+	// the plan's three cards still in play wear the chip with their keys;
+	// its done card's row has none, and its drawer names the plan
+	if got := strings.Count(body, `<span class="chip plan">from plan #1 · k`); got != 3 {
+		t.Errorf("%d cards read from plan #1 with their key, want its 3 cards in play", got)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span>`) {
-		t.Errorf("the done card's drawer does not name its plan:\n%s", d)
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span> · k5`) {
+		t.Errorf("the done card's drawer does not name its plan and key:\n%s", d)
 	}
 	if !strings.Contains(body, `<option value="linkshort" selected>linkshort</option>`) || strings.Contains(body, "every project") {
 		t.Errorf("board lacks the project select, or offers every project")
@@ -151,14 +151,14 @@ func TestBoardPlanParentOutsideItsCards(t *testing.T) {
 			Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="chip plan">from plan #1</span>`) {
-		t.Errorf("the card's chip does not name its plan, a card of another project:\n%s", body)
+	if !strings.Contains(body, `<span class="chip plan">from plan #1 · k2</span>`) {
+		t.Errorf("the card's chip does not name its plan and key, a card of another project:\n%s", body)
 	}
 	if strings.Contains(body, "Link shortener") {
 		t.Errorf("the board shows the other project's plan card:\n%s", body)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span>`) {
-		t.Errorf("the drawer does not name the plan either:\n%s", d)
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span> · k2`) {
+		t.Errorf("the drawer does not name the plan and key either:\n%s", d)
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	if !strings.Contains(code, "Link shortener") || strings.Contains(code, "build the API") {
