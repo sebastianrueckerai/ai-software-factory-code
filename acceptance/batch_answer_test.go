@@ -624,6 +624,9 @@ func (s *accBatchStore) LiveSession(ctx context.Context, taskID string) (factory
 }
 func (s *accBatchStore) DeleteLiveSession(ctx context.Context, taskID string) error { return nil }
 func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error)   { panic("unused") }
+func (s *accBatchStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ProjectByRepository(ctx context.Context, repository string) (factoryd.Project, bool, error) {
 	panic("unused")
 }

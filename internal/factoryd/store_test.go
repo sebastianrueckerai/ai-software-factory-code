@@ -632,6 +632,16 @@ func (s *fakeStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
 	return true, nil
 }
 
+func (s *fakeStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.Track != policy.TrackDirect || t.Source == SourcePlan || t.PRNumber != 0 || !slices.Contains(switchableStatuses, t.Status) {
+		return false, nil
+	}
+	t.Track, t.RequiredCapabilities = policy.TrackPlan, capabilities
+	s.tasks[id] = t
+	return true, nil
+}
+
 // ProjectMonthSpend is the month's spend a test set for repository.
 func (s *fakeStore) ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error) {
 	return ProjectSpend{EUR: s.projectSpend[repository]}, nil
@@ -1950,6 +1960,51 @@ func TestPGStoreTaskImage(t *testing.T) {
 	}
 	if got, _, _ := s.Task(ctx, "t-card"); got.ImageDigest != "reg/worker@sha256:abc" || len(got.ImageEgress) != 0 {
 		t.Fatalf("after a start reaching no registry: %q %q", got.ImageDigest, got.ImageEgress)
+	}
+}
+
+// SwitchToPlan moves a running direct card with no pull request to the plan
+// track with the planner's class, once; a card with a pull request, a
+// plan's card and an ended card stay as they are.
+func TestSwitchToPlan(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	coder, planner := []string{policy.ClassCoder}, []string{"planner"}
+	for _, c := range []Task{
+		{ID: "t-run", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder},
+		{ID: "t-pr", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder, PRNumber: 3},
+		{ID: "t-done", Status: "done", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "direct", RequiredCapabilities: coder},
+		{ID: "t-plan", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: "plan", RequiredCapabilities: planner},
+	} {
+		if err := s.CreateTask(ctx, c); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.ID, err)
+		}
+	}
+	if _, err := s.CreatePlanCard(ctx, Task{ID: "t-card", Status: "running", Track: "direct", Repository: "sf/r", Kind: "agent", Source: SourcePlan,
+		Parent: "t-plan", PlanKey: "ui", RequiredCapabilities: coder}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		id       string
+		switched bool
+	}{{"t-run", true}, {"t-pr", false}, {"t-card", false}, {"t-done", false}, {"t-run", false}} {
+		switched, err := s.SwitchToPlan(ctx, tc.id, planner)
+		got, _, _ := s.Task(ctx, tc.id)
+		track, caps := "direct", coder
+		if tc.id == "t-run" {
+			track, caps = "plan", planner
+		}
+		if err != nil || switched != tc.switched || got.Track != track || !slices.Equal(got.RequiredCapabilities, caps) {
+			t.Fatalf("SwitchToPlan(%s) = %v, %v; track %q, capabilities %q; want %v, %s, %q", tc.id, switched, err, got.Track, got.RequiredCapabilities, tc.switched, track, caps)
+		}
 	}
 }
 

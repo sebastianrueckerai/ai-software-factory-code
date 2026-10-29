@@ -1814,6 +1814,14 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
+	tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return PlanResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
+	}
+	if step := lastStep(tl, stepToPlan); step != nil {
+		work, _ := step["work_so_far"].(string)
+		findings = append([]string{workSoFarFinding + work}, findings...)
+	}
 	last, ok, err := r.store.PlanRevision(ctx, taskID, 0)
 	if err != nil {
 		return PlanResult{}, err

@@ -134,6 +134,7 @@ const (
 	ActivityParkForTool                 = "ParkForTool"
 	ActivityImageArrived                = "ImageArrived"
 	ActivityLeaveImagePark              = "LeaveImagePark"
+	ActivityBecomePlan                  = "BecomePlan"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails

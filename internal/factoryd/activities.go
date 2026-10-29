@@ -141,6 +141,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityParkForTool:                 r.ParkForTool,
 		ActivityImageArrived:                r.ImageArrived,
 		ActivityLeaveImagePark:              r.LeaveImagePark,
+		ActivityBecomePlan:                  r.BecomePlan,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}

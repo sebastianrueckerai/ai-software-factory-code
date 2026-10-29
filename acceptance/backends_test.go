@@ -561,6 +561,10 @@ func (s *acceptanceStore) ToHumanLane(_ context.Context, id string) (bool, error
 	return true, nil
 }
 
+func (s *acceptanceStore) SwitchToPlan(context.Context, string, []string) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) ProjectByRepository(context.Context, string) (factoryd.Project, bool, error) {
 	return factoryd.Project{}, false, nil
 }

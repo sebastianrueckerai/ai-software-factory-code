@@ -433,6 +433,10 @@ type Store interface {
 	// ToHumanLane makes queued agent task id a human-lane task waiting on
 	// a human; false when it was not a queued agent task.
 	ToHumanLane(ctx context.Context, id string) (bool, error)
+	// SwitchToPlan moves direct card id to the plan track with
+	// capabilities: a card of no plan, with no pull request, queued,
+	// waiting on its dependencies or running. False when no row changed.
+	SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error)
 	// ProjectByRepository is the project row of repository (owner/name).
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
@@ -1114,6 +1118,20 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
 		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
 	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
+	caps, err := toJSON(capabilities)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET track = 'plan', required_capabilities = $2::jsonb
+		WHERE id = $1 AND track = 'direct' AND source <> 'plan' AND pr_number = 0 AND status IN ('queued', 'waiting-deps', 'running')`, id, caps)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
