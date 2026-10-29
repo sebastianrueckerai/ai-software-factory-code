@@ -61,6 +61,13 @@ func (s *Scrubber) String(v string) string {
 		}
 		return p[1] + " [redacted]"
 	})
+	// a run that holds a key shape goes whole, so no part of the key stays
+	v = longRun.ReplaceAllStringFunc(v, func(m string) string {
+		if keyLike.MatchString(m) {
+			return "[redacted]"
+		}
+		return m
+	})
 	v = keyLike.ReplaceAllString(v, "[redacted]")
 	return longRun.ReplaceAllStringFunc(v, func(m string) string {
 		// a long identifier or a path holds none of the three; a random key

@@ -55,8 +55,11 @@ func TestStringRemovesKeys(t *testing.T) {
 		// "missing bearer [redacted]"
 		"missing bearer token":                      "missing bearer token",
 		"Authorization: Basic dXNlcjpwYXNzd29yZA==": "Authorization: Basic [redacted]",
-		"clone https://x-access-token:ghp_abc123shortpass@git.example/sf/repo.git failed":        "clone https://[redacted]@git.example/sf/repo.git failed",
-		"litellm refused key sk-task-key-1: blocked":                                             "litellm refused key [redacted]: blocked",
+		"clone https://x-access-token:ghp_abc123shortpass@git.example/sf/repo.git failed": "clone https://[redacted]@git.example/sf/repo.git failed",
+		"litellm refused key sk-task-key-1: blocked":                                      "litellm refused key [redacted]: blocked",
+		// a key shape inside a longer run takes the whole run: no part of
+		// the key is left
+		"key Q2xhdWRlIGlz/sk-YW4gYWkgbW9kZWwgdGhhdA set":                                         "key [redacted] set",
 		"token eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ4In0.c2ln refused":                                "token [redacted] refused",
 		"hetzner token 0123456789abcdefghijABCDEFGHIJ0123456789 refused":                         "hetzner token [redacted] refused",
 		"hetzner token AAAAAAAAAAAAAAAAAAAAbbbbbbbbbbbbbbbbbbbb01234567890123456789wxyz refused": "hetzner token [redacted] refused",
