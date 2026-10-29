@@ -2000,6 +2000,38 @@ func TestAnswersFromTagsAHealedReAskWithNoQuestionBefore(t *testing.T) {
 	}
 }
 
+// Reconcile reports the card's screening passed when its own screening
+// recorded a clear verdict, or when a person let its suspect screening run
+// (the screening alert judged noise); an answer's screening, a suspect
+// verdict still open or none at all is no pass.
+func TestReconcileReportsWhetherTheScreeningPassed(t *testing.T) {
+	for name, tc := range map[string]struct {
+		timeline string
+		alerts   []Alert
+		want     bool
+	}{
+		"clear":             {`{"step":"screening","verdict":"clear"}`, nil, true},
+		"suspect, open":     {`{"step":"screening","verdict":"suspect"}`, []Alert{{Kind: AlertScreening, TaskID: "t1"}}, false},
+		"suspect, let run":  {`{"step":"screening","verdict":"suspect"}`, []Alert{{Kind: AlertScreening, TaskID: "t1", Verdict: VerdictNoise}}, true},
+		"an answer's clear": {`{"step":"screening","answer":true,"verdict":"clear"}`, nil, false},
+		"none":              {``, nil, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, store, objects := newActivityRunner(t, withStatus(prTask, "queued"), &prForgejo{})
+			objects.Put(context.Background(), "sessions/t1/timeline.jsonl", []byte(tc.timeline+"\n"))
+			store.alerts = tc.alerts
+			val, err := execActivity(t, r, ActivityReconcile, "t1")
+			var st RunState
+			if err != nil || val.Get(&st) != nil {
+				t.Fatalf("Reconcile: %v", err)
+			}
+			if st.ScreeningPassed != tc.want {
+				t.Fatalf("ScreeningPassed = %v, want %v", st.ScreeningPassed, tc.want)
+			}
+		})
+	}
+}
+
 // Reconcile rebuilds the stage memory from the timeline (review M1): each
 // stage's returns to the agent, every finding sent there or to the card
 // at the cap, the model reviews oldest first, the last round, and

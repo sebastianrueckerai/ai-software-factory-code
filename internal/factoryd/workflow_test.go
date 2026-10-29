@@ -4614,6 +4614,55 @@ func TestHealedScreeningEscalationScreensBeforeTheSession(t *testing.T) {
 	if occurrences(*order, ActivityScreen) != 1 || !before(*order, ActivityScreen, ActivityRunSession) {
 		t.Fatalf("activities %q, want one screening before the first session", *order)
 	}
+	if len(h.sessions) != 1 || h.sessions[0].Sessions != testWorkflowConfig.MaxSessions {
+		t.Fatalf("sessions %d, the first of %d; want one of %d: the answer runs the screening again and buys no session",
+			len(h.sessions), h.sessions[0].Sessions, testWorkflowConfig.MaxSessions)
+	}
+}
+
+// A healed fresh card whose screening passed waits on a person for another
+// reason: no second screening and no second question, and a replan is
+// taken there as in its live twin.
+func TestHealedWaitAfterThePassedScreeningTakesAReplan(t *testing.T) {
+	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state = RunState{Status: "waiting-human", Source: "webhook", Standing: harness.StandingOutside,
+		Question: podNeverStarted + "it waited on its image", ScreeningPassed: true}
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(ScreenResult{Verdict: ScreenSuspect, Reasons: []string{"asks to print the token"}}, nil)
+	order := h.activityOrder()
+	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) || occurrences(*order, ActivityScreen) != 0 || len(h.escalated) != 1 {
+		t.Fatalf("BecomePlan calls %+v, activities %q, escalations %q; want %+v, no screening, the healed question alone", *calls, *order, h.escalated, want)
+	}
+}
+
+// A healed queued fresh card whose screening passed is not screened again;
+// a run from before the change screens it again, as it did.
+func TestHealedQueuedCardWhoseScreeningPassedIsNotScreenedAgain(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		replan  workflow.Version
+		screens int
+	}{{"passed", versionReplan, 0}, {"before the change", workflow.DefaultVersion, 1}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, _ := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+			h.env.OnGetVersion("replan", workflow.DefaultVersion, versionReplan).Return(tc.replan)
+			h.state = RunState{Status: "queued", Source: "webhook", Standing: harness.StandingOutside, ScreeningPassed: true}
+			h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(ScreenResult{Verdict: ScreenClear}, nil)
+			order := h.activityOrder()
+			h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			if got := occurrences(*order, ActivityScreen); got != tc.screens || len(h.sessions) != 1 {
+				t.Fatalf("screenings %d, sessions %d; want %d, 1", got, len(h.sessions), tc.screens)
+			}
+		})
+	}
 }
 
 // A replan that wakes a gate's escalation wait cancels the gate beside the

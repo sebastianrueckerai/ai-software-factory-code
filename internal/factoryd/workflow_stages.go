@@ -90,6 +90,11 @@ func atGateStop(escalation string) bool {
 		func(gate string) bool { return strings.HasPrefix(escalation, gateStopped+gate+" ") })
 }
 
+// atScreenStop: escalation is the gate supervisor's stop of the screening.
+func atScreenStop(escalation string) bool {
+	return strings.HasPrefix(escalation, gateStopped+ActivityScreen+" ")
+}
+
 // atQueueLeft: escalation is a red head's leaving the merge queue (leaveRed).
 func atQueueLeft(escalation string) bool { return strings.HasPrefix(escalation, leftQueue) }
 
@@ -1233,12 +1238,12 @@ func (t *taskRun) awaitScreening(reason string) (final, why string, answer []str
 
 // screeningWait runs wait, a wait on the screening's human, and judges the
 // screening alert by its end. A replan does not end it: the human's
-// judgment stays the gate on an outsider's text.
+// judgment stays the gate on an outsider's text. An answer lets the card
+// run, which passes its screening.
 func (t *taskRun) screeningWait(wait func() (string, string, []string)) (final, why string, answer []string) {
-	was := t.screening
 	t.screening = true
 	final, why, answer = wait()
-	t.screening = was
+	t.screening = false
 	return t.judgeScreening(final, why, answer)
 }
 

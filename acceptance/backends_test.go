@@ -829,6 +829,14 @@ func (s *acceptanceStore) JudgeTaskAlerts(_ context.Context, taskID, kind, verdi
 	return nil
 }
 
+func (s *acceptanceStore) ScreeningLetRun(_ context.Context, taskID string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.ContainsFunc(s.alerts, func(a factoryd.Alert) bool {
+		return a.TaskID == taskID && a.Kind == factoryd.AlertScreening && a.Verdict == factoryd.VerdictNoise
+	}), nil
+}
+
 func (s *acceptanceStore) OpenReportTask(_ context.Context, t factoryd.Task) (factoryd.Task, error) {
 	have, ok, _ := s.ReportOf(context.Background(), t.Parent, t.Source)
 	if ok {

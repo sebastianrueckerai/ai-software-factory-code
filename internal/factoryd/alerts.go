@@ -236,6 +236,13 @@ func (s *PGStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, by
 	return err
 }
 
+func (s *PGStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, error) {
+	var let bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM alerts WHERE task_id = $1 AND kind = $2 AND verdict = $3)`,
+		taskID, AlertScreening, VerdictNoise).Scan(&let)
+	return let, err
+}
+
 // EscalationFilter picks a task's escalation alerts: those from Source
 // (the day cap's), or the one of the escalation Comment (a withdrawn
 // question's, its detail's comment); a zero field picks any.

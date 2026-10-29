@@ -1531,6 +1531,11 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			return RunState{}, err
 		}
 	}
+	if !st.ScreeningPassed {
+		if st.ScreeningPassed, err = r.store.ScreeningLetRun(ctx, t.ID); err != nil {
+			return RunState{}, err
+		}
+	}
 	var pr *PullRequestRef
 	switch {
 	case t.PRNumber != 0:
@@ -1611,6 +1616,7 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 			Step, Stage, To, Verdict, Summary, Note, Reason string
 			By, Finding, Why                                string
 			Round, Attempt                                  int
+			Answer                                          bool
 			Findings                                        []string
 			Verdicts                                        map[string]CheckVerdict
 			Time                                            time.Time
@@ -1633,6 +1639,8 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 			st.Round = max(st.Round, step.Round)
 		case stepDepsStarted:
 			st.DepStarted = step.Reason
+		case "screening":
+			st.ScreeningPassed = st.ScreeningPassed || !step.Answer && step.Verdict == ScreenClear
 		case "model_review":
 			st.Reviews = append(st.Reviews, Review{Verdict: step.Verdict, Summary: step.Summary, Findings: step.Findings, Note: step.Note})
 			st.Round = max(st.Round, step.Round)

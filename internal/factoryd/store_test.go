@@ -1475,6 +1475,14 @@ func (s *fakeStore) JudgeTaskAlerts(ctx context.Context, taskID, kind, verdict, 
 	return nil
 }
 
+func (s *fakeStore) ScreeningLetRun(ctx context.Context, taskID string) (bool, error) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	return slices.ContainsFunc(s.alerts, func(a Alert) bool {
+		return a.TaskID == taskID && a.Kind == AlertScreening && a.Verdict == VerdictNoise
+	}), nil
+}
+
 func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID string, filter EscalationFilter, verdict, by string) error {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -3729,4 +3737,38 @@ func TestPGStoreOneCardPerIssue(t *testing.T) {
 func justNow() *time.Time {
 	now := time.Now()
 	return &now
+}
+
+// ScreeningLetRun is true once a person let the task run past its suspect
+// screening (its screening alert judged noise), and only then.
+func TestPGStoreScreeningLetRun(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE alerts`); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []Alert{{Kind: AlertScreening, Source: "outside", TaskID: "t-let"}, {Kind: AlertScreening, Source: "outside", TaskID: "t-real"},
+		{Kind: AlertScreening, Source: "outside", TaskID: "t-open"}, {Kind: AlertEscalation, Source: "agent", TaskID: "t-other"}} {
+		if _, err := s.InsertAlert(ctx, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, verdict := range map[string]string{"t-let": VerdictNoise, "t-real": VerdictReal} {
+		if err := s.JudgeTaskAlerts(ctx, id, AlertScreening, verdict, "human"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.JudgeTaskAlerts(ctx, "t-other", AlertEscalation, VerdictNoise, "human"); err != nil {
+		t.Fatal(err)
+	}
+	for id, want := range map[string]bool{"t-let": true, "t-real": false, "t-open": false, "t-other": false, "t-none": false} {
+		if got, err := s.ScreeningLetRun(ctx, id); err != nil || got != want {
+			t.Fatalf("ScreeningLetRun(%s) = %v, %v; want %v", id, got, err, want)
+		}
+	}
 }

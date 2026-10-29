@@ -430,6 +430,9 @@ type RunState struct {
 	// Screening: the human the task waits on answers its screening's
 	// suspect verdict.
 	Screening bool
+	// ScreeningPassed: the card's own screening recorded a clear verdict,
+	// or a person let its suspect screening run (its alert judged noise).
+	ScreeningPassed bool
 	// Stronger: a report task that runs on the stronger rung (the
 	// screening, ruling 191).
 	Stronger bool
@@ -1522,7 +1525,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		// a fresh card's whole time before its screening passed is the
 		// screening's: no wait takes a replan (versionReplan)
-		t.screening = t.replan >= versionReplan && t.v16 >= versionStages && u.Attempts == 0 && st.PR.Number == 0 && !st.Screening && t.screens()
+		t.screening = t.replan >= versionReplan && t.v16 >= versionStages && u.Attempts == 0 && st.PR.Number == 0 && !st.ScreeningPassed && t.screens()
 		if t.waitsForDependencies(st, u) {
 			final, why, answer := t.awaitDependencies(st)
 			if final != "" {
@@ -1669,6 +1672,9 @@ func (t *taskRun) lifecycle() (string, error) {
 					return t.finish(v.final, v.reason)
 				}
 				apply(v)
+			case t.replan >= versionReplan && atScreenStop(st.Question):
+				// the screening gate's stop: its answer runs the screening
+				// again below, as the live gate's does, and buys no session
 			default:
 				buy()
 			}
@@ -1707,7 +1713,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(v.final, v.reason)
 			}
 			apply(v)
-		case t.v16 >= versionStages && u.Attempts == 0:
+		case t.v16 >= versionStages && u.Attempts == 0 && (t.replan < versionReplan || !st.ScreeningPassed):
 			final, why, more := t.screen()
 			if final != "" {
 				return t.finish(final, why)
