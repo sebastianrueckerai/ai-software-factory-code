@@ -425,13 +425,18 @@ func (s sessionSpec) readable(extra ...Repo) []Repo {
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
-	id         string
-	parent     string
-	findings   []string
-	answers    []string
-	posterInfo []string
-	model      string
-	startRef   string
+	id     string
+	parent string
+	// parentStop and parentOutcome are how the parent ended: its stop
+	// reason, which the copied working state names, and its outcome, which
+	// decides whether one is copied
+	parentStop    string
+	parentOutcome SessionOutcome
+	findings      []string
+	answers       []string
+	posterInfo    []string
+	model         string
+	startRef      string
 	// base is the task's base commit: a session resumed from pushed work in
 	// progress starts past it
 	base string
@@ -613,20 +618,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	}
 	progress(0)
 
-	// The worker holds the start of its coding conversation for a brief
-	// (task 4): every session delivers one — a check-in's handover when a
-	// check-in decided one, empty when none ran. A reattached pod already
+	// The worker holds the start of its coding conversation for a brief:
+	// every session delivers one, with a handover note when there is one
+	// and the stopped parent's working state. A reattached pod already
 	// had its brief. A check-in that stops the session here stops it
 	// before anything of the conversation is spent.
 	if live == nil {
+		carry := r.priorState(ctx, t, s)
 		if s.checkInAsk != nil {
 			var stop bool
-			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline)
+			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline, carry)
 			if stop {
 				return out, nil
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover)
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, carry)
 		}
 	}
 
@@ -967,7 +973,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 // record is delivered whole to the pod and its tail to the conversation,
 // and a human or dropped-all decision stops the pod with nothing of the
 // conversation spent. stop says the session ends here.
-func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, deadline time.Time) (ck *CheckInOutcome, stop bool) {
+func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, deadline time.Time, carry *carryState) (ck *CheckInOutcome, stop bool) {
 	limits := s.policy.Limits
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
@@ -978,7 +984,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	bound, _ := cardLineBound(t.Size, s.policy.Risk.LargeLines)
 	ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 	brief := func(note string) {
-		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note)
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, carry)
 	}
 	eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -1096,11 +1102,15 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 	return limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
 }
 
-// pushBrief delivers the session's brief: a check-in's handover note, or
-// the empty one a session without a check-in gets. The worker holds its
-// conversation's start for it.
-func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string) {
-	if err := r.postWorkerUntil(ctx, workerStop, ns, pod, token, "/brief", map[string]string{"handover": handover}, r.endpointWait); err != nil && !errors.Is(err, errWorkerStop) {
+// pushBrief delivers the session's brief: its handover note, "" for none,
+// and the parent's working state when carry holds one. The worker holds
+// its conversation's start for it.
+func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState) {
+	push := harness.BriefPush{Handover: handover}
+	if carry != nil {
+		push.Prior, push.Files = &carry.Prior, carry.Files
+	}
+	if err := r.postWorkerUntil(ctx, workerStop, ns, pod, token, "/brief", push, r.endpointWait); err != nil && !errors.Is(err, errWorkerStop) {
 		log.Printf("task %s: deliver the brief: %v", taskID, err)
 	}
 }

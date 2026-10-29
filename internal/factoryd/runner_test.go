@@ -4064,6 +4064,163 @@ func TestRunSessionPushesTheInputHandoverAsTheBrief(t *testing.T) {
 	}
 }
 
+// prevRig is a session rig whose object store holds the record of the
+// stopped session s-prev: a todo list, one changed file, its last event at
+// 23:03:32 UTC.
+func prevRig(t *testing.T, answer string) (*Runner, *fakeWorkerEndpoint) {
+	t.Helper()
+	runner, _, _, worker, _, _, objects := checkinRig(t, answer)
+	rec := carryRecord(t, todoEv(false, [2]string{"in_progress", "fix the gate"}), fileEv("/workspace/repo/g.go"))
+	if err := objects.Put(t.Context(), "sessions/t2/s-prev.jsonl", rec); err != nil {
+		t.Fatal(err)
+	}
+	return runner, worker
+}
+
+// onlyBrief decodes the one brief the worker got.
+func onlyBrief(t *testing.T, w *fakeWorkerEndpoint) harness.BriefPush {
+	t.Helper()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.briefs) != 1 {
+		t.Fatalf("briefs = %q, want one", w.briefs)
+	}
+	var b harness.BriefPush
+	if err := json.Unmarshal([]byte(w.briefs[0]), &b); err != nil {
+		t.Fatalf("brief %s: %v", w.briefs[0], err)
+	}
+	return b
+}
+
+// A session continuing a stopped one gets the stopped one's working state
+// with its brief, dated and with the commit the branch stood at.
+func TestRunSessionDeliversThePriorStateWithTheBrief(t *testing.T) {
+	runner, worker := prevRig(t, "")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+		ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeWallClock, StartRef: "0123456789abcdef"}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+	}
+	b := onlyBrief(t, worker)
+	if b.Prior == nil {
+		t.Fatal("the brief has no prior state")
+	}
+	if want := "From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
+		t.Errorf("heading = %q, want %q", b.Prior.Heading, want)
+	}
+	if want := "Todo list at the stop:\n- [in_progress] fix the gate\n\nFiles the session changed:\n- g.go"; b.Prior.Body != want {
+		t.Errorf("body = %q, want %q", b.Prior.Body, want)
+	}
+}
+
+// A retry after factoryd stopped mid-session continues the dead session,
+// not the input's parent: the dead one's state comes with the brief, its
+// stop named by factoryd.
+func TestRunSessionDeliversTheDeadSessionsState(t *testing.T) {
+	runner, worker := prevRig(t, "")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-0",
+		ParentStop: "pushed branch factory/t2 at c0", ParentOutcome: OutcomePushed, StartRef: "0123456789abcdef"},
+		&sessionProgress{SessionID: "s-prev", Running: true, Events: 12}, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+	}
+	b := onlyBrief(t, worker)
+	if b.Prior == nil {
+		t.Fatal("the brief has no prior state")
+	}
+	if want := "From session s-prev, stopped at 23:03 UTC because factoryd stopped while it ran, after 12 events, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
+		t.Errorf("heading = %q, want %q", b.Prior.Heading, want)
+	}
+}
+
+// A parent the check-in redirected or sent to the stronger rung followed a
+// wrong approach: its todo list comes labelled as the dead end's.
+func TestRunSessionLabelsADeadEndsState(t *testing.T) {
+	for _, outcome := range []SessionOutcome{OutcomeRedirect, OutcomeRetryStronger} {
+		t.Run(string(outcome), func(t *testing.T) {
+			runner, worker := prevRig(t, "")
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+				ParentStop: "check-in: wrong approach", ParentOutcome: outcome, StartRef: "0123456789abcdef"}, nil,
+				pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+			if err != nil || res.Outcome != OutcomePushed {
+				t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+			}
+			b := onlyBrief(t, worker)
+			if b.Prior == nil {
+				t.Fatal("the brief has no prior state")
+			}
+			if want := "The check-in judged this approach wrong; the todo list below is the dead end's, not a plan to follow."; !strings.HasSuffix(b.Prior.Heading, want) {
+				t.Errorf("heading = %q, want it to end %q", b.Prior.Heading, want)
+			}
+			if want := "Todo list at the stop (the dead end's):\n- [in_progress] fix the gate"; !strings.HasPrefix(b.Prior.Body, want) {
+				t.Errorf("body = %q, want it to start %q", b.Prior.Body, want)
+			}
+		})
+	}
+}
+
+// A parent that pushed finished its work: the next session gets no copy
+// of its state. A parent without a record gives none either, and the
+// session runs on.
+func TestRunSessionSendsNoPriorStateAfterAPushedParent(t *testing.T) {
+	t.Run("pushed parent", func(t *testing.T) {
+		runner, worker := prevRig(t, "")
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+			ParentStop: "pushed branch factory/t2 at c0", ParentOutcome: OutcomePushed, StartRef: "0123456789abcdef"}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed {
+			t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+		}
+		if b := onlyBrief(t, worker); b.Prior != nil {
+			t.Fatalf("prior = %+v, want none after a pushed parent", b.Prior)
+		}
+	})
+	t.Run("no record", func(t *testing.T) {
+		runner, _, _, worker, _, _, _ := checkinRig(t, "")
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+			ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeWallClock, StartRef: "0123456789abcdef"}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed {
+			t.Fatalf("result = (%+v, %v), want the session to run and push", res, err)
+		}
+		if b := onlyBrief(t, worker); b.Prior != nil {
+			t.Fatalf("prior = %+v, want none without a record", b.Prior)
+		}
+	})
+}
+
+// A handover, the input's or the start check-in's, rides the brief beside
+// the prior state.
+func TestRunSessionKeepsTheHandoverBesideThePriorState(t *testing.T) {
+	t.Run("mid-session handover", func(t *testing.T) {
+		runner, worker := prevRig(t, "")
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+			ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef", Handover: "start with g.go"}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed {
+			t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+		}
+		if b := onlyBrief(t, worker); b.Handover != "start with g.go" || b.Prior == nil || b.Prior.Session != "s-prev" {
+			t.Fatalf("brief = %+v, want the handover and s-prev's state", b)
+		}
+	})
+	t.Run("check-in handover", func(t *testing.T) {
+		finding := "no test covers the gate"
+		runner, worker := prevRig(t, `{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"handover","handover":"start with g.go"}`)
+		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+			ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef",
+			CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: finding, Source: "review"}}}}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+		if err != nil || res.Outcome != OutcomePushed || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+			t.Fatalf("result = (%+v, %v), want the check-in's handover and the pushed session", res, err)
+		}
+		if b := onlyBrief(t, worker); b.Handover != "start with g.go" || b.Prior == nil || b.Prior.Session != "s-prev" {
+			t.Fatalf("brief = %+v, want the check-in's handover and s-prev's state", b)
+		}
+	})
+}
+
 // The statement of every check-in states the card's pace: 350 changed lines
 // against the small card's 300, 1.80 of 5 EUR spent, session 1 of 4.
 func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {

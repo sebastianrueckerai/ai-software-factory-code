@@ -34,6 +34,7 @@ type fakeWorkerEndpoint struct {
 	status int
 	auth   []string
 	texts  []string
+	briefs []string // the raw body of each POST /brief
 	onPush func()
 	// onTool answers POST /tool with its status and body; tools records
 	// every ask as the tool's name with its args
@@ -58,6 +59,9 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 		f.mu.Lock()
 		f.auth = append(f.auth, req.Header.Get("Authorization"))
 		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text+in.Token+in.Session+in.Record+in.Handover+in.Name)
+		if req.URL.Path == "/brief" {
+			f.briefs = append(f.briefs, string(b))
+		}
 		status := f.status
 		f.mu.Unlock()
 		if req.URL.Path == "/tool" {

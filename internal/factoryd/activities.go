@@ -640,7 +640,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("task", err)
 	}
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
+	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome,
+		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
 		lastGates: in.LastGates, handover: in.Handover}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("policy", err)
@@ -690,7 +691,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	s.base = t.SHA
 	var dead sessionProgress
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
-		s.parent = dead.SessionID
+		s.parent, s.parentOutcome = dead.SessionID, ""
+		s.parentStop = fmt.Sprintf("factoryd stopped while it ran, after %d events", dead.Events)
 		if dead.Running {
 			s.findings = slices.Concat(in.Findings, []string{fmt.Sprintf(
 				"session %s stopped after %d events without finishing; continue from the branch as it is", dead.SessionID, dead.Events)})
@@ -705,7 +707,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	} else if ok {
 		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending") {
 			live = &l
-			s.id, s.parent, s.findings = l.SessionID, in.ParentSessionID, in.Findings
+			s.id, s.parent, s.parentStop, s.parentOutcome, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
 			return SessionResult{}, named("live session", err)
 		}

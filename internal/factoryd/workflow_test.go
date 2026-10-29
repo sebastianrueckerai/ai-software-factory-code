@@ -510,6 +510,28 @@ func TestWorkflowBeforeStagesRedChecksRetryStrongerFromBranchHead(t *testing.T) 
 	}
 }
 
+// The next session is told how its parent stopped: the reason and the
+// outcome ride its input, for the working state's heading.
+func TestSecondSessionInputNamesHowTheFirstStopped(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "supervision trip: wall_clock"}, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 2 {
+		t.Fatalf("sessions = %d, want 2", len(h.sessions))
+	}
+	if first := h.sessions[0]; first.ParentStop != "" || first.ParentOutcome != "" {
+		t.Fatalf("first session's input = %+v, want no parent stop and no parent outcome", first)
+	}
+	if second := h.sessions[1]; second.ParentSessionID != "s1" || second.ParentStop != "supervision trip: wall_clock" || second.ParentOutcome != OutcomeNoPush {
+		t.Fatalf("second session's input = %+v, want parent s1 stopped on the wall-clock trip with no push", second)
+	}
+}
+
 func TestWorkflowChangesRequestedStartsNewAttempt(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
