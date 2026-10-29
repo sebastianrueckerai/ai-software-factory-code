@@ -833,18 +833,17 @@ func TestModelReviewNamesTheInvalidPart(t *testing.T) {
 	}
 }
 
-// The four parts wait on the gateway at once: four calls of 200 ms take
-// about one call's time, not 800 ms.
+// The four parts' calls of 200 ms each wait on the gateway at once, each
+// with its part. The gateway counts the calls at once: the activity's
+// time under the race detector says too little.
 func TestModelReviewPartsRunInParallel(t *testing.T) {
 	fj := &gateForgejo{diff: fourParts}
 	r, _, _ := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`, delay: 200 * time.Millisecond}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	began := time.Now()
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-	took := time.Since(began)
-	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || took >= 600*time.Millisecond || ll.peak != 4 {
-		t.Fatalf("review = %+v after %s, %d calls at once: want approve in under 600 ms, four calls at once", rv, took, ll.peak)
+	if rv := getInto[Review](t, val, err); rv.Verdict != "approve" || ll.peak != 4 {
+		t.Fatalf("review = %+v, %d calls at once: want approve, four calls at once", rv, ll.peak)
 	}
 	var parts []string
 	for _, chat := range byPart(ll) {

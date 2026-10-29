@@ -264,12 +264,12 @@ func TestReviewAndAuditBoundThemselvesByTheirWaves(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := newAuditRunner(t, &gateForgejo{diff: tc.diff}, &fakeLiteLLM{content: tc.answer}, true)
 			var mu sync.Mutex
-			var parts []int
+			var waves []int
 			env := signallingEnv(&GateWatch{Store: r.store, Bound: func(_ context.Context, activity string, _ int64, n int) time.Duration {
 				if activity == tc.activity {
 					mu.Lock()
 					defer mu.Unlock()
-					parts = append(parts, n)
+					waves = append(waves, n)
 				}
 				return time.Hour
 			}})
@@ -279,8 +279,8 @@ func TestReviewAndAuditBoundThemselvesByTheirWaves(t *testing.T) {
 			}
 			mu.Lock()
 			defer mu.Unlock()
-			if !slices.Equal(parts, tc.want) {
-				t.Fatalf("bounds asked for %v waves, want %v", parts, tc.want)
+			if !slices.Equal(waves, tc.want) {
+				t.Fatalf("bounds asked for %v waves, want %v", waves, tc.want)
 			}
 		})
 	}

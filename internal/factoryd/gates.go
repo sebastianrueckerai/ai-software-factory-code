@@ -1272,7 +1272,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		calls[i] = reviewCall{Label: fmt.Sprintf("part %d of %d", i+1, len(parts)), Prompt: prompt, Input: in}
 	}
-	boundByParts(ctx, (len(calls)+reviewParallel-1)/reviewParallel)
 	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
 	if err != nil {
 		return Review{}, err

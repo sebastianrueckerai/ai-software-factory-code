@@ -182,7 +182,6 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			calls[i].Prompt, calls[i].Input = auditPartPrompt, auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
 		}
 	}
-	boundByParts(ctx, (len(calls)+reviewParallel-1)/reviewParallel)
 	results, err := r.callAll(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, calls)
 	if err != nil {
 		return AuditResult{}, err
