@@ -296,10 +296,13 @@ func reads(from, n int) string {
 	return s
 }
 
-func commands(from, n int) string {
+func commands(from, n int) string { return commandsAt(from, n, time.Time{}) }
+
+// commandsAt are commands the pod stamped at.
+func commandsAt(from, n int, at time.Time) string {
 	var s string
 	for i := from; i < from+n; i++ {
-		s += envLine(harness.Event{Kind: harness.EventCommand, Detail: map[string]any{"command": fmt.Sprint("ls ", i), "exit": 0}}) + "\n"
+		s += envLine(harness.Event{Kind: harness.EventCommand, Time: at, Detail: map[string]any{"command": fmt.Sprint("ls ", i), "exit": 0}}) + "\n"
 	}
 	return s
 }
@@ -385,6 +388,34 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 	if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") || !strings.Contains(hub.comments[1], stopped) ||
 		strings.Contains(hub.comments[1], "\nReason: ") {
 		t.Fatalf("comments = %q, want the message and the stop with %q, the note once", hub.comments, stopped)
+	}
+}
+
+// The pod runs on during the check-in: the 10 commands it made then wait in
+// the stream with its time from before the message and count for nothing
+// after it. Of the 24 it makes after the message, the 24th trips, stuck:
+// the snapshot's findings are the last 20 commands, ls 38 to ls 57, and
+// the stuck line.
+func TestCommandsBufferedDuringTheCheckinDoNotCount(t *testing.T) {
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), newFakeKube(), &fakeObjectStore{})
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{Text: `{"decision":"message","guidance":"use the store's New"}`},
+		{Text: `{"decision":"handover","handover":"the agent listed the tree again after the message"}`},
+	}}
+	runner.checkin = chat
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+
+	before := time.Now()
+	logs := commandsAt(0, 24, before) + commandsAt(24, 10, before) + commandsAt(34, 24, before.Add(time.Hour)) +
+		pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil || res.Outcome != OutcomeRetryStronger || res.Trip != string(TripRepetition) || chat.calls != 2 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want retry_stronger on repetition after 2", res, err, chat.calls)
+	}
+	stuck := "stuck after the supervisor's message: repetition: 24 tool calls and commands without a file change"
+	if f := store.sessions[res.SessionID].Findings; len(f) != 21 || f[0] != "ran `ls 38` (exit 0)" || f[19] != "ran `ls 57` (exit 0)" || f[20] != stuck {
+		t.Fatalf("snapshot findings = %q, want ls 38 to ls 57 and the stuck line: the trip at the 24th command after the message", f)
 	}
 }
 

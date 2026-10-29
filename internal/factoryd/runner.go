@@ -863,8 +863,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		case d.Action == ActionMessage:
 			err := r.message(ctx, t, s, ns, podName, d.Guidance)
 			if err == nil || errors.Is(err, harness.ErrNotRunning) {
-				r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 				sup.Messaged(time.Now())
+				r.commentDecision(ctx, t, s, trip, d, out.digest, "")
 				messages = append(messages, d.Guidance)
 				return false, nil
 			}

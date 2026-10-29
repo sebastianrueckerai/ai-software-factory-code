@@ -197,10 +197,7 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	// for no detector, but a write is progress whenever it was made
 	stale := !s.messagedAt.IsZero() && !ev.Time.IsZero() && ev.Time.Before(s.messagedAt)
 	if stale && !write {
-		if !at.Before(s.deadline) {
-			return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
-		}
-		return s.cheapCap(at)
+		return s.limits(at)
 	}
 	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
 	switch {
@@ -229,10 +226,7 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if !subagentCall {
 		traced = s.traces.observe(ev)
 	}
-	if !at.Before(s.deadline) {
-		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
-	}
-	if trip := s.cheapCap(at); trip != nil {
+	if trip := s.limits(at); trip != nil {
 		return trip
 	}
 	if traced != nil {
@@ -280,10 +274,7 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	if !now.Before(s.deadline) {
-		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
-	}
-	if trip := s.cheapCap(now); trip != nil {
+	if trip := s.limits(now); trip != nil {
 		return trip
 	}
 	if trip := s.checkIn(now); trip != nil {
@@ -293,6 +284,15 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 		return s.trip(&Trip{Kind: TripNoProgress, Detail: fmt.Sprintf("no harness events for %s", silent.Round(time.Second))})
 	}
 	return nil
+}
+
+// limits are the caps every event and tick checks: the task's wall clock,
+// then the cheap rung's.
+func (s *Supervisor) limits(at time.Time) *Trip {
+	if !at.Before(s.deadline) {
+		return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
+	}
+	return s.cheapCap(at)
 }
 
 // cheapCap trips once the start rung's first attempt ran CheapCap without
