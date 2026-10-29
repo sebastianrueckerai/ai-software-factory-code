@@ -125,7 +125,7 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 			return
 		}
 		var in harness.BriefPush
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, harness.MaxBriefPush)).Decode(&in); err != nil {
 			http.Error(w, `want {"handover": "...", "prior": {...}, "files": [...]}`, http.StatusBadRequest)
 			return
 		}
@@ -152,7 +152,7 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 			return
 		}
 		if badSession(in.Session) {
-			http.Error(w, "session must be a bare id, no \"/\" or \"..\"", http.StatusBadRequest)
+			http.Error(w, fmt.Sprintf("session %q %s", in.Session, unfitName), http.StatusBadRequest)
 			return
 		}
 		dir := filepath.Join(c.ws, ".factory", "sessions")
@@ -168,7 +168,6 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 	})
 }
 
-// badSession refuses a session id that could leave the sessions directory.
 // landPrior writes the push's report files under .factory/prior/<session>,
 // outside the repository, and points the prior state at them. It writes
 // nothing when any name is unfit.
@@ -180,12 +179,12 @@ func (c *checkinServe) landPrior(in *harness.BriefPush) error {
 		return errors.New("files need a prior state; send \"prior\" with them")
 	}
 	if badSession(in.Prior.Session) {
-		return errors.New("prior session must be a bare id, no \"/\" or \"..\"")
+		return fmt.Errorf("prior session %q %s", in.Prior.Session, unfitName)
 	}
 	names := make([]string, len(in.Files))
 	for i, f := range in.Files {
 		if badSession(f.Name) {
-			return fmt.Errorf("file name %q must be a bare name, no \"/\" or \"..\"", f.Name)
+			return fmt.Errorf("file name %q %s", f.Name, unfitName)
 		}
 		names[i] = f.Name
 	}
@@ -202,9 +201,13 @@ func (c *checkinServe) landPrior(in *harness.BriefPush) error {
 	return nil
 }
 
+// badSession refuses a name that could leave its directory: a session id
+// or a report file's name. unfitName is the rule its refusals state.
 func badSession(session string) bool {
 	return session == "" || session == "." || strings.Contains(session, "/") || strings.Contains(session, "..")
 }
+
+const unfitName = `must be a bare name: not empty, not "." and without "/" or ".."`
 
 var errOutside = errors.New("outside the workspace")
 

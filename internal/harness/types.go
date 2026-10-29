@@ -83,6 +83,10 @@ type PriorState struct {
 // ReportFile is one full subagent report the worker writes beside the brief.
 type ReportFile struct{ Name, Text string }
 
+// MaxBriefPush is the largest BriefPush body the worker takes: the largest
+// factoryd builds is about 2.4 MB of JSON.
+const MaxBriefPush = 4 << 20
+
 // BriefPush is what factoryd pushes to a worker before the conversation begins.
 type BriefPush struct {
 	Handover string       `json:"handover"`

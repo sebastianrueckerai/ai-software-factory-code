@@ -370,6 +370,9 @@ func TestRunSessionCheckinMessageArmsStuckRule(t *testing.T) {
 		res.Summary != "check-in: retry_stronger after repetition: 24 tool calls and commands without a file change" || res.CheckIn != nil {
 		t.Fatalf("result = (%+v, %v), want retry_stronger on repetition with c-wip, no riding check-in", res, err)
 	}
+	if !res.DeadEnd {
+		t.Fatal("the judged stuck handover is no dead end")
+	}
 	if chat.calls != 2 {
 		t.Fatalf("check-in conversations = %d, want 2: the stuck trip asks too", chat.calls)
 	}
@@ -611,6 +614,9 @@ func TestStuckTripWithoutAJudgedAnswerClimbs(t *testing.T) {
 				res.CheckIn != nil || len(res.Findings) == 0 || res.Findings[0] != stuck || chat.calls != calls {
 				t.Fatalf("result = (%+v, %v) after %d calls, want retry_stronger on the stuck line after %d", res, err, chat.calls, calls)
 			}
+			if res.DeadEnd {
+				t.Fatal("the unjudged climb is a dead end")
+			}
 			stopped := "The session stopped on repetition: " + stuck + ". The next session resumes on the stronger model from the work in progress."
 			if n := len(hub.comments); n != 2 || !strings.Contains(hub.comments[1], "**retry_stronger**") || !strings.Contains(hub.comments[1], stopped) {
 				t.Fatalf("comments = %q, want the message and the stop with %q", hub.comments, stopped)
@@ -660,6 +666,9 @@ func TestUndeliveredMessageStops(t *testing.T) {
 	}
 	if !slices.Contains(res.Findings, "supervisor guidance: use the store's New") {
 		t.Fatalf("findings = %q, want the guidance", res.Findings)
+	}
+	if res.DeadEnd {
+		t.Fatal("the failed delivery's redirect is a dead end")
 	}
 }
 

@@ -308,6 +308,9 @@ type SessionInput struct {
 	ParentStop    string         `json:",omitempty"`
 	ParentOutcome SessionOutcome `json:",omitempty"`
 	ParentTrip    string         `json:",omitempty"`
+	// ParentDeadEnd is the parent's SessionResult.DeadEnd: its todo list
+	// comes labelled as the dead end's.
+	ParentDeadEnd bool `json:",omitempty"`
 	// PolicyVersion is WorkflowConfig.PolicyVersion: the session reads
 	// its limits from it; 0 (a workflow from before the pin) reads the
 	// version in force.
@@ -351,6 +354,9 @@ type SessionResult struct {
 	// Trip is the TripKind the supervisor stopped the session on, loop for
 	// the provider's refusal of repeated calls too, "" for none.
 	Trip string
+	// DeadEnd: a check-in model judged the session's approach wrong and it
+	// stopped on redirect or retry_stronger; a fixed rule's stop is none.
+	DeadEnd bool `json:",omitempty"`
 	// Status is the provider's HTTP status of a provider_refused session.
 	Status int `json:",omitempty"`
 	// StartFailed: the session's pod could not start, on a cause no
@@ -1325,6 +1331,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	startRef, parent := "", ""
 	var parentStop, parentTrip string
 	var parentOutcome SessionOutcome
+	var parentDeadEnd bool
 	var u TaskUsage
 	reason := "no session produced a result"
 	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
@@ -1746,7 +1753,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
-			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip,
+			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
@@ -1849,7 +1856,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		if !res.StartFailed && res.Outcome != OutcomeCheckinHuman && res.Outcome != OutcomeCheckinDropped {
-			parent, parentStop, parentOutcome, parentTrip = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip
+			parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
 		}
 		if res.Model != "" {
 			model = res.Model

@@ -532,6 +532,27 @@ func TestSecondSessionInputNamesHowTheFirstStopped(t *testing.T) {
 	}
 }
 
+// A stop a check-in judged a dead end rides the next input as such; any
+// other stop does not.
+func TestNextSessionInputCarriesTheDeadEnd(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Summary: "check-in: retry_stronger after repetition: d", Trip: "repetition", DeadEnd: true},
+		SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s2", Summary: "check-in: retry_stronger after cheap_cap: d", Trip: "cheap_cap"},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if len(h.sessions) != 3 {
+		t.Fatalf("sessions = %d, want 3", len(h.sessions))
+	}
+	if h.sessions[0].ParentDeadEnd || !h.sessions[1].ParentDeadEnd || h.sessions[2].ParentDeadEnd {
+		t.Fatalf("dead ends = %v, %v, %v; want only the second input's", h.sessions[0].ParentDeadEnd, h.sessions[1].ParentDeadEnd, h.sessions[2].ParentDeadEnd)
+	}
+}
+
 // The parent's stop rides every next input cut at the working state's
 // bound: the agent's long last message is not copied into the history
 // whole.
@@ -586,6 +607,34 @@ func TestThirdSessionContinuesTheLastSessionThatRan(t *testing.T) {
 			}
 		})
 	}
+	// a check-in that dropped every finding stopped its pod before the
+	// conversation: the session after the re-review continues s1
+	t.Run("checkin_dropped", func(t *testing.T) {
+		finding := "a.go: x is missing"
+		g := newGateHarness(t, func(g *gateHarness) {
+			g.taskConfig = askTaskConfig()
+			g.reviews = []Review{
+				{Verdict: "concerns", Summary: "the file lacks the check", Findings: []string{finding}},
+				{Verdict: "concerns", Summary: "the head still lacks it", Findings: []string{finding}},
+			}
+		})
+		drop := map[string]CheckVerdict{finding: {State: CheckDropped, Evidence: "the test never ran", Round: 1}}
+		g.onSessions(pushed("s1", "c1"),
+			checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll, Verdicts: drop}),
+			checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, Reason: "re-raised after a drop"}))
+		g.onChecks(ChecksResult{State: ChecksSuccess})
+		g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+		if final := g.run(t); final != "closed" {
+			t.Fatalf("final = %q, want closed", final)
+		}
+		if len(g.sessions) != 3 {
+			t.Fatalf("sessions = %d, want 3", len(g.sessions))
+		}
+		if third := g.sessions[2]; third.ParentSessionID != "s1" || third.ParentOutcome != OutcomePushed {
+			t.Fatalf("third session's input = %+v, want parent s1, which pushed", third)
+		}
+	})
 }
 
 func TestWorkflowChangesRequestedStartsNewAttempt(t *testing.T) {

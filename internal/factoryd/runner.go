@@ -439,6 +439,8 @@ type sessionSpec struct {
 	parentStop    string
 	parentOutcome SessionOutcome
 	parentTrip    string
+	// parentDeadEnd: a check-in model judged the parent's approach wrong
+	parentDeadEnd bool
 	findings      []string
 	answers       []string
 	posterInfo    []string
@@ -853,7 +855,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		// the judge says whether the session is stuck, code picks the model
 		// (rulings 216, 224): a stuck trip's handover is the stuck rule's climb
 		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
-			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover}, false
+			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover, Judged: true}, false
 		}
 		out.digest = digest.digest().Summary()
 		r.recordDecision(ctx, t, s, recorder, trip, d, ck, ride, out.digest)
@@ -991,12 +993,6 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	limits := s.policy.Limits
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
-	lines := -1
-	if ask.Gates != nil {
-		lines = ask.Gates.Policy.Lines
-	}
-	bound, _ := cardLineBound(t.Size, s.policy.Risk.LargeLines)
-	ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord))
 	}
@@ -1007,6 +1003,12 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: rec}, true
 	}
 	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
+		lines := -1
+		if ask.Gates != nil {
+			lines = ask.Gates.Policy.Lines
+		}
+		bound, _ := cardLineBound(t.Size, s.policy.Risk.LargeLines)
+		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 		var parent []byte
 		if s.parent != "" {
 			if rec, err := parentRecord(); err == nil {
@@ -1031,7 +1033,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		return &out, true
 	}
 	// no model under the check-in's purpose: the session runs as if no
-	// check-in was asked, and its brief is the empty one
+	// check-in was asked, and its brief carries no handover note
 	brief("")
 	return nil, false
 }

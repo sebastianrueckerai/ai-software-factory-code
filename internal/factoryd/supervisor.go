@@ -42,6 +42,9 @@ type Decision struct {
 	// model's answer.
 	Choices    []string `json:"-"`
 	Tool, Need string   `json:"-"`
+	// Judged: a check-in model chose this action on the trip (a stuck
+	// trip's handover), not a fixed rule or a fallback.
+	Judged bool `json:"-"`
 }
 
 // maxDecisionText caps guidance and reason; they become findings and

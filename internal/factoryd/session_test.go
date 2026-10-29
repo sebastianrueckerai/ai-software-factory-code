@@ -219,3 +219,33 @@ func TestSessionRecorderKeepsIdentifiersAndPaths(t *testing.T) {
 		t.Fatalf("acceptance hit = %+v, want %q with exit 0", hit, command)
 	}
 }
+
+// Every value type passes the scrub: the strings of a typed value, of a
+// string slice and of nested slices are masked, and numbers, bools and
+// nulls are kept as they were.
+func TestSessionRecorderScrubsEveryValueType(t *testing.T) {
+	r, err := NewSessionRecorder(context.Background(), newFakeStore(), &fakeObjectStore{}, redact.New(), "t1", "s1", "", "factory/small")
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "sk-abcdefghijklmnop1234"
+	ev := harness.Event{Kind: harness.EventSupervisor, Detail: map[string]any{
+		"record": &CheckInRecord{Model: "big", Reason: "found " + key},
+		"lines":  []string{"a", "key " + key},
+		"nested": []any{[]any{"key " + key, 7}},
+		"count":  int64(9007199254740993), "cost": 0.00021, "called": true, "none": nil,
+	}}
+	if err := r.Record(context.Background(), ev); err != nil {
+		t.Fatal(err)
+	}
+	got := string(r.Transcript())
+	if strings.Contains(got, key) {
+		t.Fatalf("a key shape reached the record: %s", got)
+	}
+	for _, want := range []string{`"model":"big"`, `"reason":"found [redacted]"`, `"lines":["a","key [redacted]"]`, `"nested":[["key [redacted]",7]]`,
+		`"count":9007199254740993`, `"cost":0.00021`, `"called":true`, `"none":null`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("record lacks %s:\n%s", want, got)
+		}
+	}
+}

@@ -47,7 +47,11 @@ func ResumeSessionRecorder(ctx context.Context, store Store, objects ObjectStore
 // Record appends the event to the session history and ships the whole object.
 // Every string in the event's detail is scrubbed first.
 func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
-	ev.Detail = scrubDetail(r.scrub, ev.Detail)
+	detail, err := scrubDetail(r.scrub, ev.Detail)
+	if err != nil {
+		return err
+	}
+	ev.Detail = detail
 	line, err := json.Marshal(ev)
 	if err != nil {
 		return err
@@ -57,35 +61,42 @@ func (r *SessionRecorder) Record(ctx context.Context, ev harness.Event) error {
 	return r.objects.Put(ctx, "sessions/"+r.taskID+"/"+r.id+".jsonl", r.history.Bytes())
 }
 
-// scrubDetail is a copy of d with every string value, nested ones included,
-// scrubbed. Digests under a key ending "sha256" are not secrets and stay.
-func scrubDetail(scrub *redact.Scrubber, d map[string]any) map[string]any {
+// scrubDetail is d as the JSON it is stored as, with every string value in
+// it, nested and typed ones included, scrubbed; numbers stay exact.
+// Digests under a key ending "sha256" are not secrets and stay.
+func scrubDetail(scrub *redact.Scrubber, d map[string]any) (map[string]any, error) {
 	if d == nil {
-		return nil
+		return nil, nil
 	}
-	out := make(map[string]any, len(d))
-	for k, v := range d {
-		if strings.HasSuffix(k, "sha256") {
-			out[k] = v
-			continue
-		}
-		out[k] = scrubValue(scrub, v)
+	b, err := json.Marshal(d)
+	if err != nil {
+		return nil, err
 	}
-	return out
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	var plain map[string]any
+	if err := dec.Decode(&plain); err != nil {
+		return nil, err
+	}
+	scrubValue(scrub, plain)
+	return plain, nil
 }
 
+// scrubValue scrubs v, a decoded JSON value, in place, and returns it.
 func scrubValue(scrub *redact.Scrubber, v any) any {
 	switch v := v.(type) {
 	case string:
 		return scrub.String(v)
 	case map[string]any:
-		return scrubDetail(scrub, v)
-	case []any:
-		out := make([]any, len(v))
-		for i, e := range v {
-			out[i] = scrubValue(scrub, e)
+		for k, e := range v {
+			if !strings.HasSuffix(k, "sha256") {
+				v[k] = scrubValue(scrub, e)
+			}
 		}
-		return out
+	case []any:
+		for i, e := range v {
+			v[i] = scrubValue(scrub, e)
+		}
 	}
 	return v
 }

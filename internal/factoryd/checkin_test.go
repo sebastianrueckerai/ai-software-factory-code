@@ -914,6 +914,14 @@ func TestPaceLineFloorsTheSpendLeftAtZero(t *testing.T) {
 	}
 }
 
+// A session past its deadline has no minutes left, not a negative count.
+func TestPaceLineFloorsTheMinutesLeftAtZero(t *testing.T) {
+	got := Pace{Lines: 10, BoundLines: 300, SpentEUR: 1, BudgetEUR: 5, SpentMinutes: 23, LeftMinutes: -3, Attempt: 1, Sessions: 1}.Line()
+	if !strings.Contains(got, "23 minutes of agent time spent, 0 left;") {
+		t.Fatalf("line = %q", got)
+	}
+}
+
 func TestCheckinStatementOfASizeTripAsksWhetherTheRestFits(t *testing.T) {
 	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should cut scope or wrap up, with the instruction. Nothing here cuts the card."
 	statement := func(detector TripKind) string {

@@ -51,7 +51,7 @@ func priorState(s sessionSpec, record func() ([]byte, error)) *carryState {
 		return nil
 	}
 	return workingState(rec, carryFrom{Session: s.parent, Commit: s.startRef, Stop: s.parentStop, Outcome: s.parentOutcome, Trip: s.parentTrip,
-		DeadEnd: s.parentOutcome == OutcomeRedirect || s.parentOutcome == OutcomeRetryStronger})
+		DeadEnd: s.parentDeadEnd})
 }
 
 // workingState builds the carried state from a session's record; nil when
@@ -68,13 +68,14 @@ func workingState(record []byte, from carryFrom) *carryState {
 		scanner = bufio.NewScanner(bytes.NewReader(record))
 	)
 	scanner.Buffer(nil, len(record)+1)
-	haveTodos := false
 	for scanner.Scan() {
 		var ev harness.Event
 		if json.Unmarshal(scanner.Bytes(), &ev) != nil {
 			continue
 		}
-		last = ev.Time
+		if !ev.Time.IsZero() {
+			last = ev.Time
+		}
 		switch ev.Kind {
 		case harness.EventToolCall:
 			if detailBool(ev, "subagent") {
@@ -83,13 +84,16 @@ func workingState(record []byte, from carryFrom) *carryState {
 			args, _ := ev.Detail["args"].(map[string]any)
 			switch detailString(ev, "tool") {
 			case "todowrite":
-				todos, haveTodos = nil, true
+				todos = nil
 				list, _ := args["todos"].([]any)
 				for _, it := range list {
 					m, _ := it.(map[string]any)
 					status, _ := m["status"].(string)
 					content, _ := m["content"].(string)
-					todos = append(todos, "- ["+status+"] "+content)
+					if status != "" {
+						status = "[" + status + "] "
+					}
+					todos = append(todos, "- "+status+content)
 				}
 			case "task":
 				desc, _ := args["description"].(string)
@@ -103,7 +107,7 @@ func workingState(record []byte, from carryFrom) *carryState {
 			}
 		}
 	}
-	if !haveTodos && len(tasks) == 0 && len(files) == 0 {
+	if len(todos) == 0 && len(tasks) == 0 && len(files) == 0 {
 		return nil
 	}
 
@@ -112,14 +116,17 @@ func workingState(record []byte, from carryFrom) *carryState {
 		commit = commit[:8]
 	}
 	var how string
+	if !last.IsZero() {
+		how = " at " + last.UTC().Format("15:04") + " UTC"
+	}
 	if from.Outcome != "" {
 		how += " with outcome " + string(from.Outcome)
 	}
 	if from.Trip != "" {
 		how += " after the " + from.Trip + " trip"
 	}
-	heading := fmt.Sprintf("From session %s, stopped at %s UTC%s, branch at commit %s. Written before your session started. Where they differ from the code on the branch, the code is right.",
-		from.Session, last.UTC().Format("15:04"), how, commit)
+	heading := fmt.Sprintf("From session %s, stopped%s, branch at commit %s. Written before your session started. Where they differ from the code on the branch, the code is right.",
+		from.Session, how, commit)
 	if from.DeadEnd {
 		heading += " The check-in judged this approach wrong; the todo list below is the dead end's, not a plan to follow."
 	}
@@ -145,13 +152,14 @@ func workingState(record []byte, from carryFrom) *carryState {
 			lines = append(lines, fmt.Sprintf("%d earlier subagent calls are left out.", skipped))
 		}
 		for i, tk := range tasks {
-			if tk.result == "" {
+			text := reportText(tk.result)
+			if text == "" {
 				lines = append(lines, fmt.Sprintf("- %q: no report was recorded.", tk.desc))
 				continue
 			}
 			name := fmt.Sprintf("report-%d.md", i+1)
 			reportFiles = append(reportFiles, harness.ReportFile{Name: name, Text: sanitize.Inbound("# " + tk.desc + "\n\n" + tk.result)})
-			lines = append(lines, fmt.Sprintf("- %s, %q:", name, tk.desc), textutil.Truncate(reportText(tk.result), carryReportBytes/len(tasks)))
+			lines = append(lines, fmt.Sprintf("- %s, %q:", name, tk.desc), textutil.Truncate(text, carryReportBytes/len(tasks)))
 		}
 		sections = append(sections, strings.Join(lines, "\n"))
 	}

@@ -2,12 +2,14 @@ package factoryd
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 var carryAt = time.Date(2026, 10, 28, 23, 3, 32, 0, time.UTC)
@@ -146,7 +148,7 @@ func TestWorkingStateCutsOnRuneBoundaries(t *testing.T) {
 func TestWorkingStateKeepsTheLastEightReports(t *testing.T) {
 	var evs []harness.Event
 	for i := 1; i <= 10; i++ {
-		evs = append(evs, taskEv(false, "d", strings.Repeat("x", 5000)))
+		evs = append(evs, taskEv(false, fmt.Sprint("d", i), fmt.Sprint(i)+strings.Repeat("x", 5000)))
 	}
 	got := workingState(carryRecord(t, evs...), carryFromT)
 	body := got.Prior.Body
@@ -156,6 +158,12 @@ func TestWorkingStateKeepsTheLastEightReports(t *testing.T) {
 	}
 	if strings.Contains(body, "report-9.md") || len(got.Files) != 8 {
 		t.Errorf("files = %d", len(got.Files))
+	}
+	if !strings.Contains(body, "- report-1.md, \"d3\":\n3xxx") || !strings.Contains(body, "- report-8.md, \"d10\":\n10xxx") || strings.Contains(body, "\"d2\"") {
+		t.Errorf("the reports are not calls 3 to 10: %.300q", body)
+	}
+	if len(got.Files) == 8 && (!strings.HasPrefix(got.Files[0].Text, "# d3\n\n3x") || !strings.HasPrefix(got.Files[7].Text, "# d10\n\n10x")) {
+		t.Errorf("files = %.20q, %.20q", got.Files[0].Text, got.Files[7].Text)
 	}
 	for _, ex := range strings.Split(body, "- report-")[1:] {
 		_, text, _ := strings.Cut(ex, ":\n")
@@ -233,5 +241,89 @@ func TestWorkingStateSanitisesTheReportFiles(t *testing.T) {
 	}
 	if text := got.Files[0].Text; strings.Contains(text, "<!--") || !strings.HasPrefix(text, "# Map ") || !strings.Contains(text, "alpha ") || !strings.HasSuffix(text, " beta") {
 		t.Errorf("file = %q", text)
+	}
+}
+
+// An empty last todo list with nothing else to copy copies nothing: no
+// heading over an empty fence.
+func TestWorkingStateOfAnEmptyTodoListAloneIsNil(t *testing.T) {
+	rec := carryRecord(t, todoEv(false, [2]string{"pending", "a"}), todoEv(false))
+	if got := workingState(rec, carryFromT); got != nil {
+		t.Errorf("got %+v, want nil", got)
+	}
+}
+
+// A result that is only the task tool's wrapper is no report: no file and
+// no empty excerpt. A todo without a status shows its content alone.
+func TestWorkingStateOfAnEmptyReportAndATodoWithoutAStatus(t *testing.T) {
+	rec := carryRecord(t, todoEv(false, [2]string{"", "write it"}), taskEv(false, "Empty", "task_id: x\n<task_result>\n</task_result>"))
+	got := workingState(rec, carryFromT)
+	want := "Todo list at the stop:\n- write it\n\nSubagent reports (excerpts; the full text is in the files named):\n- \"Empty\": no report was recorded."
+	if got == nil || got.Prior.Body != want || got.Files != nil {
+		t.Errorf("got %+v, want body %q and no file", got, want)
+	}
+}
+
+// A record whose events hold no time gives no made-up time in the heading.
+func TestWorkingStateOfARecordWithoutTimesNamesNoTime(t *testing.T) {
+	line, err := json.Marshal(todoEv(false, [2]string{"pending", "a"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := workingState(append(line, '\n'), carryFromT)
+	want := "From session s-1, stopped with outcome no_push after the repetition trip, branch at commit a9e69421. Written before your session started. Where they differ from the code on the branch, the code is right."
+	if got == nil || got.Prior.Heading != want {
+		t.Errorf("got %+v, want heading %q", got, want)
+	}
+}
+
+// The changed files list stops at 30 and counts the rest.
+func TestWorkingStateListsThirtyFilesAndCountsTheRest(t *testing.T) {
+	var evs []harness.Event
+	var lines []string
+	for i := 1; i <= 32; i++ {
+		evs = append(evs, fileEv(fmt.Sprintf("/workspace/repo/f%d.go", i)))
+		if i <= 30 {
+			lines = append(lines, fmt.Sprintf("- f%d.go", i))
+		}
+	}
+	got := workingState(carryRecord(t, evs...), carryFromT)
+	want := "Files the session changed:\n" + strings.Join(lines, "\n") + "\n- and 2 more."
+	if got == nil || got.Prior.Body != want {
+		t.Errorf("got %+v, want body %q", got, want)
+	}
+}
+
+// The largest brief factoryd can push fits the worker's cap: eight reports
+// at the record's cap, a todo list, excerpts, a stop reason and 30 changed
+// paths at PATH_MAX past their bounds, and a handover at the policy's
+// largest checkin_handover_chars (8000), all of "<", which JSON escapes to
+// six bytes.
+func TestTheLargestBriefPushFitsTheWorkersCap(t *testing.T) {
+	lt := func(n int) string { return strings.Repeat("<", n) }
+	var todos [][2]string
+	for range 64 {
+		todos = append(todos, [2]string{"pending", lt(512)})
+	}
+	evs := []harness.Event{todoEv(false, todos...)}
+	for range 10 {
+		evs = append(evs, taskEv(false, textutil.Truncate(lt(1<<10), maxArgString), textutil.Truncate(lt(64<<10), maxTaskResult)))
+	}
+	for i := range 40 {
+		evs = append(evs, fileEv(fmt.Sprintf("/workspace/repo/%02d%s", i, lt(4096-len("/workspace/repo/00")))))
+	}
+	from := carryFromT
+	from.Stop, from.DeadEnd = lt(1<<10), true
+	c := workingState(carryRecord(t, evs...), from)
+	if c == nil || len(c.Files) != carryMaxReports {
+		t.Fatalf("state = %+v", c)
+	}
+	b, err := json.Marshal(harness.BriefPush{Handover: cutHandover(lt(10000), 8000), Prior: &c.Prior, Files: c.Files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("the largest brief push is %d bytes", len(b))
+	if len(b) >= harness.MaxBriefPush {
+		t.Fatalf("the largest brief push is %d bytes, the worker takes %d", len(b), harness.MaxBriefPush)
 	}
 }

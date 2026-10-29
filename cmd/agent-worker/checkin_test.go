@@ -437,3 +437,46 @@ func TestBriefEndpointLandsTheReportsOutsideTheRepo(t *testing.T) {
 		})
 	}
 }
+
+// Each refusal of an unfit name says every rule the name broke against:
+// not empty, not ".", no "/" and no "..".
+func TestUnfitNameRefusalsNameEveryRule(t *testing.T) {
+	const rule = `must be a bare name: not empty, not "." and without "/" or ".."`
+	for _, tc := range []struct{ path, body, want string }{
+		{"/brief", `{"prior":{"session":"s-1"},"files":[{"Name":".","Text":"x"}]}`, `file name "." ` + rule + "\n"},
+		{"/brief", `{"prior":{"session":"."},"files":[{"Name":"r.md","Text":"x"}]}`, `prior session "." ` + rule + "\n"},
+		{"/records", `{"session":".","record":"x"}`, `session "." ` + rule + "\n"},
+	} {
+		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		req.Header.Set("Authorization", "Bearer session-secret")
+		rec := httptest.NewRecorder()
+		checkinHandler(t, newCheckinServe(t.TempDir())).ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || rec.Body.String() != tc.want {
+			t.Errorf("%s: status %d, body %q; want 400, %q", tc.path, rec.Code, rec.Body.String(), tc.want)
+		}
+	}
+}
+
+// The brief endpoint takes a push up to harness.MaxBriefPush, the largest
+// factoryd builds among them, and refuses a larger one.
+func TestBriefEndpointTakesPushesUpToTheCap(t *testing.T) {
+	for _, tc := range []struct {
+		handover int
+		status   int
+	}{
+		{(harness.MaxBriefPush - 100) / 6, http.StatusNoContent},
+		{harness.MaxBriefPush / 6, http.StatusBadRequest},
+	} {
+		body, err := json.Marshal(harness.BriefPush{Handover: strings.Repeat("<", tc.handover)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/brief", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer session-secret")
+		rec := httptest.NewRecorder()
+		checkinHandler(t, newCheckinServe(t.TempDir())).ServeHTTP(rec, req)
+		if rec.Code != tc.status {
+			t.Errorf("a body of %d bytes: status %d, want %d", len(body), rec.Code, tc.status)
+		}
+	}
+}

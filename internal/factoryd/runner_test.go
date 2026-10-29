@@ -4219,14 +4219,14 @@ func TestRunSessionDeliversTheDeadSessionsState(t *testing.T) {
 	}
 }
 
-// A parent the check-in redirected or sent to the stronger rung followed a
-// wrong approach: its todo list comes labelled as the dead end's.
+// A parent whose approach a check-in model judged wrong followed a dead
+// end: its todo list comes labelled as the dead end's.
 func TestRunSessionLabelsADeadEndsState(t *testing.T) {
 	for _, outcome := range []SessionOutcome{OutcomeRedirect, OutcomeRetryStronger} {
 		t.Run(string(outcome), func(t *testing.T) {
 			runner, worker := prevRig(t, "")
 			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
-				ParentStop: "check-in: wrong approach", ParentOutcome: outcome, StartRef: "0123456789abcdef"}, nil,
+				ParentStop: "check-in: wrong approach", ParentOutcome: outcome, ParentDeadEnd: true, StartRef: "0123456789abcdef"}, nil,
 				pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 			if err != nil || res.Outcome != OutcomePushed {
 				t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
@@ -4242,6 +4242,54 @@ func TestRunSessionLabelsADeadEndsState(t *testing.T) {
 				t.Errorf("body = %q, want it to start %q", b.Prior.Body, want)
 			}
 		})
+	}
+}
+
+// A redirect or a climb no check-in model judged (a cheap-cap stop, a
+// failed delivery, the loop's fixed redirect, the unjudged stuck climb)
+// leaves a todo list that is still a plan: no dead-end label.
+func TestRunSessionLabelsNoUnjudgedStopADeadEnd(t *testing.T) {
+	for _, outcome := range []SessionOutcome{OutcomeRedirect, OutcomeRetryStronger} {
+		t.Run(string(outcome), func(t *testing.T) {
+			runner, worker := prevRig(t, "")
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+				ParentStop: "check-in: retry_stronger after cheap_cap", ParentOutcome: outcome, StartRef: "0123456789abcdef"}, nil,
+				pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+			if err != nil || res.Outcome != OutcomePushed {
+				t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+			}
+			b := onlyBrief(t, worker)
+			if b.Prior == nil {
+				t.Fatal("the brief has no prior state")
+			}
+			if strings.Contains(b.Prior.Heading, "dead end") || strings.Contains(b.Prior.Body, "dead end") {
+				t.Errorf("prior = %+v, want no dead-end label", b.Prior)
+			}
+		})
+	}
+}
+
+// Only a decision a check-in model judged marks the stop a dead end: the
+// stuck trip's handover. The cheap cap's climb, a failed delivery's
+// redirect, the loop's fixed redirect and the unjudged stuck climb do not.
+func TestSessionResultMarksOnlyAJudgedStopADeadEnd(t *testing.T) {
+	stuck := "stuck after the supervisor's message: repetition: d"
+	for name, tc := range map[string]struct {
+		trip    *Trip
+		d       *Decision
+		outcome SessionOutcome
+		deadEnd bool
+	}{
+		"judged stuck handover": {&Trip{Kind: TripRepetition, Detail: "d", Stuck: stuck}, &Decision{Action: ActionRetryStronger, Reason: "n", Guidance: "n", Judged: true}, OutcomeRetryStronger, true},
+		"unjudged stuck climb":  {&Trip{Kind: TripRepetition, Detail: "d", Stuck: stuck}, &Decision{Action: ActionRetryStronger, Reason: stuck}, OutcomeRetryStronger, false},
+		"cheap cap":             {&Trip{Kind: TripCheapCap, Detail: "d"}, &Decision{Action: ActionRetryStronger, Reason: "d"}, OutcomeRetryStronger, false},
+		"failed delivery":       {&Trip{Kind: TripRepetition, Detail: "d"}, &Decision{Action: ActionRedirect, Guidance: "g"}, OutcomeRedirect, false},
+		"loop":                  {&Trip{Kind: TripLoop, Detail: "d"}, &Decision{Action: ActionRedirect}, OutcomeRedirect, false},
+	} {
+		res := sessionResult(sessionSpec{id: "s1"}, sessionOutcome{trip: tc.trip, decision: tc.d, noResult: "stopped"})
+		if res.Outcome != tc.outcome || res.DeadEnd != tc.deadEnd {
+			t.Errorf("%s: outcome %s, dead end %v; want %s, %v", name, res.Outcome, res.DeadEnd, tc.outcome, tc.deadEnd)
+		}
 	}
 }
 

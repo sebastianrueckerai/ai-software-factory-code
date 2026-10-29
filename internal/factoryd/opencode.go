@@ -601,16 +601,17 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 	return harness.Result{Success: success, Summary: summary}
 }
 
-// InboundBrief is b with the issue author's text (Objective and
-// PosterInfo) sanitised (sanitize.Inbound) when AuthorStanding is not a
-// writer's; the handover and the prior state's body are agent-written and
-// are sanitised for every author: an outside account's or telemetry's report is untrusted input,
-// wherever a brief reaches a model (the agent's own, the review's, a
-// supervisor's) or the gate supervisor's bundle (ruling 152, item 48). The
-// spec (a writer's plan issue), the human's answers (writers answer
-// escalations) and the findings (factoryd's, the reviewer's, CI's lines)
-// pass as written. The document links repeat the author's link targets
-// outside the markers, so an untrusted brief has none.
+// InboundBrief is b with its untrusted text sanitised (sanitize.Inbound).
+// The issue author's text (Objective and PosterInfo) is sanitised when
+// AuthorStanding is not a writer's. An outside account's or telemetry's
+// report is untrusted input wherever a brief reaches a model (the agent's
+// own, the review's, a supervisor's) or the gate supervisor's bundle
+// (ruling 152, item 48). The handover and the prior state's body are
+// agent-written and are sanitised for every author. The spec (a writer's
+// plan issue), the human's answers (writers answer escalations) and the
+// findings (factoryd's, the reviewer's, CI's lines) pass as written. The
+// document links repeat the author's link targets outside the markers, so
+// an untrusted brief has none.
 func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
 	b.Handover = sanitize.Inbound(b.Handover)
 	if b.Prior != nil {
@@ -649,7 +650,8 @@ func objectiveText(brief harness.TaskBrief) string {
 	}
 }
 
-func randomTag() string {
+// randomTag draws the markers' tag; a test scripts it.
+var randomTag = func() string {
 	b := make([]byte, 8)
 	if _, err := rand.Read(b); err != nil {
 		panic(err) // crypto/rand never fails on Linux

@@ -1894,17 +1894,22 @@ func TestLoadEnvCodingSessionCarriesNoWritingGuide(t *testing.T) {
 // diff against the merge base with main.
 func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		resume   bool
-		wantDiff map[string]any
-		wantCard map[string]any
+		name          string
+		resume, write bool
+		wantDiff      map[string]any
+		wantCard      map[string]any
 	}{
-		{"session 2", true,
+		{"session 2", true, true,
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
 			map[string]any{"files": 2, "insertions": 5, "deletions": 0}},
-		{"session 1", false,
+		{"session 1", false, true,
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0},
 			map[string]any{"files": 1, "insertions": 2, "deletions": 0}},
+		// the card's lines move the first tick of a session that changed
+		// nothing yet
+		{"session 2 before its first change", true, false,
+			map[string]any{"files": 0, "insertions": 0, "deletions": 0},
+			map[string]any{"files": 1, "insertions": 3, "deletions": 0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -1926,6 +1931,11 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			run(append([]string{"-C", seed}, commit...)...)
 			c1 := run("-C", seed, "rev-parse", "HEAD")
 			run("-C", seed, "checkout", "-q", "main")
+			// main moves past the fork: the card's diff is against the
+			// merge base, so main's own lines are none of the card's
+			os.WriteFile(filepath.Join(seed, "m.txt"), []byte("1\n2\n3\n4\n"), 0o644)
+			run("-C", seed, "add", "m.txt")
+			run(append([]string{"-C", seed}, commit...)...)
 			run("clone", "-q", seed, dir)
 			run("-C", dir, "fetch", "-q", "origin", "factory/x")
 			e := workerEnv{branch: "b"}
@@ -1940,7 +1950,9 @@ func TestCheckpointCarriesTheCardDiffAcrossSessions(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\nb\n"), 0o644)
+			if tc.write {
+				os.WriteFile(filepath.Join(dir, "a.txt"), []byte("a\nb\n"), 0o644)
+			}
 			events := make(chan harness.Event, 10)
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan struct{})
