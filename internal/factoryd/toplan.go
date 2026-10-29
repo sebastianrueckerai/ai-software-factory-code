@@ -182,24 +182,41 @@ func planRefusal(t Task, planTrack bool) string {
 	card := fmt.Sprintf("Card #%d", t.IssueNumber)
 	switch {
 	case t.Kind != "agent":
-		return card + " is a person's card" + cannotPlan + "file the work as an issue labelled plan."
+		return personCardRefusal(t)
 	case t.Track != policy.TrackDirect:
 		return fmt.Sprintf("%s is on track %q, not the direct track%sfile its work as a direct card first.", card, t.Track, cannotPlan)
 	case t.Source == SourcePlan:
 		return card + " belongs to a plan" + cannotPlan + "revise the plan instead."
 	case t.Unbound():
-		return card + " is a " + t.Source + " card" + cannotPlan + "let it finish or close it."
+		return unboundRefusal(t)
 	case t.MergeCommit != "":
-		return card + " merged, so its work is on main: file a new card for what is still missing."
+		return mergedRefusal(t)
 	case !slices.Contains(switchableStatuses, t.Status):
 		return statusRefusal(t)
 	case !planTrack:
-		return card + "'s project follows no process with a plan track" + cannotPlan + "split the work into smaller cards."
+		return noPlanTrackRefusal(t)
 	}
 	return ""
 }
 
 const cannotPlan = ", so its work cannot go back to the planner: "
+
+// The refusals planRefusal and Replan share.
+func personCardRefusal(t Task) string {
+	return fmt.Sprintf("Card #%d is a person's card%sfile the work as an issue labelled plan.", t.IssueNumber, cannotPlan)
+}
+
+func unboundRefusal(t Task) string {
+	return fmt.Sprintf("Card #%d is a %s card%slet it finish or close it.", t.IssueNumber, t.Source, cannotPlan)
+}
+
+func mergedRefusal(t Task) string {
+	return fmt.Sprintf("Card #%d merged, so its work is on main: file a new card for what is still missing.", t.IssueNumber)
+}
+
+func noPlanTrackRefusal(t Task) string {
+	return fmt.Sprintf("Card #%d's project follows no process with a plan track%ssplit the work into smaller cards.", t.IssueNumber, cannotPlan)
+}
 
 // statusRefusal refuses card t, whose status allows no switch.
 func statusRefusal(t Task) string {

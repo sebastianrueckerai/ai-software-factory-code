@@ -29,6 +29,26 @@ func TestGroupOf(t *testing.T) {
 	}
 }
 
+// A plan card and a plan's child are in a plan; a direct card, a
+// delegated one and a person's card are not.
+func TestInPlan(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		card Task
+		want bool
+	}{
+		{"a plan's child", Task{ID: "c1", Source: SourcePlan, Parent: "p1", Track: "direct"}, true},
+		{"a plan card", Task{ID: "p1", Source: "webhook", Track: "plan"}, true},
+		{"a direct card", Task{ID: "d1", Source: "webhook", Track: "direct"}, false},
+		{"a delegated card", Task{ID: "g1", Source: SourceDelegate, Parent: "d1", Track: "direct"}, false},
+		{"a person's card", Task{ID: "h1", Kind: "human", Source: "webhook"}, false},
+	} {
+		if got := InPlan(tc.card); got != tc.want {
+			t.Errorf("%s: InPlan = %t, want %t", tc.name, got, tc.want)
+		}
+	}
+}
+
 // The open groups on main: p6 (its merge the day before p1's, so the
 // plan ids' order is not the groups'), p1 (three children, two merged,
 // the merge events' earliest 09:00 although c3 finished at 09:05) and p5

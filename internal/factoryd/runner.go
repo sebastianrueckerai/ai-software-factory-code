@@ -194,6 +194,8 @@ type liveSession struct {
 	// basics records that the session was given the factory basics on its
 	// first human-sourced message.
 	basics bool
+	// replan: a replan ask is on its way to the session or was taken.
+	replan bool
 }
 
 // sessionWorker is a running session's pod and the bearer of its worker's
@@ -207,6 +209,10 @@ type sessionWorker struct {
 // ErrNoLiveSession: the task has no session running in this factoryd.
 var ErrNoLiveSession = errors.New("the task has no running session")
 
+// errReplanAsked: the task's running session took a replan ask already,
+// or one is on its way, and stops for it.
+var errReplanAsked = errors.New("the session already stops for a replan")
+
 // ErrNoImageWait refuses a report session's request_tool: its card
 // restarts on no image.
 var ErrNoImageWait = errors.New("this session cannot wait for a new image: finish with what the sandbox has")
@@ -215,15 +221,23 @@ var ErrNoImageWait = errors.New("this session cannot wait for a new image: finis
 // session, which stops the way a supervisor's escalate stops it. It returns
 // nil only once the session took the escalation; a session that ends or
 // stops first answers ErrNoLiveSession, and a report session's
-// request_tool ErrNoImageWait.
+// request_tool ErrNoImageWait. A session takes one replan ask: a later one
+// answers errReplanAsked at once.
 func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error {
+	replan := ask.Kind == AskReplan
 	r.liveMu.Lock()
 	ls, ok := r.live[taskID]
-	r.liveMu.Unlock()
-	if !ok {
-		return ErrNoLiveSession
+	asked := ok && replan && ls.replan
+	if ok && replan {
+		ls.replan = true
 	}
-	if ask.Kind == AskTool && ls.worker.report {
+	r.liveMu.Unlock()
+	switch {
+	case !ok:
+		return ErrNoLiveSession
+	case asked:
+		return errReplanAsked
+	case ask.Kind == AskTool && ls.worker.report:
 		return ErrNoImageWait
 	}
 	select {
@@ -232,6 +246,11 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 	case <-ls.done:
 		return ErrNoLiveSession
 	case <-ctx.Done():
+		if replan {
+			r.liveMu.Lock()
+			ls.replan = false
+			r.liveMu.Unlock()
+		}
 		return ctx.Err()
 	}
 }

@@ -79,26 +79,30 @@ func (r *Runner) fundPlanner(ctx context.Context, t Task) error {
 
 // planReplannable says plan p may go back to its planner: done, or failed
 // with a revision stored (a replan whose planner failed leaves its cards
-// on the board), and not closed.
-func (r *Runner) planReplannable(ctx context.Context, p Task) (bool, error) {
+// on the board), and not closed; closed tells such a plan whose criteria
+// closed it.
+func (r *Runner) planReplannable(ctx context.Context, p Task) (replannable, closed bool, err error) {
 	switch p.Status {
 	case "done":
 	case "failed":
 		if _, ok, err := r.store.PlanRevision(ctx, p.ID, 0); err != nil || !ok {
-			return false, err
+			return false, false, err
 		}
 	default:
-		return false, nil
+		return false, false, nil
 	}
-	closed, err := r.store.PlanClosed(ctx, p.ID)
-	return !closed, err
+	closed, err = r.store.PlanClosed(ctx, p.ID)
+	return !closed, closed, err
 }
+
+// reopenFrom are the statuses reopenPlan moves a plan from.
+var reopenFrom = []string{"done", "failed", "queued"}
 
 // reopenPlan sends plan p back to its planner: queued with its counters at
 // zero, money for a session, its issue open and labelled queued, and a
 // new run of its workflow. Each step is safe to repeat.
 func (r *Runner) reopenPlan(ctx context.Context, p Task) error {
-	if err := r.store.TransitionTask(ctx, p.ID, []string{"done", "failed", "queued"}, "queued"); err != nil {
+	if err := r.store.TransitionTask(ctx, p.ID, reopenFrom, "queued"); err != nil {
 		return err
 	}
 	if err := r.store.SetTaskUsage(ctx, p.ID, TaskUsage{}); err != nil {
@@ -152,16 +156,12 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	if err != nil {
 		return ReplanChildResult{}, err
 	}
-	replannable, err := r.planReplannable(ctx, p)
+	replannable, closed, err := r.planReplannable(ctx, p)
 	if err != nil {
 		return ReplanChildResult{}, err
 	}
 	if !replannable && !slices.Contains(replanRuns, p.Status) {
 		status := p.Status
-		closed, err := r.store.PlanClosed(ctx, p.ID)
-		if err != nil {
-			return ReplanChildResult{}, err
-		}
 		if closed {
 			status = "closed"
 		}
@@ -172,35 +172,33 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", map[string]any{"work": work}); err != nil {
 		return ReplanChildResult{}, fmt.Errorf("record replan_stop: %w", err)
 	}
+	answer := ReplanChildResult{Reason: fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)}
+	if replannable {
+		newest, _, err := r.store.PlanRevision(ctx, p.ID, 0)
+		if err != nil {
+			return ReplanChildResult{}, err
+		}
+		wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, map[string]any{"origin": ReplanCut, "card": k.ID, "work": work,
+			"stops": []string{k.ID}, "revision": newest.Revision}, replanClosers...)
+		if err != nil {
+			return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
+		}
+		if wrote {
+			answer.Reason = fmt.Sprintf("cut: plan #%d replans its work", p.IssueNumber)
+		}
+	}
+	// the plan is open again before the waits move onto it, or they read
+	// as met; a queued plan may be a reopen that failed before its run
+	// started
+	if replannable || p.Status == "queued" {
+		if err := r.reopenPlan(ctx, p); err != nil {
+			return ReplanChildResult{}, err
+		}
+	}
 	if err := r.moveDependents(ctx, k, p); err != nil {
 		return ReplanChildResult{}, err
 	}
-	join := ReplanChildResult{Reason: fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)}
-	if !replannable {
-		// a queued plan may be a reopen that failed before its run started
-		if p.Status == "queued" {
-			if err := r.reopenPlan(ctx, p); err != nil {
-				return ReplanChildResult{}, err
-			}
-		}
-		return join, nil
-	}
-	newest, _, err := r.store.PlanRevision(ctx, p.ID, 0)
-	if err != nil {
-		return ReplanChildResult{}, err
-	}
-	wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, map[string]any{"origin": ReplanCut, "card": k.ID, "work": work,
-		"stops": []string{k.ID}, "revision": newest.Revision}, replanClosers...)
-	if err != nil {
-		return ReplanChildResult{}, fmt.Errorf("record %s: %w", stepReplan, err)
-	}
-	if err := r.reopenPlan(ctx, p); err != nil {
-		return ReplanChildResult{}, err
-	}
-	if !wrote {
-		return join, nil
-	}
-	return ReplanChildResult{Reason: fmt.Sprintf("cut: plan #%d replans its work", p.IssueNumber)}, nil
+	return answer, nil
 }
 
 // ReplanWait is ReplanStopped's answer: Stopped when the planner may run,
@@ -245,16 +243,26 @@ func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, 
 
 // stopForReplan stops card k for plan p's replan: a live session is asked
 // to stop (its workflow then cuts the card through ReplanChild); a card
-// with none hands its dependents to p and ends closed with why.
-func (r *Runner) stopForReplan(ctx context.Context, k, p Task, why string) error {
-	err := r.EscalateSession(ctx, k.ID, AgentAsk{Kind: AskReplan, Reason: why})
-	if !errors.Is(err, ErrNoLiveSession) {
-		return err
+// with none hands its dependents to p and ends closed with why. stopped
+// is false for a session that took a replan already: it stops for it.
+func (r *Runner) stopForReplan(ctx context.Context, k, p Task, why string) (stopped bool, err error) {
+	err = r.EscalateSession(ctx, k.ID, AgentAsk{Kind: AskReplan, Reason: why})
+	switch {
+	case errors.Is(err, errReplanAsked):
+		return false, nil
+	case !errors.Is(err, ErrNoLiveSession):
+		return err == nil, err
 	}
 	if err := r.moveDependents(ctx, k, p); err != nil {
-		return err
+		return false, err
 	}
-	return r.Finish(ctx, k.ID, "closed", why)
+	return true, r.Finish(ctx, k.ID, "closed", why)
+}
+
+// stoppable: card k's work still runs, so a replan stops it; a merged
+// card's work is on main, and a closing card is ending.
+func stoppable(k Task) bool {
+	return !Final(k.Status) && k.Status != "merged" && k.Status != "closing"
 }
 
 // moveDependents hands the waits of plan p's cards on card k to p: the
@@ -307,8 +315,7 @@ func (e ErrNoReplan) Error() string { return string(e) }
 // card that did not merge, where its project's process has a plan track
 // (planTrack).
 func MayReplan(t Task, planTrack bool) bool {
-	return t.Kind == "agent" && !t.Unbound() && (t.Source == SourcePlan && t.Parent != "" || t.Track == policy.TrackPlan ||
-		planTrack && t.MergeCommit == "" && t.Status != "done" && t.Status != "merged")
+	return t.Kind == "agent" && !t.Unbound() && (InPlan(t) || planTrack && t.MergeCommit == "" && t.Status != "done" && t.Status != "merged")
 }
 
 // Replan sends card taskID's work back to the planner at a person's ask,
@@ -323,60 +330,45 @@ func (r *Runner) Replan(ctx context.Context, taskID string, ask ReplanAsk) (stri
 		return "", err
 	}
 	ask.Comment = textutil.Truncate(sanitize.Inbound(ask.Comment), maxHandoverMessage)
-	card := fmt.Sprintf("Card #%d", t.IssueNumber)
 	switch {
 	case t.Kind != "agent":
-		return "", ErrNoReplan(card + " is a person's card" + cannotPlan + "file the work as an issue labelled plan.")
+		return "", ErrNoReplan(personCardRefusal(t))
 	case t.Unbound():
-		return "", ErrNoReplan(card + " is a " + t.Source + " card" + cannotPlan + "let it finish or close it.")
-	case t.Source == SourcePlan && t.Parent != "" || t.Track == policy.TrackPlan:
+		return "", ErrNoReplan(unboundRefusal(t))
+	case InPlan(t):
 		return r.replanPlan(ctx, GroupOf(t), ask)
 	}
 	return r.replanDirect(ctx, t, ask)
 }
 
-// replanPlan sends plan planID back to its planner: the replan step, the
-// plan reopened, then each started open card stopped, so the waits they
-// hand over land on a plan that is open again.
+// replanPlan sends plan planID back to its planner: the replan step with
+// the plan's started open cards as its stops, then completeReplan.
 func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (string, error) {
 	p, _, err := r.task(ctx, planID)
 	if err != nil {
 		return "", err
 	}
 	plan := fmt.Sprintf("Plan #%d", p.IssueNumber)
-	if p.Status == "closed" {
+	switch p.Status {
+	case "closed":
 		return "", ErrNoReplan(plan + " is closed: a person closed it. File a new card or plan for the change.")
+	case "closing":
+		return "", ErrNoReplan(plan + " is closing: replan it once it has ended.")
 	}
-	pending := ErrNoReplan(plan + " is being replanned: wait for its revision.")
-	_, ok, err := r.pendingReplan(ctx, p)
+	step, pending, err := r.pendingReplan(ctx, p)
 	if err != nil {
 		return "", err
 	}
-	if ok {
-		// heals a reopen that failed after its step, or a run that never
-		// started; a run that runs answers the bare reopen as a no-op
-		if slices.Contains([]string{"done", "failed", "queued"}, p.Status) {
-			err = r.reopenPlan(ctx, p)
-		} else {
-			err = r.cfg.Workflows.Reopen(ctx, p.ID, "", TaskSignal{})
-		}
-		if err != nil {
-			return "", err
-		}
-		return "", pending
+	if pending {
+		return r.completeReplan(ctx, p, step)
 	}
-	closed, err := r.store.PlanClosed(ctx, p.ID)
-	if err != nil {
+	replannable, closed, err := r.planReplannable(ctx, p)
+	switch {
+	case err != nil:
 		return "", err
-	}
-	if closed {
+	case closed:
 		return "", ErrNoReplan(plan + " is closed: its criteria are met. File a new card or plan for the change.")
-	}
-	replannable, err := r.planReplannable(ctx, p)
-	if err != nil {
-		return "", err
-	}
-	if !replannable {
+	case !replannable:
 		return "", ErrNoReplan(plan + " is " + p.Status + ": it has not filed its cards yet. Comment on its issue to change the plan.")
 	}
 	newest, _, err := r.store.PlanRevision(ctx, p.ID, 0)
@@ -387,38 +379,70 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	if err != nil {
 		return "", err
 	}
-	// the started open cards; a merged card's work is on main already
-	var stops []Task
-	var ids []string
+	step = ReplanStep{Origin: ReplanPerson, By: ask.By, Comment: ask.Comment, Revision: newest.Revision}
 	for _, k := range cards {
-		if k.PlanRevision > 0 && !Final(k.Status) && k.Status != "merged" {
-			stops, ids = append(stops, k), append(ids, k.ID)
+		if k.PlanRevision > 0 && stoppable(k) {
+			step.Stops = append(step.Stops, k.ID)
 		}
 	}
-	wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, map[string]any{"origin": ReplanPerson, "by": ask.By, "comment": ask.Comment,
-		"stops": ids, "revision": newest.Revision}, replanClosers...)
+	wrote, err := r.timeline.AppendUnlessPending(ctx, p.ID, stepReplan, map[string]any{"origin": step.Origin, "by": step.By, "comment": step.Comment,
+		"stops": step.Stops, "revision": step.Revision}, replanClosers...)
 	if err != nil {
 		return "", fmt.Errorf("record %s: %w", stepReplan, err)
 	}
 	if !wrote {
-		return "", pending
+		return "", beingReplanned(p)
 	}
-	if err := r.reopenPlan(ctx, p); err != nil {
+	return r.completeReplan(ctx, p, step)
+}
+
+// beingReplanned refuses a press on plan p, whose replan is pending.
+func beingReplanned(p Task) ErrNoReplan {
+	return ErrNoReplan(fmt.Sprintf("Plan #%d is being replanned: wait for its revision.", p.IssueNumber))
+}
+
+// completeReplan carries out plan p's pending replan step, for the press
+// that wrote it and for any later one, so a press heals one that failed
+// partway: the plan reopened, then each of the step's stops that still
+// runs stopped, so the waits they hand over land on an open plan. A press
+// that finds nothing left to do is refused: the plan is being replanned.
+func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (string, error) {
+	plan := fmt.Sprintf("Plan #%d", p.IssueNumber)
+	acted := p.Status == "done" || p.Status == "failed"
+	var err error
+	if slices.Contains(reopenFrom, p.Status) {
+		err = r.reopenPlan(ctx, p)
+	} else {
+		// a run that runs answers it as a no-op
+		err = r.cfg.Workflows.Reopen(ctx, p.ID, "", TaskSignal{})
+	}
+	if err != nil {
 		return "", err
 	}
 	why := fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)
-	for _, k := range stops {
-		if err := r.stopForReplan(ctx, k, p, why); err != nil {
+	for _, id := range step.Stops {
+		k, ok, err := r.store.Task(ctx, id)
+		if err != nil {
 			return "", err
 		}
+		if !ok || !stoppable(k) {
+			continue
+		}
+		stopped, err := r.stopForReplan(ctx, k, p, why)
+		if err != nil {
+			return "", err
+		}
+		acted = acted || stopped
 	}
-	switch len(stops) {
-	case 0:
+	switch {
+	case !acted:
+		return "", beingReplanned(p)
+	case len(step.Stops) == 0:
 		return plan + " goes back to the planner: no card stops.", nil
-	case 1:
+	case len(step.Stops) == 1:
 		return plan + " goes back to the planner: 1 card stops, and its work stays on its branch.", nil
 	}
-	return fmt.Sprintf("%s goes back to the planner: %d cards stop, and their work stays on their branches.", plan, len(stops)), nil
+	return fmt.Sprintf("%s goes back to the planner: %d cards stop, and their work stays on their branches.", plan, len(step.Stops)), nil
 }
 
 // replanDirect sends direct card t to the planner. The person's words go
@@ -427,15 +451,18 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 // to stop. A failed or closed card is queued again for a new run.
 func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (string, error) {
 	card := fmt.Sprintf("Card #%d", t.IssueNumber)
-	if t.MergeCommit != "" || t.Status == "done" || t.Status == "merged" {
-		return "", ErrNoReplan(card + " merged, so its work is on main: file a new card for what is still missing.")
+	switch {
+	case t.MergeCommit != "" || t.Status == "done" || t.Status == "merged":
+		return "", ErrNoReplan(mergedRefusal(t))
+	case t.Status == "closing":
+		return "", ErrNoReplan(card + " is closing: replan it once it has ended.")
 	}
 	project, _, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
 		return "", err
 	}
 	if _, planTrack := trackClass(project, policy.TrackPlan); !planTrack {
-		return "", ErrNoReplan(card + "'s project follows no process with a plan track" + cannotPlan + "split the work into smaller cards.")
+		return "", ErrNoReplan(noPlanTrackRefusal(t))
 	}
 	sig := TaskSignal{Author: ask.By, Body: ask.Comment}
 	if Final(t.Status) {
@@ -455,7 +482,7 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 		return "", err
 	}
 	switch err := r.EscalateSession(ctx, t.ID, AgentAsk{Kind: AskReplan, Reason: "replanned by " + ask.By + ": " + ask.Comment}); {
-	case err == nil:
+	case err == nil || errors.Is(err, errReplanAsked):
 		return card + " stops its session and goes to the planner.", nil
 	case errors.Is(err, ErrNoLiveSession):
 		return card + " goes to the planner at its next step.", nil

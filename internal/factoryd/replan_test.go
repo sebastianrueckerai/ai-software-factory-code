@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
@@ -127,6 +128,25 @@ func TestReplanChildCutsItsPlan(t *testing.T) {
 	}
 	if got := reopens(r); len(got) != 2 {
 		t.Fatalf("reopens after the second call: %+v, want two: the join of a queued plan reopens it again", got)
+	}
+}
+
+// A cut reopens a done or failed plan, and a queued one's run, before the
+// child's dependents wait on it, as a person's Replan does: a wait moved
+// onto a plan still done would read as met.
+func TestReplanChildReopensBeforeItMovesTheWaits(t *testing.T) {
+	for _, status := range []string{"done", "failed", "queued"} {
+		t.Run(status, func(t *testing.T) {
+			r, store, fj := replanRig(t, status, 2)
+			replanChild(t, r, "c", "w")
+			if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
+				t.Fatalf("s depends on %v, want the plan", deps)
+			}
+			queued, moved := callAt(fj, "PUT /api/v1/repos/sf/repo/issues/10/labels"), callAt(fj, "POST /api/v1/repos/sf/repo/issues/13/dependencies")
+			if queued < 0 || moved < 0 || queued > moved {
+				t.Fatalf("the plan's state label at call %d, #13's wait on #10 at %d; want the reopen first", queued, moved)
+			}
+		})
 	}
 }
 
@@ -310,8 +330,9 @@ func TestReopenPlanReopensTheIssue(t *testing.T) {
 	}
 }
 
-// A card with a live session is asked to stop for the replan; one with
-// none hands its dependents to the plan and ends closed at once.
+// A card with a live session is asked to stop for the replan, once: a
+// session that took a replan already is left to it. One with none hands
+// its dependents to the plan and ends closed at once.
 func TestStopForReplan(t *testing.T) {
 	ctx := context.Background()
 	why := "stopped for the replan of plan #10"
@@ -321,8 +342,8 @@ func TestStopForReplan(t *testing.T) {
 	defer end()
 	got := make(chan AgentAsk, 1)
 	go func() { got <- <-asks }()
-	if err := r.stopForReplan(ctx, store.tasks["c"], store.tasks["p"], why); err != nil {
-		t.Fatal(err)
+	if stopped, err := r.stopForReplan(ctx, store.tasks["c"], store.tasks["p"], why); err != nil || !stopped {
+		t.Fatalf("stopForReplan = %t, %v; want stopped", stopped, err)
 	}
 	select {
 	case a := <-got:
@@ -335,10 +356,22 @@ func TestStopForReplan(t *testing.T) {
 	if c := store.tasks["c"]; c.Status != "running" || !slices.Equal(store.deps["s"], []string{"c"}) {
 		t.Fatalf("c %s, s depends on %v; want the session to end it, its dependents kept", c.Status, store.deps["s"])
 	}
+	go func() { got <- <-asks }()
+	if stopped, err := r.stopForReplan(ctx, store.tasks["c"], store.tasks["p"], why); err != nil || stopped {
+		t.Fatalf("the second stopForReplan = %t, %v; want nothing done", stopped, err)
+	}
+	select {
+	case a := <-got:
+		t.Fatalf("the session got a second ask %+v", a)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if c := store.tasks["c"]; c.Status != "running" || !slices.Equal(store.deps["s"], []string{"c"}) {
+		t.Fatalf("after the second stop c %s, s depends on %v; want both as they were", c.Status, store.deps["s"])
+	}
 
 	r, store, fj := replanRig(t, "done", 1)
-	if err := r.stopForReplan(ctx, store.tasks["c"], store.tasks["p"], why); err != nil {
-		t.Fatal(err)
+	if stopped, err := r.stopForReplan(ctx, store.tasks["c"], store.tasks["p"], why); err != nil || !stopped {
+		t.Fatalf("stopForReplan = %t, %v; want stopped", stopped, err)
 	}
 	if c := store.tasks["c"]; c.Status != "closed" || !slices.Equal(store.deps["s"], []string{"p"}) || !slices.Equal(fj.deps[13], []int64{10}) {
 		t.Fatalf("c %s, s depends on %v, issue #13 on %v; want closed, the dependents on the plan", c.Status, store.deps["s"], fj.deps[13])
@@ -405,8 +438,8 @@ func TestReplanStoppedWaitsForTheStops(t *testing.T) {
 }
 
 // startPlanCards has replanRig's c start against revision 1 and adds w
-// (issue 15, waiting for a person, started, s waiting on it too) and m
-// (issue 16, merged) to its plan.
+// (issue 15, waiting for a person, started, s waiting on it too), m
+// (issue 16, merged) and x (issue 17, started, closing) to its plan.
 func startPlanCards(t *testing.T, store *fakeStore) {
 	t.Helper()
 	ctx := context.Background()
@@ -417,6 +450,7 @@ func startPlanCards(t *testing.T, store *fakeStore) {
 	for _, k := range []Task{
 		{ID: "w", PlanKey: "db", IssueNumber: 15, Status: "waiting-human", PlanRevision: 1},
 		{ID: "m", PlanKey: "docs", IssueNumber: 16, Status: "merged", PlanRevision: 1, MergeCommit: "m1", FinishedAt: &merged},
+		{ID: "x", PlanKey: "ops", IssueNumber: 17, Status: "closing", PlanRevision: 1},
 	} {
 		k.Kind, k.Track, k.Source, k.Parent, k.Repository = "agent", policy.TrackDirect, SourcePlan, "p", "sf/repo"
 		if err := store.CreateTask(ctx, k); err != nil {
@@ -426,6 +460,17 @@ func startPlanCards(t *testing.T, store *fakeStore) {
 	if err := store.AddTaskDeps(ctx, "s", []string{"w"}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// finalReason is the reason of card id's one final step, "" for none.
+func finalReason(t *testing.T, r *Runner, id string) string {
+	t.Helper()
+	finals := stepsNamed(t, r, id, "final")
+	var final struct{ Reason string }
+	if len(finals) != 1 || json.Unmarshal(finals[0], &final) != nil {
+		return ""
+	}
+	return final.Reason
 }
 
 // takenAsk is an ask a live session took, with the reopens the fake
@@ -476,8 +521,8 @@ func callAt(fj *prForgejo, call string) int {
 // A person's Replan of a done plan records the step with the started open
 // cards it stops, reopens the plan, then stops each: a card with a live
 // session is asked to stop, one without ends closed and hands its waits to
-// the plan, which is queued by then. An unstarted card and a merged one
-// run on.
+// the plan, which is queued by then. An unstarted card, a merged one and
+// one closing run on.
 func TestReplanOfAPlanStopsItsStartedCards(t *testing.T) {
 	r, store, fj := replanRig(t, "done", 2)
 	startPlanCards(t, store)
@@ -511,8 +556,8 @@ func TestReplanOfAPlanStopsItsStartedCards(t *testing.T) {
 	if deps := store.deps["s"]; !slices.Equal(deps, []string{"c", "p"}) {
 		t.Fatalf("s depends on %v, want c and the plan in w's place", deps)
 	}
-	if s, m := store.tasks["s"], store.tasks["m"]; s.Status != "waiting-deps" || m.Status != "merged" {
-		t.Fatalf("s %s, m %s; want the unstarted and the merged card untouched", s.Status, m.Status)
+	if s, m, x := store.tasks["s"], store.tasks["m"], store.tasks["x"]; s.Status != "waiting-deps" || m.Status != "merged" || x.Status != "closing" {
+		t.Fatalf("s %s, m %s, x %s; want the unstarted, the merged and the closing card untouched", s.Status, m.Status, x.Status)
 	}
 	queued, moved := callAt(fj, "PUT /api/v1/repos/sf/repo/issues/10/labels"), callAt(fj, "POST /api/v1/repos/sf/repo/issues/13/dependencies")
 	if queued < 0 || moved < 0 || queued > moved {
@@ -592,12 +637,13 @@ func pendRig(t *testing.T, status string) (*Runner, *fakeStore, *prForgejo) {
 }
 
 // A done plan with a replan pending is a reopen that failed after its
-// step: the press reopens it, records nothing and stops nothing.
+// step: the press completes the replan, the plan reopened and the step's
+// stop made, records nothing and answers the step's note.
 func TestReplanPendingOnADonePlanReopensIt(t *testing.T) {
 	r, store, fj := pendRig(t, "done")
-	_, err := r.Replan(context.Background(), "p", ReplanAsk{By: "ana", Comment: "too wide"})
-	if want := ErrNoReplan("Plan #10 is being replanned: wait for its revision."); err != want {
-		t.Fatalf("Replan: %v, want %q", err, want)
+	got, err := r.Replan(context.Background(), "p", ReplanAsk{By: "ana", Comment: "too wide"})
+	if want := "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch."; err != nil || got != want {
+		t.Fatalf("Replan = %q, %v; want %q", got, err, want)
 	}
 	if got := replanSteps(t, r, "p"); len(got) != 1 || got[0].Origin != ReplanCut {
 		t.Fatalf("the plan's replan steps %+v, want the cut's alone", got)
@@ -608,29 +654,35 @@ func TestReplanPendingOnADonePlanReopensIt(t *testing.T) {
 	if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) || !slices.Equal(fj.reopened, []int64{10}) {
 		t.Fatalf("reopens %+v, issues reopened %v; want p's and #10", got, fj.reopened)
 	}
-	if c := store.tasks["c"]; c.Status != "running" {
-		t.Fatalf("c %s, want running: nothing stops", c.Status)
+	if c := store.tasks["c"]; c.Status != "closed" || finalReason(t, r, "c") != "stopped for the replan of plan #10" {
+		t.Fatalf("c %s (%q), want closed for the replan", c.Status, finalReason(t, r, "c"))
 	}
 }
 
-// A failed plan with a replan pending heals as a done one does, and a
-// queued one as well, its issue reopened; a running or waiting plan's run
-// is reopened bare, which a run that runs answers as a no-op.
+// With the step's stop made, a failed plan with a replan pending is
+// reopened as a done one is, and the press answers the step's note; a
+// queued one is reopened as well, its issue opened, and a running or
+// waiting plan's run bare, which a run that runs answers as a no-op: both
+// found the replan complete, so the press is refused.
 func TestReplanPendingHealsTheReopen(t *testing.T) {
 	for _, tc := range []struct {
 		status, after string
 		reopened      []int64
+		note          string
+		refused       error
 	}{
-		{"failed", "queued", []int64{10}},
-		{"queued", "queued", []int64{10}},
-		{"running", "running", nil},
-		{"waiting-human", "waiting-human", nil},
+		{"failed", "queued", []int64{10}, "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch.", nil},
+		{"queued", "queued", []int64{10}, "", ErrNoReplan("Plan #10 is being replanned: wait for its revision.")},
+		{"running", "running", nil, "", ErrNoReplan("Plan #10 is being replanned: wait for its revision.")},
+		{"waiting-human", "waiting-human", nil, "", ErrNoReplan("Plan #10 is being replanned: wait for its revision.")},
 	} {
 		t.Run(tc.status, func(t *testing.T) {
 			r, store, fj := pendRig(t, tc.status)
-			_, err := r.Replan(context.Background(), "c", ReplanAsk{By: "ana", Comment: "too wide"})
-			if want := ErrNoReplan("Plan #10 is being replanned: wait for its revision."); err != want {
-				t.Fatalf("Replan: %v, want %q", err, want)
+			c := store.tasks["c"]
+			c.Status = "closed"
+			store.tasks["c"] = c
+			if got, err := r.Replan(context.Background(), "c", ReplanAsk{By: "ana", Comment: "too wide"}); got != tc.note || err != tc.refused {
+				t.Fatalf("Replan = %q, %v; want %q, %v", got, err, tc.note, tc.refused)
 			}
 			if p := store.tasks["p"]; p.Status != tc.after {
 				t.Fatalf("plan %s, want %s", p.Status, tc.after)
@@ -641,10 +693,45 @@ func TestReplanPendingHealsTheReopen(t *testing.T) {
 			if got := replanSteps(t, r, "p"); len(got) != 1 {
 				t.Fatalf("the plan's replan steps %+v, want the cut's alone", got)
 			}
-			if c := store.tasks["c"]; c.Status != "running" {
-				t.Fatalf("c %s, want running: nothing stops", c.Status)
-			}
 		})
+	}
+}
+
+// Concern 1: a replan whose reopen failed after its step stopped nothing.
+// The next press, whoever makes it, completes it: the plan reopened, each
+// stop made, the first press's note; the planner then finds them stopped
+// with the first press's words.
+func TestReplanCompletesAReplanWhoseReopenFailed(t *testing.T) {
+	ctx := context.Background()
+	r, store, _ := replanRig(t, "done", 2)
+	startPlanCards(t, store)
+	r.cfg.Workflows.(*fakeWorkflows).reopenFails = 1
+	if _, err := r.Replan(ctx, "p", ReplanAsk{By: "ana", Comment: "too wide"}); err == nil || errors.As(err, new(ErrNoReplan)) {
+		t.Fatalf("the first press answered %v, want its reopen's error", err)
+	}
+	if c, w := store.tasks["c"], store.tasks["w"]; c.Status != "running" || w.Status != "waiting-human" {
+		t.Fatalf("after the failed reopen c %s, w %s; want both still open", c.Status, w.Status)
+	}
+	got, err := r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller"})
+	if want := "Plan #10 goes back to the planner: 2 cards stop, and their work stays on their branches."; err != nil || got != want {
+		t.Fatalf("the second press = %q, %v; want %q", got, err, want)
+	}
+	if got := replanSteps(t, r, "p"); len(got) != 1 || got[0].By != "ana" {
+		t.Fatalf("the plan's replan steps %+v, want ana's alone", got)
+	}
+	if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) || store.tasks["p"].Status != "queued" {
+		t.Fatalf("reopens %+v, plan %s; want p's run started, the plan queued", got, store.tasks["p"].Status)
+	}
+	for _, id := range []string{"c", "w"} {
+		if k := store.tasks[id]; k.Status != "closed" || finalReason(t, r, id) != "stopped for the replan of plan #10" {
+			t.Fatalf("%s %s (%q), want closed for the replan", id, k.Status, finalReason(t, r, id))
+		}
+	}
+	if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
+		t.Fatalf("s depends on %v, want the plan alone", deps)
+	}
+	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true, By: "ana", Comment: "too wide"}) {
+		t.Fatalf("the planner's wait %+v, %v; want stopped with ana's words", got, err)
 	}
 }
 
@@ -690,6 +777,7 @@ func TestReplanRefusesAPlan(t *testing.T) {
 		"a person's close": {"closed", 2, false, false, "Plan #10 is closed: a person closed it. File a new card or plan for the change."},
 		"closed pending":   {"closed", 2, false, true, "Plan #10 is closed: a person closed it. File a new card or plan for the change."},
 		"planning":         {"running", 0, false, false, "Plan #10 is running: it has not filed its cards yet. Comment on its issue to change the plan."},
+		"closing":          {"closing", 2, false, false, "Plan #10 is closing: replan it once it has ended."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, _ := replanRig(t, tc.status, tc.revisions)
@@ -750,6 +838,15 @@ func TestReplanOfARunningDirectCard(t *testing.T) {
 	if c := store.tasks["t1"]; c.Status != "running" || c.Track != policy.TrackDirect {
 		t.Fatalf("t1 %s on track %s, want running direct: its workflow switches it", c.Status, c.Track)
 	}
+	got, err = r.Replan(context.Background(), "t1", ReplanAsk{By: "bo", Comment: "smaller"})
+	if want := "Card #7 stops its session and goes to the planner."; err != nil || got != want {
+		t.Fatalf("the second press = %q, %v; want %q", got, err, want)
+	}
+	select {
+	case a := <-asks:
+		t.Fatalf("the session got a second ask %+v", a.ask)
+	case <-time.After(100 * time.Millisecond):
+	}
 }
 
 // A direct card with no session running takes the signal at its next
@@ -808,6 +905,7 @@ func TestReplanRefusesADirectCard(t *testing.T) {
 		"done":     {func(c *Task) { c.Status = "done" }, "Card #7 merged, so its work is on main: file a new card for what is still missing."},
 		"merged":   {func(c *Task) { c.Status = "merged" }, "Card #7 merged, so its work is on main: file a new card for what is still missing."},
 		"no track": {nil, "Card #7's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."},
+		"closing":  {func(c *Task) { c.Status = "closing" }, "Card #7 is closing: replan it once it has ended."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, _ := directReplanRig(t, "running")

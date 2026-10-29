@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // GroupOf names card t's group: a plan's child belongs to its plan's
@@ -13,6 +15,12 @@ func GroupOf(t Task) string {
 		return t.Parent
 	}
 	return t.ID
+}
+
+// InPlan reports whether card t is a plan card or a plan's child, so its
+// replan is its plan's.
+func InPlan(t Task) bool {
+	return t.Source == SourcePlan && t.Parent != "" || t.Track == policy.TrackPlan
 }
 
 // Group is an open plan with a card merged into main.
