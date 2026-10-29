@@ -73,7 +73,7 @@ activities, each with a timeline step and a comment on the pull request:
    the card's free headroom cannot pay the estimate the review makes no
    call, and the note names the calls, the estimate and the headroom, and
    what the approval card offers: read the diff, then Approve the merge or
-   Deny it (rejecting closes the pull request). A call the gateway refuses for
+   Deny it (Close on a pull request factoryd opened). A call the gateway refuses for
    headroom (the task's budget, the day's, the month's or the project's
    cap) is made again after the others, one at a time. The activity's
    bound follows the waves of four calls, plus one for each retried call,

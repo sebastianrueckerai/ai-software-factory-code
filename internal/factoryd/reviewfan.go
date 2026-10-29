@@ -162,7 +162,7 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 		need += cost
 	}
 	if free := own.Free(); need > free {
-		return fmt.Sprintf("its %s would cost about %.2f EUR, and the card has %.2f EUR free. Read the diff, then Approve the merge or Deny it (rejecting closes the pull request).",
+		return fmt.Sprintf("its %s would cost about %.2f EUR, and the card has %.2f EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened).",
 			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0)), nil
 	}
 	return "", nil

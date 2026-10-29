@@ -753,7 +753,7 @@ func TestModelReviewTheCardCannotPayForIsANote(t *testing.T) {
 		note   string
 	}{
 		"0.30 EUR": {0.30, 0, "model review not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. " +
-			"Read the diff, then Approve the merge or Deny it (rejecting closes the pull request)."},
+			"Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."},
 		"0.40 EUR": {0.40, 4, ""},
 	} {
 		t.Run(name, func(t *testing.T) {

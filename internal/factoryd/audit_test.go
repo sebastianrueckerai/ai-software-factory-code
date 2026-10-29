@@ -231,7 +231,7 @@ func TestGateAuditTheCardCannotPayForIsOneFinding(t *testing.T) {
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
 	want := []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. " +
-		"Read the diff, then Approve the merge or Deny it (rejecting closes the pull request)."}}
+		"Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."}}
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
 		t.Fatalf("audit = %+v after %d calls, want %+v and no call", res, len(ll.chats), want)
 	}
