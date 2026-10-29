@@ -3711,6 +3711,36 @@ func TestRunSessionRecordMasksTheBootSecrets(t *testing.T) {
 	}
 }
 
+// A report session has no card bound and no session count to pace: its
+// check-in statement states no pace.
+func TestRunSessionOfAReportStatesNoPace(t *testing.T) {
+	report := Task{ID: "t1", Status: "running", Objective: "o", Repository: "sf/r", SHA: "abc123", Process: "maintenance", Parent: "t-parent",
+		Source: SourceScreening, Track: policy.TrackDirect, RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, report, kube, &fakeObjectStore{})
+	if err := store.CreateTask(context.Background(), parentTask()); err != nil {
+		t.Fatal(err)
+	}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
+	runner.checkin = chat
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunReport, "t1", "factory/small")
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, loopFailure(1)+loopFailure(2)+loopFailure(3)+resultLine(true, `{"verdict": "clear"}`))
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("chat = %d calls %+v, want the check-in on same_failure", chat.calls, chat.gots)
+	}
+	if in := chat.gots[0].Input; strings.Contains(in, "Pace of the card") {
+		t.Fatalf("statement states a pace:\n%s", in)
+	}
+}
+
 func TestRunSessionPassesTheContextCap(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
@@ -4319,6 +4349,16 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 			if !strings.Contains(in, want) {
 				t.Fatalf("statement lacks %q:\n%s", want, in)
 			}
+		}
+	})
+	t.Run("mid-session before a checkpoint", func(t *testing.T) {
+		runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"one failing command"}`})
+		logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + pushedLine("c1") + "\n" + resultLine(true, "done")
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Sessions: 4, Model: "factory/small"}, nil, logs); err != nil {
+			t.Fatal(err)
+		}
+		if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "Pace of the card: changed lines are not measured at this moment;") {
+			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
 		}
 	})
 	t.Run("start", func(t *testing.T) {

@@ -1843,8 +1843,8 @@ func cardDiffEvent(ins, del int) harness.Event {
 // it without a second trip.
 func TestSizeTripFiresOnceWhenTheCardDiffPassesTheBound(t *testing.T) {
 	s := sizeSupervisor(t, nil)
-	if got := s.CardLines(); got != 0 {
-		t.Fatalf("CardLines before any checkpoint = %d, want 0", got)
+	if got := s.CardLines(); got != -1 {
+		t.Fatalf("CardLines before any checkpoint = %d, want -1", got)
 	}
 	for i, ev := range []harness.Event{cardDiffEvent(400, 100), cardDiffEvent(300, 300)} {
 		if trip := s.Event(ev, minute(float64(i+1))); trip != nil {
@@ -1869,8 +1869,8 @@ func TestSizeTripReadsTheCardDiffNotTheSessionDiff(t *testing.T) {
 	if trip := s.Event(diffEvent(400, 300), minute(1)); trip != nil {
 		t.Fatalf("the session's diff of 700 lines tripped: %+v", trip)
 	}
-	if got := s.CardLines(); got != 0 {
-		t.Fatalf("CardLines = %d, want 0 without a card diff", got)
+	if got := s.CardLines(); got != -1 {
+		t.Fatalf("CardLines = %d, want -1 without a card diff", got)
 	}
 }
 

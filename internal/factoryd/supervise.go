@@ -152,7 +152,8 @@ type Supervisor struct {
 	pushed  bool
 
 	spendTripped bool
-	// cardLines is the card's diff at the last checkpoint (the size trip)
+	// cardLines is the card's diff at the last checkpoint (the size trip),
+	// -1 before the first
 	cardLines   int
 	sizeTripped bool
 
@@ -168,7 +169,7 @@ func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Superviso
 	}
 	cfg = cfg.withDefaults()
 	s := &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), anchor: taskStarted,
-		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}, started: now}
+		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}, started: now, cardLines: -1}
 	s.scheduleCheckIn(now.Add(checkInQuiet - 1))
 	return s, nil
 }
@@ -281,8 +282,8 @@ func (s *Supervisor) sizeTrip() *Trip {
 		s.cardLines, s.cfg.SizeLines)})
 }
 
-// CardLines is the card's changed lines at the last checkpoint, 0 before
-// any.
+// CardLines is the card's changed lines at the last checkpoint, -1 before
+// any checkpoint carried them.
 func (s *Supervisor) CardLines() int { return s.cardLines }
 
 // newContent: the write ev records content the session has not written

@@ -1036,7 +1036,11 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 
 // pace states where the card stands for a check-in: the spend from a fresh
 // read of the task, the agent time of the earlier sessions plus this one's.
+// A report session has no card bound and no session count: nil.
 func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound int, started, deadline time.Time) *Pace {
+	if s.report != "" {
+		return nil
+	}
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
 	}
