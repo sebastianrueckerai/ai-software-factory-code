@@ -1084,19 +1084,24 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventFileChange, Detail: detail})
 	default:
-		emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: map[string]any{
+		detail := map[string]any{
 			"tool":        part.Tool,
 			"status":      "completed",
 			"args":        capArgs(part.State.Input),
 			"args_sha256": argsHash(part.State.Input),
 			"duration_ms": duration,
-		}})
+		}
+		if part.Tool == "task" {
+			detail["result"] = textutil.Truncate(part.State.Output, maxTaskResult)
+		}
+		emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: detail})
 	}
 }
 
 const (
 	maxOutputTail = 4 << 10  // bytes of a command's output an event carries
 	maxArgString  = 512      // bytes of one string argument an event carries
+	maxTaskResult = 32 << 10 // bytes of a subagent's report an event carries
 	maxHashedFile = 64 << 20 // larger files get no content hash
 )
 

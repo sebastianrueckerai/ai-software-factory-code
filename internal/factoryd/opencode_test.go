@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
@@ -704,6 +705,29 @@ func TestOpencodeToolCallCarriesArguments(t *testing.T) {
 				t.Fatalf("failed call = %+v, want its arguments and their hash", ev)
 			}
 		}
+	}
+}
+
+func TestTaskToolCallCarriesItsReport(t *testing.T) {
+	out := "task_id: ses_1\n\n<task_result>\nfound 3 files\n</task_result>"
+	line, _ := json.Marshal(map[string]any{"type": "tool_use", "timestamp": 1, "part": map[string]any{"tool": "task", "state": map[string]any{
+		"status": "completed", "output": out,
+		"input": map[string]any{"description": "Map scheduler", "prompt": "map it", "subagent_type": "explore"}}}})
+	ev := parseLines(&opencodeParser{}, string(line))[0]
+	if ev.Kind != harness.EventToolCall || ev.Detail["tool"] != "task" || ev.Detail["result"] != out {
+		t.Fatalf("task call = %+v, want its report verbatim in result", ev)
+	}
+
+	read := `{"type":"tool_use","timestamp":1,"part":{"tool":"read","state":{"status":"completed","input":{"filePath":"/w/a.go"},"output":"package a"}}}`
+	if _, has := parseLines(&opencodeParser{}, read)[0].Detail["result"]; has {
+		t.Fatal("a read call carries a result; only task does")
+	}
+
+	big, _ := json.Marshal(map[string]any{"type": "tool_use", "timestamp": 1, "part": map[string]any{"tool": "task", "state": map[string]any{
+		"status": "completed", "output": strings.Repeat("é", 40<<10), "input": map[string]any{}}}})
+	res, _ := parseLines(&opencodeParser{}, string(big))[0].Detail["result"].(string)
+	if !utf8.ValidString(res) || len(res) > maxTaskResult+3 || !strings.HasSuffix(res, "…") || len(res) < maxTaskResult-3 {
+		t.Fatalf("long report: valid=%v len=%d, want valid UTF-8 cut near %d bytes ending …", utf8.ValidString(res), len(res), maxTaskResult)
 	}
 }
 

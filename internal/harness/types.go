@@ -85,6 +85,7 @@ type EventKind string
 //     output's last 4 KiB, whole lines)
 //   - tool_call: tool, status, args (long strings capped), args_sha256 (of
 //     the full arguments' canonical JSON), error when status is "error"
+//     result (the task tool only: the subagent's report, cut at 32 KiB)
 //   - file_change: path, sha256 of the content after the change (absent or
 //     empty when the file is gone or not a regular file)
 //   - command, tool_call and file_change also carry duration_ms (the tool's
