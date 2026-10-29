@@ -199,6 +199,19 @@ func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 	}
 }
 
+// A diff past the 8 MiB bound: the audit makes no call and gives one
+// finding that says why.
+func TestGateAuditOfADiffPastTheBoundIsOneFinding(t *testing.T) {
+	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
+	r, _ := newAuditRunner(t, &gateForgejo{diff: strings.Repeat("d", 8<<20+1)}, ll, true)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"}}
+	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
+		t.Fatalf("audit = %+v after %d calls, want %+v and no call", res, len(ll.chats), want)
+	}
+}
+
 // A file over the audit's 48 KiB part is cut by hunks: two calls, no
 // finding.
 func TestGateAuditReadsABigFileInPieces(t *testing.T) {

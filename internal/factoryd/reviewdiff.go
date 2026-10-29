@@ -494,6 +494,15 @@ func names(s, name string) bool {
 	}
 }
 
+// diffBytes is the length of files' diff text.
+func diffBytes(files []fileDiff) int {
+	n := 0
+	for _, f := range files {
+		n += len(f.Text)
+	}
+	return n
+}
+
 func joinFiles(files []fileDiff) string {
 	var b strings.Builder
 	for _, f := range files {

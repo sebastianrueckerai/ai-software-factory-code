@@ -534,6 +534,10 @@ spec:
         command: [factoryd]
         ports: [{name: http, containerPort: 8080}, {name: console, containerPort: 8090}]
         env:
+        # nine tenths of the memory limit below: near it the collector works
+        # harder before the kernel kills the pod
+        - name: GOMEMLIMIT
+          value: 460MiB
         # tool calls without a file change before the repetition trip: the
         # code's default 24 trips normal reading on a large card (ruling 298)
         - name: SUPERVISE_READING_WITHOUT_WRITING

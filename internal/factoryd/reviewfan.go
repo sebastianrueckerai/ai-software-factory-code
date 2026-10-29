@@ -15,11 +15,13 @@ import (
 const reviewParallel = 4
 
 // reviewCall is one model call of a review or an audit: Label names it in
-// a note ("part 2 of 5").
+// a note ("part 2 of 5"). Input builds the call's input when the call
+// starts, so the diff text of the calls not running is held once, in its
+// parts.
 type reviewCall struct {
 	Label  string
 	Prompt string
-	Input  any
+	Input  func() any
 }
 
 // callResult is one call's answer, or why it has none.
@@ -44,7 +46,7 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 	ran := make([]bool, len(calls))
 	call := func(i int) {
 		ran[i] = true
-		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, timeout, calls[i].Prompt, calls[i].Input)
+		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, timeout, calls[i].Prompt, calls[i].Input())
 		results[i] = callResult{content, deployment, err}
 	}
 	next := make(chan int, len(calls))

@@ -482,6 +482,33 @@ func TestIntegrationReviewBudgetRefusalIsANote(t *testing.T) {
 	}
 }
 
+// A feature card's diff past the 8 MiB bound, or the feature's diffs past
+// it together (5 MiB and 5 MiB beside the card's own): the review notes
+// it, makes no call and writes no row.
+func TestIntegrationReviewOfAFeaturePastTheBoundIsANote(t *testing.T) {
+	for name, tc := range map[string]struct {
+		a, b, want string
+	}{
+		"one card": {strings.Repeat("d", 8<<20+1), featureDiffs[12],
+			"model review not run: card A: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"},
+		"together": {diffFile("a.go", 5<<20), diffFile("b.go", 5<<20),
+			"model review not run: the feature's cards together: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, map[int64]string{9: featureDiffs[9], 11: tc.a, 12: tc.b})
+			ll := &fakeLiteLLM{answer: featureAnswer}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			if rv := getInto[Review](t, val, err); rv.Verdict != "" || rv.Note != tc.want || len(ll.chats) != 0 {
+				t.Fatalf("review = %+v after %d calls, want the note %q", rv, len(ll.chats), tc.want)
+			}
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+				t.Fatalf("rows = %v, want none", rows)
+			}
+		})
+	}
+}
+
 // A criterion whose one call answers absent is stored unmet, a finding on
 // the card: absent never reaches a row.
 func TestIntegrationReviewAbsentIsUnmet(t *testing.T) {

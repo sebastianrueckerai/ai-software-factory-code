@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -94,7 +95,7 @@ func contradiction(c Claim, hits []grepHit, removed bool) (evidence string, ok b
 // applyClaims moves every finding that all its claims contradict from
 // rv.Findings to rv.Dropped, grep naming the symbol's hits. A failed grep
 // contradicts nothing. The claims are spent either way.
-func applyClaims(rv Review, diff string, grep func(symbol string) ([]grepHit, error)) Review {
+func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHit, error)) Review {
 	total, refuted := map[int]int{}, map[int]Dropped{}
 	counted := map[int]int{}
 	for _, c := range rv.Claims {
@@ -104,7 +105,8 @@ func applyClaims(rv Review, diff string, grep func(symbol string) ([]grepHit, er
 			log.Printf("review claim %s: %v", c.Symbol, err)
 			continue
 		}
-		if ev, ok := contradiction(c, hits, removesSymbol(diff, c.Symbol)); ok {
+		removed := slices.ContainsFunc(files, func(f fileDiff) bool { return removesSymbol(f.Text, c.Symbol) })
+		if ev, ok := contradiction(c, hits, removed); ok {
 			counted[c.Finding]++
 			refuted[c.Finding] = Dropped{Finding: rv.Findings[c.Finding], Kind: c.Kind, Symbol: c.Symbol, Evidence: ev}
 		}
@@ -189,7 +191,7 @@ var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, co
 // dropContradicted checks rv's claims against the repository at the head
 // and at main and drops the findings it contradicts. No claim, no
 // checkout: a checkout that fails drops nothing.
-func (r *Runner) dropContradicted(ctx context.Context, repo Repo, pr int64, commit string, rv Review, diff string) Review {
+func (r *Runner) dropContradicted(ctx context.Context, repo Repo, pr int64, commit string, rv Review, files []fileDiff) Review {
 	if len(rv.Claims) == 0 {
 		return rv
 	}
@@ -200,7 +202,7 @@ func (r *Runner) dropContradicted(ctx context.Context, repo Repo, pr int64, comm
 		return rv
 	}
 	defer cleanup()
-	return applyClaims(rv, diff, func(symbol string) ([]grepHit, error) {
+	return applyClaims(rv, files, func(symbol string) ([]grepHit, error) {
 		hits, err := gitGrep(ctx, dir, refs, symbol)
 		if errors.Is(err, errNoMatch) {
 			return nil, nil

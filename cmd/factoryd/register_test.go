@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -166,6 +167,58 @@ func TestFactorydPodReapsGitHelpers(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// factoryd's Go heap is held at nine tenths of its container's memory
+// limit (GOMEMLIMIT): near it the collector works harder before the kernel
+// kills the pod, every task's activities with it. 512Mi gives 460MiB.
+func TestFactorydHeapLimitIsNineTenthsOfItsPod(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                `yaml:"kind"`
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Spec     struct {
+				Template struct {
+					Spec struct {
+						Containers []struct {
+							Name      string
+							Env       []struct{ Name, Value string }
+							Resources struct {
+								Limits struct{ Memory string }
+							}
+						}
+					}
+				}
+			}
+		}
+		if err := dec.Decode(&doc); err != nil {
+			t.Fatal("no Deployment factoryd")
+		}
+		if doc.Kind != "Deployment" || doc.Metadata.Name != "factoryd" {
+			continue
+		}
+		c := doc.Spec.Template.Spec.Containers[0]
+		limit, ok := strings.CutSuffix(c.Resources.Limits.Memory, "Mi")
+		mib, err := strconv.Atoi(limit)
+		if !ok || err != nil {
+			t.Fatalf("factoryd's memory limit %q is not in Mi", c.Resources.Limits.Memory)
+		}
+		var got string
+		for _, e := range c.Env {
+			if e.Name == "GOMEMLIMIT" {
+				got = e.Value
+			}
+		}
+		if want := strconv.Itoa(mib*9/10) + "MiB"; c.Name != "factoryd" || got != want || want != "460MiB" {
+			t.Fatalf("container %s: GOMEMLIMIT %q under a limit of %s, want %s", c.Name, got, c.Resources.Limits.Memory, want)
+		}
+		return
 	}
 }
 

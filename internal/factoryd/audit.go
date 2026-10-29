@@ -155,12 +155,19 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, redact.New()), nil
 	}
 	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
+	if errors.Is(err, ErrDiffTooLong) {
+		noVerdict("the audit did not run: " + err.Error())
+		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, redact.New()), nil
+	}
 	if err != nil {
 		return AuditResult{}, err
 	}
-	diff := joinFiles(prFiles)
-	scrub := redact.New(redact.DiffSecrets(diff)...)
-	hits := redact.ScanDiff(diff)
+	var secrets []string
+	var hits []redact.Hit
+	for _, f := range prFiles {
+		secrets, hits = append(secrets, redact.DiffSecrets(f.Text)...), append(hits, redact.ScanDiff(f.Text)...)
+	}
+	scrub := redact.New(secrets...)
 	for i, h := range hits {
 		if i == maxPreCheck {
 			res.Findings = append(res.Findings, AuditFinding{Item: fmt.Sprintf("secret in the diff: %d more pre-check hits", len(hits)-maxPreCheck),
@@ -171,15 +178,21 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
 	parts := diffParts(prFiles, reviewDiffMax)
-	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(prFiles))}
+	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(prFiles))}
 	if len(parts) > 1 {
 		first.Part = partLabel(parts, 0, len(prFiles))
 	}
 	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
-		calls[i] = reviewCall{Label: fmt.Sprintf("part %d of %d", i+1, len(parts)), Prompt: auditPrompt, Input: first}
+		calls[i] = reviewCall{Label: fmt.Sprintf("part %d of %d", i+1, len(parts)), Prompt: auditPrompt, Input: func() any {
+			in := first
+			in.Diff = joinFiles(part)
+			return in
+		}}
 		if i > 0 {
-			calls[i].Prompt, calls[i].Input = auditPartPrompt, auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
+			calls[i].Prompt, calls[i].Input = auditPartPrompt, func() any {
+				return auditPartInput{Diff: joinFiles(part), Part: partLabel(parts, i, len(prFiles))}
+			}
 		}
 	}
 	results, err := r.callAll(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, calls)

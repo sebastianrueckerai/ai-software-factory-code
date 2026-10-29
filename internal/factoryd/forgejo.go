@@ -1643,18 +1643,25 @@ func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, numbe
 	return string(body), nil
 }
 
-// maxDiffRead bounds the diff PullRequestFileDiffs reads.
-const maxDiffRead = 64 << 20
+// maxDiffRead bounds the diff PullRequestFileDiffs reads, and what one
+// review reads of a feature's cards together: factoryd's memory sets it,
+// as a review and an audit beside it hold a few times their diff.
+const maxDiffRead = 8 << 20
 
-// longClient is the client of a read that may take minutes.
-func (f *Forgejo) longClient() *http.Client { return &http.Client{Timeout: 5 * time.Minute} }
+// diffReadTimeout bounds the diff read inside the policy gate's two
+// minutes (finishOptions).
+const diffReadTimeout = time.Minute
+
+// ErrDiffTooLong is a diff past maxDiffRead, which no gate reads: each one
+// turns it into its outcome for a person, never an error a retry repeats.
+var ErrDiffTooLong = fmt.Errorf("the diff is longer than %d MiB, the most factoryd reads: review the change yourself, or split it", maxDiffRead>>20)
 
 // PullRequestFileDiffs is pull request number's unified diff, whole, split
-// per file. A diff past maxDiffRead is an error.
+// per file; ErrDiffTooLong past maxDiffRead.
 func (f *Forgejo) PullRequestFileDiffs(ctx context.Context, owner, repo string, number int64) ([]fileDiff, error) {
-	body, err := f.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, number), nil, http.StatusOK, f.callAuth(), maxDiffRead, f.longClient().Timeout)
+	body, err := f.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, number), nil, http.StatusOK, f.callAuth(), maxDiffRead, diffReadTimeout)
 	if errors.Is(err, ErrAnswerTooLong) {
-		return nil, fmt.Errorf("the diff is longer than 64 MiB: %w", err)
+		return nil, ErrDiffTooLong
 	}
 	if err != nil {
 		return nil, err

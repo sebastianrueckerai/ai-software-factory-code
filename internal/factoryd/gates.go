@@ -55,6 +55,9 @@ type PolicyGate struct {
 	// Images is ParseImagesFile's findings on factory/images.yaml at the
 	// head of a pull request that changes it: for the agent, as Cheats.
 	Images []string `json:",omitempty"`
+	// Unread is the finding on a diff past maxDiffRead, which no gate
+	// reads: a person approves the change (Outcome requires_approval).
+	Unread string `json:",omitempty"`
 }
 
 // large: the pull request is class large by its lines.
@@ -160,8 +163,9 @@ type Review struct {
 // the project's merge rule is auto and the checks are green. For a roll the
 // gate also checks that every changed path is under k8s/; that only image
 // digests change is RollCommit's construction. Any other change, a GitHub
-// sync included, follows an agent's rules: the merge rule auto, a class
-// normal (or high, with the security audit clear), green checks, an
+// sync included, follows an agent's rules: the merge rule auto, a diff
+// the gates read, a class normal (or high, with the security audit clear),
+// green checks, an
 // approving review that finds the change a strict improvement with no
 // drawback, and proof: the reproduction failed at the base and passes at
 // the head, or the agent recorded the fault it fixed, or the review's
@@ -193,6 +197,8 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 		return len(unmet) == 0, met, unmet
 	}
 	switch {
+	case g.Policy.Unread != "":
+		unmet = append(unmet, g.Policy.Unread)
 	case g.Policy.large():
 		unmet = append(unmet, fmt.Sprintf("large change: %d lines over %d; split it or accept it", g.Policy.Lines, g.Policy.LargeLines))
 	case g.Policy.Class == policy.ClassHigh && g.Policy.Outcome == policy.OutcomeRequiresApproval:
@@ -409,7 +415,8 @@ func (r *Runner) headIs(ctx context.Context, repo Repo, pr int64, commit string)
 // task and comments it on the pull request. A forbidden class is returned,
 // not an error: the workflow fails the task with the reason. It is
 // forbidden to agents only: on a card of a pull request factoryd opened
-// it requires a human's approval (Factory).
+// it requires a human's approval (Factory). A diff past maxDiffRead,
+// which no gate reads, requires one too, and Unread says why.
 func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -447,7 +454,13 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
 	diffFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrDiffTooLong):
+		g.Unread = fmt.Sprintf("the diff of %d changed lines is longer than %d MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or split it.", lines, maxDiffRead>>20)
+		if g.Outcome == policy.OutcomeAuto {
+			g.Outcome = policy.OutcomeRequiresApproval
+		}
+	case err != nil:
 		return PolicyGate{}, err
 	}
 	g.Cheats = cheats(diffFiles)
@@ -478,11 +491,18 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	default:
 		msg += "A human approves the merge."
 	}
+	if g.Unread != "" {
+		msg += "\n\n" + g.Unread
+	}
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		return PolicyGate{}, err
 	}
-	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
-		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule, "cheats": g.Cheats, "images": g.Images}))
+	detail := map[string]any{"pr": pr, "class": g.Class, "outcome": g.Outcome,
+		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule, "cheats": g.Cheats, "images": g.Images}
+	if g.Unread != "" {
+		detail["unread"] = g.Unread
+	}
+	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, detail))
 	return g, nil
 }
 
@@ -1222,24 +1242,33 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		return Review{}, err
 	}
 	model := r.callModel(t, policy.PurposeReview)
-	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
-		if !isTerminal(err) && !isHeadMoved(err) {
-			return Review{}, err
-		}
-		rv := Review{Note: "model review not run: " + errMessage(err)}
+	notRun := func(why string) (Review, error) {
+		rv := Review{Note: "model review not run: " + why}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		return rv, nil
 	}
+	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
+		if !isTerminal(err) && !isHeadMoved(err) {
+			return Review{}, err
+		}
+		return notRun(errMessage(err))
+	}
 	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
+	if errors.Is(err, ErrDiffTooLong) {
+		return notRun(err.Error())
+	}
 	if err != nil {
 		return Review{}, err
 	}
-	diff := joinFiles(prFiles)
 	criteria := r.criteriaContext(ctx, t)
 	var feature []featureCard
 	if criteria != nil {
-		if feature, err = r.featureCards(ctx, t, repo, criteria.plan); err != nil {
+		feature, err = r.featureCards(ctx, t, repo, criteria.plan, diffBytes(prFiles))
+		if errors.Is(err, ErrDiffTooLong) {
+			return notRun(err.Error())
+		}
+		if err != nil {
 			return Review{}, err
 		}
 	}
@@ -1251,7 +1280,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	last, lastFindings := lastReview(earlier, parts)
 	first := reviewInput{
 		Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
-		PR:    pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(prFiles)),
+		PR:    pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(prFiles)),
 		Gates: reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction, Audit: gates.Audit}, LastReview: last,
 	}
 	if len(parts) > 1 {
@@ -1259,15 +1288,21 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	calls := make([]reviewCall, len(parts))
 	for i, part := range parts {
-		prompt, in := reviewPromptFor(gates), any(first)
+		prompt, input := reviewPromptFor(gates), func() any {
+			in := first
+			in.Diff = joinFiles(part)
+			return in
+		}
 		if i > 0 {
-			prompt, in = reviewPartPrompt, reviewPartInput{Objective: first.Brief.Objective, Diff: joinFiles(part),
-				Part: partLabel(parts, i, len(prFiles)), Files: first.Files, Names: names.Others(i), LastFindings: lastFindings[i]}
+			prompt, input = reviewPartPrompt, func() any {
+				return reviewPartInput{Objective: first.Brief.Objective, Diff: joinFiles(part),
+					Part: partLabel(parts, i, len(prFiles)), Files: first.Files, Names: names.Others(i), LastFindings: lastFindings[i]}
+			}
 		}
 		if last != nil && len(last.Verdicts) > 0 {
 			prompt = reviewWithDrops(prompt, i > 0, last, lastFindings[i])
 		}
-		calls[i] = reviewCall{Prompt: prompt, Input: in}
+		calls[i] = reviewCall{Prompt: prompt, Input: input}
 		if len(parts) > 1 {
 			calls[i].Label = fmt.Sprintf("part %d of %d", i+1, len(parts))
 		}
@@ -1300,7 +1335,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		verdicts, behaviours, rv.Note = readPlanCalls(criteria.plan, calls[len(parts):], of, results[len(parts):])
 	}
 	if rv.Note == "" {
-		rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), diff)
+		rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), prFiles)
 		if criteria != nil {
 			rv.Criteria, rv.Behaviours = verdicts, behaviours
 			findings := len(rv.Findings)
@@ -1309,7 +1344,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 				rv.Verdict = "concerns"
 			}
 		}
-		read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(prFiles), "file", "files"), kib(len(diff)))
+		read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(prFiles), "file", "files"), kib(diffBytes(prFiles)))
 	}
 	stopBeats()
 	if ctx.Err() != nil {

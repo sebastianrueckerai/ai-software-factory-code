@@ -291,6 +291,37 @@ func TestGatePolicyFlagsCheats(t *testing.T) {
 	}
 }
 
+// A diff past the 8 MiB bound is read by no gate: the policy gate requires
+// a person's approval with a finding that names the changed lines and the
+// bound, scans for no cheat, and says so on the pull request; the merge
+// waits for the person whatever else holds.
+func TestGatePolicyOfADiffPastTheBoundRequiresApproval(t *testing.T) {
+	fj := &gateForgejo{files: []string{`{"filename":"internal/a.go","additions":210000,"deletions":0}`}, diff: strings.Repeat("d", 8<<20+1)}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	v := testPolicyVersion()
+	v.Document.Risk.LargeLines = 0
+	r.cfg.Policy = func() policy.Version { return v }
+	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+	g := getInto[PolicyGate](t, val, err)
+	want := "the diff of 210000 changed lines is longer than 8 MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or split it."
+	if g.Class != policy.ClassNormal || g.Outcome != policy.OutcomeRequiresApproval || g.Unread != want || g.Cheats != nil {
+		t.Fatalf("gate = %+v, want class normal requiring approval for the unread diff", g)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], want) {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "gate_policy"); step["unread"] != want {
+		t.Fatalf("gate_policy step = %v, want the unread finding", step)
+	}
+	g.MergeRule = policy.MergeAuto
+	strict := true
+	ok, _, unmet := AutoMerge(GateResults{Policy: g, ChecksPassed: true, Reproduction: ReproResult{Ran: true, BaseExit: 2}},
+		Review{Verdict: "approve", StrictImprovement: &strict}, "api")
+	if ok || !slices.Equal(unmet, []string{want}) {
+		t.Fatalf("AutoMerge = %t, unmet %q: want the unread finding alone", ok, unmet)
+	}
+}
+
 // A pull request that changes factory/images.yaml has the file checked at
 // its head: each finding goes to the agent as the cheats do, and the gate
 // records them; a valid file, one the pull request removes or one it does
@@ -663,6 +694,27 @@ func TestModelReviewNotes(t *testing.T) {
 				t.Fatalf("model_review step = %v", step)
 			}
 		})
+	}
+}
+
+// A diff past the 8 MiB bound: the review makes no call and notes why, on
+// the pull request and the timeline.
+func TestModelReviewOfADiffPastTheBoundIsANote(t *testing.T) {
+	fj := &gateForgejo{diff: strings.Repeat("d", 8<<20+1)}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	want := "model review not run: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"
+	if rv.Verdict != "" || rv.Note != want || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v after %d calls, want the note %q and no call", rv, len(ll.chats), want)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], want) {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "model_review"); step["note"] != want {
+		t.Fatalf("model_review step = %v", step)
 	}
 }
 

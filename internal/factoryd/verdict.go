@@ -976,8 +976,10 @@ type featureCard struct {
 // cards a delta round filed, each with its pull request's files; the
 // reviewed card is not in it. A card with no pull request is skipped. A
 // card whose pull request cannot be read fails the read: the criteria
-// verdicts judge the whole feature or do not stand.
-func (r *Runner) featureCards(ctx context.Context, task Task, repo Repo, p Plan) ([]featureCard, error) {
+// verdicts judge the whole feature or do not stand. held is the reviewed
+// card's own diff: the cards and it read together at most maxDiffRead,
+// past which the read is ErrDiffTooLong.
+func (r *Runner) featureCards(ctx context.Context, task Task, repo Repo, p Plan, held int) ([]featureCard, error) {
 	cards, err := r.store.PlanCards(ctx, task.Parent)
 	if err != nil {
 		return nil, err
@@ -1008,6 +1010,9 @@ func (r *Runner) featureCards(ctx context.Context, task Task, repo Repo, p Plan)
 		if err != nil {
 			return nil, fmt.Errorf("card %s: %w", key, err)
 		}
+		if held += diffBytes(files); held > maxDiffRead {
+			return nil, fmt.Errorf("the feature's cards together: %w", ErrDiffTooLong)
+		}
 		title, brief := cardText(p, c)
 		out = append(out, featureCard{Key: key, Title: title, Brief: brief, Files: files})
 	}
@@ -1036,13 +1041,21 @@ func planCalls(p Plan, objective string, cards []featureCard, mine featureCard, 
 		planned[c.Key] = true
 	}
 	all := append(slices.Clone(cards), mine)
+	// each card's files cut once, not once for each criterion citing it
+	cut := make([][]fileDiff, len(all))
+	for i, card := range all {
+		for _, f := range card.Files {
+			cut[i] = append(cut[i], cutFile(f, limit)...)
+		}
+	}
 	for k, c := range p.Criteria {
 		cited := citing(p, c.ID)
 		var keys []string
 		var files []fileDiff
-		for _, card := range all {
+		whole := 0
+		for i, card := range all {
 			if card.Key == mine.Key || !planned[card.Key] || slices.Contains(cited, card.Key) {
-				keys, files = append(keys, card.Key), append(files, card.Files...)
+				keys, files, whole = append(keys, card.Key), append(files, cut[i]...), whole+len(card.Files)
 			}
 		}
 		parts := diffParts(files, limit)
@@ -1051,12 +1064,18 @@ func planCalls(p Plan, objective string, cards []featureCard, mine featureCard, 
 			list = fileList(parts, "part")
 		}
 		for i, part := range parts {
-			label, in := "criterion "+c.ID, criterionInput{Objective: objective, Criterion: c, Cards: keys, Diff: joinFiles(part)}
+			label := "criterion " + c.ID
 			if len(parts) > 1 {
 				label += fmt.Sprintf(", part %d of %d", i+1, len(parts))
-				in.Part, in.Files = partLabel(parts, i, len(files)), list
 			}
-			calls, of = append(calls, reviewCall{Label: label, Prompt: reviewCriterionPrompt, Input: in}), append(of, k)
+			calls = append(calls, reviewCall{Label: label, Prompt: reviewCriterionPrompt, Input: func() any {
+				in := criterionInput{Objective: objective, Criterion: c, Cards: keys, Diff: joinFiles(part)}
+				if len(parts) > 1 {
+					in.Part, in.Files = partLabel(parts, i, whole), list
+				}
+				return in
+			}})
+			of = append(of, k)
 		}
 	}
 	groups := make([][]fileDiff, len(all))
@@ -1065,7 +1084,7 @@ func planCalls(p Plan, objective string, cards []featureCard, mine featureCard, 
 		groups[i], listed[i] = c.Files, behaviourCard{Key: c.Key, Title: c.Title, Brief: c.Brief}
 	}
 	in := behavioursInput{Objective: objective, Criteria: p.Criteria, Cards: listed, Files: fileList(groups, "card"), Names: newNameIndex(groups).All()}
-	return append(calls, reviewCall{Label: "behaviours", Prompt: reviewBehavioursPrompt, Input: in}), of
+	return append(calls, reviewCall{Label: "behaviours", Prompt: reviewBehavioursPrompt, Input: func() any { return in }}), of
 }
 
 // readPlanCalls reads the results of planCalls: each criterion's verdict,

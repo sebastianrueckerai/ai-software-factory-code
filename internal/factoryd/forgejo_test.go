@@ -1117,22 +1117,30 @@ func TestPullRequestFileDiffsReadPastOneMiB(t *testing.T) {
 	}
 }
 
-func TestPullRequestFileDiffsPastTheBoundIsAnError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		io.WriteString(w, strings.Repeat("d", maxDiffRead+1))
-	}))
-	defer srv.Close()
-	f := &Forgejo{BaseURL: srv.URL, BotUser: "b", BotPassword: "p"}
-	_, err := f.PullRequestFileDiffs(context.Background(), "sf", "repo", 7)
-	if !errors.Is(err, ErrAnswerTooLong) || !strings.Contains(err.Error(), "64 MiB") {
-		t.Fatalf("err = %v", err)
+// A diff of 8 MiB reads whole; a byte more is ErrDiffTooLong, which each
+// gate turns into its own outcome, so no retry reads it again.
+func TestPullRequestFileDiffsPastEightMiBIsDiffTooLong(t *testing.T) {
+	for name, size := range map[string]int{"8 MiB": 8 << 20, "8 MiB and a byte": 8<<20 + 1} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				io.WriteString(w, diffFile("a.go", size))
+			}))
+			defer srv.Close()
+			f := &Forgejo{BaseURL: srv.URL, BotUser: "b", BotPassword: "p"}
+			files, err := f.PullRequestFileDiffs(context.Background(), "sf", "repo", 7)
+			if size > 8<<20 {
+				if err != ErrDiffTooLong || files != nil {
+					t.Fatalf("files %d, err %v: want ErrDiffTooLong itself", len(files), err)
+				}
+				return
+			}
+			if err != nil || len(files) != 1 || len(files[0].Text) != size {
+				t.Fatalf("files %d, err %v: want a.go whole", len(files), err)
+			}
+		})
 	}
-}
-
-func TestPullRequestFileDiffsOutlastFifteenSeconds(t *testing.T) {
-	f := &Forgejo{HTTP: nil}
-	if got := f.longClient().Timeout; got != 5*time.Minute {
-		t.Fatalf("timeout = %v", got)
+	if want := "the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"; ErrDiffTooLong.Error() != want {
+		t.Fatalf("ErrDiffTooLong = %q, want %q", ErrDiffTooLong, want)
 	}
 }
 

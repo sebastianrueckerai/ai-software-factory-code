@@ -99,7 +99,7 @@ func TestRemovesSymbol(t *testing.T) {
 func TestContradictionCountsMainWhenTheDiffRemovesOnlyACall(t *testing.T) {
 	diff := "diff --git a/s.go b/s.go\n--- a/s.go\n+++ b/s.go\n@@ -1,2 +1,1 @@\n-\thelper()\n context\n"
 	rv := Review{Verdict: "concerns", Findings: []string{"helper is uncalled"}, Claims: []Claim{{0, ClaimUncalled, "helper"}}}
-	got := applyClaims(rv, diff, func(string) ([]grepHit, error) { return mainHit("s.go", 2, "\thelper()"), nil })
+	got := applyClaims(rv, splitDiff(diff), func(string) ([]grepHit, error) { return mainHit("s.go", 2, "\thelper()"), nil })
 	if len(got.Findings) != 0 || len(got.Dropped) != 1 || got.Dropped[0].Evidence != "s.go:2 at main: \thelper()" {
 		t.Fatalf("review = %+v, want the finding refuted by main's call", got)
 	}
@@ -111,7 +111,7 @@ func mainHit(path string, line int, text string) []grepHit {
 
 func TestApplyClaimsDropsAContradictedFinding(t *testing.T) {
 	rv := Review{Verdict: "concerns", Summary: "s", Findings: []string{"keep", "gone"}, Claims: []Claim{{1, ClaimUndefined, "TasksByPR"}}}
-	got := applyClaims(rv, "", func(string) ([]grepHit, error) {
+	got := applyClaims(rv, nil, func(string) ([]grepHit, error) {
 		return mainHit("internal/s.go", 7, "func (s *PG) TasksByPR() {"), nil
 	})
 	if !slices.Equal(got.Findings, []string{"keep"}) || got.Claims != nil || got.Verdict != "concerns" {
@@ -125,7 +125,7 @@ func TestApplyClaimsDropsAContradictedFinding(t *testing.T) {
 
 func TestApplyClaimsKeepsAFindingWhenTheGrepFails(t *testing.T) {
 	rv := Review{Verdict: "concerns", Findings: []string{"f"}, Claims: []Claim{{0, ClaimUndefined, "X"}}}
-	got := applyClaims(rv, "", func(string) ([]grepHit, error) { return nil, os.ErrDeadlineExceeded })
+	got := applyClaims(rv, nil, func(string) ([]grepHit, error) { return nil, os.ErrDeadlineExceeded })
 	if !slices.Equal(got.Findings, []string{"f"}) || got.Dropped != nil {
 		t.Fatalf("review = %+v, want the finding kept", got)
 	}
@@ -133,7 +133,7 @@ func TestApplyClaimsKeepsAFindingWhenTheGrepFails(t *testing.T) {
 
 func TestApplyClaimsDropsOnlyWhenEveryClaimIsContradicted(t *testing.T) {
 	rv := Review{Verdict: "concerns", Findings: []string{"A and B are undefined"}, Claims: []Claim{{0, ClaimUndefined, "A"}, {0, ClaimUndefined, "B"}}}
-	got := applyClaims(rv, "", func(sym string) ([]grepHit, error) {
+	got := applyClaims(rv, nil, func(sym string) ([]grepHit, error) {
 		if sym == "A" {
 			return mainHit("a.go", 1, "func A() {"), nil
 		}
@@ -147,7 +147,7 @@ func TestApplyClaimsDropsOnlyWhenEveryClaimIsContradicted(t *testing.T) {
 func TestContradictionIgnoresMainWhenTheDiffRemovesTheSymbol(t *testing.T) {
 	diff := "diff --git a/s.go b/s.go\n--- a/s.go\n+++ b/s.go\n@@ -1,2 +1,1 @@\n-func TasksByPR() {}\n context\n"
 	rv := Review{Verdict: "concerns", Findings: []string{"TasksByPR is gone"}, Claims: []Claim{{0, ClaimUndefined, "TasksByPR"}}}
-	got := applyClaims(rv, diff, func(string) ([]grepHit, error) { return mainHit("s.go", 1, "func TasksByPR() {}"), nil })
+	got := applyClaims(rv, splitDiff(diff), func(string) ([]grepHit, error) { return mainHit("s.go", 1, "func TasksByPR() {}"), nil })
 	if len(got.Findings) != 1 || got.Dropped != nil {
 		t.Fatalf("review = %+v, want the true finding kept", got)
 	}
