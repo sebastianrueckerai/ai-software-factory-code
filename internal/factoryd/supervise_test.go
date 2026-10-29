@@ -1143,6 +1143,48 @@ func TestSupervisorStuckAfterMessage(t *testing.T) {
 	}
 }
 
+// The pod runs on during a check-in: the calls it made before the message
+// reached it wait in the stream and count for no detector after it.
+func TestEventsBeforeTheMessageDoNotCount(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	at := func(m float64, ev harness.Event) harness.Event {
+		ev.Time = minute(m)
+		return ev
+	}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(at(1, toolEvent("read", map[string]any{"filePath": "a"})), minute(1))
+	if trip := s.Event(at(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("first trip = %+v, want repetition", trip)
+	}
+	s.Messaged(minute(2))
+	for i := range 3 {
+		if trip := s.Event(at(1.5, toolEvent("read", map[string]any{"filePath": fmt.Sprint("stale", i)})), minute(2.1)); trip != nil {
+			t.Fatalf("read %d made before the message tripped: %+v", i+1, trip)
+		}
+	}
+	if !s.lastSeen.Equal(minute(2.1)) {
+		t.Fatalf("last seen %s after the stale reads, want minute 2.1", s.lastSeen)
+	}
+	if trip := s.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(2.2)); trip != nil || s.sinceChange != 1 {
+		t.Fatalf("read without a time: trip %+v, count %d; want none and 1", trip, s.sinceChange)
+	}
+	trip := s.Event(at(3, toolEvent("read", map[string]any{"filePath": "d"})), minute(3))
+	if trip == nil || trip.Kind != TripRepetition || trip.Detail != "2 tool calls and commands without a file change" ||
+		trip.decided != nil || trip.Stuck != "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change" {
+		t.Fatalf("trip = %+v, want repetition on two reads after the message, stuck, for the check-in", trip)
+	}
+
+	// the wall-clock cap still holds for a stale event
+	s2, _ := NewSupervisor(SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 3 * time.Minute, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour},
+		minute(0), minute(0))
+	s2.Event(at(1, toolEvent("read", map[string]any{"filePath": "a"})), minute(1))
+	s2.Event(at(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1))
+	s2.Messaged(minute(2))
+	if trip := s2.Event(at(1.5, toolEvent("read", map[string]any{"filePath": "a"})), minute(3)); trip == nil || trip.Kind != TripWallClock {
+		t.Fatalf("stale read at the cap = %+v, want wall_clock", trip)
+	}
+}
+
 // A message starts every progress detector afresh: a detector that did
 // not trip keeps no count from before the message (review I1).
 func TestMessageStartsTheDetectorsAfresh(t *testing.T) {

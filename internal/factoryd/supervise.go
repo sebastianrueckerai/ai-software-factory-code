@@ -128,6 +128,7 @@ type Supervisor struct {
 	// since; the next detector trip is stuck (the stuck rule).
 	// messagedOnce: a message was delivered in this session.
 	messaged, messagedOnce bool
+	messagedAt             time.Time
 	// nudges are the nudges delivered since the last new file content;
 	// seen is the content the session wrote, by newContent's key
 	nudges []Nudge
@@ -188,6 +189,15 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	s.noteRead(ev)
 	if ev.Kind == harness.EventPushed {
 		s.pushed = true
+	}
+	// the pod runs on during a check-in and its lines wait in the stream:
+	// what it did before the message reached it, by its own clock, counts
+	// for no detector
+	if !s.messagedAt.IsZero() && !ev.Time.IsZero() && ev.Time.Before(s.messagedAt) {
+		if !at.Before(s.deadline) {
+			return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
+		}
+		return s.cheapCap(at)
 	}
 	subagentCall := (ev.Kind == harness.EventToolCall || ev.Kind == harness.EventCommand) && detailBool(ev, "subagent")
 	switch {
@@ -402,7 +412,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 	clear(d.failed)
 	clear(d.calls)
 	d.streakKey, d.streak = "", 0
-	s.messaged, s.messagedOnce = true, true
+	s.messaged, s.messagedOnce, s.messagedAt = true, true, now
 }
 
 // stuck is the stuck rule: after a delivered message, a detector trip with

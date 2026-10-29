@@ -290,7 +290,7 @@ func TestRunSessionNudgeAfterTheSessionEndedIsANoOp(t *testing.T) {
 func reads(from, n int) string {
 	var s string
 	for i := from; i < from+n; i++ {
-		s += envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(),
+		s += envLine(harness.Event{Kind: harness.EventToolCall,
 			Detail: map[string]any{"tool": "read", "status": "completed", "args": map[string]any{"filePath": fmt.Sprint("/w/", i, ".go")}}}) + "\n"
 	}
 	return s
@@ -299,7 +299,7 @@ func reads(from, n int) string {
 func commands(from, n int) string {
 	var s string
 	for i := from; i < from+n; i++ {
-		s += envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(), Detail: map[string]any{"command": fmt.Sprint("ls ", i), "exit": 0}}) + "\n"
+		s += envLine(harness.Event{Kind: harness.EventCommand, Detail: map[string]any{"command": fmt.Sprint("ls ", i), "exit": 0}}) + "\n"
 	}
 	return s
 }
@@ -317,7 +317,7 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 	worker.start(t, runner)
 
 	logs := reads(0, 2) + reads(2, 1) +
-		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go"}}) + "\n" +
 		pushedLine("c1") + "\n" + resultLine(true, "pushed")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
@@ -477,7 +477,7 @@ func TestCheckinLiveStatementCarriesMessages(t *testing.T) {
 		CheckinResponse{Text: `{"decision":"continue","reason":"carried"}`})
 
 	logs := commands(0, 24) +
-		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go"}}) + "\n" +
 		commands(24, 24) + pushedLine("c1") + "\n" + resultLine(true, "pushed")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil || res.Outcome != OutcomePushed {
@@ -545,7 +545,7 @@ func TestStuckTripAsksTheCheckinWithEveryMessage(t *testing.T) {
 	worker.start(t, runner)
 
 	logs := commands(0, 24) +
-		envLine(harness.Event{Kind: harness.EventFileChange, Time: time.Now(), Detail: map[string]any{"path": "a.go"}}) + "\n" +
+		envLine(harness.Event{Kind: harness.EventFileChange, Detail: map[string]any{"path": "a.go"}}) + "\n" +
 		commands(24, 24) + commands(48, 24) + resultLine(false, "stopped")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
 	if err != nil || res.Outcome != OutcomeRetryStronger || chat.calls != 3 {
