@@ -119,6 +119,7 @@ const (
 	ActivityScreen                      = "Screen"
 	ActivityJudgeScreening              = "JudgeScreening"
 	ActivityScreenAnswer                = "ScreenAnswer"
+	ActivitySizeCard                    = "SizeCard"
 	ActivityRunReport                   = "RunReport"
 	ActivityRollCommit                  = "RollCommit"
 	ActivityRerunChecks                 = "RerunChecks"

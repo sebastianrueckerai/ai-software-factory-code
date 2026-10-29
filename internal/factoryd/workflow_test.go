@@ -179,6 +179,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityScreenAnswer: func(ctx context.Context, taskID, text string, pin int64) (ScreenResult, error) {
 			return ScreenResult{}, nil
 		},
+		ActivitySizeCard: func(ctx context.Context, taskID string) (SizeResult, error) { return SizeResult{}, nil },
 		ActivityRunReport: func(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
 			return ReportResult{}, nil
 		},

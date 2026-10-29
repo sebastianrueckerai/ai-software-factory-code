@@ -112,6 +112,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityScreen:                      r.Screen,
 		ActivityJudgeScreening:              r.JudgeScreening,
 		ActivityScreenAnswer:                r.ScreenAnswer,
+		ActivitySizeCard:                    r.SizeCard,
 		ActivityRunReport:                   r.RunReport,
 		ActivityRollCommit:                  r.RollCommit,
 		ActivityGateAudit:                   r.GateAudit,

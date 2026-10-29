@@ -699,7 +699,8 @@ var BoundActivities = []string{
 
 // Bound is how long one run of activity may take before it alerts: the
 // policy's bound for it; else for a session the agent time plus a minute
-// (a session at the cap is stopped by the cap already), for the gate
+// (a session at the cap is stopped by the cap already), for a screening
+// or a sizing the agent time plus two (its pod start), for the gate
 // supervisor its call's timeout plus two and for the model review and the
 // audit their ReviewParts calls' timeouts plus two (PartsBound); else
 // DefaultBounds' for it, else the policy's default, else DefaultBounds'
@@ -715,8 +716,8 @@ func (d Document) PartsBound(activity string, parts int) time.Duration {
 	case ok:
 	case activity == "RunSession" || activity == "RunReport" || activity == "RunPlan" || activity == "RunSplit":
 		return d.Limits.AgentTime + time.Minute
-	case activity == "Screen":
-		// the screening's report session, and its pod start
+	case activity == "Screen" || activity == "SizeCard":
+		// a screening's or a sizing's report session, and its pod start
 		return d.Limits.AgentTime + 2*time.Minute
 	case activity == "SuperviseGate":
 		return d.Limits.SupervisorTimeout + 2*time.Minute

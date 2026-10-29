@@ -917,6 +917,15 @@ func TestBounds(t *testing.T) {
 	}
 }
 
+// A sizing is a report session and its pod start, as a screening is.
+func TestSizeCardIsBoundLikeTheScreening(t *testing.T) {
+	var d Document
+	d.Limits.AgentTime = 10 * time.Minute
+	if got := d.Bound("SizeCard"); got != 12*time.Minute {
+		t.Fatalf("Bound(SizeCard) under agent_time 10m = %s, want 12m", got)
+	}
+}
+
 func TestBoundsRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ bounds, want string }{
 		"unknown activity": {"{RunSesion: 60}", `bounds: unknown activity "RunSesion"`},

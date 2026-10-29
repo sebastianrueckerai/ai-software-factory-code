@@ -58,6 +58,7 @@ func TestGateMeaning(t *testing.T) {
 		{GateDependencies, "waits for the cards it depends on"},
 		{GateMergeQueue, "waits for its turn to merge"},
 		{GateProvider, "waits on the model provider"},
+		{GateSizing, "a model sizes the card before its first session"},
 	}
 	for _, tt := range tests {
 		if got := GateMeaning(tt.gate); got != tt.want {

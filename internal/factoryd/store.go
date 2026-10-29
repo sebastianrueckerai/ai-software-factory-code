@@ -444,6 +444,8 @@ type Store interface {
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
+	// SetTaskSize sets the task's size and its budget.
+	SetTaskSize(ctx context.Context, id, size string, budgetEUR float64) error
 	// DeliverySeen reports whether a webhook delivery was processed.
 	DeliverySeen(ctx context.Context, id string) (bool, error)
 	// RecordDelivery marks a webhook delivery processed.
@@ -1120,6 +1122,11 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
 		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
 		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
+	return oneRow(res, err, "task "+id)
+}
+
+func (s *PGStore) SetTaskSize(ctx context.Context, id, size string, budgetEUR float64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET size = $2, budget_eur = $3 WHERE id = $1`, id, size, budgetEUR)
 	return oneRow(res, err, "task "+id)
 }
 

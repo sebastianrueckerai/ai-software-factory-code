@@ -37,6 +37,7 @@ const (
 	GateProvider      = manual.GateProvider
 	GateDependencies  = manual.GateDependencies
 	GateMergeQueue    = manual.GateMergeQueue
+	GateSizing        = manual.GateSizing
 )
 
 // StepGates are the timeline steps that end a gate, each carrying the
@@ -47,7 +48,7 @@ var StepGates = map[string]string{
 	"gate_policy": GatePolicy, "gate_migration": GateMigration, "gate_reproduction": GateReproduction, "gate_criteria": GateCriteria,
 	"model_review": GateReview, "signal": GateApproval, "merged": GateMerge,
 	"merge_failed": GateMerge, "merge_refused": GateMerge, "commissioned": GateCommissioning, "screening": GateScreening,
-	"audit": GateAudit, "dependencies_done": GateDependencies, "queue_turn": GateMergeQueue,
+	"audit": GateAudit, "dependencies_done": GateDependencies, "queue_turn": GateMergeQueue, StepSizing: GateSizing,
 }
 
 // activityGates are the gates the activities open: the task's row is in
@@ -68,6 +69,7 @@ var activityGates = map[string]string{
 	ActivityEscalate:          GateHuman,
 	ActivityScreen:            GateScreening,
 	ActivityScreenAnswer:      GateScreening,
+	ActivitySizeCard:          GateSizing,
 	ActivityRunReport:         GateSession,
 	ActivityGateAudit:         GateAudit,
 	ActivityRunPlan:           GateSession,
@@ -80,7 +82,7 @@ var activityGates = map[string]string{
 
 // defaultBoundActivities are the activities policy.BoundActivities does
 // not name: they take the policy's default bound, RunPlan and RunSplit a
-// session's.
+// session's, SizeCard a screening's.
 // Naming one there would change the configuration tree's schema, which
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan,
@@ -88,7 +90,7 @@ var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, Act
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,
 	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement, ActivityParkForTool, ActivityImageArrived, ActivityLeaveImagePark,
-	ActivityBecomePlan}
+	ActivityBecomePlan, ActivitySizeCard}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

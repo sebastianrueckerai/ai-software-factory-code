@@ -582,6 +582,15 @@ func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.
 	return nil
 }
 
+func (s *acceptanceStore) SetTaskSize(_ context.Context, id, size string, budgetEUR float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Size, t.BudgetEUR = size, budgetEUR
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *acceptanceStore) DeliverySeen(context.Context, string) (bool, error) { return false, nil }
 
 func (s *acceptanceStore) RecordDelivery(context.Context, string) error { return nil }

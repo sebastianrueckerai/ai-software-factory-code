@@ -688,6 +688,16 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 	return nil
 }
 
+func (s *fakeStore) SetTaskSize(ctx context.Context, id, size string, budgetEUR float64) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Size, t.BudgetEUR = size, budgetEUR
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
 	return s.deliveries[id], nil
 }
@@ -1585,6 +1595,15 @@ func TestPGStore(t *testing.T) {
 	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
+	}
+	if err := s.SetTaskSize(ctx, "t1", "medium", 5); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t1"); got.Size != "medium" || got.BudgetEUR != 5 {
+		t.Fatalf("size %q, budget %v, want medium and 5", got.Size, got.BudgetEUR)
+	}
+	if err := s.SetTaskSize(ctx, "nope", "small", 2); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetTaskSize unknown task = %v, want ErrNotFound", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = 0 WHERE id = 't1'`); err != nil {
 		t.Fatal(err)

@@ -20,6 +20,7 @@ const (
 	GateProvider      = "provider"
 	GateDependencies  = "dependencies"
 	GateMergeQueue    = "merge-queue"
+	GateSizing        = "sizing"
 )
 
 // Gates are the gates a worker session's pull request passes, in the
@@ -102,6 +103,8 @@ func GateMeaning(gate string) string {
 		return "waits for its turn to merge"
 	case GateProvider:
 		return "waits on the model provider"
+	case GateSizing:
+		return "a model sizes the card before its first session"
 	default:
 		return "is in an unknown gate"
 	}
