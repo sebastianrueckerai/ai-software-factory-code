@@ -1476,7 +1476,7 @@ var tools = []chatTool{
 	{name: "fund", title: "Fund a card", write: true,
 		params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
 		required: []string{"task_id", "eur", "text"},
-		about:    "Raise a card's budget with an answer to its question: the pool's money, or the member's.",
+		about:    "Raise a card's budget for its question or its refused brief: the pool's money, or the member's.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.fund(in)
 			return note, nil, err

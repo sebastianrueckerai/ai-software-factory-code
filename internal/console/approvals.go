@@ -62,6 +62,10 @@ type approvalCard struct {
 	// TaskStatus is its task's, where the task's card stands once the
 	// request is decided
 	TaskStatus string
+	// BriefShort: the card's own budget refused its brief, said in the
+	// brief's place; BriefFund is the raise that answers it, an approver's
+	BriefShort string
+	BriefFund  *fundForm
 	// Filter is the board's filter, which the card's forms keep.
 	Filter   boardFilter
 	CSRF     string
@@ -131,6 +135,12 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	k.TaskStatus = t.Status
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
+	}
+	if ok && factoryd.BriefUnfunded(a) {
+		k.BriefShort = fmt.Sprintf("The card has %.2f EUR of its %.2f EUR budget left, too little for the call that writes its brief.", max(t.BudgetEUR-t.SpentEUR, 0), t.BudgetEUR)
+		if approver && t.IssueNumber > 0 {
+			k.BriefFund = &fundForm{CSRF: csrf}
+		}
 	}
 	var err error
 	switch a.Kind {

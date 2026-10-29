@@ -726,6 +726,17 @@ func (a *AcceptanceRig) DecideApproval(_ context.Context, id int64, kind, status
 	return factoryd.ErrNotFound
 }
 
+func (a *AcceptanceRig) RetryApprovalBrief(_ context.Context, id int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, q := range a.approvals {
+		if q.ID == id && q.Status == "pending" && q.Brief == "" {
+			a.approvals[i].BriefError = ""
+		}
+	}
+	return nil
+}
+
 // Events: the event spine in memory.
 
 func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, error) {

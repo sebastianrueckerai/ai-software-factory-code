@@ -50,10 +50,11 @@
   supervisor, the gate supervisor, the model review, the audit) take the same route:
   the `gateway-factoryd` token (the gateway's `FACTORYD_TOKEN`) with the
   task in `X-Factory-Task` and the purpose (`supervisor`,
-  `gate-supervisor`, `review`, `audit`) in `X-Factory-Purpose`. Such a call may use
+  `gate-supervisor`, `review`, `audit`, `brief`) in `X-Factory-Purpose`. Such a call may use
   only the alias the task's class names for the purpose
   (`supervisor_model`, `review_model`, `audit_model`; 403 `refused_capability` else),
-  runs while the task is running or in review, is held and booked like an
+  runs while the task is running or in review (a `brief` call, a needs-you
+  card's brief, also while it waits on a person), is held and booked like an
   agent's under the ref `<purpose>/<alias>` (e.g. `review/big`),
   and its audit row has the purpose as `kind` (`agent` for an agent's
   call, `factoryd` for a factoryd call refused before its purpose is

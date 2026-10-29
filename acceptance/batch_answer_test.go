@@ -376,6 +376,8 @@ func (f *accBatchApprovals) ApprovalRequests(_ context.Context, status string) (
 	return out, nil
 }
 
+func (f *accBatchApprovals) RetryApprovalBrief(context.Context, int64) error { return nil }
+
 func (f *accBatchApprovals) DecideApproval(_ context.Context, id int64, kind, status, by, note string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

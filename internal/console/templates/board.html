@@ -133,7 +133,14 @@
 {{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
 {{end}}
 
-{{define "brief-block"}}{{if .IDSuffix}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{else}}{{with .Brief}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<div class="reason detail">{{markup .}}</div>{{end}}{{end}}{{end}}
+{{define "brief-block"}}{{if .IDSuffix}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{else}}{{with .Brief}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<div class="reason detail">{{markup .}}</div>{{end}}{{end}}{{if not .Brief}}{{with .BriefShort}}<p class="need-line brief">{{.}}</p>{{end}}{{with .BriefFund}}<form method="post" action="/tasks/{{$.TaskID}}/fund" hx-post="/tasks/{{$.TaskID}}/fund" hx-target="#board" hx-swap="outerHTML" class="inline fund">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Filter}}
+<label for="brief-fund-{{$.ID}}{{$.IDSuffix}}">Fund its brief, EUR</label>
+<input type="number" step="0.01" min="0.01" id="brief-fund-{{$.ID}}{{$.IDSuffix}}" name="eur" required>
+<label for="brief-fund-reason-{{$.ID}}{{$.IDSuffix}}">note</label>
+<input type="text" id="brief-fund-reason-{{$.ID}}{{$.IDSuffix}}" name="reason" maxlength="{{maxAnswer}}" required>
+<button type="submit" aria-label="Raise #{{$.Issue}}'s budget by the stated amount for its brief">Fund</button>
+</form>{{end}}{{end}}{{end}}
 
 {{define "approval"}}<article class="card approval{{if eq .Kind "plan"}} plan{{end}}" data-card="{{.TaskID}}" aria-labelledby="approval-{{.ID}}{{.IDSuffix}}">
 {{if eq .Kind "plan"}}{{template "plan" .}}{{else}}{{if eq .Kind "criteria"}}{{template "criteria" .}}{{else}}{{if eq .Kind "merge"}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Merge</a>{{else}}Merge{{end}} <a href="{{.PRURL}}" target="_blank" rel="noopener">PR #{{.PRNumber}}</a></h4> <span class="chip risk">{{.Merge.RiskClass}} risk</span>{{if .Merge.Migration}} <span class="chip migration">migration</span>{{end}}{{if .Healed}}{{if .HealedSHA}} <span class="chip">branch moved on, its checks green at {{printf "%.8s" .HealedSHA}}</span>{{else}} <span class="chip">checks healed after a re-run</span>{{end}}{{end}}{{with .Waiting}} <span class="since" title="waiting for a member">◷ {{.}}</span>{{end}}</div>

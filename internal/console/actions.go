@@ -1047,6 +1047,21 @@ func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string,
 	return c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
 }
 
+// unfundedBrief is t's pending request whose brief t's own budget refused
+// (factoryd.BriefUnfunded); nil when none.
+func (c *Console) unfundedBrief(ctx context.Context, t factoryd.Task) (*factoryd.ApprovalRequest, error) {
+	all, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
+	if err != nil {
+		return nil, err
+	}
+	for _, q := range all {
+		if q.TaskID == t.ID && factoryd.BriefUnfunded(q) {
+			return &q, nil
+		}
+	}
+	return nil, nil
+}
+
 // unreadBudget is the verdict of a budget read that failed: the answer
 // names the state and the fitting action instead of dying mid-request.
 func unreadBudget() error {
@@ -1091,22 +1106,33 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	if err != nil {
 		return "", err
 	}
-	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal")
+	brief, err := c.unfundedBrief(ctx, t)
+	if err != nil {
+		log.Printf("console: %s funds %s, reading its requests: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusServiceUnavailable, "The card's requests could not be read; nothing was raised. Try again.")
 	}
-	why, ferr := c.unfundedSession(ctx, t)
-	if ferr != nil {
-		log.Printf("console: %s funds %s, reading the budget: %v", a.s.user, t.ID, ferr)
-		return "", unreadBudget()
+	if brief == nil {
+		if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
+			return "", wrongState(t, c.capFactsOf(ctx, t), "a card waiting on a human after a budget refusal, or one whose budget cannot pay for its brief")
+		}
+		why, ferr := c.unfundedSession(ctx, t)
+		if ferr != nil {
+			log.Printf("console: %s funds %s, reading the budget: %v", a.s.user, t.ID, ferr)
+			return "", unreadBudget()
+		}
+		switch {
+		case why == "":
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a session's opening calls: it needs no raise; answer it (answer).", t.IssueNumber))
+		case !factoryd.BudgetRefusal(why):
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
+		}
 	}
-	switch {
-	case why == "":
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d's remaining budget can fund a session's opening calls: it needs no raise; answer it (answer).", t.IssueNumber))
-	case !factoryd.BudgetRefusal(why):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d needs no raise: no budget lets it start. %s", t.IssueNumber, why))
+	detail := map[string]any{"reason": note}
+	if brief != nil {
+		detail["brief"] = brief.ID
 	}
 	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur, bounds,
-		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded, map[string]any{"reason": note}))
+		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded, detail))
 	var spent *factoryd.PoolSpentError
 	var capped *factoryd.CardCapError
 	switch {
@@ -1121,6 +1147,15 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 		return "", refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
 	}
 	log.Printf("console: %s raised %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, t.ID, eur, from, to, a.via, note)
+	if brief != nil {
+		// the raise answers the brief alone: the card's own question, if
+		// any, waits for its answer
+		if err := c.cfg.Approvals.RetryApprovalBrief(ctx, brief.ID); err != nil {
+			log.Printf("console: %s funded %s, queueing its brief: %v", a.s.user, t.ID, err)
+			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f, but its brief could not be queued again; see the factoryd log.", t.IssueNumber, eur, to))
+		}
+		return fmt.Sprintf("Raised #%d's budget by %.2f EUR to %.2f; the factory writes the card's brief within seconds.", t.IssueNumber, eur, to), nil
+	}
 	short, serr := c.unfundedSession(ctx, t)
 	if serr != nil {
 		log.Printf("console: %s funded %s, re-reading the budget: %v", a.s.user, t.ID, serr)

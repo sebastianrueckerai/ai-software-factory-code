@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -293,5 +294,48 @@ func TestFundWhoseNoteForgejoRefusesKeepsTheRaise(t *testing.T) {
 	}
 	if funded != 1 || len(r.events.rows) != 1 {
 		t.Fatalf("event rows = %+v, want the one card_funded row alone", r.events.rows)
+	}
+}
+
+// A merge card whose own budget refused its brief says so in the brief's
+// place, and an approver's Fund there raises the budget and queues the
+// brief again: it neither answers nor moves the card.
+func TestFundAnswersABriefTheBudgetRefused(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10,
+		BudgetEUR: 2, SpentEUR: 1.99})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
+		PRNumber: 10, Status: "pending", BriefError: "refused_budget: free headroom 0.010000 EUR fits 3 output tokens",
+		Spec: json.RawMessage(`{"risk_class":"normal"}`)})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{"The card has 0.01 EUR of its 2.00 EUR budget left, too little for the call that writes its brief.", `action="/tasks/t-m/fund"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the merge card lacks %s", want)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	tool, _ := r.c.chatTool("card")
+	text, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)), a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-m"})
+	if err != nil || !strings.Contains(text, "merge request 6 pending; its brief is unwritten: the card's budget cannot pay for it, and a fund queues it again") {
+		t.Fatalf("the card read = %q, %v; want the unfunded brief", text, err)
+	}
+	rec := r.do(htmxPost("/tasks/t-m/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"eur": {"0.5"}, "reason": {"for the brief"}}), ck)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Raised #8&#39;s budget by 0.50 EUR to 2.50; the factory writes the card&#39;s brief within seconds.</p>`) {
+		t.Fatalf("fund by htmx = %d: %s", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-m"); task.BudgetEUR != 2.5 || task.Status != "in-review" {
+		t.Fatalf("the raise left %+v, want budget 2.5 and the card in review", task)
+	}
+	if a := r.approvals.get(6); a.BriefError != "" || a.Status != "pending" {
+		t.Fatalf("the request after the raise = %+v, want it pending with no brief error", a)
+	}
+	if len(r.events.rows) != 1 || r.events.rows[0].Kind != factoryd.EventCardFunded || r.events.rows[0].Detail["brief"] != int64(6) {
+		t.Fatalf("events = %+v, want the one card_funded row naming the brief", r.events.rows)
+	}
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, `action="/tasks/t-m/fund"`) {
+		t.Error("the card still asks for the brief's money after the raise")
 	}
 }

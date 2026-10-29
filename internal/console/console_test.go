@@ -747,6 +747,17 @@ func (a *fakeApprovals) DecideApproval(_ context.Context, id int64, kind, status
 	return factoryd.ErrNotFound
 }
 
+func (a *fakeApprovals) RetryApprovalBrief(_ context.Context, id int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, r := range a.rows {
+		if r.ID == id && r.Status == "pending" && r.Brief == "" {
+			a.rows[i].BriefError = ""
+		}
+	}
+	return nil
+}
+
 func (a *fakeApprovals) get(id int64) factoryd.ApprovalRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()

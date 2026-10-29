@@ -863,6 +863,10 @@ const (
 	// PurposeTitle is a chat thread's naming call (roadmap 304): one
 	// cheap call that writes the thread's title from its first message.
 	PurposeTitle = "title"
+	// PurposeBrief is a needs-you card's brief (ruling 116), on the
+	// class's supervisor model: the one call a card that waits on a person
+	// may make.
+	PurposeBrief = "brief"
 )
 
 // LookTypes are the image types a look takes, sniffed from its bytes.
@@ -872,7 +876,7 @@ var LookTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 const MaxLookBytes = 8 << 20
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
 
 // The two model classes every text call names (Sebastian, 2026-10-20).
 // A class is a LiteLLM alias routed to its z.ai model, the Alibaba model
@@ -1276,7 +1280,7 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 		switch purpose {
 		case PurposeReview:
 			alias = cl.ReviewModel
-		case PurposeSupervisor, PurposeGateSupervisor:
+		case PurposeSupervisor, PurposeGateSupervisor, PurposeBrief:
 			alias = cl.SupervisorModel
 		case PurposeAudit:
 			alias = cl.AuditModel
