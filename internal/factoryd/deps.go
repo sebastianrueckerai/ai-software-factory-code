@@ -155,10 +155,26 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	return true, tx.Commit()
 }
 
-func (s *PGStore) MoveDependents(ctx context.Context, from, to string) error {
-	_, err := s.db.ExecContext(ctx, `WITH moved AS (DELETE FROM task_deps WHERE depends_on = $1 RETURNING task_id)
-		INSERT INTO task_deps (task_id, depends_on) SELECT task_id, $2 FROM moved WHERE task_id <> $2 ON CONFLICT DO NOTHING`, from, to)
-	return err
+func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `WITH moved AS (
+			DELETE FROM task_deps d USING tasks t
+			WHERE d.depends_on = $1 AND t.id = d.task_id AND t.source = 'plan' AND t.parent_task = $2
+			RETURNING d.task_id),
+		added AS (INSERT INTO task_deps (task_id, depends_on) SELECT task_id, $2 FROM moved ON CONFLICT DO NOTHING)
+		SELECT task_id FROM moved ORDER BY task_id`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var moved []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		moved = append(moved, id)
+	}
+	return moved, rows.Err()
 }
 
 // Dependencies tells the workflow where the card's dependencies stand. A

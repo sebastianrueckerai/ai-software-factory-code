@@ -366,7 +366,7 @@ func main() {
 		nudged := map[string]time.Time{}
 		var lastBranchSweep time.Time
 		for {
-			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion)
+			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			runner.CriteriaPass(ctx)
 			if now := time.Now(); now.Sub(lastBranchSweep) >= time.Hour {

@@ -14,11 +14,12 @@ import (
 )
 
 // replanRig is plan p (issue 10, one session used) in status with
-// revisions stored, its child c (issue 12, running) and the sibling s
-// (issue 13) waiting on c, all on sf/repo.
+// revisions stored, its child c (issue 12, running), the sibling s (issue
+// 13) waiting on c, and d (issue 14), a card c delegated, waiting on c
+// too, all on sf/repo; the issues carry the waits.
 func replanRig(t *testing.T, status string, revisions int) (*Runner, *fakeStore, *prForgejo) {
 	t.Helper()
-	fj := &prForgejo{labels: map[int64][]string{10: {LabelPlan, "state/" + status}}}
+	fj := &prForgejo{labels: map[int64][]string{10: {LabelPlan, "state/" + status}}, deps: map[int64][]int64{13: {12}, 14: {12}}}
 	r, store, _ := newActivityRunner(t, Task{ID: "p", Kind: "agent", Track: policy.TrackPlan, Source: "webhook", Repository: "sf/repo",
 		IssueNumber: 10, Status: status, BudgetEUR: 5, Usage: TaskUsage{Attempts: 1}}, fj)
 	ctx := context.Background()
@@ -31,8 +32,14 @@ func replanRig(t *testing.T, status string, revisions int) (*Runner, *fakeStore,
 			t.Fatal(err)
 		}
 	}
-	if err := store.AddTaskDeps(ctx, "s", []string{"c"}); err != nil {
+	if err := store.CreateTask(ctx, Task{ID: "d", Kind: "agent", Track: policy.TrackDirect, Source: SourceDelegate, Parent: "c", Repository: "sf/repo",
+		IssueNumber: 14, Status: "waiting-deps"}); err != nil {
 		t.Fatal(err)
+	}
+	for _, waiter := range []string{"s", "d"} {
+		if err := store.AddTaskDeps(ctx, waiter, []string{"c"}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for i := range revisions {
 		if _, err := store.AddPlanRevision(ctx, "p", json.RawMessage(`{}`), fmt.Sprint("sha-", i+1)); err != nil {
@@ -81,23 +88,29 @@ func replanSteps(t *testing.T, r *Runner, id string) []ReplanStep {
 func reopens(r *Runner) []reopenCall { return r.cfg.Workflows.(*fakeWorkflows).reopens }
 
 // A child's cut sends its plan back to the planner: the plan records the
-// replan with the child's work, takes the child's dependents, and reopens
-// queued with its counters at zero. A second cut finds the replan
-// running and joins it.
+// replan with the child's work, takes its own cards' waits on the child,
+// on their issues too, and reopens queued with its counters at zero and
+// no finish. A second cut finds the replan running and joins it.
 func TestReplanChildCutsItsPlan(t *testing.T) {
-	r, store, _ := replanRig(t, "done", 2)
+	r, store, fj := replanRig(t, "done", 2)
 	if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Reason: "cut: plan #10 replans its work"}) {
 		t.Fatalf("answer %+v, want the cut", got)
 	}
 	if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
 		t.Fatalf("s depends on %v, want the plan", deps)
 	}
+	if deps := store.deps["d"]; !slices.Equal(deps, []string{"c"}) {
+		t.Fatalf("the delegated d depends on %v, want c still", deps)
+	}
+	if !slices.Equal(fj.deps[13], []int64{10}) || !slices.Equal(fj.deps[14], []int64{12}) {
+		t.Fatalf("issue dependencies %v, want #13 on #10 alone, #14 on #12 still", fj.deps)
+	}
 	want := []ReplanStep{{Origin: ReplanCut, Card: "c", Work: "w", Stops: []string{"c"}, Revision: 2}}
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
 	}
-	if p := store.tasks["p"]; p.Status != "queued" || p.Usage != (TaskUsage{}) {
-		t.Fatalf("plan %s with usage %+v, want queued with none", p.Status, p.Usage)
+	if p := store.tasks["p"]; p.Status != "queued" || p.Usage != (TaskUsage{}) || p.FinishedAt != nil {
+		t.Fatalf("plan %s with usage %+v, finished %v; want queued with none", p.Status, p.Usage, p.FinishedAt)
 	}
 	if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) {
 		t.Fatalf("reopens %+v, want p's without a signal", got)
@@ -112,8 +125,8 @@ func TestReplanChildCutsItsPlan(t *testing.T) {
 	if got := replanSteps(t, r, "p"); len(got) != 1 {
 		t.Fatalf("the plan's replan steps after the second call: %+v, want the first alone", got)
 	}
-	if got := reopens(r); len(got) != 1 {
-		t.Fatalf("reopens after the second call: %+v, want one", got)
+	if got := reopens(r); len(got) != 2 {
+		t.Fatalf("reopens after the second call: %+v, want two: the join of a queued plan reopens it again", got)
 	}
 }
 
@@ -130,8 +143,54 @@ func TestReplanChildJoinsARunningReplan(t *testing.T) {
 	if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
 		t.Fatalf("s depends on %v, want the plan", deps)
 	}
+	if got := reopens(r); len(got) != 1 {
+		t.Fatalf("reopens %+v, want one for the queued plan", got)
+	}
+}
+
+// A plan whose planner runs is joined without a reopen.
+func TestReplanChildJoinOfARunningPlanReopensNothing(t *testing.T) {
+	r, _, _ := replanRig(t, "running", 2)
+	if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Reason: "stopped for the replan of plan #10"}) {
+		t.Fatalf("answer %+v, want the join", got)
+	}
 	if got := reopens(r); len(got) != 0 {
 		t.Fatalf("reopens %+v, want none", got)
+	}
+}
+
+// A cut whose reopen failed after the plan turned queued is healed by its
+// retry: the join of the queued plan reopens it.
+func TestReplanChildRetryReopensThePlan(t *testing.T) {
+	r, store, _ := replanRig(t, "done", 2)
+	r.cfg.Workflows.(*fakeWorkflows).reopenFails = 1
+	if _, err := execActivity(t, r, ActivityReplanChild, "c", "w"); err == nil {
+		t.Fatal("the cut answered with its reopen failed")
+	}
+	if p := store.tasks["p"]; p.Status != "queued" || len(reopens(r)) != 0 {
+		t.Fatalf("plan %s, reopens %+v; want queued with no run", p.Status, reopens(r))
+	}
+	if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Reason: "stopped for the replan of plan #10"}) {
+		t.Fatalf("the retry's answer %+v, want the join", got)
+	}
+	if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) {
+		t.Fatalf("reopens %+v, want p's", got)
+	}
+	if got := replanSteps(t, r, "p"); len(got) != 1 {
+		t.Fatalf("the plan's replan steps %+v, want the first alone", got)
+	}
+}
+
+// The issues only mirror the waits: a Forgejo that fails them leaves the
+// cut and the store's edges as they are.
+func TestReplanChildMovesTheWaitsWithForgejoDown(t *testing.T) {
+	r, store, fj := replanRig(t, "done", 2)
+	fj.depsDown = true
+	if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Reason: "cut: plan #10 replans its work"}) {
+		t.Fatalf("answer %+v, want the cut", got)
+	}
+	if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
+		t.Fatalf("s depends on %v, want the plan", deps)
 	}
 }
 
@@ -277,12 +336,12 @@ func TestStopForReplan(t *testing.T) {
 		t.Fatalf("c %s, s depends on %v; want the session to end it, its dependents kept", c.Status, store.deps["s"])
 	}
 
-	r, store, _ = replanRig(t, "done", 1)
+	r, store, fj := replanRig(t, "done", 1)
 	if err := r.stopForReplan(ctx, store.tasks["c"], store.tasks["p"], why); err != nil {
 		t.Fatal(err)
 	}
-	if c := store.tasks["c"]; c.Status != "closed" || !slices.Equal(store.deps["s"], []string{"p"}) {
-		t.Fatalf("c %s, s depends on %v; want closed, the dependents on the plan", c.Status, store.deps["s"])
+	if c := store.tasks["c"]; c.Status != "closed" || !slices.Equal(store.deps["s"], []string{"p"}) || !slices.Equal(fj.deps[13], []int64{10}) {
+		t.Fatalf("c %s, s depends on %v, issue #13 on %v; want closed, the dependents on the plan", c.Status, store.deps["s"], fj.deps[13])
 	}
 	finals := stepsNamed(t, r, "c", "final")
 	var final struct{ State, Reason string }

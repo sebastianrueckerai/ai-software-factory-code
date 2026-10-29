@@ -272,7 +272,9 @@ type Store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
 	// TransitionTask moves a task to status `to` only from one of the
 	// statuses in from; any other current status is an error. Entering done
-	// or failed stamps the finish time and leaves the gate.
+	// or failed stamps the finish time and leaves the gate; entering a
+	// status that is neither final nor merged clears the finish time and
+	// the spend settlement (a reopen).
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	// MarkStarted moves a queued, waiting-deps, running, in-review,
 	// waiting-human, waiting-poster or waiting-image task to running.
@@ -555,9 +557,10 @@ type Store interface {
 	// False, and nothing changed, when id is no failed card holding the
 	// key.
 	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
-	// MoveDependents points every task waiting on from at to instead; a
-	// task that waits on to already keeps that one edge.
-	MoveDependents(ctx context.Context, from, to string) error
+	// MoveDependents points every card of plan to that waits on from at to
+	// instead, and answers those cards; a card that waits on to already
+	// keeps that one edge.
+	MoveDependents(ctx context.Context, from, to string) ([]string, error)
 	// FundCard raises task id's budget by eur and writes e, its card_funded
 	// row (PGStore.FundCard).
 	FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error)
@@ -1407,10 +1410,13 @@ func (s *PGStore) Ping(ctx context.Context) error {
 }
 
 // transitionSet and transitionWhere are TransitionTask's update: $1 the
-// task, $2 the status it moves to, $3 the statuses it may move from.
+// task, $2 the status it moves to, $3 the statuses it may move from. A
+// card that moves back from a final status (a reopen) is unfinished and
+// unsettled again.
 const (
 	transitionSet = `status = $2,
-		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE finished_at END,
+		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE NULL END,
+		 settled_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN settled_at ELSE NULL END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
 		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`
 	transitionWhere = `id = $1 AND status = ANY($3)`

@@ -144,7 +144,8 @@ type fakeWorkflows struct {
 	err         error    // returned by Signal when set
 	onStart     func(taskID string)
 	routineRuns []RoutineRunInput
-	reopens     []reopenCall
+	reopens     []reopenCall // the reopens that started a run
+	reopenFails int          // Reopen fails this many calls first
 }
 
 // reopenCall is a Workflows.Reopen a fake took.
@@ -154,6 +155,10 @@ type reopenCall struct {
 }
 
 func (w *fakeWorkflows) Reopen(ctx context.Context, taskID, signal string, sig TaskSignal) error {
+	if w.reopenFails > 0 {
+		w.reopenFails--
+		return errors.New("temporal down")
+	}
 	w.reopens = append(w.reopens, reopenCall{taskID, signal, sig})
 	return nil
 }
@@ -2312,7 +2317,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 			}
 		} else {
 			in.Projects = projectList{none}
-			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
+			HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
 		}
 		if got := store.tasks["t-q"]; got.Kind != "human" || got.Status != "waiting-human" || slices.Contains(workflowsOf(in).started, "t-q") {
 			t.Fatalf("%s: task %+v, started %v", via, got, workflowsOf(in).started)

@@ -65,7 +65,7 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	completion.Metrics = m
 	objects := &fakeObjectStore{}
 	HealPass(context.Background(), store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent", Metrics: m,
-		Timeline: &Timeline{Objects: objects}}, completion)
+		Timeline: &Timeline{Objects: objects}}, completion, noneCompleted)
 	if got := events(t, objects, "tbroken"); !slices.Equal(got, []string{"task_ended failed"}) {
 		t.Fatalf("the failed task's events = %v", got)
 	}
@@ -100,6 +100,73 @@ func TestHealPassCoversEveryUnfinishedAgentTask(t *testing.T) {
 	}
 }
 
+// noneCompleted is the heal pass's run check where no run completed.
+func noneCompleted(context.Context, string) (bool, error) { return false, nil }
+
+// An open card whose last run completed, a reopen that moved its row but
+// started no run, gets a new run; Start would be refused. A card whose
+// run is open or failed starts as before, and one its run just finished
+// (final as the pass looks again) is left alone.
+func TestHealPassReopensACardWhoseRunCompleted(t *testing.T) {
+	store := newFakeStore()
+	ctx := context.Background()
+	for id, st := range map[string]string{"tq": "queued", "tr": "running", "tx": "running"} {
+		store.CreateTask(ctx, Task{ID: id, Status: st, Kind: "agent", Track: "direct", Repository: "sf/ai-software-factory-code", IssueNumber: 30})
+	}
+	completed := func(_ context.Context, id string) (bool, error) {
+		switch id {
+		case "tq":
+			return true, nil
+		case "tx":
+			x := store.tasks["tx"]
+			x.Status = "done"
+			store.tasks["tx"] = x
+			return true, nil
+		}
+		return false, nil
+	}
+	wf := &fakeWorkflows{}
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
+	fjURL, llURL := back.srv(t)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), completed)
+	if !reflect.DeepEqual(wf.reopens, []reopenCall{{taskID: "tq"}}) || !slices.Equal(wf.started, []string{"tr"}) {
+		t.Fatalf("reopens %+v, starts %v; want tq reopened, tr started, tx left", wf.reopens, wf.started)
+	}
+}
+
+// Completed answers whether the task's last run completed: a missing,
+// running, failed or terminated run did not, and a Temporal outage is an
+// error.
+func TestTemporalCompletedIsACompletedRun(t *testing.T) {
+	for name, tc := range map[string]struct {
+		res  *workflowservice.DescribeWorkflowExecutionResponse
+		err  error
+		want bool
+	}{
+		"completed":  {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED}}, nil, true},
+		"running":    {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING}}, nil, false},
+		"failed":     {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_FAILED}}, nil, false},
+		"terminated": {&workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED}}, nil, false},
+		"not found":  {nil, serviceerror.NewNotFound("no such workflow"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &mocks.Client{}
+			c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(tc.res, tc.err)
+			got, err := TemporalWorkflows{Client: c}.Completed(context.Background(), "t1")
+			if err != nil || got != tc.want {
+				t.Fatalf("Completed = %v, %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+	c := &mocks.Client{}
+	c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(nil, errors.New("frontier down"))
+	if _, err := (TemporalWorkflows{Client: c}).Completed(context.Background(), "t1"); err == nil {
+		t.Fatal("a Temporal outage must be an error")
+	}
+}
+
 // A project's chat task runs no workflow: the heal pass starts none for
 // it, beside the running card it does start.
 func TestHealPassLeavesTheChatTaskBe(t *testing.T) {
@@ -112,7 +179,7 @@ func TestHealPassLeavesTheChatTaskBe(t *testing.T) {
 	back := &recordingBackend{forgejoStatus: 204, litellmStatus: 200}
 	fjURL, llURL := back.srv(t)
 	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL))
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, newCompletion(store, fjURL, llURL), noneCompleted)
 	if !slices.Equal(wf.started, []string{"tr"}) {
 		t.Fatalf("started = %v, want only the running card tr", wf.started)
 	}
@@ -271,7 +338,7 @@ func TestTemporalStartIsQuietAgainstARunningWorkflow(t *testing.T) {
 func TestHealPassTakesInMissedIssues(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	in.Projects = codeRepoOnly{}
-	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store})
+	HealPass(context.Background(), store, in.Workflows, in, &Completion{Store: store}, noneCompleted)
 	var agent string
 	for _, tk := range store.tasks {
 		if tk.IssueNumber == 7 {
@@ -487,7 +554,7 @@ func TestHealPassFinishesAFactoryClose(t *testing.T) {
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}}
 	in := &Intake{Store: store, Forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
-	HealPass(ctx, store, &fakeWorkflows{}, in, nil)
+	HealPass(ctx, store, &fakeWorkflows{}, in, nil, noneCompleted)
 	if fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] {
 		t.Fatalf("#5 is %q, confirmed %v; want closed and confirmed", fj.issues[5].state, store.confirmedCloses)
 	}

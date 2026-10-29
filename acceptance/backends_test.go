@@ -916,19 +916,18 @@ func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Ta
 	return false, nil
 }
 
-func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) error {
+func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) ([]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var moved []string
 	for id, deps := range s.deps {
-		if slices.Contains(deps, from) {
-			deps = slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to })
-			if id != to {
-				deps = append(deps, to)
-			}
-			s.deps[id] = deps
+		if t := s.tasks[id]; t.Source == factoryd.SourcePlan && t.Parent == to && slices.Contains(deps, from) {
+			s.deps[id] = append(slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to }), to)
+			moved = append(moved, id)
 		}
 	}
-	return nil
+	slices.Sort(moved)
+	return moved, nil
 }
 
 func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {

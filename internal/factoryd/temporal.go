@@ -135,15 +135,29 @@ func (w TemporalWorkflows) LastFailure(ctx context.Context, workflowID, activity
 // Alive: the task's workflow is running now. A workflow that is missing,
 // completed, failed or terminated is not; a Temporal error is an error.
 func (w TemporalWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
+	status, err := w.runStatus(ctx, taskID)
+	return status == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, err
+}
+
+// Completed: the task's last workflow run completed. One that is missing,
+// running, failed or terminated did not; a Temporal error is an error.
+func (w TemporalWorkflows) Completed(ctx context.Context, taskID string) (bool, error) {
+	status, err := w.runStatus(ctx, taskID)
+	return status == enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED, err
+}
+
+// runStatus is the status of the task's last workflow run, unspecified
+// when it has none.
+func (w TemporalWorkflows) runStatus(ctx context.Context, taskID string) (enumspb.WorkflowExecutionStatus, error) {
 	res, err := w.Client.DescribeWorkflowExecution(ctx, WorkflowID(taskID), "")
 	var missing *serviceerror.NotFound
 	if errors.As(err, &missing) {
-		return false, nil
+		return enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, nil
 	}
 	if err != nil {
-		return false, err
+		return enumspb.WORKFLOW_EXECUTION_STATUS_UNSPECIFIED, err
 	}
-	return res.GetWorkflowExecutionInfo().GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
+	return res.GetWorkflowExecutionInfo().GetStatus(), nil
 }
 
 func startOptions(taskID string) client.StartWorkflowOptions {
@@ -171,10 +185,12 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // waiting for its turn, so a lost queue_turn costs at most a pass. A
 // project's chat task runs no workflow: the pass leaves it be, and
 // neither restarts a merged card, whose workflow ended at its merge: the
-// chain poller ends it.
+// chain poller ends it. An open card whose last run completed (completed)
+// gets a new run through Reopen, which Start would refuse: a reopen that
+// moved the row but did not start the run.
 //
 // It also forgets webhook deliveries older than DeliveryRetention.
-func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion) {
+func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error)) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
 	}
@@ -227,14 +243,16 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 					}
 					continue
 				}
-				if !t.Unbound() {
+			}
+			if !reopenCompleted(ctx, store, wf, completed, t) {
+				if status == "queued" && !t.Unbound() {
 					pulls[t.Repository] = true
 					continue
 				}
-			}
-			if err := wf.Start(ctx, t.ID); err != nil {
-				log.Printf("start open workflows: task %s: %v", t.ID, err)
-				continue
+				if err := wf.Start(ctx, t.ID); err != nil {
+					log.Printf("start open workflows: task %s: %v", t.ID, err)
+					continue
+				}
 			}
 			if status == "waiting-deps" || status == "in-review" || status == "waiting-human" || status == "waiting-poster" || status == "waiting-image" {
 				if err := in.Resync(ctx, t); err != nil {
@@ -250,6 +268,32 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 		pullQueued(ctx, store, wf, repository)
 	}
 	signalQueueHeads(ctx, store, wf)
+}
+
+// reopenCompleted starts a new run of open card t when its last run
+// completed, and tells whether that run completed: Start would refuse it.
+// The row is read again after the check, since a run that just ended its
+// card leaves it final or merged: a card that moved is left to the next
+// pass.
+func reopenCompleted(ctx context.Context, store Store, wf Workflows, completed func(context.Context, string) (bool, error), t Task) bool {
+	done, err := completed(ctx, t.ID)
+	if err != nil {
+		log.Printf("heal pass: task %s: its run: %v", t.ID, err)
+		return false
+	}
+	if !done {
+		return false
+	}
+	now, ok, err := store.Task(ctx, t.ID)
+	switch {
+	case err != nil:
+		log.Printf("heal pass: task %s: %v", t.ID, err)
+	case ok && now.Status == t.Status:
+		if err := wf.Reopen(ctx, t.ID, "", TaskSignal{}); err != nil {
+			log.Printf("heal pass: reopen task %s: %v", t.ID, err)
+		}
+	}
+	return true
 }
 
 // StaleWindow is how long a live card may stay quiet — no event, no

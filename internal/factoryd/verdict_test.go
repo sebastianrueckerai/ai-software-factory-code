@@ -1031,6 +1031,58 @@ func TestCriteriaPassLeavesAPlanUnderReplan(t *testing.T) {
 	}
 }
 
+// A plan at rest is a final one, done, failed or closed, with no replan
+// pending: each closes once its cards are, and none under its replan.
+func TestPlanCloseCheckClosesAFinalPlan(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []string{"done", "failed", "closed"} {
+		r, s, objs, _ := planWithoutCriteria(t, "done", "closed")
+		p := s.tasks["t-plan"]
+		p.Status = status
+		s.tasks["t-plan"] = p
+		if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "card-2"}); err != nil {
+			t.Fatal(err)
+		}
+		r.planCloseCheck(ctx, "t-plan")
+		if n := planCloses(t, objs); n != 0 {
+			t.Fatalf("plan %s under replan: plan_closed %d times, want none", status, n)
+		}
+		if err := r.timeline.Append(ctx, "t-plan", "to_plan_refused", nil); err != nil {
+			t.Fatal(err)
+		}
+		r.planCloseCheck(ctx, "t-plan")
+		if n := planCloses(t, objs); n != 1 {
+			t.Fatalf("plan %s at rest: plan_closed %d times, want 1", status, n)
+		}
+	}
+}
+
+// timelineReads counts the reads of t-plan's timeline.
+type timelineReads struct {
+	*fakeObjectStore
+	n int
+}
+
+func (o *timelineReads) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == "sessions/t-plan/timeline.jsonl" {
+		o.n++
+	}
+	return o.fakeObjectStore.Get(ctx, key)
+}
+
+// The minute pass reads a plan's timeline only before it acts: a plan
+// with a card still running and no delta due costs it no read.
+func TestCriteriaPassReadsNoTimelineAtRest(t *testing.T) {
+	r, s, objs, _ := planWithoutCriteria(t, "done", "running")
+	mergeCard(s, "card-1")
+	reads := &timelineReads{fakeObjectStore: objs}
+	r.timeline.Objects = reads
+	r.CriteriaPass(context.Background())
+	if reads.n != 0 || planCloses(t, objs) != 0 {
+		t.Fatalf("%d timeline reads, %d closes; want none of either", reads.n, planCloses(t, objs))
+	}
+}
+
 func TestCriteriaPassSkipsAnsweredDeltaDues(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "done")

@@ -61,6 +61,8 @@ type prForgejo struct {
 	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it, or opens it with state open
 	issuesClosed  []int64             // PATCH /issues/{n} closes
 	reopened      []int64             // PATCH /issues/{n} with state open
+	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
+	depsDown      bool                // /issues/{n}/dependencies answers 500
 	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
 	open          []map[string]any    // open pull requests
 	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
@@ -148,6 +150,32 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			} else {
 				http.NotFound(w, r)
 			}
+		case strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
+			if f.depsDown {
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
+			}
+			var n int64
+			fmt.Sscanf(p, "/issues/%d/dependencies", &n)
+			if r.Method == "GET" {
+				list := []map[string]int64{}
+				for _, d := range f.deps[n] {
+					list = append(list, map[string]int64{"number": d})
+				}
+				json.NewEncoder(w).Encode(list)
+				return
+			}
+			var body struct{ Index int64 }
+			json.NewDecoder(r.Body).Decode(&body)
+			if f.deps == nil {
+				f.deps = map[int64][]int64{}
+			}
+			f.deps[n] = slices.DeleteFunc(f.deps[n], func(d int64) bool { return d == body.Index })
+			if r.Method == "POST" {
+				f.deps[n] = append(f.deps[n], body.Index)
+				w.WriteHeader(http.StatusCreated)
+			}
+			io.WriteString(w, `{}`)
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/timeline"):
 			fmt.Fprintf(w, `[{"type":"close","user":{"login":%q}}]`, cmp.Or(f.closer, "sebastian"))
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && !strings.HasSuffix(p, "/labels") && !strings.HasSuffix(p, "/comments"):

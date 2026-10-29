@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -129,10 +130,11 @@ func (r *Runner) reopenPlan(ctx context.Context, p Task) error {
 type ReplanChildResult struct{ Reason, Refused string }
 
 // ReplanChild sends the work of plan child childID, cut at its session,
-// back to its plan's planner: the child's dependents wait on the plan,
-// and the plan replans (or its running replan takes the child in). A plan
-// that can take no replan refuses, and nothing is recorded or moved. Safe
-// to repeat.
+// back to its plan's planner: the plan's cards that wait on the child wait
+// on the plan, and the plan replans, or its running replan takes the
+// child in. A plan that can take no replan refuses, and nothing is
+// recorded or moved. Safe to repeat: the join of a queued plan reopens it
+// again, so a reopen that failed before its run started is healed.
 func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanChildResult, error) {
 	k, _, err := r.task(ctx, childID)
 	if err != nil {
@@ -165,11 +167,17 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	if _, err := r.timeline.AppendOnce(ctx, k.ID, "replan_stop", map[string]any{"work": work}); err != nil {
 		return ReplanChildResult{}, fmt.Errorf("record replan_stop: %w", err)
 	}
-	if err := r.store.MoveDependents(ctx, k.ID, p.ID); err != nil {
+	if err := r.moveDependents(ctx, k, p); err != nil {
 		return ReplanChildResult{}, err
 	}
 	join := ReplanChildResult{Reason: fmt.Sprintf("stopped for the replan of plan #%d", p.IssueNumber)}
 	if !replannable {
+		// a queued plan may be a reopen that failed before its run started
+		if p.Status == "queued" {
+			if err := r.reopenPlan(ctx, p); err != nil {
+				return ReplanChildResult{}, err
+			}
+		}
 		return join, nil
 	}
 	newest, _, err := r.store.PlanRevision(ctx, p.ID, 0)
@@ -238,8 +246,44 @@ func (r *Runner) stopForReplan(ctx context.Context, k, p Task, why string) error
 	if !errors.Is(err, ErrNoLiveSession) {
 		return err
 	}
-	if err := r.store.MoveDependents(ctx, k.ID, p.ID); err != nil {
+	if err := r.moveDependents(ctx, k, p); err != nil {
 		return err
 	}
 	return r.Finish(ctx, k.ID, "closed", why)
+}
+
+// moveDependents hands the waits of plan p's cards on card k to p: the
+// store's edges, then their issues' dependencies, which only mirror them,
+// so a Forgejo failure there is logged.
+func (r *Runner) moveDependents(ctx context.Context, k, p Task) error {
+	moved, err := r.store.MoveDependents(ctx, k.ID, p.ID)
+	if err != nil || len(moved) == 0 {
+		return err
+	}
+	repo, err := SplitRepo(p.Repository)
+	if err != nil {
+		log.Printf("plan %s: the issue dependencies on #%d: %v", p.ID, k.IssueNumber, err)
+		return nil
+	}
+	for _, id := range moved {
+		s, ok, err := r.store.Task(ctx, id)
+		if err != nil || !ok || s.IssueNumber == 0 {
+			if err != nil {
+				log.Printf("plan %s: the issue dependencies of %s: %v", p.ID, id, err)
+			}
+			continue
+		}
+		for _, dep := range []struct {
+			issue  int64
+			remove bool
+		}{{p.IssueNumber, false}, {k.IssueNumber, true}} {
+			if dep.issue == 0 {
+				continue
+			}
+			if err := r.forgejo.SetIssueDependency(ctx, repo, s.IssueNumber, dep.issue, dep.remove); err != nil {
+				log.Printf("plan %s: issue #%d on #%d (remove %t): %v", p.ID, s.IssueNumber, dep.issue, dep.remove, err)
+			}
+		}
+	}
+	return nil
 }

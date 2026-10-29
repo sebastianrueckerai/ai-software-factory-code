@@ -182,17 +182,16 @@ func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (b
 	return true, nil
 }
 
-func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) error {
+func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
+	var moved []string
 	for id, deps := range s.deps {
-		if slices.Contains(deps, from) {
-			deps = slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to })
-			if id != to {
-				deps = append(deps, to)
-			}
-			s.deps[id] = deps
+		if t := s.tasks[id]; t.Source == SourcePlan && t.Parent == to && slices.Contains(deps, from) {
+			s.deps[id] = append(slices.DeleteFunc(deps, func(d string) bool { return d == from || d == to }), to)
+			moved = append(moved, id)
 		}
 	}
-	return nil
+	slices.Sort(moved)
+	return moved, nil
 }
 
 // FundCard raises task id's budget by eur and records e with the raise in
@@ -546,6 +545,10 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 			s.finished[id] = now
 			t.Gate, t.GateSince = "", nil
 		}
+	} else {
+		t.FinishedAt = nil
+		delete(s.finished, id)
+		delete(s.settled, id)
 	}
 	s.tasks[id] = t
 	return nil
@@ -1960,6 +1963,49 @@ func TestPGStore(t *testing.T) {
 // lists the citing cards oldest first, whatever their status.
 // Re-creating an existing card is a loud unique violation, never a
 // silent upsert that could drop its stated clauses.
+// A final card moved back to queued (a reopen) is unfinished again: its
+// finish and its spend settlement are cleared, so the settlement runs at
+// its next end. A merge still stamps its finish.
+func TestPGStoreReopenClearsTheFinish(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_reopen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if err := s.CreateTask(ctx, Task{ID: "t-p", BudgetEUR: 1, Status: "done", Kind: "agent", Track: policy.TrackDirect, Repository: "sf/r"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET settled_at = now() WHERE id = 't-p'`); err != nil {
+		t.Fatal(err)
+	}
+	finish := func() (finished, settled bool) {
+		t.Helper()
+		if err := s.db.QueryRowContext(ctx, `SELECT finished_at IS NOT NULL, settled_at IS NOT NULL FROM tasks WHERE id = 't-p'`).Scan(&finished, &settled); err != nil {
+			t.Fatal(err)
+		}
+		return finished, settled
+	}
+	if f, st := finish(); !f || !st {
+		t.Fatalf("the done card: finished %t, settled %t; want both", f, st)
+	}
+	if err := s.TransitionTask(ctx, "t-p", []string{"done"}, "queued"); err != nil {
+		t.Fatal(err)
+	}
+	if f, st := finish(); f || st {
+		t.Fatalf("the reopened card: finished %t, settled %t; want neither", f, st)
+	}
+	if err := s.MarkStarted(ctx, "t-p"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.TransitionTask(ctx, "t-p", []string{"running"}, "merged"); err != nil {
+		t.Fatal(err)
+	}
+	if f, st := finish(); !f || st {
+		t.Fatalf("the merged card: finished %t, settled %t; want finished, not settled", f, st)
+	}
+}
+
 func TestPGStoreShipsRuling(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()

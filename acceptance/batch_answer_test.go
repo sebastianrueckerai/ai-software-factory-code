@@ -766,7 +766,9 @@ func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]str
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) error { panic("unused") }
+func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
+	panic("unused")
+}
 func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
 	panic("unused")
 }

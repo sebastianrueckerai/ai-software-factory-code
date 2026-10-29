@@ -747,11 +747,13 @@ func (r *Runner) planClosed(ctx context.Context, id string) bool {
 	return closed
 }
 
-// planAtRest says plan t is done with no replan pending: the minute pass
-// neither closes, asks about nor drafts for a plan under its replan. A
-// failed read counts as under replan until the next pass.
+// planAtRest says plan t is final (done, failed or closed) with no replan
+// pending: the minute pass neither closes, asks about nor drafts for a
+// plan whose planner runs or is to run. It reads the plan's timeline, so
+// each caller asks it right before it acts. A failed read counts as under
+// replan until the next pass.
 func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
-	if t.Status != "done" {
+	if !Final(t.Status) {
 		return false
 	}
 	_, pending, err := r.pendingReplan(ctx, t)
@@ -775,9 +777,6 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return
 	}
-	if !r.planAtRest(ctx, t) {
-		return
-	}
 	p, _, err := planOfStore(ctx, r.store, parent, "")
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
@@ -789,7 +788,8 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
 		}
-		if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "closed" }) || r.planClosed(ctx, parent) {
+		if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "closed" }) || r.planClosed(ctx, parent) ||
+			!r.planAtRest(ctx, t) {
 			return
 		}
 		comment := "factoryd: every card of this plan is done or closed; the plan is closed."
@@ -810,7 +810,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		if r.planClosed(ctx, parent) {
+		if r.planClosed(ctx, parent) || !r.planAtRest(ctx, t) {
 			return
 		}
 		if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteria, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
@@ -841,7 +841,8 @@ func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int,
 	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
 }
 
-// openGap opens the plan's criteria approval once per shape of gap.
+// openGap opens the plan's criteria approval once per shape of gap, while
+// the plan is at rest.
 func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []PlanCriterion, integration Task) {
 	var ids []string
 	for _, c := range open {
@@ -859,6 +860,9 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 				return
 			}
 		}
+	}
+	if !r.planAtRest(ctx, t) {
+		return
 	}
 	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID})
 	if err != nil {
@@ -924,14 +928,6 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 // draftDue drafts the plan's unanswered delta dues: the delta catches no
 // filed or refused catch marks.
 func (r *Runner) draftDue(ctx context.Context, parent string) {
-	t, repo, err := r.task(ctx, parent)
-	if err != nil {
-		log.Printf("plan %s: the delta round: %v", parent, err)
-		return
-	}
-	if !r.planAtRest(ctx, t) {
-		return
-	}
 	catches, err := r.store.PlanCatches(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the delta dues: %v", parent, err)
@@ -954,6 +950,14 @@ func (r *Runner) draftDue(ctx context.Context, parent string) {
 		}
 	}
 	if len(due) == 0 {
+		return
+	}
+	t, repo, err := r.task(ctx, parent)
+	if err != nil {
+		log.Printf("plan %s: the delta round: %v", parent, err)
+		return
+	}
+	if !r.planAtRest(ctx, t) {
 		return
 	}
 	r.draftDelta(ctx, t, repo, due)

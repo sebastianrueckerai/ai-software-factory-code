@@ -431,7 +431,7 @@ func TestHealSignalsWaitingCards(t *testing.T) {
 	}
 	wf := &fakeWorkflows{}
 	forgejo, _ := resyncForgejoStub(t, "sebastian")
-	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil)
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent"}, nil, noneCompleted)
 	var dep []string
 	for _, s := range wf.signals {
 		if strings.Contains(s, " "+SignalDepEnded+" ") {
@@ -997,9 +997,10 @@ func TestContinuedCardResumesOnTheBranch(t *testing.T) {
 	}
 }
 
-// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). Every edge
-// onto the cut card moves onto its plan; one its dependent already had
-// stays once.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). Every wait
+// of the plan's own cards on the cut card moves onto the plan, and one a
+// card already had stays once; the card the cut card delegated keeps its
+// wait.
 func TestMoveDependents(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_move_deps"))
@@ -1009,22 +1010,24 @@ func TestMoveDependents(t *testing.T) {
 	defer s.Close()
 	for _, tk := range []Task{
 		{ID: "p", Status: "queued", IssueNumber: 1, Source: "webhook", Track: policy.TrackPlan},
-		{ID: "c", Status: "running", IssueNumber: 2, Track: policy.TrackDirect, Source: SourcePlan},
-		{ID: "s1", Status: "waiting-deps", IssueNumber: 3, Track: policy.TrackDirect, Source: SourcePlan},
-		{ID: "s2", Status: "waiting-deps", IssueNumber: 4, Track: policy.TrackDirect, Source: SourcePlan},
+		{ID: "c", Status: "running", IssueNumber: 2, Track: policy.TrackDirect, Source: SourcePlan, Parent: "p"},
+		{ID: "s1", Status: "waiting-deps", IssueNumber: 3, Track: policy.TrackDirect, Source: SourcePlan, Parent: "p"},
+		{ID: "s2", Status: "waiting-deps", IssueNumber: 4, Track: policy.TrackDirect, Source: SourcePlan, Parent: "p"},
+		{ID: "d", Status: "waiting-deps", IssueNumber: 5, Track: policy.TrackDirect, Source: SourceDelegate, Parent: "c"},
 	} {
 		tk.BudgetEUR, tk.Repository, tk.Kind = 1, "sf/r", "agent"
 		if err := s.CreateTask(ctx, tk); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for id, deps := range map[string][]string{"s1": {"c"}, "s2": {"c", "p"}} {
+	for id, deps := range map[string][]string{"s1": {"c"}, "s2": {"c", "p"}, "d": {"c"}} {
 		if err := s.AddTaskDeps(ctx, id, deps); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := s.MoveDependents(ctx, "c", "p"); err != nil {
-		t.Fatalf("MoveDependents: %v", err)
+	moved, err := s.MoveDependents(ctx, "c", "p")
+	if err != nil || !slices.Equal(moved, []string{"s1", "s2"}) {
+		t.Fatalf("MoveDependents = %v, %v; want s1 and s2 moved", moved, err)
 	}
 	var edges []string
 	rows, err := s.db.QueryContext(ctx, `SELECT task_id || '>' || depends_on FROM task_deps ORDER BY 1`)
@@ -1039,7 +1042,7 @@ func TestMoveDependents(t *testing.T) {
 		}
 		edges = append(edges, e)
 	}
-	if want := []string{"s1>p", "s2>p"}; !slices.Equal(edges, want) {
+	if want := []string{"d>c", "s1>p", "s2>p"}; !slices.Equal(edges, want) {
 		t.Fatalf("edges %v, want %v", edges, want)
 	}
 }
