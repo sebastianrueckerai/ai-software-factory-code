@@ -23,8 +23,8 @@ type Risk struct {
 	// Default is the class of a path no rule matches.
 	Default string `yaml:"default" json:"default"`
 	// LargeLines: a pull request changing more lines than this, added and
-	// deleted, is class large (requires_approval: a human splits or
-	// accepts it) unless a more severe class applies; 0 is off. Class
+	// deleted, is class large (requires_approval: a person approves it or
+	// sends it back) unless a more severe class applies; 0 is off. Class
 	// large needs no entry in classes, where it ranks just above class
 	// normal; listed, it ranks where it is listed.
 	LargeLines int `yaml:"large_lines,omitempty" json:"large_lines"`

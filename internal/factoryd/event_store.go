@@ -51,7 +51,6 @@ const (
 	EventCardEdited           = "card_edited"
 	EventSessionGranted       = "session_granted"
 	EventDependencySet        = "dependency_set"
-	EventCardSplit            = "card_split"
 	EventCardFunded           = "card_funded"
 	// EventChatFunded is an approver's raise of a project's chat task's
 	// monthly budget, the console's Fund the chat: detail {"from_eur",

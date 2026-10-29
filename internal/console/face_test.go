@@ -929,8 +929,8 @@ func TestNeedsYouCardRendersTheShapedQuestion(t *testing.T) {
 // on a note, without a browser confirm. The plain ask ends on a note
 // posted on the issue; a shaped question's End-the-card choice closes
 // in one click, as the same choice does in the chat. The native confirm
-// stays only where no note carries the close: the split PR and the
-// ask-less non-human cards.
+// stays only where no note carries the close: the ask-less non-human
+// cards.
 func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 	r, _ := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{

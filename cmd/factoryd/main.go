@@ -567,9 +567,6 @@ func main() {
 		CloseCardDone: func(ctx context.Context, taskID, by, evidence string) error {
 			return runner.CloseCardDone(ctx, taskID, by, evidence)
 		},
-		SplitCard: func(ctx context.Context, taskID, by string) error {
-			return workflows.Signal(ctx, taskID, factoryd.SignalSplit, factoryd.TaskSignal{Author: by})
-		},
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},

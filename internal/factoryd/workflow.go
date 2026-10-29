@@ -620,7 +620,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalSplit, SignalAnswerWhole, SignalImageReady, SignalToPlan} {
+		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -991,10 +991,9 @@ const (
 	// once the day's free headroom funds one (DayResume, every dayCheck)
 	// or the UTC day turns, which resolves its alert, or sooner on an
 	// answer; a healed run keeps that wait. A session the day cap refused
-	// at its first call is no attempt and takes no agent time. A split the
-	// cap refused asks a human at once. A run from before the change takes
-	// a code session's day cap as no push, a plan's or a split's as no
-	// plan, and fails a report task's.
+	// at its first call is no attempt and takes no agent time. A run from
+	// before the change takes a code session's day cap as no push, a
+	// plan's as no plan, and fails a report task's.
 	versionDayCap workflow.Version = 1
 	// versionFactoryPRSource (change id "factory-pr-source"): a card of a
 	// pull request factoryd opened outside any card's workflow is known by
@@ -1003,13 +1002,13 @@ const (
 	// to it and never a session, and one with none linked fails. A run
 	// from before the change answers a waiting state as a coding card does.
 	versionFactoryPRSource workflow.Version = 1
-	// versionPodWait (change id "pod-wait"): a code, plan, split or report
-	// session whose pod never left Pending within its start's wait ran no
-	// agent. It is no attempt and takes no agent time, and the next starts
-	// at once with the same input, the pod's own wait having been the
-	// wait; the podWaits-th in a row asks a human, naming what the pod
-	// waited on (notStarted). A run from before the change takes it as no
-	// push, a plan's or a split's as no plan, and fails a report task's.
+	// versionPodWait (change id "pod-wait"): a code, plan or report session
+	// whose pod never left Pending within its start's wait ran no agent.
+	// It is no attempt and takes no agent time, and the next starts at
+	// once with the same input, the pod's own wait having been the wait;
+	// the podWaits-th in a row asks a human, naming what the pod waited on
+	// (notStarted). A run from before the change takes it as no push, a
+	// plan's as no plan, and fails a report task's.
 	versionPodWait workflow.Version = 1
 	// versionBesideLadder (change id "beside-ladder", roadmap 246): each
 	// running gate has its own supervision. A trip of a gate beside the
@@ -2549,13 +2548,11 @@ func (t *taskRun) gate(commit string) verdict {
 			whyHuman = []string{failed}
 		}
 	}
-	// an approval or a split signalled before this request (for an earlier
-	// head) is not one of this one
+	// an approval signalled before this request (for an earlier head) is
+	// not one of this one
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
-	}
-	for workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(nil) {
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
 		ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: review, WhyHuman: whyHuman}).Get(t.ctx, nil); err != nil {
@@ -2599,14 +2596,14 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 }
 
 // awaitApproval blocks, at no cost, until a terminal signal decides the
-// task, a reviewer requests changes, a member's split files its cards
-// (versionSplit), a member re-runs a factory pull request's checks
-// (versionFactoryPRActions), or an approval merges the pull request as
-// factory-merge. An approval over findings the card showed adjudicates
-// them (versionAdjudicated). A merge Forgejo refuses keeps the wait, but
-// a queue head's red checks take it back through its turn while re-runs
-// are left (versionRedHeadRestage); one that fails otherwise keeps the
-// approval and is tried again after mergeRetryAfter (versionGatesPinned).
+// task, a reviewer requests changes, a member re-runs a factory pull
+// request's checks (versionFactoryPRActions), or an approval merges the
+// pull request as factory-merge. An approval over findings the card
+// showed adjudicates them (versionAdjudicated). A merge Forgejo refuses
+// keeps the wait, but a queue head's red checks take it back through its
+// turn while re-runs are left (versionRedHeadRestage); one that fails
+// otherwise keeps the approval and is tried again after mergeRetryAfter
+// (versionGatesPinned).
 func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 	approver := ""
 	var retry workflow.Future
@@ -2615,7 +2612,7 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 	for {
 		retried := false
 		sel := workflow.NewSelector(t.ctx)
-		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved, SignalSplit} {
+		for _, n := range []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalApproved} {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, n), func(workflow.ReceiveChannel, bool) {})
 		}
 		if t.rolling {
@@ -2639,13 +2636,6 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		if t.factoryActions() && t.drainReruns() {
 			return verdict{rerun: true, reason: "the checks run again"}
-		}
-		var split TaskSignal
-		if workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(&split) {
-			if v, done := t.split(split); done {
-				return v
-			}
-			continue
 		}
 		if t.v8 < versionGatesPinned {
 			approver = ""

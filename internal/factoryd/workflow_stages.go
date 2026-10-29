@@ -1084,13 +1084,11 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 	if t.rolling && t.rollGap == versionRollGap {
 		whyHuman = append(slices.Clip(whyHuman), RollGapNote)
 	}
-	// an approval or a split signalled before this request (for an earlier
-	// head) is not one of this one
+	// an approval signalled before this request (for an earlier head) is
+	// not one of this one
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
-	}
-	for workflow.GetSignalChannel(t.ctx, SignalSplit).ReceiveAsync(nil) {
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
 		Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}).Get(t.ctx, nil); err != nil {

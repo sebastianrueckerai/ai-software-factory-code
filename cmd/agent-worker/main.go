@@ -507,8 +507,8 @@ type workerEnv struct {
 	// image (IMAGE_MANIFEST) is what the session's project image holds;
 	// nil on the factory's image
 	image *imagegen.Manifest
-	// pull is the pull request a split reads (PULL), whose head the clone
-	// fetches as branch pull/<pull>
+	// pull is the pull request a carry card carries (PULL), whose head the
+	// clone fetches as branch pull/<pull>
 	pull string
 	// taskPR is the task's own pull request (TASK_PR): a closed one's head
 	// stays on the task's repository after its branch left the fork
@@ -730,7 +730,7 @@ func resolveDocLinks(log func(string, ...any), brief *harness.TaskBrief, docsDir
 }
 
 // cloneBase clones the task's repository at its base, with the head of a
-// split's pull request as branch pull/<n>, and, when the session resumes a
+// carried pull request as branch pull/<n>, and, when the session resumes a
 // branch head that only the fork holds, fetches that branch from the fork,
 // all with the read token. A closed pull request's branch can be gone from
 // the fork (roadmap 214): its head then comes from the task's repository,

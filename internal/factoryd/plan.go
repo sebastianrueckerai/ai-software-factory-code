@@ -122,8 +122,7 @@ type PlanCriterion struct {
 // criterion it works on, cited by id in the item itself, so which cards
 // work on a criterion is the sum of their items' citations and no second
 // list can drift out of step (the spec-intake concept, piece 2). The
-// criterion is empty where none is cited: a foundation card's contracts
-// and a split's items.
+// criterion is empty where none is cited: a foundation card's contracts.
 type PlanItem struct {
 	Criterion string `json:"criterion,omitempty"`
 	Text      string `json:"text"`
@@ -224,8 +223,8 @@ type PlanRef struct {
 	Answered bool     `json:",omitempty"`
 }
 
-// ChildrenResult is the cards a plan's revision or a split filed, or why
-// a revision filed none.
+// ChildrenResult is the cards a plan's revision filed, or why it filed
+// none.
 type ChildrenResult struct {
 	Issues  []int64
 	Refused []string
@@ -434,6 +433,17 @@ func citations(p Plan) map[string][]string {
 	return out
 }
 
+// specFindings are the spec block's findings: a spec plan (a plan this
+// process gives an integration card) drafts the spec the members confirm
+// (piece 5), the outcome in a few sentences and a glossary that names
+// each component once. Any other plan asks for none.
+func specFindings(p Plan, shape policy.PlanShape) []string {
+	if !shape.Integration || (p.Spec != nil && strings.TrimSpace(p.Spec.Outcome) != "") {
+		return nil
+	}
+	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}
+}
+
 // criteriaFindings are a plan's criteria's findings (the spec-intake
 // concept, pieces 1 and 3, roadmap 285): a spec plan wants the spec's
 // criteria, 1 to MaxCardAcceptance (the integration card carries one item
@@ -443,20 +453,8 @@ func citations(p Plan) map[string][]string {
 // citation names a criterion of the plan, every criterion is cited by a
 // card, every card but the foundation cites one, and the integration
 // card's items are the criteria, one item per criterion by id. A plan
-// without criteria (a split's) passes the citation rules; a shape without
-// specFindings are the spec block's findings: a spec plan (a plan this
-// process gives an integration card) drafts the spec the members confirm
-// (piece 5), the outcome in a few sentences and a glossary that names
-// each component once. A split or a plan before the concept carries no
-// spec and asks for none.
-func specFindings(p Plan, shape policy.PlanShape) []string {
-	if !shape.Integration || (p.Spec != nil && strings.TrimSpace(p.Spec.Outcome) != "") {
-		return nil
-	}
-	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}
-}
-
-// an integration card does not ask for criteria.
+// without criteria passes the citation rules; a shape without an
+// integration card does not ask for criteria.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	var out []string
 	if n := len(p.Criteria); n > MaxCardAcceptance || (shape.Integration && n < 1) {
@@ -2595,28 +2593,24 @@ func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, err
 }
 
 // planOf is plan card t's section "The spec and the plan" (its plan's
-// issue text and the plan's summary), its role and its plan
-// row's directories, and the pull request of a split's card; "" and none
-// for a task no plan filed.
-func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, pull int64, err error) {
+// issue text and the plan's summary), its role and its plan row's
+// directories; "" and none for a task no plan filed.
+func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, err error) {
 	if t.Source != SourcePlan || t.Parent == "" {
-		return "", "", nil, 0, nil
+		return "", "", nil, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)
 	if err != nil {
-		return "", "", nil, 0, err
+		return "", "", nil, err
 	}
 	p, err := r.filedPlan(ctx, t.Parent, t.ID)
 	if err != nil {
-		return "", "", nil, 0, err
+		return "", "", nil, err
 	}
 	role = RoleFeature
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {
 		role, dirs = p.Cards[i].Role, p.Cards[i].Directories
 	}
 	spec = plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary)
-	if plan.PRNumber != 0 {
-		spec += fmt.Sprintf("\n\nThe plan splits pull request #%[1]d, whose head is in your clone as branch pull/%[1]d: carry over the files and hunks your brief names.", plan.PRNumber)
-	}
-	return spec, role, dirs, plan.PRNumber, nil
+	return spec, role, dirs, nil
 }

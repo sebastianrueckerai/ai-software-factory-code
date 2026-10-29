@@ -73,7 +73,6 @@ var activityGates = map[string]string{
 	ActivityRunReport:         GateSession,
 	ActivityGateAudit:         GateAudit,
 	ActivityRunPlan:           GateSession,
-	ActivityRunSplit:          GateSession,
 	ActivityRequestPlan:       GateApproval,
 	ActivityHoldoutSettlement: GateSession,
 	ActivityAwaitSessionGap:   GateMerge,
@@ -81,14 +80,14 @@ var activityGates = map[string]string{
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does
-// not name: they take the policy's default bound, RunPlan and RunSplit a
-// session's, SizeCard a screening's.
+// not name: they take the policy's default bound, RunPlan a session's,
+// SizeCard a screening's.
 // Naming one there would change the configuration tree's schema, which
 // only an infra commit follows.
 var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, ActivityRequestPlan,
 	ActivityEnterQueue, ActivitySyncWithMain, ActivityLeaveQueue, ActivityWithdrawApproval, ActivityBranchHead, ActivityScreenAnswer,
 	ActivityAwaitSessionGap, ActivityAwaitRollHold, ActivityClearRollHold, ActivityAwaitRollout, ActivityProviderWait, ActivityOpenPlanQuestions,
-	ActivityRunSplit, ActivityFileSplit, ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
+	ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement, ActivityParkForTool, ActivityImageArrived, ActivityLeaveImagePark,
 	ActivityBecomePlan, ActivitySizeCard}
 

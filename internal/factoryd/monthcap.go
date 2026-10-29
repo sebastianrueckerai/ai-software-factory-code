@@ -107,20 +107,6 @@ func dayCapWait(events []IntakeEvent) (reason string, until time.Time) {
 	return "", time.Time{}
 }
 
-// splitCapped opens the escalation of a split whose session the gateway
-// refused at a cap: no second session could spend.
-const splitCapped = "the gateway refused the split's session at a cap"
-
-// splitCap is splitCapped's escalation of refusal c: the member splits
-// again once the cap allows.
-func splitCap(c CapRefusal) string {
-	when := "once a human raises the cap"
-	if until := c.until(); !until.IsZero() {
-		when = "once the day's free headroom funds a session, at the latest when the UTC day turns at " + stamp(until)
-	}
-	return fmt.Sprintf("%s (%s): split the pull request again %s, or approve or deny it.\n%s", splitCapped, c.Decision, when, c.Reason)
-}
-
 // MonthSpend is the UTC calendar month's variable spend: Month as
 // YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
 // first refused_month_cap of a model call ("" for none): the gateway's

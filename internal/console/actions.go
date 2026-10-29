@@ -138,13 +138,6 @@ func wrongState(t factoryd.Task, f capFacts, needs string) error {
 	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, not %s: %s.", t.IssueNumber, state, needs, fitting(t, f)))
 }
 
-// splitRunning refuses an action on card t's merge request of pull
-// request pr while its split runs: the request stays pending meanwhile.
-func splitRunning(t factoryd.Task, pr int64) error {
-	return refuse(http.StatusConflict, fmt.Sprintf("Card #%d runs the split of pull request #%d: its cards follow, or its findings come to the card; "+
-		"approve, deny or split it once the split ends.", t.IssueNumber, pr))
-}
-
 // factoryRedFits is what decides a factory pull request's merge request on
 // red checks (roadmap 264).
 const factoryRedFits = "rerun_checks runs its red checks again, or deny_merge closes it with your words"
@@ -1326,39 +1319,6 @@ func (c *Console) doCloseAcceptance(ctx context.Context, a actor, id string) (st
 	return fmt.Sprintf("Closed #%d done: %s.", t.IssueNumber, evidence), nil
 }
 
-// doSplit has a planner split card id's large pull request into 2 or 3
-// cards, which factoryd files and starts once its check passes: the
-// member's split is their acceptance (ruling 277).
-func (c *Console) doSplit(ctx context.Context, a actor, id string) (string, error) {
-	t, err := c.cardIn(ctx, a, id)
-	if err != nil {
-		return "", err
-	}
-	all, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
-	if err != nil {
-		log.Printf("console: approvals: %v", err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the approval requests")
-	}
-	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		var spec factoryd.MergeSpec
-		return q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil && spec.RiskClass == policy.ClassLarge
-	})
-	switch {
-	case i < 0:
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a large pull request at its approval gate")
-	case t.Status == "running":
-		return "", splitRunning(t, all[i].PRNumber)
-	}
-	if err := c.cfg.SplitCard(ctx, t.ID, a.s.user); err != nil {
-		log.Printf("console: %s splits %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusBadGateway, "The card's workflow could not be signalled; split again.")
-	}
-	log.Printf("console: %s split %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
-	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSplit, map[string]any{"pr": all[i].PRNumber})
-	return fmt.Sprintf("Split #%d: a planner splits pull request #%d into 2 or 3 cards, which start once factoryd's check passes; the card then closes.",
-		t.IssueNumber, all[i].PRNumber), nil
-}
-
 // comment posts text on t's issue as a's member; posted, when not nil,
 // gets the comment's id.
 func (c *Console) comment(ctx context.Context, a actor, t factoryd.Task, text string, posted *int64) error {
@@ -1807,14 +1767,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
 		return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
 	case factoryd.ApprovalMerge:
-		// a running card with a pending merge request runs its split
 		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 		if err != nil {
 			log.Printf("console: task %s: %v", q.TaskID, err)
 			return "", refuse(http.StatusInternalServerError, "cannot read the task")
-		}
-		if t.Status == "running" {
-			return "", splitRunning(t, q.PRNumber)
 		}
 		var spec factoryd.MergeSpec
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {

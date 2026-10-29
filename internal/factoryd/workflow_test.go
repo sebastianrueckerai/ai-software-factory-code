@@ -234,15 +234,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySessionFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityDayResume:       func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
-		ActivityRunSplit: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
-			return PlanResult{}, nil
-		},
-		ActivityFileSplit: func(ctx context.Context, taskID string, revision int, approver string, pin int64) (ChildrenResult, error) {
-			return ChildrenResult{}, nil
-		},
-		ActivityParkForTool:    func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
-		ActivityImageArrived:   func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
-		ActivityLeaveImagePark: func(ctx context.Context, taskID, toolTask string) error { return nil },
+		ActivityParkForTool:     func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
+		ActivityImageArrived:    func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
+		ActivityLeaveImagePark:  func(ctx context.Context, taskID, toolTask string) error { return nil },
 		ActivityBecomePlan: func(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
 			return PlanSwitchResult{}, nil
 		},

@@ -215,8 +215,8 @@ func TestValidatePlan(t *testing.T) {
 // The criteria are capped at the acceptance cap, ten: the integration
 // card carries one item per criterion inside its own cap, so a spec plan
 // wants at least one criterion too; a shape without an integration card
-// (a split's) refuses only the overrun. Every extra criterion is complete
-// but uncited, so the count is the first finding either way.
+// refuses only the overrun. Every extra criterion is complete but
+// uncited, so the count is the first finding either way.
 func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 	at := func(n int) Plan {
 		p := testPlan()
@@ -274,8 +274,7 @@ func TestPlanGuideOneCard(t *testing.T) {
 
 // A card names one of its project's pinned images, default or none: any
 // other name is one finding naming the card, the image and the pinned
-// names, and with no pins at hand (a split's check) every name but default
-// is one.
+// names, and with no pins at hand every name but default is one.
 func TestPlanCardNamesAPinnedImage(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium"}}}
 	p := testPlan()
@@ -434,7 +433,6 @@ func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 
 // The plan arrives by the file_plan tool, never as the last message
 // (defect 178): RunPlan refuses a session that ends without filing one.
-// The split guide keeps its last-message sentence: RunSplit still reads it.
 func TestPlanGuideFilesThroughTheTool(t *testing.T) {
 	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
 	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
@@ -1677,31 +1675,11 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 		strings.Contains(got, "acceptance/") {
 		t.Fatalf("objectiveText:\n%s", got)
 	}
-	// a split's card: its spec names the large pull request, whose head the
-	// clone container fetches as branch pull/9
-	child := Task{ID: "t3", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
-		IssueNumber: 8, Source: SourcePlan, Parent: "t-big", PlanKey: "web", Author: "sebastian", AuthorWriter: true,
-		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 5, Objective: "The links page"}
-	kube = newFakeKube()
-	splitRunner, _, splitStore := newTestRunner(t, child, kube, &fakeObjectStore{})
-	splitStore.CreateTask(ctx, Task{ID: "t-big", Kind: "agent", Status: "closed", Repository: "sf/r", IssueNumber: 7, PRNumber: 9, Objective: "Links\n\nThe page and the API.", Track: "direct"})
-	raw, sha, _ = planSHA(splitPlan())
-	splitStore.AddPlanRevision(ctx, "t-big", raw, sha)
-	if _, err := runSession(t, nil, splitRunner, SessionInput{TaskID: "t3", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
-		t.Fatal(err)
-	}
-	env = podEnv(kube.podAt(0))
-	clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
-	spec = "Links\n\nThe page and the API.\n\nThe plan's summary: The links API first, then the page on it.\n\n" +
-		"The plan splits pull request #9, whose head is in your clone as branch pull/9: carry over the files and hunks your brief names."
-	if env["SPEC"] != spec || clone["PULL"] != "9" || env["PULL"] != "" || env["DIRECTORIES"] != `["web"]` {
-		t.Fatalf("SPEC %q, clone PULL %q, worker PULL %q, DIRECTORIES %q", env["SPEC"], clone["PULL"], env["PULL"], env["DIRECTORIES"])
-	}
 	// a task no plan filed gets neither
 	store.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "queued", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, Source: "webhook",
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it", Track: "direct"})
-	if spec, role, dirs, pull, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || pull != 0 || err != nil {
-		t.Fatalf("planOf a webhook task = %q %q %q %d %v", spec, role, dirs, pull, err)
+	if spec, role, dirs, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || err != nil {
+		t.Fatalf("planOf a webhook task = %q %q %q %v", spec, role, dirs, err)
 	}
 }
 

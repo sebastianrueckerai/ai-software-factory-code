@@ -200,7 +200,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	case g.Policy.Unread != "":
 		unmet = append(unmet, g.Policy.Unread)
 	case g.Policy.large():
-		unmet = append(unmet, fmt.Sprintf("large change: %d lines over %d; split it or accept it", g.Policy.Lines, g.Policy.LargeLines))
+		unmet = append(unmet, fmt.Sprintf("large change: %d lines over %d; approve it or send it back", g.Policy.Lines, g.Policy.LargeLines))
 	case g.Policy.Class == policy.ClassHigh && g.Policy.Outcome == policy.OutcomeRequiresApproval:
 		if g.Policy.MergeRule != policy.MergeAuto || g.Audit == nil || g.Audit.Verdict != AuditClear {
 			unmet = append(unmet, "risk class high: the audit must pass for a merge without a human")
@@ -484,7 +484,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	case g.Outcome == policy.OutcomeForbidden:
 		msg += "Agents may not change these paths:\n" + listPaths(g.Paths)
 	case g.large():
-		msg += fmt.Sprintf("A large change, over the policy's %d lines: a human splits or accepts it.", g.LargeLines)
+		msg += fmt.Sprintf("A large change, over the policy's %d lines: a person approves it or sends it back.", g.LargeLines)
 	case g.Outcome == policy.OutcomeAuto && g.MergeRule == policy.MergeAuto:
 		msg += "The project's merge rule is auto: factory-merge merges when the model review approves and the reproduction failed at the base and passes at the head, " +
 			"or the agent recorded the fault it fixed and the review finds the change a strict improvement; otherwise a human approves the merge."

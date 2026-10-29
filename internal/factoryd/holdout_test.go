@@ -629,7 +629,7 @@ func awaitPodN(t *testing.T, kube *fakeKube, i int, done chan error) {
 // A wrong test with no rewrite drops at the settlement: the red lands
 // in the ledger, the row keeps the audit's verdict and the card
 // settles. The audit session is a report-mode sandbox that changes no
-// code and pushes nothing.
+// code, pushes nothing and fetches no pull request head.
 func TestSettleHoldoutsDropsAWrongTest(t *testing.T) {
 	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
 		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
@@ -656,6 +656,9 @@ func TestSettleHoldoutsDropsAWrongTest(t *testing.T) {
 	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "Hold-out idx 1 (file_verdict names it): The door stays shut until a key that fits turns the lock") ||
 		!strings.Contains(env["REPORT_GUIDE"], "The test (dry-run on main head base: red):") {
 		t.Fatalf("the audit session's env = %v", env)
+	}
+	if clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone")); clone["PULL"] != "" {
+		t.Fatalf("the audit's clone PULL = %q for the card's pull request #9, want none", clone["PULL"])
 	}
 }
 

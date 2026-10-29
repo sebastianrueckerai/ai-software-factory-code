@@ -58,7 +58,7 @@ const mustHave = {
   busy: ["Factory console", "New task", "Settings", "Resources", "Costs", "Policy", "Notifications", "Log out", "sebastian", "Theme",
     "waiting on you", "3 working", "3 need you", "€61.40", "€120.00", "GitHub", "configuration", "version 4",
     "Needs you", "Queued", "In progress", "Done",
-    "Merge", "PR #612", "high", "migration", "Approve", "Deny", "Split", "requesting changes", "rejecting",
+    "Merge", "PR #612", "high", "migration", "Approve", "Deny", "requesting changes", "rejecting",
     "Which store keeps the nightly board snapshots", "Postgres", "SQLite", "Ask the author", "answer on the issue", "Close",
     "How far back does the feed page by default?", "One day", "One week",
     "#598", "#616", "#617", "waiting on #603, #611", "#533",

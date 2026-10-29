@@ -244,9 +244,6 @@ type Config struct {
 	// acceptance commands green (roadmap 208) closes on the fact, no
 	// answer owed.
 	CloseCardDone func(ctx context.Context, taskID, by, evidence string) error
-	// SplitCard signals card taskID's workflow to split its large pull
-	// request for by (factoryd.SignalSplit).
-	SplitCard func(ctx context.Context, taskID, by string) error
 	// AnswerWhole signals card taskID's workflow that comment, which the
 	// answer box posted for by, is a whole answer
 	// (factoryd.SignalAnswerWhole): the card resumes on it without the
@@ -482,7 +479,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
 		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
-		{"POST /tasks/{id}/split", http.HandlerFunc(c.splitCard), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
 		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},

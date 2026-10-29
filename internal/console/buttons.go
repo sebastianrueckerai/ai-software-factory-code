@@ -24,11 +24,6 @@ func (c *Console) acceptanceCloseCard(w http.ResponseWriter, r *http.Request) {
 	c.showNote(w, r, c.doCloseAcceptance)
 }
 
-// splitCard is the approval card's Split (doSplit).
-func (c *Console) splitCard(w http.ResponseWriter, r *http.Request) {
-	c.showNote(w, r, c.doSplit)
-}
-
 // planAnswer posts a writer's answer to a question of the plan
 // (doAnswerPlanQuestion).
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {

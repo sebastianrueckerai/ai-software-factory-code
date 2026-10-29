@@ -966,7 +966,6 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"end":           guideEnd(nil, nil),
 		"plan":          planGuide(testShape, testLimits, nil),
 		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits, nil),
-		"split":         splitGuide(9, splitFiles, 1000, testLimits),
 	}
 	rules := []string{
 		// the worker's push guard refuseMisnamedMigrations, pinned by
@@ -1007,8 +1006,6 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		// deployOwner/ErrNoDeployOwner: CreateChildren returns it to the
 		// planner as a finding, AcceptPlan refuses the plan without an owner
 		"needs one card whose directories include deploy/",
-		// CheckSplit's finding "no card's directories cover"
-		"cover every file above",
 		// GateReproduction runs the repro block at base and head
 		"must bring its own test",
 		"the factory runs it at the base",

@@ -65,12 +65,11 @@ type Alert struct {
 	// Source is gate_bound's activity, supervisor_trip's detector,
 	// month_cap's percent, and escalation's asker (escalationSource):
 	// agent, supervisor, cap (the session cap's card), month_cap,
-	// project_cap, day_cap, split_cap (a split's session at a cap),
-	// provider, budget (the task's budget cannot fund a call), queue (a
-	// red head left the merge queue), start (a sandbox that cannot
-	// start), capacity (pods that never started), no_answer (sessions
-	// that got no model answer), content_filter, or factoryd (the stale
-	// sweep's).
+	// project_cap, day_cap, provider, budget (the task's budget cannot
+	// fund a call), queue (a red head left the merge queue), start (a
+	// sandbox that cannot start), capacity (pods that never started),
+	// no_answer (sessions that got no model answer), content_filter, or
+	// factoryd (the stale sweep's).
 	Source     string
 	TaskID     string
 	RaisedAt   time.Time
@@ -107,8 +106,6 @@ func escalationSource(reason string) string {
 		return "project_cap"
 	case strings.HasPrefix(reason, dayCapReached):
 		return "day_cap"
-	case strings.HasPrefix(reason, splitCapped):
-		return "split_cap"
 	case strings.HasPrefix(reason, providerRefused):
 		return "provider"
 	case floorRefused(reason):

@@ -135,8 +135,6 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityDayResume:                   r.DayResume,
-		ActivityRunSplit:                    r.RunSplit,
-		ActivityFileSplit:                   r.FileSplit,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,
@@ -653,13 +651,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
-	if s.spec, s.cardRole, s.directories, s.pull, err = r.planOf(ctx, t); err != nil {
+	if s.spec, s.cardRole, s.directories, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, named("plan card", err)
 	}
 	// a carry card's pull request: its head reaches the clone as branch
-	// pull/<n> (the plan's split supplies its own), and the spec says so,
-	// because the sandbox holds no git credential to fetch it mid-session
-	if s.pull == 0 && t.CarryPR != 0 {
+	// pull/<n>, and the spec says so, because the sandbox holds no git
+	// credential to fetch it mid-session
+	if t.CarryPR != 0 {
 		s.pull = t.CarryPR
 		s.spec += fmt.Sprintf("\n\nThis card carries pull request #%[1]d: its head is in your clone as branch pull/%[1]d. The sandbox holds no git credential and cannot fetch it, so work from that branch.", t.CarryPR)
 	}
@@ -1042,10 +1040,6 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
 	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	if strings.HasPrefix(reason, splitFailed) || strings.HasPrefix(reason, splitCapped) {
-		// the approval card answers it; the approval wait reads no reply
-		next = "Approve, deny or split it on the board."
-	}
 	if floorRefused(reason) {
 		// no answer can run (ruling 322): the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."

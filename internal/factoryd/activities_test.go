@@ -2752,7 +2752,7 @@ func TestDayResume(t *testing.T) {
 
 // A healed run reads the day cap's wait from the task's last escalation:
 // its reason, and the turn of the escalation's UTC day; any later
-// escalation, or a split's at the day cap, asks otherwise.
+// escalation asks otherwise.
 func TestDayCapWait(t *testing.T) {
 	reason := dayCapRefused(dayCapGateway, "spent", oct(15, 0, 0))
 	esc := func(body string, at time.Time) IntakeEvent {
@@ -2766,7 +2766,6 @@ func TestDayCapWait(t *testing.T) {
 	}{
 		"the day cap's":     {[]IntakeEvent{esc("The agent asks: x", oct(14, 18, 0)), esc(reason, oct(14, 20, 43)), comment}, reason, oct(15, 0, 0)},
 		"a later question":  {[]IntakeEvent{esc(reason, oct(14, 20, 43)), esc("The agent asks: x", oct(14, 22, 0))}, "", time.Time{}},
-		"a split's":         {[]IntakeEvent{esc(splitCap(dayRefusal), oct(14, 20, 43))}, "", time.Time{}},
 		"no escalation yet": {[]IntakeEvent{comment}, "", time.Time{}},
 	} {
 		if got, until := dayCapWait(tc.events); got != tc.reason || !until.Equal(tc.until) {

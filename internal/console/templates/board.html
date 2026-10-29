@@ -164,7 +164,7 @@
 <button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
 </form>{{else}}<p class="meta">Only the project's approvers may approve.</p>
 <div class="acts">{{end}}{{if not .Returns}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else}}Deny{{end}}</button>{{end}}
-{{template "split" .}}</div>
+</div>
 <form method="post" action="/approvals/{{.ID}}/deny" hx-post="/approvals/{{.ID}}/deny" hx-target="#board" hx-swap="outerHTML" data-to="{{.TaskStatus}}" class="deny-box" id="deny-{{.ID}}{{.IDSuffix}}"{{if not .Returns}} hidden{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <label for="note-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Why it closes, posted on its issue and pull request{{else if .Returns}}What the agent changes, or why it closes, posted on the pull request as you{{else}}Reason{{if eq .Kind "merge"}}, posted on the pull request as you{{end}}{{end}}</label>
@@ -178,10 +178,6 @@
 </form>
 <p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if eq .Kind "merge"}}<a href="{{.PRURL}}.diff" target="_blank" rel="noopener">diff</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}
-
-{{define "split"}}{{if and .Approver (eq .Kind "merge") (eq .Merge.RiskClass "large")}}<form method="post" action="/tasks/{{.TaskID}}/split" hx-post="/tasks/{{.TaskID}}/split" hx-target="#board" hx-swap="outerHTML" hx-confirm="Split PR #{{.PRNumber}}? A planner splits it into 2 or 3 cards, which start on their own; this card then closes." class="inline">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Split PR #{{.PRNumber}} of {{.TaskID}} into 2 or 3 cards">Split</button>
-</form>{{end}}{{end}}
 
 {{define "review-verdicts"}}{{range $f, $v := .}}{{if eq $v.State "dropped"}}<br>- dropped ({{$v.Evidence}}): {{$f}}{{else if eq $v.State "remark"}}<br>- remark: {{$f}}{{end}}{{end}}{{end}}
 

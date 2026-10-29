@@ -484,8 +484,8 @@ type sessionSpec struct {
 	spec, cardRole string
 	// directories are the card's, which the worker maps from its clone
 	directories []string
-	// pull is the pull request a split reads, whose head the clone holds
-	// as branch pull/<pull>; 0 for none
+	// pull is the pull request a carry card carries, whose head the clone
+	// holds as branch pull/<pull>; 0 for none
 	pull int64
 	// messageToken is the bearer of the worker's message endpoint, made
 	// per session; the pod gets its hash
@@ -1601,11 +1601,9 @@ func workerStartFailure(res harness.Result) error {
 // startRefused opens the escalation of a session that cannot start.
 const startRefused = "the sandbox cannot start at "
 
-// The ways on a start failure's escalation: a code or plan session's, and
-// a split's, which a split of the pull request starts again.
+// The ways on a start failure's escalation.
 const (
 	thenAnswer   = "then answer to start a session again, or close the card"
-	thenSplit    = "then split the pull request again, or approve or deny it"
 	thenRepro    = "then answer to run the reproduction again, or close the card"
 	thenCriteria = "then answer to run the criteria gate again, or close the card"
 )

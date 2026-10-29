@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"path"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -77,11 +76,6 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	for _, d := range dependents {
 		fmt.Fprintf(&b, "\nneeded by #%d (%s)", d.Issue, factoryd.StatusMeaning(d.Status))
 	}
-	split, err := t.splitLines(k)
-	if err != nil {
-		return "", err
-	}
-	b.WriteString(split)
 	for _, f := range []struct{ name, v string }{{"the question it waits on", bt.Escalation}, {"the choices it offers", numbered(bt.Choices)}} {
 		if f.v != "" {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
@@ -154,37 +148,6 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	for _, f := range []struct{ name, v string }{{"objective", k.Objective}, {"the agent's summary", k.AgentSummary}} {
 		if f.v != "" {
 			fmt.Fprintf(&b, "\n%s: %s", f.name, textutil.Truncate(f.v, 2000))
-		}
-	}
-	return b.String(), nil
-}
-
-// splitLines are the card read's "split from #n" on a card a split filed
-// and "split into #a, #b" on a card whose pull request a split filed cards
-// for, each on its own line.
-func (t *turn) splitLines(k factoryd.Task) (string, error) {
-	ctx := t.r.Context()
-	var b strings.Builder
-	if planChild(k) {
-		parent, ok, err := t.c.cfg.Tasks.Task(ctx, k.Parent)
-		if err != nil {
-			return "", err
-		}
-		if ok && parent.Track != policy.TrackPlan {
-			fmt.Fprintf(&b, "\nsplit from #%d", parent.IssueNumber)
-		}
-	}
-	if k.Track != policy.TrackPlan && k.PRNumber != 0 {
-		cards, err := t.c.cfg.Tasks.PlanCards(ctx, k.ID)
-		if err != nil {
-			return "", err
-		}
-		issues := make([]int64, len(cards))
-		for i, c := range cards {
-			issues[i] = c.IssueNumber
-		}
-		if slices.Sort(issues); len(issues) > 0 {
-			b.WriteString("\n" + factoryd.SplitInto(issues))
 		}
 	}
 	return b.String(), nil

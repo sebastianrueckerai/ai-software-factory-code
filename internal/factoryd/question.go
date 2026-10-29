@@ -435,6 +435,15 @@ const (
 // the member's comment, is what the roller takes for it (consumeRetry).
 const AnswerRetryRoll = "retry"
 
+// issueRefs names issues as a person reads them: "#3, #5".
+func issueRefs(issues []int64) string {
+	refs := make([]string, len(issues))
+	for i, n := range issues {
+		refs[i] = fmt.Sprintf("#%d", n)
+	}
+	return strings.Join(refs, ", ")
+}
+
 // stallQuestion is the stall card's question: what of repository's head
 // at sha has been pending since when, the cards the stall holds, and the
 // three answers.

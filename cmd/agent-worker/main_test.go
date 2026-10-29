@@ -409,7 +409,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 // The clone init container (MODE=clone) alone holds the read token, on the
 // task's repository and the bot's fork: it clones the repository into the
 // workspace, fetches a resumed session's branch head from the fork and a
-// split's pull request head from the repository with that same token, and
+// carried pull request's head from the repository with that same token, and
 // leaves no token in the clone's config. A failed
 // clone exits 0 and leaves its failure, scrubbed of the token, for the
 // worker container to report.
@@ -485,7 +485,7 @@ func TestCloneModeClones(t *testing.T) {
 			}
 		})
 	}
-	// a split's session: the pull request's head, which Forgejo keeps in
+	// a carry card's session: the pull request's head, which Forgejo keeps in
 	// the repository as refs/pull/7/head, is the clone's branch pull/7
 	run("-C", seed, "push", "-q", remote, "factory/t1:refs/pull/7/head")
 	for k, v := range map[string]string{"MODE": "clone", "REPO_URL": srv.URL + "/repo.git", "PUSH_URL": "", "PULL": "7",
