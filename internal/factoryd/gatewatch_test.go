@@ -248,8 +248,8 @@ func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
 
 // The model review and the audit tell their watch the parts their diff
 // reads in before the first call: two files of 30 KiB are two parts, read
-// after the watch bound the run at policy.ReviewParts parts; a diff beyond
-// three parts makes no call and tells none.
+// after the watch bound the run at policy.ReviewParts parts; four parts
+// are told as four.
 func TestReviewAndAuditBoundThemselvesByTheirParts(t *testing.T) {
 	two := diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10)
 	four := diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
@@ -258,9 +258,9 @@ func TestReviewAndAuditBoundThemselvesByTheirParts(t *testing.T) {
 		want                         []int
 	}{
 		{"a review of two parts", ActivityModelReview, two, `{"verdict":"approve","summary":"ok"}`, []int{3, 2}},
-		{"a review beyond its reach", ActivityModelReview, four, `{"verdict":"approve","summary":"ok"}`, []int{3}},
+		{"a review of four parts", ActivityModelReview, four, `{"verdict":"approve","summary":"ok"}`, []int{3, 4}},
 		{"an audit of two parts", ActivityGateAudit, two, `{"verdict":"clear"}`, []int{3, 2}},
-		{"an audit beyond its reach", ActivityGateAudit, four, `{"verdict":"clear"}`, []int{3}},
+		{"an audit of four parts", ActivityGateAudit, four, `{"verdict":"clear"}`, []int{3, 4}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _ := newAuditRunner(t, &gateForgejo{diff: tc.diff}, &fakeLiteLLM{content: tc.answer}, true)

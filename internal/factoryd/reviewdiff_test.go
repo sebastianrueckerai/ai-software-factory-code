@@ -2,9 +2,11 @@ package factoryd
 
 import (
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 const splitTestDiff = "diff --git a/a.go b/a.go\n" +
@@ -118,83 +120,17 @@ func TestPackFiles(t *testing.T) {
 	for name, tc := range map[string]struct {
 		kib    []int
 		chunks string
-		tooBig []string
 	}{
-		"three of 30":   {[]int{30, 30, 30}, "[[f1] [f2] [f3]]", nil},
-		"five of 10":    {[]int{10, 10, 10, 10, 10}, "[[f1 f2 f3 f4] [f5]]", nil},
-		"60 then 10":    {[]int{60, 10}, "[[f2]]", []string{"f1"}},
-		"exactly 48":    {[]int{48, 1}, "[[f1] [f2]]", nil},
-		"none":          {nil, "[]", nil},
-		"too big alone": {[]int{49}, "[]", []string{"f1"}},
+		"three of 30": {[]int{30, 30, 30}, "[[f1] [f2] [f3]]"},
+		"five of 10":  {[]int{10, 10, 10, 10, 10}, "[[f1 f2 f3 f4] [f5]]"},
+		"exactly 48":  {[]int{48, 1}, "[[f1] [f2]]"},
+		"none":        {nil, "[]"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			chunks, tooBig := packFiles(sized(tc.kib...), 48<<10)
-			var big []string
-			for _, f := range tooBig {
-				big = append(big, f.Path)
-			}
-			if got := fmt.Sprint(paths(chunks)); got != tc.chunks || !slices.Equal(big, tc.tooBig) {
-				t.Fatalf("chunks %s, too big %v; want %s, %v", got, big, tc.chunks, tc.tooBig)
+			if got := fmt.Sprint(paths(packFiles(sized(tc.kib...), 48<<10))); got != tc.chunks {
+				t.Fatalf("chunks %s; want %s", got, tc.chunks)
 			}
 		})
-	}
-}
-
-const concurrencyTestDiff = "diff --git a/w.go b/w.go\n" +
-	"--- a/w.go\n" +
-	"+++ b/w.go\n" +
-	"@@ -10,3 +10,4 @@ func run() {\n" +
-	" \tx := 1\n" +
-	" \ty := 2\n" +
-	"+\tgo func() {\n" +
-	" \tz := 3\n" +
-	"@@ -18,2 +19,3 @@\n" +
-	" \ta := 1\n" +
-	"+\tch := make(chan int, 1)\n" +
-	" \tb := 2\n" +
-	"@@ -28,3 +30,3 @@\n" +
-	" \tc := 1\n" +
-	"-\tgo worker()\n" +
-	"+\tvar mu sync.Mutex\n" +
-	" \td := 2\n" +
-	"@@ -36,6 +38,9 @@\n" +
-	" \tg := 0\n" +
-	" \te := 1\n" +
-	"+\tselect {\n" +
-	"+\tdefault:\n" +
-	" \tf := 2\n" +
-	" \th := 3\n" +
-	" \ti := 4\n" +
-	"+\tatomic.AddInt64(&n, 1)\n" +
-	" \tj := 5\n"
-
-func TestConcurrencySites(t *testing.T) {
-	got := concurrencySites(splitDiff(concurrencyTestDiff))
-	want := []site{
-		{File: "w.go", Line: 12, Kind: "goroutine", Text: "go func() {"},
-		{File: "w.go", Line: 20, Kind: "channel", Text: "ch := make(chan int, 1)"},
-		{File: "w.go", Line: 31, Kind: "lock", Text: "var mu sync.Mutex"},
-		{File: "w.go", Line: 40, Kind: "select", Text: "select {"},
-		{File: "w.go", Line: 45, Kind: "atomic", Text: "atomic.AddInt64(&n, 1)"},
-	}
-	if !slices.Equal(got, want) {
-		t.Fatalf("sites = %+v, want %+v", got, want)
-	}
-	block := "every goroutine, channel, lock, select and atomic the diff adds, with file and line:\n" +
-		"w.go:12 goroutine: go func() {\n" +
-		"w.go:20 channel: ch := make(chan int, 1)\n" +
-		"w.go:31 lock: var mu sync.Mutex\n" +
-		"w.go:40 select: select {\n" +
-		"w.go:45 atomic: atomic.AddInt64(&n, 1)"
-	if b := concurrencyBlock(got); b != block {
-		t.Fatalf("block = %q, want %q", b, block)
-	}
-	aGo := concurrencySites(splitDiff(splitTestDiff[:strings.Index(splitTestDiff, "diff --git a/old_test.go")]))
-	if len(aGo) != 1 || aGo[0].Kind != "lock" || aGo[0].Line != 6 {
-		t.Fatalf("a.go's sites = %+v, want its one sync.Mutex at line 6", aGo)
-	}
-	if got := concurrencySites(splitDiff("diff --git a/c.md b/c.md\n--- a/c.md\n+++ b/c.md\n@@ -1 +1 @@\n-a\n+b\n")); len(got) != 0 || concurrencyBlock(got) != "none" {
-		t.Fatalf("sites = %+v, block %q", got, concurrencyBlock(got))
 	}
 }
 
@@ -283,16 +219,8 @@ func TestFileList(t *testing.T) {
 	want := "a.go +7 -2 (part 1)\n" +
 		"old_test.go -> b_test.go +3 -0 (part 1)\n" +
 		"c.md +1 -1 (part 2)"
-	if got := fileList([][]fileDiff{files[:2], files[2:]}); got != want {
+	if got := fileList([][]fileDiff{files[:2], files[2:]}, "part"); got != want {
 		t.Fatalf("file list = %q, want %q", got, want)
-	}
-	var many []fileDiff
-	for i := range 205 {
-		many = append(many, fileDiff{Path: fmt.Sprintf("f%d", i+1), Added: 1})
-	}
-	lines := strings.Split(fileList([][]fileDiff{many}), "\n")
-	if len(lines) != 201 || lines[199] != "f200 +1 -0 (part 1)" || lines[200] != "... and 5 more" {
-		t.Fatalf("%d lines, last %q", len(lines), lines[len(lines)-1])
 	}
 }
 
@@ -318,15 +246,11 @@ func TestDiffPartsBoundary(t *testing.T) {
 		"a larger limit holds": {256 << 10, 18<<10 + 1, 1},
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, parts, why := diffParts(diffFile("a.go", 30<<10)+diffFile("b.go", tc.second), "review", tc.max)
-			if why != "" || len(parts) != tc.parts {
-				t.Fatalf("parts = %d, why = %q, want %d parts", len(parts), why, tc.parts)
+			parts := diffParts(splitDiff(diffFile("a.go", 30<<10)+diffFile("b.go", tc.second)), tc.max)
+			if len(parts) != tc.parts {
+				t.Fatalf("parts = %d, want %d", len(parts), tc.parts)
 			}
 		})
-	}
-	_, parts, why := diffParts(diffFile("a.go", 300<<10), "review", 256<<10)
-	if parts != nil || !strings.Contains(why, "the review reads at most 3 parts of 256 KiB (a.go alone is 300 KiB)") {
-		t.Fatalf("parts = %v, why = %q", parts, why)
 	}
 }
 
@@ -335,13 +259,171 @@ func TestOthersOfNamesWhatTheOtherPartsAdd(t *testing.T) {
 	b := splitDiff("diff --git a/ui.css b/ui.css\n--- a/ui.css\n+++ b/ui.css\n@@ -1,1 +1,3 @@\n+.card-title {\n+  color: red;\n")
 	c := splitDiff("diff --git a/c.go b/c.go\n--- /dev/null\n+++ b/c.go\n@@ -0,0 +1,2 @@\n+func Own() {}\n+go func() {\n")
 	parts := [][]fileDiff{a, b, c}
-	if got, want := othersOf(parts, 1), "functions: Own, TasksByPR\ntypes: Server\nroutes: /api/tasks"; got != want {
+	names := newNameIndex(parts)
+	if got, want := names.Others(1), "functions: Own, TasksByPR\ntypes: Server\nroutes: /api/tasks"; got != want {
 		t.Fatalf("others of part 2 = %q, want %q", got, want)
 	}
-	if got, want := othersOf(parts, 0), "functions: Own\nselectors: .card-title"; got != want {
+	if got, want := names.Others(0), "functions: Own\nselectors: .card-title"; got != want {
 		t.Fatalf("others of part 1 = %q, want %q", got, want)
 	}
-	if got := othersOf([][]fileDiff{a}, 0); got != "" {
+	if got, want := names.All(), "functions: Own, TasksByPR\ntypes: Server\nroutes: /api/tasks\nselectors: .card-title"; got != want {
+		t.Fatalf("all names = %q, want %q", got, want)
+	}
+	if got := newNameIndex([][]fileDiff{a}).Others(0); got != "" {
 		t.Fatalf("one part has no others, got %q", got)
+	}
+}
+
+// hunkFile is a modified file of that many hunks, each of about hunkBytes:
+// 100 added lines of 102 bytes for 10 KiB, after one context line.
+func hunkFile(path string, hunks, hunkBytes int) fileDiff {
+	n := hunkBytes / 102
+	var b strings.Builder
+	fmt.Fprintf(&b, "diff --git a/%s b/%s\n--- a/%s\n+++ b/%s\n", path, path, path, path)
+	for i := range hunks {
+		fmt.Fprintf(&b, "@@ -%d,1 +%d,%d @@\n c\n", 10*i+1, 10*i+1+i*n, n+1)
+		b.WriteString(strings.Repeat("+"+strings.Repeat("x", 100)+"\n", n))
+	}
+	return parseFileDiff(b.String())
+}
+
+func TestCutFileWholeWhenItFits(t *testing.T) {
+	got := cutFile(hunkFile("a.go", 3, 10<<10), 48<<10)
+	if len(got) != 1 || got[0].Piece != 0 || got[0].Pieces != 0 {
+		t.Fatalf("pieces = %+v", got)
+	}
+}
+
+func TestCutFileByHunks(t *testing.T) {
+	f := hunkFile("big.go", 10, 10<<10)
+	head := f.Text[:strings.Index(f.Text, "\n@@ ")+1]
+	got := cutFile(f, 48<<10)
+	if len(got) != 3 {
+		t.Fatalf("%d pieces, want 3", len(got))
+	}
+	added := 0
+	for i, p := range got {
+		if want := []int{4, 4, 2}[i]; strings.Count(p.Text, "\n@@ ") != want {
+			t.Errorf("piece %d holds %d hunks, want %d", i+1, strings.Count(p.Text, "\n@@ "), want)
+		}
+		if p.Piece != i+1 || p.Pieces != 3 || !strings.HasPrefix(p.Text, head) || len(p.Text) > 48<<10 || p.Path != "big.go" {
+			t.Errorf("piece %d = %d of %d, %d bytes, path %q", i+1, p.Piece, p.Pieces, len(p.Text), p.Path)
+		}
+		added += p.Added
+	}
+	if added != f.Added {
+		t.Fatalf("pieces add %d lines, the file %d", added, f.Added)
+	}
+}
+
+func TestCutFileSplitsOneHugeHunk(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("diff --git a/n.go b/n.go\n--- /dev/null\n+++ b/n.go\n@@ -0,0 +1,3000 @@\n")
+	var lines []string
+	for i := range 3000 {
+		l := fmt.Sprintf("+%038d", i)
+		lines = append(lines, l)
+		b.WriteString(l + "\n")
+	}
+	pieces := cutFile(parseFileDiff(b.String()), 48<<10)
+	if len(pieces) < 3 {
+		t.Fatalf("%d pieces, want at least 3", len(pieces))
+	}
+	before := 0
+	var joined []string
+	for i, p := range pieces {
+		if len(p.Text) > 48<<10 {
+			t.Fatalf("piece %d is %d bytes", i+1, len(p.Text))
+		}
+		hdr := fmt.Sprintf("\n@@ -0,0 +%d,%d @@\n", 1+before, p.Added)
+		if !strings.Contains(p.Text, hdr) || strings.Count(p.Text, "\n@@ ") != 1 {
+			t.Fatalf("piece %d lacks the header %q", i+1, hdr)
+		}
+		_, body, _ := strings.Cut(p.Text, hdr)
+		joined = append(joined, strings.Split(strings.TrimSuffix(body, "\n"), "\n")...)
+		before += p.Added
+	}
+	if before != 3000 || !slices.Equal(joined, lines) {
+		t.Fatalf("pieces add %d lines, in order %t", before, slices.Equal(joined, lines))
+	}
+}
+
+func TestCutFileSplitsAGiantLine(t *testing.T) {
+	line := strings.Repeat("€", 100<<10/3)
+	f := parseFileDiff("diff --git a/n.go b/n.go\n--- /dev/null\n+++ b/n.go\n@@ -0,0 +1 @@\n+" + line + "\n")
+	pieces := cutFile(f, 48<<10)
+	if len(pieces) < 3 {
+		t.Fatalf("%d pieces, want at least 3", len(pieces))
+	}
+	var got strings.Builder
+	for i, p := range pieces {
+		if len(p.Text) > 48<<10 || !utf8.ValidString(p.Text) {
+			t.Fatalf("piece %d: %d bytes, valid %t", i+1, len(p.Text), utf8.ValidString(p.Text))
+		}
+		_, body, _ := strings.Cut(p.Text, " @@\n")
+		if !strings.HasPrefix(body, "+") || !strings.HasSuffix(body, "\n") {
+			t.Fatalf("piece %d body = %.20q", i+1, body)
+		}
+		got.WriteString(body[1 : len(body)-1])
+	}
+	if got.String() != line {
+		t.Fatal("the pieces do not make the line again")
+	}
+}
+
+func TestDiffPartsHasNoCap(t *testing.T) {
+	var files []fileDiff
+	for i := range 40 {
+		files = append(files, fileDiff{Path: fmt.Sprintf("f%d", i), Text: strings.Repeat("x", 20<<10)})
+	}
+	parts := diffParts(files, 48<<10)
+	if len(parts) != 20 || len(parts[0]) != 2 {
+		t.Fatalf("%d parts of %d files, want 20 of 2", len(parts), len(parts[0]))
+	}
+}
+
+func TestDiffPartsOfNoFilesIsOneEmptyPart(t *testing.T) {
+	if got := diffParts(nil, 48<<10); !reflect.DeepEqual(got, [][]fileDiff{nil}) {
+		t.Fatalf("parts = %#v", got)
+	}
+}
+
+func TestPartLabelNamesACutFile(t *testing.T) {
+	parts := diffParts([]fileDiff{hunkFile("big.go", 13, 10<<10)}, 48<<10)
+	if len(parts) != 4 {
+		t.Fatalf("%d parts, want 4", len(parts))
+	}
+	if got, want := partLabel(parts, 1, 1), "file 1 of 1 (big.go, piece 2 of 4), part 2 of 4"; got != want {
+		t.Fatalf("label = %q, want %q", got, want)
+	}
+	mixed := [][]fileDiff{{{Path: "a.go"}}, {{Path: "b.go", Piece: 1, Pieces: 2}}, {{Path: "b.go", Piece: 2, Pieces: 2}, {Path: "c.go"}}}
+	for i, want := range []string{"file 1 of 3, part 1 of 3", "file 2 of 3 (b.go, piece 1 of 2), part 2 of 3", "files 2 to 3 of 3, part 3 of 3"} {
+		if got := partLabel(mixed, i, 3); got != want {
+			t.Errorf("label %d = %q, want %q", i+1, got, want)
+		}
+	}
+}
+
+func TestFileListGroupsTheTailByDirectory(t *testing.T) {
+	var files []fileDiff
+	for _, dir := range []string{"a", "b"} {
+		for i := range 500 {
+			files = append(files, fileDiff{Path: fmt.Sprintf("%s/f%03d.go", dir, i), Added: 2, Removed: 1})
+		}
+	}
+	list := fileList([][]fileDiff{files[:600], files[600:]}, "part")
+	lines := strings.Split(list, "\n")
+	if len(lines) != 202 || len(list) >= 20<<10 || lines[199] != "a/f199.go +2 -1 (part 1)" {
+		t.Fatalf("%d lines, %d bytes, line 200 %q", len(lines), len(list), lines[199])
+	}
+	if lines[200] != "a/ 300 files +600 -300 (part 1)" || lines[201] != "b/ 500 files +1000 -500 (parts 1 to 2)" {
+		t.Fatalf("tail = %q", lines[200:])
+	}
+}
+
+func TestFileListNamesAPiece(t *testing.T) {
+	got := fileList([][]fileDiff{{{Path: "big.go", Piece: 2, Pieces: 3, Added: 5}}}, "part")
+	if want := "big.go piece 2 of 3 +5 -0 (part 1)"; got != want {
+		t.Fatalf("list = %q, want %q", got, want)
 	}
 }

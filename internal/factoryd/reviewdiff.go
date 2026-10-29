@@ -6,7 +6,9 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -15,11 +17,13 @@ import (
 // fileDiff is one file's part of a unified git diff, its header and every
 // hunk byte for byte. Path is the new path (a deleted file's old one);
 // OldPath is the old path of a rename or copy. Added and Removed count the
-// hunks' + and - lines.
+// hunks' + and - lines. Piece and Pieces are 0 for a whole file; else the
+// file is piece Piece of Pieces (1-based) and the counts are the piece's own.
 type fileDiff struct {
 	Path, OldPath  string
 	Text           string
 	Added, Removed int
+	Piece, Pieces  int
 }
 
 // splitDiff cuts diff at its "diff --git" lines; text before the first one
@@ -75,45 +79,187 @@ func parseFileDiff(text string) fileDiff {
 }
 
 // packFiles fills chunks in order, each with files whose texts together
-// stay within limit; a file larger than limit alone is tooBig.
-func packFiles(files []fileDiff, limit int) (chunks [][]fileDiff, tooBig []fileDiff) {
+// stay within limit; a file larger than limit alone is a chunk of its own.
+func packFiles(files []fileDiff, limit int) (chunks [][]fileDiff) {
 	size := 0
 	for _, f := range files {
-		switch n := len(f.Text); {
-		case n > limit:
-			tooBig = append(tooBig, f)
-		case len(chunks) == 0 || size+n > limit:
+		if n := len(f.Text); len(chunks) == 0 || size+n > limit {
 			chunks, size = append(chunks, []fileDiff{f}), n
-		default:
+		} else {
 			chunks[len(chunks)-1] = append(chunks[len(chunks)-1], f)
 			size += n
 		}
 	}
-	return chunks, tooBig
+	return chunks
 }
 
-// diffParts packs diff's files into parts of at most max bytes, at most
-// reviewChunks of them, one model call each, at least one part: a diff
-// within max is one part. why says why the model cannot read the whole
-// diff so ("" when it can); reader names the gate in it.
-func diffParts(diff, reader string, max int) (files []fileDiff, parts [][]fileDiff, why string) {
-	files = splitDiff(diff)
-	parts, tooBig := packFiles(files, max)
-	size := fmt.Sprintf("%s, %d KiB", textutil.Plural(len(files), "file", "files"), kib(len(diff)))
-	var reason string
-	switch {
-	case strings.Contains(diff, diffCut):
-		size, reason = "more than 1 MiB of diff", "Forgejo's answer is cut at 1 MiB"
-	case len(tooBig) > 0:
-		reason = fmt.Sprintf("%s alone is %d KiB", tooBig[0].Path, kib(len(tooBig[0].Text)))
-	case len(parts) > reviewChunks:
-		reason = "too many parts"
-	case len(parts) == 0:
-		return files, [][]fileDiff{nil}, ""
-	default:
-		return files, parts, ""
+// diffParts cuts the files larger than limit (cutFile) and packs the
+// result into parts of at most limit bytes, one model call each, at least
+// one part: no files are one empty part.
+func diffParts(files []fileDiff, limit int) [][]fileDiff {
+	var cut []fileDiff
+	for _, f := range files {
+		cut = append(cut, cutFile(f, limit)...)
 	}
-	return files, nil, fmt.Sprintf("%s; the %s reads at most %d parts of %d KiB (%s)", size, reader, reviewChunks, max>>10, reason)
+	if parts := packFiles(cut, limit); len(parts) > 0 {
+		return parts
+	}
+	return [][]fileDiff{nil}
+}
+
+// subHeaderRoom is the room a recomputed hunk header needs.
+const subHeaderRoom = 80
+
+var hunkHeader = regexp.MustCompile(`^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@`)
+
+// cutFile cuts f into pieces of at most limit bytes: f itself when it
+// fits. Each piece starts with f's header, then whole hunks while they fit.
+// A hunk that does not fit beside the header is split at line boundaries
+// into sub-hunks with recomputed headers, and a line that does not fit is
+// cut at rune boundaries into lines that keep its prefix.
+func cutFile(f fileDiff, limit int) []fileDiff {
+	if len(f.Text) <= limit {
+		return []fileDiff{f}
+	}
+	var texts []string
+	if at := strings.Index(f.Text, "\n@@ "); at < 0 || at+1+subHeaderRoom+8 > limit {
+		for rest := f.Text; rest != ""; {
+			n := runeCut(rest, limit)
+			texts, rest = append(texts, rest[:n]), rest[n:]
+		}
+	} else {
+		header, rest := f.Text[:at+1], f.Text[at+1:]
+		var cur strings.Builder
+		cur.WriteString(header)
+		hunks := 0
+		for rest != "" {
+			end := len(rest)
+			if i := strings.Index(rest[1:], "\n@@ "); i >= 0 {
+				end = i + 2
+			}
+			var group []string
+			if hunk := rest[:end]; len(header)+len(hunk) <= limit {
+				group = []string{hunk}
+			} else {
+				group = splitHunk(hunk, limit-len(header))
+			}
+			for _, h := range group {
+				if hunks > 0 && cur.Len()+len(h) > limit {
+					texts = append(texts, cur.String())
+					cur.Reset()
+					cur.WriteString(header)
+					hunks = 0
+				}
+				cur.WriteString(h)
+				hunks++
+			}
+			rest = rest[end:]
+		}
+		texts = append(texts, cur.String())
+	}
+	pieces := make([]fileDiff, len(texts))
+	for i, t := range texts {
+		p := parseFileDiff(t)
+		p.Path, p.OldPath = f.Path, f.OldPath
+		if len(texts) > 1 {
+			p.Piece, p.Pieces = i+1, len(texts)
+		}
+		pieces[i] = p
+	}
+	return pieces
+}
+
+// splitHunk cuts one hunk into sub-hunks of at most room bytes with the
+// headers their lines call for.
+func splitHunk(hunk string, room int) []string {
+	head, body, _ := strings.Cut(hunk, "\n")
+	m := hunkHeader.FindStringSubmatch(head)
+	if m == nil {
+		return []string{hunk}
+	}
+	num := func(s string, absent int) int {
+		if s == "" {
+			return absent
+		}
+		n, _ := strconv.Atoi(s)
+		return n
+	}
+	oldStart, oldCount, newStart, newCount := num(m[1], 0), num(m[2], 1), num(m[3], 0), num(m[4], 1)
+	// the next line to number: a side with no lines names the line before
+	nextOld, nextNew := oldStart, newStart
+	if oldCount == 0 {
+		nextOld++
+	}
+	if newCount == 0 {
+		nextNew++
+	}
+	var out []string
+	var lines strings.Builder
+	oldN, newN := 0, 0
+	flush := func() {
+		if lines.Len() == 0 {
+			return
+		}
+		at := func(next, n int) int {
+			if n == 0 {
+				return next - 1
+			}
+			return next
+		}
+		out = append(out, fmt.Sprintf("@@ -%d,%d +%d,%d @@\n%s", at(nextOld, oldN), oldN, at(nextNew, newN), newN, lines.String()))
+		nextOld, nextNew = nextOld+oldN, nextNew+newN
+		lines.Reset()
+		oldN, newN = 0, 0
+	}
+	room -= subHeaderRoom
+	for _, l := range strings.SplitAfter(body, "\n") {
+		if l == "" {
+			continue
+		}
+		pieces := []string{l}
+		if len(l) > room {
+			payload := strings.TrimSuffix(l[1:], "\n")
+			pieces = pieces[:0]
+			for payload != "" || len(pieces) == 0 {
+				n := runeCut(payload, room-2)
+				pieces, payload = append(pieces, l[:1]+payload[:n]+"\n"), payload[n:]
+			}
+		}
+		for _, p := range pieces {
+			if lines.Len()+len(p) > room {
+				flush()
+			}
+			lines.WriteString(p)
+			switch p[0] {
+			case '+':
+				newN++
+			case '-':
+				oldN++
+			case '\\':
+			default:
+				oldN++
+				newN++
+			}
+		}
+	}
+	flush()
+	return out
+}
+
+// runeCut is how many bytes of s, at most limit and at least one rune, end
+// on a rune boundary.
+func runeCut(s string, limit int) int {
+	if len(s) <= limit {
+		return len(s)
+	}
+	n := limit
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	if n == 0 {
+		_, n = utf8.DecodeRuneInString(s)
+	}
+	return n
 }
 
 func kib(n int) int { return (n + 1023) >> 10 }
@@ -130,16 +276,17 @@ var nameShapes = []struct {
 
 const maxListedNames = 300
 
-// othersOf lists the functions, types, routes and selectors the added
-// lines of every part but part i define, one line a kind, so the call on
-// part i knows a name it does not see is defined elsewhere in the diff.
-func othersOf(parts [][]fileDiff, i int) string {
-	byKind := map[string][]string{}
-	seen := map[string]bool{}
-	for k, part := range parts {
-		if k == i {
-			continue
-		}
+// nameIndex holds the names each part's added lines define.
+type nameIndex struct {
+	parts []map[string][]string
+}
+
+// newNameIndex scans the added lines of every part once.
+func newNameIndex(parts [][]fileDiff) *nameIndex {
+	n := &nameIndex{}
+	for _, part := range parts {
+		byKind := map[string][]string{}
+		seen := map[string]bool{}
 		for _, f := range part {
 			redact.Added(f.Text, func(_ string, _ int, text string) {
 				for _, s := range nameShapes {
@@ -150,10 +297,35 @@ func othersOf(parts [][]fileDiff, i int) string {
 				}
 			})
 		}
+		n.parts = append(n.parts, byKind)
 	}
+	return n
+}
+
+// Others lists the functions, types, routes and selectors the added lines
+// of every part but part i define, one line a kind, so the call on part i
+// knows a name it does not see is defined elsewhere in the diff.
+func (n *nameIndex) Others(i int) string { return n.list(i) }
+
+// All lists the names of every part.
+func (n *nameIndex) All() string { return n.list(-1) }
+
+func (n *nameIndex) list(skip int) string {
 	var lines []string
 	for _, s := range nameShapes {
-		list := byKind[s.kind]
+		seen := map[string]bool{}
+		var list []string
+		for k, byKind := range n.parts {
+			if k == skip {
+				continue
+			}
+			for _, name := range byKind[s.kind] {
+				if !seen[name] {
+					seen[name] = true
+					list = append(list, name)
+				}
+			}
+		}
 		if len(list) == 0 {
 			continue
 		}
@@ -167,38 +339,81 @@ func othersOf(parts [][]fileDiff, i int) string {
 	return strings.Join(lines, "\n")
 }
 
-// partLabel names part i of parts and its files among all.
+// partLabel names part i of parts and its files among all. A file's
+// ordinal counts a cut file once, at its first piece.
 func partLabel(parts [][]fileDiff, i, all int) string {
-	first := 1
+	ordinal := 0
 	for _, p := range parts[:i] {
-		first += len(p)
+		for _, f := range p {
+			if f.Piece <= 1 {
+				ordinal++
+			}
+		}
 	}
-	files := fmt.Sprintf("files %d to %d", first, first+len(parts[i])-1)
-	if len(parts[i]) == 1 {
+	first, last := ordinal+1, ordinal
+	if parts[i][0].Piece > 1 {
+		first = ordinal
+	}
+	for _, f := range parts[i] {
+		if f.Piece <= 1 {
+			last++
+		}
+	}
+	last = max(last, first)
+	if f := parts[i][0]; len(parts[i]) == 1 && f.Piece > 0 {
+		return fmt.Sprintf("file %d of %d (%s, piece %d of %d), part %d of %d", first, all, f.Path, f.Piece, f.Pieces, i+1, len(parts))
+	}
+	files := fmt.Sprintf("files %d to %d", first, last)
+	if first == last {
 		files = fmt.Sprintf("file %d", first)
 	}
 	return fmt.Sprintf("%s of %d, part %d of %d", files, all, i+1, len(parts))
 }
 
-// fileList renders every file of parts, one line each with its added and
-// removed lines and its part, at most maxListLines.
-func fileList(parts [][]fileDiff) string {
+// fileList renders every entry of groups, one line each with its added
+// and removed lines and its group, at most maxListLines; the entries past
+// them are one line a directory. unit names a group: "part" or "card".
+func fileList(groups [][]fileDiff, unit string) string {
+	type dirTotal struct {
+		files, added, removed, from, to int
+	}
 	var lines []string
+	var dirs []string
+	totals := map[string]*dirTotal{}
 	n := 0
-	for k, part := range parts {
-		for _, f := range part {
+	for k, group := range groups {
+		for _, f := range group {
 			if n++; n > maxListLines {
+				d := path.Dir(f.Path) + "/"
+				t := totals[d]
+				if t == nil {
+					t = &dirTotal{from: k + 1}
+					totals[d] = t
+					dirs = append(dirs, d)
+				}
+				if f.Piece <= 1 {
+					t.files++
+				}
+				t.added, t.removed, t.to = t.added+f.Added, t.removed+f.Removed, k+1
 				continue
 			}
 			name := f.Path
 			if f.OldPath != "" {
 				name = f.OldPath + " -> " + f.Path
 			}
-			lines = append(lines, fmt.Sprintf("%s +%d -%d (part %d)", name, f.Added, f.Removed, k+1))
+			if f.Piece > 0 {
+				name += fmt.Sprintf(" piece %d of %d", f.Piece, f.Pieces)
+			}
+			lines = append(lines, fmt.Sprintf("%s +%d -%d (%s %d)", name, f.Added, f.Removed, unit, k+1))
 		}
 	}
-	if n > maxListLines {
-		lines = append(lines, fmt.Sprintf("... and %d more", n-maxListLines))
+	for _, d := range dirs {
+		t := totals[d]
+		span := fmt.Sprintf("%ss %d to %d", unit, t.from, t.to)
+		if t.from == t.to {
+			span = fmt.Sprintf("%s %d", unit, t.from)
+		}
+		lines = append(lines, fmt.Sprintf("%s %s +%d -%d (%s)", d, textutil.Plural(t.files, "file", "files"), t.added, t.removed, span))
 	}
 	return strings.Join(lines, "\n")
 }

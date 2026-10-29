@@ -796,34 +796,38 @@ func TestModelReviewPartWithoutAVerdictIsTheNote(t *testing.T) {
 	}
 }
 
-// Beyond three parts of 48 KiB, or with one file over 48 KiB, or a diff
-// over Forgejo's 1 MiB, the review makes no call and says why it did not
-// review, without a verdict or findings: the card takes it to a human.
-func TestModelReviewBeyondItsReachIsNotReviewed(t *testing.T) {
-	for name, tc := range map[string]struct{ diff, note string }{
-		"four parts": {diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10),
-			"not reviewed: 4 files, 160 KiB; the review reads at most 3 parts of 48 KiB (too many parts)"},
-		"one big file": {diffFile("big.go", 60<<10), "not reviewed: 1 file, 60 KiB; the review reads at most 3 parts of 48 KiB (big.go alone is 60 KiB)"},
-		"over 1 MiB": {diffFile("huge.go", 3<<19),
-			"not reviewed: more than 1 MiB of diff; the review reads at most 3 parts of 48 KiB (Forgejo's answer is cut at 1 MiB)"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			fj := &gateForgejo{diff: tc.diff}
-			r, _, objects := newGateRunner(t, gateTask, fj)
-			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
-			r.supervisor = testSupervisorModel(ll.srv(t).URL)
-			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
-			rv := getInto[Review](t, val, err)
-			if rv.Verdict != "" || rv.Findings != nil || rv.Note != tc.note || len(ll.chats) != 0 {
-				t.Fatalf("review = %+v after %d calls, want the note %q", rv, len(ll.chats), tc.note)
-			}
-			if len(fj.comments) != 1 || !strings.HasSuffix(fj.comments[0], tc.note) {
-				t.Fatalf("comments = %q", fj.comments)
-			}
-			if step := timelineStep(t, objects, "t1", "model_review"); step["note"] != tc.note {
-				t.Fatalf("model_review step = %v", step)
-			}
-		})
+// Four files of 40 KiB are four parts of the default 48 KiB: four calls,
+// no cap, no note.
+func TestModelReviewReadsADiffBeyondThreeParts(t *testing.T) {
+	fj := &gateForgejo{diff: diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || rv.Note != "" || len(ll.chats) != 4 {
+		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
+	}
+	if len(fj.comments) != 1 || !strings.HasSuffix(fj.comments[0], "Read in 4 parts, 4 files, 160 KiB.") {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+}
+
+// One file of 60 KiB in six hunks of 10 KiB is two parts, of 4 and 2 hunks,
+// and the first call names the piece.
+func TestModelReviewReadsOneBigFileByHunks(t *testing.T) {
+	big := hunkFile("big.go", 6, 10<<10)
+	fj := &gateForgejo{diff: big.Text}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || len(ll.chats) != 2 {
+		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
+	}
+	if first := userMessage(ll.chats[0]); !strings.Contains(first, `"part":"file 1 of 1 (big.go, piece 1 of 2), part 1 of 2"`) || strings.Count(first, `@@ -`) != 4 {
+		t.Fatalf("first call = %.300s", first)
 	}
 }
 

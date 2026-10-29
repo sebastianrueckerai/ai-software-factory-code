@@ -122,9 +122,9 @@ func parseAudit(content string) ([]AuditFinding, string) {
 // for a project that switches it on under the task's pinned version: a
 // deterministic scan of the added lines for secret shapes, then the audit
 // model the policy names for the task's class, through the gateway on the
-// task's account, one call for each of up to reviewChunks parts of whole
-// files, the first with the concurrency summary of the whole diff. A diff
-// beyond those parts and an answer without a verdict are findings. The
+// task's account, one call for each part of the diff, a file larger than
+// a part cut by hunks, the first with the concurrency summary of the whole
+// diff. An answer without a verdict is a finding. The
 // findings go to the card and the timeline, never to the pull request,
 // which the agent reads. An audit beside the checks wait (gates.Beside)
 // starts its gate at its own schedule.
@@ -170,12 +170,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		res.Findings = append(res.Findings, AuditFinding{Item: "secret in the diff: " + h.Kind, File: h.File, Line: h.Line,
 			Why: "an added line has the shape of a " + h.Kind + " (pre-check)"})
 	}
-	files, parts, why := diffParts(diff, "audit", reviewDiffMax)
-	if why != "" {
-		res.Findings = append(res.Findings, AuditFinding{Item: "not audited in full", Why: why})
-		stopBeats()
-		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
-	}
+	files, parts := prFiles, diffParts(prFiles, reviewDiffMax)
 	boundByParts(ctx, len(parts))
 	first := auditInput{Repository: t.Repository, PR: pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files))}
 	if len(parts) > 1 {

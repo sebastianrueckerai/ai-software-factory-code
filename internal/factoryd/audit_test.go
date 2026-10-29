@@ -198,16 +198,15 @@ func TestGateAuditWithoutAVerdictIsAFinding(t *testing.T) {
 	}
 }
 
-// A file over the audit's 48 KiB part: no model call, and the one finding
-// that says why.
-func TestGateAuditCutDiffIsAFinding(t *testing.T) {
+// A file over the audit's 48 KiB part is cut by hunks: two calls, no
+// finding.
+func TestGateAuditReadsABigFileInPieces(t *testing.T) {
 	big := "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -0,0 +1,5000 @@\n" + strings.Repeat("+0123456789abcdef\n", 5000)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: big}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{{Item: "not audited in full", Why: "1 file, 88 KiB; the audit reads at most 3 parts of 48 KiB (a.txt alone is 88 KiB)"}}
-	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
+	if res.Verdict == AuditFindings || len(res.Findings) != 0 || len(ll.chats) != 2 {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
 }
@@ -270,20 +269,14 @@ func TestGateAuditPartWithoutAVerdict(t *testing.T) {
 	}
 }
 
-// Four parts: no model call, the pre-check still scans the whole diff,
-// and the one finding says why the rest is not audited.
-func TestGateAuditBeyondItsReachIsNotAuditedInFull(t *testing.T) {
-	diff := diffFile("a_test.go", 40<<10, "\tpassword = \"hunter2hunter2\"") + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
+// Four parts: four calls, no finding.
+func TestGateAuditReadsFourParts(t *testing.T) {
+	diff := diffFile("a.go", 40<<10) + diffFile("b.go", 40<<10) + diffFile("c.go", 40<<10) + diffFile("d.go", 40<<10)
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	r, _ := newAuditRunner(t, &gateForgejo{diff: diff}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{
-		{Item: "secret in the diff: password, secret or token assigned a literal", File: "a_test.go", Line: 1,
-			Why: "an added line has the shape of a password, secret or token assigned a literal (pre-check)"},
-		{Item: "not audited in full", Why: "4 files, 160 KiB; the audit reads at most 3 parts of 48 KiB (too many parts)"},
-	}
-	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
+	if len(res.Findings) != 0 || len(ll.chats) != 4 {
 		t.Fatalf("audit = %+v after %d calls", res, len(ll.chats))
 	}
 }

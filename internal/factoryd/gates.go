@@ -890,9 +890,9 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[str
 	return requestEmptyDirs(pod)
 }
 
-// The model review reads a diff in at most reviewChunks parts of
-// limits.review_diff_kib, one call each (a diff within the limit is one
-// call); the audit in parts of reviewDiffMax.
+// The model review reads a diff in parts of limits.review_diff_kib, one
+// call each (a diff within the limit is one call); the audit in parts of
+// reviewDiffMax.
 const (
 	reviewDiffMax = policy.DefaultReviewDiffKiB << 10
 	reviewChunks  = policy.ReviewParts
@@ -1185,11 +1185,11 @@ func combineReviews(parts []Review) Review {
 // passes that review alone as earlier, and round, this review's among the
 // task's; round 0 is an activity scheduled before the workflow passed it,
 // whose earlier holds every earlier review. The diff is read whole, in one
-// call when it fits limits.review_diff_kib, else in up to reviewChunks
-// parts of whole files of that size, one call each; the call on the
+// call when it fits limits.review_diff_kib, else in parts of that size,
+// one call each, a file larger than a part cut by hunks; the call on the
 // first part carries the brief, the gates and the concurrency summary of
-// the whole diff. No answer (a diff beyond those parts, a gateway refusal
-// such as refused_budget, a failed call, an invalid answer) is a note,
+// the whole diff. No answer (a gateway refusal such as refused_budget, a
+// failed call, an invalid answer) is a note,
 // which the review stage puts on the card as a finding
 // (versionReviewVerdict); concerns are findings under the review stage's
 // on_findings (ruling 177).
@@ -1232,72 +1232,69 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	diff := joinFiles(prFiles)
+	files, diff := prFiles, joinFiles(prFiles)
 	criteria := r.criteriaContext(ctx, t)
 	if criteria != nil {
 		whole, err := r.wholeFeatureDiff(ctx, t, repo, criteria.plan, diff)
 		if err != nil {
 			return Review{}, err
 		}
-		diff = whole
+		files, diff = splitDiff(whole), whole
 	}
 	var rv Review
 	read := ""
-	files, parts, why := diffParts(diff, "review", pinned.Limits.ReviewDiffBytes())
-	if why != "" {
-		rv.Note = "not reviewed: " + why
-	} else {
-		boundByParts(ctx, len(parts))
-		last, lastFindings := lastReview(earlier, parts)
-		first := reviewInput{
-			Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
-			PR:    pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files)),
-			Gates: reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction, Audit: gates.Audit}, LastReview: last,
+	parts := diffParts(files, pinned.Limits.ReviewDiffBytes())
+	boundByParts(ctx, len(parts))
+	names := newNameIndex(parts)
+	last, lastFindings := lastReview(earlier, parts)
+	first := reviewInput{
+		Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
+		PR:    pr.Number, Commit: commit, Diff: joinFiles(parts[0]), Concurrency: concurrencyBlock(concurrencySites(files)),
+		Gates: reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction, Audit: gates.Audit}, LastReview: last,
+	}
+	if len(parts) > 1 {
+		first.Part, first.Files, first.Names = partLabel(parts, 0, len(files)), fileList(parts, "part"), names.Others(0)
+	}
+	if criteria != nil {
+		first.Criteria = criteriaBlock(criteria.plan)
+	}
+	var answers []Review
+	for i, part := range parts {
+		prompt, in := reviewPromptFor(gates), any(first)
+		if i == 0 && criteria != nil {
+			prompt += reviewCriteria
 		}
-		if len(parts) > 1 {
-			first.Part, first.Files, first.Names = partLabel(parts, 0, len(files)), fileList(parts), othersOf(parts, 0)
+		if i > 0 {
+			prompt, in = reviewPartPrompt, reviewPartInput{Objective: first.Brief.Objective, Diff: joinFiles(part),
+				Part: partLabel(parts, i, len(files)), Files: first.Files, Names: names.Others(i), LastFindings: lastFindings[i]}
 		}
+		if last != nil && len(last.Verdicts) > 0 {
+			prompt = reviewWithDrops(prompt, i > 0, last, lastFindings[i])
+		}
+		content, _, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, prompt, in)
+		if ctx.Err() != nil {
+			return Review{}, ctx.Err()
+		}
+		a := reviewAnswer(content, err)
+		if a.Verdict == "" {
+			if len(parts) > 1 {
+				a.Note = fmt.Sprintf("part %d of %d: %s", i+1, len(parts), a.Note)
+			}
+			rv = a
+			break
+		}
+		answers = append(answers, a)
+	}
+	if rv.Note == "" {
+		rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), diff)
 		if criteria != nil {
-			first.Criteria = criteriaBlock(criteria.plan)
+			findings := len(rv.Findings)
+			r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)
+			if len(rv.Findings) > findings && rv.Verdict == "approve" {
+				rv.Verdict = "concerns"
+			}
 		}
-		var answers []Review
-		for i, part := range parts {
-			prompt, in := reviewPromptFor(gates), any(first)
-			if i == 0 && criteria != nil {
-				prompt += reviewCriteria
-			}
-			if i > 0 {
-				prompt, in = reviewPartPrompt, reviewPartInput{Objective: first.Brief.Objective, Diff: joinFiles(part),
-					Part: partLabel(parts, i, len(files)), Files: first.Files, Names: othersOf(parts, i), LastFindings: lastFindings[i]}
-			}
-			if last != nil && len(last.Verdicts) > 0 {
-				prompt = reviewWithDrops(prompt, i > 0, last, lastFindings[i])
-			}
-			content, _, err := r.supervisor.Chat(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, prompt, in)
-			if ctx.Err() != nil {
-				return Review{}, ctx.Err()
-			}
-			a := reviewAnswer(content, err)
-			if a.Verdict == "" {
-				if len(parts) > 1 {
-					a.Note = fmt.Sprintf("part %d of %d: %s", i+1, len(parts), a.Note)
-				}
-				rv = a
-				break
-			}
-			answers = append(answers, a)
-		}
-		if rv.Note == "" {
-			rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), diff)
-			if criteria != nil {
-				findings := len(rv.Findings)
-				r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)
-				if len(rv.Findings) > findings && rv.Verdict == "approve" {
-					rv.Verdict = "concerns"
-				}
-			}
-			read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(files), "file", "files"), kib(len(diff)))
-		}
+		read = fmt.Sprintf("Read in %s, %s, %d KiB.", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(files), "file", "files"), kib(len(diff)))
 	}
 	stopBeats()
 	if ctx.Err() != nil {
