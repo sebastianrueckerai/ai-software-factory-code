@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -48,6 +47,7 @@ type AcceptanceRig struct {
 	atts      []factoryd.ChatAttachment
 	proposals []*accProposal
 	sessions  map[string]factoryd.ConsoleSession
+	timelines acceptObjects // the sessions' timelines: a test seeds the steps
 	reviews   []map[string]string
 	fgCalls   []string // "METHOD path Bearer token" per Forgejo API call
 	commentN  int64
@@ -86,7 +86,8 @@ type accProposal struct {
 // and the project's chat path.
 func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*AcceptanceRig, *AccDocs, string) {
 	t.Helper()
-	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus()}
+	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
+		timelines: acceptObjects{}}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -104,7 +105,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
-		Sessions: a, Tasks: a, Timelines: a, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a,
+		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a,
 		Bus: a.bus,
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
@@ -1057,15 +1058,8 @@ func (a *AcceptanceRig) CallTotals(context.Context, []string) (map[string]policy
 	return nil, nil
 }
 
-// Timelines: no timeline, so a card's face reads no checks.
-
-func (a *AcceptanceRig) Get(context.Context, string) ([]byte, error) {
-	return nil, errors.New("acceptance: no timeline")
-}
-
-func (a *AcceptanceRig) Put(context.Context, string, []byte) error { return nil }
-
-func (a *AcceptanceRig) Delete(context.Context, string) error { return nil }
+// Timelines: the package's in-memory object store, so a card's face
+// reads the timeline a test seeds and none otherwise.
 
 func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int, error) {
 	a.mu.Lock()
