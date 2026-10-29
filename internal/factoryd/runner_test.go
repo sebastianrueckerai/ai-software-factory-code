@@ -1603,30 +1603,22 @@ func TestRunSessionCheckinHumanEndsTheSession(t *testing.T) {
 	}
 }
 
-// A card whose check-in calls are spent gets the deterministic human ask
-// without a conversation: the reason and its kind come from the policy's
-// cap, and the trip is named for the next session.
-func TestRunSessionCheckinCapExhaustedIsDeterministic(t *testing.T) {
-	runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
-	store.checkinCalls = map[string]int{"t2": 12}
+// The card's check-in calls before this one count not: every check-in
+// conversation opens with the policy's calls, so the trip's judge runs and
+// its continue carries the session on to its push.
+func TestRunSessionCheckinIgnoresTheCardsPastCalls(t *testing.T) {
+	runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
 
-	logs := commands(0, 24) + pushedLine("c-wip") + "\n" + resultLine(false, "stopped")
+	logs := commands(0, 24) + pushedLine("c2") + "\n" + resultLine(true, "pushed")
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
-	if err != nil {
-		t.Fatal(err)
+	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c2" {
+		t.Fatalf("result = (%+v, %v), want the session run on to its push", res, err)
 	}
-	if chat.calls != 0 {
-		t.Fatalf("chat calls = %d, want none: the cap is decided before any conversation", chat.calls)
+	if chat.calls != 1 {
+		t.Fatalf("chat calls = %d, want the trip's one conversation", chat.calls)
 	}
-	if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil ||
-		res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != "check-in call cap reached" {
-		t.Fatalf("result = %+v, want the deterministic human ask under the spend kind", res)
-	}
-	if rec := res.CheckIn.Record; rec == nil || rec.Model != "big" || rec.Moment != CheckInSession || len(rec.Calls) != 0 {
-		t.Fatalf("record = %+v, want the no-conversation record under the class's review model", rec)
-	}
-	if res.Trip != string(TripRepetition) {
-		t.Fatalf("trip = %q, want the detector named for the next session", res.Trip)
+	if !strings.Contains(chat.gots[0].Input, "calls left 20,") {
+		t.Fatalf("statement = %q, want the policy's 20 calls left", chat.gots[0].Input)
 	}
 }
 
@@ -3840,70 +3832,29 @@ func TestRunSessionCheckinParentRecord(t *testing.T) {
 	}
 }
 
-// The limits are read before anything is bought: with the call cap or the
-// budget share already spent, the session stops on the human ask under
-// spend and no conversation runs.
+// The limits are read before anything is bought: with the budget share
+// already spent, the session stops on the human ask under spend and no
+// conversation runs.
 func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
-	for _, c := range []struct {
-		name  string
-		calls map[string]int
-		spent map[string]float64
-		want  string
-	}{
-		{name: "calls at the cap", calls: map[string]int{"t2": policy.DefaultCheckinCalls}, want: "check-in call cap reached"},
-		// the coder card's 0.3 EUR budget at the default 10 percent share
-		{name: "the budget share spent", spent: map[string]float64{"t2": 0.03}, want: "the check-in's share of the budget is spent"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			runner, _, kube, worker, chat, _, _ := checkinRig(t, "")
-			store := runner.store.(*fakeStore)
-			store.checkinCalls, store.checkinSpent = c.calls, c.spent
-			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-				CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != c.want {
-				t.Fatalf("result = (%+v, %v), want the human ask under spend: %s", res, err, c.want)
-			}
-			if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
-				t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
-			}
-			worker.mu.Lock()
-			defer worker.mu.Unlock()
-			if len(worker.texts) != 0 {
-				t.Fatalf("worker got %q, want nothing pushed", worker.texts)
-			}
-		})
-	}
-}
-
-// A card whose human answered at the call cap runs its check-in under the
-// raised cap: with the policy's calls spent and one raise granted, the
-// check-in's conversation runs where the plain cap stopped it.
-func TestRunSessionCheckinCallCapRaised(t *testing.T) {
-	runner, _, _, worker, chat, store, _ := checkinRig(t,
-		`{"findings":[{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"handover","handover":"carry on from the last note"}`)
-	task := store.tasks["t2"]
-	task.Usage.ExtraCheckin = 1
-	store.tasks["t2"] = task
-	store.checkinCalls = map[string]int{"t2": policy.DefaultCheckinCalls}
+	runner, _, kube, worker, chat, _, _ := checkinRig(t, "")
+	store := runner.store.(*fakeStore)
+	// the coder card's 0.3 EUR budget at the default 10 percent share
+	store.checkinSpent = map[string]float64{"t2": 0.03}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "no test covers the handler", Source: "review"}}}}, nil,
-		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
-	if err != nil || res.Outcome != OutcomePushed || res.Commit != "c1" {
-		t.Fatalf("result = (%+v, %v), want the conversation under the raised cap", res, err)
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
-		t.Fatalf("check-in = %+v, want the handover the extra calls bought", res.CheckIn)
+	if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != "the check-in's share of the budget is spent" {
+		t.Fatalf("result = (%+v, %v), want the human ask under spend on the share", res, err)
 	}
-	if chat.calls < 1 {
-		t.Fatalf("chat calls = %d, want the check-in running under the raise", chat.calls)
+	if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
+		t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if len(worker.texts) != 1 || worker.texts[0] != "POST /brief carry on from the last note" {
-		t.Fatalf("worker got %q, want the handover pushed as the brief", worker.texts)
+	if len(worker.texts) != 0 {
+		t.Fatalf("worker got %q, want nothing pushed", worker.texts)
 	}
 }
 

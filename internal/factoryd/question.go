@@ -97,8 +97,7 @@ func (q *HumanQuestion) Labels() []string {
 // the caller has them at hand; zero fields leave the ask with the reason's
 // own numbers or without that number.
 type QuestionFacts struct {
-	CheckinCalls int     // check-in calls the task has made
-	CheckinCap   int     // the policy's check-in call cap
+	CheckinCap   int     // the policy's calls of one check-in conversation
 	CheckinSpent float64 // EUR of the check-in share spent
 	CheckinShare float64 // EUR, the policy's check-in share of the budget
 	FloorEUR     float64 // the policy's session floor of the card's rung
@@ -206,17 +205,13 @@ func continueChoices() []QuestionChoice {
 const continueInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent."
 
 func callCapQuestion(f QuestionFacts) *HumanQuestion {
-	ask := "The card's check-in call cap is reached. May it go on?"
+	ask := "The check-in gave no answer within its calls. May the card go on?"
 	if f.CheckinCap > 0 {
-		calls := f.CheckinCalls
-		if calls == 0 {
-			calls = f.CheckinCap
-		}
-		ask = fmt.Sprintf("The card has spent %d of its %d check-in calls. May it go on?", calls, f.CheckinCap)
+		ask = fmt.Sprintf("The check-in gave no answer within its %d calls. May the card go on?", f.CheckinCap)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
-		Why:     "Its check-in call cap is reached: the check-in stopped the session, and its checks from here go to a person.",
+		Why:     "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person.",
 		Info:    continueInfo,
 		Choices: continueChoices(),
 	}
@@ -225,8 +220,7 @@ func callCapQuestion(f QuestionFacts) *HumanQuestion {
 func checkinShareQuestion(f QuestionFacts) *HumanQuestion {
 	ask := "The card has spent its check-in share of the budget. May it go on?"
 	if f.CheckinSpent > 0 || f.CheckinShare > 0 {
-		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share (%d calls). May it go on?",
-			f.CheckinSpent, f.CheckinShare, f.CheckinCalls)
+		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
@@ -635,7 +629,7 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 }
 
 // questionFacts reads the numbers the spend templates fill from: the
-// check-in calls and spend the task has made and the policy's cap and
+// check-in spend the task has made, the policy's call cap and the card's
 // share. It reads nothing for a reason the spend templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
@@ -646,11 +640,6 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		return QuestionFacts{}
 	}
 	f := QuestionFacts{}
-	if n, err := r.store.CheckinCalls(ctx, t.ID); err != nil {
-		log.Printf("task %s: read the check-in calls: %v", t.ID, err)
-	} else {
-		f.CheckinCalls = n
-	}
 	if e, err := r.store.CheckinSpent(ctx, t.ID); err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	} else {
@@ -658,7 +647,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 	}
 	if r.cfg.Policy != nil {
 		limits := r.cfg.Policy().Document.Limits
-		f.CheckinCap = checkinCap(t, limits)
+		f.CheckinCap = limits.CheckinCallCap()
 		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
 	}
 	return f

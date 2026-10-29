@@ -66,7 +66,7 @@ const (
 // of the card's budget the check-in may spend is spent. A human's answer
 // to it grants the card one more share of the check-in budget
 // (versionCheckinGrant); the call cap carries checkinCallCapStop, whose
-// answer buys one more turn of the cap (versionCheckinRaise) instead.
+// answer buys the session alone (versionCheckinRaise).
 const CheckinShareSpent = "the check-in's share of the budget is spent"
 
 // CheckFinding is one finding the check-in judges: its text exactly as the
@@ -552,8 +552,10 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // arrives, and the guards turn that into the outcome. A provider that
 // refuses every call ends it as a handover with no note and no verdicts —
 // the round runs as if no check-in existed. An answer the runner cannot
-// read gets one repair round and then a human. The call cap is a human ask
-// under spend. Every call lands in the record.
+// read gets one repair round and then a human. The last call carries no
+// tools and asks for the answer; a tool asked for on it, or no answer
+// within the calls, is the call cap's human ask under spend. Every call
+// lands in the record.
 func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int) CheckInOutcome {
 	start := time.Now()
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
@@ -561,15 +563,26 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)
 	rec.StatementBytes = len(conv)
 
+	capStop := func() CheckInOutcome {
+		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
+		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
+	}
 	calls, repairs := 0, 0
 	for {
 		if calls >= callsLeft {
-			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
-			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
+			return capStop()
+		}
+		last := calls == callsLeft-1
+		if last {
+			conv += "\n\nThis is your last call: answer now with the JSON object, no tool."
+		}
+		req := CheckinRequest{System: checkinSystemFor(ask.Moment), Input: conv}
+		if !last {
+			req.Tools = checkinToolsFor(ask.Moment)
 		}
 		calls++
 		at := time.Now()
-		resp, err := chat.Call(ctx, taskID, alias, CheckinRequest{System: checkinSystemFor(ask.Moment), Input: conv, Tools: checkinToolsFor(ask.Moment)})
+		resp, err := chat.Call(ctx, taskID, alias, req)
 		rec.Calls = append(rec.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: time.Since(at)})
 		rec.CostEUR += resp.UsageEUR
 		if err != nil {
@@ -577,6 +590,9 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			return CheckInOutcome{Decision: CheckHandover, Record: rec}
 		}
 		if resp.ToolName != "" {
+			if last {
+				return capStop()
+			}
 			args, _ := json.Marshal(resp.ToolArgs)
 			at := time.Now()
 			out, cut, terr := tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
@@ -588,7 +604,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			}
 			rec.Calls = append(rec.Calls, CheckCall{Name: resp.ToolName, Args: textutil.Truncate(string(args), 512), ResultBytes: len(out), Duration: d})
 			rec.ToolCalls++
-			conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s", resp.ToolName, args, out)
+			conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d)", resp.ToolName, args, out, callsLeft-calls)
 			continue
 		}
 		a, perr := parseCheckinAnswer(resp.Text, ask)

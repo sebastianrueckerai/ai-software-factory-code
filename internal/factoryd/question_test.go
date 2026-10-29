@@ -15,7 +15,7 @@ import (
 // check-in, the caps, the gates and the sweep compose, with their
 // numbers; a reason no template covers shapes nothing.
 func TestShapedQuestionFamilies(t *testing.T) {
-	facts := QuestionFacts{CheckinCalls: 12, CheckinCap: 12, CheckinSpent: 0.84, CheckinShare: 0.90}
+	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90}
 	for name, tt := range map[string]struct {
 		reason string
 		facts  QuestionFacts
@@ -27,13 +27,14 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		"call cap": {
 			reason: checkinSpendAsk + "check-in call cap reached",
 			facts:  facts,
-			askHas: []string{"12 of its 12 check-in calls"},
+			askHas: []string{"no answer within its 20 calls"},
+			whyHas: []string{"spent its calls on evidence and gave no decision"},
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in share spent": {
 			reason: checkinSpendAsk + "the check-in's share of the budget is spent",
 			facts:  facts,
-			askHas: []string{"€0.84 of its €0.90 check-in share (12 calls)"},
+			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"session cap": {
@@ -217,19 +218,18 @@ func TestBudgetQuestionButtons(t *testing.T) {
 	}
 }
 
-// The question's numbers are the card's own: the cap and the share as the
-// human's answers widened them, not the policy's base — an ask that reads
-// "24 of its 12" sends a person hunting for a bug that is not there.
-func TestQuestionFactsReportTheRaisedCapAndShare(t *testing.T) {
+// The question's numbers: the call cap is the policy's, one check-in
+// conversation's calls, and the share is the card's own as the human's
+// answers widened it.
+func TestQuestionFactsReportTheCapAndTheGrantedShare(t *testing.T) {
 	store := newFakeStore()
-	store.checkinCalls = map[string]int{"t1": 24}
 	store.checkinSpent = map[string]float64{"t1": 1.2}
-	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinCalls: 12, CheckinShare: 20}}}}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinShare: 20}}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
-	task := Task{ID: "t1", BudgetEUR: 5, Usage: TaskUsage{ExtraCheckin: 1, ExtraCheckinShare: 2}}
+	task := Task{ID: "t1", BudgetEUR: 5, Usage: TaskUsage{ExtraCheckinShare: 2}}
 	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached")
-	if f.CheckinCap != 24 { // 12 calls, raised once
-		t.Errorf("CheckinCap = %d, want the raised 24", f.CheckinCap)
+	if f.CheckinCap != 20 { // the policy's default calls
+		t.Errorf("CheckinCap = %d, want the policy's 20", f.CheckinCap)
 	}
 	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
 		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
