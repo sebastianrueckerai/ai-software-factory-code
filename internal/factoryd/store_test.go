@@ -316,6 +316,7 @@ func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) 
 			out = append(out, t)
 		}
 	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
