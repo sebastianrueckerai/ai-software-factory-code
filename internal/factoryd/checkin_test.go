@@ -875,3 +875,55 @@ func TestCheckinToolsForMoments(t *testing.T) {
 		t.Fatal("the session's tools are not the gate's list without run")
 	}
 }
+
+func TestCheckinStatementCarriesThePace(t *testing.T) {
+	const line = "Pace of the card: 640 changed lines so far against its bound of 600; 3.10 EUR spent, 1.90 left; 52 minutes of agent time spent, 68 left; session 2 of 3."
+	const unmeasured = "Pace of the card: changed lines are not measured at this moment; 3.10 EUR spent, 1.90 left; 52 minutes of agent time spent, 68 left; session 2 of 3."
+	pace := Pace{Lines: 640, BoundLines: 600, SpentEUR: 3.1, BudgetEUR: 5, SpentMinutes: 52, LeftMinutes: 68, Attempt: 2, Sessions: 3}
+	asks := map[string]CheckInAsk{
+		"session": {Moment: CheckInSession, ParentSession: "s1", Trip: &TripReport{Detector: TripChurn, Detail: "d"}},
+		"gate":    {Moment: CheckInGate, ParentSession: "s1", Findings: []CheckFinding{{Text: "f", Source: "review"}}},
+		"dead":    {Moment: CheckInDead, ParentSession: "s1", Stop: "wall clock"},
+	}
+	for name, ask := range asks {
+		t.Run(name, func(t *testing.T) {
+			ask.Pace = &pace
+			got := checkinStatement(&ask, []byte("the tail"), 7, 1.5, 2000)
+			at := strings.Index(got, line)
+			if at < 0 || at > strings.Index(got, "<<<SESSION-TAIL>>>") {
+				t.Fatalf("statement lacks the pace line before the tail:\n%s", got)
+			}
+			p := pace
+			p.Lines = -1
+			ask.Pace = &p
+			if got := checkinStatement(&ask, []byte("the tail"), 7, 1.5, 2000); !strings.Contains(got, unmeasured) {
+				t.Fatalf("statement lacks the unmeasured wording:\n%s", got)
+			}
+			ask.Pace = nil
+			if got := checkinStatement(&ask, []byte("the tail"), 7, 1.5, 2000); strings.Contains(got, "Pace of the card") {
+				t.Fatalf("nil pace left text:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestPaceLineFloorsTheSpendLeftAtZero(t *testing.T) {
+	got := Pace{Lines: 10, BoundLines: 300, SpentEUR: 5.5, BudgetEUR: 5, SpentMinutes: 1, LeftMinutes: 2, Attempt: 1, Sessions: 1}.Line()
+	if !strings.Contains(got, "5.50 EUR spent, 0.00 left;") {
+		t.Fatalf("line = %q", got)
+	}
+}
+
+func TestCheckinStatementOfASizeTripAsksWhetherTheRestFits(t *testing.T) {
+	const question = "The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should cut scope or wrap up, with the instruction. Nothing here cuts the card."
+	statement := func(detector TripKind) string {
+		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1",
+			Trip: &TripReport{Detector: detector, Detail: "d"}}, []byte("the tail"), 7, 1.5, 2000)
+	}
+	if got := statement(TripSize); !strings.Contains(got, question) {
+		t.Fatalf("size statement lacks the question:\n%s", got)
+	}
+	if got := statement(TripRepetition); strings.Contains(got, "The size trip asks") {
+		t.Fatalf("repetition statement carries the size question:\n%s", got)
+	}
+}

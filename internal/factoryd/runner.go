@@ -621,7 +621,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if live == nil {
 		if s.checkInAsk != nil {
 			var stop bool
-			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop)
+			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline)
 			if stop {
 				return out, nil
 			}
@@ -799,9 +799,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			d = *trip.decided
 		} else {
 			answered := make(chan struct{})
+			lines, started := sup.CardLines(), sup.started
 			go func() {
 				defer close(answered)
-				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started)
 			}()
 			select {
 			case <-answered:
@@ -966,10 +967,16 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 // record is delivered whole to the pod and its tail to the conversation,
 // and a human or dropped-all decision stops the pod with nothing of the
 // conversation spent. stop says the session ends here.
-func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) (ck *CheckInOutcome, stop bool) {
+func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, deadline time.Time) (ck *CheckInOutcome, stop bool) {
 	limits := s.policy.Limits
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
+	lines := -1
+	if ask.Gates != nil {
+		lines = ask.Gates.Policy.Lines
+	}
+	bound, _ := cardLineBound(t.Size, s.policy.Risk.LargeLines)
+	ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note)
 	}
@@ -1011,13 +1018,24 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	return nil, false
 }
 
+// pace states where the card stands for a check-in: the spend from a fresh
+// read of the task, the agent time of the earlier sessions plus this one's.
+func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound int, started, deadline time.Time) *Pace {
+	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
+		t = fresh
+	}
+	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.SpentEUR, BudgetEUR: t.BudgetEUR,
+		SpentMinutes: int((t.Usage.AgentTime + time.Since(started)).Minutes()), LeftMinutes: int(time.Until(deadline).Minutes()),
+		Attempt: s.attempt, Sessions: s.sessions}
+}
+
 // checkinLive is the mid-session check-in: a detector tripped, and the
 // check-in decides over the running session from the transcript it reads
 // factoryd-side. Nothing is pushed to the pod — the coding agent needs no
 // record of its own audit. d is the action for the trip switch; ck the
 // conversation's outcome with its record (nil only under no alias); ride
 // says the outcome stops the session and rides SessionResult.CheckIn.
-func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
 	eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -1035,7 +1053,8 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	// session_model of a plan or report class, which this session runs on
 	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
-		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates}
+		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
+		Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,

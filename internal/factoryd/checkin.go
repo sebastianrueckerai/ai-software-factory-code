@@ -103,6 +103,26 @@ type CheckInAsk struct {
 	Trip          *TripReport `json:",omitempty"`
 	Messages      []string    `json:",omitempty"`
 	Stop          string      `json:",omitempty"`
+	Pace          *Pace       `json:"-"`
+}
+
+// Pace is how far the card has come against what it has: its changed lines
+// against the bound, its spend against the budget, and its time. Lines < 0
+// means not measured.
+type Pace struct {
+	Lines, BoundLines                            int
+	SpentEUR, BudgetEUR                          float64
+	SpentMinutes, LeftMinutes, Attempt, Sessions int
+}
+
+// Line is the pace as the statement's one sentence.
+func (p Pace) Line() string {
+	lines := "changed lines are not measured at this moment"
+	if p.Lines >= 0 {
+		lines = fmt.Sprintf("%d changed lines so far against its bound of %d", p.Lines, p.BoundLines)
+	}
+	return fmt.Sprintf("Pace of the card: %s; %.2f EUR spent, %.2f left; %d minutes of agent time spent, %d left; session %d of %d.",
+		lines, p.SpentEUR, max(0, p.BudgetEUR-p.SpentEUR), p.SpentMinutes, p.LeftMinutes, p.Attempt, p.Sessions)
 }
 
 // CheckInOutcome is the check-in's answer: the decision, the reason and its
@@ -223,6 +243,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 				b.WriteString("- on this trip a handover ends the session, and the next session starts from your note.\n")
 			}
 		}
+		if ask.Trip.Detector == TripSize {
+			b.WriteString("The size trip asks one question: will the rest of the card fit in its bound, its budget and its time? Answer continue if it will. Answer message if the agent should cut scope or wrap up, with the instruction. Nothing here cuts the card.\n")
+		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
 	case CheckInDead:
 		fmt.Fprintf(&b, "You are the factory's check-in before a fresh session: the session %s ended without a result: %s. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Stop)
@@ -278,6 +301,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 		}
 
 		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's facts), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
+	}
+	if ask.Pace != nil {
+		b.WriteString(ask.Pace.Line() + "\n\n")
 	}
 	if len(tail) > 0 {
 		// the session moment tails the live session's own record, which no

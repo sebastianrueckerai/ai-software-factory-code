@@ -4063,3 +4063,42 @@ func TestRunSessionPushesTheInputHandoverAsTheBrief(t *testing.T) {
 		t.Fatalf("worker got %q, want the input's handover as the brief", worker.texts)
 	}
 }
+
+// The statement of every check-in states the card's pace: 350 changed lines
+// against the small card's 300, 1.80 of 5 EUR spent, session 1 of 4.
+func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
+	t.Run("mid-session", func(t *testing.T) {
+		runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
+		tk := store.tasks["t2"]
+		tk.Size, tk.BudgetEUR, tk.SpentEUR = "small", 5, 1.8
+		store.tasks["t2"] = tk
+		version := testPolicyVersion()
+		version.Document.Risk.LargeLines = 1000
+		runner.cfg.Policy = func() policy.Version { return version }
+		runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Sessions: 4, Model: "factory/big"}, nil,
+			cardDiffLine(250, 100)+"\n"+pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+			t.Fatal(err)
+		}
+		if chat.calls != 1 {
+			t.Fatalf("chat = %d calls, want one", chat.calls)
+		}
+		in := chat.gots[0].Input
+		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 3.20 left;", "left; session 1 of 4."} {
+			if !strings.Contains(in, want) {
+				t.Fatalf("statement lacks %q:\n%s", want, in)
+			}
+		}
+	})
+	t.Run("start", func(t *testing.T) {
+		runner, _, _, _, chat, _, _ := checkinRig(t, `{"decision":"handover","handover":"start from the tests"}`)
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Sessions: 4, Model: "m",
+			CheckInAsk: &CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}}, nil,
+			pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+			t.Fatal(err)
+		}
+		if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "Pace of the card: changed lines are not measured at this moment;") {
+			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
+		}
+	})
+}
