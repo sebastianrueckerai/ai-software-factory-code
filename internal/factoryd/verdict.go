@@ -628,8 +628,9 @@ func (r *Runner) planClosed(ctx context.Context, id string) bool {
 }
 
 // planCloseCheck is the plan-close rule (piece 8): a plan closes when
-// every criterion is met or waived; when its cards are all final and a
-// criterion is still open, its gap is a criterion row, visible and owned:
+// every criterion is met or waived, a plan without criteria when every
+// card is done or closed. When its cards are all final and a criterion
+// is still open, its gap is a criterion row, visible and owned:
 // a criteria approval asks the human to grant one more bounded card or
 // waive, and pokes them. A gap it asked about before, in the same shape,
 // asks again never: only a changed gap re-opens the question.
@@ -645,6 +646,15 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(p.Criteria) == 0 {
+		cards, err := r.store.PlanCards(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "closed" }) || r.planClosed(ctx, parent) {
+			return
+		}
+		r.closePlan(ctx, t, repo, 0, "factoryd: every card of this plan is done; the plan is closed.")
 		return
 	}
 	integration, err := integrationCard(ctx, r.store, parent, p)
@@ -664,9 +674,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteria, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
 			log.Printf("plan %s: close the criteria approval: %v", parent, err)
 		}
-		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: every criterion of this plan is met or waived; the plan is closed.")
-		r.timeline.recordEvent(ctx, parent, EventPlanClosed, map[string]any{"criteria": len(p.Criteria)})
-		r.record(ctx, parent, "plan_closed", map[string]any{"criteria": len(p.Criteria)})
+		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: every criterion of this plan is met or waived; the plan is closed.")
 		return
 	}
 	cards, err := r.store.PlanCards(ctx, parent)
@@ -677,6 +685,14 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	if !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
 		r.openGap(ctx, t, repo, p, openCriteria(p, rows), integration)
 	}
+}
+
+// closePlan says why plan t closed on its issue and records plan_closed
+// with the plan's count of criteria.
+func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int, comment string) {
+	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
+	r.timeline.recordEvent(ctx, t.ID, EventPlanClosed, map[string]any{"criteria": criteria})
+	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
 }
 
 // openGap opens the plan's criteria approval once per shape of gap.
@@ -720,9 +736,11 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 		map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": ids})
 }
 
-// CriteriaPass is the criteria sweep, run beside the stale sweep: it closes
-// the plans whose criteria are all met or waived, opens the gap question of
-// a plan whose cards ran out with one still open, and drafts the delta
+// CriteriaPass is the criteria sweep, run beside the stale sweep, over the
+// plans with verdict rows and the plans of the open groups: it closes the
+// plans whose criteria are all met or waived and those without criteria
+// whose cards are all done, opens the gap question of a plan whose cards
+// ran out with a criterion still open, and drafts the delta
 // cards the reviews and the grants asked for. One model call per delta due,
 // in the sweep's own time: no activity holds it.
 func (r *Runner) CriteriaPass(ctx context.Context) {
@@ -740,6 +758,15 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 		}
 		if ok && t.Source == SourcePlan && t.Parent != "" {
 			parents[t.Parent] = true
+		}
+	}
+	groups, err := r.store.OpenGroups(ctx)
+	if err != nil {
+		log.Printf("criteria pass: the open groups: %v", err)
+	}
+	for _, open := range groups {
+		for _, g := range open {
+			parents[g.Plan] = true
 		}
 	}
 	for _, parent := range slices.Sorted(maps.Keys(parents)) {

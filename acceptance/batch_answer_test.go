@@ -713,6 +713,10 @@ func (s *accBatchStore) PlanCards(ctx context.Context, plan string) ([]factoryd.
 	panic("unused")
 }
 
+func (s *accBatchStore) OpenGroups(context.Context) (map[string][]factoryd.Group, error) {
+	panic("unused")
+}
+
 func (s *accBatchStore) SetTaskPlanRevision(context.Context, string, int) error {
 	panic("unused")
 }

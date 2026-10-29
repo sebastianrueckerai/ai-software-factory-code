@@ -835,6 +835,10 @@ func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptanceStore) OpenGroups(context.Context) (map[string][]factoryd.Group, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) error {
 	return nil
 }

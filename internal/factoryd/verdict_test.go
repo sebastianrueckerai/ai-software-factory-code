@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -352,6 +353,104 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	(&Runner{store: s3, timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
+	}
+}
+
+// planWithoutCriteria stores a plan without criteria on task t-plan, issue
+// #1 of linkshort/linkshort, with one card per status, card-1 first, and
+// a runner whose comments land on the returned Forgejo.
+func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore, *fakeObjectStore, *planForgejo) {
+	t.Helper()
+	s := newFakeStore()
+	b, err := json.Marshal(Plan{Summary: "the plan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "linkshort/linkshort", IssueNumber: 1, Source: SourceChat, Status: "done"}
+	for i, status := range statuses {
+		id := fmt.Sprintf("card-%d", i+1)
+		s.tasks[id] = Task{ID: id, Repository: "linkshort/linkshort", Parent: "t-plan", Source: SourcePlan, PlanKey: id, Status: status}
+	}
+	fj := &planForgejo{issues: map[int64]*planIssue{1: {state: "open"}}}
+	objs := &fakeObjectStore{}
+	r := &Runner{store: s, timeline: &Timeline{Objects: objs},
+		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	return r, s, objs, fj
+}
+
+// planCloses counts the plan_closed events of t-plan's timeline that
+// carry no criteria.
+func planCloses(t *testing.T, objs *fakeObjectStore) int {
+	t.Helper()
+	body, err := objs.Get(context.Background(), "sessions/t-plan/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.Count(string(body), `"criteria":0,"event":"`+EventPlanClosed+`"`)
+}
+
+func commentBodies(fj *planForgejo) []string {
+	var out []string
+	for _, c := range fj.comments {
+		out = append(out, fmt.Sprintf("#%d %s", c.issue, c.body))
+	}
+	return out
+}
+
+func TestPlanCloseCheckClosesAPlanWithoutCriteria(t *testing.T) {
+	ctx := context.Background()
+	r, _, objs, fj := planWithoutCriteria(t, "done", "done", "closed")
+	want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 {
+		t.Fatalf("plan_closed with criteria 0 recorded %d times, want 1", n)
+	}
+	if got := commentBodies(fj); !slices.Equal(got, want) {
+		t.Fatalf("comments = %q, want %q", got, want)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 {
+		t.Errorf("the second check: plan_closed recorded %d times, want 1", n)
+	}
+	if got := commentBodies(fj); !slices.Equal(got, want) {
+		t.Errorf("the second check: comments = %q, want %q", got, want)
+	}
+}
+
+func TestPlanCloseCheckKeepsAPlanWithoutCriteriaOpen(t *testing.T) {
+	ctx := context.Background()
+	for _, statuses := range [][]string{{"done", "failed"}, {"done", "merged"}} {
+		r, _, objs, fj := planWithoutCriteria(t, statuses...)
+		r.planCloseCheck(ctx, "t-plan")
+		if n := planCloses(t, objs); n != 0 || len(fj.comments) != 0 {
+			t.Errorf("cards %v: plan_closed %d times, comments %q; want none", statuses, n, commentBodies(fj))
+		}
+	}
+}
+
+func TestCriteriaPassVisitsOpenGroups(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, fj := planWithoutCriteria(t, "done")
+	finished := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	card := s.tasks["card-1"]
+	card.MergeCommit, card.FinishedAt = "abc", &finished
+	s.tasks["card-1"] = card
+	groups, err := s.OpenGroups(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := groups["linkshort/linkshort"]; len(g) != 1 || g[0].Plan != "t-plan" {
+		t.Fatalf("open groups = %+v, want t-plan's", groups)
+	}
+	r.CriteriaPass(ctx)
+	if n := planCloses(t, objs); n != 1 {
+		t.Fatalf("plan_closed with criteria 0 recorded %d times, want 1", n)
+	}
+	if want := []string{"#1 factoryd: every card of this plan is done; the plan is closed."}; !slices.Equal(commentBodies(fj), want) {
+		t.Errorf("comments = %q, want %q", commentBodies(fj), want)
 	}
 }
 

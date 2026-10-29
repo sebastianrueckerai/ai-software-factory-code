@@ -513,6 +513,10 @@ type Store interface {
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// OpenGroups are the groups open on main, by repository, the earliest
+	// FirstMerge first, then by plan: the plans with a merged card (a merge
+	// commit or a pull_request_merged event) and no plan_closed event.
+	OpenGroups(ctx context.Context) (map[string][]Group, error)
 	// SetTaskPlanRevision records the plan revision a card first runs
 	// against; the guard makes it once.
 	SetTaskPlanRevision(ctx context.Context, id string, revision int) error

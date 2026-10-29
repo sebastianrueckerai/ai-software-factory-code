@@ -106,6 +106,7 @@ type fakeStore struct {
 	routineStates map[string]RoutineState
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
+	closed        map[string]bool // the plans with a plan_closed event
 }
 
 func (s *fakeStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -278,6 +279,40 @@ func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) 
 		if t.Parent == plan && t.Source == SourcePlan && t.PlanKey != "" {
 			out = append(out, t)
 		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
+	groups := map[string]*Group{}
+	merged := map[string]bool{}
+	for _, c := range s.tasks {
+		if c.Source != SourcePlan || c.Parent == "" || c.PlanKey == "" || s.closed[c.Parent] {
+			continue
+		}
+		g := groups[c.Parent]
+		if g == nil {
+			p := s.tasks[c.Parent]
+			g = &Group{Plan: p.ID, Issue: p.IssueNumber, Repository: p.Repository, Children: map[string]int{}}
+			groups[c.Parent] = g
+		}
+		g.Children[c.Status]++
+		if c.MergeCommit == "" {
+			continue
+		}
+		merged[c.Parent] = true
+		if c.FinishedAt != nil && (g.FirstMerge.IsZero() || c.FinishedAt.Before(g.FirstMerge)) {
+			g.FirstMerge = *c.FinishedAt
+		}
+	}
+	out := map[string][]Group{}
+	for plan, g := range groups {
+		if merged[plan] {
+			out[g.Repository] = append(out[g.Repository], *g)
+		}
+	}
+	for _, gs := range out {
+		slices.SortFunc(gs, func(a, b Group) int { return cmp.Or(a.FirstMerge.Compare(b.FirstMerge), cmp.Compare(a.Plan, b.Plan)) })
 	}
 	return out, nil
 }
