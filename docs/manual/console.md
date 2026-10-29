@@ -256,7 +256,9 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   button too), `edit` its title or body and the task's objective, which the
   next session's brief reads, `grant_session` answers a card at its session
   cap, and `set_dependency` adds or removes a dependency of a card that has
-  not started, in the store and on the issues as the bot.
+  not started, in the store and on the issues as the bot. An added
+  dependency joins two cards of one plan; a card of no plan is a group of
+  one, and a refusal names the fitting action.
 
 ## Projects (task 65, ruling 179)
 
