@@ -71,6 +71,11 @@ type acceptLedger struct {
 // card's lines with a day in the window summed into its EUR and kept as
 // its lines, and the window's own From and To on the head. The fixture's
 // lines carry their day in Ref behind a space: "small 2026-10-10".
+// PremiumMonthSpend is the fixture's premium spend: none.
+func (l *acceptLedger) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
+	return 0, nil
+}
+
 // DaySpend is the fixture's total of one day, the board's figure; it is
 // no window read.
 func (l *acceptLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {

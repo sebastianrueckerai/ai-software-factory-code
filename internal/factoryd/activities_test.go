@@ -2981,6 +2981,35 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	}
 }
 
+// A plan class's session_model (ruling 330) is the model its session is
+// funded on, above the start rung: the planner's premium session at 0.50
+// free asks the frontier floor 0.60 and names premium, though the plan
+// loop passes the stronger rung.
+func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
+		RequiredCapabilities: []string{"planner"}}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
+		SessionModel: policy.Premium}
+	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	r := &Runner{store: store, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	why, err := r.SessionFunded(context.Background(), "t-2", "factory/big")
+	if err != nil || !strings.Contains(why, "a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("premium plan session at 0.50 free = (%q, %v), want the frontier floor on factory/premium", why, err)
+	}
+	if got := sessionModel(v.Document, Task{RequiredCapabilities: []string{"coder"}}, "factory/small"); got != "factory/small" {
+		t.Errorf("a coder session's model = %q, want the ladder's factory/small", got)
+	}
+}
+
 // The floors check the day's, the month's and the project's month
 // headroom too, against the same call (roadmap 243): 3 EUR of the task's
 // budget is free, but 0.01 EUR under a cap cannot fund the cheapest call's

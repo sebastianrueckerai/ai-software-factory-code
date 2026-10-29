@@ -1210,8 +1210,12 @@ type statusLine struct {
 	// TodayEUR is the factory's spend this UTC day and DayCapEUR the
 	// policy's day cap, as /costs shows them.
 	TodayEUR, DayCapEUR float64
-	GitHub              string
-	GitHubURL           string // the export's remote on GitHub, "" when not exported
+	// PremiumEUR is the factory's spend on the premium class this UTC
+	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
+	// 0 shows no premium meter.
+	PremiumEUR, PremiumCapEUR float64
+	GitHub                    string
+	GitHubURL                 string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
 	// ("↻ bump held", RoutineHeld) else the soonest under an hour away
 	// ("↻ bump in 20 min"), "" for none.
@@ -2408,10 +2412,17 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	s.CapEUR = monthCap(v.policy, p.Repository)
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
+		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
 	}
 	if s.TodayEUR, err = c.cfg.Costs.DaySpend(ctx, time.Now().UTC()); err != nil {
 		log.Printf("console: the spend today: %v", err)
 		d.Problems = append(d.Problems, "the spend today could not be read")
+	}
+	if s.PremiumCapEUR > 0 {
+		if s.PremiumEUR, err = c.cfg.Costs.PremiumMonthSpend(ctx, time.Now().UTC()); err != nil {
+			log.Printf("console: the premium spend this month: %v", err)
+			d.Problems = append(d.Problems, "the premium spend this month could not be read")
+		}
 	}
 	s.Approver = v.approves(p.Repository)
 	if stop, err := c.chatStopNow(ctx, p); err != nil {

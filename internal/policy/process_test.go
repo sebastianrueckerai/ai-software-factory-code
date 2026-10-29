@@ -98,6 +98,44 @@ func TestShippedTreePasses(t *testing.T) {
 	}
 }
 
+// The premium class (rulings 328-330): the chat and the planner on
+// premium under its month cap; every list a key is minted from holds big
+// beside premium, the alias a premium call falls back to.
+func TestPremiumClass(t *testing.T) {
+	files := fixtureTree(t)
+	for _, r := range [][2]string{
+		{"budget:\n", "chat: {model: premium}\nbudget:\n"},
+		{"  month_eur: 50\n", "  month_eur: 50\n  premium_month_eur: 50\n"},
+		{"    session: plan\n    models: [small, big]\n", "    session: plan\n    models: [small, big, premium]\n    session_model: premium\n"},
+		{"max_output_tokens: {", "max_output_tokens: {premium: 24576, "},
+	} {
+		if !strings.Contains(string(files["policy.yaml"]), r[0]) {
+			t.Fatalf("policy.yaml lacks %q", r[0])
+		}
+		files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), r[0], r[1], 1))
+	}
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := tree.Document
+	if d.Budget.PremiumMonthEUR != 50 {
+		t.Errorf("premium_month_eur = %v, want 50", d.Budget.PremiumMonthEUR)
+	}
+	if got, want := d.FactoryModels([]string{ClassChat}), []string{Big, Premium, Small, "vision"}; !slices.Equal(got, want) {
+		t.Errorf("the chat's factoryd models = %v, want %v", got, want)
+	}
+	if got, want := d.Models([]string{"planner"}), []string{Big, Premium, Small}; !slices.Equal(got, want) {
+		t.Errorf("the planner's models = %v, want %v", got, want)
+	}
+	if got := d.SessionModel([]string{"planner"}); got != Premium {
+		t.Errorf("the planner's session model = %q, want premium", got)
+	}
+	if got := d.SessionModel([]string{"coder"}); got != "" {
+		t.Errorf("the coder's session model = %q, want none: the ladder's", got)
+	}
+}
+
 // The gateway validates the Document of the version in force; a version
 // written before classes had a session stays valid there during the roll
 // (section 1.3), while the tree check refuses it.

@@ -1007,6 +1007,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
   .cell, .cell.gh, .cell.routine { flex: 1 1 auto; min-height: 38px; margin: 0; padding: 0 12px; border: 0; background: var(--bg-panel); }
   .cell.needs.on { background: color-mix(in srgb, var(--need) 10%, var(--bg-panel)); }
   .cell.spend { flex-basis: 100%; }
+  .cell.spend > a { flex: 1; }
   .cell.spend .gauge { flex: 1; width: auto; }
   .sp { grid-template-columns: 1fr; }
   .sp > section { border-left: 0; border-top: 1px solid var(--line); }

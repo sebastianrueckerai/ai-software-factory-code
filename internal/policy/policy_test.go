@@ -259,6 +259,49 @@ func TestFitTool(t *testing.T) {
 	}
 }
 
+// A premium call under its cap fits the premium month headroom too
+// (ruling 329), with its whole output or not at all: a call the premium
+// headroom would clamp is refused refused_premium_cap, which the gateway
+// turns into a call on big. At 1e-6 in and 4e-6 out, a request of 1000
+// bytes holds 0.001 EUR of input; 0.005 EUR fits (0.005 - 0.001) / 4e-6 =
+// 1000 output tokens, below the minimum call; 0.05 fits 12250 of the 24576
+// it asks; 0.5 fits all 24576, a hold of 0.001 + 24576 * 4e-6 = 0.099304.
+func TestFitPremium(t *testing.T) {
+	p := Price{In: 1e-6, Out: 4e-6, MaxOutput: 24576}
+	r := HoldRequest{TaskID: "t", Kind: KindModel, Ref: "operator/premium", Bytes: 1000, Price: p}
+	premium := func(eur float64) *float64 { return &eur }
+	var ref *Refusal
+	_, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: inf, Premium: premium(0.005)}, r)
+	if !errors.As(err, &ref) || ref.Decision != RefusedPremiumCap || ref.Reason != "free headroom 0.005000 EUR (task 1.000000, day 1.000000, month 1.000000, premium 0.005000) "+
+		"fits 1000 output tokens after a request of 1000 bytes (at most 1000 prompt tokens), below the minimum call of 1024; "+
+		"the premium cap budget.premium_month_eur in policy.yaml cannot pay for it" {
+		t.Fatalf("premium headroom 0.005 = %v, want refused_premium_cap", err)
+	}
+	_, err = Fit(Free{Task: 1, Day: 1, Month: 1, Project: inf, Premium: premium(0.05)}, r)
+	if !errors.As(err, &ref) || ref.Decision != RefusedPremiumCap || ref.Reason != "free headroom 0.050000 EUR (task 1.000000, day 1.000000, month 1.000000, premium 0.050000) "+
+		"fits 12250 of the call's 24576 output tokens after a request of 1000 bytes (at most 1000 prompt tokens); "+
+		"the premium cap budget.premium_month_eur in policy.yaml cannot pay for it" {
+		t.Fatalf("premium headroom 0.05 = %v, want refused_premium_cap for the clamped output", err)
+	}
+	if h, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: inf, Premium: premium(0.5)}, r); err != nil || h.MaxOut != 24576 || math.Abs(h.EUR-0.099304) > 1e-12 {
+		t.Fatalf("premium headroom 0.5 = (%+v, %v), want 24576 output tokens held at 0.099304 EUR", h, err)
+	}
+	// a call that asks for 2000 tokens keeps them all at 0.05
+	asks := r
+	asks.WantOut = 2000
+	if h, err := Fit(Free{Task: 1, Day: 1, Month: 1, Project: inf, Premium: premium(0.05)}, asks); err != nil || h.MaxOut != 2000 {
+		t.Fatalf("premium headroom 0.05 asking 2000 = (%+v, %v), want the 2000 tokens", h, err)
+	}
+	// a smaller cap of another kind binds first and clamps as before
+	if h, err := Fit(Free{Task: 1, Day: 0.05, Month: 1, Project: inf, Premium: premium(0.5)}, r); err != nil || h.MaxOut != 12250 {
+		t.Fatalf("day headroom 0.05 under premium 0.5 = (%+v, %v), want 12250 output tokens", h, err)
+	}
+	// no premium figure: no premium bound
+	if h, err := Fit(Free{Task: 0.05, Day: 1, Month: 1, Project: inf}, r); err != nil || h.MaxOut != 12250 {
+		t.Fatalf("no premium bound = (%+v, %v), want the task's clamp to 12250", h, err)
+	}
+}
+
 func TestFitResource(t *testing.T) {
 	r := HoldRequest{TaskID: "t", Kind: KindResource, Ref: "server", EUR: 0.0384}
 	h, err := FitResource(Free{Task: 0.05, Day: 1, Month: 1, Project: inf}, r)
@@ -545,7 +588,16 @@ func TestParseModelInfo(t *testing.T) {
 	 {"model_name":"sonar","model_info":{"litellm_provider":"perplexity","input_cost_per_token":1e-6,"output_cost_per_token":1e-6,
 	   "search_context_cost_per_query":{"search_context_size_low":0.005,"search_context_size_medium":0.008,"search_context_size_high":0.012}}},
 	 {"model_name":"regional","model_info":{"litellm_provider":"vertex_ai","input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"regional_endpoint_uplift_multiplier":1.1}},
-	 {"model_name":"residency","model_info":{"litellm_provider":"openai","input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"regional_processing_uplift_multiplier_eu":1.1}},
+	 {"model_name":"residency","model_info":{"litellm_provider":"openai","input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"regional_processing_uplift_multiplier_eu":1.1},
+	  "litellm_params":{"model":"openai/gpt-6.1-sol","data_residency":"eu"}},
+	 {"model_name":"openai-tiers","model_info":{"litellm_provider":"openai","max_output_tokens":128000,
+	   "input_cost_per_token":2e-6,"input_cost_per_token_above_272k_tokens":4e-6,"input_cost_per_token_priority":8e-6,"input_cost_per_token_batches":1e-6,
+	   "cache_creation_input_token_cost":2.5e-6,"cache_creation_input_token_cost_above_12hr":5e-6,
+	   "cache_read_input_token_cost":1e-7,"cache_read_input_token_cost_above_272k_tokens_ultrafast":1.2e-6,
+	   "output_cost_per_token":1e-5,"output_cost_per_token_above_272k_tokens":1.5e-5,"output_cost_per_token_flex":5e-6,"output_cost_per_token_above_272k_tokens_ultrafast":9e-5,
+	   "regional_processing_uplift_multiplier_eu":1.1,"regional_processing_uplift_multiplier_us":1.1,
+	   "search_context_cost_per_query":{"search_context_size_low":0.01,"search_context_size_medium":0.01,"search_context_size_high":0.01}},
+	  "litellm_params":{"model":"openai/gpt-6.1-sol"}},
 	 {"model_name":"off-peak-flat","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":1.2e-6,
 	   "off_peak_pricing":{"input_cost_per_token":5e-7,"output_cost_per_token":6e-7,"hours_utc":"16:30-00:30","weekday_timezone":"Asia/Shanghai"}}},
 	 {"model_name":"off-peak-odd","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"off_peak_pricing":{"output_cost_per_second":1,"windows":[]}}},
@@ -567,6 +619,10 @@ func TestParseModelInfo(t *testing.T) {
 		"off-peak":        {In: 3e-7, CacheRead: 6e-9, Out: 1.2e-6, MaxOutput: 393216},
 		"off-peak-dearer": {In: 4e-7, CacheRead: 4e-7, Out: 5e-7},
 		"off-peak-flat":   {In: 5e-7, CacheRead: 5e-7, Out: 1.2e-6},
+		// an OpenAI deployment without data_residency: the service tiers,
+		// the batch API, the 12-hour cache, web search and the regional
+		// uplifts bill no gateway call; the long-context rates do
+		"openai-tiers": {In: 4e-6, CacheRead: 1e-7, Out: 1.5e-5, MaxOutput: 128000},
 	}
 	if !reflect.DeepEqual(prices, want) {
 		t.Fatalf("prices = %+v, want %+v", prices, want)

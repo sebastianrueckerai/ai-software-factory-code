@@ -1028,7 +1028,9 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		log.Printf("task %s: no model under the check-in's purpose: %s over %s", t.ID, d.Action, trip.Kind)
 		return d, nil, false
 	}
-	climbs := r.cfg.Models.Stronger != "" && s.model != r.cfg.Models.Stronger
+	// a handover's next session runs on the stronger rung, or on the
+	// session_model of a plan or report class, which this session runs on
+	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates}
 	tr := rec.Transcript()
@@ -1223,6 +1225,13 @@ func (p *runnerTools) post(ctx context.Context, name string, args map[string]any
 // cheapAttemptCap is how long the start rung's first attempt has to push
 // before the session climbs in place (roadmap 222, item 5).
 const cheapAttemptCap = 8 * time.Minute
+
+// frontier: a session on model runs above the ladder's start rung, on the
+// stronger rung or a class's session_model, and starts on the frontier
+// floor (budget.session_floor_frontier_eur).
+func (r *Runner) frontier(model string) bool {
+	return aliasOf(model) != aliasOf(r.cfg.Models.Start)
+}
 
 // canClimb: the session runs on the ladder's start and a stronger rung
 // exists to switch to.

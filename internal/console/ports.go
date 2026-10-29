@@ -64,6 +64,9 @@ type Costs interface {
 	// DaySpend is the ledger's total of one UTC day, the board's figure
 	// against the day cap.
 	DaySpend(ctx context.Context, day time.Time) (float64, error)
+	// PremiumMonthSpend is the ledger's spend on the premium class in the
+	// UTC month of at, the board's figure against budget.premium_month_eur.
+	PremiumMonthSpend(ctx context.Context, at time.Time) (float64, error)
 	ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error)
 	// CallTotals sums the tasks' audit call rows: their tokens and the
 	// modeled cost and plan credits derived from them at read time

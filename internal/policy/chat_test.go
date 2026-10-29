@@ -101,7 +101,7 @@ func TestChatBlockRefusals(t *testing.T) {
 	for name, tc := range map[string]struct{ file, block, want string }{
 		"unknown tool": {"projects/linkshort.yaml", "chat:\n  confirm: [aprove_merge]\n",
 			`project linkshort: chat.confirm: unknown tool "aprove_merge"`},
-		"unknown model":        {"policy.yaml", "chat:\n  model: gpt-5\n", `policy: chat.model "gpt-5": want one of [big small]`},
+		"unknown model":        {"policy.yaml", "chat:\n  model: gpt-5\n", `policy: chat.model "gpt-5": want one of [big small premium]`},
 		"unknown vision model": {"policy.yaml", "chat:\n  vision_model: gpt-5\n", `policy: chat.vision_model "gpt-5": want one of [vision]`},
 		"negative budget":      {"policy.yaml", "chat:\n  monthly_eur: -1\n", "policy: chat.monthly_eur must not be negative"},
 		"a class named chat":   {"policy.yaml", "", `policy: a capability class may not be named "chat"`},

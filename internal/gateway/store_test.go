@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -195,6 +198,46 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 	if err := s.db.QueryRowContext(ctx, `SELECT eur::text || ' ' || prompt_tokens || ' ' || cached_tokens || ' ' || output_tokens || ' ' || body_bytes
 		FROM ledger WHERE task_id = 't1'`).Scan(&row); err != nil || len(bodies) != 1 || row != fmt.Sprintf("0.007818 140000 131600 900 %d", len(bodies[0])) {
 		t.Fatalf("ledger row = %q (%v), want 0.007818 EUR, 140000 prompt, 131600 cached, 900 output tokens and the upstream body's bytes", row, err)
+	}
+}
+
+// The premium month headroom (ruling 329) is the cap less this UTC
+// month's ledger rows on premium, an agent's ref and factoryd's alike, and
+// the outstanding premium holds: 0.05 - 0.03 - 0.01 - 0.005 = 0.005 EUR.
+// Big's row and last month's premium row do not count. A call of 1000
+// bytes at 1e-6 in and 4e-6 out fits (0.005 - 0.001) / 4e-6 = 1000 output
+// tokens there, below the minimum call: refused_premium_cap. Under a cap
+// of 1 EUR it fits.
+func TestPGPremiumHeadroom(t *testing.T) {
+	dsn := os.Getenv("GATEWAY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("GATEWAY_TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, audit, ledger, holds, policy_activations, policy_versions CASCADE;
+		INSERT INTO tasks (id, budget_eur, spent_eur, status, required_capabilities, repository, model_alias, track) VALUES ('t1', 10, 0, 'running', '["chat"]', 'sf/app', '', 'direct');
+		INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('t1', 'model', 'operator/premium', 0.03), ('t1', 'model', 'premium', 0.01), ('t1', 'model', 'operator/big', 5);
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('t1', (date_trunc('month', now() AT TIME ZONE 'UTC') - interval '1 day')::date, 'model', 'premium', 9);
+		INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t1', 'model', 'review/premium', 0.005, now() + interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := policy.LedgerPremiumMonthSpend(ctx, s.db, time.Now()); err != nil || math.Abs(got-0.04) > 1e-9 {
+		t.Fatalf("premium spend this month = (%v, %v), want 0.04", got, err)
+	}
+	req := policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "operator/premium", Bytes: 1000,
+		Price: policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}, DayEUR: 100, MonthEUR: 100, ProjectEUR: math.Inf(1), PremiumEUR: 0.05}
+	var ref *policy.Refusal
+	if _, err := s.TakeHold(ctx, req); !errors.As(err, &ref) || ref.Decision != policy.RefusedPremiumCap || !strings.Contains(ref.Reason, "premium 0.005000)") {
+		t.Fatalf("premium cap 0.05 = %v, want refused_premium_cap at 0.005 EUR", err)
+	}
+	req.PremiumEUR = 1
+	if _, err := s.TakeHold(ctx, req); err != nil {
+		t.Fatalf("premium cap 1 = %v, want a hold", err)
 	}
 }
 

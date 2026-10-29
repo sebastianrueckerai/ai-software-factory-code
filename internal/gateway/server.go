@@ -293,12 +293,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	price, err := s.opts.Prices.Price(ctx, chatReq.Model)
-	if err == nil {
-		price, err = pv.Document.Limited(chatReq.Model, price)
-	}
+	price, err := s.price(ctx, pv, task, chatReq.Model)
 	if err != nil {
-		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, chatReq.Model, err)
 		s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 		return
 	}
@@ -314,21 +310,41 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ref, slot, models := chatReq.Model, task.ID, pv.Document.Models(task.Classes)
+	slot, models := task.ID, pv.Document.Models(task.Classes)
 	if purpose != "" {
-		ref, slot, models = purpose+"/"+chatReq.Model, task.ID+"/"+factorydSA, pv.Document.FactoryModels(task.Classes)
+		slot, models = task.ID+"/"+factorydSA, pv.Document.FactoryModels(task.Classes)
 	}
 	project, projectEUR := pv.ProjectCap(task.Repository)
-	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
-		TaskID: task.ID, Kind: policy.KindModel, Ref: ref, Session: id.Session,
+	req := policy.HoldRequest{
+		TaskID: task.ID, Kind: policy.KindModel, Ref: ledgerRef(purpose, chatReq.Model), Session: id.Session,
 		Bytes: len(body) + bodySlack - chatReq.image.stripped, ImageTokens: chatReq.image.tokens, Price: price, WantOut: chatReq.WantOut,
 		DayEUR:   pv.Document.Budget.DayEUR,
 		MonthEUR: pv.Document.Budget.MonthEUR,
 		Project:  project, ProjectEUR: projectEUR,
-	})
+	}
+	if chatReq.Model == policy.Premium {
+		req.PremiumEUR = pv.Document.Budget.PremiumMonthEUR
+	}
+	hold, err := s.opts.Store.TakeHold(ctx, req)
 	var refusal *policy.Refusal
+	var note string
+	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedPremiumCap {
+		// ruling 329: at the premium cap the call is served on big
+		note = refusal.Reason + "; served on " + policy.Big
+		chatReq.Model, chatReq.fields["model"] = policy.Big, json.RawMessage(strconv.Quote(policy.Big))
+		if req.Price, err = s.price(ctx, pv, task, policy.Big); err != nil {
+			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+			return
+		}
+		req.Ref, req.PremiumEUR = ledgerRef(purpose, policy.Big), 0
+		hold, err = s.opts.Store.TakeHold(ctx, req)
+	}
 	if errors.As(err, &refusal) {
-		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, refusal.Reason)
+		reason := refusal.Reason
+		if note != "" {
+			reason = note + ", which refused it: " + reason
+		}
+		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, reason)
 		return
 	}
 	if err != nil {
@@ -336,7 +352,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
-		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped}
+		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
 		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {
@@ -369,6 +385,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	s.proxy(w, r, call, body, chatReq.Stream)
+}
+
+// price is alias's LiteLLM price under the version's output limit; a
+// missing price refuses every call of the alias.
+func (s *Server) price(ctx context.Context, pv *policy.Version, task Task, alias string) (policy.Price, error) {
+	price, err := s.opts.Prices.Price(ctx, alias)
+	if err == nil {
+		price, err = pv.Document.Limited(alias, price)
+	}
+	if err != nil {
+		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, alias, err)
+	}
+	return price, err
+}
+
+// ledgerRef is a model call's ref on its hold and ledger row: the alias of
+// an agent's call, purpose/alias of factoryd's.
+func ledgerRef(purpose, alias string) string {
+	if purpose == "" {
+		return alias
+	}
+	return purpose + "/" + alias
 }
 
 // identify is the caller: factoryd by the gateway-factoryd token, with
@@ -816,6 +854,15 @@ type modelCall struct {
 	imgStripped int
 }
 
+// addNote adds n to the audit row's note, after a note the call already
+// carries (the premium cap's).
+func (c *modelCall) addNote(n string) {
+	if c.note != "" {
+		c.note += "; "
+	}
+	c.note += n
+}
+
 var zero = 0.0
 
 // zeroCost is the cost of a call that never reached a provider.
@@ -875,7 +922,8 @@ func (s *Server) settleCanceled(c *modelCall) {
 			cancel()
 			readErr = err
 			if found {
-				cost, c.note = &v, fmt.Sprintf("caller left; priced from LiteLLM's spend log: %.6f EUR", v)
+				cost = &v
+				c.addNote(fmt.Sprintf("caller left; priced from LiteLLM's spend log: %.6f EUR", v))
 				break
 			}
 			if time.Now().After(deadline) {
@@ -887,9 +935,10 @@ func (s *Server) settleCanceled(c *modelCall) {
 	switch {
 	case cost != nil:
 	case readErr != nil:
-		c.note = fmt.Sprintf("caller left; spend log unreadable (%v)", readErr)
+		c.addNote(fmt.Sprintf("caller left; spend log unreadable (%v)", readErr))
 	default:
-		cost, c.note = zeroCost, "caller left; no spend record for the call: booked 0 EUR"
+		cost = zeroCost
+		c.addNote("caller left; no spend record for the call: booked 0 EUR")
 	}
 	s.finish(c, cost, "client_canceled")
 }

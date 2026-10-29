@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -405,15 +406,19 @@ func metricTokensPerCard(ctx context.Context, db *sql.DB, repo string, w metricW
 // A ledger ref's alias: the bare alias of an agent's call, the part after
 // the purpose of factoryd's (review/big). The ledger is immutable, so the
 // purpose aliases of before 2026-10-20 read as the classes they named.
-// The text classes are big and small; a model row of any other alias
+// The text classes are policy.TextClasses; a model row of any other alias
 // (vision) is a tool on the page.
 const ledgerAlias = `(CASE regexp_replace(l.ref, '^.*/', '')
 	WHEN 'coding-frontier' THEN 'big' WHEN 'review-frontier' THEN 'big' WHEN 'supervisor' THEN 'big' WHEN 'checkin' THEN 'big' WHEN 'operator' THEN 'big'
 	WHEN 'coding-cheap' THEN 'small' WHEN 'pulse' THEN 'small' ELSE regexp_replace(l.ref, '^.*/', '') END)`
-const textClassRow = `l.kind = 'model' AND ` + ledgerAlias + ` IN ('` + policy.Big + `', '` + policy.Small + `')`
-const toolRow = `(l.kind = 'tool' OR l.kind = 'model' AND ` + ledgerAlias + ` NOT IN ('` + policy.Big + `', '` + policy.Small + `'))`
 
-// metricModelSpend: the window's model euros by class, big and small.
+var (
+	textClasses  = `('` + strings.Join(policy.TextClasses, `', '`) + `')`
+	textClassRow = `l.kind = 'model' AND ` + ledgerAlias + ` IN ` + textClasses
+	toolRow      = `(l.kind = 'tool' OR l.kind = 'model' AND ` + ledgerAlias + ` NOT IN ` + textClasses + `)`
+)
+
+// metricModelSpend: the window's model euros by class.
 func metricModelSpend(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]MixShare, error) {
 	return metricShares(ctx, db, `SELECT `+ledgerAlias+`, sum(l.eur)::float8`+ledgerPair+` AND `+textClassRow+` GROUP BY 1`, repo, w.From, w.To)
 }

@@ -175,33 +175,46 @@ func inFile(file string, err error) error {
 }
 
 // checkSessions requires every class's session, which Document.Validate
-// leaves out for the gateway (stage11-design.md 1.3).
+// leaves out for the gateway (stage11-design.md 1.3), and holds a
+// session_model to a plan or report class that may call it: a code
+// session's model is the ladder's.
 func checkSessions(d Document) error {
 	var errs []error
 	for _, name := range slices.Sorted(maps.Keys(d.Classes)) {
-		switch s := d.Classes[name].Session; {
+		c := d.Classes[name]
+		switch s := c.Session; {
 		case s == "":
 			errs = append(errs, fmt.Errorf("classes.%s: session is required, one of %v", name, Sessions))
 		case !slices.Contains(Sessions, s):
 			errs = append(errs, fmt.Errorf("classes.%s: session %q, want one of %v", name, s, Sessions))
+		}
+		switch m := c.SessionModel; {
+		case m == "":
+		case c.Session == SessionCode:
+			errs = append(errs, fmt.Errorf("classes.%s: session_model %q: a code session runs on factoryd's ladder, only a plan or report class names its model", name, m))
+		case !slices.Contains(c.Models, m):
+			errs = append(errs, fmt.Errorf("classes.%s: session_model %q is not one of its models %v", name, m, c.Models))
 		}
 	}
 	return errors.Join(errs...)
 }
 
 // checkOutputLimits requires prices.max_output_tokens for every alias a
-// class or the chat calls, which Document.Validate leaves out for the
-// gateway: a version stored before the key stays readable, and the
-// gateway refuses its calls (Document.Limited).
+// class or the chat calls, and for Big beside Premium (its fallback),
+// which Document.Validate leaves out for the gateway: a version stored
+// before the key stays readable, and the gateway refuses its calls
+// (Document.Limited).
 func checkOutputLimits(d Document) error {
-	aliases := append(slices.Clone(ChatModels), Small)
+	aliases := []string{Small}
+	if m := d.ChatOf(ProjectConfig{}).Model; slices.Contains(ChatModels, m) {
+		aliases = append(aliases, m)
+	}
 	for _, c := range d.Classes {
-		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel, c.VisionModel)
+		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel, c.VisionModel, c.SessionModel)
 		aliases = append(aliases, c.Models...)
 	}
-	slices.Sort(aliases)
 	var errs []error
-	for _, a := range slices.Compact(aliases) {
+	for _, a := range withFallback(aliases) {
 		if _, ok := d.Prices.MaxOutputTokens[a]; a != "" && !ok {
 			errs = append(errs, fmt.Errorf("prices.max_output_tokens: %s has no output limit; every alias a class or the chat calls needs one", a))
 		}

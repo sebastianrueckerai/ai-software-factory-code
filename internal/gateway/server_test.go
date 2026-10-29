@@ -139,6 +139,23 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 	}
 	taskHeadroom, dayHeadroom, monthHeadroom, projectHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal, r.ProjectEUR-projectTotal
 	free := policy.Free{Task: taskHeadroom - taskHeld, Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld, Project: projectHeadroom - projectHeld}
+	if r.PremiumEUR > 0 {
+		premium := r.PremiumEUR
+		onPremium := func(kind, ref string) bool {
+			return kind == policy.KindModel && ref[strings.LastIndex(ref, "/")+1:] == policy.Premium
+		}
+		for _, l := range m.ledger {
+			if onPremium(l.kind, l.ref) {
+				premium -= l.eur
+			}
+		}
+		for _, h := range m.holds {
+			if onPremium(h.Kind, h.Ref) {
+				premium -= h.EUR
+			}
+		}
+		free.Premium = &premium
+	}
 	var h policy.Hold
 	var err error
 	if r.Kind == policy.KindTool {
@@ -2465,6 +2482,87 @@ func TestThreadOnTheAudit(t *testing.T) {
 			}
 			if len(store.ledger) != 1 || store.ledger[0].ref != tc.wantLedger {
 				t.Errorf("ledger = %+v, want one row under %s", store.ledger, tc.wantLedger)
+			}
+		})
+	}
+}
+
+// A premium call past its cap that big cannot fit either is refused on
+// big's refusal, and its audit row keeps why it left premium.
+func TestPremiumCapThenBigRefused(t *testing.T) {
+	stub := newStubUpstream(t)
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 0.001, Status: "running"}
+	store := newMemStore(task)
+	pol := factoryPolicy()
+	pol.Document.Chat = &policy.ChatConfig{Model: policy.Premium}
+	pol.Document.Budget.PremiumMonthEUR = 0.0005
+	pol.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	store.setPolicy(pol)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: fakePrices{"big": testPrice, "small": testPrice, "premium": testPrice}, FactorydToken: testFactorydToken})
+	rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Premium))
+	if rr.Code == http.StatusOK || len(stub.bodies) != 0 {
+		t.Fatalf("status %d, %d upstream calls: want a refusal and none", rr.Code, len(stub.bodies))
+	}
+	audits := store.auditRows()
+	last := audits[len(audits)-1]
+	if last.Decision != policy.RefusedBudget || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big, which refused it: free headroom 0.001000 EUR") {
+		t.Errorf("audit row %s %q, want refused_budget naming the premium cap first", last.Decision, last.Reason)
+	}
+}
+
+// The price book leaves out an OpenAI deployment's rates for the request
+// options the gateway never forwards (policy's openAIUnbilled): a call
+// carrying one is refused, so no hold can be short of its bill.
+func TestUnbilledOptionsAreNotForwarded(t *testing.T) {
+	for _, field := range []string{"service_tier", "prompt_cache_retention", "web_search_options"} {
+		if forwardedFields[field] {
+			t.Errorf("%s is forwarded, but the price book leaves its rates out", field)
+		}
+	}
+}
+
+// A premium call under its cap goes to premium; past it the gateway
+// serves it on big (ruling 329): the forwarded body, the ledger ref and
+// the audit row's alias name big, and the row's reason says why. No cap:
+// premium is an alias like any other.
+func TestPremiumCapServesOnBig(t *testing.T) {
+	for name, tc := range map[string]struct {
+		capEUR                float64
+		wantModel, wantLedger string
+		wantReason            string
+	}{
+		"under the cap": {capEUR: 50, wantModel: policy.Premium, wantLedger: "operator/premium"},
+		"past the cap": {capEUR: 0.001, wantModel: policy.Big, wantLedger: "operator/big",
+			wantReason: "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big"},
+		"no cap": {wantModel: policy.Premium, wantLedger: "operator/premium"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			stub := newStubUpstream(t)
+			stub.setResp(stubResp{status: 200, body: `{"choices":[]}`, headers: map[string]string{"x-litellm-response-cost": "0.0001"}})
+			task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}
+			store := newMemStore(task)
+			pol := factoryPolicy()
+			pol.Document.Chat = &policy.ChatConfig{Model: policy.Premium}
+			pol.Document.Budget.PremiumMonthEUR = tc.capEUR
+			pol.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+			store.setPolicy(pol)
+			s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+				LiteLLMURL: stub.URL, Prices: fakePrices{"big": testPrice, "small": testPrice, "premium": testPrice}, FactorydToken: testFactorydToken})
+			rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Premium))
+			if rr.Code != http.StatusOK {
+				t.Fatalf("status %d: %s", rr.Code, rr.Body)
+			}
+			if len(stub.bodies) != 1 || !strings.Contains(stub.bodies[0], `"model":"`+tc.wantModel+`"`) {
+				t.Errorf("forwarded %q, want model %s", stub.bodies, tc.wantModel)
+			}
+			if len(store.ledger) != 1 || store.ledger[0].ref != tc.wantLedger {
+				t.Errorf("ledger = %+v, want one row under %s", store.ledger, tc.wantLedger)
+			}
+			audits := store.auditRows()
+			last := audits[len(audits)-1]
+			if last.ModelAlias != tc.wantModel || !strings.HasSuffix(last.Reason, tc.wantReason) || tc.wantReason == "" && last.Reason != "" {
+				t.Errorf("audit row alias %q reason %q, want %q ending %q", last.ModelAlias, last.Reason, tc.wantModel, tc.wantReason)
 			}
 		})
 	}

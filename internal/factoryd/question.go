@@ -633,8 +633,7 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // share. It reads nothing for a reason the spend templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
-		frontier := r.cfg.Models.Stronger != "" && aliasOf(t.ModelAlias) == aliasOf(r.cfg.Models.Stronger)
-		return QuestionFacts{FloorEUR: r.cfg.Policy().Document.Budget.SessionFloor(frontier)}
+		return QuestionFacts{FloorEUR: r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))}
 	}
 	if !strings.HasPrefix(reason, checkinSpendAsk) {
 		return QuestionFacts{}

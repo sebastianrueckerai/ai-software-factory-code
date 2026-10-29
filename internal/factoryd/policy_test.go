@@ -139,6 +139,9 @@ func (m *memPolicy) PolicyVersion(_ context.Context, id int64) (policy.Version, 
 }
 
 func (m *memPolicy) DaySpend(context.Context, time.Time) (float64, error) { return 0, nil }
+func (m *memPolicy) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
+	return 0, nil
+}
 
 func (m *memPolicy) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
 	m.mu.Lock()

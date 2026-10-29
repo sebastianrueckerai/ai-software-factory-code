@@ -639,6 +639,10 @@ func (s *PGStore) DaySpend(ctx context.Context, day time.Time) (float64, error) 
 	return policy.LedgerDaySpend(ctx, s.db, day)
 }
 
+func (s *PGStore) PremiumMonthSpend(ctx context.Context, at time.Time) (float64, error) {
+	return policy.LedgerPremiumMonthSpend(ctx, s.db, at)
+}
+
 func (s *PGStore) ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error) {
 	return policy.ModelCalls(ctx, s.db, taskID)
 }
@@ -694,6 +698,20 @@ var _ PolicyStore = (*PGStore)(nil)
 // opencode provider prefix ("factory/small" is "small").
 func (l ModelLadder) Aliases() []string {
 	return []string{aliasOf(l.Start), aliasOf(l.Stronger)}
+}
+
+// sessionModel is the model a plan or report session of t runs on under
+// d: the session_model of t's class (ruling 330) under model's opencode
+// provider, else model.
+func sessionModel(d policy.Document, t Task, model string) string {
+	m := d.SessionModel(t.RequiredCapabilities)
+	if m == "" {
+		return model
+	}
+	if provider, _, ok := strings.Cut(model, "/"); ok {
+		return provider + "/" + m
+	}
+	return m
 }
 
 // aliasOf is model without its opencode provider prefix.

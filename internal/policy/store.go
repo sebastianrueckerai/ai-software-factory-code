@@ -160,6 +160,14 @@ func LedgerDaySpend(ctx context.Context, db *sql.DB, day time.Time) (float64, er
 	return eur, err
 }
 
+// LedgerPremiumMonthSpend is the ledger's spend on Premium in the UTC
+// month of at.
+func LedgerPremiumMonthSpend(ctx context.Context, db *sql.DB, at time.Time) (float64, error) {
+	var eur float64
+	err := db.QueryRowContext(ctx, `SELECT `+PremiumMonthSpentSQL("$1::timestamptz")+`::float8`, at).Scan(&eur)
+	return eur, err
+}
+
 func LedgerCosts(ctx context.Context, db *sql.DB, from, to time.Time) (Costs, error) {
 	c := Costs{From: from.Format(DateLayout), To: to.Format(DateLayout), Days: []DayCost{}, Tasks: []TaskCost{}}
 	rows, err := db.QueryContext(ctx,

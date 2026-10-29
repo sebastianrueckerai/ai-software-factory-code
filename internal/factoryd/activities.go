@@ -485,6 +485,11 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if r.cfg.Prices == nil {
 		return "", nil
 	}
+	// the version in force, as the floors below read it; the session reads
+	// its task's pinned one (reportSession), which differs only when a
+	// commit changed the class's session_model since the task started
+	v := r.cfg.Policy()
+	model = sessionModel(v.Document, t, model)
 	alias := aliasOf(model)
 	price, err := r.price(ctx, alias)
 	if err != nil {
@@ -492,7 +497,6 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		// attempt is refused (roadmap 222, item 5)
 		return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
 	}
-	v := r.cfg.Policy()
 	project, projectEUR := v.ProjectCap(t.Repository)
 	req := policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Price: price,
 		DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
@@ -531,7 +535,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 			}
 			need, measure = eur, fmt.Sprintf("%s; the largest of the newest %d sessions' openings on %s, as the holds take them", what, len(o.Sessions), on)
 		}
-		frontier := r.cfg.Models.Stronger != "" && aliasOf(model) == aliasOf(r.cfg.Models.Stronger)
+		frontier := r.frontier(model)
 		if floor := v.Document.Budget.SessionFloor(frontier); floor > need {
 			key := "budget.session_floor_cheap_eur"
 			if frontier {

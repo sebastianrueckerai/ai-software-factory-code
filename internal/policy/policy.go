@@ -136,7 +136,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}
 
 // ChatModels are the aliases a chat block may name.
-var ChatModels = []string{Big, Small}
+var ChatModels = []string{Big, Small, Premium}
 
 // VisionModels are the vision aliases a chat block or a class may name.
 var VisionModels = []string{"vision"}
@@ -799,6 +799,10 @@ type Budget struct {
 	// SessionFloorFrontierEUR is SessionFloorCheapEUR for a session on the
 	// frontier rung.
 	SessionFloorFrontierEUR float64 `yaml:"session_floor_frontier_eur,omitempty" json:"session_floor_frontier_eur,omitempty"`
+	// PremiumMonthEUR caps the calls on Premium together per UTC calendar
+	// month, inside the caps above; the gateway serves a call it cannot fit
+	// on Big (ruling 329). Absent or 0: Premium has no cap of its own.
+	PremiumMonthEUR float64 `yaml:"premium_month_eur,omitempty" json:"premium_month_eur,omitempty"`
 }
 
 // SessionFloor is the least free budget a session starts on, by its rung.
@@ -820,6 +824,9 @@ type Class struct {
 	Session string `yaml:"session" json:"session,omitempty"`
 	// Models are the aliases the agent may call through the gateway.
 	Models []string `yaml:"models" json:"models"`
+	// SessionModel is the alias a session of a plan or report class runs
+	// on (ruling 330), one of Models; absent: factoryd's stronger rung.
+	SessionModel string `yaml:"session_model,omitempty" json:"session_model,omitempty"`
 	// Tools are the gateway tools the class may call: a paid tool with its
 	// per-task caps, a free tool as {}.
 	Tools map[string]ToolCap `yaml:"tools,omitempty" json:"tools"`
@@ -878,14 +885,31 @@ const MaxLookBytes = 8 << 20
 // Purposes are the factoryd purposes the gateway admits.
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
 
-// The two model classes every text call names (Sebastian, 2026-10-20).
-// A class is a LiteLLM alias routed to its z.ai model, the Alibaba model
-// behind it as fallback. A call's purpose sits on its audit row and in
-// its ledger ref, not in its alias.
+// The model classes every text call names (Sebastian, 2026-10-20). Big
+// and Small are LiteLLM aliases routed to their z.ai model, the Alibaba
+// model behind it as fallback. Premium (ruling 328) is a pay-per-token
+// model with its own month cap (Budget.PremiumMonthEUR) that falls back to
+// Big (ruling 329). A call's purpose sits on its audit row and in its
+// ledger ref, not in its alias.
 const (
-	Big   = "big"
-	Small = "small"
+	Big     = "big"
+	Small   = "small"
+	Premium = "premium"
 )
+
+// TextClasses are the model classes, as the metrics page sorts spend.
+var TextClasses = []string{Big, Small, Premium}
+
+// withFallback is aliases with Big beside Premium: the alias the gateway
+// serves a premium call on at the premium cap, and LiteLLM's on a provider
+// failure.
+func withFallback(aliases []string) []string {
+	if slices.Contains(aliases, Premium) {
+		aliases = append(aliases, Big)
+	}
+	slices.Sort(aliases)
+	return slices.Compact(aliases)
+}
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -1059,6 +1083,9 @@ func (d Document) Validate() error {
 	}
 	if floor := max(b.SessionFloorCheapEUR, b.SessionFloorFrontierEUR); floor > b.TaskMaxEUR {
 		return fmt.Errorf("policy: a session floor of %g exceeds budget.task_max_eur %g, which no card could fund", floor, b.TaskMaxEUR)
+	}
+	if b.PremiumMonthEUR < 0 {
+		return errors.New("policy: budget.premium_month_eur must not be negative (0: premium has no cap of its own)")
 	}
 	for alias, n := range d.Prices.MaxOutputTokens {
 		if n <= 0 {
@@ -1297,7 +1324,7 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 }
 
 // FactoryModels are the aliases factoryd may call on a task of classes,
-// sorted, once each.
+// Big beside Premium, sorted, once each.
 func (d Document) FactoryModels(classes []string) []string {
 	var out []string
 	for _, p := range Purposes {
@@ -1305,18 +1332,29 @@ func (d Document) FactoryModels(classes []string) []string {
 			out = append(out, m)
 		}
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return withFallback(out)
 }
 
-// Models are the aliases any of classes may call, sorted, once each.
+// Models are the aliases any of classes may call, Big beside Premium,
+// sorted, once each.
 func (d Document) Models(classes []string) []string {
 	var out []string
 	for _, c := range classes {
 		out = append(out, d.Classes[c].Models...)
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return withFallback(out)
+}
+
+// SessionModel is the alias a plan or report session of a task of classes
+// runs on: the first of classes that names one (ruling 330); "" when none
+// does.
+func (d Document) SessionModel(classes []string) string {
+	for _, c := range classes {
+		if m := d.Classes[c].SessionModel; m != "" {
+			return m
+		}
+	}
+	return ""
 }
 
 // ClampBudget is a new task's budget: the default when none (or a

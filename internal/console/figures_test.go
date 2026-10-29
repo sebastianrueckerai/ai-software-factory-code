@@ -4,12 +4,43 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+// Under a premium cap the strip and the Spend panel show the premium
+// class's spend this month against it, and the chat's policy read names
+// the cap; without one, no premium meter and no line.
+func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
+	r, ck := screenRig(t)
+	r.ledger.premiumCap, r.ledger.premium = 50, 12.5
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, r.readSession(t, ck)))
+	d, err := r.c.boardOf(req, urlFilter(req), button(req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status.PremiumEUR != 12.5 || d.Status.PremiumCapEUR != 50 {
+		t.Errorf("premium %.2f of %.2f, want 12.50 of 50", d.Status.PremiumEUR, d.Status.PremiumCapEUR)
+	}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`aria-label="Premium spend of its month cap">25 percent</meter>`, `<span class="lbl">premium this month</span>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the board lacks %s", want)
+		}
+	}
+	if text, err := r.c.policyText(context.Background(), actor{}); err != nil || !strings.Contains(text, "  premium month cap: €50.00 (past it, premium calls run on big)\n") {
+		t.Errorf("policy read = (%q, %v), want the premium cap", text, err)
+	}
+	r.ledger.premiumCap = 0
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); strings.Contains(body, "Premium spend") || strings.Contains(body, "premium this month") {
+		t.Error("the board shows a premium meter without a premium cap")
+	}
+}
 
 // The board page carries what the status panel and the stage word read:
 // the factory's spend this UTC day and the policy's day cap as /costs

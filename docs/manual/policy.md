@@ -108,11 +108,18 @@ them.
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over
 all tasks, `session_floor_cheap_eur` for the least free budget a session on the cheap rung starts on,
-`session_floor_frontier_eur` for the same on the frontier rung, both 0 when absent) and `classes` (per capability
+`session_floor_frontier_eur` for the same on the frontier rung, both 0 when absent, and
+`premium_month_eur` for the calls on the `premium` class per UTC calendar month, no cap of its own when absent) and `classes` (per capability
 class the model aliases it may call, its tools with per-task caps, and
 the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
-gate supervisor, `checkin_model` for the check-in (else `review_model`), `audit_model` for the audit; a class without one gets no such call).
+gate supervisor, `checkin_model` for the check-in (else `review_model`), `audit_model` for the audit; a class without one gets no such call;
+a plan or report class may name `session_model`, one of its models, which its sessions run on instead of the stronger rung).
+The text classes are `small`, `big` and `premium` (rulings 328 to 330): `premium` is a pay-per-token model
+whose spend is real money, so `premium_month_eur` caps it apart. A premium call that cap cannot fit with its
+whole output runs on `big`, its audit row saying so, and a premium call the provider fails LiteLLM's router sends to `big`; every key
+minted for a list holding `premium` also holds `big`. The console's status strip shows the premium spend this
+month against the cap while the cap is set.
 The gateway never reads the files, only the version in force in
 Postgres. `day_eur: 0` stops all spend; `month_eur: 0` does too, but
 only in a commit that also lowers every project's `budget.month_eur` to 0
@@ -150,6 +157,11 @@ The caps hold on the call itself. Prices per alias come from LiteLLM's
 alias the maximum over its deployments of every per-token input rate
 (base, long-context `*_above_*_tokens`, service tiers, cache writes,
 `tiered_pricing`), every output and reasoning rate, and `max_output_tokens`.
+An OpenAI deployment's rates no gateway call reaches are left out: the service tiers (flex, priority,
+ultrafast) and the batch API's, the 12-hour cache's, web search's and, without `data_residency`, the
+regional uplift; the gateway forwards none of the options that reach them (`service_tier`,
+`prompt_cache_retention`, `web_search_options`). The OpenAI project must therefore stay on the default
+service tier: a project whose default tier is priority or flex bills at a rate no hold counts.
 An alias's output limit is the policy's `prices.max_output_tokens`, lowered
 to that published maximum when it is less; the tree's check refuses a
 policy without one for an alias a class or the chat calls.
@@ -163,7 +175,9 @@ transaction, the headroom left after spend and every outstanding hold is
 computed (task: budget minus spent; day: `day_eur` minus today's ledger
 total; month: `month_eur` minus the ledger total since the 1st, UTC;
 project: its file's `budget.month_eur` minus the month's ledger rows of
-the tasks of its repository and their outstanding holds; standing lines
+the tasks of its repository and their outstanding holds; premium, for a
+premium call under `premium_month_eur`: the cap minus the month's ledger
+rows and outstanding holds on `premium`; standing lines
 count for none), the output limit (`max_tokens` or `max_completion_tokens`,
 at most the alias's, the alias's when the caller set none) is
 clamped to what that pays for, and a `holds` row takes the worst case.

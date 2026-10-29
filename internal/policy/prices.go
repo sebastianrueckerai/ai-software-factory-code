@@ -111,8 +111,11 @@ func (b *PriceBook) fetch(ctx context.Context) (map[string]Price, map[string]boo
 func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 	var info struct {
 		Data []struct {
-			ModelName string                     `json:"model_name"`
-			ModelInfo map[string]json.RawMessage `json:"model_info"`
+			ModelName     string                     `json:"model_name"`
+			ModelInfo     map[string]json.RawMessage `json:"model_info"`
+			LiteLLMParams struct {
+				DataResidency string `json:"data_residency"`
+			} `json:"litellm_params"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &info); err != nil {
@@ -120,7 +123,7 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 	}
 	prices, unpriced := map[string]Price{}, map[string]bool{}
 	for _, d := range info.Data {
-		dp, err := deploymentPrice(d.ModelInfo)
+		dp, err := deploymentPrice(d.ModelInfo, d.LiteLLMParams.DataResidency != "")
 		if err != nil {
 			log.Printf("LiteLLM prices: a deployment of %q is unpriced: %v", d.ModelName, err)
 			unpriced[d.ModelName] = true
@@ -140,16 +143,20 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 }
 
 // deploymentPrice is one deployment's worst case over every per-token rate
-// LiteLLM can bill a text call with: the base, long-context
-// (*_above_*_tokens), service-tier, cache-write, tiered_pricing and
-// off_peak_pricing rates, and apart the cache-read rate. Any other cost field
-// carrying a value (per query, second, image, character, ...) is a charge
-// the hold cannot bound, and so is any cost multiplier (regional uplifts):
-// the deployment counts as unpriced.
-func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
+// LiteLLM can bill a text call through the gateway with: the base,
+// long-context (*_above_*_tokens), service-tier, cache-write,
+// tiered_pricing and off_peak_pricing rates, and apart the cache-read rate.
+// An OpenAI deployment's rates no gateway call reaches are out
+// (openAIUnbilled); residency says whether the deployment sets
+// data_residency. Any other cost field carrying a value (per query,
+// second, image, character, ...) is a charge the hold cannot bound, and so
+// is any cost multiplier (regional uplifts): the deployment counts as
+// unpriced.
+func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, error) {
 	var p Price
+	openai := string(mi["litellm_provider"]) == `"openai"`
 	for k, raw := range mi {
-		if string(raw) == "null" {
+		if string(raw) == "null" || openai && openAIUnbilled(k, residency) {
 			continue
 		}
 		switch {
@@ -203,6 +210,23 @@ func deploymentPrice(mi map[string]json.RawMessage) (Price, error) {
 	}
 	p.inSet, p.cacheSet = false, false
 	return p, nil
+}
+
+// openAIUnbilled reports an OpenAI rate no call through the gateway is
+// billed at: a service tier's (flex, priority, ultrafast) and the batch
+// API's, which take service_tier or a batch; extended cache retention's
+// (above_12hr), which takes prompt_cache_retention; a web search's, which
+// takes web_search_options; and the regional uplift of a deployment
+// without data_residency. The gateway forwards none of these options
+// (forwardedFields).
+func openAIUnbilled(k string, residency bool) bool {
+	for _, suffix := range []string{"_flex", "_priority", "_ultrafast", "_batches"} {
+		if strings.HasSuffix(k, suffix) {
+			return true
+		}
+	}
+	return strings.Contains(k, "_above_12hr") || k == "search_context_cost_per_query" ||
+		!residency && strings.HasPrefix(k, "regional_processing_uplift_multiplier_")
 }
 
 func (p *Price) addRate(k string, raw json.RawMessage) error {

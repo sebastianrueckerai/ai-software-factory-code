@@ -870,6 +870,9 @@ type fakeLedger struct {
 	routines  []policy.Routine  // policy.yaml's
 	briefs    map[string]string // the routines' briefs by path
 	down      bool              // no policy in force can be read
+	// premiumCap is the policy's budget.premium_month_eur and premium the
+	// month's spend on the premium class
+	premiumCap, premium float64
 }
 
 // testProcesses are the shipped two processes: maintenance builds direct
@@ -894,6 +897,11 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 	defer l.mu.Unlock()
 	l.from, l.to = from, to
 	return l.costs, nil
+}
+
+// PremiumMonthSpend is the fake's premium spend, whatever the month.
+func (l *fakeLedger) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
+	return l.premium, nil
 }
 
 // DaySpend is the fake's total of one day; it records no window, as it
@@ -935,7 +943,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 	}
 	v := policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Date(2026, 9, 27, 22, 50, 7, 0, time.UTC),
 		ActivatedAt: time.Date(2026, 9, 27, 22, 56, 38, 0, time.UTC),
-		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
+		Tree: policy.Tree{Document: policy.Document{Version: 1, Budget: policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50, PremiumMonthEUR: l.premiumCap},
 			Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/small"}}},
 			Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 			Approvers:       []string{"sebastian"},

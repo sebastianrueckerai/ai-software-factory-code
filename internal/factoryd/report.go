@@ -117,6 +117,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.policy, err = r.pinned(ctx, pin); err != nil {
 		return reportEnd{}, err
 	}
+	s.model = sessionModel(s.policy, t, s.model)
 	tc, err := r.TaskConfig(ctx, t.ID, pin)
 	if err != nil {
 		return reportEnd{}, err

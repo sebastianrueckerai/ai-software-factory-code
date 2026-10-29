@@ -1048,6 +1048,9 @@ func (a *AcceptanceRig) Costs(context.Context, time.Time, time.Time) (policy.Cos
 }
 
 func (a *AcceptanceRig) DaySpend(context.Context, time.Time) (float64, error) { return 0, nil }
+func (a *AcceptanceRig) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
+	return 0, nil
+}
 
 func (a *AcceptanceRig) ModelCalls(context.Context, string) ([]policy.ModelCall, error) {
 	return nil, nil

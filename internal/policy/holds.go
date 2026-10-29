@@ -57,6 +57,9 @@ type HoldRequest struct {
 	// file's budget.month_eur (Tree.ProjectCap): +Inf for none.
 	Project    string
 	ProjectEUR float64
+	// PremiumEUR is the premium month cap (budget.premium_month_eur) of a
+	// call on Premium; 0 for any other call, or no such cap.
+	PremiumEUR float64
 	// EUR is a tool call's worst case, held as is, and Cap the task's caps
 	// on the tool.
 	EUR float64
@@ -104,18 +107,25 @@ const RefusedMonthCap = "refused_month_cap"
 // cannot fit.
 const RefusedProjectCap = "refused_project_cap"
 
+// RefusedPremiumCap is the refusal of a premium call the premium month
+// headroom cannot fit; the gateway serves the call on Big instead.
+const RefusedPremiumCap = "refused_premium_cap"
+
 // Refusal is a call the headroom or a tool cap cannot fit.
 type Refusal struct {
-	Decision string // refused_budget, refused_day_cap, refused_month_cap, refused_project_cap, refused_tool_requests, refused_tool_eur or refused_task_status
+	Decision string // refused_budget, refused_day_cap, refused_month_cap, refused_project_cap, refused_premium_cap, refused_tool_requests, refused_tool_eur or refused_task_status
 	Reason   string
 }
 
 // refusal is the headroom refusal decision with reason; the month cap's
 // and project's cap's say what it refused and name the key a human raises,
-// the project's in its file. Only a model call finds a cap spent: a
-// reservation or a tool call's worst case may exceed what is left while
-// smaller calls still fit.
+// the project's in its file, and the premium cap's names its key. Only a
+// model call finds a cap spent: a reservation or a tool call's worst case
+// may exceed what is left while smaller calls still fit.
 func refusal(decision, kind, project, reason string) *Refusal {
+	if decision == RefusedPremiumCap {
+		return &Refusal{Decision: decision, Reason: reason + "; the premium cap budget.premium_month_eur in policy.yaml cannot pay for it"}
+	}
 	headroom, limit := "the month's remaining headroom (budget.month_eur)", "the month cap budget.month_eur in policy.yaml"
 	if decision == RefusedProjectCap {
 		file := "projects/" + project + ".yaml"
@@ -156,7 +166,7 @@ type Usage struct {
 // is at the input price. Without an earlier call it is at most Bytes
 // tokens at the input price.
 func Fit(f Free, r HoldRequest) (Hold, error) {
-	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
+	free, decision := f.bound()
 	img := float64(r.ImageTokens)
 	tokens, measure := float64(r.Bytes)+img, "at most"
 	inEUR := tokens * r.Price.In
@@ -171,14 +181,22 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 		// the epsilon keeps an exact quotient (0.009/4e-6) from flooring low
 		outFit = int(math.Min(math.Floor(left/r.Price.Out+1e-9), math.MaxInt32))
 	}
-	maxOut := min(outFit, r.Price.MaxOutput)
+	full := r.Price.MaxOutput
 	if r.WantOut > 0 {
-		maxOut = min(maxOut, r.WantOut)
+		full = min(full, r.WantOut)
 	}
+	maxOut := min(outFit, full)
 	if maxOut <= 0 || maxOut < MinCallTokens && maxOut != r.WantOut {
 		return Hold{}, refusal(decision, KindModel, r.Project, fmt.Sprintf(
 			"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
 			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens))
+	}
+	// a premium call keeps its whole output or runs on big: a reasoning
+	// model at max effort can spend a clamped limit before it answers
+	if decision == RefusedPremiumCap && maxOut < full {
+		return Hold{}, refusal(decision, KindModel, r.Project, fmt.Sprintf(
+			"free headroom %.6f EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens)",
+			free, f.figures(), maxOut, full, r.Bytes, measure, tokens))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, MaxOut: maxOut, WantOut: r.WantOut,
 		EUR: inEUR + float64(maxOut)*r.Price.Out}, nil
@@ -203,7 +221,7 @@ func FitTool(f Free, requests int, usedEUR float64, r HoldRequest) (Hold, error)
 // headroom pay for it: a tool call's worst case, or a commissioned
 // resource's reservation.
 func FitResource(f Free, r HoldRequest) (Hold, error) {
-	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
+	free, decision := f.bound()
 	if r.EUR > free {
 		return Hold{}, refusal(decision, r.Kind, r.Project, fmt.Sprintf(
 			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (%s)", r.Ref, r.EUR, free, f.figures()))
@@ -425,17 +443,31 @@ func LockHeadroom(ctx context.Context, tx *sql.Tx) error {
 
 // Free is a task's, the day's, the month's and the task's project's month
 // headroom after every outstanding hold. The project's is +Inf for a
-// project without a cap.
+// project without a cap. Premium is the premium month headroom of a call
+// on Premium under a premium cap, nil for any other call.
 type Free struct {
 	Task, Day, Month, Project float64
+	Premium                   *float64
+}
+
+// bound is HeadroomBound over f, and the premium headroom below it.
+func (f Free) bound() (float64, string) {
+	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
+	if f.Premium != nil && *f.Premium < free {
+		return *f.Premium, RefusedPremiumCap
+	}
+	return free, decision
 }
 
 // figures are the free headroom a refusal quotes; the project's only under
-// a cap.
+// a cap, the premium's only on a premium call under its cap.
 func (f Free) figures() string {
 	s := fmt.Sprintf("task %.6f, day %.6f, month %.6f", f.Task, f.Day, f.Month)
 	if !math.IsInf(f.Project, 1) {
 		s += fmt.Sprintf(", project %.6f", f.Project)
+	}
+	if f.Premium != nil {
+		s += fmt.Sprintf(", premium %.6f", *f.Premium)
 	}
 	return s
 }
@@ -455,6 +487,16 @@ func daySpentSQL(at string) string {
 }
 
 const heldSQL = `COALESCE((SELECT sum(eur) FROM holds), 0)`
+
+// premiumRef holds a ledger or hold row on Premium: an agent's ref is the
+// alias, factoryd's purpose/alias.
+const premiumRef = `kind = 'model' AND regexp_replace(ref, '^.*/', '') = '` + Premium + `'`
+
+// PremiumMonthSpentSQL is the spend on Premium over the ledger in the UTC
+// calendar month of at, a timestamptz expression.
+func PremiumMonthSpentSQL(at string) string {
+	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND ` + premiumRef + `), 0)`
+}
 
 // DayFree is the UTC day's free headroom under dayEUR at at, the day's
 // figure FreeHeadroom fits a hold into: dayEUR less the day's spend and
@@ -492,7 +534,9 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 // project's is r.ProjectEUR less the month's ledger rows and the
 // outstanding holds of every task of the task's repository, read only
 // under a cap (+Inf otherwise). Every outstanding hold counts against the
-// day and the month.
+// day and the month. A call under a premium cap (r.PremiumEUR) also reads
+// the premium month headroom: the cap less the month's spend and the
+// outstanding holds on Premium.
 func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free, error) {
 	taskID, at := r.TaskID, now()
 	t, err := readTaskFree(ctx, q, taskID)
@@ -509,6 +553,15 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 		return TaskFree{}, Free{}, err
 	}
 	f.Task, f.Day, f.Month, f.Project = t.Free(), day-allHeld, month-allHeld, math.Inf(1)
+	if r.PremiumEUR > 0 {
+		var premium float64
+		if err := q.QueryRowContext(ctx,
+			`SELECT ($1 - `+PremiumMonthSpentSQL("$2::timestamptz")+` - COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8`,
+			r.PremiumEUR, at).Scan(&premium); err != nil {
+			return TaskFree{}, Free{}, err
+		}
+		f.Premium = &premium
+	}
 	if math.IsInf(r.ProjectEUR, 1) {
 		return t, f, nil
 	}

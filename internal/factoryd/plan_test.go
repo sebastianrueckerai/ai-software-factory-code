@@ -2060,6 +2060,56 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	}
 }
 
+// The planner class's session_model (ruling 330) is the model its plan
+// session runs on, whatever rung the plan loop passes.
+func TestRunPlanRunsOnTheClassSessionModel(t *testing.T) {
+	files, err := policy.ReadDir("../policy/testdata/tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	edit := func(file, old, new string) {
+		t.Helper()
+		s := string(files[file])
+		if !strings.Contains(s, old) {
+			t.Fatalf("%s lacks %q", file, old)
+		}
+		files[file] = []byte(strings.Replace(s, old, new, 1))
+	}
+	edit("policy.yaml", "  planner:\n    session: plan\n    models: [small, big]\n",
+		"  planner:\n    session: plan\n    models: [small, big, premium]\n    session_model: premium\n")
+	edit("policy.yaml", "max_output_tokens: {", "max_output_tokens: {premium: 24576, ")
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinned := policy.Version{ID: 7, Commit: "c7", Tree: tree}
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+
+	logs := envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + resultLine(true, "no plan yet")
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{})
+		if err == nil {
+			var res PlanResult
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, logs)
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if env := podEnv(kube.podAt(0)); env["MODEL"] != "factory/premium" {
+		t.Fatalf("the plan session's MODEL = %q, want factory/premium", env["MODEL"])
+	}
+}
+
 // deploySpec is a spec with a Deploy line; noDeployOwner the refusal of a
 // plan without a card owning deploy/ against it.
 const (
