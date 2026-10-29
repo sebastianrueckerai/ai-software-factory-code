@@ -38,51 +38,68 @@ func sizedSwitch(size, reason string, files []string) *PlanSwitch {
 // report task sizes it; the filer's small, or none, is a floor no size
 // goes under. A sized card that holds its filing's budget gets its new
 // size's. A sizing with no size keeps the card as filed. The sizing step
-// is written last, so a retry that finds it answers from it.
+// is recorded once and first; the size write follows from it, and a call
+// that finds the step completes that write and answers from it.
 func (r *Runner) SizeCard(ctx context.Context, taskID string) (SizeResult, error) {
 	defer beatUntilDone(ctx, "sizing")()
-	t, _, err := r.task(ctx, taskID)
+	step, err := r.sizingStep(ctx, taskID)
 	if err != nil {
 		return SizeResult{}, err
 	}
-	tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
-	if err != nil {
-		return SizeResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
-	}
-	if step := lastStep(tl, StepSizing); step != nil {
-		if plan, _ := step["plan"].(bool); !plan {
-			return SizeResult{}, nil
-		}
-		size, _ := step["size"].(string)
-		reason, _ := step["reason"].(string)
-		var files []string
-		listed, _ := step["files"].([]any)
-		for _, f := range listed {
-			if f, ok := f.(string); ok {
-				files = append(files, f)
-			}
-		}
-		return SizeResult{ToPlan: sizedSwitch(size, reason, files)}, nil
-	}
-	record := func(detail map[string]any) error {
-		if err := r.timeline.Append(ctx, taskID, StepSizing, gateEnd(t, GateSizing, detail)); err != nil {
-			return fmt.Errorf("record %s: %w", StepSizing, err)
-		}
-		return nil
-	}
-	if t.CarryPR > 0 {
-		return SizeResult{}, record(map[string]any{"skipped": fmt.Sprintf("the card carries pull request #%d, whose work exists", t.CarryPR)})
-	}
-	if t.Size == "medium" || t.Size == "large" {
-		reason := "its filer sized it " + t.Size
-		if err := record(map[string]any{"size": t.Size, "filed": t.Size, "reason": reason, "plan": true}); err != nil {
+	if step == nil {
+		if step, err = r.recordSizing(ctx, taskID); err != nil {
 			return SizeResult{}, err
 		}
-		return SizeResult{ToPlan: sizedSwitch(t.Size, reason, nil)}, nil
+	}
+	return r.sized(ctx, taskID, step)
+}
+
+// recordSizing sizes card taskID and records its sizing step, unless a
+// parallel attempt recorded one first; it answers the step recorded.
+func (r *Runner) recordSizing(ctx context.Context, taskID string) (map[string]any, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	detail, err := r.sizing(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := r.timeline.AppendOnce(ctx, taskID, StepSizing, detail); err != nil {
+		return nil, fmt.Errorf("record %s: %w", StepSizing, err)
+	}
+	step, err := r.sizingStep(ctx, taskID)
+	if err == nil && step == nil {
+		err = fmt.Errorf("the timeline of %s holds no %s step after its record", taskID, StepSizing)
+	}
+	return step, err
+}
+
+// sizingStep is card taskID's sizing step, nil before it is recorded.
+func (r *Runner) sizingStep(ctx context.Context, taskID string) (map[string]any, error) {
+	tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return nil, fmt.Errorf("the timeline of %s: %w", taskID, err)
+	}
+	return lastStep(tl, StepSizing), nil
+}
+
+// sizing is card t's sizing step, its gate's end included. A sized step
+// that changes the card carries held_cents, the budget its decision read.
+func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
+	if t.CarryPR > 0 {
+		return gateEnd(t, GateSizing, map[string]any{"skipped": fmt.Sprintf("the card carries pull request #%d, whose work exists", t.CarryPR)}), nil
+	}
+	if t.Size == "medium" || t.Size == "large" {
+		return gateEnd(t, GateSizing, map[string]any{"size": t.Size, "filed": t.Size, "reason": "its filer sized it " + t.Size, "plan": true}), nil
 	}
 	child, err := r.reportOf(ctx, t, SourceSizing)
 	if err != nil {
-		return SizeResult{}, err
+		return nil, err
+	}
+	// a raise may have come during the session
+	if t, _, err = r.task(ctx, t.ID); err != nil {
+		return nil, err
 	}
 	var v sizeVerdict
 	ok, reason := false, fmt.Sprintf("the sizing task %s ended %s", child.ID, child.Status)
@@ -92,11 +109,11 @@ func (r *Runner) SizeCard(ctx context.Context, taskID string) (SizeResult, error
 		}
 	}
 	if !ok {
-		return SizeResult{}, record(map[string]any{"size": t.Size, "filed": t.Size, "reason": reason, "report": child.ID, "plan": false})
+		return gateEnd(t, GateSizing, map[string]any{"size": t.Size, "filed": t.Size, "reason": reason, "report": child.ID, "plan": false}), nil
 	}
 	p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
-		return SizeResult{}, err
+		return nil, err
 	}
 	b, strong := r.cfg.Policy().Document.Budget, t.Rung == RungFrontier
 	_, eur := askedBudget(t.Objective)
@@ -109,15 +126,36 @@ func (r *Runner) SizeCard(ctx context.Context, taskID string) (SizeResult, error
 		detail["budget_eur"] = budget
 	}
 	if v.Size != t.Size || Cents(budget) != Cents(t.BudgetEUR) {
-		if err := r.store.SetTaskSize(ctx, taskID, v.Size, budget); err != nil {
+		detail["held_cents"] = Cents(t.BudgetEUR)
+	}
+	return gateEnd(t, GateSizing, detail), nil
+}
+
+// sized completes the size write card taskID's sizing step names and
+// answers from the step. Only a sized step that changes the card carries
+// held_cents and writes; a budget that moved since its decision read it
+// stays.
+func (r *Runner) sized(ctx context.Context, taskID string, step map[string]any) (SizeResult, error) {
+	size, _ := step["size"].(string)
+	if held, ok := step["held_cents"].(float64); ok {
+		budget, ok := step["budget_eur"].(float64)
+		if !ok {
+			budget = held / 100
+		}
+		if err := r.store.SetTaskSize(ctx, taskID, size, int64(held), budget); err != nil {
 			return SizeResult{}, err
 		}
 	}
-	if err := record(detail); err != nil {
-		return SizeResult{}, err
-	}
-	if v.Size == "small" {
+	if plan, _ := step["plan"].(bool); !plan {
 		return SizeResult{}, nil
 	}
-	return SizeResult{ToPlan: sizedSwitch(v.Size, v.Reason, v.Files)}, nil
+	reason, _ := step["reason"].(string)
+	var files []string
+	listed, _ := step["files"].([]any)
+	for _, f := range listed {
+		if f, ok := f.(string); ok {
+			files = append(files, f)
+		}
+	}
+	return SizeResult{ToPlan: sizedSwitch(size, reason, files)}, nil
 }
