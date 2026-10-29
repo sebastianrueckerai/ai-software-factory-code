@@ -72,6 +72,7 @@ type prForgejo struct {
 	created       []map[string]any   // POST /pulls bodies
 	comments      []string           // issue comment bodies
 	labels        map[int64][]string // issue → labels
+	labelFail     int                // PUT /issues/{n}/labels answers 500 this many times first
 	head          string             // GET /branches/{b}'s commit; a POST /contents moves it to head+"e"
 	mainHead      string             // GET /branches/main's commit; unlisted branches answer head
 	contents      []map[string]any   // POST /contents bodies
@@ -268,6 +269,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			json.NewEncoder(w).Encode(out)
 		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
+			if f.labelFail > 0 {
+				f.labelFail--
+				http.Error(w, "forgejo down", http.StatusInternalServerError)
+				return
+			}
 			var n int64
 			fmt.Sscanf(p, "/issues/%d/labels", &n)
 			var body struct{ Labels []string }

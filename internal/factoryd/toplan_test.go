@@ -112,6 +112,46 @@ func TestBecomePlanIsRetrySafe(t *testing.T) {
 	}
 }
 
+// A label write that fails after the row moved fails the attempt; the
+// retry finishes the labels and records no second step.
+func TestBecomePlanCompletesAfterAFailedLabelWrite(t *testing.T) {
+	r, store, objects, fj := becomePlanRig(t, directCard(), specTracks)
+	fj.labelFail = 1
+	sw := PlanSwitch{Reason: "too big", Work: "split by the check-in"}
+	if _, err := execActivity(t, r, ActivityBecomePlan, "t1", sw); err == nil {
+		t.Fatal("the first attempt succeeded, want the label write's failure")
+	}
+	if card := store.tasks["t1"]; card.Track != policy.TrackPlan || len(toPlanSteps(t, objects)) != 1 ||
+		!slices.Equal(fj.labels[7], []string{LabelAgent, "state/running"}) {
+		t.Fatalf("after the failed attempt: track %q, steps %v, labels %q; want plan, one step, the labels as they were", card.Track, toPlanSteps(t, objects), fj.labels[7])
+	}
+	if got := becomePlan(t, r, sw); got != (PlanSwitchResult{Switched: true}) {
+		t.Fatalf("the retry: BecomePlan = %+v, want switched", got)
+	}
+	if steps, writes := len(toPlanSteps(t, objects)), labelWrites(fj); steps != 1 || writes != 2 ||
+		!slices.Equal(fj.labels[7], []string{LabelPlan, "state/running"}) || store.tasks["t1"].Usage != (TaskUsage{}) {
+		t.Fatalf("%d to_plan steps, %d label writes, labels %q, usage %+v; want 1, 2 (one refused), [plan state/running], zero",
+			steps, writes, fj.labels[7], store.tasks["t1"].Usage)
+	}
+}
+
+// A card found plan-track is one an earlier attempt moved before it
+// stopped: the attempt records the missing step, zeroes the counters and
+// relabels the issue.
+func TestBecomePlanCompletesAnEarlierAttempt(t *testing.T) {
+	card := directCard()
+	card.Track, card.RequiredCapabilities = policy.TrackPlan, []string{"planner"}
+	r, store, objects, fj := becomePlanRig(t, card, specTracks)
+	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "split by the check-in"}); got != (PlanSwitchResult{Switched: true}) {
+		t.Fatalf("BecomePlan = %+v, want switched", got)
+	}
+	steps := toPlanSteps(t, objects)
+	if len(steps) != 1 || steps[0]["work_so_far"] != "Branch head: c7\nsplit by the check-in\nReason for the switch: too big" ||
+		store.tasks["t1"].Usage != (TaskUsage{}) || !slices.Equal(fj.labels[7], []string{LabelPlan, "state/running"}) {
+		t.Fatalf("to_plan steps %v, usage %+v, labels %q", steps, store.tasks["t1"].Usage, fj.labels[7])
+	}
+}
+
 // A card that may not turn plan-track is refused with its reason and left
 // exactly as it was.
 func TestBecomePlanRefuses(t *testing.T) {
@@ -122,12 +162,13 @@ func TestBecomePlanRefuses(t *testing.T) {
 	}{
 		"open pull request": {change: func(c *Task) { c.PRNumber = 12 }, tracks: specTracks,
 			want: "Card #7 has an open pull request, so its work cannot go back to the planner: close the pull request first."},
-		"a plan's child":            {change: func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "t-plan", "api" }, tracks: specTracks},
-		"a roll":                    {change: func(c *Task) { c.Source = SourceRoll }, tracks: specTracks},
-		"a human card":              {change: func(c *Task) { c.Kind, c.Status, c.Track, c.RequiredCapabilities = "human", "waiting-human", "", nil }, tracks: specTracks},
-		"waiting on a human":        {change: func(c *Task) { c.Status = "waiting-human" }, tracks: specTracks},
-		"plan-track from the start": {change: func(c *Task) { c.Track, c.RequiredCapabilities = policy.TrackPlan, []string{"planner"} }, tracks: specTracks},
-		"no plan track":             {change: func(*Task) {}, tracks: maintenanceTracks},
+		"a plan's child":     {change: func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "t-plan", "api" }, tracks: specTracks},
+		"a roll":             {change: func(c *Task) { c.Source = SourceRoll }, tracks: specTracks},
+		"a human card":       {change: func(c *Task) { c.Kind, c.Status, c.Track, c.RequiredCapabilities = "human", "waiting-human", "", nil }, tracks: specTracks},
+		"waiting on a human": {change: func(c *Task) { c.Status = "waiting-human" }, tracks: specTracks},
+		"another track": {change: func(c *Task) { c.Track = "lane" }, tracks: specTracks,
+			want: `Card #7 is on track "lane", not the direct track, so its work cannot go back to the planner: file its work as a direct card first.`},
+		"no plan track": {change: func(*Task) {}, tracks: maintenanceTracks},
 	} {
 		t.Run(name, func(t *testing.T) {
 			card := directCard()
@@ -137,15 +178,22 @@ func TestBecomePlanRefuses(t *testing.T) {
 			if got.Switched || got.Refused == "" || !strings.Contains(got.Refused, "#7") || (tc.want != "" && got.Refused != tc.want) {
 				t.Fatalf("BecomePlan = %+v, want refused naming #7 (%q)", got, tc.want)
 			}
-			after := store.tasks["t1"]
-			if after.Track != card.Track || !slices.Equal(after.RequiredCapabilities, card.RequiredCapabilities) || after.Usage != card.Usage {
-				t.Fatalf("card changed: %+v", after)
-			}
-			if steps, writes := len(toPlanSteps(t, objects)), labelWrites(fj); steps != 0 || writes != 0 ||
-				!slices.Equal(fj.labels[7], []string{LabelAgent, "state/running"}) {
-				t.Fatalf("%d to_plan steps, %d label writes, labels %q; want none and the labels as they were", steps, writes, fj.labels[7])
-			}
+			untouched(t, store, objects, fj, card)
 		})
+	}
+}
+
+// untouched fails unless t1 is card as it was: its track, class and
+// usage, no to_plan step, no label write.
+func untouched(t *testing.T, store *fakeStore, objects *fakeObjectStore, fj *prForgejo, card Task) {
+	t.Helper()
+	after := store.tasks["t1"]
+	if after.Track != card.Track || !slices.Equal(after.RequiredCapabilities, card.RequiredCapabilities) || after.Usage != card.Usage {
+		t.Fatalf("card changed: %+v", after)
+	}
+	if steps, writes := len(toPlanSteps(t, objects)), labelWrites(fj); steps != 0 || writes != 0 ||
+		!slices.Equal(fj.labels[7], []string{LabelAgent, "state/running"}) {
+		t.Fatalf("%d to_plan steps, %d label writes, labels %q; want none and the labels as they were", steps, writes, fj.labels[7])
 	}
 }
 
@@ -163,23 +211,40 @@ func (s racingStore) SwitchToPlan(ctx context.Context, id string, capabilities [
 	return s.fakeStore.SwitchToPlan(ctx, id, capabilities)
 }
 
-// A row that moved on before the switch: a card closed meanwhile is
-// refused by its status, one an earlier attempt switched is switched.
+// A row that moved on before the switch is refused by what moved it, with
+// nothing written: a card closed meanwhile by its status, one that got a
+// pull request meanwhile by the pull request.
 func TestBecomePlanAfterARace(t *testing.T) {
 	for name, tc := range map[string]struct {
 		change func(*Task)
-		want   PlanSwitchResult
+		want   string
 	}{
 		"closed meanwhile": {func(c *Task) { c.Status = "closed" },
-			PlanSwitchResult{Refused: "Card #7 is closed, so its work cannot go back to the planner: switch it while it is queued, waiting on its dependencies or running."}},
-		"switched meanwhile": {func(c *Task) { c.Track = policy.TrackPlan }, PlanSwitchResult{Switched: true}},
+			"Card #7 is closed, so its work cannot go back to the planner: switch it while it is queued, waiting on its dependencies or running."},
+		"a pull request meanwhile": {func(c *Task) { c.PRNumber = 12 },
+			"Card #7 has an open pull request, so its work cannot go back to the planner: close the pull request first."},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r, store, _, _ := becomePlanRig(t, directCard(), specTracks)
+			r, store, objects, fj := becomePlanRig(t, directCard(), specTracks)
 			r.store = racingStore{store, tc.change}
-			if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); got != tc.want {
-				t.Fatalf("BecomePlan = %+v, want %+v", got, tc.want)
+			if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); got != (PlanSwitchResult{Refused: tc.want}) {
+				t.Fatalf("BecomePlan = %+v, want refused %q", got, tc.want)
 			}
+			untouched(t, store, objects, fj, directCard())
 		})
+	}
+}
+
+// One an earlier attempt switched meanwhile is switched, and this attempt
+// completes it.
+func TestBecomePlanAfterAnEarlierAttemptSwitched(t *testing.T) {
+	r, store, objects, fj := becomePlanRig(t, directCard(), specTracks)
+	r.store = racingStore{store, func(c *Task) { c.Track = policy.TrackPlan }}
+	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "w"}); got != (PlanSwitchResult{Switched: true}) {
+		t.Fatalf("BecomePlan = %+v, want switched", got)
+	}
+	if steps := toPlanSteps(t, objects); len(steps) != 1 || store.tasks["t1"].Usage != (TaskUsage{}) ||
+		!slices.Equal(fj.labels[7], []string{LabelPlan, "state/running"}) {
+		t.Fatalf("to_plan steps %v, usage %+v, labels %q", steps, store.tasks["t1"].Usage, fj.labels[7])
 	}
 }

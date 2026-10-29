@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"slices"
@@ -30,46 +31,58 @@ const workSoFarFinding = "work so far on this card, which ran as a direct card b
 // switchableStatuses are the statuses a direct card may turn plan-track in.
 var switchableStatuses = []string{"queued", "waiting-deps", "running"}
 
-// BecomePlan turns direct card taskID plan-track: the to_plan step with
-// the planner's block, the card's session counters at zero (the plan loop
-// has caps of its own), its issue labelled plan in place of agent, then
-// the row on the plan track with the plan class. The row moves last: an
-// attempt that stopped before it is repeated whole, one after it answers
-// switched.
+// BecomePlan turns direct card taskID plan-track. The row moves first, to
+// the plan track with the plan class, and nothing is written before it: a
+// refusal leaves the card as it was. Then each attempt that finds the card
+// plan-track completes what is missing: the to_plan step with the
+// planner's block, the session counters at zero (the plan loop has caps of
+// its own), the issue labelled plan in place of agent. Its only caller is
+// the direct lifecycle, so a card found plan-track is one an earlier
+// attempt moved.
 func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (PlanSwitchResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return PlanSwitchResult{}, err
 	}
-	if t.Track == policy.TrackPlan {
-		tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	var work string
+	if t.Track != policy.TrackPlan {
+		p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
 		if err != nil {
-			return PlanSwitchResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
+			return PlanSwitchResult{}, err
 		}
-		if lastStep(tl, stepToPlan) != nil {
-			return PlanSwitchResult{Switched: true}, nil
+		class, planTrack := trackClass(p, policy.TrackPlan)
+		if why := planRefusal(t, planTrack); why != "" {
+			return PlanSwitchResult{Refused: why}, nil
+		}
+		if work, err = r.workSoFar(ctx, taskID, sw); err != nil {
+			return PlanSwitchResult{}, err
+		}
+		switched, err := r.store.SwitchToPlan(ctx, taskID, []string{class})
+		if err != nil {
+			return PlanSwitchResult{}, err
+		}
+		if !switched {
+			if t, _, err = r.task(ctx, taskID); err != nil {
+				return PlanSwitchResult{}, err
+			}
+			if t.Track != policy.TrackPlan {
+				return PlanSwitchResult{Refused: cmp.Or(planRefusal(t, planTrack), statusRefusal(t))}, nil
+			}
 		}
 	}
-	p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
+	tl, err := r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
-		return PlanSwitchResult{}, err
+		return PlanSwitchResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
 	}
-	class, planTrack := trackClass(p, policy.TrackPlan)
-	if why := planRefusal(t, planTrack); why != "" {
-		return PlanSwitchResult{Refused: why}, nil
-	}
-	head, err := r.BranchHead(ctx, taskID)
-	if err != nil {
-		return PlanSwitchResult{}, err
-	}
-	work := "No commit past the base.\n"
-	if head != "" {
-		work = "Branch head: " + head + "\n"
-	}
-	work += sw.Work + "\nReason for the switch: " + sw.Reason
-	// the planner reads this step: a lost append fails the attempt, not the planner's input
-	if err := r.timeline.Append(ctx, taskID, stepToPlan, map[string]any{"reason": sw.Reason, "work_so_far": work}); err != nil {
-		return PlanSwitchResult{}, fmt.Errorf("record %s: %w", stepToPlan, err)
+	if lastStep(tl, stepToPlan) == nil {
+		if work == "" {
+			if work, err = r.workSoFar(ctx, taskID, sw); err != nil {
+				return PlanSwitchResult{}, err
+			}
+		}
+		if err := r.timeline.Append(ctx, taskID, stepToPlan, map[string]any{"reason": sw.Reason, "work_so_far": work}); err != nil {
+			return PlanSwitchResult{}, fmt.Errorf("record %s: %w", stepToPlan, err)
+		}
 	}
 	if err := r.store.SetTaskUsage(ctx, taskID, TaskUsage{}); err != nil {
 		return PlanSwitchResult{}, err
@@ -79,27 +92,33 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 		if err != nil {
 			return PlanSwitchResult{}, err
 		}
-		next := []string{LabelPlan}
-		for _, l := range labels {
-			if l != LabelAgent && l != LabelPlan {
-				next = append(next, l)
+		if slices.Contains(labels, LabelAgent) || !slices.Contains(labels, LabelPlan) {
+			next := []string{LabelPlan}
+			for _, l := range labels {
+				if l != LabelAgent && l != LabelPlan {
+					next = append(next, l)
+				}
+			}
+			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, next); err != nil {
+				return PlanSwitchResult{}, err
 			}
 		}
-		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, next); err != nil {
-			return PlanSwitchResult{}, err
-		}
 	}
-	switched, err := r.store.SwitchToPlan(ctx, taskID, []string{class})
-	if err != nil || switched {
-		return PlanSwitchResult{Switched: switched}, err
+	return PlanSwitchResult{Switched: true}, nil
+}
+
+// workSoFar is the planner's input block of card taskID: the head of its
+// branch past the base, the caller's text and the reason for the switch.
+func (r *Runner) workSoFar(ctx context.Context, taskID string, sw PlanSwitch) (string, error) {
+	head, err := r.BranchHead(ctx, taskID)
+	if err != nil {
+		return "", err
 	}
-	if t, _, err = r.task(ctx, taskID); err != nil {
-		return PlanSwitchResult{}, err
+	work := "No commit past the base.\n"
+	if head != "" {
+		work = "Branch head: " + head + "\n"
 	}
-	if t.Track == policy.TrackPlan {
-		return PlanSwitchResult{Switched: true}, nil
-	}
-	return PlanSwitchResult{Refused: statusRefusal(t)}, nil
+	return work + sw.Work + "\nReason for the switch: " + sw.Reason, nil
 }
 
 // planRefusal is why card t may not turn plan-track, "" when it may;
@@ -109,8 +128,8 @@ func planRefusal(t Task, planTrack bool) string {
 	switch {
 	case t.Kind != "agent":
 		return card + " is a person's card" + cannotPlan + "file the work as an issue labelled plan."
-	case t.Track == policy.TrackPlan:
-		return card + " is on the plan track already, so the planner has its work: wait for its plan."
+	case t.Track != policy.TrackDirect:
+		return fmt.Sprintf("%s is on track %q, not the direct track%sfile its work as a direct card first.", card, t.Track, cannotPlan)
 	case t.Source == SourcePlan:
 		return card + " belongs to a plan" + cannotPlan + "revise the plan instead."
 	case t.Unbound():

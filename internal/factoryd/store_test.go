@@ -1997,13 +1997,19 @@ func TestSwitchToPlan(t *testing.T) {
 		switched bool
 	}{{"t-run", true}, {"t-pr", false}, {"t-card", false}, {"t-done", false}, {"t-run", false}} {
 		switched, err := s.SwitchToPlan(ctx, tc.id, planner)
-		got, _, _ := s.Task(ctx, tc.id)
+		if err != nil {
+			t.Fatalf("SwitchToPlan(%s): %v", tc.id, err)
+		}
+		got, ok, err := s.Task(ctx, tc.id)
+		if err != nil || !ok {
+			t.Fatalf("Task(%s) = %v, %v", tc.id, ok, err)
+		}
 		track, caps := "direct", coder
 		if tc.id == "t-run" {
 			track, caps = "plan", planner
 		}
-		if err != nil || switched != tc.switched || got.Track != track || !slices.Equal(got.RequiredCapabilities, caps) {
-			t.Fatalf("SwitchToPlan(%s) = %v, %v; track %q, capabilities %q; want %v, %s, %q", tc.id, switched, err, got.Track, got.RequiredCapabilities, tc.switched, track, caps)
+		if switched != tc.switched || got.Track != track || !slices.Equal(got.RequiredCapabilities, caps) {
+			t.Fatalf("SwitchToPlan(%s) = %v; track %q, capabilities %q; want %v, %s, %q", tc.id, switched, got.Track, got.RequiredCapabilities, tc.switched, track, caps)
 		}
 	}
 }

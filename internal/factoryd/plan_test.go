@@ -1767,15 +1767,23 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 }
 
 // A planner session of a card that ran direct first gets the to_plan
-// step's work so far as its first finding; a card plan-track from its
-// filing gets none.
+// step's work so far as its last finding, which the session's fit drops
+// last: past the carried cap the oldest findings go and the block stays.
+// A card plan-track from its filing gets none.
 func TestRunPlanCarriesTheWorkSoFar(t *testing.T) {
+	block := "work so far on this card, which ran as a direct card before it came to you:\nBranch head: c7\nsplit by the check-in\nReason for the switch: too big"
+	var sixty []string
+	for i := 1; i <= 60; i++ {
+		sixty = append(sixty, fmt.Sprintf("finding %d", i))
+	}
 	for name, tc := range map[string]struct {
 		switched bool
-		want     string
+		findings []string
+		want     []string
 	}{
-		"switched":                   {true, `["work so far on this card, which ran as a direct card before it came to you:\nBranch head: c7\nsplit by the check-in\nReason for the switch: too big","an earlier finding"]`},
-		"plan-track from its filing": {false, `["an earlier finding"]`},
+		"switched":                   {true, []string{"an earlier finding"}, []string{"an earlier finding", block}},
+		"switched, past the cap":     {true, sixty, append(slices.Clone(sixty[1:]), block)},
+		"plan-track from its filing": {false, []string{"an earlier finding"}, []string{"an earlier finding"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
@@ -1793,7 +1801,7 @@ func TestRunPlanCarriesTheWorkSoFar(t *testing.T) {
 			}
 			done := make(chan error)
 			go func() {
-				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string{"an earlier finding"})
+				_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), tc.findings)
 				done <- err
 			}()
 			awaitPod(t, kube, done)
@@ -1801,8 +1809,9 @@ func TestRunPlanCarriesTheWorkSoFar(t *testing.T) {
 			if err := <-done; err != nil {
 				t.Fatalf("RunPlan: %v", err)
 			}
-			if got := podEnv(kube.podAt(0))["FINDINGS"]; got != tc.want {
-				t.Fatalf("FINDINGS %s, want %s", got, tc.want)
+			var got []string
+			if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || !slices.Equal(got, tc.want) {
+				t.Fatalf("FINDINGS %q (%v), want %q", got, err, tc.want)
 			}
 		})
 	}
