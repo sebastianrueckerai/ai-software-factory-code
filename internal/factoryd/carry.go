@@ -3,10 +3,8 @@ package factoryd
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -39,19 +37,18 @@ type carryFrom struct {
 type carryTask struct{ desc, result string }
 
 // priorState is the working state s continues from, copied from its
-// parent's record. nil without a parent, for a report or plan session,
-// after a parent that pushed (it finished its work), and when the record
-// cannot be read or holds no state.
-func (r *Runner) priorState(ctx context.Context, t Task, s sessionSpec) *carryState {
+// parent's record, which record returns. nil without a parent, for a
+// report or plan session, after a parent that pushed (it finished its
+// work), and when the record cannot be read or holds no state.
+func priorState(s sessionSpec, record func() ([]byte, error)) *carryState {
 	if s.parent == "" || s.report != "" || s.planner || s.parentOutcome == OutcomePushed {
 		return nil
 	}
-	record, err := r.objects.Get(ctx, "sessions/"+t.ID+"/"+s.parent+".jsonl")
+	rec, err := record()
 	if err != nil {
-		log.Printf("task %s: read session %s's record for its working state: %v", t.ID, s.parent, err)
 		return nil
 	}
-	return workingState(record, carryFrom{Session: s.parent, Commit: s.startRef, Stop: s.parentStop,
+	return workingState(rec, carryFrom{Session: s.parent, Commit: s.startRef, Stop: s.parentStop,
 		DeadEnd: s.parentOutcome == OutcomeRedirect || s.parentOutcome == OutcomeRetryStronger})
 }
 

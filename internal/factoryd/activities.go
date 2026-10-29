@@ -631,7 +631,8 @@ func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned boo
 // own LiteLLM key), one worker pod, supervision, and the session record.
 // A retry after a crashed or stopped worker finds the dead session in the
 // heartbeat, removes its namespace and pod with its credentials, and
-// starts a new session carrying the dead one's findings and id as parent.
+// starts a new session carrying the dead one's findings, and its id as
+// parent once it recorded an event.
 // factoryd stopping ends the session gracefully first: the worker pushes
 // its work in progress and the heartbeat carries its report.
 func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult, error) {
@@ -691,8 +692,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	s.base = t.SHA
 	var dead sessionProgress
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
-		s.parent, s.parentOutcome = dead.SessionID, ""
-		s.parentStop = fmt.Sprintf("factoryd stopped while it ran, after %d events", dead.Events)
+		if dead.Events > 0 {
+			// the dead session left a record, which every event extends
+			s.parent, s.parentOutcome = dead.SessionID, ""
+			s.parentStop = fmt.Sprintf("factoryd's run of it ended without an outcome after at least %d events", dead.Events)
+		}
 		if dead.Running {
 			s.findings = slices.Concat(in.Findings, []string{fmt.Sprintf(
 				"session %s stopped after %d events without finishing; continue from the branch as it is", dead.SessionID, dead.Events)})

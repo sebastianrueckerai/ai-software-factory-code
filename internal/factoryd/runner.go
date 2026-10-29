@@ -624,15 +624,22 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// had its brief. A check-in that stops the session here stops it
 	// before anything of the conversation is spent.
 	if live == nil {
-		carry := r.priorState(ctx, t, s)
+		// the check-in and the working state read the parent's record once
+		parentRecord := sync.OnceValues(func() ([]byte, error) {
+			rec, err := r.objects.Get(ctx, "sessions/"+t.ID+"/"+s.parent+".jsonl")
+			if err != nil {
+				log.Printf("task %s: read session %s's record: %v", t.ID, s.parent, err)
+			}
+			return rec, err
+		})
 		if s.checkInAsk != nil {
 			var stop bool
-			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline, carry)
+			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline, parentRecord)
 			if stop {
 				return out, nil
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, carry)
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord))
 		}
 	}
 
@@ -973,7 +980,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 // record is delivered whole to the pod and its tail to the conversation,
 // and a human or dropped-all decision stops the pod with nothing of the
 // conversation spent. stop says the session ends here.
-func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, deadline time.Time, carry *carryState) (ck *CheckInOutcome, stop bool) {
+func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}, deadline time.Time, parentRecord func() ([]byte, error)) (ck *CheckInOutcome, stop bool) {
 	limits := s.policy.Limits
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
@@ -984,7 +991,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	bound, _ := cardLineBound(t.Size, s.policy.Risk.LargeLines)
 	ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 	brief := func(note string) {
-		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, carry)
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord))
 	}
 	eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -995,9 +1002,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
 		var parent []byte
 		if s.parent != "" {
-			if rec, err := r.objects.Get(ctx, "sessions/"+t.ID+"/"+s.parent+".jsonl"); err != nil {
-				log.Printf("task %s: read session %s's record for the check-in: %v", t.ID, s.parent, err)
-			} else {
+			if rec, err := parentRecord(); err == nil {
 				parent = rec
 				if err := r.postWorkerUntil(ctx, workerStop, ns, pod, s.messageToken, "/records",
 					map[string]string{"session": s.parent, "record": string(rec)}, r.endpointWait); err != nil && !errors.Is(err, errWorkerStop) {

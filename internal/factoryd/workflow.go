@@ -1318,8 +1318,9 @@ func (t *taskRun) lifecycle() (string, error) {
 	addFindings := func(fs []string, from string) {
 		findings, sources = append(findings, fs...), append(sources, slices.Repeat([]string{from}, len(fs))...)
 	}
+	// parent is the last session that left a record; parentStop and
+	// parentOutcome say how it ended, for its working state's heading
 	startRef, parent := "", ""
-	// how parent ended, for its working state's heading
 	var parentStop string
 	var parentOutcome SessionOutcome
 	var u TaskUsage
@@ -1845,7 +1846,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		}
-		parent, parentStop, parentOutcome = res.SessionID, res.Summary, res.Outcome
+		if !res.StartFailed && res.Outcome != OutcomeCheckinHuman && res.Outcome != OutcomeCheckinDropped {
+			parent, parentStop, parentOutcome = res.SessionID, res.Summary, res.Outcome
+		}
 		if res.Model != "" {
 			model = res.Model
 		}

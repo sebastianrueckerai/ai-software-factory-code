@@ -532,6 +532,42 @@ func TestSecondSessionInputNamesHowTheFirstStopped(t *testing.T) {
 	}
 }
 
+// A session that ran no conversation left no record and never becomes the
+// parent: after a check-in that stopped its session for a human, or a
+// start that failed, the session the answer buys continues the last one
+// that ran.
+func TestThirdSessionContinuesTheLastSessionThatRan(t *testing.T) {
+	for name, stopped := range map[string]SessionResult{
+		"checkin_human": checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman,
+			Reason: "the session died with its work unpushed twice",
+			Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1"}}),
+		"start failed": {Outcome: OutcomeEscalate, SessionID: "s2", StartFailed: true,
+			Summary: "the image cannot be pulled", Reason: "the image cannot be pulled; fix it, then answer"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = askTaskConfig()
+			deadSessions(h, SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "supervision trip: wall_clock"}, stopped, pushed("s3", "c3"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+			}
+			if len(h.sessions) != 3 {
+				t.Fatalf("sessions = %d, want 3", len(h.sessions))
+			}
+			if second := h.sessions[1]; second.ParentSessionID != "s1" {
+				t.Fatalf("second session's parent = %q, want s1", second.ParentSessionID)
+			}
+			if third := h.sessions[2]; third.ParentSessionID != "s1" || third.ParentStop != "supervision trip: wall_clock" || third.ParentOutcome != OutcomeNoPush {
+				t.Fatalf("third session's input = %+v, want parent s1 stopped on the wall-clock trip with no push", third)
+			}
+		})
+	}
+}
+
 func TestWorkflowChangesRequestedStartsNewAttempt(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))

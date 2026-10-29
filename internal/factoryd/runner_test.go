@@ -1334,21 +1334,22 @@ func TestRunSessionStartsFromTheGivenRef(t *testing.T) {
 // the dead session's namespace (and pod) and token go first, then a new
 // session carries the dead one's findings and id as parent.
 // A session whose worker was lost before it ever ran (pod never
-// scheduled, image pull stuck) still gets linked as the parent of its
-// replacement; only a session that ran adds the interruption finding.
-func TestRunSessionRetryLinksDeadSessionThatNeverRan(t *testing.T) {
+// scheduled, image pull stuck) left no record and is not the parent: its
+// replacement keeps the input's; only a session that ran adds the
+// interruption finding.
+func TestRunSessionRetryKeepsTheParentPastADeadSessionThatNeverRan(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "long", Repository: "sf/repo", SHA: "base", Track: "direct"}
 	kube := newFakeKube()
 	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	dead := &sessionProgress{SessionID: "s-dead"}
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small", Findings: []string{"earlier note"}},
-		dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small", Findings: []string{"earlier note"},
+		ParentSessionID: "s-0"}, dead, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	env := podEnv(kube.podAt(0))
-	if env["PARENT_SESSION_ID"] != "s-dead" {
-		t.Fatalf("PARENT_SESSION_ID = %q, want s-dead", env["PARENT_SESSION_ID"])
+	if env["PARENT_SESSION_ID"] != "s-0" {
+		t.Fatalf("PARENT_SESSION_ID = %q, want the input's s-0", env["PARENT_SESSION_ID"])
 	}
 	var findings []string
 	if err := json.Unmarshal([]byte(env["FINDINGS"]), &findings); err != nil {
@@ -1357,8 +1358,8 @@ func TestRunSessionRetryLinksDeadSessionThatNeverRan(t *testing.T) {
 	if len(findings) != 1 || findings[0] != "earlier note" {
 		t.Fatalf("findings = %q, want the input only: nothing ran, nothing was interrupted", findings)
 	}
-	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-dead" {
-		t.Fatalf("session row = %+v, want parent s-dead", sess)
+	if sess := store.sessions[res.SessionID]; sess.ParentSessionID != "s-0" {
+		t.Fatalf("session row = %+v, want the input's parent s-0", sess)
 	}
 }
 
@@ -4114,23 +4115,50 @@ func TestRunSessionDeliversThePriorStateWithTheBrief(t *testing.T) {
 	}
 }
 
-// A retry after factoryd stopped mid-session continues the dead session,
-// not the input's parent: the dead one's state comes with the brief, its
-// stop named by factoryd.
+// A retry continues the dead session when it left a record, one event or
+// more: its state comes with the brief, its stop named by factoryd, and
+// the input's pushed parent gives none. A dead session that recorded no
+// event left no record: the input's parent's state comes instead.
 func TestRunSessionDeliversTheDeadSessionsState(t *testing.T) {
-	runner, worker := prevRig(t, "")
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-0",
-		ParentStop: "pushed branch factory/t2 at c0", ParentOutcome: OutcomePushed, StartRef: "0123456789abcdef"},
-		&sessionProgress{SessionID: "s-prev", Running: true, Events: 12}, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
-	if err != nil || res.Outcome != OutcomePushed {
-		t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+	cases := map[string]struct {
+		in   SessionInput
+		dead sessionProgress
+		want string
+	}{
+		"ran 12 events": {
+			SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-0",
+				ParentStop: "pushed branch factory/t2 at c0", ParentOutcome: OutcomePushed, StartRef: "0123456789abcdef"},
+			sessionProgress{SessionID: "s-prev", Running: true, Events: 12},
+			"From session s-prev, stopped at 23:03 UTC because factoryd's run of it ended without an outcome after at least 12 events, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+		},
+		"ran no event": {
+			SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+				ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef"},
+			sessionProgress{SessionID: "s-dead", Running: true},
+			"From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+		},
+		"never ran": {
+			SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+				ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef"},
+			sessionProgress{SessionID: "s-dead"},
+			"From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right.",
+		},
 	}
-	b := onlyBrief(t, worker)
-	if b.Prior == nil {
-		t.Fatal("the brief has no prior state")
-	}
-	if want := "From session s-prev, stopped at 23:03 UTC because factoryd stopped while it ran, after 12 events, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
-		t.Errorf("heading = %q, want %q", b.Prior.Heading, want)
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			runner, worker := prevRig(t, "")
+			res, err := runSession(t, nil, runner, tc.in, &tc.dead, pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+			if err != nil || res.Outcome != OutcomePushed {
+				t.Fatalf("result = (%+v, %v), want the plain pushed session", res, err)
+			}
+			b := onlyBrief(t, worker)
+			if b.Prior == nil {
+				t.Fatal("the brief has no prior state")
+			}
+			if b.Prior.Heading != tc.want {
+				t.Errorf("heading = %q, want %q", b.Prior.Heading, tc.want)
+			}
+		})
 	}
 }
 
@@ -4219,6 +4247,31 @@ func TestRunSessionKeepsTheHandoverBesideThePriorState(t *testing.T) {
 			t.Fatalf("brief = %+v, want the check-in's handover and s-prev's state", b)
 		}
 	})
+}
+
+// Without a model under the check-in's purpose the asked check-in does not
+// run, and the empty brief still carries the prior state.
+func TestRunSessionCarriesThePriorStateWithoutACheckinModel(t *testing.T) {
+	runner, worker := prevRig(t, "")
+	noAlias := testPolicyVersion()
+	cl := noAlias.Document.Classes["coder"]
+	cl.ReviewModel = ""
+	noAlias.Document.Classes["coder"] = cl
+	runner.cfg.Policy = func() policy.Version { return noAlias }
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 2, Model: "m", ParentSessionID: "s-prev",
+		ParentStop: "supervision trip: wall_clock", ParentOutcome: OutcomeNoPush, StartRef: "0123456789abcdef",
+		CheckInAsk: &CheckInAsk{Moment: CheckInDead}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.CheckIn != nil {
+		t.Fatalf("result = (%+v, %v), want the plain pushed session without a check-in", res, err)
+	}
+	b := onlyBrief(t, worker)
+	if b.Handover != "" || b.Prior == nil {
+		t.Fatalf("brief = %+v, want no handover and s-prev's state", b)
+	}
+	if want := "From session s-prev, stopped at 23:03 UTC because supervision trip: wall_clock, branch at commit 01234567. Written before your session started. Where they differ from the code on the branch, the code is right."; b.Prior.Heading != want {
+		t.Errorf("heading = %q, want %q", b.Prior.Heading, want)
+	}
 }
 
 // The statement of every check-in states the card's pace: 350 changed lines
