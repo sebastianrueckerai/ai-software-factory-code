@@ -1794,11 +1794,16 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			}
 			spec.HeadSHA = sha
 		}
-		// a card the plan has passed cannot merge (roadmap 291): the
+		// a card the newest revision drops cannot merge (roadmap 291): the
 		// request opened before the revision landed
 		if t.Source == factoryd.SourcePlan && t.Parent != "" && t.PlanRevision > 0 {
-			if rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.Parent, 0); err == nil && ok && rev.Revision > t.PlanRevision {
-				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan moved to revision %d, the card ran against revision %d, so it cannot merge: deny the merge (deny_merge) and let the planner re-file the plan.", rev.Revision, t.PlanRevision))
+			drops, newest, err := c.revisionDrops(ctx, t)
+			if err != nil {
+				log.Printf("console: the plan revisions of %s: %v", t.ID, err)
+				return "", refuse(http.StatusInternalServerError, "cannot read the plan's revisions; approve again")
+			}
+			if drops {
+				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge: deny the merge (deny_merge).", newest, t.PlanKey))
 			}
 		}
 		agent := a.approver() == factoryd.ChatUser
@@ -1826,6 +1831,21 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		return fmt.Sprintf("Approved pull request #%d; factoryd merges it.", q.PRNumber), nil
 	}
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
+}
+
+// revisionDrops tells whether plan card t's newest plan revision drops
+// its key, and that revision's number.
+func (c *Console) revisionDrops(ctx context.Context, t factoryd.Task) (bool, int, error) {
+	started, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.Parent, t.PlanRevision)
+	if err != nil || !ok {
+		return false, 0, err
+	}
+	newest, ok, err := c.cfg.Tasks.PlanRevision(ctx, t.Parent, 0)
+	if err != nil || !ok {
+		return false, 0, err
+	}
+	drops, err := factoryd.RevisionDrops(started, newest, t.PlanKey)
+	return drops, newest.Revision, err
 }
 
 // doDeny denies approval request id with the member's reason, a

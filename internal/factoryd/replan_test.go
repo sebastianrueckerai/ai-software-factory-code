@@ -1182,3 +1182,258 @@ func TestReplanState(t *testing.T) {
 		t.Fatalf("a cut with its branch gone: cut %q, work %t, %v", st.cut, st.cutWork, err)
 	}
 }
+
+// Review Focus 2 end to end: a cut moves its sibling's wait onto the plan,
+// the revision makes the sibling wait on the new card that carries the cut
+// work too, and once the plan ends done the sibling waits on that card,
+// not on an ended one. The filing records the replan, which ends the
+// pending state.
+func TestCutSiblingWaitsOnTheNewCard(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	setStatus := func(id, status string) {
+		k := store.tasks[id]
+		k.Status = status
+		store.tasks[id] = k
+	}
+	cards := cardsByKey(t, store)
+	cut, sibling, foundation := cards["links-api"], cards["redirects"], cards["foundation"]
+	cut.Status, cut.PlanRevision = "running", 1
+	store.tasks[cut.ID] = cut
+	fj.branches = map[string]string{"factory/" + cut.ID: "c7"}
+	setStatus("t-plan", "done")
+	if res := replanChild(t, r, cut.ID, "the list endpoint is left"); res.Refused != "" {
+		t.Fatalf("ReplanChild = %+v", res)
+	}
+	if got := store.deps[sibling.ID]; !slices.Equal(got, []string{foundation.ID, "t-plan"}) {
+		t.Fatalf("after the cut the sibling waits on %v, want the foundation and the plan", got)
+	}
+	if err := r.Finish(ctx, cut.ID, "closed", "cut: plan #1 replans its work"); err != nil {
+		t.Fatal(err)
+	}
+
+	setStatus("t-plan", "running")
+	next := testPlan()
+	next.Cards[1].Key, next.Cards[1].From = "links-api-2", "links-api"
+	next.Cards[2].DependsOn = []string{"links-api-2"}
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, next)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	if ref := getInto[PlanRef](t, val, err); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("filing revision 2: %+v", ref)
+	}
+	c2 := cardsByKey(t, store)["links-api-2"]
+	if got := store.deps[sibling.ID]; !slices.Equal(got, []string{foundation.ID, "t-plan", c2.ID}) {
+		t.Fatalf("after the filing the sibling waits on %v, want the foundation, the plan and %s", got, c2.ID)
+	}
+	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
+		t.Fatalf("the replan is pending after its filing: %t, %v", pending, err)
+	}
+
+	setStatus("t-plan", "done")
+	setStatus(foundation.ID, "done")
+	st, err := r.Dependencies(ctx, sibling.ID)
+	if err != nil || st.Ended != nil || !slices.Equal(st.Waiting, []int64{c2.IssueNumber}) {
+		t.Fatalf("Dependencies = %+v, %v; want waiting on #%d", st, err, c2.IssueNumber)
+	}
+}
+
+// recordRig is t-plan (issue 1) with the old cards stored an hour before
+// its pending replan step, written at at, and that step as read back.
+func recordRig(t *testing.T, at time.Time, step map[string]any, old ...Task) (*Runner, *fakeStore, *planForgejo, ReplanStep) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, _, fj := newPlanRunner(t, testPlan())
+	r.timeline.now = func() time.Time { return at }
+	for _, k := range old {
+		k.Kind, k.Track, k.Source, k.Parent, k.Repository = "agent", policy.TrackDirect, SourcePlan, "t-plan", "linkshort/linkshort"
+		if k.CreatedAt.IsZero() {
+			k.CreatedAt = at.Add(-time.Hour)
+		}
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, step); err != nil {
+		t.Fatal(err)
+	}
+	got, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"])
+	if err != nil || !pending {
+		t.Fatalf("the replan step: %t, %v", pending, err)
+	}
+	return r, store, fj, got
+}
+
+// commentsOn are the bodies of the comments on issue n, oldest first.
+func commentsOn(fj *planForgejo, n int64) []string {
+	var out []string
+	for _, c := range fj.comments {
+		if c.issue == n {
+			out = append(out, c.body)
+		}
+	}
+	return out
+}
+
+type cardVerdict struct {
+	Revision int
+	Verdict  string
+	Into     int64
+}
+
+// verdictOf is card id's replanned steps.
+func verdictOf(t *testing.T, r *Runner, id string) []cardVerdict {
+	t.Helper()
+	var out []cardVerdict
+	for _, line := range stepsNamed(t, r, id, "replanned") {
+		var v cardVerdict
+		if err := json.Unmarshal(line, &v); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// A replan's filing records what it did with the old cards: kept by key,
+// changed into the card whose from names it, dropped, and the new cards
+// added, on the plan's issue with the person's words, as the plan's step
+// and event and as each old card's step. A card closed before the replan
+// is no old card. A cut says on its card's issue what it was cut into, at
+// which session and spend; a direct card's cut reads them from its switch,
+// whose counters went to zero.
+func TestRecordReplanCounts(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().Add(time.Hour).UTC()
+	feature := func(key, from string) PlanCard {
+		return PlanCard{Key: key, Role: RoleFeature, Title: key, Brief: key, Size: "small", From: from}
+	}
+	after := func(d time.Duration) *time.Time { x := at.Add(d); return &x }
+
+	r, store, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too wide", "stops": []string{"t-ui"}, "revision": 2},
+		Task{ID: "t-api", PlanKey: "api", IssueNumber: 21, Status: "queued"},
+		Task{ID: "t-ui", PlanKey: "ui", IssueNumber: 22, Status: "closed", PlanRevision: 2, FinishedAt: after(time.Minute)},
+		Task{ID: "t-docs", PlanKey: "docs", IssueNumber: 23, Status: "closed", FinishedAt: after(2 * time.Minute)},
+		Task{ID: "t-old", PlanKey: "legacy", IssueNumber: 20, Status: "closed", FinishedAt: after(-30 * time.Minute)},
+		Task{ID: "t-ui2", PlanKey: "ui2", IssueNumber: 24, Status: "queued", CreatedAt: at.Add(10 * time.Minute)},
+		Task{ID: "t-cli", PlanKey: "cli", IssueNumber: 25, Status: "queued", CreatedAt: at.Add(10 * time.Minute)})
+	p, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := Plan{Summary: "s", Cards: []PlanCard{feature("api", ""), feature("ui2", "ui"), feature("cli", "")}}
+	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api": 21, "ui2": 24, "cli": 25}); err != nil {
+		t.Fatal(err)
+	}
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 1, changed 1, dropped 1, added 1.\nAsked by ana: too wide"}) {
+		t.Fatalf("the plan's comments %q", got)
+	}
+	for id, want := range map[string][]cardVerdict{
+		"t-api":  {{3, "kept", 0}},
+		"t-ui":   {{3, "changed", 24}},
+		"t-docs": {{3, "dropped", 0}},
+		"t-old":  nil,
+		"t-ui2":  nil,
+		"t-cli":  nil,
+	} {
+		if got := verdictOf(t, r, id); !slices.Equal(got, want) {
+			t.Fatalf("%s's replanned steps %+v, want %+v", id, got, want)
+		}
+	}
+	want := map[string]any{"revision": 3.0, "kept": 1.0, "changed": 1.0, "dropped": 1.0, "added": 1.0, "origin": "person", "by": "ana", "comment": "too wide"}
+	lines := stepsNamed(t, r, "t-plan", "replanned")
+	var got map[string]any
+	if len(lines) != 1 || json.Unmarshal(lines[0], &got) != nil {
+		t.Fatalf("the plan's replanned steps %s", lines)
+	}
+	delete(got, "time")
+	delete(got, "step")
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("the plan's replanned step %v, want %v", got, want)
+	}
+	i := slices.IndexFunc(store.events, func(e Event) bool { return e.Kind == EventPlanReplanned })
+	if i < 0 || store.events[i].TaskID != "t-plan" || store.events[i].Detail["kept"] != 1 || store.events[i].Detail["by"] != "ana" {
+		t.Fatalf("events %+v, want plan_replanned on t-plan", store.events)
+	}
+	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
+		t.Fatalf("the replan is pending after its record: %t, %v", pending, err)
+	}
+
+	r, _, fj, step = recordRig(t, at, map[string]any{"origin": ReplanCut, "card": "t-cut", "work": "the list endpoint", "stops": []string{"t-cut"}, "revision": 2},
+		Task{ID: "t-cut", PlanKey: "api", IssueNumber: 50, Status: "closed", PlanRevision: 2, FinishedAt: after(time.Minute),
+			SpentEUR: 4.2, Usage: TaskUsage{Attempts: 3}},
+		Task{ID: "t-api2", PlanKey: "api2", IssueNumber: 51, Status: "queued", CreatedAt: at.Add(10 * time.Minute)},
+		Task{ID: "t-docs2", PlanKey: "docs2", IssueNumber: 52, Status: "queued", CreatedAt: at.Add(10 * time.Minute)})
+	next = Plan{Summary: "s", Cards: []PlanCard{feature("api2", "api"), feature("docs2", "")}}
+	if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api2": 51, "docs2": 52}); err != nil {
+		t.Fatal(err)
+	}
+	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"factoryd: cut into #51, #52 at session 3, 4.20 EUR spent."}) {
+		t.Fatalf("the cut card's comments %q", got)
+	}
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{"factoryd: replanned at revision 3: kept 0, changed 1, dropped 0, added 1.\nThe cut of #50: the list endpoint"}) {
+		t.Fatalf("the plan's comments %q", got)
+	}
+	var cutStep struct {
+		Into    []int64
+		Session int
+		Spent   float64
+	}
+	if lines := stepsNamed(t, r, "t-cut", "cut"); len(lines) != 1 || json.Unmarshal(lines[0], &cutStep) != nil ||
+		!slices.Equal(cutStep.Into, []int64{51, 52}) || cutStep.Session != 3 || cutStep.Spent != 4.2 {
+		t.Fatalf("the cut steps %s", lines)
+	}
+
+	r, store, fj, _ = recordRig(t, at, map[string]any{"origin": ReplanCut, "card": "t-plan", "work": "the rest"})
+	if err := r.timeline.Append(ctx, "t-plan", stepToPlan, map[string]any{"reason": "cut: too big", "session": 2, "spent": 1.5}); err != nil {
+		t.Fatal(err)
+	}
+	plan := store.tasks["t-plan"]
+	plan.SpentEUR, plan.Usage = 2.3, TaskUsage{Attempts: 1}
+	store.tasks["t-plan"] = plan
+	step, _, _ = r.pendingReplan(ctx, plan)
+	if err := r.recordReplan(ctx, plan, repo, 1, Plan{Summary: "s", Cards: []PlanCard{feature("cli", "#1")}}, step, map[string]int64{"cli": 61}); err != nil {
+		t.Fatal(err)
+	}
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{
+		"factoryd: replanned at revision 1: kept 0, changed 1, dropped 0, added 0.\nThe cut of #1: the rest",
+		"factoryd: cut into #61 at session 2, 1.50 EUR spent.",
+	}) {
+		t.Fatalf("the direct card's comments %q", got)
+	}
+	if got := verdictOf(t, r, "t-plan"); len(got) != 1 || got[0].Verdict != "" {
+		t.Fatalf("the plan's replanned steps %+v, want its own record alone", got)
+	}
+}
+
+// A former direct card that the sizing switched to the plan track, with
+// phase 3's to_plan step and no replan step, files its first revision
+// without a replan's record.
+func TestRecordReplanSkipsASizingSwitch(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if err := r.timeline.Append(ctx, "t-plan", stepToPlan, map[string]any{"reason": "sized large", "work_so_far": "No commit past the base."}); err != nil {
+		t.Fatal(err)
+	}
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	for _, c := range fj.comments {
+		if strings.Contains(c.body, "replanned at revision") {
+			t.Fatalf("a replan's comment on #%d: %s", c.issue, c.body)
+		}
+	}
+	for id := range store.tasks {
+		if lines := stepsNamed(t, r, id, "replanned"); len(lines) != 0 {
+			t.Fatalf("%s's replanned steps %s", id, lines)
+		}
+	}
+}

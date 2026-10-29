@@ -903,10 +903,11 @@ func cardFacts(c PlanCard) string {
 
 // cardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), filed for author, with the issues of the cards it depends on
-// (deps, their keys by issue). The integration card carries the plan's
-// spec (piece 7: its brief already does), spec the rendered spec block or
-// "".
-func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency, spec string) string {
+// (deps, their keys by issue), and start, the line on the old card's work
+// it starts from, after the facts ("" for none). The integration card
+// carries the plan's spec (piece 7: its brief already does), spec the
+// rendered spec block or "".
+func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency, spec, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
@@ -914,6 +915,9 @@ func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency,
 	directories, facts, _ := strings.Cut(cardFacts(c), "\n")
 	body := fmt.Sprintf("Card %s of %s (%d of %d), filed for %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
 		c.Key, of, i, n, author, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
+	if start != "" {
+		body += "\n" + start
+	}
 	if spec != "" {
 		body += "\n\nThe spec of the whole feature:\n" + spec
 	}
@@ -2181,6 +2185,18 @@ func revisionFindings(old, next Plan) []string {
 // catch per criterion the revision adds, removes or revises under a new
 // id, the churn join's old id, new id and time (piece 10).
 func (r *Runner) recordCriteria(ctx context.Context, taskID string, revision int, old, next Plan) {
+	details := criteriaDelta(old, next)
+	if len(details) == 0 {
+		return
+	}
+	if _, err := r.store.PutPlanCatches(ctx, taskID, revision, CatchCriterion, FinderPlanner, details); err != nil {
+		log.Printf("plan %s revision %d: its criteria records: %v", taskID, revision, err)
+	}
+}
+
+// criteriaDelta is what next does to old's criteria, sorted: "<id>
+// added", "<id> replaces <old>" and "<id> removed".
+func criteriaDelta(old, next Plan) []string {
 	prev := map[string]bool{}
 	for _, c := range old.Criteria {
 		prev[c.ID] = true
@@ -2205,12 +2221,7 @@ func (r *Runner) recordCriteria(ctx context.Context, taskID string, revision int
 		}
 	}
 	slices.Sort(details)
-	if len(details) == 0 {
-		return
-	}
-	if _, err := r.store.PutPlanCatches(ctx, taskID, revision, CatchCriterion, FinderPlanner, details); err != nil {
-		log.Printf("plan %s revision %d: its criteria records: %v", taskID, revision, err)
-	}
+	return details
 }
 
 func replacesNothing(p Plan, id string) bool {
@@ -2224,10 +2235,11 @@ func replacesNothing(p Plan, id string) bool {
 
 // restartChildren runs the restart rules a new revision carries (piece
 // 10): the checks re-ran with the filing, every card that never started
-// takes the new revision's brief, image, rung and size, a card the new plan drops ends closed
-// with its issue unless it merged (Finish leaves a merged card to its
-// chain, which ends it done), a started card keeps its branch (the merge
-// check holds it there) and a final card never reopens.
+// takes the new revision's brief, image, rung and size, one the new plan
+// drops ends closed with its issue unless it merged (Finish leaves a
+// merged card to its chain, which ends it done), a started open card the
+// new plan drops stops as for a replan, its work kept on its branch, a
+// started card it keeps runs on, and a final card never reopens.
 func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Plan) {
 	cards, err := r.store.PlanCards(ctx, t.ID)
 	if err != nil {
@@ -2248,10 +2260,18 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Pl
 	}
 	of := fmt.Sprintf("plan #%d", t.IssueNumber)
 	for _, k := range cards {
-		if Final(k.Status) || k.PlanRevision > 0 {
+		if Final(k.Status) {
 			continue
 		}
 		c, ok := card[k.PlanKey]
+		if k.PlanRevision > 0 {
+			if !ok && stoppable(k) {
+				if _, err := r.stopForReplan(ctx, k, t, fmt.Sprintf("the plan's revision %d drops it", revision)); err != nil {
+					log.Printf("card %s: the plan's revision %d drops it: %v", k.ID, revision, err)
+				}
+			}
+			continue
+		}
 		if !ok {
 			if err := r.Finish(ctx, k.ID, "closed", fmt.Sprintf("the plan's revision %d drops the card %s", revision, k.PlanKey)); err != nil {
 				log.Printf("card %s: the plan's revision %d drops it: %v", k.ID, revision, err)
@@ -2266,7 +2286,7 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, revision int, p Pl
 		if c.Role == RoleIntegration {
 			spec = specBlock(p)
 		}
-		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec))
+		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec, ""))
 		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
@@ -2339,7 +2359,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 	// the round's hold-outs are drafted before a question is stored, a
 	// review model call and dry runs of minutes: the questions, the
 	// confirmation and the zone then reach Needs you as the plan waits
-	if confirm, err := r.confirms(ctx, t, p); err != nil {
+	if confirm, err := r.confirms(ctx, t, rev.Revision, p); err != nil {
 		return PlanRef{}, err
 	} else if confirm {
 		if err := r.askHoldouts(ctx, t, rev.Revision, p); err != nil {
@@ -2456,11 +2476,11 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // questions (the spec-intake concept, piece 5): the spec and the criteria
 // shown to the members in Needs you, an okay fixes the criteria, an
 // answer with changes carries them to the next planner round, a comment
-// on the issue starts one too. Asked until answered once: a revision
-// after the answer asks nothing, one a comment replaced asks again. A
-// plan without criteria carries no spec to confirm.
+// on the issue starts one too. Asked until answered once, and again for a
+// revision that changes the spec or a criterion (confirms). A plan
+// without criteria carries no spec to confirm.
 func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
-	if confirm, err := r.confirms(ctx, t, p); err != nil || !confirm {
+	if confirm, err := r.confirms(ctx, t, revision, p); err != nil || !confirm {
 		return err
 	}
 	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Choices: []string{"okay"}}
@@ -2473,14 +2493,28 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	return nil
 }
 
-// confirms reports whether plan p of task t asks the confirmation: it
-// carries criteria, and no revision's confirmation was answered yet.
-func (r *Runner) confirms(ctx context.Context, t Task, p Plan) (bool, error) {
+// confirms reports whether plan p, revision of task t, asks the
+// confirmation: it carries criteria, and no revision's confirmation was
+// answered yet or p changes the spec or a criterion of the revision
+// before.
+func (r *Runner) confirms(ctx context.Context, t Task, revision int, p Plan) (bool, error) {
 	if len(p.Criteria) == 0 {
 		return false, nil
 	}
 	answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID)
-	return err == nil && !answered, err
+	if err != nil || !answered || revision < 2 {
+		return err == nil && !answered, err
+	}
+	prev, _, err := r.planAt(ctx, t.ID, revision-1)
+	return err == nil && prev != nil && specChanged(*prev, p), err
+}
+
+// specChanged tells whether next changes prev's spec, its outcome or its
+// glossary, or a criterion. A criterion changed under its own id cannot
+// occur: revisionFindings refuses it.
+func specChanged(prev, next Plan) bool {
+	a, b := cmp.Or(prev.Spec, &Spec{}), cmp.Or(next.Spec, &Spec{})
+	return a.Outcome != b.Outcome || !slices.Equal(a.Glossary, b.Glossary) || len(criteriaDelta(prev, next)) > 0
 }
 
 // confirmationQuestion is the confirmation question's text: what an
@@ -2533,7 +2567,8 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 // planner gets it); files each card in topological order on the direct
 // track at main's head, with the card's author as the cards' (plans do not
 // nest: the children are direct cards); records the edges in Forgejo and
-// task_deps; puts the issues into the plan's comment.
+// task_deps; puts the issues into the plan's comment; and, for a replan,
+// records it, which ends the replan.
 func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.Version, rev PlanRevision) (ChildrenResult, error) {
 	revision := rev.Revision
 	shape, process, err := planShape(v, t)
@@ -2569,6 +2604,15 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		return ChildrenResult{}, err
 	}
 	r.record(ctx, t.ID, "children_created", map[string]any{"revision": revision, "by": author, "issues": issues})
+	step, pending, err := r.pendingReplan(ctx, t)
+	if err != nil {
+		return ChildrenResult{}, err
+	}
+	if pending {
+		if err := r.recordReplan(ctx, t, repo, revision, p, step, byKey); err != nil {
+			return ChildrenResult{}, err
+		}
+	}
 	return ChildrenResult{Issues: issues}, nil
 }
 
@@ -2579,7 +2623,11 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 // work bound, where a card waits for the cards it depends on (plans do not
 // nest: a plan's card is never a plan). approver authors the cards, with
 // writer as its standing: a plan's are its card's, whose spec an outside
-// account may have written; the cards in filing order.
+// account may have written; the cards in filing order. A card whose from
+// names an old card starts from its work, unless a row of its key started
+// or ended: it files at the old card's base, and its branch is the old
+// card's before its issue exists; an old card whose branch is gone leaves
+// it to start from main.
 func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
@@ -2588,6 +2636,18 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	if !ok || direct.Class == "" {
 		return nil, terminalError("task %s: process %q has no direct track in configuration version %d", t.ID, process, v.ID)
 	}
+	old, err := r.oldCards(ctx, t)
+	if err != nil {
+		return nil, err
+	}
+	byRef, rows := map[string]Task{}, map[string]Task{}
+	for _, k := range old {
+		byRef[fromRef(k)] = k
+		if k.PlanKey != "" {
+			rows[k.PlanKey] = k
+		}
+	}
+	fork := r.forgejo.Fork(repo)
 	cards := map[string]Task{}
 	var open []webhookIssue
 	for i, c := range order {
@@ -2600,14 +2660,43 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		if c.Role == RoleIntegration {
 			spec = specBlock(p)
 		}
-		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps, spec))
+		// a row of the key that started or ended runs on its own work; one
+		// that never started is copied to again, which keeps a branch a
+		// filing already put there
+		base, start := sha, ""
+		from, continues := byRef[c.From]
+		if row, filed := rows[c.Key]; c.From == "" || filed && (row.PlanRevision > 0 || Final(row.Status)) {
+			continues = false
+		}
+		if continues {
+			work := fmt.Sprintf("#%d", from.IssueNumber)
+			if from.PlanKey != "" {
+				work += " (" + from.PlanKey + ")"
+			}
+			switch _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(from)); {
+			case errors.Is(err, ErrNotFound):
+				start, continues = fmt.Sprintf("The branch of #%d is gone: start from main.", from.IssueNumber), false
+			case err != nil:
+				return nil, fmt.Errorf("branch head of %s: %w", from.ID, err)
+			default:
+				base, start = from.SHA, "Starts from the work of "+work+", on this card's branch: finish what it holds, make it build green, and land it."
+			}
+		}
+		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps, spec, start))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
-			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: sha, Process: process,
+			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
 			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer})
 		if err != nil {
 			return nil, err
+		}
+		// the branch is in place before the issue, whose label event can
+		// start the card
+		if continues {
+			if _, err := r.ContinueBranch(ctx, from, card); err != nil {
+				return nil, fmt.Errorf("card %s: continue the branch of %s: %w", c.Key, from.ID, err)
+			}
 		}
 		// the card's dependencies are stored before its issue exists: the
 		// issue's label event can start it, and the start must find them

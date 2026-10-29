@@ -1451,12 +1451,12 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	if err != nil {
 		return err
 	}
-	// a card the plan has passed never asks for its merge (piece 10): it
-	// fails with the reason, its branch stays for the plan's re-run
-	if newest, started, stale, err := r.staleRevision(ctx, t); err != nil {
+	// a card the newest revision drops never asks for its merge (piece
+	// 10): it fails with the reason, its branch stays for the plan's re-run
+	if newest, _, stale, err := r.staleRevision(ctx, t); err != nil {
 		return err
 	} else if stale {
-		return terminalError("the plan moved to revision %d, the card ran against revision %d", newest, started)
+		return terminalError("the plan's revision %d drops the card %s", newest, t.PlanKey)
 	}
 	g := in.Gates.Policy
 	if g.Factory {
@@ -1577,18 +1577,46 @@ func lastAttempt(ctx context.Context) bool {
 	return info.RetryPolicy != nil && info.RetryPolicy.MaximumAttempts > 0 && info.Attempt >= info.RetryPolicy.MaximumAttempts
 }
 
-// staleRevision names the plan's newest revision past the one the task
-// started against (piece 10): the card cannot merge until the plan is
-// re-run. stale is false for every task that is no started plan card.
+// staleRevision names the plan's newest revision and the one the task
+// started against (piece 10): stale when the newest drops the card's key,
+// which then cannot merge. stale is false for every task that is no
+// started plan card.
 func (r *Runner) staleRevision(ctx context.Context, t Task) (newest, started int, stale bool, err error) {
 	if t.Source != SourcePlan || t.Parent == "" || t.PlanRevision == 0 {
 		return 0, 0, false, nil
 	}
-	rev, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
+	last, ok, err := r.store.PlanRevision(ctx, t.Parent, 0)
 	if err != nil || !ok {
 		return 0, 0, false, err
 	}
-	return rev.Revision, t.PlanRevision, rev.Revision > t.PlanRevision, nil
+	ran, ok, err := r.store.PlanRevision(ctx, t.Parent, t.PlanRevision)
+	if err != nil || !ok {
+		return 0, 0, false, err
+	}
+	stale, err = RevisionDrops(ran, last, t.PlanKey)
+	return last.Revision, t.PlanRevision, stale, err
+}
+
+// RevisionDrops tells whether revision newest, past started, drops the
+// card key that started holds. A card neither holds, a delta card, is
+// never dropped.
+func RevisionDrops(started, newest PlanRevision, key string) (bool, error) {
+	if newest.Revision <= started.Revision {
+		return false, nil
+	}
+	holds := func(rev PlanRevision) (bool, error) {
+		var p Plan
+		if err := json.Unmarshal(rev.Plan, &p); err != nil {
+			return false, fmt.Errorf("plan %s revision %d: %w", rev.TaskID, rev.Revision, err)
+		}
+		return slices.ContainsFunc(p.Cards, func(c PlanCard) bool { return c.Key == key }), nil
+	}
+	held, err := holds(started)
+	if err != nil || !held {
+		return false, err
+	}
+	kept, err := holds(newest)
+	return !kept, err
 }
 
 func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
@@ -1599,12 +1627,12 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if st.Merged {
 		return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
 	}
-	// the merge refuses a card the plan has passed (piece 10), the
+	// the merge refuses a card the newest revision drops (piece 10), the
 	// auto-merge's path and a request opened before the revision landed
-	if newest, started, stale, err := r.staleRevision(ctx, t); err != nil {
+	if newest, _, stale, err := r.staleRevision(ctx, t); err != nil {
 		return MergeResult{}, err
 	} else if stale {
-		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the plan moved to revision %d, the card ran against revision %d", newest, started)), nil
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the plan's revision %d drops the card %s", newest, t.PlanKey)), nil
 	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil

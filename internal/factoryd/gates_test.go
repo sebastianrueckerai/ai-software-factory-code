@@ -2719,3 +2719,29 @@ func TestAutoMergeNamesWhatItFoundMet(t *testing.T) {
 		})
 	}
 }
+
+// A started card is stale only when the newest revision drops its key
+// (Review Focus 3): a revision that keeps it, or a delta card that no
+// revision holds, leaves it free to merge.
+func TestStaleRevisionMeansDropped(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, key, newest string
+		stale             bool
+	}{
+		{"newest keeps it", "ui", `{"summary":"three","cards":[{"key":"api"},{"key":"ui"}]}`, false},
+		{"newest drops it", "ui", `{"summary":"three","cards":[{"key":"api"}]}`, true},
+		{"a delta card", "d1", `{"summary":"three","cards":[{"key":"api"}]}`, false},
+	} {
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey, task.PlanRevision = SourcePlan, "t-plan", tc.key, 2
+		r, store, _ := newGateRunner(t, task, &gateForgejo{})
+		store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one","cards":[{"key":"api"}]}`), "s1")
+		store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two","cards":[{"key":"api"},{"key":"ui"}]}`), "s2")
+		store.AddPlanRevision(ctx, "t-plan", json.RawMessage(tc.newest), "s3")
+		newest, started, stale, err := r.staleRevision(ctx, store.tasks["t1"])
+		if err != nil || newest != 3 || started != 2 || stale != tc.stale {
+			t.Fatalf("%s: staleRevision = %d, %d, %t, %v; want 3, 2, %t", tc.name, newest, started, stale, err, tc.stale)
+		}
+	}
+}

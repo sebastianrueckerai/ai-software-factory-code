@@ -71,8 +71,9 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 // rebriefs the foundation, and changes the started links-api by a new
 // card, links-api-2, that starts from its work. It records each
 // criterion's fate, closes the dropped card that never started with its
-// issue, rebriefs every card that never started, and leaves a started
-// card and a final one alone.
+// issue, rebriefs every card that never started, stops the started card
+// the revision drops, leaves a final one alone, and its filing continues
+// links-api's branch on links-api-2's.
 func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := fileRig(t, testPlan())
@@ -84,8 +85,9 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	runPlanTask(store)
 	cards := cardsByKey(t, store)
 	started := cards["links-api"]
-	started.Status, started.PlanRevision = "running", 1
+	started.Status, started.PlanRevision, started.SHA = "running", 1, "b0"
 	store.tasks[started.ID] = started
+	fj.branches = map[string]string{"factory/" + started.ID: "c7"}
 	final := cards["integration"]
 	final.Status = "done"
 	store.tasks[final.ID] = final
@@ -122,8 +124,13 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	if c := cards["foundation"]; c.Status != "queued" || !strings.Contains(c.Objective, "Foundation: layout, contract, schema, migrations.") {
 		t.Fatalf("the never-started card kept its old brief:\n%s", c.Objective)
 	}
-	if c := cards["links-api"]; c.Objective != oldStarted || c.PlanRevision != 1 {
-		t.Fatalf("the started card was touched: revision %d\n%s", c.PlanRevision, c.Objective)
+	if c := cards["links-api"]; c.Status != "closed" || c.Objective != oldStarted || c.PlanRevision != 1 {
+		t.Fatalf("the started card the revision drops is %s, revision %d, want closed with its brief\n%s", c.Status, c.PlanRevision, c.Objective)
+	}
+	if !slices.ContainsFunc(fj.comments, func(c *stubComment) bool {
+		return c.issue == started.IssueNumber && strings.Contains(c.body, "closed: the plan's revision 2 drops it")
+	}) {
+		t.Fatalf("the stopped card's issue #%d carries no close reason: %+v", started.IssueNumber, fj.comments)
 	}
 	if c := cards["integration"]; c.Status != "done" || c.Objective != oldFinal {
 		t.Fatalf("the final card was touched:\n%s", c.Objective)
@@ -143,6 +150,18 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 	}
 	if reason == "" {
 		t.Fatalf("the dropped card's issue carries no close reason: %+v", fj.comments)
+	}
+
+	plan, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res, err := r.fileRevision(ctx, plan, repo, pinned, rev); err != nil || len(res.Refused) != 0 || len(res.Issues) != 3 {
+		t.Fatalf("filing revision 2: %+v, %v", res, err)
+	}
+	next := cardsByKey(t, store)["links-api-2"]
+	if next.SHA != "b0" || fj.branches["factory/"+next.ID] != "c7" {
+		t.Fatalf("links-api-2 filed at %q, its branch at %q; want links-api's base b0 and its head c7", next.SHA, fj.branches["factory/"+next.ID])
 	}
 }
 
@@ -221,6 +240,115 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 	}
 	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
 		t.Fatalf("card %s = %+v, want it filed naming no image", p.Cards[1].Key, got)
+	}
+}
+
+// A revision's card whose from names an old card with no row of its own
+// key starts from that card's work: it files at the old card's base, its
+// branch is the old card's head before its issue exists, and its brief
+// says so. A from whose branch is gone files at main's head and says that
+// instead, with no copy. A keyless from, the plan card's own work after a
+// direct card's cut, continues the plan's branch.
+func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
+	ctx := context.Background()
+	pinned := fixtureVersion(t)
+	ui2 := PlanCard{Key: "ui2", Role: RoleFeature, Title: "UI again", Brief: "Finish the UI.", Size: "small", From: "ui",
+		Acceptance: []PlanItem{{Text: "the page renders"}}}
+	file := func(t *testing.T, branches map[string]string, c PlanCard) (Task, *planForgejo) {
+		t.Helper()
+		r, store, _, fj := newPlanRunner(t, testPlan())
+		r.cfg.Policy = func() policy.Version { return pinned }
+		fj.branches = branches
+		if err := store.CreateTask(ctx, Task{ID: "t-ui", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "t-plan", PlanKey: "ui",
+			Repository: "linkshort/linkshort", IssueNumber: 31, SHA: "b0", Status: "closed", PlanRevision: 1}); err != nil {
+			t.Fatal(err)
+		}
+		plan := store.tasks["t-plan"]
+		plan.IssueNumber, plan.SHA = 40, "p0"
+		store.tasks["t-plan"] = plan
+		if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "t-plan", "work": "the half"}); err != nil {
+			t.Fatal(err)
+		}
+		_, repo, err := r.task(ctx, "t-plan")
+		if err != nil {
+			t.Fatal(err)
+		}
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1")
+		if err != nil || len(cards) != 1 {
+			t.Fatalf("fileChildren = %+v, %v", cards, err)
+		}
+		return store.tasks[cards[0].ID], fj
+	}
+	before := func(calls []string, a, b string) bool {
+		i, j := slices.Index(calls, a), slices.Index(calls, b)
+		return i >= 0 && j > i
+	}
+
+	card, fj := file(t, map[string]string{"factory/t-ui": "c7"}, ui2)
+	start := "Starts from the work of #31 (ui), on this card's branch: finish what it holds, make it build green, and land it."
+	if card.SHA != "b0" || fj.branches["factory/"+card.ID] != "c7" {
+		t.Fatalf("ui2 filed at %q, its branch at %q; want ui's base b0 and its head c7", card.SHA, fj.branches["factory/"+card.ID])
+	}
+	if !strings.Contains(card.Objective, start) || !strings.Contains(fj.issues[card.IssueNumber].body, start) {
+		t.Fatalf("ui2's brief and issue lack the start line:\n%s", card.Objective)
+	}
+	if !before(fj.calls, "POST fork branches factory/"+card.ID, "POST issues") {
+		t.Fatalf("the branch was not in place before the issue: %q", fj.calls)
+	}
+
+	card, fj = file(t, map[string]string{}, ui2)
+	gone := "The branch of #31 is gone: start from main."
+	if card.SHA != "m1" || !strings.Contains(card.Objective, gone) || strings.Contains(card.Objective, "Starts from") {
+		t.Fatalf("ui2 without ui's branch filed at %q with:\n%s", card.SHA, card.Objective)
+	}
+	if slices.ContainsFunc(fj.calls, func(c string) bool {
+		return c == "GET fork branch factory/"+card.ID || strings.HasPrefix(c, "POST fork branches")
+	}) {
+		t.Fatalf("a gone branch was continued: %q", fj.calls)
+	}
+
+	cli := PlanCard{Key: "cli", Role: RoleFeature, Title: "CLI", Brief: "Land the cut work.", Size: "small", From: "#40",
+		Acceptance: []PlanItem{{Text: "the command runs"}}}
+	card, fj = file(t, map[string]string{"factory/t-plan": "d4"}, cli)
+	if card.SHA != "p0" || fj.branches["factory/"+card.ID] != "d4" ||
+		!strings.Contains(card.Objective, "Starts from the work of #40, on this card's branch: finish what it holds, make it build green, and land it.") {
+		t.Fatalf("cli filed at %q, its branch at %q, with:\n%s", card.SHA, fj.branches["factory/"+card.ID], card.Objective)
+	}
+}
+
+// A started open card the revision drops is stopped for the replan: with
+// no live session its dependents wait on the plan and it ends closed with
+// the reason.
+func TestRestartChildrenStopsADroppedStartedCard(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Refused) != 0 || len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	cards := cardsByKey(t, store)
+	started := cards["links-api"]
+	started.Status, started.PlanRevision = "running", 1
+	store.tasks[started.ID] = started
+	next := testPlan()
+	next.Cards = append(next.Cards[:1], next.Cards[2:]...)
+	next.Cards[1].DependsOn = nil
+	r.restartChildren(ctx, store.tasks["t-plan"], 2, next)
+
+	if c := store.tasks[started.ID]; c.Status != "closed" {
+		t.Fatalf("the dropped started card is %s, want closed", c.Status)
+	}
+	if got := store.deps[cards["redirects"].ID]; !slices.Equal(got, []string{cards["foundation"].ID, "t-plan"}) {
+		t.Fatalf("redirects waits on %v, want the foundation and the plan", got)
+	}
+	finals := stepsNamed(t, r, started.ID, "final")
+	var final struct{ State, Reason string }
+	if len(finals) != 1 || json.Unmarshal(finals[0], &final) != nil || final.State != "closed" || final.Reason != "the plan's revision 2 drops it" {
+		t.Fatalf("final steps %s, want closed with the plan's revision 2 drops it", finals)
+	}
+	if is := fj.issues[started.IssueNumber]; is.state != "closed" {
+		t.Fatalf("the stopped card's issue is %q, want closed", is.state)
 	}
 }
 
@@ -306,22 +434,23 @@ func TestRunSessionStampsThePlanRevision(t *testing.T) {
 
 // A stale card's merge approval never opens: the request fails the card
 // with the reason, and the merge itself refuses it too, so its branch
-// stays for the plan's re-run (piece 10).
+// stays for the plan's re-run (piece 10). A card is stale when the newest
+// revision drops its key.
 func TestStaleCardNeitherAsksNorMerges(t *testing.T) {
 	ctx := context.Background()
 	fj := &gateForgejo{mergeStatus: []int{200}}
 	task := gateTask
-	task.Source, task.Parent, task.PlanRevision = SourcePlan, "t-plan", 1
+	task.Source, task.Parent, task.PlanKey, task.PlanRevision = SourcePlan, "t-plan", "make-check", 1
 	r, store, _ := newGateRunner(t, task, fj)
-	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one"}`), "s1")
+	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one","cards":[{"key":"make-check"}]}`), "s1")
 	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "s2")
-	if err := r.RequestApproval(ctx, "t1", ApprovalInput{}); err == nil || !strings.Contains(err.Error(), "the plan moved to revision 2, the card ran against revision 1") ||
+	if err := r.RequestApproval(ctx, "t1", ApprovalInput{}); err == nil || !strings.Contains(err.Error(), "the plan's revision 2 drops the card make-check") ||
 		!strings.Contains(err.Error(), "type: terminal") {
 		t.Fatalf("RequestApproval: %v", err)
 	}
 	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 	res := getInto[MergeResult](t, val, err)
-	if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "the plan moved to revision 2, the card ran against revision 1") {
+	if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "the plan's revision 2 drops the card make-check") {
 		t.Fatalf("merge = %+v, merges %d: a stale card merged", res, len(fj.merges))
 	}
 }

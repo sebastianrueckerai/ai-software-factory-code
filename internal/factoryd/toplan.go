@@ -96,7 +96,9 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 				return PlanSwitchResult{}, err
 			}
 		}
-		detail := map[string]any{"reason": sw.Reason, "work_so_far": work}
+		// the session counters go to zero below: the step keeps where a
+		// cut cut the card
+		detail := map[string]any{"reason": sw.Reason, "work_so_far": work, "session": t.Usage.Attempts, "spent": t.SpentEUR}
 		if pr != 0 {
 			detail["pr"] = pr
 		}

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -8,6 +9,8 @@ import (
 	"log"
 	"reflect"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
@@ -697,4 +700,120 @@ func sameEntry(a, b PlanCard) bool {
 	a.Directories, a.DependsOn, a.Acceptance = nil, nil, nil
 	b.Directories, b.DependsOn, b.Acceptance = nil, nil, nil
 	return reflect.DeepEqual(a, b)
+}
+
+// recordReplan writes the record of plan p's pending replan step, whose
+// revision filed next, the cards' issues by key: each old card kept by
+// its key, changed into the new card whose from names it, or dropped,
+// and the new cards added. The old cards are oldCards that existed at
+// the step, without those closed before it; the cards the replan itself
+// stops count whatever the clocks say. It comments the counts and who
+// asked on the plan's issue and steps each old card; a cut says on its
+// card's issue what it was cut into, at which session and spend, and
+// steps it. The plan's replanned step comes last, as it ends the pending
+// replan: a failure before it fails the filing, which runs again.
+func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision int, next Plan, step ReplanStep, issues map[string]int64) error {
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+	if err != nil {
+		return fmt.Errorf("the timeline of %s: %w", p.ID, err)
+	}
+	var asked struct {
+		Time time.Time `json:"time"`
+	}
+	if err := json.Unmarshal(openStep(tl, stepReplan, replanClosers...), &asked); err != nil {
+		return fmt.Errorf("the replan step of %s: %w", p.ID, err)
+	}
+	cards, err := r.oldCardsOf(ctx, p, step, true)
+	if err != nil {
+		return err
+	}
+	keys, into := map[string]bool{}, map[string]string{}
+	for _, c := range next.Cards {
+		keys[c.Key] = true
+		if c.From != "" {
+			into[c.From] = c.Key
+		}
+	}
+	type fate struct {
+		k       Task
+		verdict string
+		into    int64
+	}
+	var fates []fate
+	count, held, named := map[string]int{}, map[string]bool{}, map[string]bool{}
+	for _, k := range cards {
+		stopped := k.ID == step.Card || slices.Contains(step.Stops, k.ID)
+		if k.CreatedAt.After(asked.Time) || k.Status == "closed" && k.FinishedAt != nil && k.FinishedAt.Before(asked.Time) && !stopped {
+			continue
+		}
+		f := fate{k: k, verdict: "dropped"}
+		switch ref := fromRef(k); {
+		case k.PlanKey != "" && keys[k.PlanKey]:
+			f.verdict = "kept"
+		case into[ref] != "":
+			f.verdict, f.into, named[ref] = "changed", issues[into[ref]], true
+		}
+		held[k.PlanKey] = k.PlanKey != ""
+		count[f.verdict]++
+		fates = append(fates, f)
+	}
+	added := 0
+	var cutInto []int64
+	for _, c := range planOrder(next, planEdges(next)) {
+		if held[c.Key] {
+			continue
+		}
+		cutInto = append(cutInto, issues[c.Key])
+		if !named[c.From] {
+			added++
+		}
+	}
+	note := fmt.Sprintf("replanned at revision %d: kept %d, changed %d, dropped %d, added %d.", revision, count["kept"], count["changed"], count["dropped"], added)
+	i := slices.IndexFunc(cards, func(k Task) bool { return k.ID == step.Card })
+	switch {
+	case step.Origin == ReplanPerson:
+		note += fmt.Sprintf("\nAsked by %s: %s", cmp.Or(step.By, "a person"), sanitize.Inbound(step.Comment))
+	case step.Origin == ReplanCut && i >= 0:
+		note += fmt.Sprintf("\nThe cut of #%d: %s", cards[i].IssueNumber, sanitize.Inbound(step.Work))
+	}
+	r.commentOnce(ctx, p, repo, p.IssueNumber, "factoryd: "+r.untrusted(p, note))
+	if step.Origin == ReplanCut && i >= 0 {
+		cut := cards[i]
+		session, spent := cut.Usage.Attempts, cut.SpentEUR
+		if cut.ID == p.ID {
+			// a direct card's switch set its counters to zero; its to_plan
+			// step kept them
+			sw := lastStep(tl, stepToPlan)
+			n, _ := sw["session"].(float64)
+			spent, _ = sw["spent"].(float64)
+			session = int(n)
+		}
+		refs := make([]string, len(cutInto))
+		for j, n := range cutInto {
+			refs[j] = fmt.Sprintf("#%d", n)
+		}
+		r.commentOnce(ctx, p, repo, cut.IssueNumber, fmt.Sprintf("factoryd: cut into %s at session %d, %.2f EUR spent.", strings.Join(refs, ", "), session, spent))
+		if err := r.timeline.Append(ctx, cut.ID, "cut", map[string]any{"into": cutInto, "session": session, "spent": spent}); err != nil {
+			return fmt.Errorf("record cut: %w", err)
+		}
+	}
+	for _, f := range fates {
+		if f.k.ID == p.ID {
+			continue // the plan's own step records it
+		}
+		d := map[string]any{"revision": revision, "verdict": f.verdict}
+		if f.into != 0 {
+			d["into"] = f.into
+		}
+		if err := r.timeline.Append(ctx, f.k.ID, "replanned", d); err != nil {
+			return fmt.Errorf("record replanned on %s: %w", f.k.ID, err)
+		}
+	}
+	detail := map[string]any{"revision": revision, "kept": count["kept"], "changed": count["changed"], "dropped": count["dropped"], "added": added,
+		"origin": step.Origin, "by": step.By, "comment": step.Comment}
+	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {
+		return fmt.Errorf("record replanned: %w", err)
+	}
+	r.timeline.RecordRow(ctx, p.ID, EventPlanReplanned, FactoryDecider, ViaFactoryd, detail)
+	return nil
 }

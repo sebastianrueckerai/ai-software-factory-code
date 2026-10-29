@@ -66,13 +66,16 @@ func labelWrites(fj *prForgejo) int {
 
 // A running direct card turns plan-track: the planner's class, its
 // session counters back to zero, its issue labelled plan in place of
-// agent, and a to_plan step holding the planner's work-so-far block.
+// agent, and a to_plan step holding the planner's work-so-far block and
+// the session and spend it switched at, which a cut's record names.
 func TestBecomePlanTurnsADirectCard(t *testing.T) {
-	r, store, objects, fj := becomePlanRig(t, directCard(), specTracks)
+	card := directCard()
+	card.SpentEUR = 1.25
+	r, store, objects, fj := becomePlanRig(t, card, specTracks)
 	if got := becomePlan(t, r, PlanSwitch{Reason: "too big", Work: "split by the check-in"}); got != (PlanSwitchResult{Switched: true}) {
 		t.Fatalf("BecomePlan = %+v, want switched", got)
 	}
-	card := store.tasks["t1"]
+	card = store.tasks["t1"]
 	if card.Track != policy.TrackPlan || !slices.Equal(card.RequiredCapabilities, []string{"planner"}) || card.Usage != (TaskUsage{}) {
 		t.Fatalf("card track %q, capabilities %q, usage %+v; want plan, [planner], zero", card.Track, card.RequiredCapabilities, card.Usage)
 	}
@@ -81,7 +84,8 @@ func TestBecomePlanTurnsADirectCard(t *testing.T) {
 	}
 	steps := toPlanSteps(t, objects)
 	if len(steps) != 1 || steps[0]["reason"] != "too big" ||
-		steps[0]["work_so_far"] != "Branch head: c7\nsplit by the check-in\nReason for the switch: too big" {
+		steps[0]["work_so_far"] != "Branch head: c7\nsplit by the check-in\nReason for the switch: too big" ||
+		steps[0]["session"] != 2.0 || steps[0]["spent"] != 1.25 {
 		t.Fatalf("to_plan steps %v", steps)
 	}
 }

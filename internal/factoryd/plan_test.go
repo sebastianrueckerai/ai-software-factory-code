@@ -1091,6 +1091,57 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 }
 
+// A revision that changes a criterion asks the confirmation again, though
+// an earlier one was answered; one that keeps the spec and every
+// criterion asks nothing and files its cards (the spec, piece H 5).
+func TestConfirmsAgainOnAChangedSpec(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name string
+		edit func(p *Plan)
+		asks bool
+	}{
+		{"one criterion added", func(p *Plan) {
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "clicks_counted", Kind: CriterionInvariant, Test: "go test ./internal/clicks passes"})
+		}, true},
+		{"the same spec and criteria", func(p *Plan) { p.Summary = "The same plan, filed a third time." }, false},
+	} {
+		r, store, _, _ := newPlanRunner(t, testPlan())
+		store.tasks["t-plan"] = func(tk Task) Task { tk.Status = "running"; return tk }(store.tasks["t-plan"])
+		r.cfg.Workflows = &fakeWorkflows{}
+		add := func(p Plan) {
+			raw, sha, err := planSHA(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+				t.Fatal(err)
+			}
+		}
+		two := testPlan()
+		two.Summary = "The second revision."
+		add(two)
+		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, "okay", "alice"); err != nil {
+			t.Fatal(err)
+		}
+		three := testPlan()
+		tc.edit(&three)
+		add(three)
+		val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 3, int64(7))
+		ref := getInto[PlanRef](t, val, err)
+		qs, _ := store.PlanQuestions(ctx, "t-plan", 3)
+		switch {
+		case tc.asks && (len(qs) != 1 || !strings.HasPrefix(qs[0].Text, "Confirmation of the spec and the criteria of plan revision 3:") || ref.Filed != nil):
+			t.Fatalf("%s: questions %+v, filed %v; want the confirmation and no card", tc.name, qs, ref.Filed)
+		case !tc.asks && (len(qs) != 0 || len(ref.Filed) != 4):
+			t.Fatalf("%s: questions %+v, filed %v; want none and four cards", tc.name, qs, ref.Filed)
+		}
+	}
+}
+
 // planSession is how long a planner session takes on the harness's clock.
 const planSession = 5 * time.Minute
 
@@ -2844,7 +2895,7 @@ func TestCardFactsRungLine(t *testing.T) {
 func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 	c := PlanCard{Key: "redirects", Title: "Redirects", Brief: "GET /<slug> answers 302.", Directories: []string{"internal/links"},
 		Acceptance: []PlanItem{{Text: "GET /abc answers 302"}}, Size: "small", Rung: RungCheap, RungReason: "routine"}
-	objective := "Redirects\n\n" + cardBody(c, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "")
+	objective := "Redirects\n\n" + cardBody(c, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "", "")
 	want := "Redirects\n\nCard redirects of plan #1 (3 of 4), filed for sebastian. Written by the planner.\n\nGET /<slug> answers 302.\n\n" +
 		"Depends on: #2 (foundation)\nAcceptance:\n- GET /abc answers 302"
 	if got := briefObjective(objective, true); got != want {
