@@ -1278,7 +1278,7 @@ type taskRun struct {
 	replanBy          string           // the pending replan's person (versionReplan)
 	replanNote        string           // the pending replan's note (versionReplan)
 	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)
-	screening         bool             // the run waits on the screening's human, which no replan ends (screeningWait)
+	screening         bool             // the card's screening has not passed: no wait takes a replan (screen, screeningWait)
 	switched          *programEnd      // the run's end once the card switched to the plan track, which finish returns (switchToPlan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
@@ -1520,6 +1520,9 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
+		// a fresh card's whole time before its screening passed is the
+		// screening's: no wait takes a replan (versionReplan)
+		t.screening = t.replan >= versionReplan && t.v16 >= versionStages && u.Attempts == 0 && st.PR.Number == 0 && !st.Screening && t.screens()
 		if t.waitsForDependencies(st, u) {
 			final, why, answer := t.awaitDependencies(st)
 			if final != "" {
@@ -1705,6 +1708,16 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			apply(v)
 		case t.v16 >= versionStages && u.Attempts == 0:
+			final, why, more := t.screen()
+			if final != "" {
+				return t.finish(final, why)
+			}
+			addFindings(more, "changes")
+		}
+		if t.screening {
+			// a healed fresh card answered a wait before its screening
+			// passed: it is screened now, as a live one before its first
+			// session
 			final, why, more := t.screen()
 			if final != "" {
 				return t.finish(final, why)
@@ -3594,7 +3607,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		defer end.stop()
 	}
 	wake := []string{SignalPRMerged, SignalPRClosed, SignalIssueClosed, SignalChangesRequested, SignalHumanComment}
-	replans := t.replans() && !t.screening
+	replans := t.replans()
 	if replans {
 		wake = append(wake, SignalToPlan)
 	}

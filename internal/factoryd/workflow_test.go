@@ -4551,25 +4551,122 @@ func TestReplanWaitsForTheScreening(t *testing.T) {
 	if want := []becomePlanCall{{"t1", toPlanAsked, "running"}}; !slices.Equal(*calls, want) || !before(*order, ActivityJudgeScreening, ActivityBecomePlan) {
 		t.Fatalf("BecomePlan calls %+v, activities %q; want %+v after the screening's judgment", *calls, *order, want)
 	}
+
+	// the screening gate's own escalation is the screening's too: the
+	// replan waits through it until the screening ran again and passed
+	h, calls = toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state.Source, h.state.Standing = "webhook", harness.StandingOutside
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").After(20*time.Minute).Return(ScreenResult{Verdict: ScreenClear}, nil)
+	h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the screening hangs", Recommendation: "look at the gateway"})
+	order = h.activityOrder()
+	h.tripAfter(15*time.Minute, ActivityScreen, 1)
+	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "gateway restarted", Comment: 602})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if j := slices.Index(*order, ActivityBecomePlan); len(*calls) != 1 || j < 0 || occurrences((*order)[:j], ActivityScreen) != 2 {
+		t.Fatalf("BecomePlan calls %+v, activities %q; want one, after the second screening", *calls, *order)
+	}
+
+	// a healed fresh card waiting on the screening gate's escalation: the
+	// replan waits through it, and the answer runs the screening first
+	h, calls = toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state = RunState{Status: "waiting-human", Source: "webhook", Standing: harness.StandingOutside, Question: screenGateQuestion}
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(ScreenResult{Verdict: ScreenClear}, nil)
+	order = h.activityOrder()
+	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if j := slices.Index(*order, ActivityBecomePlan); len(*calls) != 1 || j < 0 || occurrences((*order)[:j], ActivityScreen) != 1 {
+		t.Fatalf("BecomePlan calls %+v, activities %q; want one, after the screening", *calls, *order)
+	}
+}
+
+// screenGateQuestion is the question of the screening gate's escalation.
+const screenGateQuestion = "The gate supervisor stopped Screen (attempt 1) past its bound of 10m0s: the screening hangs"
+
+// occurrences is how often v stands in s.
+func occurrences(s []string, v string) int {
+	n := 0
+	for _, x := range s {
+		if x == v {
+			n++
+		}
+	}
+	return n
+}
+
+// A healed fresh card that waited on the screening gate's escalation runs
+// its screening after the answer, before its first session, as a live one.
+func TestHealedScreeningEscalationScreensBeforeTheSession(t *testing.T) {
+	h, _ := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.state = RunState{Status: "waiting-human", Source: "webhook", Standing: harness.StandingOutside, Question: screenGateQuestion}
+	h.env.OnActivity(ActivityScreen, mock.Anything, "t1").Return(ScreenResult{Verdict: ScreenClear}, nil)
+	order := h.activityOrder()
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if occurrences(*order, ActivityScreen) != 1 || !before(*order, ActivityScreen, ActivityRunSession) {
+		t.Fatalf("activities %q, want one screening before the first session", *order)
+	}
 }
 
 // A replan that wakes a gate's escalation wait cancels the gate beside the
 // checks before the planner runs.
 func TestReplanFromAGateWaitCancelsTheGateBesideTheChecks(t *testing.T) {
-	h, _ := directCardHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
-	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
-	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
-	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
-		After(3*time.Hour).Return(Review{Verdict: "approve"}, nil)
-	h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the checks hang", Recommendation: "look at the runner"})
-	order := h.activityOrder()
-	h.tripAfter(15*time.Minute, ActivityWaitChecks, 1)
-	h.toPlanAfter(30*time.Minute, toPlanTooBig)
+	rig := func(become func() (PlanSwitchResult, error)) (*planHarness, *[]string, *[]string) {
+		h, _ := directCardHarness(t, become, timedSession{res: pushed("s1", "c1")})
+		h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).
+			After(3*time.Hour).Return(Review{Verdict: "approve"}, nil)
+		h.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the gate hangs", Recommendation: "look at the runner"})
+		var withdrawn []string
+		h.env.OnActivity(ActivityWithdrawQuestion, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID, reason string, comment int64, why string) (int64, error) {
+				withdrawn = append(withdrawn, fmt.Sprintf("%d because %s", comment, why))
+				return 900, nil
+			})
+		h.tripAfter(15*time.Minute, ActivityWaitChecks, 1)
+		h.toPlanAfter(30*time.Minute, toPlanTooBig)
+		return h, h.activityOrder(), &withdrawn
+	}
+
+	h, order, _ := rig(becomeSwitched)
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.escalated) != 1 || !before(*order, "cancel "+ActivityModelReview, ActivityRunPlan) {
-		t.Fatalf("escalations %q, activities %q; want one, the review beside the checks cancelled before the planner ran", h.escalated, *order)
+	if len(h.escalated) != 1 || !before(*order, ActivityBecomePlan, "cancel "+ActivityModelReview) || !before(*order, "cancel "+ActivityModelReview, ActivityRunPlan) {
+		t.Fatalf("escalations %q, activities %q; want one, the review beside the checks cancelled after the switch, before the planner ran", h.escalated, *order)
+	}
+
+	// the question the review beside the checks asked is withdrawn, naming
+	// the replan
+	h, order, withdrawn := rig(becomeSwitched)
+	h.tripAfter(5*time.Minute, ActivityModelReview, 1)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if want := []string{"601 because the card went back to the planner"}; !slices.Equal(*withdrawn, want) ||
+		!before(*order, ActivityBecomePlan, ActivityWithdrawQuestion) || !before(*order, ActivityWithdrawQuestion, ActivityRunPlan) {
+		t.Fatalf("withdrawn %q, activities %q; want %q after the switch, before the planner ran", *withdrawn, *order, want)
+	}
+
+	// a refused switch leaves the review beside the checks running
+	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
+	h, order, _ = rig(becomeRefused(refused))
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "runner fixed", Comment: 602})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if slices.Contains(*order, "cancel "+ActivityModelReview) || occurrences(*order, ActivityModelReview) != 1 {
+		t.Fatalf("activities %q, want the one review beside the checks never cancelled", *order)
 	}
 }
 

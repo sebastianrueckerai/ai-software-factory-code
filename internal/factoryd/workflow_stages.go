@@ -705,6 +705,7 @@ type besideRun struct {
 const (
 	checksFailed = "the checks failed"
 	headBack     = "the head went back to the agent"
+	toPlanner    = "the card went back to the planner"
 )
 
 // scheduleBeside starts the review and the audit beside the checks wait
@@ -1137,6 +1138,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 // waits on a human; the human's answer (which lets the task run) or the
 // close judges the screening alert.
 func (t *taskRun) screen() (final, why string, findings []string) {
+	defer func() { t.screening = false }()
 	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageScreening })
 	if i < 0 {
 		return "", "", nil
@@ -1233,10 +1235,17 @@ func (t *taskRun) awaitScreening(reason string) (final, why string, answer []str
 // screening alert by its end. A replan does not end it: the human's
 // judgment stays the gate on an outsider's text.
 func (t *taskRun) screeningWait(wait func() (string, string, []string)) (final, why string, answer []string) {
+	was := t.screening
 	t.screening = true
 	final, why, answer = wait()
-	t.screening = false
+	t.screening = was
 	return t.judgeScreening(final, why, answer)
+}
+
+// screens tells a card the screening stage runs for (screen).
+func (t *taskRun) screens() bool {
+	i := slices.IndexFunc(t.cfg.Stages, func(s policy.Stage) bool { return s.Name == policy.StageScreening })
+	return i >= 0 && t.skipReason(t.cfg.Stages[i]) == ""
 }
 
 // judgeScreening judges the screening alert by how the wait on its human

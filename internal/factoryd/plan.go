@@ -1396,9 +1396,11 @@ func (s *PGStore) SetTaskIssue(ctx context.Context, id string, issue int64) erro
 // request it had, and the program runs again, which TaskConfig now gives
 // session mode plan. The writers' comments the direct run left unread are
 // recorded as ignored, so the plan loop does not take them as written
-// while the planner ran. A refusal is recorded on the timeline, kept in
-// t.planRefused, and the direct lifecycle goes on (switched false). The
-// end of a switched run is kept in t.switched for a wait's caller.
+// while the planner ran, and the gates beside the checks stop, their
+// questions withdrawn (versionReplan). A refusal is recorded on the
+// timeline, kept in t.planRefused, and the direct lifecycle goes on
+// (switched false), its gates still running. The end of a switched run is
+// kept in t.switched for a wait's caller.
 func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err error) {
 	if t.directToPlan < versionDirectToPlan {
 		return "", false, nil
@@ -1424,6 +1426,9 @@ func (t *taskRun) switchToPlan(sw PlanSwitch) (final string, switched bool, err 
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
 		}
 	}
+	if t.replan >= versionReplan {
+		t.cancelBeside(toPlanner)
+	}
 	final, err = t.program()
 	t.switched = &programEnd{final, err}
 	return final, true, err
@@ -1437,10 +1442,10 @@ type programEnd struct {
 
 // replans tells a run whose waits take a person's replan (versionReplan):
 // a direct agent card's coding run, not a roll's, a factory pull request
-// card's or a plan child's.
+// card's or a plan child's, once its screening passed.
 func (t *taskRun) replans() bool {
 	return t.replan >= versionReplan && t.cfg.Task.Session == policy.SessionCode && t.cfg.Task.Track == policy.TrackDirect &&
-		t.source != SourcePlan && !slices.Contains(unboundSources, t.source)
+		t.source != SourcePlan && !slices.Contains(unboundSources, t.source) && !t.screening
 }
 
 // takeToPlan takes a pending to_plan, a person's replan of the card: the
@@ -1476,14 +1481,12 @@ func (t *taskRun) replanToPlan(step ReplanStep, sw PlanSwitch) (final string, sw
 	return t.switchToPlan(sw)
 }
 
-// switchFromWait sends a card from a wait to the planner: the gates beside
-// the checks stop, a card in review has its approval superseded, the card
-// runs, a status BecomePlan accepts, and switches. A switched card's final
-// ends the wait (done); a refused switch moves the card back to back and
-// the wait goes on. The plan program's error comes back through the
-// caller's finish.
+// switchFromWait sends a card from a wait to the planner: a card in review
+// has its approval superseded, the card runs, a status BecomePlan accepts,
+// and switches. A switched card's final ends the wait (done); a refused
+// switch moves the card back to back and the wait goes on. The plan
+// program's error comes back through the caller's finish.
 func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (final, why string, done bool) {
-	t.cancelBeside("")
 	if back == "in-review" {
 		reason := "superseded: " + cmp.Or(step.By, "a person") + " asked to send the card back to the planner"
 		if err := workflow.ExecuteActivity(t.short, ActivitySupersedeApproval, t.taskID, reason).Get(t.ctx, nil); err != nil {
