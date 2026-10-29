@@ -689,9 +689,10 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 }
 
-// closePlan says why plan t closed on its issue, unless comment is empty, and records plan_closed
-// with the plan's count of criteria. A close whose row failed runs again
-// on the next pass; the issue still hears of it once.
+// closePlan says why plan t closed on its issue, unless comment is
+// empty, and records plan_closed with the plan's count of criteria. A
+// close whose row failed runs again on the next pass; the issue still
+// hears of it once.
 func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int, comment string) {
 	if comment != "" {
 		r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
