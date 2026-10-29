@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -508,4 +509,28 @@ func (r *Runner) Go(ctx context.Context, taskID, by string) (int64, error) {
 		return 0, fmt.Errorf("task %s: hand its routine run to %s: %w", taskID, n.ID, err)
 	}
 	return ref.Number, nil
+}
+
+// ErrNoBranch means the branch of the card to continue is gone.
+var ErrNoBranch = errors.New("the branch of the card to continue does not exist")
+
+// ContinueBranch puts card to's branch on the bot's fork at the head of card
+// from's branch and returns that head. to's first session then starts there
+// (startRef reads the branch first); the caller files to with from's base. A
+// branch of to that exists is kept: a filing that is repeated finds it.
+func (r *Runner) ContinueBranch(ctx context.Context, from, to Task) (string, error) {
+	_, repo, err := r.task(ctx, from.ID)
+	if err != nil {
+		return "", err
+	}
+	fork := r.forgejo.Fork(repo)
+	if _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(from)); errors.Is(err, ErrNotFound) {
+		return "", ErrNoBranch
+	} else if err != nil {
+		return "", fmt.Errorf("branch head of %s: %w", from.ID, err)
+	}
+	if err := r.forgejo.CopyBranch(ctx, fork, taskBranch(from), taskBranch(to)); err != nil {
+		return "", fmt.Errorf("copy the branch of %s: %w", from.ID, err)
+	}
+	return r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(to))
 }

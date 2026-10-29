@@ -916,3 +916,70 @@ func TestPGStoreBoardKeepsABlockingFailedCard(t *testing.T) {
 		t.Fatalf("board = %v, want the waiting card and the failed card it waits on", ids)
 	}
 }
+
+func TestContinueBranch(t *testing.T) {
+	ctx := context.Background()
+	from := Task{ID: "t-a", SHA: "b0"}
+	to := Task{ID: "t-n"}
+	posts := func(fj *planForgejo) (n int) {
+		for _, c := range fj.calls {
+			if strings.HasPrefix(c, "POST fork branches") {
+				n++
+			}
+		}
+		return n
+	}
+	t.Run("puts the new branch at the old head", func(t *testing.T) {
+		r, _, _, fj, _ := newRetryRig(t)
+		head, err := r.ContinueBranch(ctx, from, to)
+		if err != nil || head != "c7" || fj.branches["factory/t-n"] != "c7" {
+			t.Fatalf("ContinueBranch = %q, %v; branch %q; want c7 on both", head, err, fj.branches["factory/t-n"])
+		}
+	})
+	t.Run("twice creates once", func(t *testing.T) {
+		r, _, _, fj, _ := newRetryRig(t)
+		r.ContinueBranch(ctx, from, to)
+		head, err := r.ContinueBranch(ctx, from, to)
+		if err != nil || head != "c7" || posts(fj) != 1 {
+			t.Fatalf("second ContinueBranch = %q, %v with %d POST fork branches; want c7, one", head, err, posts(fj))
+		}
+	})
+	t.Run("keeps an existing branch", func(t *testing.T) {
+		r, _, _, fj, _ := newRetryRig(t)
+		fj.branches["factory/t-n"] = "c9"
+		head, err := r.ContinueBranch(ctx, from, to)
+		if err != nil || head != "c9" || fj.branches["factory/t-n"] != "c9" {
+			t.Fatalf("ContinueBranch = %q, %v; branch %q; want c9 kept", head, err, fj.branches["factory/t-n"])
+		}
+	})
+	t.Run("a missing old branch", func(t *testing.T) {
+		r, _, _, fj, _ := newRetryRig(t)
+		delete(fj.branches, "factory/t-a")
+		_, err := r.ContinueBranch(ctx, from, to)
+		if _, made := fj.branches["factory/t-n"]; !errors.Is(err, ErrNoBranch) || made {
+			t.Fatalf("ContinueBranch err = %v, branch made %v; want ErrNoBranch, none", err, made)
+		}
+	})
+}
+
+func TestContinuedCardResumesOnTheBranch(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	to := Task{ID: "t-n", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "linkshort/linkshort", SHA: "b0", Source: SourcePlan, Parent: "t-plan", PlanKey: "n"}
+	if err := store.CreateTask(ctx, to); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.ContinueBranch(ctx, Task{ID: "t-a", SHA: "b0"}, to); err != nil {
+		t.Fatal(err)
+	}
+	_, repo, err := r.task(ctx, to.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref, err := r.startRef(ctx, &to, repo, ""); err != nil || ref != "c7" || to.SHA != "b0" {
+		t.Fatalf("startRef = %q, %v with SHA %q; want c7 and b0", ref, err, to.SHA)
+	}
+	if head, err := r.BranchHead(ctx, to.ID); err != nil || head != "c7" {
+		t.Fatalf("BranchHead = %q, %v; want c7", head, err)
+	}
+}
