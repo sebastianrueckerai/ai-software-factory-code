@@ -2184,9 +2184,9 @@ func TestRunPlanFencesTheWorkSoFar(t *testing.T) {
 		prior    *harness.PriorState
 	}{
 		"switched": {true, nil, []string{"an earlier finding"}, []string{"an earlier finding"},
-			&harness.PriorState{Session: "replan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
+			&harness.PriorState{Session: "to_plan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
 		"switched, sixty findings": {true, nil, sixty, sixty,
-			&harness.PriorState{Session: "replan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
+			&harness.PriorState{Session: "to_plan", Heading: "The work so far on this card, as factoryd copied it when this session started.", Body: work}},
 		"a direct card's cut": {true, cut, []string{"an earlier finding"}, []string{"an earlier finding", "#1 (this card, no key): its work on branch card/1; its record is card-1.md"},
 			&harness.PriorState{Session: "replan", Heading: "The records of the plan's old cards, as factoryd copied them when this session started.",
 				Body: "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session.\n\n" +
@@ -2235,9 +2235,9 @@ func TestRunPlanFencesTheWorkSoFar(t *testing.T) {
 }
 
 // A replan's planner session gets the record: the findings it came with,
-// its last plan, then the opener and one line per old card, the old
-// cards' branches for its clone, and their files under the record's
-// heading with its brief.
+// its last plan, then one finding of the opener and a line per old card,
+// the old cards' branches for its clone, and their files under the
+// record's heading with its brief.
 func TestRunPlanCarriesTheRecord(t *testing.T) {
 	runner, _, kube, _, raw := oldCardsRig(t, personReplan)
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
@@ -2252,9 +2252,9 @@ func TestRunPlanCarriesTheRecord(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatalf("RunPlan: %v", err)
 	}
-	want := slices.Concat([]string{"an earlier finding",
+	want := []string{"an earlier finding",
 		"your last plan, revision 1: answer the whole plan again, changed as the findings ask:\n```json\n" + raw + "\n```",
-		"This is a replan of plan #1, asked by ana: the ui is too wide"}, oldCardLines)
+		strings.Join(append([]string{"This is a replan of plan #1, asked by ana: the ui is too wide"}, oldCardLines...), "\n")}
 	var got []string
 	if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || !slices.Equal(got, want) {
 		t.Fatalf("FINDINGS\n%q (%v)\nwant\n%q", got, err, want)
@@ -2271,6 +2271,56 @@ func TestRunPlanCarriesTheRecord(t *testing.T) {
 		b.Prior.Body != "One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session." ||
 		!slices.Equal(names, []string{"card-30.md", "card-33.md", "card-32.md", "card-31.md"}) {
 		t.Fatalf("brief prior %+v, files %q", b.Prior, names)
+	}
+}
+
+// A replan's record is one finding however many old cards it names, so
+// the session's fit, which drops the oldest findings first, keeps the
+// last plan before it: seventy old cards and sixty findings leave the
+// last plan and the record, and the oldest findings go.
+func TestRunPlanKeepsTheLastPlanBeforeManyOldCards(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, recordPlanTask(), kube, &fakeObjectStore{})
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	raw := planJSON(t, Plan{Summary: "s", Cards: []PlanCard{replanCard("api", RoleFeature, "the api"), replanCard("cli", RoleIntegration, "the cli")}})
+	if _, err := store.AddPlanRevision(ctx, "t-plan", json.RawMessage(raw), "sha-1"); err != nil {
+		t.Fatal(err)
+	}
+	lines := []string{"This is a replan of plan #1, asked by ana: the ui is too wide"}
+	for i := 1; i <= 70; i++ {
+		k := Task{ID: fmt.Sprintf("t-k%02d", i), PlanKey: fmt.Sprintf("k%02d", i), IssueNumber: int64(100 + i), Status: "queued", BudgetEUR: 1,
+			Objective: fmt.Sprintf("Card %d\n\nIts brief.", i), Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "t-plan",
+			Repository: "linkshort/linkshort", SHA: "abc123"}
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+		lines = append(lines, fmt.Sprintf("#%d Card %d (feature, key k%02d): never started; spent 0.00 of 1.00 EUR in 0 sessions; its record is card-%d.md", 100+i, i, i, 100+i))
+	}
+	if err := runner.Timeline().Append(ctx, "t-plan", stepReplan, personReplan); err != nil {
+		t.Fatal(err)
+	}
+	var sixty []string
+	for i := 1; i <= 60; i++ {
+		sixty = append(sixty, fmt.Sprintf("finding %d", i))
+	}
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), sixty)
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(true, "no plan"))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	want := append(slices.Clone(sixty[2:]),
+		"your last plan, revision 1: answer the whole plan again, changed as the findings ask:\n```json\n"+raw+"\n```",
+		strings.Join(lines, "\n"))
+	var got []string
+	if err := json.Unmarshal([]byte(podEnv(kube.podAt(0))["FINDINGS"]), &got); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("FINDINGS %d (%v): %.300q\nwant %d: %.300q", len(got), err, got, len(want), want)
 	}
 }
 
@@ -2479,7 +2529,7 @@ func TestFilePlanReadsTheRecordOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	timeline := &timelineReads{fakeObjectStore: objs}
+	timeline := &timelineReads{fakeObjectStore: objs, n: map[string]int{}}
 	r.timeline.Objects = timeline
 	revisions := &revisionReads{fakeStore: store, n: map[int]int{}}
 	r.store = revisions
@@ -2489,8 +2539,8 @@ func TestFilePlanReadsTheRecordOnce(t *testing.T) {
 	if err != nil || !slices.Equal(res.Findings, want) {
 		t.Fatalf("the filing: %+v, %v, want the findings %q", res, err, want)
 	}
-	if timeline.n != 1 || !reflect.DeepEqual(revisions.n, map[int]int{0: 1, 1: 1}) {
-		t.Fatalf("the filing read the timeline %d times and the revisions %v, want once and map[0:1 1:1]", timeline.n, revisions.n)
+	if timeline.n["t-plan"] != 1 || !reflect.DeepEqual(revisions.n, map[int]int{0: 1, 1: 1}) {
+		t.Fatalf("the filing read the timeline %d times and the revisions %v, want once and map[0:1 1:1]", timeline.n["t-plan"], revisions.n)
 	}
 }
 

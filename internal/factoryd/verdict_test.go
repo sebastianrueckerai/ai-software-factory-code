@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1057,15 +1058,18 @@ func TestPlanCloseCheckClosesAFinalPlan(t *testing.T) {
 	}
 }
 
-// timelineReads counts the reads of t-plan's timeline.
+// timelineReads counts the reads of each task's timeline, by task.
 type timelineReads struct {
 	*fakeObjectStore
-	n int
+	mu sync.Mutex
+	n  map[string]int
 }
 
 func (o *timelineReads) Get(ctx context.Context, key string) ([]byte, error) {
-	if key == "sessions/t-plan/timeline.jsonl" {
-		o.n++
+	if id, ok := strings.CutSuffix(strings.TrimPrefix(key, "sessions/"), "/timeline.jsonl"); ok {
+		o.mu.Lock()
+		o.n[id]++
+		o.mu.Unlock()
 	}
 	return o.fakeObjectStore.Get(ctx, key)
 }
@@ -1075,11 +1079,11 @@ func (o *timelineReads) Get(ctx context.Context, key string) ([]byte, error) {
 func TestCriteriaPassReadsNoTimelineAtRest(t *testing.T) {
 	r, s, objs, _ := planWithoutCriteria(t, "done", "running")
 	mergeCard(s, "card-1")
-	reads := &timelineReads{fakeObjectStore: objs}
+	reads := &timelineReads{fakeObjectStore: objs, n: map[string]int{}}
 	r.timeline.Objects = reads
 	r.CriteriaPass(context.Background())
-	if reads.n != 0 || planCloses(t, objs) != 0 {
-		t.Fatalf("%d timeline reads, %d closes; want none of either", reads.n, planCloses(t, objs))
+	if reads.n["t-plan"] != 0 || planCloses(t, objs) != 0 {
+		t.Fatalf("%d timeline reads, %d closes; want none of either", reads.n["t-plan"], planCloses(t, objs))
 	}
 }
 

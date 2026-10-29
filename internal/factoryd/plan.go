@@ -2129,9 +2129,9 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 }
 
 // planRecord is what plan t's planner session gets of the work before
-// it. A pending replan's findings go after findings, since the session's
-// fit drops the oldest first, and its old cards' branches go to the
-// clone. The agent's words, the cut's opener and the work so far of a
+// it. A pending replan's findings go after findings as one, since the
+// session's fit drops the oldest first, and its old cards' branches go to
+// the clone. The agent's words, the cut's opener and the work so far of a
 // card that ran direct, stand in the brief's fence beside the old cards'
 // files, and in no finding.
 func (r *Runner) planRecord(ctx context.Context, t Task, findings []string) (reportExtra, []string, error) {
@@ -2145,10 +2145,12 @@ func (r *Runner) planRecord(ctx context.Context, t Task, findings []string) (rep
 	}
 	var extra reportExtra
 	var fenced []string
-	prior := harness.PriorState{Session: "replan", Heading: "The work so far on this card, as factoryd copied it when this session started."}
+	prior := harness.PriorState{Session: stepToPlan, Heading: "The work so far on this card, as factoryd copied it when this session started."}
 	if replan {
-		findings = append(slices.Clone(findings), rec.findings...)
+		// one finding, so the fit drops it last and the last plan before it
+		findings = append(slices.Clone(findings), strings.Join(rec.findings, "\n"))
 		extra.branches = rec.branches
+		prior.Session = stepReplan
 		prior.Heading = "The records of the plan's old cards, as factoryd copied them when this session started."
 		fenced = append([]string{"One file per card: its review findings, its criteria verdicts, the check-in's notes and the working state of its last session."}, rec.work...)
 	}

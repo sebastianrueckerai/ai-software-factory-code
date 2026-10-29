@@ -1611,7 +1611,13 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 	if err != nil {
 		return fmt.Errorf("read the timeline: %w", err)
 	}
-	for line := range strings.SplitSeq(string(b), "\n") {
+	stageMemoryOf(b, st)
+	return nil
+}
+
+// stageMemoryOf is stageMemory of the timeline tl.
+func stageMemoryOf(tl []byte, st *RunState) {
+	for line := range strings.SplitSeq(string(tl), "\n") {
 		var step struct {
 			Step, Stage, To, Verdict, Summary, Note, Reason string
 			By, Finding, Why                                string
@@ -1663,7 +1669,6 @@ func (r *Runner) stageMemory(ctx context.Context, taskID string, st *RunState) e
 			}
 		}
 	}
-	return nil
 }
 
 // waitsOnScreening: the task's last escalation, not counting a healed

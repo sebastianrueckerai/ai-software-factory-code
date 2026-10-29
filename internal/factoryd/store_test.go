@@ -865,10 +865,10 @@ func (s *fakeStore) Session(ctx context.Context, id string) (Session, bool, erro
 	return sess, ok, nil
 }
 
-func (s *fakeStore) RecentSessions(ctx context.Context, taskID string, n int) ([]Session, error) {
+func (s *fakeStore) RecentSessions(ctx context.Context, taskID string, before time.Time, n int) ([]Session, error) {
 	var out []Session
 	for _, sess := range s.sessions {
-		if sess.TaskID == taskID {
+		if sess.TaskID == taskID && sess.CreatedAt.Before(before) {
 			out = append(out, sess)
 		}
 	}
@@ -3788,9 +3788,9 @@ func TestPGStoreScreeningLetRun(t *testing.T) {
 }
 
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). A task's
-// recent sessions are its newest rows by created_at, newest first, n at
-// most; another task's rows are not its own, and a task with none has
-// none.
+// recent sessions are its newest rows created before a time, newest
+// first, n at most; a row created at that time is not before it, another
+// task's rows are not its own, and a task with none has none.
 func TestRecentSessions(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_recent_sessions"))
@@ -3814,7 +3814,7 @@ func TestRecentSessions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, err := s.RecentSessions(ctx, "t1", 2)
+	got, err := s.RecentSessions(ctx, "t1", at.Add(time.Hour), 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3828,10 +3828,13 @@ func TestRecentSessions(t *testing.T) {
 	if !slices.Equal(ids, []string{"s-c", "s-b"}) || !got[0].CreatedAt.Equal(at.Add(2*time.Minute)) {
 		t.Fatalf("RecentSessions(t1, 2) = %+v, want s-c then s-b", got)
 	}
-	if got, err := s.RecentSessions(ctx, "t1", 5); err != nil || len(got) != 3 || got[2].ID != "s-a" || got[2].ParentSessionID != "s-0" {
+	if got, err := s.RecentSessions(ctx, "t1", at.Add(time.Hour), 5); err != nil || len(got) != 3 || got[2].ID != "s-a" || got[2].ParentSessionID != "s-0" {
 		t.Fatalf("RecentSessions(t1, 5) = %+v, %v; want all three, s-a last with its parent", got, err)
 	}
-	if got, err := s.RecentSessions(ctx, "t3", 2); err != nil || len(got) != 0 {
+	if got, err := s.RecentSessions(ctx, "t1", at.Add(2*time.Minute), 5); err != nil || len(got) != 2 || got[0].ID != "s-b" || got[1].ID != "s-a" {
+		t.Fatalf("RecentSessions(t1) before s-c's time = %+v, %v; want s-b then s-a", got, err)
+	}
+	if got, err := s.RecentSessions(ctx, "t3", at.Add(time.Hour), 2); err != nil || len(got) != 0 {
 		t.Fatalf("RecentSessions of a task without sessions = %+v, %v; want none", got, err)
 	}
 }

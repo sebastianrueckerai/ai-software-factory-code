@@ -608,7 +608,7 @@ func (s *acceptanceStore) Session(context.Context, string) (factoryd.Session, bo
 	return factoryd.Session{}, false, nil
 }
 
-func (s *acceptanceStore) RecentSessions(context.Context, string, int) ([]factoryd.Session, error) {
+func (s *acceptanceStore) RecentSessions(context.Context, string, time.Time, int) ([]factoryd.Session, error) {
 	return nil, nil
 }
 

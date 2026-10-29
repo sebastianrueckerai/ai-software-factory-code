@@ -457,9 +457,9 @@ type Store interface {
 	PruneDeliveries(ctx context.Context, age time.Duration) error
 	InsertSession(ctx context.Context, s Session) error
 	Session(ctx context.Context, id string) (Session, bool, error)
-	// RecentSessions are task taskID's newest n sessions, newest first by
-	// created_at.
-	RecentSessions(ctx context.Context, taskID string, n int) ([]Session, error)
+	// RecentSessions are task taskID's newest n sessions created before
+	// before, newest first by created_at.
+	RecentSessions(ctx context.Context, taskID string, before time.Time, n int) ([]Session, error)
 	UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error
 	// SetTaskRisk records the risk class GatePolicy gave the task's pull
 	// request.
@@ -1736,8 +1736,9 @@ func (s *PGStore) Session(ctx context.Context, id string) (Session, bool, error)
 	return sess, true, nil
 }
 
-func (s *PGStore) RecentSessions(ctx context.Context, taskID string, n int) ([]Session, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE task_id = $1 ORDER BY created_at DESC LIMIT $2`, taskID, n)
+func (s *PGStore) RecentSessions(ctx context.Context, taskID string, before time.Time, n int) ([]Session, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE task_id = $1 AND created_at < $2 ORDER BY created_at DESC LIMIT $3`,
+		taskID, before, n)
 	if err != nil {
 		return nil, err
 	}

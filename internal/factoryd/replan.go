@@ -947,7 +947,10 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 		if err != nil {
 			return replanRecord{}, false, fmt.Errorf("the timeline of %s: %w", k.ID, err)
 		}
-		var state string
+		// said is the file's state line where it differs: a final reason
+		// may be the agent's words, which the fenced file holds and no
+		// finding does
+		var state, said string
 		switch {
 		case k.MergeCommit != "":
 			state = "merged as " + k.MergeCommit[:min(8, len(k.MergeCommit))]
@@ -956,11 +959,10 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 		case k.ID == step.Card || slices.Contains(step.Stops, k.ID):
 			state = "stopped for this replan, " + work
 		case Final(k.Status):
-			state = "ended " + k.Status
+			state = "ended " + k.Status + ", " + work
 			if reason, _ := lastStep(tl, "final")["reason"].(string); stopLine(reason) != "" {
-				state += ": " + stopLine(reason)
+				said = "ended " + k.Status + ": " + stopLine(reason) + ", " + work
 			}
-			state += ", " + work
 		case k.PlanRevision == 0:
 			state = "never started" + onBranch
 		default:
@@ -968,11 +970,8 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 		}
 		title, _, _ := strings.Cut(k.Objective, "\n")
 		name := fmt.Sprintf("card-%d.md", k.IssueNumber)
-		role := roles[k.PlanKey]
-		var before time.Time
+		role, spend := roles[k.PlanKey], ""
 		if k.ID == p.ID {
-			// the card's own sessions since its replan are its planner's
-			before = step.Time
 			rec.findings = append(rec.findings, fmt.Sprintf("#%d (this card, no key): %s; its record is %s", k.IssueNumber, state, name))
 		} else {
 			if _, held := roles[k.PlanKey]; !held && k.PlanRevision > 0 {
@@ -988,10 +987,12 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 				}
 			}
 			role = cmp.Or(role, RoleFeature)
-			state += fmt.Sprintf("; spent %.2f of %.2f EUR in %d sessions", k.SpentEUR, k.BudgetEUR, k.Usage.Attempts)
-			rec.findings = append(rec.findings, fmt.Sprintf("#%d %s (%s, key %s): %s; its record is %s", k.IssueNumber, title, role, k.PlanKey, state, name))
+			spend = fmt.Sprintf("; spent %.2f of %.2f EUR in %d sessions", k.SpentEUR, k.BudgetEUR, k.Usage.Attempts)
+			rec.findings = append(rec.findings, fmt.Sprintf("#%d %s (%s, key %s): %s%s; its record is %s", k.IssueNumber, title, role, k.PlanKey, state, spend, name))
 		}
-		text, err := r.oldCardText(ctx, k, tl, fmt.Sprintf("# #%d %s", k.IssueNumber, title), state, role, cmp.Or(head, k.MergeCommit, k.SHA), before)
+		// its last session is one from before the replan: a direct card's
+		// later ones are its planner's
+		text, err := r.oldCardText(ctx, k, tl, fmt.Sprintf("# #%d %s", k.IssueNumber, title), cmp.Or(said, state)+spend, role, cmp.Or(head, k.MergeCommit, k.SHA), step.Time)
 		if err != nil {
 			return replanRecord{}, false, err
 		}
@@ -1003,9 +1004,9 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 // oldCardText is old card k's record file under title: its state line,
 // then each section that has lines: the reviews' findings and the stages'
 // from its timeline tl, an integration card's criteria verdicts, the
-// check-in's notes, and the working state of its newest session that left
-// one, of those created before before when it is set, at branch head
-// commit.
+// check-in's notes, and the working state of its newest session created
+// before before that left one, at branch head commit, with how that
+// session ended.
 func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, state, role, commit string, before time.Time) (string, error) {
 	parts := []string{title, state}
 	section := func(heading string, lines []string) {
@@ -1014,9 +1015,7 @@ func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, stat
 		}
 	}
 	var st RunState
-	if err := r.stageMemory(ctx, k.ID, &st); err != nil {
-		return "", err
-	}
+	stageMemoryOf(tl, &st)
 	var lines []string
 	for i, rv := range st.Reviews {
 		for _, f := range rv.Findings {
@@ -1047,8 +1046,9 @@ func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, stat
 		section("Criteria verdicts", lines)
 	}
 	lines = nil
+	ends := map[string]carryFrom{}
 	for line := range strings.SplitSeq(string(tl), "\n") {
-		var s struct{ Step, Reason, Handover string }
+		var s struct{ Step, Reason, Handover, Session, Outcome, Summary string }
 		if json.Unmarshal([]byte(line), &s) != nil {
 			continue
 		}
@@ -1057,22 +1057,23 @@ func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, stat
 			lines = append(lines, "- check-in: "+s.Reason)
 		case s.Step == "handover" && s.Handover != "":
 			lines = append(lines, "- handover: "+s.Handover)
+		case s.Step == "session_end":
+			ends[s.Session] = carryFrom{Outcome: SessionOutcome(s.Outcome), Stop: s.Summary}
 		}
 	}
 	section("Check-in notes", lines)
-	sessions, err := r.store.RecentSessions(ctx, k.ID, recordSessions)
+	sessions, err := r.store.RecentSessions(ctx, k.ID, before, recordSessions)
 	if err != nil {
 		return "", err
 	}
 	for _, s := range sessions {
-		if !before.IsZero() && !s.CreatedAt.Before(before) {
-			continue
-		}
 		rec, err := r.objects.Get(ctx, "sessions/"+k.ID+"/"+s.ID+".jsonl")
 		if err != nil {
 			return "", fmt.Errorf("the record of session %s: %w", s.ID, err)
 		}
-		if last := workingState(rec, carryFrom{Session: s.ID, Commit: commit}); last != nil {
+		from := ends[s.ID]
+		from.Session, from.Commit = s.ID, commit
+		if last := workingState(rec, from); last != nil {
 			section("Its last session", []string{last.Prior.Heading + "\n\n" + last.Prior.Body})
 			break
 		}
