@@ -624,7 +624,9 @@ func drawerRig(t *testing.T) (*rig, *http.Cookie) {
 	}
 	r.tasks.deps = map[string][]string{"t-c4": {"t-c3", "t-c5"}}
 	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {planRevision("t-plan", 1, "sha-1")}}
-	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2026-10-11T10:05:00Z","step":"session_end","started":"2026-10-11T10:00:00Z","attempt":1,"outcome":"pushed"}
+	r.objects["sessions/t-run/timeline.jsonl"] = []byte(`{"time":"2026-10-11T10:04:00Z","step":"checkin","session":"s-1","detector":"no_write","trip":"no write in 8 min","digest":"read console.css twice","decision":"redirect","guidance":"run the failing acceptance test","reason":"","called":true}
+{"time":"2026-10-11T10:05:00Z","step":"session_end","started":"2026-10-11T10:00:00Z","attempt":1,"outcome":"pushed"}
+{"time":"2026-10-11T10:06:00Z","step":"checkin","round":1,"decision":"dropped_all","reason":"","verdicts":{"a.go: x is missing":{"state":"dropped","evidence":"the test never ran","round":1}}}
 `)
 	ck, _ := r.loggedIn(t)
 	return r, ck
@@ -735,6 +737,8 @@ func TestDrawerActivity(t *testing.T) {
 	for _, want := range []string{
 		`<tr><td>session</td><td>1</td><td><time>2026-10-11 10:00:00</time></td><td>5 min</td><td>pushed</td><td><meter min="0" max="300" value="300">5 min</meter></td></tr>`,
 		`<tr><td title="2026-10-11T10:05:00Z"><time>2026-10-11 10:05:00</time></td><td>session_end</td><td></td><td><code>{&#34;attempt&#34;:1,&#34;outcome&#34;:&#34;pushed&#34;,&#34;started&#34;:&#34;2026-10-11T10:00:00Z&#34;}</code></td></tr>`,
+		`<tr><td title="2026-10-11T10:04:00Z"><time>2026-10-11 10:04:00</time></td><td>checkin</td><td><strong>redirect</strong>: run the failing acceptance test</td><td><code>{&#34;called&#34;:true,&#34;decision&#34;:&#34;redirect&#34;,&#34;detector&#34;:&#34;no_write&#34;,&#34;digest&#34;:&#34;read console.css twice&#34;,&#34;guidance&#34;:&#34;run the failing acceptance test&#34;,&#34;reason&#34;:&#34;&#34;,&#34;session&#34;:&#34;s-1&#34;,&#34;trip&#34;:&#34;no write in 8 min&#34;}</code></td></tr>`,
+		`<tr><td title="2026-10-11T10:06:00Z"><time>2026-10-11 10:06:00</time></td><td>checkin</td><td></td><td><code>{&#34;decision&#34;:&#34;dropped_all&#34;,&#34;reason&#34;:&#34;&#34;,&#34;round&#34;:1,&#34;verdicts&#34;:{&#34;a.go: x is missing&#34;:{&#34;evidence&#34;:&#34;the test never ran&#34;,&#34;round&#34;:1,&#34;state&#34;:&#34;dropped&#34;}}}</code></td></tr>`,
 	} {
 		if !strings.Contains(activity, want) {
 			t.Errorf("the activity lacks %s", want)
@@ -750,6 +754,27 @@ func TestDrawerActivity(t *testing.T) {
 	failed := drawer(t, r, ck, "t-run", "activity")
 	if !strings.Contains(failed, `<p class="problem" role="alert">The timeline could not be read; see the factoryd log.</p>`) || strings.Contains(failed, "<table") {
 		t.Errorf("an unreadable timeline:\n%s", failed)
+	}
+}
+
+// The Supervisor column reads the runner's checkin step: the session
+// supervisor's decision renders beside it, a review checkin (round,
+// verdicts; no detector, no guidance) keeps its plain row and leaves the
+// column empty, on the drawer's Activity and the timeline page alike.
+func TestDrawerShowsTheCheckinDecision(t *testing.T) {
+	r, ck := drawerRig(t)
+	for _, body := range []string{
+		drawer(t, r, ck, "t-run", "activity"),
+		r.do(httptest.NewRequest(http.MethodGet, "/tasks/t-run/timeline", nil), ck).Body.String(),
+	} {
+		for _, want := range []string{
+			`<td>checkin</td><td><strong>redirect</strong>: run the failing acceptance test</td>`,
+			`<td>checkin</td><td></td>`,
+		} {
+			if !strings.Contains(body, want) {
+				t.Errorf("the steps lack %s:\n%s", want, body)
+			}
+		}
 	}
 }
 

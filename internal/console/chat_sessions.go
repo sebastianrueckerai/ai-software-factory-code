@@ -416,7 +416,14 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 		}
 		var line string
 		switch m["step"] {
-		case "supervisor":
+		case "supervisor", "checkin":
+			// a check-in joins the list only when the runner wrote it
+			// beside a detector or guidance; a review check-in stays out
+			_, detected := m["detector"]
+			_, guided := m["guidance"]
+			if m["step"] == "checkin" && !detected && !guided {
+				continue
+			}
 			line = textAt(m, "detector") + " tripped: " + textutil.Truncate(oneLine(cmp.Or(textAt(m, "guidance"), textAt(m, "reason"))), 300)
 		case "nudge":
 			line = fmt.Sprintf("nudged after %d identical %s calls", int(numAt(m, "count")), textAt(m, "tool"))
