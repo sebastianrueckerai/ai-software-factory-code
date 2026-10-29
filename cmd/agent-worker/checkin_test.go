@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -109,7 +110,7 @@ func TestToolEndpointBounds(t *testing.T) {
 	if len(got.Output) != checkinOutputCap || !got.Cut {
 		t.Fatalf("output %d bytes cut %v, want exactly the cap %d with cut true", len(got.Output), got.Cut, checkinOutputCap)
 	}
-	ck := &checkinServe{ws: ws, timeout: 50 * time.Millisecond, handover: make(chan string, 1)}
+	ck := &checkinServe{ws: ws, timeout: 50 * time.Millisecond, handover: make(chan harness.BriefPush, 1)}
 	if code, out := postTool(t, checkinHandler(t, ck), "Bearer session-secret", toolBody("run", `"command":"sleep 600"`)); code != http.StatusBadRequest || !strings.Contains(out, "50ms") {
 		t.Fatalf("sleep 600: status %d, body %q, want 400 naming the timeout", code, out)
 	}
@@ -384,5 +385,53 @@ func TestImageEndpoint(t *testing.T) {
 	}
 	if code, _, body := postImage(t, h, "", "shots/page.png"); code != http.StatusUnauthorized || body != "unauthorized\n" {
 		t.Errorf("no bearer: status %d, body %q, want 401 unauthorized", code, body)
+	}
+}
+
+// The brief's files land under .factory/prior outside the repository
+// before the conversation's brief is released, and a name that could
+// leave that directory writes nothing.
+func TestBriefEndpointLandsTheReportsOutsideTheRepo(t *testing.T) {
+	post := func(h http.Handler, body string) int {
+		req := httptest.NewRequest(http.MethodPost, "/brief", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer session-secret")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	t.Run("lands", func(t *testing.T) {
+		ws := t.TempDir()
+		ck := newCheckinServe(ws)
+		code := post(checkinHandler(t, ck), `{"handover":"note","prior":{"session":"s-1","heading":"h","body":"b"},"files":[{"Name":"report-1.md","Text":"full"}]}`)
+		if code != http.StatusNoContent {
+			t.Fatalf("status %d, want 204", code)
+		}
+		dir := filepath.Join(ws, ".factory", "prior", "s-1")
+		if b, err := os.ReadFile(filepath.Join(dir, "report-1.md")); err != nil || string(b) != "full" {
+			t.Fatalf("report = %q, %v, want full", b, err)
+		}
+		push := ck.waitBrief(t.Logf)
+		if push.Handover != "note" || push.Prior == nil || push.Prior.Dir != dir || !slices.Equal(push.Prior.Reports, []string{"report-1.md"}) {
+			t.Fatalf("push = %+v, prior %+v", push, push.Prior)
+		}
+	})
+	for name, body := range map[string]string{
+		"session with a slash": `{"prior":{"session":"a/b"},"files":[{"Name":"r.md","Text":"x"}]}`,
+		"session dotdot":       `{"prior":{"session":".."},"files":[{"Name":"r.md","Text":"x"}]}`,
+		"session empty":        `{"prior":{"session":""},"files":[{"Name":"r.md","Text":"x"}]}`,
+		"name dotdot":          `{"prior":{"session":"s-1"},"files":[{"Name":"../x","Text":"x"}]}`,
+		"name with a slash":    `{"prior":{"session":"s-1"},"files":[{"Name":"a/b","Text":"x"}]}`,
+		"name empty":           `{"prior":{"session":"s-1"},"files":[{"Name":"","Text":"x"}]}`,
+		"files without prior":  `{"files":[{"Name":"r.md","Text":"x"}]}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ws := t.TempDir()
+			if code := post(checkinHandler(t, newCheckinServe(ws)), body); code != http.StatusBadRequest {
+				t.Fatalf("status %d, want 400", code)
+			}
+			if _, err := os.Stat(filepath.Join(ws, ".factory")); !os.IsNotExist(err) {
+				t.Fatalf("a refused push wrote under .factory: %v", err)
+			}
+		})
 	}
 }

@@ -631,6 +631,9 @@ func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
 func objectiveText(brief harness.TaskBrief) string {
 	brief = InboundBrief(brief)
 	texts := slices.Concat([]string{brief.Objective, brief.Spec}, brief.PosterInfo, brief.Findings)
+	if brief.Prior != nil {
+		texts = append(texts, brief.Prior.Body)
+	}
 	for {
 		tag := randomTag()
 		if !slices.ContainsFunc(texts, func(s string) bool { return strings.Contains(s, tag) }) {
@@ -653,6 +656,13 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	var b strings.Builder
 	if brief.Handover != "" {
 		fmt.Fprintf(&b, "<<<HANDOVER>>>\n%s\nHANDOVER>>>\n\n", brief.Handover)
+	}
+	if p := brief.Prior; p != nil {
+		fmt.Fprintf(&b, "%s\n<<<STATE-%s\n%s\nSTATE-%s>>>\n", p.Heading, tag, p.Body, tag)
+		if len(p.Reports) > 0 {
+			fmt.Fprintf(&b, "The full subagent reports are files, readable with your file tools, in %s: %s.\n", p.Dir, strings.Join(p.Reports, ", "))
+		}
+		b.WriteString("\n")
 	}
 	if len(brief.LeftOut) > 0 {
 		b.WriteString("factoryd left out of this brief what is past its bounds; the issue and the card keep it:\n")

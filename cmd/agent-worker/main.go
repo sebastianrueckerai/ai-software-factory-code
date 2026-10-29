@@ -304,7 +304,8 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	s.stopMessages = stop
 	// the check-in runs before the coding conversation; its handover, when
 	// one arrives within the wait, is the brief's first section
-	s.brief.Handover = checkin.waitBrief(log)
+	push := checkin.waitBrief(log)
+	s.brief.Handover, s.brief.Prior = push.Handover, push.Prior
 	if s.env.report == "" {
 		if s.ck, err = newCheckpointer(s.repoDir, s.env, s.base, s.mainHead); err != nil {
 			return s, startError{"checkpoint store", err}

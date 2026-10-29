@@ -1357,3 +1357,23 @@ func TestBriefAsksForTheReportPerFinding(t *testing.T) {
 		t.Fatalf("a brief without findings asks for the report:\n%s", plain)
 	}
 }
+
+func TestBriefTextShowsThePriorStateDatedAndFenced(t *testing.T) {
+	const heading = "From session s-1, stopped at 23:03 UTC because x, branch at commit a9e69421. Written before your session started. Where they differ from the code on the branch, the code is right."
+	prior := &harness.PriorState{Heading: heading, Body: "Todo list at the stop:\n- [pending] a", Dir: "/workspace/.factory/prior/s-1", Reports: []string{"report-1.md", "report-2.md"}}
+	got := briefText(harness.TaskBrief{Handover: "note", Prior: prior, Repository: "sf/r"}, "tg")
+	const handover = "<<<HANDOVER>>>\nnote\nHANDOVER>>>\n\n"
+	const state = heading + "\n<<<STATE-tg\nTodo list at the stop:\n- [pending] a\nSTATE-tg>>>\n"
+	const files = "The full subagent reports are files, readable with your file tools, in /workspace/.factory/prior/s-1: report-1.md, report-2.md.\n"
+	if !strings.Contains(got, handover+state+files+"\nRepository: sf/r") {
+		t.Fatalf("brief =\n%s", got)
+	}
+	prior.Reports = nil
+	got = briefText(harness.TaskBrief{Handover: "note", Prior: prior, Repository: "sf/r"}, "tg")
+	if !strings.Contains(got, handover+state+"\nRepository: sf/r") || strings.Contains(got, "The full subagent reports") {
+		t.Fatalf("brief without reports =\n%s", got)
+	}
+	if got := briefText(harness.TaskBrief{Handover: "note", Repository: "sf/r"}, "tg"); strings.Contains(got, "STATE-") {
+		t.Fatalf("brief without prior has STATE text:\n%s", got)
+	}
+}

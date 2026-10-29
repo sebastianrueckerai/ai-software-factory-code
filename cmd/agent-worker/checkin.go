@@ -24,6 +24,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -46,25 +47,25 @@ const (
 // in the session's workspace, the handover and the parent record arrive
 // before the coding conversation starts.
 type checkinServe struct {
-	ws       string        // the workspace root
-	wait     time.Duration // how long oc.Run's start holds for /brief
-	timeout  time.Duration // a run tool's cap
-	handover chan string   // exactly one send: the pushed note, or "" at the deadline
+	ws       string                 // the workspace root
+	wait     time.Duration          // how long oc.Run's start holds for /brief
+	timeout  time.Duration          // a run tool's cap
+	handover chan harness.BriefPush // exactly one send: the pushed brief, or the zero push at the deadline
 }
 
 func newCheckinServe(ws string) *checkinServe {
-	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinRunTimeout, handover: make(chan string, 1)}
+	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinRunTimeout, handover: make(chan harness.BriefPush, 1)}
 }
 
 // waitBrief holds the conversation's start for the check-in's handover:
-// the note when it arrived within the wait, "" when none did.
-func (c *checkinServe) waitBrief(log func(string, ...any)) string {
+// the push when it arrived within the wait, the zero push when none did.
+func (c *checkinServe) waitBrief(log func(string, ...any)) harness.BriefPush {
 	select {
-	case note := <-c.handover:
-		return note
+	case push := <-c.handover:
+		return push
 	case <-time.After(c.wait):
 		log("no check-in handover within %s; the conversation starts without one", c.wait)
-		return ""
+		return harness.BriefPush{}
 	}
 }
 
@@ -123,16 +124,18 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 		if !authorized(w, r) {
 			return
 		}
-		var in struct {
-			Handover string `json:"handover"`
+		var in harness.BriefPush
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&in); err != nil {
+			http.Error(w, `want {"handover": "...", "prior": {...}, "files": [...]}`, http.StatusBadRequest)
+			return
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&in); err != nil {
-			http.Error(w, `want {"handover": "..."}`, http.StatusBadRequest)
+		if err := c.landPrior(&in); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		select {
-		case c.handover <- in.Handover:
-		default: // a retry, or a push past the wait: the first note stands
+		case c.handover <- in:
+		default: // a retry, or a push past the wait: the first brief stands
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -166,6 +169,39 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 }
 
 // badSession refuses a session id that could leave the sessions directory.
+// landPrior writes the push's report files under .factory/prior/<session>,
+// outside the repository, and points the prior state at them. It writes
+// nothing when any name is unfit.
+func (c *checkinServe) landPrior(in *harness.BriefPush) error {
+	if len(in.Files) == 0 {
+		return nil
+	}
+	if in.Prior == nil {
+		return errors.New("files need a prior state; send \"prior\" with them")
+	}
+	if badSession(in.Prior.Session) {
+		return errors.New("prior session must be a bare id, no \"/\" or \"..\"")
+	}
+	names := make([]string, len(in.Files))
+	for i, f := range in.Files {
+		if badSession(f.Name) {
+			return fmt.Errorf("file name %q must be a bare name, no \"/\" or \"..\"", f.Name)
+		}
+		names[i] = f.Name
+	}
+	dir := filepath.Join(c.ws, ".factory", "prior", in.Prior.Session)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return err
+	}
+	for _, f := range in.Files {
+		if err := os.WriteFile(filepath.Join(dir, f.Name), []byte(f.Text), 0o600); err != nil {
+			return err
+		}
+	}
+	in.Prior.Dir, in.Prior.Reports = dir, names
+	return nil
+}
+
 func badSession(session string) bool {
 	return session == "" || strings.Contains(session, "/") || strings.Contains(session, "..")
 }
