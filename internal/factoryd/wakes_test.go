@@ -440,6 +440,34 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 	}
 }
 
+// The wake line reads in the singular and the plural: one ask waits,
+// two asks wait.
+func TestWakeAskTextCountsAsks(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, nil)
+	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
+	wakeAsk(t, s, "sf/wake", "t-3", "Merge the branch?", ViaFactoryd)
+	*clock = clock.Add(11 * time.Second)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 2 {
+		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
+	}
+	for i, want := range []string{
+		"Wake: 1 ask waits for a human.",
+		"Wake: 2 asks wait for a human.",
+	} {
+		if !strings.HasPrefix(calls[i].text, want) {
+			t.Fatalf("wake %d's text %q does not open %q", i, calls[i].text, want)
+		}
+	}
+}
+
 // The marks and the cursor are rows, so a restart changes nothing: what
 // one Waker handled stays handled, and what it left blocked still starts.
 func TestWakerMarksSurviveRestart(t *testing.T) {
