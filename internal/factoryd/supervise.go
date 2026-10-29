@@ -190,10 +190,13 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if ev.Kind == harness.EventPushed {
 		s.pushed = true
 	}
+	// a file written through a shell shows only as a changed diff
+	write := ev.Kind == harness.EventFileChange || s.traces.diffMoved(ev)
 	// the pod runs on during a check-in and its lines wait in the stream:
 	// what it did before the message reached it, by its own clock, counts
-	// for no detector
-	if !s.messagedAt.IsZero() && !ev.Time.IsZero() && ev.Time.Before(s.messagedAt) {
+	// for no detector, but a write is progress whenever it was made
+	stale := !s.messagedAt.IsZero() && !ev.Time.IsZero() && ev.Time.Before(s.messagedAt)
+	if stale && !write {
 		if !at.Before(s.deadline) {
 			return s.trip(&Trip{Kind: TripWallClock, Detail: "the task's wall-clock cap is reached"})
 		}
@@ -209,11 +212,12 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 			// the command's running time is the machine's, not the agent's
 			s.noWriteFrom = s.noWriteFrom.Add(commandDuration(ev))
 		}
-	case ev.Kind == harness.EventFileChange, s.traces.diffMoved(ev):
-		// a file written through a shell shows only as a changed diff
+	case write:
 		s.sinceChange = 0
 		s.noWriteFrom = at
-		s.messaged = false
+		if !stale {
+			s.messaged = false // the stuck rule wants a write after the delivery
+		}
 		if s.newContent(ev) {
 			s.nudges = nil
 		}

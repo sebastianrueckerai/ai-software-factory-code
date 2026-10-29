@@ -1147,10 +1147,7 @@ func TestSupervisorStuckAfterMessage(t *testing.T) {
 // reached it wait in the stream and count for no detector after it.
 func TestEventsBeforeTheMessageDoNotCount(t *testing.T) {
 	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
-	at := func(m float64, ev harness.Event) harness.Event {
-		ev.Time = minute(m)
-		return ev
-	}
+	at := podAt
 	s, _ := NewSupervisor(cfg, minute(0), minute(0))
 	s.Event(at(1, toolEvent("read", map[string]any{"filePath": "a"})), minute(1))
 	if trip := s.Event(at(1, toolEvent("read", map[string]any{"filePath": "b"})), minute(1)); trip == nil || trip.Kind != TripRepetition {
@@ -1182,6 +1179,81 @@ func TestEventsBeforeTheMessageDoNotCount(t *testing.T) {
 	s2.Messaged(minute(2))
 	if trip := s2.Event(at(1.5, toolEvent("read", map[string]any{"filePath": "a"})), minute(3)); trip == nil || trip.Kind != TripWallClock {
 		t.Fatalf("stale read at the cap = %+v, want wall_clock", trip)
+	}
+}
+
+// podAt is ev as the pod stamped it, at minute m.
+func podAt(m float64, ev harness.Event) harness.Event {
+	ev.Time = minute(m)
+	return ev
+}
+
+// A write the pod made during the check-in is progress like any write; only
+// the stuck rule wants one after the message's delivery.
+func TestAWriteBeforeTheMessageIsStillAWrite(t *testing.T) {
+	const check = "go test ./..."
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	read := func(m float64, path string) harness.Event { return podAt(m, readEvent(path)) }
+
+	// the stuck rule stays armed: two reads after the message trip, stuck
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(read(1, "a"), minute(1))
+	s.Event(read(1, "b"), minute(1))
+	s.Messaged(minute(2))
+	if trip := s.Event(podAt(1.5, fileEvent("a.go", "h1")), minute(2.1)); trip != nil || !s.noWriteFrom.Equal(minute(2.1)) {
+		t.Fatalf("stale write: trip %+v, no_write anchor %s; want none and minute 2.1", trip, s.noWriteFrom)
+	}
+	s.Event(read(3, "c"), minute(3))
+	trip := s.Event(read(3, "d"), minute(3))
+	if trip == nil || trip.Kind != TripRepetition || trip.decided != nil ||
+		trip.Stuck != "stuck after the supervisor's message: repetition: 2 tool calls and commands without a file change" {
+		t.Fatalf("trip = %+v, want repetition, stuck, for the check-in", trip)
+	}
+
+	// new content clears the nudges: two before the check-in, the third
+	// after the message is a nudge, no loop
+	s2 := mustSupervisor(t, 30*time.Minute, 10*time.Hour, 100)
+	for _, p := range []string{"/w/a.go", "/w/b.go"} {
+		if trip := nudgeOn(t, s2, readEvent(p)); trip != nil {
+			t.Fatalf("nudge on %s tripped: %+v", p, trip)
+		}
+	}
+	if trip := s2.Tick(minute(30)); trip == nil || trip.Kind != TripNoProgress {
+		t.Fatalf("tick = %+v, want no_progress", trip)
+	}
+	s2.Messaged(minute(31))
+	s2.Event(podAt(30.5, fileEvent("a.go", "h1")), minute(31))
+	for range 3 {
+		if trip := s2.Event(read(32, "/w/c.go"), minute(32)); trip != nil {
+			t.Fatalf("read after the message tripped: %+v", trip)
+		}
+	}
+	n := s2.TakeNudge()
+	if n == nil {
+		t.Fatal("no nudge after three reads of c.go")
+	}
+	if trip := s2.NudgeSent(*n); trip != nil {
+		t.Fatalf("third nudge after new content = %+v, want no loop", trip)
+	}
+
+	// the flip-flop memory sees it: h1, h2, then h1 again during the
+	// check-in; after the message h2 is a return, and the check that was
+	// failing then fails again
+	s3, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s3.Event(podAt(0.5, fileEvent("a.go", "h1")), minute(0.5))
+	s3.Event(podAt(0.6, fileEvent("a.go", "h2")), minute(0.6))
+	s3.Event(read(1, "a"), minute(1))
+	s3.Event(read(1, "b"), minute(1))
+	s3.Messaged(minute(2))
+	s3.Event(podAt(1.5, fileEvent("a.go", "h1")), minute(2.1))
+	s3.Event(podAt(3, cmdEvent(check, 1, "FAIL: TestLinks")), minute(3))
+	if trip := s3.Event(podAt(4, fileEvent("a.go", "h2")), minute(4)); trip != nil {
+		t.Fatalf("the return itself tripped: %+v", trip)
+	}
+	trip = s3.Event(podAt(5, cmdEvent(check, 1, "FAIL: TestLinks")), minute(5))
+	if trip == nil || trip.Kind != TripFlipFlop || trip.decided != nil ||
+		trip.Stuck != "stuck after the supervisor's message: flip_flop: after a.go returned to a content it had before, `"+check+"` failed again, unchanged" {
+		t.Fatalf("trip = %+v, want flip_flop, stuck, for the check-in", trip)
 	}
 }
 
