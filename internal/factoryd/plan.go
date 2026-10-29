@@ -1161,7 +1161,7 @@ func pendingPlan(ctx context.Context, store Store, taskID string) (ApprovalReque
 			return a, nil
 		}
 	}
-	return ApprovalRequest{}, fmt.Errorf("task %s has no plan waiting for acceptance", taskID)
+	return ApprovalRequest{}, fmt.Errorf("task %s has no plan waiting for answers", taskID)
 }
 
 func (s *PGStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
@@ -2118,6 +2118,16 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
 		return PlanRef{}, terminalError("task %s: plan revision %d: %v", taskID, rev.Revision, err)
 	}
+	// the round's hold-outs are drafted before a question is stored, a
+	// review model call and dry runs of minutes: the questions, the
+	// confirmation and the zone then reach Needs you as the plan waits
+	if confirm, err := r.confirms(ctx, t, p); err != nil {
+		return PlanRef{}, err
+	} else if confirm {
+		if err := r.askHoldouts(ctx, t, rev.Revision, p); err != nil {
+			return PlanRef{}, err
+		}
+	}
 	if err := r.askQuestions(ctx, t, rev.Revision, p.Questions); err != nil {
 		return PlanRef{}, err
 	}
@@ -2232,10 +2242,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // after the answer asks nothing, one a comment replaced asks again. A
 // plan without criteria carries no spec to confirm.
 func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
-	if len(p.Criteria) == 0 {
-		return nil
-	}
-	if answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID); err != nil || answered {
+	if confirm, err := r.confirms(ctx, t, p); err != nil || !confirm {
 		return err
 	}
 	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Choices: []string{"okay"}}
@@ -2245,9 +2252,17 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
 		map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": idx, "kind": "confirmation"})
-	// the round's hold-outs: drafted and dry-run once the confirmation is
-	// asked, so the zone and the question arrive together
-	return r.askHoldouts(ctx, t, revision, p)
+	return nil
+}
+
+// confirms reports whether plan p of task t asks the confirmation: it
+// carries criteria, and no revision's confirmation was answered yet.
+func (r *Runner) confirms(ctx context.Context, t Task, p Plan) (bool, error) {
+	if len(p.Criteria) == 0 {
+		return false, nil
+	}
+	answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID)
+	return err == nil && !answered, err
 }
 
 // confirmationQuestion is the confirmation question's text: what an
