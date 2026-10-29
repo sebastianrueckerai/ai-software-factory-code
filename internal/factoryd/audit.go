@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -209,10 +210,12 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	if err != nil {
 		return AuditResult{}, err
 	}
-	// a refused or failed call is one finding for each reason, which names
-	// its parts: the retry gives every part after a refusal that refusal
+	// a refused call is one finding for each refusal, which names its parts
+	// (the retry gives every part after a refusal that refusal), and a
+	// failed call one for each status the gateway answered with; a finding
+	// of one part says its whole text
 	var gaps []string
-	gapParts := map[string][]int{}
+	gapParts, gapText := map[string][]int{}, map[string]string{}
 	var found []AuditFinding
 	for i, got := range results {
 		label := ""
@@ -221,12 +224,13 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		}
 		res.Deployment = cmp.Or(got.Deployment, res.Deployment)
 		var refusal *policy.Refusal
-		gap := ""
+		gap, text := "", ""
 		switch {
 		case errors.As(got.Err, &refusal):
 			gap = "the audit call was refused by the gateway (" + refusal.Decision + "): " + refusal.Reason
+			text = gap
 		case got.Err != nil:
-			gap = "the audit call failed: " + got.Err.Error()
+			gap, text = "the audit call failed: "+cmp.Or(failedStatus.FindString(got.Err.Error()), got.Err.Error()), "the audit call failed: "+got.Err.Error()
 		default:
 			parsed, why := parseAudit(got.Content)
 			if why != "" {
@@ -239,13 +243,17 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			continue
 		}
 		if gapParts[gap] == nil {
-			gaps = append(gaps, gap)
+			gaps, gapText[gap] = append(gaps, gap), text
 		}
 		gapParts[gap] = append(gapParts[gap], i)
 	}
 	for _, gap := range gaps {
+		at := gapParts[gap]
+		if len(at) == 1 {
+			gap = gapText[gap]
+		}
 		if len(calls) > 1 {
-			gap = partsNamed(gapParts[gap], len(calls)) + ": " + gap
+			gap = partsNamed(at, len(calls)) + ": " + gap
 		}
 		noVerdict(gap)
 	}
@@ -257,6 +265,10 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	stopBeats()
 	return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
 }
+
+// failedStatus is a failed call's status, which keys its finding: the
+// bodies of a burst of upstream 429s differ.
+var failedStatus = regexp.MustCompile(`^status \d+`)
 
 // recordAudit scrubs the item and why of res's findings, the model's and
 // the errors', of the diff's secret values and the generic shapes (a

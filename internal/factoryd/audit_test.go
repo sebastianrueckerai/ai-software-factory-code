@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -253,6 +256,26 @@ func TestGateAuditOfThirtyRefusedPartsIsOneFinding(t *testing.T) {
 	want := []AuditFinding{{Item: auditNoVerdict, Why: "parts 1 to 30 of 30: the audit call was refused by the gateway (refused_budget): task headroom 0.000000 EUR"}}
 	if !slices.Equal(res.Findings, want) || len(ll.chats) > reviewParallel+1 {
 		t.Fatalf("audit = %+v after %d calls, want %+v", res, len(ll.chats), want)
+	}
+}
+
+// Five calls the upstream answers 429, each with its own body: one
+// finding, keyed on the status, names the five parts.
+func TestGateAuditOfFailedPartsCollapsesByStatus(t *testing.T) {
+	var n atomic.Int32
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprintf(w, `{"error":{"message":"rate limited, try again (%d)"}}`, n.Add(1))
+	}))
+	defer gw.Close()
+	r, _ := newAuditRunner(t, &gateForgejo{diff: fourParts + diffFile("e.go", 40<<10)}, &fakeLiteLLM{}, true)
+	r.supervisor = testSupervisorModel(gw.URL)
+	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	want := []AuditFinding{{Item: auditNoVerdict, Why: "parts 1 to 5 of 5: the audit call failed: status 429"}}
+	if !slices.Equal(res.Findings, want) || n.Load() != 5 {
+		t.Fatalf("audit = %+v after %d calls, want %+v", res, n.Load(), want)
 	}
 }
 
