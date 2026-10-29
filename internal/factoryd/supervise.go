@@ -32,6 +32,8 @@ const (
 	TripAgentEscalation  TripKind = "agent_escalation"
 	TripAgentInfoRequest TripKind = "agent_info_request"
 	TripAgentToolRequest TripKind = "agent_tool_request"
+	// TripAgentCut: the agent called request_cut; the check-in judges it
+	TripAgentCut TripKind = "agent_cut"
 	// TripLoop: loopNudges nudges delivered with no new file content in between
 	// (NudgeSent), or the provider's refusal of repeated calls
 	// (sessionResult); a redirect, no supervisor call
@@ -383,7 +385,8 @@ const (
 // AgentAsk trips on the agent's own escalate_to_human, request_info or
 // request_tool: an escalation with its question, the information request,
 // or the tool request with its tool and need; or on a person's replan with
-// its reason. The supervisor model is not asked.
+// its reason. The supervisor model is not asked. The agent's request_cut
+// trips undecided, for the check-in, with its reason and parts.
 func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
@@ -396,6 +399,13 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 		kind, detail = TripAgentToolRequest, "the agent called request_tool"
 	case AskReplan:
 		kind, detail, action = TripReplan, "a person asked for the replan", ActionReplan
+	case AskCut:
+		parts := make([]string, len(a.Parts))
+		for i, p := range a.Parts {
+			parts[i] = fmt.Sprintf("%d. %s", i+1, p)
+		}
+		// the parts are bounded already: the reason is cut so they always follow it
+		return s.trip(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: " + textutil.Truncate(a.Reason, 1000) + ". Its parts: " + strings.Join(parts, "; ")})
 	}
 	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: action, Reason: a.reason(), Choices: a.Choices, Tool: a.Tool, Need: a.Need}})
 }
@@ -483,7 +493,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
-	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize:
+	case TripCheckIn, TripWallClock, TripNoProgress, TripSpendNoPush, TripSize, TripAgentCut:
 		return false
 	case TripFlipFlop, TripChurn:
 		return s.messagedOnce

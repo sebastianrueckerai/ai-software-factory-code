@@ -1012,24 +1012,29 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	return res
 }
 
-// replanText is the planner's text of a replan, cut at
-// maxHandoverMessage: the check-in's names the trip it judged, with its
-// reason and guidance; a person's is their reason. Only the size trip's
-// detail is quoted: factoryd's own line counts. Every other detail can
-// quote the agent's calls.
+// replanText is the planner's text of a replan: the check-in's names the
+// trip it judged, with its reason and guidance, and a person's is their
+// reason, each bounded at maxHandoverMessage. Two trips' details are
+// quoted: the size trip's, factoryd's own line counts, and the agent's
+// request_cut, the parts it proposes. That detail stands whole outside
+// the bound, which would drop parts: its reason and parts are bounded
+// already. Every other detail can quote the agent's calls.
 func replanText(trip *Trip, d Decision) string {
 	if trip.Kind == TripReplan {
 		return textutil.Truncate(d.Reason, maxHandoverMessage)
 	}
-	after := string(trip.Kind) + " trip"
-	if trip.Kind == TripSize {
-		after += " (" + trip.Detail + ")"
-	}
-	text := "The check-in decided replan after the " + after + ": " + d.Reason
+	judged := d.Reason
 	if d.Guidance != "" {
-		text += "\nIts guidance: " + d.Guidance
+		judged += "\nIts guidance: " + d.Guidance
 	}
-	return textutil.Truncate(text, maxHandoverMessage)
+	after := string(trip.Kind) + " trip"
+	switch trip.Kind {
+	case TripSize:
+		after += " (" + trip.Detail + ")"
+	case TripAgentCut:
+		return "The check-in decided replan after the " + after + " (" + trip.Detail + "): " + textutil.Truncate(judged, maxHandoverMessage)
+	}
+	return textutil.Truncate("The check-in decided replan after the "+after+": "+judged, maxHandoverMessage)
 }
 
 // OverHoldCall is a model call the gateway booked beyond its hold (COST

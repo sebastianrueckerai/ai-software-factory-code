@@ -1946,3 +1946,32 @@ func TestAPersonsReplanIsDecided(t *testing.T) {
 		t.Fatalf("findings = %q, want no stuck line on a person's replan", trip.Findings)
 	}
 }
+
+// The agent's cut is no decision: it trips for the check-in, its detail the
+// reason and the numbered parts, and it is never the stuck rule's. A long
+// reason is cut at 1000 bytes so the parts always follow it.
+func TestAgentCutGoesToTheCheckin(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2, NoWriteAfter: 100 * time.Hour}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	if trip := s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1)); trip == nil || trip.Kind != TripRepetition {
+		t.Fatalf("setup trip = %+v, want repetition", trip)
+	}
+	s.Messaged(minute(2))
+	parts := []string{"the store", "the UI"}
+	trip := s.AgentAsk(AgentAsk{Kind: AskCut, Reason: "a store and a UI", Parts: parts})
+	if trip.Kind != TripAgentCut || trip.decided != nil || trip.Stuck != "" ||
+		trip.Detail != "the agent asks to cut the card: a store and a UI. Its parts: 1. the store; 2. the UI" {
+		t.Fatalf("trip = %+v (decided %+v), want the cut for the check-in with its detail", trip, trip.decided)
+	}
+	if slices.ContainsFunc(trip.Findings, func(f string) bool { return strings.HasPrefix(f, "stuck after") }) {
+		t.Fatalf("findings = %q, want no stuck line on the agent's cut", trip.Findings)
+	}
+
+	s, _ = NewSupervisor(cfg, minute(0), minute(0))
+	long := strings.Repeat("r", 3000)
+	if got, want := s.AgentAsk(AgentAsk{Kind: AskCut, Reason: long, Parts: parts}).Detail,
+		"the agent asks to cut the card: "+long[:1000]+"…. Its parts: 1. the store; 2. the UI"; got != want {
+		t.Fatalf("detail of a 3000-byte reason = %d bytes, want the reason's first 1000 and both parts", len(got))
+	}
+}

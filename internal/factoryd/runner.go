@@ -200,10 +200,11 @@ type liveSession struct {
 
 // sessionWorker is a running session's pod and the bearer of its worker's
 // message endpoint; report marks a report session, whose card restarts on
-// no image.
+// no image, and cuttable a session whose card the planner can cut
+// (cuttable).
 type sessionWorker struct {
 	session, ns, pod, token string
-	report                  bool
+	report, cuttable        bool
 }
 
 // ErrNoLiveSession: the task has no session running in this factoryd.
@@ -217,12 +218,18 @@ var errReplanAsked = errors.New("the session already stops for a replan")
 // restarts on no image.
 var ErrNoImageWait = errors.New("this session cannot wait for a new image: finish with what the sandbox has")
 
+// ErrNoCut refuses the agent's cut of a session whose card cannot be cut
+// (cuttable).
+var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or ask a person with escalate_to_human")
+
 // EscalateSession hands an agent's escalate_to_human to its task's running
-// session, which stops the way a supervisor's escalate stops it. It returns
-// nil only once the session took the escalation; a session that ends or
-// stops first answers ErrNoLiveSession, and a report session's
-// request_tool ErrNoImageWait. A session takes one replan ask: a later one
-// answers errReplanAsked at once.
+// session, which stops the way a supervisor's escalate stops it, or its
+// request_cut, which the session's check-in judges. It returns nil only
+// once the session took the ask; a session that ends or stops first
+// answers ErrNoLiveSession, a report session's request_tool
+// ErrNoImageWait, and a cut of a session that cannot be cut ErrNoCut. A
+// session takes one replan ask: a later one answers errReplanAsked at
+// once.
 func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error {
 	replan := ask.Kind == AskReplan
 	r.liveMu.Lock()
@@ -239,6 +246,8 @@ func (r *Runner) EscalateSession(ctx context.Context, taskID string, ask AgentAs
 		return errReplanAsked
 	case ask.Kind == AskTool && ls.worker.report:
 		return ErrNoImageWait
+	case ask.Kind == AskCut && !ls.worker.cuttable:
+		return ErrNoCut
 	}
 	select {
 	case ls.ch <- ask:
@@ -784,7 +793,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
 	// the agent's escalate_to_human reaches the session here until it stops
-	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != ""})
+	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s)})
 	defer unregister()
 	stop := func(trip *Trip) {
 		// a stopping session takes no escalation: the gateway tells the
@@ -830,11 +839,25 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return errWorkerStop
 	}
 	// onTrip returns true when the session ends, with the session's error.
-	onTrip := func(trip *Trip) (bool, error) {
+	var onTrip func(trip *Trip) (bool, error)
+	onTrip = func(trip *Trip) (end bool, err error) {
 		if trip.Kind == TripWallClock {
 			stop(trip)
 			return true, ctx.Err()
 		}
+		// the agent's cut during the conversation does not cut it: the
+		// answer stands, and the cut is the next trip of a session that runs
+		// on. A stopping session drops it.
+		var held *AgentAsk
+		defer func() {
+			switch {
+			case held == nil:
+			case end:
+				log.Printf("task %s: the agent's cut during the check-in for %s is dropped: the session stops", t.ID, trip.Kind)
+			default:
+				end, err = onTrip(sup.AgentAsk(*held))
+			}
+		}()
 		// the conversation never outlives the session: the deadline cuts
 		// it, and factoryd stopping cuts it, its answer unread
 		callCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -855,23 +878,35 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				defer close(answered)
 				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started)
 			}()
-			select {
-			case <-answered:
+			// asks is nil once a cut is held: a second ask waits in the
+			// gateway until the hold ends
+			asks, answering := escalations, true
+			for answering {
 				select {
-				case e := <-escalations:
+				case <-answered:
+					answering = false
+					select {
+					case e := <-asks:
+						esc = &e
+					default:
+					}
+				case e := <-asks:
 					esc = &e
-				default:
+					if e.Kind != AskCut {
+						cancel()
+						<-answered
+						answering = false
+					}
+				case <-workerStop:
+					stopAt = time.Now()
+					cancel()
+					<-answered
+					log.Printf("task %s: factoryd stopping cut the check-in for %s", t.ID, trip.Kind)
+					return true, shutdown()
 				}
-			case e := <-escalations:
-				esc = &e
-				cancel()
-				<-answered
-			case <-workerStop:
-				stopAt = time.Now()
-				cancel()
-				<-answered
-				log.Printf("task %s: factoryd stopping cut the check-in for %s", t.ID, trip.Kind)
-				return true, shutdown()
+				if esc != nil && esc.Kind == AskCut {
+					held, esc, asks = esc, nil, nil
+				}
 			}
 		}
 		if esc != nil {
@@ -1429,8 +1464,8 @@ func (r *Runner) recordDecision(ctx context.Context, t Task, s sessionSpec, reco
 		detail["session"] = s.id
 		r.record(ctx, t.ID, "checkin", detail)
 	}
-	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripCheckIn || trip.Kind == TripReplan {
-		return // the agent's question (the workflow's escalation or info_request alert), a person's replan, or no detector
+	if trip.Kind == TripAgentEscalation || trip.Kind == TripAgentInfoRequest || trip.Kind == TripAgentToolRequest || trip.Kind == TripAgentCut || trip.Kind == TripCheckIn || trip.Kind == TripReplan {
+		return // the agent's ask (an escalation or info_request has the workflow's alert), a person's replan, or no detector
 	}
 	a := Alert{Kind: AlertSupervisorTrip, Source: string(trip.Kind), TaskID: t.ID, Verdict: tripVerdict(d.Action), ResolvedBy: "checkin",
 		Detail: map[string]any{"session": s.id, "action": string(d.Action), "diagnosis": cmp.Or(d.Reason, d.Guidance), "trip": trip.Detail, "called": called}}
@@ -1985,6 +2020,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.report != "" {
 		// a report session's card restarts on no image
 		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestTool })
+	}
+	if !cuttable(t, s) {
+		tools = slices.DeleteFunc(tools, func(tool string) bool { return tool == policy.ToolRequestCut })
 	}
 	toolsJSON, _ := json.Marshal(tools)
 	var fit envFit

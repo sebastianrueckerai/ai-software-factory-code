@@ -112,7 +112,8 @@ type VerdictFiled struct {
 // Escalation is what an agent asks: a human (escalate_to_human: the
 // question, why, what the agent would do and the answers it offers), the
 // issue's author (request_info: the question, what it tried, what it
-// needs) or the factory for a tool (request_tool: the tool, what for).
+// needs), the factory for a tool (request_tool: the tool, what for) or
+// the check-in for a cut of its card (request_cut: why, and the parts).
 type Escalation struct {
 	Kind           string   `json:"kind"`
 	Question       string   `json:"question"`
@@ -123,6 +124,7 @@ type Escalation struct {
 	Needs          string   `json:"needs,omitempty"`
 	Tool           string   `json:"tool,omitempty"`
 	Need           string   `json:"need,omitempty"`
+	Parts          []string `json:"parts,omitempty"`
 }
 
 // Escalation kinds.
@@ -130,6 +132,7 @@ const (
 	KindEscalation  = "escalation"
 	KindInfoRequest = "info_request"
 	KindMissingTool = "missing_tool"
+	KindCut         = "cut"
 )
 
 var (
@@ -373,6 +376,11 @@ type RequestToolIn struct {
 	Need string `json:"need" jsonschema:"what you need it for in this card"`
 }
 
+type RequestCutIn struct {
+	Reason string   `json:"reason" jsonschema:"why the card is bigger than one card should be"`
+	Parts  []string `json:"parts" jsonschema:"the 2 to 5 parts you propose, each one card's work"`
+}
+
 type FilePlanIn struct {
 	Plan string `json:"plan" jsonschema:"the complete plan json: one object with spec, summary, criteria and cards"`
 }
@@ -408,23 +416,35 @@ type FileVerdictIn struct {
 // the hand-over.
 const maxVerdictCode = 4 << 10
 
-// escalateSchema is EscalateIn's input schema with choices a plain array:
-// the inferred type list ["null", "array"] is one some models' tool calls
-// refuse.
-var escalateSchema = func() *jsonschema.Schema {
-	s, err := jsonschema.For[EscalateIn](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
+// plainArrays is T's input schema with each list of strings a plain
+// array: the inferred type list ["null", "array"] is one some models' tool
+// calls refuse.
+func plainArrays[T any]() *jsonschema.Schema {
+	s, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
 		reflect.TypeFor[[]string](): {Type: "array", Items: &jsonschema.Schema{Type: "string"}}}})
 	if err != nil {
 		panic(err)
 	}
 	return s
-}()
+}
 
-// maxQuestion bounds an escalation's question and reason and an
-// information request's fields; maxRecommendation the recommendation.
+var (
+	escalateSchema = plainArrays[EscalateIn]()
+	cutSchema      = plainArrays[RequestCutIn]()
+)
+
+// maxQuestion bounds an escalation's question and reason, an information
+// request's fields and a cut's reason; maxRecommendation the
+// recommendation.
 const (
 	maxQuestion       = 4000
 	maxRecommendation = 2000
+)
+
+// maxCutParts bounds the parts a cut proposes, maxCutPart the bytes of one.
+const (
+	maxCutParts = 5
+	maxCutPart  = 400
 )
 
 // maxChoices and maxChoicesBytes bound the choices passed on to factoryd,
@@ -471,6 +491,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"from its branch once the image is built. Name the tool by its Debian package or binary name (chromium, ffmpeg, python3), and what you need it for."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestToolIn) (*mcp.CallToolResult, any, error) {
 			return s.requestTool(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolRequestCut, Description: "Ask to cut this card when its work is bigger than one card should be: name why and the 2 to 5 parts you propose. " +
+		"The check-in judges it. If it decides to cut, this session stops, your work in progress is pushed, and the planner plans the rest on top of it; " +
+		"otherwise it answers you with a message. Go on with the work meanwhile. Free.", InputSchema: cutSchema},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in RequestCutIn) (*mcp.CallToolResult, any, error) {
+			return s.requestCut(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDelegate, Description: "File a small follow-up card on the cheap model rung that starts when this card has landed: " +
 		"routine, well-specified work this card need not do itself. Give it a title and a brief a weaker model acts on alone: the files, the change, how to check it. " +
@@ -890,6 +916,30 @@ func (s *Server) requestTool(ctx context.Context, c *toolCaller, in RequestToolI
 			"or the next session is told why not. Stop working now.")
 }
 
+// requestCut hands the agent's ask to cut its card to factoryd, whose
+// check-in judges it while the session goes on. Free, for the classes that
+// list it.
+func (s *Server) requestCut(ctx context.Context, c *toolCaller, in RequestCutIn) *mcp.CallToolResult {
+	tool := policy.ToolRequestCut
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	why, parts := strings.TrimSpace(in.Reason), make([]string, len(in.Parts))
+	for i, p := range in.Parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	if why == "" || len(why) > maxQuestion || len(parts) < 2 || len(parts) > maxCutParts ||
+		slices.ContainsFunc(parts, func(p string) bool { return p == "" || len(p) > maxCutPart || strings.ContainsAny(p, "\r\n") }) {
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf(
+			"reason (at most %d bytes) and 2 to %d parts (each one line of at most %d bytes) are required", maxQuestion, maxCutParts, maxCutPart))
+	}
+	return s.handOver(ctx, c, tool, Escalation{Kind: KindCut, Reason: why, Parts: parts}, "cut_requested",
+		"asked to cut the card; the check-in judges it. Go on with the work until it answers.")
+}
+
 // manualRead answers the manual tool with the factory manual from
 // internal/manual, the one source the project agent's manual reads too.
 // Free, for the classes that list it.
@@ -1061,7 +1111,8 @@ func (s *Server) delegate(ctx context.Context, c *toolCaller, in DelegateIn) *mc
 		Text: fmt.Sprintf("filed as issue #%d (card %s) on the cheap rung; it starts when this card has landed. Carry on with this card.", res.Issue, res.TaskID)}}}
 }
 
-// handOver gives factoryd what the agent asks, which stops the session.
+// handOver gives factoryd what the agent asks, which stops the session,
+// or for a cut asks the check-in.
 func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Escalation, decision, answer string) *mcp.CallToolResult {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
 	defer cancel()
@@ -1076,8 +1127,11 @@ func (s *Server) handOver(ctx context.Context, c *toolCaller, tool string, e Esc
 		return toolError("the escalation did not reach factoryd: " + err.Error())
 	}
 	asked := e.Question
-	if e.Kind == KindMissingTool {
+	switch e.Kind {
+	case KindMissingTool:
 		asked = e.Tool + ": " + e.Need
+	case KindCut:
+		asked = e.Reason
 	}
 	s.auditTool(c, tool, decision, textutil.Truncate(asked, 500), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: answer}}}

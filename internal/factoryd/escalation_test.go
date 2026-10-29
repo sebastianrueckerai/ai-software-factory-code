@@ -326,6 +326,74 @@ func TestEscalationHandlerToolRequest(t *testing.T) {
 	}
 }
 
+// The agent's request_cut reaches the session as a cut ask, the reason
+// and each part trimmed and no choices; the intake event records the
+// reason and the parts. A reason of 1 to 4000 bytes and 2 to 5 parts of
+// 1 to 400 bytes on one line pass, as at the gateway.
+func TestEscalationHandlerCut(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
+	post := func(s *fakeSessions, body string) int {
+		rec := httptest.NewRecorder()
+		EscalationHandler(store, s).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(body)))
+		return rec.Code
+	}
+	s := &fakeSessions{}
+	if code := post(s, `{"task_id":"t-run","kind":"cut","reason":" a store and a UI ","parts":[" the store ","the UI"],"choices":["a","b"]}`); code != http.StatusAccepted {
+		t.Fatalf("cut = %d", code)
+	}
+	if want := (AgentAsk{Kind: AskCut, Reason: "a store and a UI", Parts: []string{"the store", "the UI"}}); len(s.asks) != 1 || !reflect.DeepEqual(s.asks[0], want) {
+		t.Fatalf("delivered %+v, want %+v", s.asks, want)
+	}
+	if e := store.intakeEvents; len(e) != 1 || e[0].Kind != IntakeAgentCut || e[0].Author != "agent" || e[0].Trusted ||
+		e[0].Body != "a store and a UI\n\nParts:\n- the store\n- the UI" || e[0].Choices != nil {
+		t.Fatalf("intake events = %+v", e)
+	}
+	five := fmt.Sprintf(`[%q,%q,%q,%q,%q]`, strings.Repeat("a", 400), strings.Repeat("b", 400), strings.Repeat("c", 400), strings.Repeat("d", 400), strings.Repeat("e", 400))
+	if code := post(s, fmt.Sprintf(`{"task_id":"t-run","kind":"cut","reason":%q,"parts":%s}`, strings.Repeat("r", 4000), five)); code != http.StatusAccepted {
+		t.Fatalf("a reason of 4000 bytes and five parts of 400 = %d, want accepted", code)
+	}
+	for name, body := range map[string]string{
+		"one part":            `{"task_id":"t-run","kind":"cut","reason":"r","parts":["a"]}`,
+		"six parts":           `{"task_id":"t-run","kind":"cut","reason":"r","parts":["a","b","c","d","e","f"]}`,
+		"no reason":           `{"task_id":"t-run","kind":"cut","reason":" ","parts":["a","b"]}`,
+		"an empty part":       `{"task_id":"t-run","kind":"cut","reason":"r","parts":["a"," "]}`,
+		"a part on two lines": `{"task_id":"t-run","kind":"cut","reason":"r","parts":["the\nstore","b"]}`,
+		"a long reason":       fmt.Sprintf(`{"task_id":"t-run","kind":"cut","reason":%q,"parts":["a","b"]}`, strings.Repeat("r", 4001)),
+		"a long part":         fmt.Sprintf(`{"task_id":"t-run","kind":"cut","reason":"r","parts":[%q,"b"]}`, strings.Repeat("a", 401)),
+	} {
+		if code := post(&fakeSessions{}, body); code != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", name, code)
+		}
+	}
+}
+
+// A session that cannot be cut (a direct card without a plan track, a
+// report) refuses the agent's cut with a line it reads: the session runs
+// on and nothing is recorded, while its escalate_to_human still reaches it.
+func TestEscalationHandlerRefusesACutOfASessionThatCannotBeCut(t *testing.T) {
+	runner := &Runner{}
+	esc, unregister := runner.liveSession("t-run", sessionWorker{cuttable: false})
+	defer unregister()
+	took := make(chan AgentAsk, 1)
+	go func() { took <- <-esc }()
+	store := newFakeStore()
+	store.CreateTask(t.Context(), Task{ID: "t-run", Status: "running", Track: "direct"})
+	rec := httptest.NewRecorder()
+	EscalationHandler(store, runner).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(
+		`{"task_id":"t-run","kind":"cut","reason":"a store and a UI","parts":["the store","the UI"]}`)))
+	if body := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusUnprocessableEntity ||
+		body != "this card cannot be cut: finish it as it is, or ask a person with escalate_to_human" || len(store.intakeEvents) != 0 {
+		t.Fatalf("cut = %d %q, intake events %+v; want the refusal and nothing recorded", rec.Code, body, store.intakeEvents)
+	}
+	if err := runner.EscalateSession(t.Context(), "t-run", licenseAsk); err != nil {
+		t.Fatalf("escalation from a session that cannot be cut = %v", err)
+	}
+	if e := <-took; !reflect.DeepEqual(e, licenseAsk) {
+		t.Fatalf("took %+v", e)
+	}
+}
+
 // A report session's card restarts on no image: its request_tool is
 // refused with a line the agent reads, the session left running and
 // nothing recorded, while its escalate_to_human still reaches it.

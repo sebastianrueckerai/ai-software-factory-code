@@ -483,6 +483,20 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   while that card is open or within 30 days of its end. `remove-project`
   deletes the project's `sf/sandbox-<project>.*` packages and its image
   rows.
+- `request_cut` (`reason`, 1 to 4000 bytes, and `parts`, 2 to 5, each one
+  line of 1 to 400 bytes): free, through the class's tool list
+  (`request_cut: {}`). The agent asks to cut its card when the work is
+  bigger than one card should be. The session goes on: factoryd records
+  an `agent_cut` intake event, and the session's check-in judges the ask
+  (trip `agent_cut`, its reason cut at 1000 bytes, then the numbered
+  parts). Its `replan` stops the session and sends the card to the
+  planner with the parts; `continue` or `message` lets the card finish as
+  one card. A cut that arrives during a check-in on another trip waits
+  for that answer and is judged next; an answer that stops the session
+  drops it. Only a coding session whose card the planner can cut may ask:
+  a plan's child, or a direct card whose project's process has a plan
+  track. factoryd refuses any other session's ask ("this card cannot be
+  cut: finish it as it is, or ask a person with escalate_to_human").
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

@@ -300,7 +300,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_info,request_tool,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -863,6 +863,83 @@ func TestRequestTool(t *testing.T) {
 	if text, isErr := tc.call(t, policy.ToolRequestTool, map[string]any{"tool": "ffmpeg", "need": "n"}); !isErr || !strings.Contains(text, "refused_capability") ||
 		!strings.Contains(text, "a tool card declares tools its own sandbox never gets") || len(tc.escalator.asks) != 0 {
 		t.Fatalf("a tool card's request_tool = %q", text)
+	}
+}
+
+// request_cut asks to cut the card: why (1 to 4000 bytes) and 2 to 5
+// parts, each one line of 1 to 400 bytes. The session goes on; the
+// check-in judges the ask, and its description alone tells the agent so.
+func TestRequestCut(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolRequestCut })
+	if i < 0 {
+		t.Fatal("no request_cut")
+	}
+	if want := "Ask to cut this card when its work is bigger than one card should be: name why and the 2 to 5 parts you propose. The check-in judges it. " +
+		"If it decides to cut, this session stops, your work in progress is pushed, and the planner plans the rest on top of it; otherwise it answers you with a message. " +
+		"Go on with the work meanwhile. Free."; res.Tools[i].Description != want {
+		t.Fatalf("description = %q, want %q", res.Tools[i].Description, want)
+	}
+	b, _ := json.Marshal(res.Tools[i].InputSchema)
+	var schema struct {
+		Required   []string
+		Properties map[string]struct {
+			Type        any
+			Description string
+			Items       struct{ Type any }
+		}
+	}
+	if err := json.Unmarshal(b, &schema); err != nil || !slices.Equal(schema.Required, []string{"reason", "parts"}) {
+		t.Fatalf("required = %q (%v), want reason and parts", schema.Required, err)
+	}
+	if p := schema.Properties["parts"]; fmt.Sprint(p.Type) != "array" || fmt.Sprint(p.Items.Type) != "string" || p.Description != "the 2 to 5 parts you propose, each one card's work" {
+		t.Fatalf("parts = %+v in %s, want a plain array of strings with its description", p, b)
+	}
+	if got := schema.Properties["reason"].Description; got != "why the card is bigger than one card should be" {
+		t.Fatalf("reason's description = %q", got)
+	}
+
+	text, isErr := e.call(t, policy.ToolRequestCut, map[string]any{"reason": " the card holds a store and a UI ", "parts": []string{" the store ", "the UI"}})
+	if isErr || text != "asked to cut the card; the check-in judges it. Go on with the work until it answers." {
+		t.Fatalf("result = %q", text)
+	}
+	if want := (Escalation{Kind: KindCut, Reason: "the card holds a store and a UI", Parts: []string{"the store", "the UI"}}); len(e.escalator.asks) != 1 || !reflect.DeepEqual(e.escalator.asks[0], want) {
+		t.Fatalf("asks = %+v, want %+v", e.escalator.asks, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "cut_requested" || a.Tool != policy.ToolRequestCut || a.Reason != "the card holds a store and a UI" {
+		t.Fatalf("audit = %+v, want the reason", a)
+	}
+	five := []string{strings.Repeat("a", 400), strings.Repeat("b", 400), strings.Repeat("c", 400), strings.Repeat("d", 400), strings.Repeat("e", 400)}
+	if text, isErr := e.call(t, policy.ToolRequestCut, map[string]any{"reason": strings.Repeat("r", 4000), "parts": five}); isErr {
+		t.Fatalf("a reason of 4000 bytes and five parts of 400 = %q, want accepted", text)
+	}
+	for name, args := range map[string]map[string]any{
+		"one part":            {"reason": "r", "parts": []string{"the store"}},
+		"six parts":           {"reason": "r", "parts": []string{"a", "b", "c", "d", "e", "f"}},
+		"no reason":           {"reason": " ", "parts": []string{"a", "b"}},
+		"a part on two lines": {"reason": "r", "parts": []string{"the\nstore", "the UI"}},
+		"an empty part":       {"reason": "r", "parts": []string{"a", " "}},
+		"a long reason":       {"reason": strings.Repeat("r", 4001), "parts": []string{"a", "b"}},
+		"a long part":         {"reason": "r", "parts": []string{strings.Repeat("a", 401), "b"}},
+	} {
+		if text, isErr := e.call(t, policy.ToolRequestCut, args); !isErr || !strings.Contains(text, "refused_arguments") ||
+			!strings.Contains(text, "reason (at most 4000 bytes) and 2 to 5 parts (each one line of at most 400 bytes) are required") {
+			t.Errorf("%s = %q, want refused_arguments naming the bounds", name, text)
+		}
+	}
+	if len(e.escalator.asks) != 2 {
+		t.Fatalf("asks = %d, want the two valid ones", len(e.escalator.asks))
+	}
+	// factoryd refuses a session that cannot be cut: the agent reads why
+	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this card cannot be cut: finish it as it is, or ask a person with escalate_to_human\n"}
+	text, isErr = e.call(t, policy.ToolRequestCut, map[string]any{"reason": "r", "parts": []string{"a", "b"}})
+	if want := "refused by the factory policy (refused_session): this card cannot be cut: finish it as it is, or ask a person with escalate_to_human. " +
+		"The tool did not run; do not retry this call."; !isErr || text != want {
+		t.Fatalf("a refused cut = %q, want %q", text, want)
 	}
 }
 

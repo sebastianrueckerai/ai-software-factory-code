@@ -258,6 +258,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 			b.WriteString("\n")
 		}
+		if ask.Trip.Detector == TripAgentCut {
+			b.WriteString("The agent asks to cut the card. Answer replan if the cut holds. Answer continue or message if the card should finish as one card.\n")
+		}
 		b.WriteString("The agent's report per finding is the last message in its record: what it fixed, disputed or left open. Verify it; never take it on trust.\n\n")
 	case CheckInDead:
 		fmt.Fprintf(&b, "You are the factory's check-in before a fresh session: the session %s ended without a result: %s. You never edit anything; you gather evidence and answer.\n\n", ask.ParentSession, ask.Stop)

@@ -211,6 +211,17 @@ func TestTools(t *testing.T) {
 	}
 }
 
+// request_cut is a free tool a class lists without caps.
+func TestRequestCutIsAFreeTool(t *testing.T) {
+	d, err := Parse([]byte(strings.Replace(withTools, "      replicate_predict:", "      request_cut: {}\n      replicate_predict:", 1)))
+	if err != nil {
+		t.Fatalf("a coder class listing request_cut: %v", err)
+	}
+	if got := d.Tools([]string{"coder"}, ""); !slices.Equal(got, []string{"replicate_predict", "request_cut", "web_scrape"}) {
+		t.Fatalf("tools = %v, want request_cut among them", got)
+	}
+}
+
 func TestToolCap(t *testing.T) {
 	d, err := Parse([]byte(withTools))
 	if err != nil {

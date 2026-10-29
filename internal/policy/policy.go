@@ -966,6 +966,9 @@ const (
 	// ToolRequestTool asks for a tool the sandbox lacks: a card adds it to
 	// one of the project's images, and the caller's card restarts on it.
 	ToolRequestTool = "request_tool"
+	// ToolRequestCut asks to cut the caller's card when its work is bigger
+	// than one card should be; the check-in judges the ask.
+	ToolRequestCut = "request_cut"
 	// ToolAnalyzeImage has the class's vision model look at an image of
 	// the card's issue or a file in the workspace; the look spends on the
 	// card's account as a model call.
@@ -987,7 +990,7 @@ func OffersTool(tool string, namespaces []string) bool {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

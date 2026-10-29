@@ -31,8 +31,10 @@ type SessionEscalator interface {
 // AgentAsk is an agent's escalate_to_human (Kind AskEscalation: the
 // question, why, and what the agent would do, ruling 149, and the answers
 // it offers as Choices, ruling 256), request_info (AskInfo: the question
-// for the issue's author, what it tried, what it needs, ruling 150) or
-// request_tool (AskTool: the tool the sandbox lacks and what for).
+// for the issue's author, what it tried, what it needs, ruling 150),
+// request_tool (AskTool: the tool the sandbox lacks and what for) or
+// request_cut (AskCut: why the card is too big, and the Parts it
+// proposes).
 type AgentAsk struct {
 	Kind           string   `json:"kind"`
 	Question       string   `json:"question"`
@@ -43,6 +45,7 @@ type AgentAsk struct {
 	Needs          string   `json:"needs"`
 	Tool           string   `json:"tool,omitempty"`
 	Need           string   `json:"need,omitempty"`
+	Parts          []string `json:"parts,omitempty"`
 }
 
 // AgentAsk kinds. AskReplan is a person's stop of the running session
@@ -52,6 +55,7 @@ const (
 	AskEscalation = "escalation"
 	AskInfo       = "info_request"
 	AskTool       = "missing_tool"
+	AskCut        = "cut"
 	AskReplan     = "replan"
 )
 
@@ -62,12 +66,26 @@ const (
 	maxNeed = 600
 )
 
+// maxCutParts bounds the parts a cut proposes, maxCutPart the bytes of
+// one, as the gateway does.
+const (
+	maxCutParts = 5
+	maxCutPart  = 400
+)
+
 // validate checks the fields of its kind, as the gateway does.
 func (a AgentAsk) validate() error {
-	if a.Kind == AskTool {
+	switch a.Kind {
+	case AskTool:
 		if n, m := utf8.RuneCountInString(a.Tool), utf8.RuneCountInString(a.Need); n == 0 || n > maxTool || m == 0 || m > maxNeed ||
 			strings.ContainsFunc(a.Tool+a.Need, unicode.IsControl) {
 			return fmt.Errorf("tool (1 to %d characters) and need (1 to %d characters) are required, each on one line without control characters", maxTool, maxNeed)
+		}
+		return nil
+	case AskCut:
+		if a.Reason == "" || len(a.Reason) > maxEscalationText || len(a.Parts) < 2 || len(a.Parts) > maxCutParts ||
+			slices.ContainsFunc(a.Parts, func(p string) bool { return p == "" || len(p) > maxCutPart || strings.ContainsAny(p, "\r\n") }) {
+			return fmt.Errorf("reason (at most %d bytes) and 2 to %d parts (each one line of at most %d bytes) are required", maxEscalationText, maxCutParts, maxCutPart)
 		}
 		return nil
 	}
@@ -78,7 +96,7 @@ func (a AgentAsk) validate() error {
 	case AskInfo:
 		fields["tried"], fields["needs"] = len(a.Tried), len(a.Needs)
 	default:
-		return fmt.Errorf("kind %q: want %s, %s or %s", a.Kind, AskEscalation, AskInfo, AskTool)
+		return fmt.Errorf("kind %q: want %s, %s, %s or %s", a.Kind, AskEscalation, AskInfo, AskTool, AskCut)
 	}
 	for name, n := range fields {
 		limit := maxEscalationText
@@ -110,12 +128,13 @@ func (a AgentAsk) reason() string {
 
 // IntakeAgentEscalation is the intake event of an agent's escalate_to_human,
 // IntakeAgentInfoRequest of its request_info, IntakeAgentToolRequest of its
-// request_tool: recorded, never signalled (the session's supervision acts
-// on them).
+// request_tool, IntakeAgentCut of its request_cut: recorded, never
+// signalled (the session's supervision acts on them).
 const (
 	IntakeAgentEscalation  = "agent_escalation"
 	IntakeAgentInfoRequest = "agent_info_request"
 	IntakeAgentToolRequest = "agent_tool_request"
+	IntakeAgentCut         = "agent_cut"
 )
 
 // IntakeEscalation records an escalation's issue comment (its CommentID)
@@ -237,12 +256,13 @@ func offeredChoices(taskID string, choices []string) []string {
 }
 
 // EscalationHandler is POST /internal/escalations, the gateway's hand-over
-// of an agent's escalate_to_human, request_info or request_tool (behind
-// the gateway's bearer): the task must be running and its session take the
-// ask, which is then recorded as an intake event; the session stops as on
-// a supervisor's escalate: work in progress pushed, the question on the
-// issue, and the human's (or for request_info the issue author's) answer
-// resumes it, or for request_tool the image's arrival.
+// of an agent's escalate_to_human, request_info, request_tool or
+// request_cut (behind the gateway's bearer): the task must be running and
+// its session take the ask, which is then recorded as an intake event; the
+// session stops as on a supervisor's escalate: work in progress pushed,
+// the question on the issue, and the human's (or for request_info the
+// issue author's) answer resumes it, or for request_tool the image's
+// arrival. A cut does not stop the session: its check-in judges it.
 func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -257,6 +277,9 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		for _, f := range []*string{&ask.Question, &ask.Reason, &ask.Recommendation, &ask.Tried, &ask.Needs, &ask.Tool, &ask.Need} {
 			*f = strings.TrimSpace(*f)
 		}
+		for i := range ask.Parts {
+			ask.Parts[i] = strings.TrimSpace(ask.Parts[i])
+		}
 		if in.TaskID == "" {
 			http.Error(w, "task_id is required", http.StatusBadRequest)
 			return
@@ -268,7 +291,7 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 		if ask.Kind == AskEscalation {
 			ask.Choices = offeredChoices(in.TaskID, ask.Choices)
 		} else {
-			ask.Choices = nil // no human picks: the issue's author answers on Forgejo, a tool request waits for its image
+			ask.Choices = nil // no human picks: the issue's author answers on Forgejo, a tool request waits for its image, the check-in judges a cut
 		}
 		t, ok, err := store.Task(r.Context(), in.TaskID)
 		if err != nil {
@@ -288,20 +311,24 @@ func EscalationHandler(store EscalationStore, sessions SessionEscalator) http.Ha
 			switch {
 			case errors.Is(err, ErrNoLiveSession):
 				status = http.StatusConflict
-			case errors.Is(err, ErrNoImageWait):
+			case errors.Is(err, ErrNoImageWait), errors.Is(err, ErrNoCut):
 				status = http.StatusUnprocessableEntity
 			}
 			http.Error(w, err.Error(), status)
 			return
 		}
 		kind, body := IntakeAgentEscalation, ask.Question+"\n\nWhy: "+ask.Reason+"\n\nRecommendation: "+ask.Recommendation
+		asked := cmp.Or(ask.Question, ask.Tool)
 		switch ask.Kind {
 		case AskInfo:
 			kind, body = IntakeAgentInfoRequest, ask.Question+"\n\nTried: "+ask.Tried+"\n\nNeeds: "+ask.Needs
 		case AskTool:
 			kind, body = IntakeAgentToolRequest, ask.Tool+"\n\nNeed: "+ask.Need
+		case AskCut:
+			kind, body = IntakeAgentCut, ask.Reason+"\n\nParts:\n- "+strings.Join(ask.Parts, "\n- ")
+			asked = fmt.Sprintf("%d parts: %s", len(ask.Parts), ask.Reason)
 		}
-		log.Printf("task %s: the agent asked (%s): %s", t.ID, ask.Kind, textutil.Truncate(cmp.Or(ask.Question, ask.Tool), 200))
+		log.Printf("task %s: the agent asked (%s): %s", t.ID, ask.Kind, textutil.Truncate(asked, 200))
 		// the session already took it: a failed record is logged, not undone
 		if _, err := store.InsertIntakeEvent(context.WithoutCancel(r.Context()), IntakeEvent{
 			TaskID: t.ID, Kind: kind, Author: "agent", Body: body, Choices: ask.Choices,

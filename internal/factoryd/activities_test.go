@@ -3405,3 +3405,19 @@ func TestReplanTextQuotesNoCallAndIsBounded(t *testing.T) {
 		t.Fatalf("a person's text of a 3000-byte reason = %d bytes, want the first 2000 and the cut mark", len(got))
 	}
 }
+
+// A cut's text names the agent's ask whole, its parts the planner's
+// proposal, before the check-in's words, which alone are cut at 2000 bytes.
+func TestReplanTextOfAnAgentCutKeepsItsParts(t *testing.T) {
+	parts := "1. " + strings.Repeat("a", 400) + "; 2. " + strings.Repeat("b", 400) + "; 3. " + strings.Repeat("c", 400) + "; 4. " + strings.Repeat("d", 400) + "; 5. " + strings.Repeat("e", 400)
+	detail := "the agent asks to cut the card: " + strings.Repeat("r", 1000) + "…. Its parts: " + parts
+	reason := strings.Repeat("x", 3000)
+	got := replanText(&Trip{Kind: TripAgentCut, Detail: detail}, Decision{Action: ActionReplan, Reason: reason, Guidance: "store first"})
+	if want := "The check-in decided replan after the agent_cut trip (" + detail + "): " + reason[:2000] + "…"; got != want {
+		t.Fatalf("cut text = %d bytes, want the whole ask and the check-in's first 2000 bytes", len(got))
+	}
+	got = replanText(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: r. Its parts: 1. a; 2. b"}, Decision{Action: ActionReplan, Reason: "two parts", Guidance: "store first"})
+	if want := "The check-in decided replan after the agent_cut trip (the agent asks to cut the card: r. Its parts: 1. a; 2. b): two parts\nIts guidance: store first"; got != want {
+		t.Fatalf("cut text = %q, want %q", got, want)
+	}
+}

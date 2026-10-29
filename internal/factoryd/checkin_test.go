@@ -936,6 +936,20 @@ func TestCheckinStatementOfASizeTripAsksWhetherTheRestFits(t *testing.T) {
 	}
 }
 
+func TestCheckinStatementOfAnAgentCutAsksWhetherTheCutHolds(t *testing.T) {
+	const question = "The agent asks to cut the card. Answer replan if the cut holds. Answer continue or message if the card should finish as one card.\n"
+	statement := func(detector TripKind) string {
+		return checkinStatement(&CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true,
+			Trip: &TripReport{Detector: detector, Detail: "the agent asks to cut the card: r. Its parts: 1. a; 2. b"}}, []byte("the tail"), 7, 1.5, 2000)
+	}
+	if got := statement(TripAgentCut); !strings.Contains(got, question) || !strings.Contains(got, "the detector agent_cut tripped (the agent asks to cut the card: r. Its parts: 1. a; 2. b)") {
+		t.Fatalf("cut statement lacks the question or the ask:\n%s", got)
+	}
+	if got := statement(TripRepetition); strings.Contains(got, "The agent asks to cut") {
+		t.Fatalf("repetition statement carries the cut's question:\n%s", got)
+	}
+}
+
 // The session check-in offers replan only where the card can be cut: the
 // rule after the human line, the persona's answer shape, and the parser
 // all follow the ask's Replan.
