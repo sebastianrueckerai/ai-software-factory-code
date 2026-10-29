@@ -1150,6 +1150,25 @@ func (t *taskRun) screen() (final, why string, findings []string) {
 	return t.awaitSuspect(suspectReasons(res, err))
 }
 
+// size runs the sizing step before the first session: the task's end, the
+// findings the first session starts with, or the switch of a card that is
+// not small. A sizing that fails is recorded, and the card runs as filed.
+func (t *taskRun) size() (final, why string, findings []string, toPlan *PlanSwitch) {
+	var res SizeResult
+	v, decided, err := t.gateActivity(true, screenOptions(t.cfg.WallClockCap), &res, ActivitySizeCard, t.taskID)
+	if decided {
+		return v.final, v.reason, v.findings, nil
+	}
+	if err != nil {
+		detail := map[string]any{"reason": "the sizing step failed: " + errMessage(err)}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, StepSizing, detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record "+StepSizing, "task", t.taskID, "error", err)
+		}
+		return "", "", nil, nil
+	}
+	return "", "", nil, res.ToPlan
+}
+
 // screenAnswers screens the answers of the issue's author the screening
 // has not read (versionScreenAnswers), on a task whose author is not a
 // writer and whose screening stage applies: one ScreenAnswer each, then
@@ -1223,8 +1242,8 @@ func (t *taskRun) judgeScreening(final, why string, answer []string) (string, st
 	return final, why, answer
 }
 
-// screenOptions: the screening waits for its analyzer task's session, at
-// most the agent time of a task; it heartbeats.
+// screenOptions: the screening and the sizing wait for their analyzer
+// task's session, at most the agent time of a task; they heartbeat.
 func screenOptions(agentTime time.Duration) workflow.ActivityOptions {
 	return workflow.ActivityOptions{
 		StartToCloseTimeout:    agentTime + 10*time.Minute,

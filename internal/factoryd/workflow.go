@@ -573,6 +573,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	// its value is unused; the call stays until no running history carries the marker
 	workflow.GetVersion(ctx, "chain-done", workflow.DefaultVersion, versionChainDone)
 	run.directToPlan = workflow.GetVersion(ctx, "direct-to-plan", workflow.DefaultVersion, versionDirectToPlan)
+	run.sizing = workflow.GetVersion(ctx, "sizing", workflow.DefaultVersion, versionSizing)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1135,6 +1136,12 @@ const (
 	// loop runs on; a refusal is recorded and the card runs on as it was.
 	// A run from before the change leaves the signal unread.
 	versionDirectToPlan workflow.Version = 1
+	// versionSizing (change id "sizing", roadmap 336): before the first
+	// session of a card a person or the chat filed, in a process with a
+	// plan track, the sizing step sizes it (size), and a card that is not
+	// small turns plan-track (switchToPlan). A run from before sizes
+	// nothing.
+	versionSizing workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1245,6 +1252,7 @@ type taskRun struct {
 	holds             int              // heads adopted this run (versionHeadHolds)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
+	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
@@ -1659,6 +1667,23 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			addFindings(more, "changes")
+		}
+		if t.sizing >= versionSizing && u.Attempts == 0 && st.PR.Number == 0 && t.cfg.Task.PlanShape != nil && slices.Contains(sizedSources, st.Source) {
+			final, why, more, toPlan := t.size()
+			if final != "" {
+				return t.finish(final, why)
+			}
+			addFindings(more, "changes")
+			if toPlan != nil {
+				// the plan loop reads a waiting-human row as its own healed wait,
+				// and an answered screening leaves the row there
+				if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
+					return t.finish("failed", "set running: "+errMessage(err))
+				}
+				if final, switched, err := t.switchToPlan(*toPlan); switched {
+					return final, err
+				}
+			}
 		}
 	}
 	// taken is how many numbers the budget's refusals took since the last
