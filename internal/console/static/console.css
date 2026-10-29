@@ -273,7 +273,7 @@ footer#live:empty { display: none; }
 /* chips: mono 11 px in a hairline box; blocked in red, a fine state in amber */
 .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .chips > * { max-width: 100%; }
-.chip.waiting { height: auto; min-height: 18px; padding: 1px 6px; white-space: normal; }
+.chip.waiting, .chip.plan { height: auto; min-height: 18px; padding: 1px 6px; white-space: normal; }
 .chip, .badge, .pill.fine { display: inline-flex; align-items: center; gap: 5px; height: 18px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; color: var(--text-muted); font: 11px/1 var(--font-mono); white-space: nowrap; background: none; }
 .pill.fine::before { content: none; }
 .pill.fine, .chip.waiting { color: var(--need-text); border-color: color-mix(in srgb, var(--need) 60%, transparent); }
