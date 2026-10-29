@@ -216,8 +216,8 @@ func TestGateAuditOfADiffPastTheBoundIsOneFinding(t *testing.T) {
 }
 
 // An audit the card cannot pay for is not started: four calls of 9,000
-// output tokens at 1e-5 EUR hold 0.36 EUR, past the 0.30 EUR free. One
-// finding says so; no call is made.
+// output tokens at 1e-5 EUR cost 0.36 EUR with no call on the ref to read,
+// past the 0.30 EUR free. One finding says so; no call is made.
 func TestGateAuditTheCardCannotPayForIsOneFinding(t *testing.T) {
 	ll := &fakeLiteLLM{content: `{"verdict":"clear"}`}
 	fj := &gateForgejo{diff: fourParts}
@@ -230,8 +230,8 @@ func TestGateAuditTheCardCannotPayForIsOneFinding(t *testing.T) {
 	r.cfg.Prices = stubPrices{price: policy.Price{In: 1e-9, Out: 1e-5}}
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run: its 4 calls would hold about 0.36 EUR at the gateway, and the card has 0.30 EUR free. " +
-		"Fund the card (Fund on the board) so the audit can run, or review the change yourself."}}
+	want := []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. " +
+		"Read the diff, then Approve the merge or Deny it (rejecting closes the pull request)."}}
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
 		t.Fatalf("audit = %+v after %d calls, want %+v and no call", res, len(ll.chats), want)
 	}

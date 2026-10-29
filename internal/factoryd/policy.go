@@ -651,9 +651,8 @@ func (s *PGStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFr
 	return policy.ReadFree(ctx, s.db, r)
 }
 
-func (s *PGStore) Calibrate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, error) {
-	err := policy.Calibrate(ctx, s.db, &r)
-	return r, err
+func (s *PGStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {
+	return policy.CalibrateEstimate(ctx, s.db, r)
 }
 
 func (s *PGStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {

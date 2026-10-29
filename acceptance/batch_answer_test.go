@@ -595,7 +595,7 @@ func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }
-func (s *accBatchStore) Calibrate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, error) {
+func (s *accBatchStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {
 	panic("unused")
 }
 func (s *accBatchStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {

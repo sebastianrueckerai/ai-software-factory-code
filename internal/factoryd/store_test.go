@@ -85,8 +85,8 @@ type fakeStore struct {
 	// unbounded when nil; openings are Opening's answers by ref
 	held     map[string]policy.TaskFree
 	capsFree *policy.Free
-	// earlier is Calibrate's earlier call by ref
-	earlier   map[string]policy.Usage
+	// estimates are CalibrateEstimate's earlier call and mean output by ref
+	estimates map[string]refHistory
 	openings  map[string]policy.Opening
 	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
@@ -1059,9 +1059,16 @@ func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.Task
 	return tf, f, nil
 }
 
-func (s *fakeStore) Calibrate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, error) {
-	r.Earlier = s.earlier[r.Ref]
-	return r, nil
+// refHistory is what a ref's settled calls tell an estimate.
+type refHistory struct {
+	earlier policy.Usage
+	meanOut int
+}
+
+func (s *fakeStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {
+	h := s.estimates[r.Ref]
+	r.Earlier = h.earlier
+	return r, h.meanOut, nil
 }
 
 func (s *fakeStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {

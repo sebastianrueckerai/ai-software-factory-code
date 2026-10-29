@@ -109,46 +109,95 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 
 // unfunded says why the card's free headroom cannot pay for calls, before
 // the first is made; "" when it can, or when their model has no price,
-// whose calls the gateway refuses itself. The need is the calls' holds as
-// the gateway takes them: Fit on each call's request, calibrated as
-// TakeHold calibrates, with the headroom unbounded, summed. what names
-// the calls' activity, "the review" or "the audit".
-func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose, what string, calls []reviewCall) (string, error) {
-	if r.cfg.Prices == nil || model == "" {
-		return "", nil
-	}
-	alias := aliasOf(model)
-	price, err := r.price(ctx, alias)
-	if err != nil {
+// whose calls the gateway refuses itself. The need is what the calls are
+// expected to spend, priced by Fit alone: each call's request at the
+// ref's settled calls (fanOutPrice), at the ref's mean output but for the
+// last call, at the whole limit. A premium call the premium month's
+// headroom cannot hold is priced on big, where the gateway serves it. The
+// note names what the approval card offers a person instead.
+func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, calls []reviewCall) (string, error) {
+	if r.cfg.Prices == nil || model == "" || len(calls) == 0 {
 		return "", nil
 	}
 	limit, err := r.supervisor.Budget.OutputLimit()
 	if err != nil {
 		return "", err
 	}
-	req, err := r.store.Calibrate(ctx, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: policy.LedgerRef(purpose, alias), Price: price, WantOut: limit})
+	alias := aliasOf(model)
+	at, ok, err := r.fanOutPrice(ctx, taskID, purpose, alias)
+	if !ok || err != nil {
+		return "", err
+	}
+	req := policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, ProjectEUR: math.Inf(1)}
+	if alias == policy.Premium {
+		req.PremiumEUR = r.cfg.Policy().Document.Budget.PremiumMonthEUR
+	}
+	own, free, err := r.store.Free(ctx, req)
 	if err != nil {
 		return "", err
 	}
-	inf, need := math.Inf(1), 0.0
-	for _, c := range calls {
+	var big *callPrice
+	need := 0.0
+	for i, c := range calls {
 		body, err := chatBody(model, c.Prompt, c.Input(), limit)
 		if err != nil {
 			return "", err
 		}
-		req.Bytes = len(body)
-		h, _ := policy.Fit(policy.Free{Task: inf, Day: inf, Month: inf, Project: inf}, req)
-		need += h.EUR
-	}
-	own, _, err := r.store.Free(ctx, req)
-	if err != nil {
-		return "", err
+		p, last := at, i == len(calls)-1
+		onBig := free.Premium != nil && at.cost(len(body), limit, true) > *free.Premium
+		if onBig {
+			if big == nil {
+				fallback, ok, err := r.fanOutPrice(ctx, taskID, purpose, policy.Big)
+				if !ok || err != nil {
+					return "", err
+				}
+				big = &fallback
+			}
+			p = *big
+		}
+		cost := p.cost(len(body), limit, last)
+		if free.Premium != nil && !onBig {
+			*free.Premium -= cost
+		}
+		need += cost
 	}
 	if free := own.Free(); need > free {
-		return fmt.Sprintf("its %s would hold about %.2f EUR at the gateway, and the card has %.2f EUR free. Fund the card (Fund on the board) so %s can run, or review the change yourself.",
-			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0), what), nil
+		return fmt.Sprintf("its %s would cost about %.2f EUR, and the card has %.2f EUR free. Read the diff, then Approve the merge or Deny it (rejecting closes the pull request).",
+			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0)), nil
 	}
 	return "", nil
+}
+
+// callPrice is what an estimate prices one alias's calls at: the request,
+// calibrated on the ref's settled calls (Store.CalibrateEstimate), and
+// the ref's mean output.
+type callPrice struct {
+	req  policy.HoldRequest
+	mean int
+}
+
+// fanOutPrice is alias's callPrice for purpose; false when alias has no
+// price.
+func (r *Runner) fanOutPrice(ctx context.Context, taskID, purpose, alias string) (callPrice, bool, error) {
+	price, err := r.price(ctx, alias)
+	if err != nil {
+		return callPrice{}, false, nil
+	}
+	req, mean, err := r.store.CalibrateEstimate(ctx, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: policy.LedgerRef(purpose, alias), Price: price})
+	return callPrice{req, mean}, err == nil, err
+}
+
+// cost is Fit on a call of bytes at p, the headroom unbounded: its output
+// the ref's mean, or limit for the last call or a ref without one.
+func (p callPrice) cost(bytes, limit int, last bool) float64 {
+	r := p.req
+	r.Bytes, r.WantOut = bytes, limit
+	if p.mean > 0 && !last {
+		r.WantOut = min(p.mean, limit)
+	}
+	inf := math.Inf(1)
+	h, _ := policy.Fit(policy.Free{Task: inf, Day: inf, Month: inf, Project: inf}, r)
+	return h.EUR
 }
 
 // partsNamed names the parts at, 0-based and ascending, of n: "part 3 of

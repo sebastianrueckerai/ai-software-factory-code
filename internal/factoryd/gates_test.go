@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -729,26 +730,30 @@ func fundedReview(t *testing.T, budget, in, out float64, earlier map[string]poli
 	task := gateTask
 	task.BudgetEUR = budget
 	r, store, _ := newGateRunner(t, task, fj)
-	store.earlier = earlier
+	store.estimates = map[string]refHistory{}
+	for ref, u := range earlier {
+		store.estimates[ref] = refHistory{earlier: u}
+	}
 	r.cfg.Prices = stubPrices{price: policy.Price{In: in, Out: out}}
 	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	return r, fj, ll
 }
 
-// A review the card cannot pay for is not started: four calls of 9,000
-// output tokens at 1e-5 EUR hold 0.36 EUR (their 1e-9 EUR a byte of
-// request adds under 0.001), past the 0.30 EUR free, so no call is made
-// and the note names the calls, the estimate, the headroom and the act.
-// At 0.40 EUR free the four calls run.
+// A review the card cannot pay for is not started: with no call on its
+// ref to read, four calls of 9,000 output tokens at 1e-5 EUR cost 0.36
+// EUR (their 1e-9 EUR a byte of request adds under 0.001), past the 0.30
+// EUR free, so no call is made. The note names the calls, the estimate,
+// the headroom and what the approval card offers. At 0.40 EUR the four
+// calls run.
 func TestModelReviewTheCardCannotPayForIsANote(t *testing.T) {
 	for name, tc := range map[string]struct {
 		budget float64
 		calls  int
 		note   string
 	}{
-		"0.30 EUR": {0.30, 0, "model review not run: its 4 calls would hold about 0.36 EUR at the gateway, and the card has 0.30 EUR free. " +
-			"Fund the card (Fund on the board) so the review can run, or review the change yourself."},
+		"0.30 EUR": {0.30, 0, "model review not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. " +
+			"Read the diff, then Approve the merge or Deny it (rejecting closes the pull request)."},
 		"0.40 EUR": {0.40, 4, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -767,9 +772,9 @@ func TestModelReviewTheCardCannotPayForIsANote(t *testing.T) {
 
 // The estimate reads the requests' bytes as the gateway does: four parts
 // of 40 KiB of diff each are over 160 KiB of request, over 0.16 EUR at
-// 1e-6 EUR a byte uncalibrated, past 0.15 EUR free. The task's earlier
-// review call on review/big, 1 prompt token for 100 bytes, calibrates
-// them to 1.25 hundredths of that, and the four calls run.
+// 1e-6 EUR a byte uncalibrated, past 0.15 EUR free. A settled call on
+// review/big, 1 prompt token for 100 bytes, calibrates them to 1.25
+// hundredths of that, and the four calls run.
 func TestModelReviewEstimateIsTheGatewaysHold(t *testing.T) {
 	for name, tc := range map[string]struct {
 		earlier map[string]policy.Usage
@@ -783,6 +788,88 @@ func TestModelReviewEstimateIsTheGatewaysHold(t *testing.T) {
 			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 			if rv := getInto[Review](t, val, err); len(ll.chats) != tc.calls || (tc.calls == 0) != strings.Contains(rv.Note, "and the card has 0.15 EUR free") {
 				t.Fatalf("review = %+v after %d calls, want %d", rv, len(ll.chats), tc.calls)
+			}
+		})
+	}
+}
+
+// The re-review's example: a first review of three parts of 250 KiB, each
+// call about 262,000 bytes of request (the part and a prompt of under
+// 8,000), at 2e-6 EUR a token in and 1e-5 out, 18,432 output tokens the
+// limit, 1.50 EUR free. With no call on review/big to read, the estimate
+// is today's: a token a byte and the whole limit for every call, 3 x
+// (0.524 + 0.184), about 2.12 EUR, so no call is made. Another task's
+// settled call on the ref, 257 tokens a KiB, prices the input at 1.25 x
+// 257 / 1,024 of that, about 0.164 a call, and the ref's mean output of
+// 8,000 tokens prices all but the last call at 0.08: 2 x 0.244 + 0.348,
+// about 0.84 EUR, and the three calls run. At 0.95 EUR free they run on
+// the mean output alone: the whole limit for every call is about 1.04.
+func TestModelReviewEstimateIsTheExpectedSpend(t *testing.T) {
+	history := map[string]refHistory{"review/big": {policy.Usage{PromptTokens: 257, BodyBytes: 1024}, 8000}}
+	for name, tc := range map[string]struct {
+		history map[string]refHistory
+		budget  float64
+		calls   int
+		note    string
+	}{
+		"no history":         {nil, 1.5, 0, "model review not run: its 3 calls would cost about 2.1"},
+		"history":            {history, 1.5, 3, ""},
+		"history, 0.95 free": {history, 0.95, 3, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fj := &gateForgejo{diff: diffFile("a.go", 250<<10) + diffFile("b.go", 250<<10) + diffFile("c.go", 250<<10)}
+			task := gateTask
+			task.BudgetEUR = tc.budget
+			r, store, _ := newGateRunner(t, task, fj)
+			store.estimates = tc.history
+			r.cfg.Prices = stubPrices{price: policy.Price{In: 2e-6, Out: 1e-5}}
+			pinned := testPolicyVersion()
+			pinned.Document.Limits.ReviewDiffKiB = 256
+			r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			r.supervisor.Budget = TokenBudget{AnswerTokens: 2048, HeadroomTokens: 16384}
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7})
+			rv := getInto[Review](t, val, err)
+			if len(ll.chats) != tc.calls || !strings.HasPrefix(rv.Note, tc.note) || (tc.note == "") != (rv.Note == "") {
+				t.Fatalf("review = %+v after %d calls, want %d calls and a note starting %q", rv, len(ll.chats), tc.calls, tc.note)
+			}
+		})
+	}
+}
+
+// A premium call the premium month cannot hold runs on big, as the gateway
+// serves it, and the estimate prices it there. Four parts of about 47,000
+// bytes of request with 9,000 output tokens: on premium (2e-5 and 1e-4 a
+// token) 4 x (0.94 + 0.90), about 7.3 EUR, past the 1.00 EUR free; on big
+// (2e-6 and 1e-5) 4 x (0.094 + 0.09), about 0.74 EUR, which runs. With
+// 100 EUR of premium month the calls are premium's and nothing runs; with
+// none, they are big's and all four run.
+func TestModelReviewEstimatePricesOnBigPastThePremiumMonth(t *testing.T) {
+	for name, tc := range map[string]struct {
+		premium float64
+		calls   int
+		note    string
+	}{
+		"premium month free":  {100, 0, "model review not run: its 4 calls would cost about 7."},
+		"premium month spent": {0, 4, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, ll := fundedReview(t, 1.0, 0, 0, nil)
+			r.cfg.Prices = aliasPrices{policy.Premium: {In: 2e-5, Out: 1e-4}, policy.Big: {In: 2e-6, Out: 1e-5}}
+			v := testPolicyVersion()
+			coder := v.Document.Classes["coder"]
+			coder.ReviewModel = policy.Premium
+			v.Document.Classes["coder"] = coder
+			v.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+			v.Document.Budget.PremiumMonthEUR = 50
+			r.cfg.Policy = func() policy.Version { return v }
+			inf, premium := math.Inf(1), tc.premium
+			r.store.(*fakeStore).capsFree = &policy.Free{Day: inf, Month: inf, Project: inf, Premium: &premium}
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			rv := getInto[Review](t, val, err)
+			if len(ll.chats) != tc.calls || !strings.HasPrefix(rv.Note, tc.note) || (tc.note == "") != (rv.Note == "") {
+				t.Fatalf("review = %+v after %d calls, want %d calls and a note starting %q", rv, len(ll.chats), tc.calls, tc.note)
 			}
 		})
 	}

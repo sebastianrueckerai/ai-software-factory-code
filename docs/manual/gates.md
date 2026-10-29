@@ -62,11 +62,18 @@ activities, each with a timeline step and a comment on the pull request:
    `limits.review_diff_kib` (48 KiB), else in as many parts of that size
    as it needs, one call each, four at a time, each call's input built
    when the call starts. A file larger than a part is cut by hunks. There
-   is no cap on parts. Before the first call the review sums its calls'
-   holds as the gateway takes them (`policy.Fit` on each request,
-   calibrated as the hold is) and makes none when the card's free headroom
-   cannot pay the sum: the note names the calls, the estimate and the
-   headroom, and asks to fund the card. A call the gateway refuses for
+   is no cap on parts. Before the first call the review estimates what its
+   calls will spend, with `policy.Fit` alone on each request
+   (`policy.CalibrateEstimate`): its prompt calibrated on the task's newest
+   settled call on the ref, else the ref's newest of any task, and its
+   output at the ref's mean over its newest 100 settled calls, the last
+   call at the whole limit; with no settled call on the ref, a token a
+   byte and the whole limit for every call. A premium call the premium
+   month cannot hold is priced on `big`, where the gateway serves it. When
+   the card's free headroom cannot pay the estimate the review makes no
+   call, and the note names the calls, the estimate and the headroom, and
+   what the approval card offers: read the diff, then Approve the merge or
+   Deny it (rejecting closes the pull request). A call the gateway refuses for
    headroom (the task's budget, the day's, the month's or the project's
    cap) is made again after the others, one at a time. The activity's
    bound follows the waves of four calls, plus one for each retried call,
@@ -104,9 +111,10 @@ activities, each with a timeline step and a comment on the pull request:
    fixed checklist:
    secrets, network egress, RBAC and ServiceAccounts, policy and workflow
    files, migrations that drop or widen, the sandbox contract. An answer
-   without a verdict is a finding. A refused or failed call is one finding
-   for its reason, which names its parts, and the parts' findings keep the
-   first 50 and a line that counts the rest. A diff past 8 MiB, or calls
+   without a verdict is a finding. A refused call is one finding for its
+   refusal, failed calls one for each status (`status 429`), each naming
+   its parts, and the parts' findings keep the first 50 and a line that
+   counts the rest. A diff past 8 MiB, or calls
    the card's free headroom cannot pay for (estimated as the review's),
    is one finding and no call. The findings go to the card's
    "Security audit" section and the timeline step `audit` (verdict,

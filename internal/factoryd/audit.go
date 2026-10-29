@@ -199,7 +199,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			}
 		}
 	}
-	if why, err := r.unfunded(ctx, t.ID, res.Model, policy.PurposeAudit, "the audit", calls); err != nil {
+	if why, err := r.unfunded(ctx, t.ID, res.Model, policy.PurposeAudit, calls); err != nil {
 		return AuditResult{}, err
 	} else if why != "" {
 		noVerdict("the audit did not run: " + why)

@@ -347,6 +347,50 @@ func TestHolds(t *testing.T) {
 	}
 }
 
+// An estimate of calls not yet made reads the ref's history: without a
+// settled call of its own task on the ref, Earlier is the ref's newest
+// settled call of any task (c's, 514 tokens in 2,048 bytes; d's row has no
+// usage, another ref's does not count), and the mean output of the ref's
+// settled calls is (6,000 + 10,000) / 2 = 8,000. The task's own call then
+// calibrates it, and the mean is (6,000 + 10,000 + 2,000) / 3 = 6,000. Of
+// 101 calls on audit/big only the newest 100 count: 1,000 each, the
+// oldest's 100,000 left out. A ref without a call has neither.
+func TestCalibrateEstimateReadsTheRef(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
+		('b', 'model', 'review/big', 0.01, 257, 0, 6000, 1024), ('c', 'model', 'review/big', 0.01, 514, 0, 10000, 2048),
+		('c', 'model', 'review/small', 0.01, 1, 0, 99999, 1), ('d', 'model', 'review/big', 0.01, 0, 0, 50000, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes)
+		SELECT 'e', 'model', 'audit/big', 0.01, 100, 0, CASE WHEN i = 1 THEN 100000 ELSE 1000 END, 400 FROM generate_series(1, 101) i ORDER BY i`); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, ref string
+		earlier   Usage
+		mean      int
+	}{
+		{"any task's", "review/big", Usage{PromptTokens: 514, BodyBytes: 2048}, 8000},
+		{"the newest 100", "audit/big", Usage{PromptTokens: 100, BodyBytes: 400}, 1000},
+		{"none", "review/premium", Usage{}, 0},
+	} {
+		r, mean, err := CalibrateEstimate(ctx, db, HoldRequest{TaskID: "a", Kind: KindModel, Ref: tc.ref})
+		if err != nil || r.Earlier != tc.earlier || mean != tc.mean {
+			t.Fatalf("%s: earlier %+v, mean %d, err %v; want %+v, %d", tc.name, r.Earlier, mean, err, tc.earlier, tc.mean)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur, prompt_tokens, cached_tokens, output_tokens, body_bytes) VALUES
+		('a', 'model', 'review/big', 0.01, 100, 0, 2000, 1000), ('f', 'model', 'review/big', 0.01, 0, 0, 0, 0)`); err != nil {
+		t.Fatal(err)
+	}
+	r, mean, err := CalibrateEstimate(ctx, db, HoldRequest{TaskID: "a", Kind: KindModel, Ref: "review/big"})
+	if want := (Usage{PromptTokens: 100, BodyBytes: 1000}); err != nil || r.Earlier != want || mean != 6000 {
+		t.Fatalf("own call: earlier %+v, mean %d, err %v; want %+v, 6000", r.Earlier, mean, err, want)
+	}
+}
+
 // A model call's ledger row keeps its usage and request bytes, and the
 // task's next hold on the same ref calibrates from the newest row with
 // usage (the figures of TestFitCalibrated); a row without usage, another
