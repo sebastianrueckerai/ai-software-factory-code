@@ -536,6 +536,23 @@ func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	}
 }
 
+// An unreadable answer on the last call leaves no room for the repair
+// round: the outcome is the unreadable answer's human ask, not the cap's.
+func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000)
+	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || out.Reason == "check-in call cap reached" {
+		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
+	}
+	if out.ReasonKind != "" || out.Record.Reason != out.Reason {
+		t.Fatalf("outcome kind %q, record reason %q; want no spend kind and the reason recorded", out.ReasonKind, out.Record.Reason)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("calls = %d, want the one call", chat.calls)
+	}
+}
+
 // runnerTools answers the transcript and card questions itself and runs
 // the workspace tools through the worker's /tool endpoint: the local
 // answers, the posted ones with their bearer, a non-200 the model sees,

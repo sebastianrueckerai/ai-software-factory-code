@@ -212,7 +212,7 @@ func callCapQuestion(f QuestionFacts) *HumanQuestion {
 	return &HumanQuestion{
 		Ask:     ask,
 		Why:     "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person.",
-		Info:    continueInfo,
+		Info:    "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent.",
 		Choices: continueChoices(),
 	}
 }

@@ -107,9 +107,10 @@ const checkinSpendAsk = "check-in: " + CheckSpend + ": "
 // calls.
 const checkinCallCapStop = "check-in call cap reached"
 
-// atCheckinSpend: escalation is a check-in stopped at its spent budget,
-// its call cap or the budget's share: the answer verifies the head again,
-// no session, for one would stop at the same cap before any model call.
+// atCheckinSpend: escalation is a check-in stopped under spend, at its
+// call cap or on the budget's share. The share stop's answer verifies the
+// head again, no session, for one would stop at the same share before any
+// model call; the call cap's answer buys the session (atCheckinCallCap).
 func atCheckinSpend(escalation string) bool {
 	return strings.HasPrefix(escalation, checkinSpendAsk)
 }

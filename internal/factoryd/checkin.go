@@ -552,10 +552,10 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // arrives, and the guards turn that into the outcome. A provider that
 // refuses every call ends it as a handover with no note and no verdicts —
 // the round runs as if no check-in existed. An answer the runner cannot
-// read gets one repair round and then a human. The last call carries no
-// tools and asks for the answer; a tool asked for on it, or no answer
-// within the calls, is the call cap's human ask under spend. Every call
-// lands in the record.
+// read gets one repair round and then a human, at once on the last call.
+// The last call carries no tools and asks for the answer; a tool asked
+// for on it is the call cap's human ask under spend. Every call lands in
+// the record.
 func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int) CheckInOutcome {
 	start := time.Now()
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
@@ -563,16 +563,9 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)
 	rec.StatementBytes = len(conv)
 
-	capStop := func() CheckInOutcome {
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
-		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
-	}
 	calls, repairs := 0, 0
 	for {
-		if calls >= callsLeft {
-			return capStop()
-		}
-		last := calls == callsLeft-1
+		last := calls >= callsLeft-1
 		if last {
 			conv += "\n\nThis is your last call: answer now with the JSON object, no tool."
 		}
@@ -591,7 +584,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		}
 		if resp.ToolName != "" {
 			if last {
-				return capStop()
+				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
+				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
 			}
 			args, _ := json.Marshal(resp.ToolArgs)
 			at := time.Now()
@@ -611,7 +605,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		if perr == nil {
 			return checkinOutcome(rec, ask, a, handoverCap, sessions)
 		}
-		if repairs == 1 {
+		if repairs == 1 || last {
 			reason := "check-in answer unreadable: " + perr.Error()
 			rec.Decision, rec.Reason = CheckHuman, reason
 			return CheckInOutcome{Decision: CheckHuman, Reason: reason, Record: rec}

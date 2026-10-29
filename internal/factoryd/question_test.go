@@ -21,6 +21,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		facts  QuestionFacts
 		askHas []string
 		whyHas []string
+		info   string // the whole info, where the row pins it
 		values []string
 		source string
 	}{
@@ -29,12 +30,14 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			facts:  facts,
 			askHas: []string{"no answer within its 20 calls"},
 			whyHas: []string{"spent its calls on evidence and gave no decision"},
+			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in share spent": {
 			reason: checkinSpendAsk + "the check-in's share of the budget is spent",
 			facts:  facts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
+			info:   "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"session cap": {
@@ -93,6 +96,9 @@ func TestShapedQuestionFamilies(t *testing.T) {
 				if !strings.Contains(q.Why, want) {
 					t.Errorf("the why %q misses %q", q.Why, want)
 				}
+			}
+			if tt.info != "" && q.Info != tt.info {
+				t.Errorf("the info = %q, want %q", q.Info, tt.info)
 			}
 			if len(q.Choices) != len(tt.values) {
 				t.Fatalf("choices %v, want values %v", q.Choices, tt.values)

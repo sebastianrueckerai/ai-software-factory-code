@@ -1603,10 +1603,9 @@ func TestRunSessionCheckinHumanEndsTheSession(t *testing.T) {
 	}
 }
 
-// The card's check-in calls before this one count not: every check-in
-// conversation opens with the policy's calls, so the trip's judge runs and
-// its continue carries the session on to its push.
-func TestRunSessionCheckinIgnoresTheCardsPastCalls(t *testing.T) {
+// The live check-in opens with the policy's 20 calls, and its continue
+// carries the session on to its push.
+func TestRunSessionLiveCheckinOpensWithThePolicysCalls(t *testing.T) {
 	runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
 
 	logs := commands(0, 24) + pushedLine("c2") + "\n" + resultLine(true, "pushed")
@@ -3855,6 +3854,24 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	defer worker.mu.Unlock()
 	if len(worker.texts) != 0 {
 		t.Fatalf("worker got %q, want nothing pushed", worker.texts)
+	}
+}
+
+// The gate moment's check-in opens with the policy's 20 calls too.
+func TestRunSessionGateCheckinOpensWithThePolicysCalls(t *testing.T) {
+	runner, _, _, _, chat, _, _ := checkinRig(t,
+		`{"findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}],"decision":"handover","handover":"fix the caller first"}`)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil,
+		pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.CheckIn == nil || res.CheckIn.Decision != CheckHandover {
+		t.Fatalf("result = (%+v, %v), want the gate check-in's handover", res, err)
+	}
+	if chat.calls != 1 {
+		t.Fatalf("chat calls = %d, want the one conversation", chat.calls)
+	}
+	if !strings.Contains(chat.gots[0].Input, "calls left 20,") {
+		t.Fatalf("statement = %q, want the policy's 20 calls left", chat.gots[0].Input)
 	}
 }
 

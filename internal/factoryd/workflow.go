@@ -1213,7 +1213,7 @@ type taskRun struct {
 	approvalPending   workflow.Version // a pending head at the approval waits its checks out (versionApprovalPending)
 	criteriaGate      workflow.Version // the criteria gate runs once before the approval's request (versionCriteriaGate)
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
-	checkinRaise      workflow.Version // a call-cap stop's answer buys one more turn of the cap (versionCheckinRaise)
+	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
