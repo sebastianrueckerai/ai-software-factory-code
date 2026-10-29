@@ -154,10 +154,11 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		noVerdict("the audit did not run: " + errMessage(err))
 		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, redact.New()), nil
 	}
-	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, maxForgejoAnswer)
+	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if err != nil {
 		return AuditResult{}, err
 	}
+	diff := joinFiles(prFiles)
 	scrub := redact.New(redact.DiffSecrets(diff)...)
 	hits := redact.ScanDiff(diff)
 	for i, h := range hits {

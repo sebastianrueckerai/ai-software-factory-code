@@ -445,11 +445,11 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
-	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr, maxForgejoAnswer)
+	diffFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return PolicyGate{}, err
 	}
-	g.Cheats = cheats(splitDiff(diff))
+	g.Cheats = cheats(diffFiles)
 	if g.Images, err = r.imagesFindings(ctx, repo, pr, commit, files); err != nil {
 		return PolicyGate{}, err
 	}
@@ -1228,10 +1228,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		return rv, nil
 	}
-	diff, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, pr.Number, maxForgejoAnswer)
+	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if err != nil {
 		return Review{}, err
 	}
+	diff := joinFiles(prFiles)
 	criteria := r.criteriaContext(ctx, t)
 	if criteria != nil {
 		whole, err := r.wholeFeatureDiff(ctx, t, repo, criteria.plan, diff)

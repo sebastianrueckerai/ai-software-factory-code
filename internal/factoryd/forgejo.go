@@ -250,8 +250,8 @@ func (f *Forgejo) orgCall(ctx context.Context, method, path string, payload []by
 	})
 }
 
-// ErrAnswerTooLong is an answer past maxForgejoAnswer: an error for every
-// caller but PullRequestDiff, which takes the cut body.
+// ErrAnswerTooLong is an answer past its read limit: an error for every
+// caller.
 var ErrAnswerTooLong = errors.New("the answer is longer than 1 MiB")
 
 // maxForgejoAnswer bounds a Forgejo answer factoryd reads.
@@ -261,12 +261,12 @@ const maxForgejoAnswer = 1 << 20
 const anySuccess = 0
 
 func (f *Forgejo) do(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request)) ([]byte, error) {
-	return f.doLimit(ctx, method, path, payload, wantStatus, auth, maxForgejoAnswer)
+	return f.doLimit(ctx, method, path, payload, wantStatus, auth, maxForgejoAnswer, 15*time.Second)
 }
 
 // doLimit is do with an answer of at most limit bytes: a longer one is cut
-// there and ErrAnswerTooLong.
-func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request), limit int) ([]byte, error) {
+// there and ErrAnswerTooLong. A nil f.HTTP gets a client of timeout.
+func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []byte, wantStatus int, auth func(*http.Request), limit int, timeout time.Duration) ([]byte, error) {
 	var reader io.Reader
 	if payload != nil {
 		reader = bytes.NewReader(payload)
@@ -282,7 +282,7 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 
 	client := f.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: 15 * time.Second}
+		client = &http.Client{Timeout: timeout}
 	}
 	res, err := client.Do(req)
 	if err != nil {
@@ -1448,7 +1448,7 @@ func (f *Forgejo) IssueAssets(ctx context.Context, owner, repo string, number in
 // download route, which takes the API's credentials. A larger one is
 // ErrAnswerTooLong.
 func (f *Forgejo) Attachment(ctx context.Context, uuid string, limit int) ([]byte, error) {
-	return f.doLimit(ctx, http.MethodGet, "/attachments/"+url.PathEscape(uuid), nil, http.StatusOK, f.callAuth(), limit)
+	return f.doLimit(ctx, http.MethodGet, "/attachments/"+url.PathEscape(uuid), nil, http.StatusOK, f.callAuth(), limit, 15*time.Second)
 }
 
 // CommentOnce posts body on issue number unless a comment of exactly that
@@ -1641,6 +1641,25 @@ func (f *Forgejo) PullRequestDiff(ctx context.Context, owner, repo string, numbe
 		return string(body[:max]) + diffCut + fmt.Sprintf("%d of %d bytes)", max, len(body)), nil
 	}
 	return string(body), nil
+}
+
+// maxDiffRead bounds the diff PullRequestFileDiffs reads.
+const maxDiffRead = 64 << 20
+
+// longClient is the client of a read that may take minutes.
+func (f *Forgejo) longClient() *http.Client { return &http.Client{Timeout: 5 * time.Minute} }
+
+// PullRequestFileDiffs is pull request number's unified diff, whole, split
+// per file. A diff past maxDiffRead is an error.
+func (f *Forgejo) PullRequestFileDiffs(ctx context.Context, owner, repo string, number int64) ([]fileDiff, error) {
+	body, err := f.doLimit(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", owner, repo, number), nil, http.StatusOK, f.callAuth(), maxDiffRead, f.longClient().Timeout)
+	if errors.Is(err, ErrAnswerTooLong) {
+		return nil, fmt.Errorf("the diff is longer than 64 MiB: %w", err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return splitDiff(string(body)), nil
 }
 
 // MergePullRequest merges pull request number as factory-merge with token,

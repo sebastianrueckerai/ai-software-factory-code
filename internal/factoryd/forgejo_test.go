@@ -1100,6 +1100,42 @@ func TestPullRequestDiffPastTheReadLimitIsCut(t *testing.T) {
 	}
 }
 
+func TestPullRequestFileDiffsReadPastOneMiB(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, diffFile("a.go", 700<<10)+diffFile("b.go", 700<<10))
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "b", BotPassword: "p"}
+	files, err := f.PullRequestFileDiffs(context.Background(), "sf", "repo", 7)
+	if err != nil || len(files) != 2 || files[0].Path != "a.go" || files[1].Path != "b.go" || len(files[1].Text) != 700<<10 {
+		t.Fatalf("files %d, err %v", len(files), err)
+	}
+	for _, fd := range files {
+		if strings.Contains(fd.Text, diffCut) {
+			t.Fatalf("%s carries a cut note", fd.Path)
+		}
+	}
+}
+
+func TestPullRequestFileDiffsPastTheBoundIsAnError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, strings.Repeat("d", maxDiffRead+1))
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "b", BotPassword: "p"}
+	_, err := f.PullRequestFileDiffs(context.Background(), "sf", "repo", 7)
+	if !errors.Is(err, ErrAnswerTooLong) || !strings.Contains(err.Error(), "64 MiB") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestPullRequestFileDiffsOutlastFifteenSeconds(t *testing.T) {
+	f := &Forgejo{HTTP: nil}
+	if got := f.longClient().Timeout; got != 5*time.Minute {
+		t.Fatalf("timeout = %v", got)
+	}
+}
+
 // Ruling 179's one mapping from a project to factoryd's tokens: a factory
 // project's registration tokens, a seed project's seeded secrets as its
 // file names them; ruling 164's bound: no seed project ever gets

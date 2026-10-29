@@ -884,11 +884,11 @@ func (r *Runner) wholeFeatureDiff(ctx context.Context, task Task, repo Repo, p P
 		if c.PRNumber == 0 {
 			continue
 		}
-		d, err := r.forgejo.PullRequestDiff(ctx, repo.Owner, repo.Name, c.PRNumber, maxForgejoAnswer)
+		files, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, c.PRNumber)
 		if err != nil {
 			return "", fmt.Errorf("card %s: %w", c.PlanKey, err)
 		}
-		diffs = append(diffs, d)
+		diffs = append(diffs, joinFiles(files))
 	}
 	return strings.Join(append(diffs, mine), "\n"), nil
 }
