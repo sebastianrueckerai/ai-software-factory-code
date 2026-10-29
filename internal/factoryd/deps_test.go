@@ -938,7 +938,9 @@ func TestContinueBranch(t *testing.T) {
 	})
 	t.Run("twice creates once", func(t *testing.T) {
 		r, _, _, fj, _ := newRetryRig(t)
-		r.ContinueBranch(ctx, from, to)
+		if _, err := r.ContinueBranch(ctx, from, to); err != nil {
+			t.Fatal(err)
+		}
 		head, err := r.ContinueBranch(ctx, from, to)
 		if err != nil || head != "c7" || posts(fj) != 1 {
 			t.Fatalf("second ContinueBranch = %q, %v with %d POST fork branches; want c7, one", head, err, posts(fj))
@@ -950,6 +952,17 @@ func TestContinueBranch(t *testing.T) {
 		head, err := r.ContinueBranch(ctx, from, to)
 		if err != nil || head != "c9" || fj.branches["factory/t-n"] != "c9" {
 			t.Fatalf("ContinueBranch = %q, %v; branch %q; want c9 kept", head, err, fj.branches["factory/t-n"])
+		}
+	})
+	t.Run("a retry finds the branch once the old one is gone", func(t *testing.T) {
+		r, _, _, fj, _ := newRetryRig(t)
+		if _, err := r.ContinueBranch(ctx, from, to); err != nil {
+			t.Fatal(err)
+		}
+		delete(fj.branches, "factory/t-a")
+		head, err := r.ContinueBranch(ctx, from, to)
+		if err != nil || head != "c7" || posts(fj) != 1 {
+			t.Fatalf("retry = %q, %v with %d POST fork branches; want c7, one", head, err, posts(fj))
 		}
 	})
 	t.Run("a missing old branch", func(t *testing.T) {
@@ -969,8 +982,8 @@ func TestContinuedCardResumesOnTheBranch(t *testing.T) {
 	if err := store.CreateTask(ctx, to); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.ContinueBranch(ctx, Task{ID: "t-a", SHA: "b0"}, to); err != nil {
-		t.Fatal(err)
+	if head, err := r.ContinueBranch(ctx, Task{ID: "t-a", SHA: "b0"}, to); err != nil || head != "c7" {
+		t.Fatalf("ContinueBranch = %q, %v; want c7", head, err)
 	}
 	_, repo, err := r.task(ctx, to.ID)
 	if err != nil {

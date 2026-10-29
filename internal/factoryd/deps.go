@@ -524,6 +524,11 @@ func (r *Runner) ContinueBranch(ctx context.Context, from, to Task) (string, err
 		return "", err
 	}
 	fork := r.forgejo.Fork(repo)
+	if head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(to)); err == nil {
+		return head, nil
+	} else if !errors.Is(err, ErrNotFound) {
+		return "", fmt.Errorf("branch head of %s: %w", to.ID, err)
+	}
 	if _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(from)); errors.Is(err, ErrNotFound) {
 		return "", ErrNoBranch
 	} else if err != nil {
@@ -532,5 +537,9 @@ func (r *Runner) ContinueBranch(ctx context.Context, from, to Task) (string, err
 	if err := r.forgejo.CopyBranch(ctx, fork, taskBranch(from), taskBranch(to)); err != nil {
 		return "", fmt.Errorf("copy the branch of %s: %w", from.ID, err)
 	}
-	return r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(to))
+	head, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(to))
+	if errors.Is(err, ErrNotFound) {
+		return "", ErrNoBranch
+	}
+	return head, err
 }
