@@ -71,7 +71,7 @@ project, with the row's track, its stages, merge queue and dependency
 block, and the session mode of the track's class, or of a report task's
 own class, which chooses the program: `code` the lifecycle, `report` the
 screening, `plan` the plan loop); and in every session, report session,
-gate-supervisor call and model review the agent time, `steps`, `supervisor_calls`,
+gate-supervisor call and model review the agent time, `steps`, the check-in limits,
 `supervisor_timeout` and the `no_write` detector, the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,
 `supervisor_model`), and the activity bounds of a session, a
@@ -84,22 +84,24 @@ intake, the approvers, the bounds of the other activities,
 `envelope_default` and `project_default`.
 
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
-(20m, the wall-clock cap across a task's sessions), `supervisor_calls`
-(decides nothing since plan E, kept so a pinned policy loads),
-`checkin_calls` (20, the model calls of one check-in conversation),
-`checkin_share` (10, the percent of the card's budget all its check-ins
-may spend), `supervisor_timeout` (6m per supervisor or review call,
-at most 15m), `stronger_after` (1: the second return from the same
-stage takes the stronger rung) and `steps` (200, also when absent: the
-model turns of one agent session, the worker's `STEPS`), `nudge_after` (3)
+(2h, the wall-clock cap across a task's sessions, at most 72h),
+`supervisor_calls` (6, decides nothing since plan E, kept so a pinned
+policy loads), `checkin_calls` (20, also when absent: the model calls of
+one check-in conversation, the last without tools), `checkin_share` (10,
+also when absent: the percent of the card's budget all its check-ins may
+spend), `supervisor_timeout` (6m per supervisor or review call, at most
+15m), `stronger_after` (3, the session cap, so a stage's returns never
+climb a card, and 1 for a medium or large card, whose second return from
+the same stage takes the stronger rung) and `steps` (1500, 200 when
+absent: the model turns of one agent session, the worker's `STEPS`), `nudge_after` (3)
 and `nudges` (1), also when absent, `nudge_after` below `same_call` (4):
 that many identical tool calls in a row, or `same_call` of them scattered
 over the session (same tool, same input, from the session's event stream), get the
 running session the message "You repeated the same call three times
 (<tool>). Change approach, then continue." and a `nudge` timeline step,
 once per repetition, counted only when the session took it; the next such
-run trips `same_call` to the supervisor. A harness without messages gets the redirect with that text,
-decided without a supervisor call. The activity bound of `RunSession` is the agent time plus a minute, of
+run trips `same_call` to the check-in. A harness without messages gets the redirect with that text,
+decided in code. The activity bound of `RunSession` is the agent time plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 
@@ -110,7 +112,7 @@ all tasks, `session_floor_cheap_eur` for the least free budget a session on the 
 class the model aliases it may call, its tools with per-task caps, and
 the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
-session and gate supervisor, `audit_model` for the audit; a class without one gets no such call).
+gate supervisor, `checkin_model` for the check-in (else `review_model`), `audit_model` for the audit; a class without one gets no such call).
 The gateway never reads the files, only the version in force in
 Postgres. `day_eur: 0` stops all spend; `month_eur: 0` does too, but
 only in a commit that also lowers every project's `budget.month_eur` to 0
@@ -294,9 +296,9 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   it to the running session, answers 202 only once the session took it
   (a session that stops or ends first answers 409, and the agent is told
   it did not arrive), then records an `agent_escalation` intake event.
-  The session trips its supervision with an escalation, no supervisor
-  call (one arriving during a supervisor call cuts the call and wins
-  over its answer): the worker pushes its work in progress, the task
+  The session trips its supervision with an escalation, no check-in
+  (one arriving during a check-in cuts the conversation and wins over
+  its answer): the worker pushes its work in progress, the task
   goes `waiting-human`, the question is commented on the issue, and a
   trusted answer resumes the task. The agent reads "escalated; this
   session will end".
