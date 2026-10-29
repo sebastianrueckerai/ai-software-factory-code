@@ -593,7 +593,8 @@ project repository over 200 MiB) stays on the card as `failed: ...`; a network e
 the next poll. A put of the same remote and mode keeps `since` and gives
 each failed card one more try. git runs one operation at a time, each
 killed with its process group after 2 minutes, a pass after 4, with one
-pack thread and small pack windows (factoryd's limit is 512Mi; its pod
+pack thread and small pack windows (factoryd's limit is 512Mi, its Go
+heap held at 460MiB by `GOMEMLIMIT`; its pod
 shares its process namespace, so the pause container reaps a killed git's
 helpers; git ships in the image the gateway shares). Sync latest (the export row's button, the
 chat's `github_sync`) answers at once and brings GitHub's default branch

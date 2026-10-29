@@ -91,7 +91,8 @@ one check-in conversation, the last without tools), `checkin_share` (10,
 also when absent: the percent of the card's budget all its check-ins may
 spend), `supervisor_timeout` (6m per supervisor or review call, at most
 15m), `review_diff_kib` (48, also when absent, at most 1024: the size of
-one part of the diff a model review or audit reads, one call each),
+one part of the diff a model review reads, one call each; the audit reads
+parts of 48 KiB),
 `stronger_after` (3, the session cap, so a stage's returns never
 climb a card, and 1 for a medium or large card, whose second return from
 the same stage takes the stronger rung) and `steps` (1500, 200 when

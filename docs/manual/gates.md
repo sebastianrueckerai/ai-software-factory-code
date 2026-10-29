@@ -11,7 +11,11 @@ activities, each with a timeline step and a comment on the pull request:
    class, a default, the classes most severe first, each `forbidden` or
    `requires_approval`, `migration: true` for schema migrations). The
    class goes on the task row (`risk_class`). A forbidden class fails the
-   task with the paths, which closes the pull request.
+   task with the paths, which closes the pull request. The gate reads the
+   diff whole for the anti-cheat scan, up to 8 MiB in a minute. No gate
+   reads a longer diff: the gate requires a human's approval, and its
+   comment, its timeline step (`unread`) and the approval card name the
+   changed lines and the bound.
 2. `GateMigration`, when a migration-class path changed: the comment and
    the approval card list them under "schema migration: human review
    required".
@@ -51,13 +55,24 @@ activities, each with a timeline step and a comment on the pull request:
    an outsider's report is untrusted input), the diff and the gate
    results, through the gateway on the task's account (purpose
    `review`): its hold, the `model` ledger row `review/<alias>` and an
-   audit row of kind `review`. The diff is read whole (up to 64 MiB) and
-   split per file. It goes in one call when it fits `limits.review_diff_kib`
-   (48 KiB), else in as many parts of that size as it needs, one call each,
-   four at a time. A file larger than a part is cut by hunks. There is no
-   cap on parts. A call the gateway refuses for the budget is made again
-   after the others, one at a time. The activity's bound follows the number
-   of calls. The review of an integration card, one that answers the
+   audit row of kind `review`. The diff is read whole and split per file,
+   up to 8 MiB: past it the review makes no call and notes why, as it does
+   when the feature an integration card reviews passes 8 MiB with every
+   card's diff together. It goes in one call when it fits
+   `limits.review_diff_kib` (48 KiB), else in as many parts of that size
+   as it needs, one call each, four at a time, each call's input built
+   when the call starts. A file larger than a part is cut by hunks. There
+   is no cap on parts. Before the first call the review sums its calls'
+   holds as the gateway takes them (`policy.Fit` on each request,
+   calibrated as the hold is) and makes none when the card's free headroom
+   cannot pay the sum: the note names the calls, the estimate and the
+   headroom, and asks to fund the card. A call the gateway refuses for
+   headroom (the task's budget, the day's, the month's or the project's
+   cap) is made again after the others, one at a time. The activity's
+   bound follows the waves of four calls, plus one for each retried call,
+   and stays ten minutes under the six hours of its attempt. The parts'
+   findings keep the first 50 and a line that counts the rest; their
+   summaries keep 8 KiB. The review of an integration card, one that answers the
    plan's criteria, adds one call per criterion (more for a criterion
    whose diff needs several parts) over the diff of the cards that cite
    it, every delta card and the card itself, and one call for the
@@ -72,9 +87,10 @@ activities, each with a timeline step and a comment on the pull request:
    and records "not reproduced" instead of "skipped"), the answer must
    carry `"strict_improvement": true|false`. A gateway refusal
    (`refused_budget` at the task's cap: "model review refused by the
-   gateway (refused_budget): ..."), a failed call, an invalid answer or a
-   class without a review model is a note on the pull request and the
-   approval card; nothing it says skips a gate.
+   gateway (refused_budget): ...", which names every part it struck), a
+   failed call, an invalid answer or a class without a review model is a
+   note on the pull request and the approval card; nothing it says skips
+   a gate. The comment counts the calls of an integration card's review.
    From change id `audit` on (ruling 188), the workflow's `audit` stage
    (between review and approval, `on_findings: human` only) runs
    `GateAudit` for a project whose file sets `audit: true`, else records
@@ -83,12 +99,16 @@ activities, each with a timeline step and a comment on the pull request:
    `glpat-`, `AKIA`, a password or token assigned a literal), each hit a
    finding with file and line, never the value; then one call of the
    class's `audit_model` (purpose `audit`, bound `GateAudit`) over the
-   diff, in parts of `limits.review_diff_kib` like the review (one call
-   each, four at a time, a file larger than a part cut by hunks), with a
+   diff, in parts of 48 KiB whatever `limits.review_diff_kib` says (one
+   call each, four at a time, a file larger than a part cut by hunks), with a
    fixed checklist:
    secrets, network egress, RBAC and ServiceAccounts, policy and workflow
    files, migrations that drop or widen, the sandbox contract. An answer
-   without a verdict is a finding. The findings go to the card's
+   without a verdict is a finding. A refused or failed call is one finding
+   for its reason, which names its parts, and the parts' findings keep the
+   first 50 and a line that counts the rest. A diff past 8 MiB, or calls
+   the card's free headroom cannot pay for (estimated as the review's),
+   is one finding and no call. The findings go to the card's
    "Security audit" section and the timeline step `audit` (verdict,
    model, deployment), never to the pull request; on the merge rule auto
    they send the merge to the card. A roll task skips the stage.
@@ -103,7 +123,8 @@ activities, each with a timeline step and a comment on the pull request:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
    class's outcome is `auto` (allowed on class `normal` only; the policy
-   decoder refuses it on any other), the review's verdict is `approve`
+   decoder refuses it on any other), the gates read the diff (8 MiB at
+   most), the review's verdict is `approve`
    with `strict_improvement: true` (ruling 169: the review answers it on
    every pull request; false or missing sends it to the card), and the
    fix is proven one of two ways (ruling 167): the reproduction failed at
