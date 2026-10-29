@@ -1743,7 +1743,7 @@ func TestNewTaskSize(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	form := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck).Body.String()
 	want := `<select id="size" name="size">
-<option value="">sized by the factory</option>
+<option value="">none</option>
 <option value="small">small</option>
 <option value="medium">medium</option>
 <option value="large">large</option>

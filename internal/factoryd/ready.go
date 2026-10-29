@@ -37,10 +37,10 @@ type ReadyStore interface {
 // ReadyFindings are the ready check's per-card findings for a card that
 // would start or be filed (roadmap 239): its size, if it names one, one of
 // the card sizes, and acceptance criteria present, one line each naming
-// the card and the failed line; none for a ready card. A card without a
-// size is sized by the factory before its first session. The checks are
-// the plan card's own; the acceptance comes from the body when the card
-// names none.
+// the card and the failed line; none for a ready card. The factory sizes
+// a direct card where the process has a plan track, so a size may be
+// left out. The checks are the plan card's own; the acceptance comes from
+// the body when the card names none.
 func ReadyFindings(key, body, size string, acceptance []string) []string {
 	if acceptance == nil {
 		acceptance = CardAcceptance(body)
