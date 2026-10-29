@@ -147,8 +147,9 @@ func TestFilePlanAmendmentRecordsAndRestarts(t *testing.T) {
 }
 
 // A card that never started takes the new revision's image with its
-// brief; a started one keeps the image it runs on, and a revision that
-// changes its image is refused.
+// brief; a started one keeps the image it runs on and its brief, though
+// the revision adds a card, and a revision that changes its image is
+// refused.
 func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := fileRig(t, testPlan())
@@ -167,6 +168,9 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 
 	amend := testPlan()
 	amend.Cards[1].Image = "browser"
+	// a rebrief would count the cards "of 5"
+	amend.Cards = slices.Insert(amend.Cards, 3, PlanCard{Key: "stats", Role: RoleFeature, Title: "Click stats", Brief: "GET /api/links/<slug>/stats answers the clicks.",
+		Directories: []string{"internal/stats"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestStats in internal/stats answers 200"}}, Size: "small"})
 	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
 		t.Fatalf("the amendment: %+v, %v", res, err)
 	}
@@ -176,6 +180,9 @@ func TestFilePlanAmendmentMovesAnUnstartedCardsImage(t *testing.T) {
 	}
 	if got := cards["redirects"].Image; got != "" {
 		t.Errorf("the started card's image %q, want its own", got)
+	}
+	if got := cards["redirects"].Objective; got != started.Objective {
+		t.Errorf("the started card was rebriefed:\n%s\nwant:\n%s", got, started.Objective)
 	}
 	amend.Cards[2].Image = "browser"
 	refusedStartedChange(t, r, store, amend)
@@ -187,7 +194,7 @@ func refusedStartedChange(t *testing.T, r *Runner, store *fakeStore, p Plan) {
 	t.Helper()
 	ctx := context.Background()
 	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
-	want := []string{"card redirects started against revision 1: keep its entry as it was, or leave its key out to stop it"}
+	want := []string{"card redirects started against revision 1: keep its entry as revision 1 has it, or leave its key out to stop it"}
 	if err != nil || !slices.Equal(res.Findings, want) {
 		t.Fatalf("a started card's entry changed: %+v, %v, want the findings %q", res, err, want)
 	}

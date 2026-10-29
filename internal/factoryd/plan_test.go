@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -360,7 +361,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 			"kind human names a claim only a person settles, with the evidence the approver will see.",
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item.",
-		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
+		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it, unless it merged), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
 			"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 			`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays.",
@@ -2234,6 +2235,61 @@ func TestFilePlanRefusesABrokenReplan(t *testing.T) {
 	}
 	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 1 {
 		t.Fatalf("a refused replan landed as revision %d", rev.Revision)
+	}
+}
+
+// revisionReads counts the plan revision reads by number (0: the newest).
+type revisionReads struct {
+	*fakeStore
+	n map[int]int
+}
+
+func (s *revisionReads) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	s.n[n]++
+	return s.fakeStore.PlanRevision(ctx, id, n)
+}
+
+// A filing reads the plan's timeline once, its newest revision once, and
+// each revision a started card ran against once: two cards started
+// against revision 1 and one against the newest, revision 2.
+func TestFilePlanReadsTheRecordOnce(t *testing.T) {
+	ctx := context.Background()
+	r, store, objs, _, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	start := func(key string, revision int) {
+		k := cardsByKey(t, store)[key]
+		k.Status, k.PlanRevision = "running", revision
+		store.tasks[k.ID] = k
+	}
+	start("links-api", 1)
+	start("redirects", 1)
+	amend := testPlan()
+	amend.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	start("foundation", 2)
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "revision": 2}); err != nil {
+		t.Fatal(err)
+	}
+
+	timeline := &timelineReads{fakeObjectStore: objs}
+	r.timeline.Objects = timeline
+	revisions := &revisionReads{fakeStore: store, n: map[int]int{}}
+	r.store = revisions
+	amend.Cards[2].Brief = "GET /<slug> answers 302, counts a click and logs it."
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend))
+	want := []string{"card redirects started against revision 1: keep its entry as revision 1 has it, or leave its key out to stop it"}
+	if err != nil || !slices.Equal(res.Findings, want) {
+		t.Fatalf("the filing: %+v, %v, want the findings %q", res, err, want)
+	}
+	if timeline.n != 1 || !reflect.DeepEqual(revisions.n, map[int]int{0: 1, 1: 1}) {
+		t.Fatalf("the filing read the timeline %d times and the revisions %v, want once and map[0:1 1:1]", timeline.n, revisions.n)
 	}
 }
 

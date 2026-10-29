@@ -1017,16 +1017,20 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"one card carries an old card's work",
 		// replanFindings, R4
 		"and add a card with",
+		// replanFindings, R4 for a card that never started
+		"and add its work under a new key",
 		// replanFindings, R5
 		"keep its key; a later card changes its work",
 		// replanFindings, R6
 		"the revision's new integration card checks",
 		// replanFindings, R7
-		"keep its entry as it was",
+		"keep its entry as revision",
 		// replanFindings, R8
 		"of the card that lands it",
 		// replanFindings, R9
 		"takes a new key",
+		// replanFindings, R10
+		"which this revision keeps",
 	}
 	for name, g := range guides {
 		for _, rule := range rules {

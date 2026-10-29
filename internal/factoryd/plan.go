@@ -944,7 +944,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
 		"kind human names a claim only a person settles, with the evidence the approver will see. " +
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
-		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
+		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it, unless it merged), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
 		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
@@ -2126,10 +2126,6 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	// the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
 	// against the plan's record of cards
-	prev, ok, err := r.store.PlanRevision(ctx, taskID, 0)
-	if err != nil {
-		return PlanResult{}, err
-	}
 	st, err := r.replanState(ctx, t)
 	if err != nil {
 		return PlanResult{}, err
@@ -2148,7 +2144,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if ok && n > prev.Revision {
+	if st.prev != nil && n > st.revision {
 		r.recordCriteria(ctx, taskID, n, *st.prev, p)
 		r.restartChildren(ctx, t, n, p)
 	}
