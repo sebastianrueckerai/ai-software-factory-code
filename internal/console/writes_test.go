@@ -58,7 +58,9 @@ func withPlan(r *rig) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-k2", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
 			Repository: "sf/code", IssueNumber: 32, Objective: "Add the second link.", Source: factoryd.SourcePlan, Parent: "t-pl"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-d", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
-			Repository: "sf/code", IssueNumber: 33, Objective: "Add the lone card."}})
+			Repository: "sf/code", IssueNumber: 33, Objective: "Add the lone card."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-d2", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec",
+			Repository: "sf/code", IssueNumber: 34, Objective: "Add the other lone card."}})
 }
 
 // proposeAndDo has the agent call tool with args, which proposes, and the
@@ -294,9 +296,11 @@ func TestChatSetDependency(t *testing.T) {
 		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
 		{toolInput{TaskID: "t-k1", DependsOn: "t-d"}, http.StatusConflict,
-			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only. Wait for #33 to finish and file #31 after it, or ask for #31 in the plan of #33."},
+			"#31 is in plan #30 and #33 is in no plan. A dependency joins cards of one plan only. Ask for the change in plan #30."},
 		{toolInput{TaskID: "t-d", DependsOn: "t-k1"}, http.StatusConflict,
-			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only. Wait for #31 to finish and file #33 after it, or ask for #33 in the plan of #31."},
+			"#33 is in no plan and #31 is in plan #30. A dependency joins cards of one plan only. Ask for #33 in plan #30."},
+		{toolInput{TaskID: "t-d2", DependsOn: "t-d"}, http.StatusConflict,
+			"#34 is in no plan and #33 is in no plan. A dependency joins cards of one plan only. Wait for #33 to finish and file #34 again after it, or file the work of both as one plan."},
 	} {
 		code, msg := refused(t, r, "set_dependency", tc.in)
 		equal(t, "set_dependency "+tc.in.TaskID+" on "+tc.in.DependsOn, []any{code, msg}, []any{tc.code, tc.want})

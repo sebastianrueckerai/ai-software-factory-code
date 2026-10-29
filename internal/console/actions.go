@@ -1463,10 +1463,8 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		return "", refuse(http.StatusConflict, "The card has no issue yet.")
 	}
 	if !remove {
-		if ga, gb := factoryd.GroupOf(t), factoryd.GroupOf(d); ga != gb {
-			return "", refuse(http.StatusConflict, fmt.Sprintf(
-				"#%d is in %s and #%d is in %s. A dependency joins cards of one plan only. Wait for #%d to finish and file #%d after it, or ask for #%d in the plan of #%d.",
-				t.IssueNumber, c.groupLabel(ctx, ga), d.IssueNumber, c.groupLabel(ctx, gb), d.IssueNumber, t.IssueNumber, t.IssueNumber, d.IssueNumber))
+		if factoryd.GroupOf(t) != factoryd.GroupOf(d) {
+			return "", refuse(http.StatusConflict, c.crossGroup(ctx, t, d))
 		}
 		name, err := c.processOfCard(ctx, t)
 		if err != nil {
@@ -1522,13 +1520,45 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 	return fmt.Sprintf("#%d depends on #%d now.", t.IssueNumber, d.IssueNumber), nil
 }
 
-// groupLabel names a group by its plan card's issue, or "no plan" when
-// the group is a card of its own.
-func (c *Console) groupLabel(ctx context.Context, groupID string) string {
-	if p, ok, err := c.cfg.Tasks.Task(ctx, groupID); err == nil && ok && p.Track == policy.TrackPlan && p.IssueNumber != 0 {
-		return fmt.Sprintf("plan #%d", p.IssueNumber)
+// groupPlan is the issue of the plan card that holds t's group, 0 when t
+// is a group of one.
+func (c *Console) groupPlan(ctx context.Context, t factoryd.Task) int64 {
+	g := factoryd.GroupOf(t)
+	if g == t.ID && t.Track != policy.TrackPlan {
+		return 0
 	}
-	return "no plan"
+	p, ok, err := c.cfg.Tasks.Task(ctx, g)
+	if err != nil {
+		log.Printf("console: the plan card %s: %v", g, err)
+	}
+	if err != nil || !ok {
+		return 0
+	}
+	return p.IssueNumber
+}
+
+// crossGroup is the refusal of a dependency across two groups. Its action
+// follows their shape: a card of a plan changes through the plan, and a
+// direct card either waits or joins a plan.
+func (c *Console) crossGroup(ctx context.Context, t, d factoryd.Task) string {
+	label := func(n int64) string {
+		if n == 0 {
+			return "no plan"
+		}
+		return fmt.Sprintf("plan #%d", n)
+	}
+	pt, pd := c.groupPlan(ctx, t), c.groupPlan(ctx, d)
+	var action string
+	switch {
+	case pt != 0:
+		action = fmt.Sprintf("Ask for the change in plan #%d.", pt)
+	case pd != 0:
+		action = fmt.Sprintf("Ask for #%d in plan #%d.", t.IssueNumber, pd)
+	default:
+		action = fmt.Sprintf("Wait for #%d to finish and file #%d again after it, or file the work of both as one plan.", d.IssueNumber, t.IssueNumber)
+	}
+	return fmt.Sprintf("#%d is in %s and #%d is in %s. A dependency joins cards of one plan only. %s",
+		t.IssueNumber, label(pt), d.IssueNumber, label(pd), action)
 }
 
 // reaches: card from depends on card to, through dependencies not done.
