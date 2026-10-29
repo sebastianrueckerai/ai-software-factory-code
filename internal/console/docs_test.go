@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"net/http/httputil"
 	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"testing"
@@ -103,6 +104,23 @@ func docsOver(t *testing.T, next string, files map[string]string) (*docsFake, *h
 				return
 			}
 			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": factoryd.ContentHash(text)[:12]})
+		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/git/trees/HEAD":
+			// master's files and their directories in one page; without
+			// recursive the top level only, as Forgejo answers
+			kinds := map[string]string{}
+			for p := range f.files {
+				kinds[p] = "blob"
+				for d := path.Dir(p); d != "."; d = path.Dir(d) {
+					kinds[d] = "tree"
+				}
+			}
+			tree := []map[string]string{}
+			for p, kind := range kinds {
+				if req.URL.Query().Get("recursive") == "true" || !strings.Contains(p, "/") {
+					tree = append(tree, map[string]string{"path": p, "type": kind})
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"sha": versionSHA(f.version), "tree": tree, "truncated": false, "page": 1, "total_count": len(tree)})
 		case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/commits" && req.URL.Query().Get("path") != "" &&
 			req.URL.Query().Get("sha") == "master":
 			if f.failReads {

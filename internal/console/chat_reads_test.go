@@ -90,16 +90,18 @@ func reads(t *testing.T, r *rig, g *chatGateway, nameArgs ...string) []string {
 	return out
 }
 
-// refused runs tool name on in as the rig's member, outside a chat turn,
-// and answers its refusal's status and sentence.
+// refused runs tool name on in as the rig's member, outside a chat turn
+// but with the project's chat block, and answers its refusal's status and
+// sentence.
 func refused(t *testing.T, r *rig, name string, in toolInput) (int, string) {
 	t.Helper()
 	_, s := r.loggedIn(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
 	tool, _ := r.c.chatTool(name)
+	v, _ := r.c.inForce(req.Context())
 	_, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, in)
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, cfg: v.Document.ChatOf(v.Projects["ai-software-factory-code"])}, in)
 	var no *refusal
 	if !errors.As(err, &no) {
 		t.Fatalf("%s %+v = %v, want a refusal", name, in, err)

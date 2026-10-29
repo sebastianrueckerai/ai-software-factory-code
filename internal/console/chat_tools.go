@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/doclinks"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/manual"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -350,6 +351,49 @@ func refuseCarry(title, body string, carry int64) error {
 	return refuse(http.StatusBadRequest, "The sandbox holds no git credential, so its agent cannot fetch a pull request's commits mid-session: name carry_pr as the pull request's number, which supplies its head in the clone.")
 }
 
+// refuseDocLinks refuses a new_card whose body links, relatively, to no
+// path or to several of the document repository's tree at HEAD: the
+// agent's pod resolves each link against its docs clone and writes the
+// path into the brief, so the link must name one.
+func (c *Console) refuseDocLinks(ctx context.Context, docRepo, body string) error {
+	links := doclinks.Links(body)
+	if docRepo == "" || c.cfg.DocsToken == "" || len(links) == 0 {
+		return nil
+	}
+	repo, err := factoryd.SplitRepo(docRepo)
+	if err != nil {
+		return refuse(http.StatusConflict, "the document repository is no owner/name")
+	}
+	tree, err := c.docTree(ctx, repo)
+	if err != nil {
+		return err
+	}
+	for _, l := range links {
+		switch m := doclinks.Resolve(l, tree); len(m) {
+		case 0:
+			return refuse(http.StatusBadRequest, fmt.Sprintf("the link %s resolves to no file in the document repository %s: name the path from the repository's root", l, repo))
+		case 1:
+		default:
+			return refuse(http.StatusBadRequest, fmt.Sprintf("the link %s matches %d files in the document repository %s (%s): name one path from the repository's root",
+				l, len(m), repo, strings.Join(m[:min(len(m), 3)], ", ")))
+		}
+	}
+	return nil
+}
+
+// cardBody is the issue body new_card files from in, before its
+// attachments: the body and the acceptance items.
+func cardBody(in toolInput) string {
+	body := in.Body
+	if len(in.Acceptance) > 0 {
+		body += "\n\nAcceptance:"
+		for _, a := range in.Acceptance {
+			body += "\n- " + a
+		}
+	}
+	return body
+}
+
 // describe is one line saying what a proposal of tool with in would do,
 // an approve_merge's with its warning; a card of another project refuses it, and so do an
 // approve_merge or a deny_merge without a pending merge request and a
@@ -370,7 +414,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if _, err := pinnedImage(t.p, in.Image); err != nil {
 			return "", err
 		}
-		if err := refuseCarry(in.Title, in.Body, in.CarryPR); err != nil {
+		body := cardBody(*in)
+		if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
+			return "", err
+		}
+		if err := t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, body); err != nil {
 			return "", err
 		}
 	}
@@ -1215,13 +1263,7 @@ var tools = []chatTool{
 			if err := refuseTrack(in); err != nil {
 				return "", nil, err
 			}
-			body := in.Body
-			if len(in.Acceptance) > 0 {
-				body += "\n\nAcceptance:"
-				for _, a := range in.Acceptance {
-					body += "\n- " + a
-				}
-			}
+			body := cardBody(in)
 			ups, err := t.assets(in.Attachments)
 			if err != nil {
 				return "", nil, err
@@ -1231,6 +1273,9 @@ var tools = []chatTool{
 				return "", nil, refuse(http.StatusBadRequest, flaggedCard(flags))
 			}
 			if err := refuseCarry(in.Title, body, in.CarryPR); err != nil {
+				return "", nil, err
+			}
+			if err := t.c.refuseDocLinks(t.r.Context(), t.cfg.DocRepo, body); err != nil {
 				return "", nil, err
 			}
 			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)
