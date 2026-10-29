@@ -3488,6 +3488,23 @@ func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
 	}
 }
 
+func TestRunSessionStatesTheCardsSizeInTheFacts(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, Track: "direct", Size: "medium"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	version := testPolicyVersion()
+	version.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 3, Model: "factory/small"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	if got := podEnv(kube.podAt(0))["FACTS"]; !strings.Contains(got, "This card is planned at most 600 changed lines (size medium).") {
+		t.Fatalf("FACTS = %q", got)
+	}
+}
+
 func TestRunSessionWithoutASessionsCapStatesThePolicyLimit(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 1.8, Track: "direct"}
 	kube := newFakeKube()
@@ -3498,7 +3515,7 @@ func TestRunSessionWithoutASessionsCapStatesThePolicyLimit(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := podEnv(kube.podAt(0))["FACTS"]
-	if !strings.Contains(got, "this is session 3 of the 3 the policy allows before a human is asked. It is the last one") {
+	if !strings.Contains(got, "this is session 3 of the 3 the policy allows before a human is asked. This card has no size, so it is planned at most 1000 changed lines, the policy's large_lines. It is the last one") {
 		t.Fatalf("FACTS = %q", got)
 	}
 }

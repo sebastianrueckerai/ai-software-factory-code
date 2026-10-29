@@ -1015,6 +1015,18 @@ func sizeLines(bound int) map[string]int {
 	return map[string]int{"small": int(math.Round(0.3 * float64(bound))), "medium": int(math.Round(0.6 * float64(bound))), "large": bound}
 }
 
+// cardLineBound is the changed lines a card of the given size plans at
+// most, and whether the size is one of small, medium, large. An unsized
+// card is bound by large.
+func cardLineBound(size string, largeLines int) (lines int, sized bool) {
+	bounds := sizeLines(largeLines)
+	lines, sized = bounds[size]
+	if !sized {
+		lines = bounds["large"]
+	}
+	return lines, sized
+}
+
 // PlanAnswerComment is the console's comment, as the member, on the plan's
 // issue when they answer question idx: intake knows it for no change
 // request by the answer stored before it.

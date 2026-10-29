@@ -2881,3 +2881,23 @@ func TestPlanCardsHoldTheirDependenciesBeforeTheirIssues(t *testing.T) {
 		t.Fatal("the plan filed no dependency")
 	}
 }
+
+func TestCardLineBound(t *testing.T) {
+	for _, c := range []struct {
+		size  string
+		large int
+		lines int
+		sized bool
+	}{
+		{"medium", 1000, 600, true},
+		{"small", 500, 150, true},
+		{"large", 0, 1000, true},
+		{"", 1000, 1000, false},
+		{"huge", 500, 500, false},
+		{"", 0, 1000, false},
+	} {
+		if lines, sized := cardLineBound(c.size, c.large); lines != c.lines || sized != c.sized {
+			t.Errorf("cardLineBound(%q, %d) = %d, %v, want %d, %v", c.size, c.large, lines, sized, c.lines, c.sized)
+		}
+	}
+}
