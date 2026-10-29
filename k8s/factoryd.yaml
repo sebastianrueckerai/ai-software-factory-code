@@ -637,7 +637,7 @@ spec:
         - name: SIGNOZ_WEBHOOK_PASSWORD
           valueFrom: {secretKeyRef: {name: signoz-webhook, key: password}}
         - name: CI_RUNNER_IMAGE
-          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:ab7f9fcba68be6ab5e9e504bacaa308e16f38b2bc7525d725975795537b172b5
+          value: git.aisoftwarefactory.world/sf/ci-runner@sha256:fb4bccc1d68c11585c896eace1fd3bb0502f734c6311d72bf82a1ba5f08aacb4
         - name: LITELLM_MASTER_KEY
           valueFrom: {secretKeyRef: {name: litellm-master-key, key: masterkey}}
         - name: S3_ENDPOINT
