@@ -489,6 +489,18 @@ port 8090 only.
   entries differ from the base's, closing an already open one. Object ids
   are compared, not diff path listings, so renames out of the directory
   and quoted non-ASCII names cannot slip past.
+- While a plan of the code repository is open on `main`, factoryd keeps
+  the Flux Kustomization `flux-system/factory` suspended, so no change
+  under `k8s/` goes live; it resumes it when the hold ends and while a
+  roll or a Deploy now goes out. Every roller poll sets the level, so
+  while factoryd runs it undoes a hand suspend or resume within 15
+  seconds: before suspending a Kustomization by hand (a shutdown's
+  `flux suspend kustomization --all`, an incident), scale factoryd to 0
+  with `kubectl -n factory scale deployment factoryd --replicas=0`. A
+  failed suspend is logged and noted on the hold's ask, and the hold goes
+  on; a failed resume stops the roll. If factoryd is down while a hold
+  stands, a manifest fix needs
+  `flux resume kustomization factory -n flux-system` by hand.
 
 
 ## Ship
@@ -565,7 +577,8 @@ pushed to both remotes:
 
 While a plan of the code repository is open on `main` (from its first
 merged card until its `plan_closed`; a reverted card does not count), the
-roller opens no roll. It logs
+roller opens no roll and keeps the Flux Kustomization `flux-system/factory`
+suspended, so no change under `k8s/` goes live either (Operating it). It logs
 `roller: plan #N is open on main: no roll until no plan is open on main`
 once per commit and posts `factory/roll` `success` with a description
 starting `held:` on `main`'s newest commit it has not judged, so a merged
@@ -582,8 +595,8 @@ any other time.
 `kubectl rollout restart deployment/factoryd` restarts it twice: Flux
 reverts the `restartedAt` annotation about five minutes later and rolls
 it again. Both restarts are safe (Temporal retries the interrupted
-activity), but plan for the second one, or suspend the `factory`
-Kustomization first.
+activity), but plan for the second one: factoryd undoes a hand suspend
+of the `factory` Kustomization within 15 seconds (Operating it).
 
 Order when a change spans them: the infra policy first (new keys before
 the factoryd that reads them), then the gateway, then factoryd once the

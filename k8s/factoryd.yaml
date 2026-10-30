@@ -212,6 +212,34 @@ subjects:
   name: factoryd
   namespace: factory
 ---
+# factoryd suspends the factory's own Kustomization while a plan of the
+# code repository is open on main, and resumes it at release and at
+# Deploy now (rolltask.go).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: factoryd-flux
+  namespace: flux-system
+rules:
+- apiGroups: [kustomize.toolkit.fluxcd.io]
+  resources: [kustomizations]
+  verbs: [get, patch]
+  resourceNames: [factory]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: factoryd-flux
+  namespace: flux-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: factoryd-flux
+subjects:
+- kind: ServiceAccount
+  name: factoryd
+  namespace: factory
+---
 # The registry pull secret factoryd copies into each task namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
@@ -344,9 +372,21 @@ spec:
       has(object.metadata.labels) && 'factory/project' in object.metadata.labels &&
       object.metadata.name == object.metadata.labels['factory/project'] + '-git' &&
       (!has(object.type) || object.type == 'Opaque')
+  # factoryd's suspend and resume of the factory's own Kustomization
+  # (rolltask.go): flux-system/factory, spec.suspend and nothing else
+  - name: factorySuspend
+    expression: >-
+      variables.kind == 'Kustomization' && request.namespace == 'flux-system' &&
+      request.operation == 'UPDATE' && object.metadata.name == 'factory' &&
+      object.spec.all(k, k == 'suspend' || (k in oldObject.spec && object.spec[k] == oldObject.spec[k])) &&
+      oldObject.spec.all(k, k == 'suspend' || k in object.spec) &&
+      has(object.metadata.labels) == has(oldObject.metadata.labels) &&
+      (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels) &&
+      has(object.metadata.annotations) == has(oldObject.metadata.annotations) &&
+      (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)
   validations:
-  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource || variables.projectGitSecret || variables.releasedCache
-    message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces, on its projects' Flux sources and on released cache volumes
+  - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource || variables.projectGitSecret || variables.releasedCache || variables.factorySuspend
+    message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces, on its projects' Flux sources, on released cache volumes and on the suspend of flux-system/factory
   - expression: >-
       variables.task ? variables.kind in ['Namespace', 'RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'CiliumNetworkPolicy', 'Secret', 'Pod', 'PersistentVolumeClaim'] :
       variables.inProject ? variables.kind in ['RoleBinding', 'ResourceQuota', 'LimitRange', 'ServiceAccount', 'Secret', 'Kustomization', 'CiliumNetworkPolicy'] :
@@ -389,7 +429,7 @@ spec:
   # a project's Kustomization applies its own repository into its own
   # namespace as that namespace's flux account (ruling 157)
   - expression: >-
-      variables.kind != 'Kustomization' || request.operation == 'DELETE' ||
+      variables.kind != 'Kustomization' || request.operation == 'DELETE' || variables.factorySuspend ||
       (has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'flux' &&
        has(object.spec.targetNamespace) && object.spec.targetNamespace == request.namespace &&
        object.spec.sourceRef.kind == 'GitRepository' && object.spec.sourceRef.namespace == 'flux-system' &&

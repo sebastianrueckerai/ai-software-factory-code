@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -361,5 +363,242 @@ func TestRollerHeldMainRedPausesAndReRunsAsEver(t *testing.T) {
 	}
 	if !slices.Equal(f.reported, []string{commitC2 + " success " + rollStatusContext}) || len(f.reruns) != 1 || len(f.issues) != 0 || len(store.rolls) != 0 {
 		t.Fatalf("reported %q, re-runs %q, issues %q, rolls %+v; want no second mark, no card, no roll", f.reported, f.reruns, f.issues, store.rolls)
+	}
+}
+
+// fakeFluxSwitch is the factory's Kustomization as its suspend leaves it.
+// Every call to SuspendKustomization counts in sets; a refused one changes
+// nothing, and a level that differs from suspended counts in changes.
+type fakeFluxSwitch struct {
+	suspended                       bool
+	applied                         string
+	sets, changes                   int
+	suspendErr, resumeErr, stateErr error
+	onChange                        func()
+}
+
+func (f *fakeFluxSwitch) KustomizationState(ctx context.Context, namespace, name string) (FluxState, error) {
+	if namespace != "flux-system" || name != "factory" {
+		return FluxState{}, fmt.Errorf("read of %s/%s, want flux-system/factory", namespace, name)
+	}
+	if f.stateErr != nil {
+		return FluxState{}, f.stateErr
+	}
+	return FluxState{Applied: f.applied}, nil
+}
+
+func (f *fakeFluxSwitch) SuspendKustomization(ctx context.Context, namespace, name string, suspend bool) error {
+	f.sets++
+	if namespace != "flux-system" || name != "factory" {
+		return fmt.Errorf("suspend of %s/%s, want flux-system/factory", namespace, name)
+	}
+	if suspend && f.suspendErr != nil {
+		return f.suspendErr
+	}
+	if !suspend && f.resumeErr != nil {
+		return f.resumeErr
+	}
+	if suspend != f.suspended {
+		f.suspended = suspend
+		f.changes++
+		if f.onChange != nil {
+			f.onChange()
+		}
+	}
+	return nil
+}
+
+const (
+	fluxSuspendedLog = "roller: plan #40 is open on main: the factory's Kustomization is suspended"
+	fluxResumedLog   = "roller: the factory's Kustomization is resumed"
+)
+
+// While a plan is open on main the factory's Kustomization is suspended,
+// its level sent every poll and said once. The plan's close resumes it
+// before the roll is filed in the same poll.
+func TestRollerSuspendsTheFactoryKustomizationWhileHeld(t *testing.T) {
+	logs := captureLog(t)
+	roller, f, store, _ := newHeldRoller(t)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	ctx := context.Background()
+	for poll := 1; poll <= 2; poll++ {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !flux.suspended || flux.changes != 1 || flux.sets != poll {
+			t.Fatalf("poll %d: suspended %v, changes %d, sets %d; want suspended once, set every poll", poll, flux.suspended, flux.changes, flux.sets)
+		}
+		if n := strings.Count(logs.String(), fluxSuspendedLog); n != 1 {
+			t.Fatalf("poll %d: the suspend logged %d times, want once: %q", poll, n, logs.String())
+		}
+	}
+
+	store.closed["t-plan"] = time.Now()
+	issues := -1
+	flux.onChange = func() { issues = len(f.issues) }
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended || issues != 0 {
+		t.Fatalf("suspended %v, issues at the resume %d; want resumed before the roll is filed", flux.suspended, issues)
+	}
+	rolledC1(t, f, store)
+	if n := strings.Count(logs.String(), fluxResumedLog); n != 1 {
+		t.Fatalf("the resume logged %d times, want once: %q", n, logs.String())
+	}
+}
+
+// A resume Flux refuses ends the poll before a roll is filed: the roll
+// needs Flux to apply it.
+func TestRollerFilesNoRollWhenTheResumeFails(t *testing.T) {
+	roller, f, store, _ := newHeldRoller(t)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	flux.suspended = true
+	flux.resumeErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+	store.closed["t-plan"] = time.Now()
+	if err := roller.poll(context.Background()); !errors.Is(err, flux.resumeErr) {
+		t.Fatalf("poll: %v, want the resume's error", err)
+	}
+	if len(f.issues) != 0 || len(store.rolls) != 0 || !flux.suspended {
+		t.Fatalf("issues %q, rolls %+v, suspended %v; want no roll and Flux still suspended", f.issues, store.rolls, flux.suspended)
+	}
+}
+
+// A suspend Flux refuses does not end the hold: rolls stay held, the error
+// is logged once, and once the keeper filed the hold's ask it is noted
+// there once. Each suspend that lands after a refused one is said.
+func TestRollerHoldsOnWhenTheSuspendFails(t *testing.T) {
+	logs := captureLog(t)
+	roller, f, store, _ := newHeldRoller(t)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	flux.suspendErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+	ctx := context.Background()
+	for poll := 1; poll <= 2; poll++ {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatalf("poll %d: %v, want the hold to go on", poll, err)
+		}
+		if len(f.issues) != 0 || !slices.Equal(f.reported, []string{commitC2 + " success " + rollStatusContext}) {
+			t.Fatalf("poll %d: issues %q, reported %q; want no roll and c2 marked held", poll, f.issues, f.reported)
+		}
+		if n := strings.Count(logs.String(), "roller: plan #40 is open on main: the factory's Kustomization could not be suspended ("); n != 1 {
+			t.Fatalf("poll %d: the failed suspend logged %d times, want once: %q", poll, n, logs.String())
+		}
+		if len(f.comments) != 0 {
+			t.Fatalf("poll %d: comments %q, want none before the ask", poll, f.comments)
+		}
+	}
+
+	store.tasks["t-ask"] = Task{ID: "t-ask", Kind: "human", Source: SourceProductionHeld, Status: "waiting-human", IssueNumber: 77, Repository: codeRepo}
+	for poll := 3; poll <= 4; poll++ {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatalf("poll %d: %v", poll, err)
+		}
+	}
+	want := "77 factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
+	if !slices.Equal(f.comments, []string{want}) {
+		t.Fatalf("comments %q, want %q once", f.comments, want)
+	}
+
+	// each suspend that lands after a refused one is said
+	for want := 1; want <= 2; want++ {
+		flux.suspendErr = nil
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if !flux.suspended || strings.Count(logs.String(), fluxSuspendedLog) != want {
+			t.Fatalf("suspended %v, log %q; want the suspend said %d times", flux.suspended, logs.String(), want)
+		}
+		flux.suspendErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// An open roll keeps Flux resumed though a plan is open: the roll goes
+// live through it. Once the roll's task ends, the next poll suspends.
+func TestRollerKeepsFluxResumedForAnOpenRoll(t *testing.T) {
+	roller, _, store, _ := newHeldRoller(t)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	store.tasks["t-roll1"] = Task{ID: "t-roll1", Source: SourceRoll, Status: "running", Repository: codeRepo}
+	store.rolls = []RollRequest{{SHA: "5050505050505050505050505050505050505050", RunID: 50, Repository: codeRepo, State: RollOpened, TaskID: "t-roll1"}}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended || flux.sets != 1 {
+		t.Fatalf("suspended %v, sets %d; want resumed while the roll is open", flux.suspended, flux.sets)
+	}
+	task := store.tasks["t-roll1"]
+	task.Status = "done"
+	store.tasks["t-roll1"] = task
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !flux.suspended {
+		t.Fatal("still resumed after the roll's task ended")
+	}
+}
+
+// Deploy now resumes Flux before its commit's roll is filed and keeps it
+// resumed while the roll is open and until Flux applied main's newest
+// commit; a state Flux will not tell counts as not yet. Then Deploy now is
+// spent and the hold suspends again.
+func TestRollerResumesFluxForDeployNow(t *testing.T) {
+	logs := captureLog(t)
+	roller, f, store, _ := newHeldRoller(t)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	flux.suspended = true
+	store.releases = map[string]Release{codeRepo: {Repository: codeRepo, HeldSince: time.Now(), DeployNow: commitC1}}
+	issues := -1
+	flux.onChange = func() { issues = len(f.issues) }
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended || issues != 0 {
+		t.Fatalf("suspended %v, issues at the resume %d; want resumed before the roll is filed", flux.suspended, issues)
+	}
+	rolledC1(t, f, store)
+
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended {
+		t.Fatal("poll 2: suspended while the roll is open")
+	}
+
+	task := store.tasks[store.rolls[0].TaskID]
+	task.Status = "done"
+	store.tasks[task.ID] = task
+	store.rolls[0].State = RollMerged
+	flux.applied = "main@sha1:" + commitC1
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended || store.releases[codeRepo].DeployNow != commitC1 {
+		t.Fatalf("poll 3: suspended %v, Deploy now %q; want resumed and c1's Deploy now kept: Flux has not applied main's newest commit", flux.suspended, store.releases[codeRepo].DeployNow)
+	}
+
+	flux.stateErr = errors.New("kube GET x: status 500")
+	for range 2 {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatalf("poll 4: %v, want the poll to go on", err)
+		}
+		if flux.suspended || store.releases[codeRepo].DeployNow != commitC1 {
+			t.Fatalf("poll 4: suspended %v, Deploy now %q; want resumed and c1's Deploy now kept", flux.suspended, store.releases[codeRepo].DeployNow)
+		}
+	}
+	if n := strings.Count(logs.String(), "kube GET x: status 500"); n != 1 {
+		t.Fatalf("the failed read logged %d times over two polls, want once: %q", n, logs.String())
+	}
+
+	flux.stateErr = nil
+	flux.applied = "main@sha1:" + commitC2
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !flux.suspended || store.releases[codeRepo].DeployNow != "" {
+		t.Fatalf("poll 5: suspended %v, Deploy now %q; want suspended and Deploy now spent", flux.suspended, store.releases[codeRepo].DeployNow)
 	}
 }

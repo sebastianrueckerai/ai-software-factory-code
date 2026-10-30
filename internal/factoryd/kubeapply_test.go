@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -151,6 +152,38 @@ func TestKubeKustomizationState(t *testing.T) {
 	}
 	if _, err := k.KustomizationState(context.Background(), "gone", "app"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a missing Kustomization: %v, want ErrNotFound", err)
+	}
+}
+
+// SuspendKustomization is one server-side apply of spec.suspend, with no
+// read first; a refused patch is ErrForbidden.
+func TestKubeSuspendKustomization(t *testing.T) {
+	var seen []string
+	forbid := false
+	k := stubKube(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		seen = append(seen, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery+" "+r.Header.Get("Content-Type")+" "+string(body))
+		if forbid {
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, `{"kind":"Status","reason":"Forbidden"}`)
+			return
+		}
+		io.WriteString(w, `{"metadata":{"resourceVersion":"8"}}`)
+	})
+	const patch = "PATCH /apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-system/kustomizations/factory?fieldManager=factoryd&force=true application/apply-patch+yaml "
+	for _, suspend := range []bool{true, false} {
+		seen = nil
+		if err := k.SuspendKustomization(context.Background(), "flux-system", "factory", suspend); err != nil {
+			t.Fatalf("suspend %v: %v", suspend, err)
+		}
+		want := patch + `{"apiVersion":"kustomize.toolkit.fluxcd.io/v1","kind":"Kustomization","metadata":{"name":"factory","namespace":"flux-system"},"spec":{"suspend":` + strconv.FormatBool(suspend) + `}}`
+		if !reflect.DeepEqual(seen, []string{want}) {
+			t.Fatalf("suspend %v sent %q, want one request %q", suspend, seen, want)
+		}
+	}
+	forbid = true
+	if err := k.SuspendKustomization(context.Background(), "flux-system", "factory", true); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("a refused patch: %v, want ErrForbidden", err)
 	}
 }
 

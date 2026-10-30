@@ -349,9 +349,17 @@ type RollerStore interface {
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error
-	// the hold while a plan is open on main (markHeld)
+	// the hold while a plan is open on main (markHeld, setFlux)
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
 	Release(ctx context.Context, repository string) (Release, error)
+	ClearDeployNow(ctx context.Context, repository, commit string) error
+	ChainCard(ctx context.Context, repository, source string) (Task, bool, error)
+}
+
+// FluxSwitch reads and sets the suspend of a Flux Kustomization.
+type FluxSwitch interface {
+	KustomizationState(ctx context.Context, namespace, name string) (FluxState, error)
+	SuspendKustomization(ctx context.Context, namespace, name string, suspend bool) error
 }
 
 // Roller opens the roll of the code repository (ruling 178): for the push
@@ -366,7 +374,8 @@ type RollerStore interface {
 // only while main's head has a green test job (headTested). A changed image
 // without a signature by SigningKey refuses the commit: a human card says
 // why, and nothing of it rolls. It judges each commit once. While a plan's
-// group is open on main, only Deploy now's commit rolls (markHeld).
+// group is open on main, only Deploy now's commit rolls (markHeld), and the
+// factory's Kustomization stays suspended but while a roll goes out (setFlux).
 type Roller struct {
 	Forgejo  *Forgejo
 	Registry *Registry
@@ -385,6 +394,8 @@ type Roller struct {
 	Poll      time.Duration
 	// Scrub cleans the job log lines a fix-forward card carries of secrets
 	Scrub *redact.Scrubber
+	// Flux suspends the factory's own Kustomization while held (setFlux)
+	Flux FluxSwitch
 
 	held string // main's head the roll last waited on, said once
 	// heldPosted is main's newest commit markHeld last said held; heldErr
@@ -393,6 +404,12 @@ type Roller struct {
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
+	// fluxLevel is the suspend setFlux last set, "suspended" or "resumed",
+	// "" since the start or a refused set; fluxErr is the text of its last refused suspend,
+	// fluxReadErr of its last failed read of Flux's state, each logged
+	// once; fluxNoted is the hold's ask a refused suspend was noted on
+	fluxLevel, fluxErr, fluxReadErr string
+	fluxNoted                       int64
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -461,6 +478,9 @@ func (r *Roller) poll(ctx context.Context) error {
 		if err := r.markHeld(ctx, runs, groups, deploy); err != nil {
 			return err
 		}
+	}
+	if deploy, err = r.setFlux(ctx, runs, groups, deploy); err != nil {
+		return err
 	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
 	if err != nil {
@@ -549,6 +569,97 @@ func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group,
 	r.heldErr = ""
 	log.Printf("roller: %s: no roll until no plan is open on main", reason)
 	r.heldPosted = head.CommitSHA
+	return nil
+}
+
+// setFlux keeps the factory's Kustomization, which applies the code
+// repository's k8s/ at every merge to main, suspended while groups hold
+// production, and resumed otherwise, so no manifest goes live during a
+// hold. An open roll and deploy, Deploy now's commit, go out through
+// Flux: deploy has gone out once it was judged, no roll is open and Flux
+// applied main's newest push commit; then its Deploy now is spent and
+// setFlux answers "". A refused resume ends the poll: no roll goes out
+// without Flux. A refused suspend does not, since rolls stay held: it is
+// logged and noted on the hold's ask.
+func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, deploy string) (string, error) {
+	_, rollOpen, err := r.Store.OpenRollTask(ctx, r.Repo.String())
+	if err != nil {
+		return deploy, err
+	}
+	goingOut := false
+	if deploy != "" {
+		seen, err := r.Store.RollRequestSeen(ctx, deploy)
+		if err != nil {
+			return deploy, err
+		}
+		goingOut = !seen || rollOpen || r.fluxBehind(ctx, runs)
+		if !goingOut {
+			if err := r.Store.ClearDeployNow(ctx, r.Repo.String(), deploy); err != nil {
+				return deploy, err
+			}
+			deploy = ""
+		}
+	}
+	suspend := len(groups) > 0 && !rollOpen && !goingOut
+	if err := r.Flux.SuspendKustomization(ctx, fluxNamespace, factoryKustomization, suspend); err != nil {
+		r.fluxLevel = "" // unknown: the next success says the level
+		if !suspend {
+			return deploy, fmt.Errorf("the factory's Kustomization could not be resumed: %w: no roll until it is", err)
+		}
+		if err.Error() != r.fluxErr {
+			log.Printf("roller: %s: the factory's Kustomization could not be suspended (%v): a change under k8s/ goes live at its merge", HoldReason(groups), err)
+			r.fluxErr = err.Error()
+		}
+		return deploy, r.noteFluxRefused(ctx)
+	}
+	r.fluxErr = ""
+	level := "resumed"
+	if suspend {
+		level = "suspended"
+	}
+	if level != r.fluxLevel {
+		if suspend {
+			log.Printf("roller: %s: the factory's Kustomization is suspended", HoldReason(groups))
+		} else {
+			log.Printf("roller: the factory's Kustomization is resumed")
+		}
+		r.fluxLevel = level
+	}
+	return deploy, nil
+}
+
+// fluxBehind answers whether the factory's Kustomization has not applied
+// main's newest push commit yet. A state Flux does not tell counts as
+// behind, logged once.
+func (r *Roller) fluxBehind(ctx context.Context, runs []ActionRun) bool {
+	state, err := r.Flux.KustomizationState(ctx, fluxNamespace, factoryKustomization)
+	if err != nil {
+		if err.Error() != r.fluxReadErr {
+			log.Printf("roller: the factory's Kustomization could not be read (%v): it stays resumed and Deploy now stands", err)
+			r.fluxReadErr = err.Error()
+		}
+		return true
+	}
+	r.fluxReadErr = ""
+	head := newestMain(runs)
+	return head == nil || !strings.HasSuffix(state.Applied, head.CommitSHA)
+}
+
+// fluxRefusedNote is what a refused suspend notes on the hold's ask.
+const fluxRefusedNote = "factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
+
+// noteFluxRefused notes a refused suspend once on the hold's ask, the code
+// repository's newest card of SourceProductionHeld while it waits. Before
+// the keeper files the ask, the log alone says it.
+func (r *Roller) noteFluxRefused(ctx context.Context) error {
+	ask, ok, err := r.Store.ChainCard(ctx, r.Repo.String(), SourceProductionHeld)
+	if err != nil || !ok || Final(ask.Status) || ask.IssueNumber == 0 || ask.IssueNumber == r.fluxNoted {
+		return err
+	}
+	if err := r.Forgejo.CommentOnce(ctx, r.Repo.Owner, r.Repo.Name, ask.IssueNumber, fluxRefusedNote); err != nil {
+		return fmt.Errorf("note the refused suspend on the hold's ask #%d: %w", ask.IssueNumber, err)
+	}
+	r.fluxNoted = ask.IssueNumber
 	return nil
 }
 

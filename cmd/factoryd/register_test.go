@@ -337,3 +337,86 @@ func TestDeploymentHealthReadsThroughARoleOfReadsOnly(t *testing.T) {
 		}
 	}
 }
+
+// factoryd suspends and resumes the factory's own Kustomization while a
+// plan is open on main: a Role in flux-system grants get and patch on
+// that one Kustomization, bound to factoryd alone, and the admission
+// policy admits the change by its own case.
+func TestFactorydMaySuspendItsKustomization(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type rule struct {
+		APIGroups     []string `yaml:"apiGroups"`
+		Resources     []string `yaml:"resources"`
+		Verbs         []string `yaml:"verbs"`
+		ResourceNames []string `yaml:"resourceNames"`
+	}
+	type ref struct{ APIGroup, Kind, Name string }
+	type subject struct{ Kind, Name, Namespace string }
+	var role []rule
+	var roleRef *ref
+	var subjects []subject
+	var variable bool
+	var validations []string
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Kind     string                           `yaml:"kind"`
+			Metadata struct{ Name, Namespace string } `yaml:"metadata"`
+			Rules    []rule                           `yaml:"rules"`
+			RoleRef  struct {
+				APIGroup string `yaml:"apiGroup"`
+				Kind     string `yaml:"kind"`
+				Name     string `yaml:"name"`
+			} `yaml:"roleRef"`
+			Subjects []subject `yaml:"subjects"`
+			Spec     struct {
+				Variables   []struct{ Name, Expression string } `yaml:"variables"`
+				Validations []struct{ Expression string }       `yaml:"validations"`
+			} `yaml:"spec"`
+		}
+		if err := dec.Decode(&doc); err != nil {
+			break
+		}
+		switch {
+		case doc.Kind == "Role" && doc.Metadata.Name == "factoryd-flux" && doc.Metadata.Namespace == "flux-system":
+			role = doc.Rules
+		case doc.Kind == "RoleBinding" && doc.Metadata.Name == "factoryd-flux" && doc.Metadata.Namespace == "flux-system":
+			roleRef = &ref{doc.RoleRef.APIGroup, doc.RoleRef.Kind, doc.RoleRef.Name}
+			subjects = doc.Subjects
+		case doc.Kind == "ValidatingAdmissionPolicy" && doc.Metadata.Name == "factoryd-task-namespaces":
+			for _, v := range doc.Spec.Variables {
+				variable = variable || v.Name == "factorySuspend"
+			}
+			for _, v := range doc.Spec.Validations {
+				validations = append(validations, v.Expression)
+			}
+		}
+	}
+	want := []rule{{APIGroups: []string{"kustomize.toolkit.fluxcd.io"}, Resources: []string{"kustomizations"}, Verbs: []string{"get", "patch"}, ResourceNames: []string{"factory"}}}
+	if !slices.EqualFunc(role, want, func(a, b rule) bool {
+		return slices.Equal(a.APIGroups, b.APIGroups) && slices.Equal(a.Resources, b.Resources) && slices.Equal(a.Verbs, b.Verbs) && slices.Equal(a.ResourceNames, b.ResourceNames)
+	}) {
+		t.Errorf("Role flux-system/factoryd-flux rules %+v, want exactly %+v", role, want)
+	}
+	if roleRef == nil || *roleRef != (ref{"rbac.authorization.k8s.io", "Role", "factoryd-flux"}) {
+		t.Errorf("RoleBinding flux-system/factoryd-flux roleRef %+v, want Role factoryd-flux", roleRef)
+	}
+	if !slices.Equal(subjects, []subject{{"ServiceAccount", "factoryd", "factory"}}) {
+		t.Errorf("RoleBinding flux-system/factoryd-flux subjects %+v, want ServiceAccount factory/factoryd alone", subjects)
+	}
+	if !variable {
+		t.Error("policy factoryd-task-namespaces has no variable factorySuspend")
+	}
+	var first, kustomization bool
+	for i, v := range validations {
+		named := strings.Contains(v, "variables.factorySuspend")
+		first = first || i == 0 && named
+		kustomization = kustomization || strings.HasPrefix(v, "variables.kind != 'Kustomization'") && named
+	}
+	if !first || !kustomization {
+		t.Errorf("variables.factorySuspend in the first validation %v, in the Kustomization rule %v; want both", first, kustomization)
+	}
+}

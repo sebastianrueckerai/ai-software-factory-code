@@ -800,6 +800,24 @@ func (k *InClusterKube) KustomizationState(ctx context.Context, namespace, name 
 	return s, nil
 }
 
+// fluxNamespace and factoryKustomization name the Flux Kustomization that
+// applies the code repository's k8s/, the one the roller suspends while a
+// plan is open on main.
+const (
+	fluxNamespace        = "flux-system"
+	factoryKustomization = "factory"
+)
+
+// SuspendKustomization sets spec.suspend of the Flux Kustomization name in
+// namespace by one server-side apply, with no read first: an apply of the
+// value it has changes nothing.
+func (k *InClusterKube) SuspendKustomization(ctx context.Context, namespace, name string, suspend bool) error {
+	_, err := k.call(ctx, http.MethodPatch, "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/"+namespace+"/kustomizations/"+name+"?fieldManager=factoryd&force=true",
+		map[string]any{"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization",
+			"metadata": map[string]any{"name": name, "namespace": namespace}, "spec": map[string]any{"suspend": suspend}}, nil)
+	return err
+}
+
 // FluxRollouts are the newest rollouts of every HelmRelease and every
 // Kustomization but the factory's own, the one applying the roll targets'
 // Deployments in namespace, whose rolls those Deployments' own window

@@ -1,9 +1,11 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -205,5 +207,58 @@ func TestRegistrationClusterOnAnAPIServer(t *testing.T) {
 		if got := can(c.ns, c.group, c.resource, c.verb); got != c.want {
 			t.Errorf("flux %s %s.%s in %q = %v, want %v", c.verb, c.resource, c.group, c.ns, got, c.want)
 		}
+	}
+
+	// the factory's own Kustomization: factoryd flips its spec.suspend and
+	// changes nothing else of it, and no other Kustomization of flux-system
+	asAdmin := func(method, path string, body, into any) int {
+		t.Helper()
+		var r io.Reader
+		if body != nil {
+			b, _ := json.Marshal(body)
+			r = bytes.NewReader(b)
+		}
+		req, _ := http.NewRequestWithContext(ctx, method, kube.Host+path, r)
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+		req.Header.Set("Content-Type", "application/json")
+		res, err := kube.HTTP.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		if into != nil {
+			json.NewDecoder(res.Body).Decode(into)
+		}
+		return res.StatusCode
+	}
+	fks := "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/flux-system/kustomizations"
+	fk := func(name string, labels map[string]string, spec map[string]any) map[string]any {
+		meta := map[string]any{"name": name, "namespace": "flux-system"}
+		if labels != nil {
+			meta["labels"] = labels
+		}
+		return map[string]any{"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization", "metadata": meta, "spec": spec}
+	}
+	for name, path := range map[string]string{"factory": "./k8s", "platform": "./platform"} {
+		spec := map[string]any{"interval": "10m", "path": path, "prune": true,
+			"sourceRef": map[string]any{"kind": "GitRepository", "name": "factory-code"}, "serviceAccountName": "kustomize-controller"}
+		if code := asAdmin(http.MethodPost, fks, fk(name, nil, spec), nil); code != http.StatusCreated && code != http.StatusConflict {
+			t.Fatalf("admin creates flux-system/%s: %d", name, code)
+		}
+	}
+	for _, suspend := range []bool{true, false} {
+		if err := kube.SuspendKustomization(ctx, "flux-system", "factory", suspend); err != nil {
+			t.Fatalf("factoryd sets flux-system/factory's suspend %v: %v", suspend, err)
+		}
+		var got struct{ Spec struct{ Suspend *bool } }
+		if code := asAdmin(http.MethodGet, fks+"/factory", nil, &got); code != http.StatusOK || got.Spec.Suspend == nil || *got.Spec.Suspend != suspend {
+			t.Fatalf("admin reads flux-system/factory: %d, suspend %v; want %v", code, got.Spec.Suspend, suspend)
+		}
+	}
+	refused("factory's path", http.MethodPatch, apply(fks+"/factory"), fk("factory", nil, map[string]any{"path": "./x"}))
+	refused("a label on factory", http.MethodPatch, apply(fks+"/factory"), fk("factory", map[string]string{"x": "y"}, map[string]any{}))
+	if err := kube.SuspendKustomization(ctx, "flux-system", "platform", true); err == nil ||
+		!(errors.Is(err, ErrForbidden) || strings.Contains(err.Error(), "ValidatingAdmissionPolicy 'factoryd-task-namespaces'")) {
+		t.Errorf("factoryd suspends flux-system/platform: %v, want refused", err)
 	}
 }
