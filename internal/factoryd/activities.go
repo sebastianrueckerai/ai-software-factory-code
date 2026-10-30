@@ -699,8 +699,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 		return SessionResult{}, named("fork", err)
 	}
-	// a plan's work taken off main is on its salvage branch, which a card
-	// that lands it again applies from
+	// a plan's work its first revert took off main is on its salvage
+	// branch, which a card that lands it again applies from
 	if t.Source == SourcePlan && t.Parent != "" {
 		pair, err := r.salvagePair(ctx, repo, t.Parent)
 		if err != nil {

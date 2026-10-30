@@ -344,7 +344,7 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 		t.Errorf("groupRevertBranch calls = %q, want %q", g.calls, want)
 	}
 	body := "Takes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\nWhy: asked by sebastian: the api is wrong\n\n" +
-		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it was before it."
+		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
 	title := "Revert plan #10: 2 merges, newest first"
 	if want := []string{"factory-agent:factory/" + id + " " + title + "\n\n" + body}; !slices.Equal(g.fj.pulls, want) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
@@ -401,7 +401,7 @@ func TestRevertGroupOfOneCard(t *testing.T) {
 	}
 	id := g.store.pauses["sf/repo"].RevertTask
 	want := "factory-agent:factory/" + id + " Revert plan #10: 1 merge, newest first\n\nTakes plan #10's merged cards off main, newest first: #14 m1.\n\n" +
-		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it was before it."
+		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
 	if !slices.Equal(g.fj.pulls, []string{want}) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}
@@ -818,7 +818,7 @@ func TestRevertPausePassFilesALostRevertCard(t *testing.T) {
 	}
 	want := "factory-agent:factory/t-lost Revert plan #10: 2 merges, newest first\n\nTakes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\n" +
 		"Why: factoryd files the revert's card again: its first filing did not finish\n\n" +
-		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it was before it."
+		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it stood before the plan's first revert."
 	if !slices.Equal(g.fj.pulls, []string{want}) {
 		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
 	}

@@ -2845,7 +2845,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // base, and its branch is the old card's before its issue exists; an old
 // card whose branch is gone leaves it to start from main. One whose old
 // card was taken off main files at main's head and lands that work again
-// from the salvage branch.
+// from its merge in main's history (againLine).
 func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)

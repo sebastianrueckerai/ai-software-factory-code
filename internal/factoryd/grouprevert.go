@@ -44,7 +44,8 @@ const revertRefileAfter = 10 * time.Minute
 const revertHookOwns = time.Minute
 
 // salvageBranch is the fork's branch that keeps main as it stood before
-// plan's group revert, the plan's work on it.
+// plan's first group revert, the plan's work then on it. A later revert
+// keeps it: the work it takes off stays in main's history.
 func salvageBranch(plan string) string { return "salvage/" + plan }
 
 // salvagePair is the clone's branch pair of plan's salvage branch on
@@ -323,7 +324,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 			named[i] = fmt.Sprintf("#%d %s", m.IssueNumber, m.MergeCommit)
 		}
 		body := fmt.Sprintf("Takes plan #%d's merged cards off main, newest first: %s.\n\nWhy: %s\n\n"+
-			"The merge queue of %s waits for this revert. Branch %s of the bot's fork keeps main as it was before it.",
+			"The merge queue of %s waits for this revert. Branch %s of the bot's fork keeps main as it stood before the plan's first revert.",
 			p.IssueNumber, strings.Join(named, ", "), why, p.Repository, salvage)
 		var pr *PullRequestRef
 		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch); err != nil {
