@@ -456,7 +456,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	diffFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
 	switch {
 	case errors.Is(err, ErrDiffTooLong):
-		g.Unread = fmt.Sprintf("the diff of %d changed lines is longer than %d MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or split it.", lines, maxDiffRead>>20)
+		g.Unread = fmt.Sprintf("the diff of %d changed lines is longer than %d MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card.", lines, maxDiffRead>>20)
 		if g.Outcome == policy.OutcomeAuto {
 			g.Outcome = policy.OutcomeRequiresApproval
 		}

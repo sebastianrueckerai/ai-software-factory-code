@@ -304,7 +304,7 @@ func TestGatePolicyOfADiffPastTheBoundRequiresApproval(t *testing.T) {
 	r.cfg.Policy = func() policy.Version { return v }
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
-	want := "the diff of 210000 changed lines is longer than 8 MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or split it."
+	want := "the diff of 210000 changed lines is longer than 8 MiB, the most factoryd reads: no anti-cheat scan, model review or audit reads it. Review the change yourself, or replan the card."
 	if g.Class != policy.ClassNormal || g.Outcome != policy.OutcomeRequiresApproval || g.Unread != want || g.Cheats != nil {
 		t.Fatalf("gate = %+v, want class normal requiring approval for the unread diff", g)
 	}
@@ -707,7 +707,7 @@ func TestModelReviewOfADiffPastTheBoundIsANote(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	want := "model review not run: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"
+	want := "model review not run: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"
 	if rv.Verdict != "" || rv.Note != want || len(ll.chats) != 0 {
 		t.Fatalf("review = %+v after %d calls, want the note %q and no call", rv, len(ll.chats), want)
 	}

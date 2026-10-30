@@ -1139,7 +1139,7 @@ func TestPullRequestFileDiffsPastEightMiBIsDiffTooLong(t *testing.T) {
 			}
 		})
 	}
-	if want := "the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"; ErrDiffTooLong.Error() != want {
+	if want := "the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"; ErrDiffTooLong.Error() != want {
 		t.Fatalf("ErrDiffTooLong = %q, want %q", ErrDiffTooLong, want)
 	}
 }

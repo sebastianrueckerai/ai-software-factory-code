@@ -498,9 +498,9 @@ func TestIntegrationReviewOfAFeaturePastTheBoundIsANote(t *testing.T) {
 		a, b, want string
 	}{
 		"one card": {strings.Repeat("d", 8<<20+1), featureDiffs[12],
-			"model review not run: card A: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"},
+			"model review not run: card A: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"},
 		"together": {diffFile("a.go", 5<<20), diffFile("b.go", 5<<20),
-			"model review not run: the feature's cards together: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"},
+			"model review not run: the feature's cards together: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store := featureRunner(t, "I", map[string]int64{"A": 11, "B": 12}, map[int64]string{9: featureDiffs[9], 11: tc.a, 12: tc.b})

@@ -209,7 +209,7 @@ func TestGateAuditOfADiffPastTheBoundIsOneFinding(t *testing.T) {
 	r, _ := newAuditRunner(t, &gateForgejo{diff: strings.Repeat("d", 8<<20+1)}, ll, true)
 	val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	res := getInto[AuditResult](t, val, err)
-	want := []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or split it"}}
+	want := []AuditFinding{{Item: auditNoVerdict, Why: "the audit did not run: the diff is longer than 8 MiB, the most factoryd reads: review the change yourself, or replan the card"}}
 	if res.Verdict != AuditFindings || !slices.Equal(res.Findings, want) || len(ll.chats) != 0 {
 		t.Fatalf("audit = %+v after %d calls, want %+v and no call", res, len(ll.chats), want)
 	}

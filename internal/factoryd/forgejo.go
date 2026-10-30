@@ -1663,7 +1663,7 @@ const diffReadTimeout = time.Minute
 
 // ErrDiffTooLong is a diff past maxDiffRead, which no gate reads: each one
 // turns it into its outcome for a person, never an error a retry repeats.
-var ErrDiffTooLong = fmt.Errorf("the diff is longer than %d MiB, the most factoryd reads: review the change yourself, or split it", maxDiffRead>>20)
+var ErrDiffTooLong = fmt.Errorf("the diff is longer than %d MiB, the most factoryd reads: review the change yourself, or replan the card", maxDiffRead>>20)
 
 // PullRequestFileDiffs is pull request number's unified diff, whole, split
 // per file; ErrDiffTooLong past maxDiffRead.
