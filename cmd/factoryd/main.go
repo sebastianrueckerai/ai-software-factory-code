@@ -852,7 +852,7 @@ func createTaskHandler(store taskCreator, forgejo *factoryd.Forgejo, workflows f
 			http.Error(w, "repro_command must not contain ```", http.StatusBadRequest)
 			return
 		}
-		in.BudgetEUR = budget().ClampBudget(in.BudgetEUR)
+		in.BudgetEUR = policy.CardBudget(budget(), p.Budget, "", false, in.BudgetEUR)
 		sha, err := forgejo.DefaultBranchHeadSHA(r.Context(), repoParts.Owner, repoParts.Name, "")
 		if err != nil {
 			http.Error(w, "base sha: "+err.Error(), http.StatusBadGateway)

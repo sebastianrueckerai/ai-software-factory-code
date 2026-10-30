@@ -401,6 +401,28 @@ func TestCreateTaskHandlerBudgetFromPolicy(t *testing.T) {
 	}
 }
 
+// A project's card maximum bounds the API task's budget, asked or default.
+func TestCreateTaskHandlerBudgetUnderAProjectMaximum(t *testing.T) {
+	project := factoryd.Project{Name: "p", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder", File: true, Process: "maintenance",
+		Tracks: policy.Tracks{Direct: policy.Track{Class: policy.ClassCoder}}, Budget: &policy.ProjectBudget{MonthEUR: 50, TaskMaxEUR: 1}}
+	for body, want := range map[string]float64{
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code"}`:                   1,
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":0.01}`: 0.01,
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":9}`:    1,
+	} {
+		var events []string
+		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+		store := &fakeTaskCreator{events: &events, projects: map[string]factoryd.Project{project.Repository: project}}
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+		}
+		if got := store.created[0].BudgetEUR; got != want {
+			t.Fatalf("%s: task budget %v, want %v", body, got, want)
+		}
+	}
+}
+
 // The API's repro_command lands on the task and, as a repro block, in the
 // issue body, where the webhook path would read it too.
 func TestCreateTaskHandlerReproCommand(t *testing.T) {
