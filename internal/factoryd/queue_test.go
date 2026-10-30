@@ -481,6 +481,16 @@ func TestQueueAdmitsOnePlanAtATime(t *testing.T) {
 		r, _ := fixture(t, "")
 		enter(t, r, "h1", 0)
 	})
+
+	t.Run("woken when the plan closes", func(t *testing.T) {
+		r, store := fixture(t, policy.GroupsOneAtATime, Task{ID: "o1", Status: "in-review", Repository: "sf/other", Track: policy.TrackDirect,
+			Process: "maintenance", Gate: GateMergeQueue})
+		enter(t, r, "h1", 1)
+		r.closePlan(ctx, store.tasks["p-g"], Repo{}, 0, "")
+		if wf := r.cfg.Workflows.(*fakeWorkflows); !slices.Equal(wf.signals, []string{"h1 queue_turn  #0: "}) {
+			t.Fatalf("signals = %q, want queue_turn for h1 alone", wf.signals)
+		}
+	})
 }
 
 // timelineLines are the timeline records of task id.

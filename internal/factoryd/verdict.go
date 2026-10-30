@@ -840,14 +840,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 }
 
 // closePlan says why plan t closed on its issue, unless comment is
-// empty, and records plan_closed with the plan's count of criteria. A
-// close whose row failed runs again on the next pass; the issue still
-// hears of it once.
+// empty, records plan_closed with the plan's count of criteria, and wakes
+// the project's cards held out of the merge queue for it. A close whose
+// row failed runs again on the next pass; the issue still hears of it
+// once.
 func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int, comment string) {
 	if comment != "" {
 		r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
 	}
 	r.timeline.recordEvent(ctx, t.ID, EventPlanClosed, map[string]any{"criteria": criteria})
+	r.wakeHeld(ctx, t.Repository)
 	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
 }
 

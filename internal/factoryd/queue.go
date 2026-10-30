@@ -314,6 +314,28 @@ func signalQueueHeads(ctx context.Context, store interface {
 	}
 }
 
+// wakeHeld signals queue_turn to every card of repository in review in
+// gate merge-queue: a plan of it closed or its revert ended, so a card
+// held out of the queue for it asks again. A card behind others asks for
+// its place and waits on. The heal pass does not signal held cards: they
+// are no queue's head.
+func (r *Runner) wakeHeld(ctx context.Context, repository string) {
+	cards, err := r.store.ListTasksByStatus(ctx, "in-review")
+	if err != nil {
+		log.Printf("wake the held cards of %s: %v", repository, err)
+		return
+	}
+	for _, c := range cards {
+		if c.Repository != repository || c.Gate != GateMergeQueue {
+			continue
+		}
+		if err := r.cfg.Workflows.Signal(ctx, c.ID, SignalQueueTurn, TaskSignal{}); err != nil {
+			// the card asks again within queueRecheck
+			log.Printf("wake held card %s: %v", c.ID, err)
+		}
+	}
+}
+
 // queued: the task's process merges one pull request of the project at a
 // time (versionMergeQueue); a roll takes no turn (versionRollNoQueue).
 func (t *taskRun) queued() bool {

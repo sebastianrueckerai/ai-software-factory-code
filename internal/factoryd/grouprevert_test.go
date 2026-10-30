@@ -665,6 +665,23 @@ func TestRevertMergedMarksTheCardsAndGoesOn(t *testing.T) {
 	}
 }
 
+// The revert's end wakes a card held out of the queue for the plan, which
+// is no longer open on main.
+func TestRevertEndWakesTheHeldCards(t *testing.T) {
+	g := revertEndRig(t)
+	g.landed()
+	if err := g.store.CreateTask(context.Background(), Task{ID: "held", Kind: "agent", Track: policy.TrackDirect, Repository: "sf/repo",
+		Status: "in-review", Gate: GateMergeQueue}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.r.Finish(context.Background(), "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(g.wf.signals, "held queue_turn  #0: ") {
+		t.Errorf("signals = %q, want the held card woken", g.wf.signals)
+	}
+}
+
 // A revert that landed counts each card it newly marks reverted in
 // factory.task.reverted{project}, as the daily pass does: c1, marked
 // before, counts no more, and the end run again counts nothing new.

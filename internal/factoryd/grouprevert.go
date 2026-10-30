@@ -491,6 +491,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		return err
 	}
 	signalQueueHeads(ctx, r.store, r.cfg.Workflows)
+	r.wakeHeld(ctx, pause.Project)
 	return nil
 }
 
