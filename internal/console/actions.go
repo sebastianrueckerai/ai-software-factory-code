@@ -2140,7 +2140,11 @@ func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string
 	}
 	commit, err := c.cfg.DeployNow(ctx, p.Repository, a.s.user, a.via, cmp.Or(a.decider, "member"))
 	var red factoryd.ErrMainRed
+	var queued factoryd.ErrPlanQueued
 	switch {
+	case errors.As(err, &queued):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Production of %s is not held, but plan #%d has a card in the merge queue: "+
+			"a change under k8s/ goes live once it merges or leaves the queue.", name, queued.Plan))
 	case errors.Is(err, factoryd.ErrNotHeld):
 		return "", refuse(http.StatusConflict, "Production of "+name+" is not held: every merge goes to production on its own.")
 	case errors.As(err, &red):

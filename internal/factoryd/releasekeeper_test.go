@@ -765,6 +765,33 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	}
 }
 
+// Deploy now of the code repository with no plan open on its main but a
+// plan's card in the merge queue names the queued plan; a project's names
+// no plan: its production follows no Flux suspension.
+func TestReleaseKeeperDeployNowNamesAQueuedPlan(t *testing.T) {
+	ctx := context.Background()
+	k, store, _ := newKeeper(t, &chainForgejo{})
+	if _, err := k.DeployNow(ctx, codeRepo, "sebastian", ViaButton, "member"); !errors.Is(err, ErrNotHeld) {
+		t.Fatalf("DeployNow with no card queued = %v, want ErrNotHeld", err)
+	}
+	for _, repository := range []string{codeRepo, demoRepo} {
+		store.tasks["t-q"+repository] = Task{ID: "t-q" + repository, IssueNumber: 7, Repository: repository, Track: policy.TrackPlan}
+		store.tasks["t-q1"+repository] = Task{ID: "t-q1" + repository, Source: SourcePlan, Parent: "t-q" + repository, PlanKey: "a", Repository: repository, Status: "in-review"}
+		store.queue = append(store.queue, queueEntry{project: repository, task: "t-q1" + repository, at: keeperAt(10, 0)})
+	}
+	store.closed["t-plan"] = keeperAt(10, 30)
+	var queued ErrPlanQueued
+	if _, err := k.DeployNow(ctx, codeRepo, "sebastian", ViaButton, "member"); !errors.As(err, &queued) || queued.Plan != 7 {
+		t.Errorf("DeployNow(code) = %v, want ErrPlanQueued of plan #7", err)
+	}
+	if _, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton, "member"); !errors.Is(err, ErrNotHeld) {
+		t.Errorf("DeployNow(demo) = %v, want ErrNotHeld", err)
+	}
+	if len(releasedRows(store)) != 0 {
+		t.Errorf("%d rows, want nothing recorded", len(releasedRows(store)))
+	}
+}
+
 // Deploy now refuses while main's newest push run concluded red, failure
 // or cancelled: nothing is written, closed or recorded. A run still
 // running is taken.
