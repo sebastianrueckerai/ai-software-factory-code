@@ -186,7 +186,9 @@ from the webhook intake are delivered with signal-with-start, so a signal
 to a task whose run died starts a new one (which reconciles first).
 `pr_merged` (done),
 `pr_closed` (closed without merge: failed) and `issue_closed` (done if
-the PR merged, else failed) decide the task wherever they land: a
+the PR merged, else failed) decide the task wherever they land (a
+trusted user's close of a failed card's issue ends the card `closed` in the
+store, so its plan can close): a
 running session or check wait is cancelled within about 10 s (the
 session deletes its pod and namespace and revokes its credentials
 first). The cancel reaches an activity in the answer to its next

@@ -187,10 +187,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		}
 		return "its gates run; nothing to do until they end"
 	case "failed":
-		if t.IssueNumber == 0 {
-			return "close ends it (close)"
-		}
-		return "the card is final: a new card continues the work"
+		return "close ends it (close)"
 	case "done", "closed":
 		return "the card is final: a new card continues the work"
 	}
@@ -1215,6 +1212,7 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 // doClose closes card id's issue as the member, its note commented first
 // when given; intake ends the card as on any writer's close. A card with
 // no issue factoryd closes alone, a failed one too, its note on the row,
+// and a failed card with an issue ends closed by intake like any other,
 // and so a merged card: its merge closed its issue already, and closing
 // a closed issue sends no webhook.
 func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
@@ -1226,7 +1224,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if err != nil {
 		return "", err
 	}
-	if factoryd.Final(t.Status) && (t.IssueNumber != 0 || t.Status != "failed") {
+	if factoryd.Final(t.Status) && t.Status != "failed" {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
 	}
 	if t.IssueNumber != 0 && note != "" {

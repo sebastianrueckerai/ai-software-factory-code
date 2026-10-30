@@ -1857,22 +1857,23 @@ func TestIntakeIssueClosedNeedsWriteAccess(t *testing.T) {
 	}
 }
 
-// A trusted close of a failed card's issue keeps the card's branch on the
-// bot's fork, where the sweep ends it, and signals nothing: the workflow is
-// over. A running card's close is its workflow's signal, as before.
-func TestClosingAFailedCardKeepsItsBranch(t *testing.T) {
+// A trusted close of a failed card's issue ends the card closed in the
+// store, keeps its branch on the bot's fork, where the sweep ends it, and
+// signals nothing: the workflow is over. A running card's close is its
+// workflow's signal, as before.
+func TestClosingAFailedCardEndsItClosed(t *testing.T) {
 	for _, tc := range []struct {
-		status, closer string
-		recorded       bool
-		deletes        []string
-		signals        []string
+		status, closer, after string
+		recorded              bool
+		deletes               []string
+		signals               []string
 	}{
-		{status: "failed", closer: "sebastian"},
-		{status: "failed", closer: "factory-agent", recorded: true},
-		{status: "failed", closer: "factory-agent"},
-		{status: "failed", closer: "mallory"},
-		{status: "done", closer: "sebastian", signals: []string{"t1 issue_closed sebastian #0: "}},
-		{status: "running", closer: "sebastian", signals: []string{"t1 issue_closed sebastian #0: "}},
+		{status: "failed", closer: "sebastian", after: "closed"},
+		{status: "failed", closer: "factory-agent", recorded: true, after: "closed"},
+		{status: "failed", closer: "factory-agent", after: "failed"},
+		{status: "failed", closer: "mallory", after: "failed"},
+		{status: "done", closer: "sebastian", after: "done", signals: []string{"t1 issue_closed sebastian #0: "}},
+		{status: "running", closer: "sebastian", after: "running", signals: []string{"t1 issue_closed sebastian #0: "}},
 	} {
 		in, store, requests := newTestIntake(t)
 		store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: tc.status, Kind: "agent", IssueNumber: 4}
@@ -1894,9 +1895,9 @@ func TestClosingAFailedCardKeepsItsBranch(t *testing.T) {
 				deletes = append(deletes, r)
 			}
 		}
-		if !slices.Equal(deletes, tc.deletes) || !slices.Equal(workflowsOf(in).signals, tc.signals) {
-			t.Errorf("%s task closed by %s (recorded %v): deletes %q, signals %q; want %q, %q",
-				tc.status, tc.closer, tc.recorded, deletes, workflowsOf(in).signals, tc.deletes, tc.signals)
+		if after := store.tasks["t1"].Status; after != tc.after || !slices.Equal(deletes, tc.deletes) || !slices.Equal(workflowsOf(in).signals, tc.signals) {
+			t.Errorf("%s task closed by %s (recorded %v): status %q, deletes %q, signals %q; want %q, %q, %q",
+				tc.status, tc.closer, tc.recorded, after, deletes, workflowsOf(in).signals, tc.after, tc.deletes, tc.signals)
 		}
 	}
 }

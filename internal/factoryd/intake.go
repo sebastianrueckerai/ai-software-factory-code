@@ -1229,7 +1229,7 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done, a failed
-// task's branch is deleted. A merged card is left as it is: its own
+// card ends closed. A merged card is left as it is: its own
 // merge closes its issue (Closes #N), a close no webhook tells from a
 // human's, and its workflow ended at the merge; the chain ends it, or
 // the console's Close (CloseCard). An issue's author can close it without any
@@ -1256,7 +1256,9 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 		return nil // endPRCard closed the issue and ends the card itself
 	case t.Kind == "human":
 		return in.finishHumanTask(ctx, t, "done", "", closer, nil)
-	case t.Status == "failed", t.Status == "merged":
+	case t.Status == "failed":
+		return in.closeFailed(ctx, t.ID)
+	case t.Status == "merged":
 		return nil
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
@@ -1273,11 +1275,16 @@ func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
 	case err != nil:
 		return err
 	case t.Status == "failed":
-		return in.Store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+		return in.closeFailed(ctx, id)
 	case t.Status == "merged":
 		return in.CloseMerged(ctx, id, by)
 	}
 	return in.Workflows.Signal(ctx, id, SignalIssueClosed, TaskSignal{Author: by})
+}
+
+// closeFailed ends failed card id closed in the store.
+func (in *Intake) closeFailed(ctx context.Context, id string) error {
+	return in.Store.TransitionTask(ctx, id, []string{"failed"}, "closed")
 }
 
 // decide records a decision — issue number closed, pull request number

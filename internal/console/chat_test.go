@@ -3503,7 +3503,7 @@ func TestWrongState(t *testing.T) {
 		{factoryd.Task{Status: "in-review", IssueNumber: 11}, capFacts{merge: true},
 			"Card #11 waits at its approval gate, where a human approves the merge, not a running session: approve_merge or deny_merge decide its merge request."},
 		{factoryd.Task{Status: "done", IssueNumber: 7}, capFacts{}, "Card #7 is done, not a running session: the card is final: a new card continues the work."},
-		{factoryd.Task{Status: "failed", IssueNumber: 8}, capFacts{}, "Card #8 has failed, not a running session: the card is final: a new card continues the work."},
+		{factoryd.Task{Status: "failed", IssueNumber: 8}, capFacts{}, "Card #8 has failed, not a running session: close ends it (close)."},
 		{factoryd.Task{Status: "closed", IssueNumber: 9}, capFacts{}, "Card #9 was closed, not a running session: the card is final: a new card continues the work."},
 		{factoryd.Task{Status: "closing", IssueNumber: 10}, capFacts{}, "Card #10 is being closed, not a running session: wait a moment."},
 	} {

@@ -908,6 +908,32 @@ func TestPlanCloseCheckClosesAPlanWithoutCriteria(t *testing.T) {
 	}
 }
 
+// A plan whose child failed stays open until a trusted user closes the
+// child's issue: the card ends closed, and the next check closes the plan.
+func TestPlanClosesAfterItsFailedChildsIssueIsClosed(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, _ := planWithoutCriteria(t, "done", "failed")
+	child := s.tasks["card-2"]
+	child.IssueNumber = 4
+	s.tasks["card-2"] = child
+	in, _, _ := newTestIntake(t)
+	in.Store = s
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 0 {
+		t.Fatalf("a plan with a failed child: plan_closed %d times, want 0", n)
+	}
+	if err := in.issueClosed(ctx, s.tasks["card-2"], "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.tasks["card-2"].Status; got != "closed" {
+		t.Fatalf("the failed child after its issue's close: status %q, want closed", got)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 {
+		t.Errorf("after the child's close: plan_closed %d times, want 1", n)
+	}
+}
+
 // The comment that every card is done already told the issue; the close
 // records itself and adds no second comment.
 func TestPlanCloseCheckAddsNoCommentAfterAllChildrenDone(t *testing.T) {

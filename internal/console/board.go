@@ -579,12 +579,12 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed without an issue, which has no other way out. A card
+// a human, or failed, which has no other way out. A card
 // whose question offers a close, or a choice card, offers its choices
 // alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
-	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.IssueNumber == 0 && k.Status == "failed")
+	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed")
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free

@@ -562,8 +562,19 @@ func TestChatNewCardRung(t *testing.T) {
 	}
 }
 
+// Close of a failed card with an issue closes the issue alone: intake ends
+// the card, so CloseCard is not called.
+func TestCloseAFailedCardWithAnIssue(t *testing.T) {
+	r, g := newWritesRig(t)
+	args := `{"task_id":"t-f"}`
+	_, done, _ := proposeAndDo(t, r, g, "close", args)
+	equal(t, "Do it", done, ran("close", args, "Closed #31; factoryd ends the card."))
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/31 {"state":"closed"}`})
+	equal(t, "CloseCard", r.closed, []string(nil))
+}
+
 // The face offers a writer Close on a card waiting on a human, behind a
-// confirm, and on no queued, running or final card; the answer
+// confirm, and on a failed one, and on no queued, running, done or closed card; the answer
 // form of a card at its session cap says what the answer does, and its
 // answer is a grant: one session_granted row via button.
 func TestCardFaceCloseAndGrant(t *testing.T) {
@@ -578,7 +589,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, closeForm) {
 		t.Errorf("the waiting card's face =\n%s\nwant it to hold\n%s", face, closeForm)
 	}
-	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": false} {
+	for id, closes := range map[string]bool{"t-e": true, "t-cap": true, "t-a": false, "t-r": false, "t-done": false, "t-f": true} {
 		if got := strings.Contains(faceOf(t, body, id), `action="/tasks/`+id+`/close"`); got != closes {
 			t.Errorf("card %s offers Close: %t, want %t", id, got, closes)
 		}
