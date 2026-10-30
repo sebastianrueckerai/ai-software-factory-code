@@ -117,7 +117,11 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 		}
 		return "", err
 	}
-	return fmt.Sprintf("Plan #%d's %d merged cards come off main: the merge queue waits for the revert, card #%d.", p.IssueNumber, len(cards), issue), nil
+	verb := "come"
+	if len(cards) == 1 {
+		verb = "comes"
+	}
+	return fmt.Sprintf("Plan #%d's %s %s off main: the merge queue waits for the revert, card #%d.", p.IssueNumber, plural(len(cards), "merged card"), verb, issue), nil
 }
 
 // unfiled tells that card id has no row, read past ctx's end: a call that
@@ -225,7 +229,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	for i, sha := range shas {
 		merges[i] = bySHA[sha]
 	}
-	title := fmt.Sprintf("Revert plan #%d: %d merges, newest first", p.IssueNumber, len(merges))
+	title := fmt.Sprintf("Revert plan #%d: %s, newest first", p.IssueNumber, plural(len(merges), "merge"))
 	budget := r.cfg.Policy().Document.Budget
 	var ref IssueRef
 	if conflict == "" {

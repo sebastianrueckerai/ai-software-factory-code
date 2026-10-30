@@ -310,6 +310,21 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 	}
 }
 
+// One card reads in the singular: the answer and the pull request.
+func TestRevertGroupOfOneCard(t *testing.T) {
+	g := newGroupRevertRig(t)
+	note, err := g.r.RevertGroup(context.Background(), g.plan, g.cards[:1], "plan revision 3 drops it")
+	if want := "Plan #10's 1 merged card comes off main: the merge queue waits for the revert, card #21."; err != nil || note != want {
+		t.Fatalf("RevertGroup = %q, %v; want %q", note, err, want)
+	}
+	id := g.store.pauses["sf/repo"].RevertTask
+	want := "factory-agent:factory/" + id + " Revert plan #10: 1 merge, newest first\n\nTakes plan #10's merged cards off main, newest first: #14 m1.\n\n" +
+		"Why: plan revision 3 drops it\n\nThe merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it was before it."
+	if !slices.Equal(g.fj.pulls, []string{want}) {
+		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
+	}
+}
+
 // A call that finds the plan's own pause, a retry's, goes on with its
 // revert card: it files t-rv once, and a second call files nothing more
 // and answers the same. A failure before the card exists lifts the pause.
