@@ -453,6 +453,12 @@ func (r *Roller) poll(ctx context.Context) error {
 	if stuck {
 		r.escalateRolls(ctx)
 	}
+	// the queue before the groups: a plan card leaves the queue only once
+	// it merged, so one that merges between the two reads counts in one
+	queued, err := r.Store.QueuedPlans(ctx, r.Repo.String())
+	if err != nil {
+		return err
+	}
 	all, err := r.Store.OpenGroups(ctx)
 	if err != nil {
 		return err
@@ -481,7 +487,7 @@ func (r *Roller) poll(ctx context.Context) error {
 			return err
 		}
 	}
-	if deploy, err = r.setFlux(ctx, runs, groups, deploy); err != nil {
+	if deploy, err = r.setFlux(ctx, runs, groups, queued, deploy); err != nil {
 		return err
 	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
@@ -584,11 +590,8 @@ func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group,
 // setFlux answers "". A refused resume ends the poll: no roll goes out
 // without Flux. A refused suspend does not, since rolls stay held: it is
 // logged and noted on the hold's ask.
-func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, deploy string) (string, error) {
-	reason, err := r.fluxHold(ctx, groups)
-	if err != nil {
-		return deploy, err
-	}
+func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, queued []int64, deploy string) (string, error) {
+	reason := fluxHold(groups, queued)
 	_, rollOpen, err := r.Store.OpenRollTask(ctx, r.Repo.String())
 	if err != nil {
 		return deploy, err
@@ -642,25 +645,24 @@ func (r *Roller) setLevel(ctx context.Context, suspend bool, reason string) erro
 }
 
 // fluxHold names what holds the factory's Kustomization: the plans open
-// on main, else the plans with a card in the merge queue, whose merge
-// would open their group; "" when none does. Rolls stay held by the open
-// groups alone (markHeld).
-func (r *Roller) fluxHold(ctx context.Context, groups []Group) (string, error) {
+// on main, else the plans with a card in the merge queue (queued, their
+// issues), whose merge would open their group; "" when none does. Rolls
+// stay held by the open groups alone (markHeld).
+func fluxHold(groups []Group, queued []int64) string {
 	if len(groups) > 0 {
-		return HoldReason(groups), nil
+		return HoldReason(groups)
 	}
-	queued, err := r.Store.QueuedPlans(ctx, r.Repo.String())
-	if err != nil || len(queued) == 0 {
-		return "", err
+	if len(queued) == 0 {
+		return ""
 	}
 	plans := make([]string, len(queued))
 	for i, issue := range queued {
 		plans[i] = fmt.Sprintf("#%d", issue)
 	}
 	if len(plans) == 1 {
-		return "plan " + plans[0] + " has a card in the merge queue", nil
+		return "plan " + plans[0] + " has a card in the merge queue"
 	}
-	return "plans " + andList(plans) + " have cards in the merge queue", nil
+	return "plans " + andList(plans) + " have cards in the merge queue"
 }
 
 // fluxBehind answers whether the factory's Kustomization has not applied

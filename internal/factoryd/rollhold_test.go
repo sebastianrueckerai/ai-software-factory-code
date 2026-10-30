@@ -741,3 +741,34 @@ func TestRollerNotesNoRefusedSuspendOnAnEndedAsk(t *testing.T) {
 		t.Fatalf("comments %q, want none on the ended ask", f.comments)
 	}
 }
+
+// A plan card that merges and leaves the merge queue between the roller's
+// reads of the queue and of the open groups counts in one of them, either
+// way round: Flux stays suspended.
+func TestRollerSuspendsFluxForACardThatMergesBetweenItsReads(t *testing.T) {
+	for _, after := range []string{"OpenGroups", "QueuedPlans"} {
+		t.Run("after "+after, func(t *testing.T) {
+			f := &rollForgejo{runs: []map[string]any{pushRun(58, commitC2, "running")}}
+			roller, store, _ := newTestRoller(t, f)
+			flux := roller.Flux.(*fakeFluxSwitch)
+			store.tasks["t-plan"] = Task{ID: "t-plan", IssueNumber: 40, Repository: codeRepo, Track: "plan"}
+			store.tasks["t-c1"] = Task{ID: "t-c1", Source: SourcePlan, Parent: "t-plan", PlanKey: "a", Repository: codeRepo, Status: "in-review"}
+			store.queue = []queueEntry{{project: codeRepo, task: "t-c1", at: time.Now()}}
+			store.afterRead = func(name string) {
+				if name != after || store.queue == nil {
+					return
+				}
+				c1 := store.tasks["t-c1"]
+				c1.Status, c1.MergeCommit, c1.FinishedAt = "merged", mergePR12, justNow()
+				store.tasks["t-c1"] = c1
+				store.queue = nil
+			}
+			if err := roller.poll(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if !flux.suspended {
+				t.Fatal("resumed: the card counted in neither read")
+			}
+		})
+	}
+}

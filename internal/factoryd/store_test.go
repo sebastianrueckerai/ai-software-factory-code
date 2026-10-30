@@ -114,6 +114,8 @@ type fakeStore struct {
 	routineCursor int64
 	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
 	releases      map[string]Release
+	// afterRead runs once OpenGroups or QueuedPlans (the name) has read
+	afterRead func(name string)
 }
 
 func (s *fakeStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -357,6 +359,9 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	for _, gs := range out {
 		slices.SortFunc(gs, func(a, b Group) int { return cmp.Or(a.FirstMerge.Compare(b.FirstMerge), cmp.Compare(a.Plan, b.Plan)) })
 	}
+	if s.afterRead != nil {
+		s.afterRead("OpenGroups")
+	}
 	return out, nil
 }
 
@@ -370,6 +375,9 @@ func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64
 		}
 	}
 	slices.Sort(out)
+	if s.afterRead != nil {
+		s.afterRead("QueuedPlans")
+	}
 	return out, nil
 }
 
