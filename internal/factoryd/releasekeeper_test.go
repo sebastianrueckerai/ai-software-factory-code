@@ -545,6 +545,30 @@ func TestReleaseKeeperEndsTheHoldAndRunsThePromoteAgain(t *testing.T) {
 	}
 }
 
+// The hold's end closes its ask first: a close that fails leaves the hold
+// as it stood, and the next pass ends it.
+func TestReleaseKeeperEndsTheHoldOnceItsAskClosed(t *testing.T) {
+	logs := captureLog(t)
+	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+	store.failIntakeEvent = errors.New("the database is gone")
+	if err := k.Pass(context.Background()); err == nil || !strings.Contains(logs.String(), "release keeper: sf/demo-app: the database is gone") {
+		t.Fatalf("Pass = %v, log %q; want the failed close returned and logged", err, logs.String())
+	}
+	if got := releaseRow(store, demoRepo).HeldSince; !got.Equal(keeperAt(10, 0)) || len(releasedRows(store)) != 0 || len(f.closed) != 0 || len(f.jobReruns) != 0 {
+		t.Fatalf("held since %v, %d rows, closed %q, job re-runs %q; want the hold as it stood", got, len(releasedRows(store)), f.closed, f.jobReruns)
+	}
+	store.failIntakeEvent = nil
+	*clock = keeperAt(18, 1)
+	keeperPass(t, k)
+	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0)}); !reflect.DeepEqual(got, want) {
+		t.Errorf("row %+v, want %+v", got, want)
+	}
+	if rows := releasedRows(store); len(rows) != 1 || rows[0].Detail["hours"] != 8 || !slices.Equal(f.closed, []string{demoRepo + "#77"}) ||
+		!slices.Equal(f.jobReruns, []string{demoRepo + " 212"}) {
+		t.Errorf("rows %+v, closed %q, job re-runs %q; want the hold ended once", rows, f.closed, f.jobReruns)
+	}
+}
+
 func TestReleaseKeeperRunsThePromoteOnlyOfTheToldCommit(t *testing.T) {
 	ctx := context.Background()
 	t.Run("a newer commit", func(t *testing.T) {
