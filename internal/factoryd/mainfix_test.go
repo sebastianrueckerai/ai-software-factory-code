@@ -658,8 +658,22 @@ func TestPGStoreQueuePauseForRevert(t *testing.T) {
 	if ok, err := s.PauseQueueForRevert(ctx, other); err != nil || ok {
 		t.Fatalf("second call = %v, %v; want false", ok, err)
 	}
-	if again, _, _ := s.QueuePause(ctx, "sf/r"); again.Plan != "p" || again.RevertTask != "t-rv" {
+	again, _, err := s.QueuePause(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Plan != "p" || again.RevertTask != "t-rv" {
 		t.Fatalf("pause = %+v, want it unchanged", again)
+	}
+	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since}); err != nil {
+		t.Fatal(err)
+	}
+	kept, _, err := s.QueuePause(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if kept.Plan != "p" || !slices.Equal(kept.Reverts, []string{"c1", "c2"}) {
+		t.Fatalf("after PauseQueue pause = %+v, want plan p and reverts c1, c2 kept", kept)
 	}
 	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/red", RunID: 7, SHA: commitC1, Since: group.Since, FixTask: "t-fix"}); err != nil {
 		t.Fatal(err)
@@ -667,7 +681,11 @@ func TestPGStoreQueuePauseForRevert(t *testing.T) {
 	if ok, err := s.PauseQueueForRevert(ctx, QueuePause{Project: "sf/red", Plan: "p"}); err != nil || ok {
 		t.Fatalf("on a main-red pause = %v, %v; want false", ok, err)
 	}
-	if red, _, _ := s.QueuePause(ctx, "sf/red"); red.Plan != "" || red.Reverts != nil {
+	red, _, err := s.QueuePause(ctx, "sf/red")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if red.Plan != "" || red.Reverts != nil {
 		t.Fatalf("main-red pause = %+v, want no plan", red)
 	}
 	pauses, err := s.PlanQueuePauses(ctx)
