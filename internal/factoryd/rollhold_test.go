@@ -488,15 +488,14 @@ func TestRollerHoldsOnWhenTheSuspendFails(t *testing.T) {
 		}
 	}
 
-	store.tasks["t-ask"] = Task{ID: "t-ask", Kind: "human", Source: SourceProductionHeld, Status: "waiting-human", IssueNumber: 77, Repository: codeRepo}
+	heldAsk(store, "waiting-human")
 	for poll := 3; poll <= 4; poll++ {
 		if err := roller.poll(ctx); err != nil {
 			t.Fatalf("poll %d: %v", poll, err)
 		}
 	}
-	want := "77 factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
-	if !slices.Equal(f.comments, []string{want}) {
-		t.Fatalf("comments %q, want %q once", f.comments, want)
+	if !slices.Equal(f.comments, []string{fluxRefusedComment}) {
+		t.Fatalf("comments %q, want %q once", f.comments, fluxRefusedComment)
 	}
 
 	// each suspend that lands after a refused one is said
@@ -695,5 +694,50 @@ func TestRollerFilesNoRollWhenItsResumeFails(t *testing.T) {
 	}
 	if len(f.issues) != 0 || len(store.rolls) != 0 || !flux.suspended {
 		t.Fatalf("issues %q, rolls %+v, suspended %v; want no roll and Flux still suspended", f.issues, store.rolls, flux.suspended)
+	}
+}
+
+const fluxRefusedComment = "77 factoryd: the factory's Kustomization flux-system/factory could not be suspended, so a change under k8s/ goes live at its merge while production is held. The roller's log names the error."
+
+// heldAsk files the hold's ask as the keeper does, issue #77, in status.
+func heldAsk(store *fakeStore, status string) {
+	store.tasks["t-ask"] = Task{ID: "t-ask", Kind: "human", Source: SourceProductionHeld, Status: status, IssueNumber: 77, Repository: codeRepo}
+}
+
+// A note on the ask Forgejo refuses ends the poll with its error, and the
+// next poll notes it.
+func TestRollerNotesARefusedSuspendOnceForgejoTakesIt(t *testing.T) {
+	roller, f, store, _ := newHeldRoller(t)
+	roller.Flux.(*fakeFluxSwitch).suspendErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+	heldAsk(store, "waiting-human")
+	f.commentsOff = true
+	ctx := context.Background()
+	if err := roller.poll(ctx); err == nil || !strings.Contains(err.Error(), "note the refused suspend on the hold's ask #77: ") {
+		t.Fatalf("poll: %v, want the refused note's error", err)
+	}
+	if len(f.comments) != 0 || len(f.issues) != 0 {
+		t.Fatalf("comments %q, issues %q; want none", f.comments, f.issues)
+	}
+	f.commentsOff = false
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.comments, []string{fluxRefusedComment}) {
+		t.Fatalf("comments %q, want %q", f.comments, fluxRefusedComment)
+	}
+}
+
+// A refused suspend notes nothing on an ask that has ended.
+func TestRollerNotesNoRefusedSuspendOnAnEndedAsk(t *testing.T) {
+	roller, f, store, _ := newHeldRoller(t)
+	roller.Flux.(*fakeFluxSwitch).suspendErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+	heldAsk(store, "done")
+	for poll := 1; poll <= 2; poll++ {
+		if err := roller.poll(context.Background()); err != nil {
+			t.Fatalf("poll %d: %v", poll, err)
+		}
+	}
+	if len(f.comments) != 0 {
+		t.Fatalf("comments %q, want none on the ended ask", f.comments)
 	}
 }
