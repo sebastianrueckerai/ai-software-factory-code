@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"net/http"
 	"reflect"
 	"slices"
 	"strings"
@@ -396,6 +397,28 @@ func TestReleaseKeeperAsksAgainAfterAFailedFiling(t *testing.T) {
 	}
 }
 
+// An ask Forgejo refuses for good keeps its time: no retry each minute,
+// the next ask comes HoldAskAfter later, and the refusal is logged.
+func TestReleaseKeeperKeepsTheAskTimeOfARefusedFiling(t *testing.T) {
+	logs := captureLog(t)
+	f := &chainForgejo{fileIssue: http.StatusUnprocessableEntity}
+	k, store, clock := newKeeper(t, f)
+	*clock = keeperAt(16, 0)
+	keeperPass(t, k)
+	if got := releaseRow(store, demoRepo).AskedAt; !got.Equal(keeperAt(16, 0)) {
+		t.Errorf("AskedAt %v, want 16:00 kept", got)
+	}
+	if !strings.Contains(logs.String(), "release keeper: sf/demo-app: Forgejo refused the ask, which is not filed: ") {
+		t.Errorf("log %q, want the refusal said", logs.String())
+	}
+	f.fileIssue = 0
+	*clock = keeperAt(16, 1)
+	keeperPass(t, k)
+	if len(f.issues) != 0 {
+		t.Errorf("issues %q at 16:01, want none before 22:00", f.issues)
+	}
+}
+
 // endedHold is a hold of demoRepo since 10:00 whose plan closed, its
 // promote job told held at demoCommit, ask #77 standing, at 18:00. Run 21's
 // jobs and run 22's are listed; runs are main's push runs.
@@ -495,6 +518,18 @@ func TestReleaseKeeperRunsThePromoteOnlyOfTheToldCommit(t *testing.T) {
 			t.Errorf("job re-runs %q, told held %q; want one try, then cleared", f.jobReruns, releaseRow(store, demoRepo).ToldHeld)
 		}
 		if !strings.Contains(logs.String(), "release keeper: sf/demo-app: job 212 of sf/demo-app: forgejo offers no re-run") {
+			t.Errorf("log %q, want the refused re-run said", logs.String())
+		}
+	})
+	t.Run("a re-run Forgejo refuses", func(t *testing.T) {
+		logs := captureLog(t)
+		k, f, store, _ := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+		f.rerun = http.StatusUnprocessableEntity
+		keeperPass(t, k)
+		if !slices.Equal(f.jobReruns, []string{demoRepo + " 212"}) || releaseRow(store, demoRepo).ToldHeld != "" {
+			t.Errorf("job re-runs %q, told held %q; want one try, then cleared", f.jobReruns, releaseRow(store, demoRepo).ToldHeld)
+		}
+		if !strings.Contains(logs.String(), "release keeper: sf/demo-app: forgejo POST /api/v1/repos/sf/demo-app/actions/jobs/212/rerun: forgejo: refused") {
 			t.Errorf("log %q, want the refused re-run said", logs.String())
 		}
 	})

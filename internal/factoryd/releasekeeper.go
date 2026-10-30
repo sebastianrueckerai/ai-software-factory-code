@@ -147,7 +147,8 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 // written first, only where the row's ask and clock are still the ones
 // this pass read, and the ask goes out only where that write landed, so a
 // Deploy now or another pass meanwhile wins. An ask that does not go out
-// puts its time back.
+// puts its time back, unless Forgejo refused it for good: then the next
+// comes HoldAskAfter later, not each minute.
 func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, now time.Time) error {
 	repository, since := row.Repository, row.HeldSince
 	if since.IsZero() {
@@ -202,6 +203,10 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		err = k.Forgejo.CommentOnce(ctx, repo.Owner, repo.Name, card.IssueNumber, comment)
 	} else {
 		_, err = EscalateToHuman(ctx, k.Store, k.Forgejo, k.Timeline, repo, q, "the production hold", Task{Source: SourceProductionHeld})
+	}
+	if forgejoTerminal(err) {
+		log.Printf("release keeper: %s: Forgejo refused the ask, which is not filed: %v; the next ask comes after %s", repository, err, hours(HoldAskAfter))
+		return nil
 	}
 	if err != nil {
 		if _, undo := k.Store.PutReleaseHold(ctx, repository, since, row.AskedAt, now, since); undo != nil {
@@ -298,8 +303,8 @@ func hours(d time.Duration) string { return textutil.Plural(int(d/time.Hour), "h
 // wherever main moved since. Once the hold ended, only main's newest run's
 // does: a newer commit clears told, since its own run asks, and an empty
 // told is unknown, so the newest run's job runs. A told commit with no run
-// is cleared. Forgejo without a re-run is logged and clears told; another
-// failure keeps it for the next pass.
+// is cleared. Forgejo without a re-run, or refusing it for good, is logged
+// and clears told; another failure keeps it for the next pass.
 func (k *ReleaseKeeper) promoteAgain(ctx context.Context, repository, told string, held bool) error {
 	p, runs, err := k.pushRuns(ctx, repository)
 	if err != nil {
@@ -316,7 +321,7 @@ func (k *ReleaseKeeper) promoteAgain(ctx context.Context, repository, told strin
 		return nil
 	}
 	err = k.rerunPromote(ctx, p, *run)
-	if errors.Is(err, ErrNoRerun) {
+	if errors.Is(err, ErrNoRerun) || errors.Is(err, ErrRefused) {
 		log.Printf("release keeper: %s: %v: production waits for main's next run", repository, err)
 	} else if err != nil {
 		return err

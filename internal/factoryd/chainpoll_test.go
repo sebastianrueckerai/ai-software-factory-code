@@ -376,6 +376,7 @@ type chainForgejo struct {
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
+	fileIssue int                                       // the status an issue's filing answers; 0 is 201
 	open      map[string][]map[string]any               // repository -> its open issues
 	status    []string                                  // the sha of every combined status read
 	reads     []string                                  // "repository dir" of every workflow-list read
@@ -443,6 +444,8 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				open = append(open, f.open[repo]...)
 			}
 			reply(open)
+		case r.Method == "POST" && p == "/issues" && f.fileIssue != 0:
+			http.Error(w, "refused", f.fileIssue)
 		case r.Method == "POST" && p == "/issues":
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
