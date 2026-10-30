@@ -214,7 +214,9 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 
 // question is the hold's ask on project name: after its hours, or naming
 // the fixes merged while held first; the open plans with what each waits
-// on; wait, deploy anyway, and per plan its two replans.
+// on; wait, deploy anyway, and the two replans of groups[0], the plan that
+// holds longest (OpenGroups orders by first merge). Within MaxChoices, the
+// other plans are named, to be replanned from their drawers.
 func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now time.Time, groups []Group, fixes []Task) (HumanQuestion, error) {
 	reason := HoldReason(groups)
 	q := HumanQuestion{
@@ -239,7 +241,8 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 	q.Why = strings.Join(append(why, fmt.Sprintf("Merged is not live: while a plan is open on main, no merge of %s goes to production, "+
 		"so a half-built feature never goes live. Production has waited since %s UTC.", name, since.UTC().Format("2006-01-02 15:04"))), " ")
 	info := []string{"The open plans and what each waits on:"}
-	for _, g := range groups {
+	var others []string
+	for i, g := range groups {
 		cards, err := k.Store.PlanCards(ctx, g.Plan)
 		if err != nil {
 			return HumanQuestion{}, err
@@ -256,6 +259,10 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 		}
 		merged, total := g.Merged()
 		info = append(info, fmt.Sprintf("- plan #%d: %d of %d cards merged; %s.", g.Issue, merged, total, waits))
+		if i > 0 {
+			others = append(others, fmt.Sprintf("#%d", g.Issue))
+			continue
+		}
 		q.Choices = append(q.Choices,
 			QuestionChoice{AnswerReplanOnTop + ":" + g.Plan, fmt.Sprintf("Replan plan #%d on top", g.Issue)},
 			QuestionChoice{AnswerTakeOffMain + ":" + g.Plan, fmt.Sprintf("Take plan #%d off main and replan", g.Issue)})
@@ -263,6 +270,13 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 	q.Info = strings.Join(info, "\n") + "\n\nWait keeps production held and asks again in " + hours(HoldAskAfter) + ". " +
 		"Deploy anyway sends main as it is to production, half-built plans included. Replan on top plans the rest again on top of what is merged. " +
 		"Take it off main and replan reverts the plan's merged cards first, so production goes ahead without them."
+	switch len(others) {
+	case 0:
+	case 1:
+		q.Info += "\n\nPlan " + others[0] + " is open on main too: replan it from its drawer."
+	default:
+		q.Info += "\n\nPlans " + andList(others) + " are open on main too: replan them from their drawers."
+	}
 	return q, nil
 }
 

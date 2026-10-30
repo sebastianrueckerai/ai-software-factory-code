@@ -257,6 +257,60 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	}
 }
 
+// With several plans open the ask keeps to MaxChoices: wait, deploy anyway
+// and the two replans of the plan that holds longest, the oldest first
+// merge; it names each other plan, to be replanned from its drawer.
+func TestReleaseKeeperOffersTheReplansOfTheLongestHeldPlan(t *testing.T) {
+	why := "Merged is not live: while a plan is open on main, no merge of sf-demo-app goes to production, so a half-built feature never goes live. " +
+		"Production has waited since 2026-10-29 09:50 UTC."
+	choices := []QuestionChoice{
+		{AnswerHoldWait, "Wait"},
+		{AnswerDeployAnyway, "Deploy anyway"},
+		{AnswerReplanOnTop + ":t-zplan", "Replan plan #15 on top"},
+		{AnswerTakeOffMain + ":t-zplan", "Take plan #15 off main and replan"},
+	}
+	for _, c := range []struct {
+		name, reason, lines, others string
+		third                       bool
+	}{
+		{"two plans", "plans #15 and #12", "- plan #15: 1 of 1 cards merged; waits for the plan to close.\n" + holdPlanLine,
+			"Plan #12 is open on main too: replan it from its drawer.", false},
+		{"three plans", "plans #15, #12 and #18", "- plan #15: 1 of 1 cards merged; waits for the plan to close.\n" + holdPlanLine +
+			"\n- plan #18: 1 of 1 cards merged; waits for the plan to close.",
+			"Plans #12 and #18 are open on main too: replan them from their drawers.", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			f := &chainForgejo{}
+			k, store, clock := newKeeper(t, f)
+			openPlanIn(store, demoRepo, "t-zplan", 15, keeperAt(9, 50))
+			if c.third {
+				openPlanIn(store, demoRepo, "t-yplan", 18, keeperAt(10, 20))
+			}
+			*clock = keeperAt(16, 0)
+			keeperPass(t, k)
+			if len(f.issues) != 1 {
+				t.Fatalf("issues %d, want one ask", len(f.issues))
+			}
+			if !strings.Contains(f.issues[0], c.others) {
+				t.Errorf("body %q does not name the other plans with %q", f.issues[0], c.others)
+			}
+			_, q := askOfHold(t, store)
+			want := HumanQuestion{
+				Ask:     "Production of sf-demo-app has waited 6 hours: " + c.reason + " are open on main. Wait, deploy anyway, or replan?",
+				Why:     why,
+				Info:    "The open plans and what each waits on:\n" + c.lines + "\n\n" + holdInfoTail + "\n\n" + c.others,
+				Choices: choices,
+			}
+			if !reflect.DeepEqual(q, want) {
+				t.Errorf("question\n%+v, want\n%+v", q, want)
+			}
+			if len(q.Choices) > MaxChoices {
+				t.Errorf("%d choices, over MaxChoices %d", len(q.Choices), MaxChoices)
+			}
+		})
+	}
+}
+
 // A pass whose ask write lost to a writer that landed after its read files
 // no ask: a Deploy now's reset, on a hold's first ask (asked_at still none,
 // the clock restarted) as on a later one, or another pass's ask.
