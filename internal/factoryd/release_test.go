@@ -104,7 +104,7 @@ func checkReleaseRows(t *testing.T, s Store) {
 	}
 	check := func(step string, want Release) {
 		t.Helper()
-		if got := read("sf/a"); !reflect.DeepEqual(got, want) {
+		if got := read(want.Repository); !reflect.DeepEqual(got, want) {
 			t.Errorf("%s: Release = %+v, want %+v", step, got, want)
 		}
 	}
@@ -153,12 +153,19 @@ func checkReleaseRows(t *testing.T, s Store) {
 	want.ToldHeld = ""
 	check("ClearToldHeld", want)
 
+	must(s.PutReleaseHold(ctx, "sf/c", at(10, 0), at(10, 20), at(9, 0)))
+	newHold := Release{Repository: "sf/c", HeldSince: at(10, 0), AskedAt: at(10, 20)}
+	check("PutReleaseHold on no row", newHold)
+	must(s.SetDeployNow(ctx, "sf/d", "d9", at(11, 0)))
+	newDeploy := Release{Repository: "sf/d", HeldSince: at(11, 0), DeployNow: "d9"}
+	check("SetDeployNow on no row", newDeploy)
+
 	rows, err := s.Releases(ctx)
 	must(err)
 	for i := range rows {
 		rows[i] = utcRelease(rows[i])
 	}
-	if all := []Release{want, {Repository: "sf/b", AsksAt: at(8, 0)}}; !reflect.DeepEqual(rows, all) {
+	if all := []Release{want, {Repository: "sf/b", AsksAt: at(8, 0)}, newHold, newDeploy}; !reflect.DeepEqual(rows, all) {
 		t.Errorf("Releases = %+v, want %+v", rows, all)
 	}
 }
