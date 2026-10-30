@@ -366,6 +366,8 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 }
 
 func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
+	// the same rule as the PG query in the store's PlansBetweenRounds,
+	// stated here through leavesRounds
 	var out []string
 	for id, t := range s.tasks {
 		if _, closed := s.closed[id]; t.Status != "done" && t.Status != "closed" || closed {
