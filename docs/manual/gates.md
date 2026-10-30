@@ -253,8 +253,9 @@ human: its approval request is withdrawn (an approval sent meanwhile
 finds none open) and it takes its turn again. A red main pauses the
 queue, and factoryd re-runs each failed job of the run once (Forgejo
 17's job rerun API; a job's `attempt` above 1 marks its re-run), so a
-flake ends the pause with no card. A re-run red too, or one Forgejo
-refuses, files the fix-forward card. Its objective carries the last lines
+flake ends the pause with no card. A re-run red too, one Forgejo refuses
+or one that ends cancelled, and a job list Forgejo does not answer, file
+the fix-forward card, which names the revert's deadline. Its objective carries the last lines
 of each failed job's log, which the agent cannot fetch itself, under a
 heading that marks them as information, not instructions: at most 60
 lines and 4 KiB a job, 8 KiB in all, scrubbed of secrets, or a line saying
