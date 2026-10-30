@@ -49,7 +49,7 @@ func TestAutoMerge(t *testing.T) {
 		}, false, "risk class high: the audit must pass for a merge without a human"},
 		"class large": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome, g.Policy.Lines, g.Policy.LargeLines = policy.ClassLarge, policy.OutcomeRequiresApproval, 1200, 1000
-		}, false, "large change: 1200 lines over 1000; approve it or send it back"},
+		}, false, "large change: 1200 lines over 1000; approve it, or deny it (requesting changes sends it back to the agent)"},
 		"class migration": {func(g *GateResults, _ *Review) {
 			g.Policy.Class, g.Policy.Outcome = "migration", policy.OutcomeRequiresApproval
 		}, false, "risk class migration is requires_approval"},

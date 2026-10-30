@@ -12,7 +12,8 @@ activities, each with a timeline step and a comment on the pull request:
    `requires_approval`, `migration: true` for schema migrations). The
    class goes on the task row (`risk_class`). A pull request over the
    policy's `large_lines` (1000; 0 switches it off) is class large: a
-   person approves it or sends it back. A forbidden class fails the
+   person approves it, or denies it (requesting changes sends it back to
+   the agent). A forbidden class fails the
    task with the paths, which closes the pull request. The gate reads the
    diff whole for the anti-cheat scan, up to 8 MiB in a minute. No gate
    reads a longer diff: the gate requires a human's approval, and its

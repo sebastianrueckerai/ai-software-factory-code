@@ -264,7 +264,8 @@ func TestGatePolicyCountsLines(t *testing.T) {
 	if got, _, _ := store.Task(context.Background(), "t1"); got.RiskClass != policy.ClassLarge {
 		t.Fatalf("risk class = %q", got.RiskClass)
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "53 changed lines") || !strings.Contains(fj.comments[0], "over the policy's 50") {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "53 changed lines") ||
+		!strings.Contains(fj.comments[0], "over the policy's 50 lines: a person approves it, or denies it (requesting changes sends it back to the agent).") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 	if step := timelineStep(t, objects, "t1", "gate_policy"); step["lines"] != float64(53) {
