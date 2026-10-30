@@ -2252,16 +2252,18 @@ func TestReplanChildStoppedAtTheRevertsEnd(t *testing.T) {
 	asks := liveAsks(t, g.r, "c3")
 	var res ReplanChildResult
 	var err error
+	var ask AgentAsk
 	paused := false
 	g.r.store = &stopHook{fakeStore: g.store, card: "c4", run: func() {
+		ask = takeAsk(t, asks).ask
 		_, paused = g.store.pauses["sf/repo"]
 		res, err = g.r.ReplanChild(ctx, "c3", "the rest")
 	}}
 	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
 		t.Fatal(err)
 	}
-	if a := takeAsk(t, asks); a.ask.Kind != AskReplan {
-		t.Fatalf("c3's ask %+v, want the replan", a.ask)
+	if ask.Kind != AskReplan {
+		t.Fatalf("c3's ask %+v, want the replan", ask)
 	}
 	if !paused {
 		t.Fatal("the pause had lifted before c4 stopped")
