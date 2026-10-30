@@ -871,7 +871,8 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 			}
 		}
 	}
-	if !r.planAtRest(ctx, t) {
+	// a person closed the plan: nothing more is asked of it
+	if t.Status == "closed" || !r.planAtRest(ctx, t) {
 		return
 	}
 	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID})
@@ -967,7 +968,8 @@ func (r *Runner) draftDue(ctx context.Context, parent string) {
 		log.Printf("plan %s: the delta round: %v", parent, err)
 		return
 	}
-	if !r.planAtRest(ctx, t) {
+	// a person closed the plan: no card is drafted for it
+	if t.Status == "closed" || !r.planAtRest(ctx, t) {
 		return
 	}
 	r.draftDelta(ctx, t, repo, due)

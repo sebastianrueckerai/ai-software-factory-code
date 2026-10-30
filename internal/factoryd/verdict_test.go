@@ -1007,28 +1007,36 @@ func TestCriteriaPassLeavesAPlanUnderReplan(t *testing.T) {
 	}
 
 	// a criteria plan with a gap and a delta due: no question, no model call
-	// (the runner's supervisor fails the test on any)
-	cr, _, _ := newTestRunner(t, Task{ID: "t-other", Kind: "agent", Track: policy.TrackDirect, Repository: "sf/code"}, newFakeKube(), &fakeObjectStore{})
-	cs := seedVerdictPlan(t, "t-plan", "t-int", "done")
-	cr.store = cs
-	p := cs.tasks["t-plan"]
-	p.Status, p.RequiredCapabilities = "queued", []string{policy.ClassCoder}
-	cs.tasks["t-plan"] = p
-	if err := cr.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "t-int"}); err != nil {
-		t.Fatal(err)
-	}
-	if err := cs.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
-		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
-		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := cs.PutPlanCatches(ctx, "t-plan", 1, CatchDelta, FinderApprover, []string{"c3 grant 9"}); err != nil {
-		t.Fatal(err)
-	}
-	cr.CriteriaPass(ctx)
-	if pending, _ := cs.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
-		t.Fatalf("pending = %+v, want no gap question under the replan", pending)
+	// (the runner's supervisor fails the test on any), under its replan, and
+	// once a person closed it, under its replan or not
+	for _, c := range []struct {
+		status string
+		replan bool
+	}{{"queued", true}, {"closed", true}, {"closed", false}} {
+		cr, _, _ := newTestRunner(t, Task{ID: "t-other", Kind: "agent", Track: policy.TrackDirect, Repository: "sf/code"}, newFakeKube(), &fakeObjectStore{})
+		cs := seedVerdictPlan(t, "t-plan", "t-int", "done")
+		cr.store = cs
+		p := cs.tasks["t-plan"]
+		p.Status, p.RequiredCapabilities = c.status, []string{policy.ClassCoder}
+		cs.tasks["t-plan"] = p
+		if c.replan {
+			if err := cr.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "t-int"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := cs.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+			{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := cs.PutPlanCatches(ctx, "t-plan", 1, CatchDelta, FinderApprover, []string{"c3 grant 9"}); err != nil {
+			t.Fatal(err)
+		}
+		cr.CriteriaPass(ctx)
+		if pending, _ := cs.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+			t.Fatalf("plan %s, replan pending %t: pending = %+v, want no gap question", c.status, c.replan, pending)
+		}
 	}
 }
 
