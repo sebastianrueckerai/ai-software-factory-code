@@ -602,7 +602,10 @@ func offMainNote(p Task, n int) string {
 
 // revertCard is the refusal of a replan of plan p while its project's
 // pause names p with a filed revert card, a person's off-main revert or
-// one the planner's revision started: it names the card; "" for none.
+// one the planner's revision started: it names the card while the card
+// runs, and the pending end of one that ended; "" for none, and once the
+// plan's timeline records the card's end (endGroupRevert), whose stops
+// may cut themselves before the pause lifts.
 func (r *Runner) revertCard(ctx context.Context, p Task) (string, error) {
 	pause, paused, err := r.store.QueuePause(ctx, p.Repository)
 	if err != nil || !paused || pause.Plan != p.ID {
@@ -612,7 +615,17 @@ func (r *Runner) revertCard(ctx context.Context, p Task) (string, error) {
 	if err != nil || !filed {
 		return "", err
 	}
-	return fmt.Sprintf("Plan #%d's merged cards are coming off main: wait for the revert, card #%d.", p.IssueNumber, card.IssueNumber), nil
+	if !Final(card.Status) && card.Status != "merged" {
+		return fmt.Sprintf("Plan #%d's merged cards are coming off main: wait for the revert, card #%d.", p.IssueNumber, card.IssueNumber), nil
+	}
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+	if err != nil {
+		return "", fmt.Errorf("the timeline of %s: %w", p.ID, err)
+	}
+	if lastStep(tl, stepGroupReverted)["card"] == card.ID || lastStep(tl, stepGroupRevertEnded)["card"] == card.ID {
+		return "", nil
+	}
+	return fmt.Sprintf("Plan #%d's revert, card #%d, has ended, and factoryd is still recording its end: replan again in two minutes.", p.IssueNumber, card.IssueNumber), nil
 }
 
 // awaitOffMain answers a press on plan p while its pending replan step

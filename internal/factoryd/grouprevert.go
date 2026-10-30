@@ -384,10 +384,12 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // failure such as the wall clock or an error) tells the plan once that its
 // cards stay on main. At the session cap the agent card asks a person
 // first, as spec H wants; a hard failure lifts the pause with no person's
-// decision, since nothing else could lift it. Then a replan that waits
-// with off_main for the revert is carried out (completeReplan): the plan
-// goes to its planner, then the cards its step stops stop. The pause goes
-// last, the queue's waiting heads woken.
+// decision, since nothing else could lift it. The end's step goes on the
+// plan's timeline next, so a stopped card's cut finds the revert ended
+// (revertCard). Then a replan that waits with off_main for the revert is
+// carried out (completeReplan): the plan goes to its planner, then the
+// cards its step stops stop. The pause goes last, the queue's waiting
+// heads woken.
 // A step that fails leaves the pause for RevertPausePass, which runs it
 // all again; a comment or a reopen Forgejo refuses is logged and passed
 // instead, as no retry changes it and the queue must go on. Safe to
@@ -439,6 +441,9 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 	if err != nil {
 		return err
 	}
+	if err := r.timeline.Append(ctx, p.ID, step, detail); err != nil {
+		return fmt.Errorf("record %s: %w", step, err)
+	}
 	if pending && replan.OffMain && p.Status != "closed" && p.Status != "closing" {
 		_, err := r.completeReplan(ctx, p, replan)
 		switch {
@@ -448,7 +453,6 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 			return err
 		}
 	}
-	r.record(ctx, p.ID, step, detail)
 	if err := r.store.ClearRevertPause(ctx, pause.Project, pause.RevertTask); err != nil {
 		return err
 	}

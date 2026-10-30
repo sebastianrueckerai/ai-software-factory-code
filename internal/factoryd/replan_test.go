@@ -2190,6 +2190,96 @@ func TestOffMainRevertEndStopsTheCards(t *testing.T) {
 	}
 }
 
+// stopHook is a store whose first MoveDependents of card runs run first:
+// what arrives while the revert's end stops that card.
+type stopHook struct {
+	*fakeStore
+	card string
+	run  func()
+}
+
+func (s *stopHook) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
+	if run := s.run; from == s.card && run != nil {
+		s.run = nil
+		run()
+	}
+	return s.fakeStore.MoveDependents(ctx, from, to)
+}
+
+// A child the off-main revert's end stopped cuts itself while the end
+// still stops the card after it, the pause standing: the revert has
+// ended, so the cut joins the replan.
+func TestReplanChildStoppedAtTheRevertsEnd(t *testing.T) {
+	ctx := context.Background()
+	g := revertEndRig(t)
+	g.landed()
+	for _, k := range []Task{{ID: "c3", PlanKey: "ui", IssueNumber: 16}, {ID: "c4", PlanKey: "cli", IssueNumber: 17}} {
+		k.Kind, k.Track, k.Source, k.Parent, k.Repository, k.Status, k.PlanRevision = "agent", policy.TrackDirect, SourcePlan, "p", "sf/repo", "running", 1
+		if err := g.store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := g.r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "comment": "the api is wrong",
+		"stops": []string{"c3", "c4"}, "off_main": true, "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	asks := liveAsks(t, g.r, "c3")
+	var res ReplanChildResult
+	var err error
+	paused := false
+	g.r.store = &stopHook{fakeStore: g.store, card: "c4", run: func() {
+		_, paused = g.store.pauses["sf/repo"]
+		res, err = g.r.ReplanChild(ctx, "c3", "the rest")
+	}}
+	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if a := takeAsk(t, asks); a.ask.Kind != AskReplan {
+		t.Fatalf("c3's ask %+v, want the replan", a.ask)
+	}
+	if !paused {
+		t.Fatal("the pause had lifted before c4 stopped")
+	}
+	if want := (ReplanChildResult{Reason: "stopped for the replan of plan #10"}); err != nil || res != want {
+		t.Fatalf("ReplanChild = %+v, %v; want %+v", res, err, want)
+	}
+	if steps := stepsNamed(t, g.r, "c3", "replan_stop"); len(steps) != 1 {
+		t.Fatalf("c3's replan_stop steps %s, want one", steps)
+	}
+}
+
+// A revert card that ended before its end was carried out (its hook lost,
+// the minute pass not yet run) refuses a press and a child's cut with its
+// state: the press records nothing, and the replan still waits for the
+// end.
+func TestReplanWhileARevertsEndIsPending(t *testing.T) {
+	ctx := context.Background()
+	g := revertEndRig(t)
+	g.landed()
+	rv := g.store.tasks["t-rv"]
+	rv.Status, rv.FinishedAt = "merged", finishedAgo(30*time.Second)
+	g.store.tasks["t-rv"] = rv
+	if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	want := "Plan #10's revert, card #20, has ended, and factoryd is still recording its end: replan again in two minutes."
+	for _, offMain := range []bool{false, true} {
+		if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller", OffMain: offMain}); err != ErrNoReplan(want) {
+			t.Fatalf("a press with off main %t: %v, want %q", offMain, err, want)
+		}
+	}
+	if res, err := g.r.ReplanChild(ctx, "c3", "the rest"); err != nil || res != (ReplanChildResult{Refused: want}) {
+		t.Fatalf("ReplanChild = %+v, %v; want refused with %q", res, err, want)
+	}
+	steps := replanSteps(t, g.r, "p")
+	if _, pending, err := g.r.pendingReplan(ctx, g.store.tasks["p"]); err != nil || !pending || len(steps) != 1 || len(g.calls) != 0 || len(g.wf.reopens) != 0 ||
+		len(groupSteps(t, g.r, stepOffMainFailed)) != 0 {
+		t.Fatalf("pending %t (%v), steps %+v, reverts %q, reopens %+v, off_main_failed %v; want the replan waiting and nothing done",
+			pending, err, steps, g.calls, g.wf.reopens, groupSteps(t, g.r, stepOffMainFailed))
+	}
+}
+
 // A person's off-main replan says on the plan that its merged cards came
 // off main, once they did; a revert that did not land says nothing of it.
 func TestRecordReplanOffMain(t *testing.T) {
