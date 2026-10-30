@@ -405,7 +405,7 @@ func TestCreateTaskHandlerBudgetFromPolicy(t *testing.T) {
 // the form the sizing and the intake read; none asked adds no line.
 func TestCreateTaskHandlerWritesTheAskedBudget(t *testing.T) {
 	for body, want := range map[string]string{
-		`{"objective":"Add X\n\nDetails.","repository":"sf/ai-software-factory-code","budget_eur":5}`: "Add X\n\nDetails.\n\nBudget: 5 EUR",
+		`{"objective":"Add X\n\nDetails.","repository":"sf/ai-software-factory-code","budget_eur":3}`: "Add X\n\nDetails.\n\nBudget: 3 EUR",
 		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":9}`:             "Add X\n\nBudget: 4 EUR",
 		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":0.25}`:          "Add X\n\nBudget: 0.25 EUR",
 		`{"objective":"Add X","repository":"sf/ai-software-factory-code"}`:                            "Add X",
