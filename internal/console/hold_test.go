@@ -134,19 +134,6 @@ func TestDeployNowRefusesAFreeProduction(t *testing.T) {
 	}
 }
 
-func TestDeployNowNamesAQueuedPlan(t *testing.T) {
-	r, _ := holdRig(t)
-	r.c.cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) {
-		return "", factoryd.ErrPlanQueued{Plan: 12}
-	}
-	ck, s := r.loggedIn(t)
-	rec := r.do(post("/projects/"+holdProject+"/deploy-now", url.Values{"csrf": {s.csrf}}), ck)
-	want := "Production of " + holdProject + " is not held, but plan #12 has a card in the merge queue: a change under k8s/ goes live once it merges or leaves the queue."
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
-		t.Fatalf("Deploy now with a queued plan = %d %q, want 409 %q", rec.Code, rec.Body, want)
-	}
-}
-
 func TestDeployNowRefusesARedMain(t *testing.T) {
 	r, calls := holdRig(t)
 	r.c.cfg.DeployNow = func(_ context.Context, repository, by, via, decider string) (string, error) {

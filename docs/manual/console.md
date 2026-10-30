@@ -65,12 +65,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   confirm, main goes to production as it is, and the answer names the
   commit. A writer sees the cell and the section without the button and is
   refused the route with 403. A production that is not held refuses the
-  route with 409; for the factory's own project the refusal names a plan
-  with a card in the merge queue, which holds Flux, so a change under
-  `k8s/` goes live once that card merges or leaves the queue. A red main
-  refuses with 409 too: while main's newest push run concluded `failure`
-  or `cancelled`, Deploy now waits for a green run on main (a run still
-  running is taken). The board's text for the agent starts with the hold.
+  route with 409. A red main refuses with 409 too: while main's newest
+  push run concluded `failure` or `cancelled`, Deploy now waits for a
+  green run on main (a run still running is taken). The board's text for
+  the agent starts with the hold.
 - The held-production ask: a human card that asks the project's approvers
   what to do about the hold. factoryd files it once production has waited
   6 hours (the clock starts at the plan's first merge and again at each

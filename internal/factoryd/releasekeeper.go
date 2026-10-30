@@ -45,16 +45,6 @@ func (e ErrMainRed) Error() string {
 	return "main's newest push run at " + e.Commit[:min(7, len(e.Commit))] + " is red"
 }
 
-// ErrPlanQueued refuses a Deploy now of the factory's own repository while
-// no plan holds its production, but plan Plan (its issue) has a card in
-// the merge queue, which holds the factory's Kustomization suspended
-// (Roller.setFlux).
-type ErrPlanQueued struct{ Plan int64 }
-
-func (e ErrPlanQueued) Error() string {
-	return fmt.Sprintf("production is not held, but plan #%d has a card in the merge queue", e.Plan)
-}
-
 // promoteJob is the job of a project's main run that asks /release and
 // rolls prod (the template's ci.yml).
 const promoteJob = "promote"
@@ -72,7 +62,6 @@ func ReplanChoice(value string) (plan string, takeOff bool, ok bool) {
 // ReleaseStore is what the ReleaseKeeper reads and writes.
 type ReleaseStore interface {
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
-	QueuedPlans(ctx context.Context, repository string) ([]int64, error)
 	Release(ctx context.Context, repository string) (Release, error)
 	Releases(ctx context.Context) ([]Release, error)
 	PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error)
@@ -418,24 +407,13 @@ func (k *ReleaseKeeper) Hold(ctx context.Context, repository string) (Hold, erro
 // clock's restart and the cleared ask in one write, the standing ask
 // closed, the release recorded. The roller, /release and the next Pass do
 // the rest. A newest run that concluded red refuses (ErrMainRed); one
-// still running is taken. Own not held while a plan's card is in its merge
-// queue refuses with that plan (ErrPlanQueued).
+// still running is taken.
 func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, decider string) (string, error) {
 	h, err := k.Hold(ctx, repository)
 	if err != nil {
 		return "", err
 	}
 	if !h.Held() {
-		if repository != k.Own.String() {
-			return "", ErrNotHeld
-		}
-		queued, err := k.Store.QueuedPlans(ctx, repository)
-		if err != nil {
-			return "", err
-		}
-		if len(queued) > 0 {
-			return "", ErrPlanQueued{Plan: queued[0]}
-		}
 		return "", ErrNotHeld
 	}
 	_, runs, err := k.pushRuns(ctx, repository)
