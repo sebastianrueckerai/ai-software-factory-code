@@ -269,18 +269,18 @@ func TestSizeCardRetriesAFailedRecord(t *testing.T) {
 }
 
 // sizedBudget sizes t1 (filed as card) to size and answers the card.
-func sizedBudget(t *testing.T, card Task, size string) (*Runner, *fakeStore, Task) {
+func sizedBudget(t *testing.T, card Task, size string) Task {
 	t.Helper()
 	r, store, _, _ := sizingRig(t, card, "done", `{"size": "`+size+`", "reason": "r"}`)
 	sizeCard(t, r)
-	return r, store, store.tasks["t1"]
+	return store.tasks["t1"]
 }
 
 // The default 5 EUR card is the filing's budget: the sizing gives it its
 // size's budget, small 4, medium 5, large 10.
 func TestSizeCardSetsTheBudgetOfAnUnsizedCard(t *testing.T) {
 	for size, want := range map[string]float64{"small": 4, "medium": 5, "large": 10} {
-		if _, _, got := sizedBudget(t, sizingCard(), size); got.Size != size || got.BudgetEUR != want {
+		if got := sizedBudget(t, sizingCard(), size); got.Size != size || got.BudgetEUR != want {
 			t.Errorf("sized %s: size %q, budget %v, want %v", size, got.Size, got.BudgetEUR, want)
 		}
 	}
@@ -290,7 +290,7 @@ func TestSizeCardSetsTheBudgetOfAnUnsizedCard(t *testing.T) {
 func TestSizeCardKeepsARaisedBudget(t *testing.T) {
 	card := sizingCard()
 	card.BudgetEUR = 7
-	if _, _, got := sizedBudget(t, card, "small"); got.Size != "small" || got.BudgetEUR != 7 {
+	if got := sizedBudget(t, card, "small"); got.Size != "small" || got.BudgetEUR != 7 {
 		t.Fatalf("card size %q, budget %v, want small and the raised 7", got.Size, got.BudgetEUR)
 	}
 }
@@ -301,7 +301,7 @@ func TestSizeCardOfAStrongCard(t *testing.T) {
 	for size, want := range map[string]float64{"small": 5, "large": 10} {
 		card := sizingCard()
 		card.Rung = RungFrontier
-		if _, _, got := sizedBudget(t, card, size); got.BudgetEUR != want {
+		if got := sizedBudget(t, card, size); got.BudgetEUR != want {
 			t.Errorf("sized %s: budget %v, want %v", size, got.BudgetEUR, want)
 		}
 	}
@@ -327,7 +327,7 @@ func TestSizeCardKeepsAskedBudgetEqualToTheDefault(t *testing.T) {
 	for _, size := range []string{"small", "large"} {
 		card := sizingCard()
 		card.Objective += "\n\nBudget: 5"
-		if _, _, got := sizedBudget(t, card, size); got.Size != size || got.BudgetEUR != 5 {
+		if got := sizedBudget(t, card, size); got.Size != size || got.BudgetEUR != 5 {
 			t.Errorf("sized %s: size %q, budget %v, want the asked 5", size, got.Size, got.BudgetEUR)
 		}
 	}
