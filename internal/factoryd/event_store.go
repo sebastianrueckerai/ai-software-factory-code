@@ -113,7 +113,9 @@ const EventQuestionWithdrawn = "question_withdrawn"
 // EventPlanReplanned is factoryd's record of a replan's revision filed on
 // its plan: detail {"revision", "kept", "changed", "dropped", "added",
 // "origin", "by", "comment"}, the old cards' fates and the new cards
-// without a from, and who asked: a person, or the cut of a card.
+// without a from, and who asked: a person, or the cut of a card; a
+// round's: {"revision", "origin": "round", "round", "cards"}, the issues
+// of the round's cards in filing order.
 const EventPlanReplanned = "plan_replanned"
 
 // EventChatBudgetSpent is factoryd's record, on a project's chat task of

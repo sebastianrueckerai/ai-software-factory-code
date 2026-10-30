@@ -1201,10 +1201,11 @@ const (
 
 // replanRecord is a replan's record for its planner. findings are
 // factoryd's lines: a person's or a round's opener and one line per old
-// card; work are the agent's words, the cut's opener, which stand in the
-// brief's fence; branches are the fork's branches of the old cards that
-// hold work and did not merge, and the plan's salvage branch, each <fork
-// branch>:<local branch>; files are one record per old card.
+// card that is not settled; work are the agent's words, the cut's opener,
+// which stand in the brief's fence; branches are the fork's branches of
+// the old cards that hold work and did not merge, and the plan's salvage
+// branch, each <fork branch>:<local branch>; files are one record per old
+// card that is not settled.
 type replanRecord struct {
 	findings, branches []string
 	files              []harness.ReportFile

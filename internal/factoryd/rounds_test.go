@@ -1056,12 +1056,13 @@ func TestCriteriaPassStartsTheNextRound(t *testing.T) {
 
 // Review Focus 5: a person's replan of a plan whose round is complete
 // files the next round, and its step names it; the round check then adds
-// no step. A round that still runs replans itself, and a plan filed
-// before rounds replans as it did: their step names no round. A last
-// round that is complete files a round after it.
+// no step and no reopen, though the plan is done again, its reopen lost.
+// A round that still runs replans itself, and a plan filed before rounds
+// replans as it did: their step names no round. A last round that is
+// complete files a round after it.
 func TestReplanAfterACompleteRoundFilesTheNext(t *testing.T) {
 	ctx := context.Background()
-	r, _, _ := roundRig(t)
+	r, store, _ := roundRig(t)
 	if _, err := r.Replan(ctx, "p", ReplanAsk{By: "ana", Comment: "stats first"}); err != nil {
 		t.Fatal(err)
 	}
@@ -1069,9 +1070,10 @@ func TestReplanAfterACompleteRoundFilesTheNext(t *testing.T) {
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("replan steps %+v, want %+v", got, want)
 	}
+	setStatus(store, "p", "done")
 	r.roundCheck(ctx, "p")
-	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
-		t.Fatalf("replan steps after the round check %+v, want %+v", got, want)
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) || len(reopens(r)) != 1 {
+		t.Fatalf("after the round check: replan steps %+v, reopens %+v; want %+v and the Replan's reopen alone", got, reopens(r), want)
 	}
 
 	last := testPlan()
