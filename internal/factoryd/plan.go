@@ -2816,7 +2816,9 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 	if len(dropped) == 0 {
 		return nil
 	}
+	stopBeats := beatUntilDone(ctx, "revert")
 	_, err = r.RevertGroup(ctx, t, dropped, fmt.Sprintf("plan revision %d drops them", n))
+	stopBeats()
 	var no ErrNoReplan
 	if !errors.As(err, &no) {
 		return err
