@@ -499,8 +499,11 @@ port 8090 only.
   while factoryd runs it undoes a hand suspend or resume within 15
   seconds: before suspending a Kustomization by hand (a shutdown's
   `flux suspend kustomization --all`, an incident), scale factoryd to 0
-  with `kubectl -n factory scale deployment factoryd --replicas=0`. A
-  failed suspend is logged and noted on the hold's ask, and the hold goes
+  with `kubectl -n factory scale deployment factoryd --replicas=0`. Flux
+  may apply factoryd's Deployment (`replicas: 1`) before the suspend
+  lands, so check after it that factoryd is still at 0
+  (`kubectl -n factory get deployment factoryd` reads `0/0`); if not,
+  scale it to 0 and suspend again. A failed suspend is logged and noted on the hold's ask, and the hold goes
   on; a failed resume stops the roll. If factoryd is down while a hold
   stands, a manifest fix needs
   `flux resume kustomization factory -n flux-system` by hand.
