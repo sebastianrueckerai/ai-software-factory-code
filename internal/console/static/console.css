@@ -339,6 +339,7 @@ footer#live:empty { display: none; }
 .dmeta > *:not(:last-child)::after { content: "·"; margin-left: 5px; }
 .dmeta .g { margin-right: 4px; }
 .dmeta .chip { height: auto; padding: 0; border: 0; color: inherit; }
+.dmeta > .rollup { white-space: normal; max-width: 100%; }
 .face.final.d-failed .dmeta .st { color: var(--st-failed); }
 .dmeta form.inline button { height: auto; padding: 0; border: 0; background: none; color: var(--text-muted); font: inherit; letter-spacing: inherit; text-decoration: underline; text-decoration-color: var(--line-strong); text-underline-offset: 3px; cursor: pointer; }
 .dmeta form.inline button:hover { color: var(--accent); background: none; text-decoration-color: currentColor; }

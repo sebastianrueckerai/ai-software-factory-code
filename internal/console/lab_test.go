@@ -962,6 +962,13 @@ func busyScene(now time.Time) labScene {
 		k.Source, k.Parent, k.PlanKey = factoryd.SourcePlan, labID(531), key
 		return k
 	}
+	// the chat's set_dependency proposal joins #617 to #606, which one plan's cards may do
+	for _, c := range []struct {
+		t   *factoryd.Task
+		key string
+	}{{&drawer, "drawer-polish"}, {&queued.Task, "drawer-send"}} {
+		c.t.Source, c.t.Parent, c.t.PlanKey = factoryd.SourcePlan, labID(531), c.key
+	}
 	review := labCard(now, 601, "in-review", "direct", 4*time.Hour, "Pulse: recompute on a card's status change",
 		"The pulse recomputes every ten minutes; a card that fails waits that long to show. Recompute on each task_status row, at most once a minute.")
 	review.PRNumber, review.Gate, review.GateSince, review.SpentEUR = 605, factoryd.GateMergeQueue, at(8*time.Minute), 0.87
