@@ -2906,3 +2906,28 @@ func TestRedPlainRevertRetryAfterTheAgentCardEnded(t *testing.T) {
 		t.Errorf("issues %q, approvals %+v; want the one agent card and no one asked", g.fj.issues, g.store.approvals)
 	}
 }
+
+// A hand-over whose link of the pause fails has filed its agent card: the
+// retry links that card, files no second one, and ends t-rv.
+func TestRedPlainRevertRetryLinksTheSameCard(t *testing.T) {
+	g := revertEndRig(t)
+	ctx := context.Background()
+	if err := g.r.timeline.Append(ctx, "p", "group_revert", map[string]any{"card": "t-rv", "shas": []string{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}); err != nil {
+		t.Fatal(err)
+	}
+	g.r.store = &linkFailing{fakeStore: g.store, fails: 1}
+	red := ApprovalInput{PR: PullRequest{Number: 70}, Commit: "rv1", RedChecks: true, Factory: true}
+	if err := g.r.RequestApproval(ctx, "t-rv", red); err == nil || !strings.Contains(err.Error(), "the database is gone") {
+		t.Fatalf("error = %v, want the link's", err)
+	}
+	if p := g.store.pauses["sf/repo"]; p.RevertTask != "t-rv" || len(g.fj.issues) != 1 || len(g.wf.started) != 1 {
+		t.Fatalf("pause %+v, issues %q, started %q; want the pause on t-rv and the agent card filed", p, g.fj.issues, g.wf.started)
+	}
+	filed := g.wf.started[0]
+	if err := g.r.RequestApproval(ctx, "t-rv", red); err != nil {
+		t.Fatal(err)
+	}
+	if p := g.store.pauses["sf/repo"]; p.RevertTask != filed || len(g.fj.issues) != 1 || !slices.Equal(g.wf.started, []string{filed}) || g.store.tasks["t-rv"].Status != "closed" {
+		t.Errorf("pause %+v, issues %q, started %q, t-rv %s; want the pause on %s, one card and t-rv closed", p, g.fj.issues, g.wf.started, g.store.tasks["t-rv"].Status, filed)
+	}
+}
