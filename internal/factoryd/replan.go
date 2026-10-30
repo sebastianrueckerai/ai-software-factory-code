@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -67,7 +68,9 @@ func (r *Runner) pendingReplan(ctx context.Context, p Task) (ReplanStep, bool, e
 	return pendingIn(tl, p.ID)
 }
 
-// pendingIn is pendingReplan of plan id's timeline tl.
+// pendingIn is pendingReplan of plan id's timeline tl. Its Stops hold
+// those of each group revert's end since: an off-main revert's end stops
+// the cards that started while it ran too.
 func pendingIn(tl []byte, id string) (ReplanStep, bool, error) {
 	line := openStep(tl, stepReplan, replanClosers...)
 	if line == nil {
@@ -76,6 +79,20 @@ func pendingIn(tl []byte, id string) (ReplanStep, bool, error) {
 	var step ReplanStep
 	if err := json.Unmarshal(line, &step); err != nil {
 		return ReplanStep{}, false, fmt.Errorf("the replan step of %s: %w", id, err)
+	}
+	for l := range bytes.SplitSeq(tl[bytes.LastIndex(tl, line)+len(line):], []byte("\n")) {
+		var end struct {
+			Step  string   `json:"step"`
+			Stops []string `json:"stops"`
+		}
+		if json.Unmarshal(l, &end) != nil || end.Step != stepGroupReverted && end.Step != stepGroupRevertEnded {
+			continue
+		}
+		for _, k := range end.Stops {
+			if !slices.Contains(step.Stops, k) {
+				step.Stops = append(step.Stops, k)
+			}
+		}
 	}
 	return step, true, nil
 }

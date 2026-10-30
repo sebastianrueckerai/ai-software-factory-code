@@ -388,8 +388,9 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // plan's timeline next, so a stopped card's cut finds the revert ended
 // (revertCard). Then a replan that waits with off_main for the revert is
 // carried out (completeReplan): the plan goes to its planner, then the
-// cards its step stops stop. The pause goes last, the queue's waiting
-// heads woken.
+// cards its step stops stop, and with them the plan's cards that started
+// while the revert ran, which the end's step names (pendingIn). The pause
+// goes last, the queue's waiting heads woken.
 // A step that fails leaves the pause for RevertPausePass, which runs it
 // all again; a comment or a reopen Forgejo refuses is logged and passed
 // instead, as no retry changes it and the queue must go on. Safe to
@@ -441,10 +442,25 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 	if err != nil {
 		return err
 	}
+	carry := pending && replan.OffMain && p.Status != "closed" && p.Status != "closing"
+	if carry {
+		cards, err := r.store.PlanCards(ctx, p.ID)
+		if err != nil {
+			return err
+		}
+		for _, k := range cards {
+			if k.PlanRevision > 0 && stoppable(k) && !slices.Contains(replan.Stops, k.ID) {
+				replan.Stops = append(replan.Stops, k.ID)
+			}
+		}
+		if len(replan.Stops) > 0 {
+			detail["stops"] = replan.Stops
+		}
+	}
 	if err := r.timeline.Append(ctx, p.ID, step, detail); err != nil {
 		return fmt.Errorf("record %s: %w", step, err)
 	}
-	if pending && replan.OffMain && p.Status != "closed" && p.Status != "closing" {
+	if carry {
 		_, err := r.completeReplan(ctx, p, replan)
 		switch {
 		case forgejoTerminal(err):

@@ -2248,6 +2248,54 @@ func TestReplanChildStoppedAtTheRevertsEnd(t *testing.T) {
 	}
 }
 
+// The off-main revert's end stops the plan's cards that started while it
+// ran, beside the press's: before the pause lifts, with the end's step
+// already naming them, so the planner waits for each and its record reads
+// each as stopped.
+func TestOffMainRevertEndStopsTheCardsThatStartedSince(t *testing.T) {
+	ctx := context.Background()
+	g := revertEndRig(t)
+	g.landed()
+	for _, k := range []Task{{ID: "c3", PlanKey: "ui", IssueNumber: 16, PlanRevision: 1}, {ID: "c4", PlanKey: "cli", IssueNumber: 17, PlanRevision: 1},
+		{ID: "c5", PlanKey: "doc", IssueNumber: 18, PlanRevision: 1}, {ID: "c6", PlanKey: "ops", IssueNumber: 19}} {
+		k.Kind, k.Track, k.Source, k.Parent, k.Repository, k.Status = "agent", policy.TrackDirect, SourcePlan, "p", "sf/repo", "running"
+		if err := g.store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := g.r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "comment": "the api is wrong",
+		"stops": []string{"c3"}, "off_main": true, "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	asks := liveAsks(t, g.r, "c5")
+	paused, named := false, false
+	g.r.store = &stopHook{fakeStore: g.store, card: "c4", run: func() {
+		_, paused = g.store.pauses["sf/repo"]
+		ends := groupSteps(t, g.r, "group_reverted")
+		named = len(ends) == 1 && reflect.DeepEqual(ends[0]["stops"], []any{"c3", "c4", "c5"})
+	}}
+	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if !paused || !named {
+		t.Fatalf("at c4's stop: paused %t, the end's step naming c3, c4 and c5 %t; want both", paused, named)
+	}
+	for _, id := range []string{"c3", "c4"} {
+		if k := g.store.tasks[id]; k.Status != "closed" || finalReason(t, g.r, id) != "stopped for the replan of plan #10" {
+			t.Fatalf("%s %s (%q), want closed for the replan", id, k.Status, finalReason(t, g.r, id))
+		}
+	}
+	if a := takeAsk(t, asks); a.ask.Kind != AskReplan {
+		t.Fatalf("c5's ask %+v, want the replan", a.ask)
+	}
+	if c6 := g.store.tasks["c6"]; c6.Status != "running" {
+		t.Fatalf("c6 %s, want it running: it never started", c6.Status)
+	}
+	if got, err := g.r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Open: []string{"c5"}, By: "sebastian", Comment: "the api is wrong"}) {
+		t.Fatalf("ReplanStopped = %+v, %v; want c5 open", got, err)
+	}
+}
+
 // A revert card that ended before its end was carried out (its hook lost,
 // the minute pass not yet run) refuses a press and a child's cut with its
 // state: the press records nothing, and the replan still waits for the
