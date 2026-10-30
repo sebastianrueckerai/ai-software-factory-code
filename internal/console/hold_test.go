@@ -313,3 +313,34 @@ func TestHoldAskReplanNamesAFailedClose(t *testing.T) {
 		t.Errorf("%d replans, %d closes, status %s; want 1, 0, waiting-human", len(*replans), len(askRows(ev, factoryd.EventCardClosed)), askStatus(r))
 	}
 }
+
+// The chat's answer tool takes a label for its choice's value and routes
+// and admits as the button does.
+func TestHoldAskDeployAnywayByChat(t *testing.T) {
+	answer := func(r *rig, s *session) (string, error) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		tool, _ := r.c.chatTool("answer")
+		note, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
+			a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+			p: factoryd.Project{Name: holdProject, Repository: "sf/code"}}, toolInput{TaskID: "t-ask", Text: "Deploy anyway"})
+		return note, err
+	}
+	r, ev, deploys, _ := holdAskRig(t)
+	_, s := r.loggedIn(t)
+	note, err := answer(r, s)
+	if err != nil || !strings.Contains(note, "Deploy now: main of "+holdProject+" at 9d9d9d9 goes to production.") {
+		t.Fatalf("the approver's answer = %q, %v; want the Deploy now note", note, err)
+	}
+	if len(*deploys) != 1 || (*deploys)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaChat}) {
+		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the chat", *deploys)
+	}
+	if rows := askRows(ev, factoryd.EventQuestionAnswered); len(rows) != 1 || rows[0].Detail["value"] != factoryd.AnswerDeployAnyway {
+		t.Errorf("question_answered rows = %+v, want one with deploy_anyway", rows)
+	}
+
+	r, _, deploys, _ = holdAskRig(t)
+	_, ws := memberLogin(t, r, "morgan")
+	if _, err := answer(r, ws); err == nil || len(*deploys) != 0 {
+		t.Errorf("the writer's answer = %v with %d calls, want a refusal and none", err, len(*deploys))
+	}
+}
