@@ -2182,15 +2182,19 @@ func TestRecordReplanOffMain(t *testing.T) {
 	ctx := context.Background()
 	at := time.Now().Add(-time.Hour).UTC()
 	for _, tc := range []struct {
-		name     string
-		reverted *time.Time
-		want     string
+		name, comment string
+		reverted      *time.Time
+		want          string
 	}{
-		{"landed", finishedAgo(time.Minute), "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
-		{"not landed", nil, "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong."},
+		{"landed", "the api is wrong.", finishedAgo(time.Minute), "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+		{"landed, a comment without a period", "the api is wrong", finishedAgo(time.Minute),
+			"factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+		{"landed, a question", "is the api wrong?", finishedAgo(time.Minute),
+			"factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: is the api wrong? Its merged cards came off main."},
+		{"not landed", "the api is wrong", nil, "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r, _, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the api is wrong.", "off_main": true, "revision": 1},
+			r, _, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": tc.comment, "off_main": true, "revision": 1},
 				Task{ID: "t-api", PlanKey: "api", IssueNumber: 21, Status: "done", MergeCommit: "m-api", PlanRevision: 1, RevertedAt: tc.reverted})
 			p, repo, err := r.task(ctx, "t-plan")
 			if err != nil {

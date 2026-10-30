@@ -1075,8 +1075,12 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	i := slices.IndexFunc(cards, func(k Task) bool { return k.ID == step.Card })
 	switch {
 	case step.Origin == ReplanPerson:
-		note += fmt.Sprintf("\nAsked by %s: %s", cmp.Or(step.By, "a person"), sanitize.Inbound(step.Comment))
+		comment := sanitize.Inbound(step.Comment)
+		note += fmt.Sprintf("\nAsked by %s: %s", cmp.Or(step.By, "a person"), comment)
 		if step.OffMain && slices.ContainsFunc(cards, func(k Task) bool { return k.RevertedAt != nil && !k.RevertedAt.Before(step.Time) }) {
+			if c := strings.TrimSpace(comment); c != "" && !strings.ContainsAny(c[len(c)-1:], ".!?") {
+				note += "."
+			}
 			note += " Its merged cards came off main."
 		}
 	case step.Origin == ReplanCut && i >= 0:
