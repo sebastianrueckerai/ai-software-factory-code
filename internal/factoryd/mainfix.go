@@ -15,17 +15,16 @@ import (
 )
 
 // The backstop of the cheap merge turn (roadmap 222, item 4): a red push
-// run of main pauses the project's merge queue, files the fix-forward
-// card, and, when no fix lands within mainRedBound, files the revert of
-// the red commit as a factory-PR card. A run whose every failed job lost
-// its runner (killed, shut down, or its docker daemon restarted) is no
-// commit's fault and reverts nothing: factoryd re-runs it once through
-// Forgejo's rerun API and pauses with no card. The human card to re-run
-// it comes at once when the re-run fails or Forgejo offers none, and when
-// the re-run's jobs lost their runner too; a re-run red in a step files
-// the fix-forward card. The next green run of main ends the pause, wakes the
-// queue's heads and ends the pause's card, unless the card's own merge
-// made main green.
+// run of main pauses the project's merge queue and re-runs each failed job
+// once through Forgejo's job rerun API, so a flake (main's run 3176: the
+// build cache unreachable for seconds) files nothing. A re-run red too, or
+// one Forgejo refuses, files the fix-forward card, and when no fix lands
+// within mainRedBound of the pause, factoryd files the revert of the red
+// commit as a factory-PR card. A red whose every failed job lost its
+// runner (killed, shut down, or its docker daemon restarted) is no
+// commit's fault and reverts nothing: its card is the human one to re-run
+// it. The next green run of main ends the pause, wakes the queue's heads
+// and ends the pause's card, unless the card's own merge made main green.
 const (
 	SourceMainFix = "mainfix"
 	SourceRerun   = "rerun"
@@ -37,8 +36,7 @@ const (
 )
 
 // QueuePause is a project's paused merge queue: main is red since the run.
-// RerunAt is factoryd's one re-run of the run, zero without one; a pause
-// on a re-run has no card until the re-run is red again.
+// A pause with no card waits on its run's re-run.
 // A pause with a Plan is that plan's group revert instead: Reverts are the
 // cards whose merges it undoes, RevertTask its card. Main's own runs leave
 // it alone.
@@ -46,20 +44,20 @@ type QueuePause struct {
 	Project             string
 	RunID               int64
 	SHA                 string
-	Since, RerunAt      time.Time
+	Since               time.Time
 	FixTask, RevertTask string
 	Plan                string
 	Reverts             []string
 }
 
 // PauseQueue writes the project's pause; a pause that stands, a re-run's,
-// takes p's run and card. A plan's pause stands as it is, and the answer
-// is false: nothing was written.
+// takes p's run and card and keeps its since. A plan's pause stands as it
+// is, and the answer is false: nothing was written.
 func (s *PGStore) PauseQueue(ctx context.Context, p QueuePause) (bool, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at
+	res, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task) VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, fix_task = EXCLUDED.fix_task
 		WHERE queue_pauses.plan = ''`,
-		p.Project, p.RunID, p.SHA, p.Since, p.FixTask, nullTime(p.RerunAt))
+		p.Project, p.RunID, p.SHA, p.Since, p.FixTask)
 	if err != nil {
 		return false, err
 	}
@@ -83,18 +81,16 @@ func (s *PGStore) PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, 
 	return n == 1, err
 }
 
-const queuePauseColumns = `project, run_id, sha, since, rerun_at, fix_task, revert_task, plan, reverts`
+const queuePauseColumns = `project, run_id, sha, since, fix_task, revert_task, plan, reverts`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanQueuePause(row rowScanner) (QueuePause, error) {
 	var p QueuePause
-	var rerun sql.NullTime
 	var reverts []byte
-	if err := row.Scan(&p.Project, &p.RunID, &p.SHA, &p.Since, &rerun, &p.FixTask, &p.RevertTask, &p.Plan, &reverts); err != nil {
+	if err := row.Scan(&p.Project, &p.RunID, &p.SHA, &p.Since, &p.FixTask, &p.RevertTask, &p.Plan, &reverts); err != nil {
 		return QueuePause{}, err
 	}
-	p.RerunAt = rerun.Time
 	if err := json.Unmarshal(reverts, &p.Reverts); err != nil {
 		return QueuePause{}, err
 	}
@@ -145,11 +141,10 @@ func (s *PGStore) ClearRevertPause(ctx context.Context, project, revertTask stri
 	return err
 }
 
-// mainState reads main's newest push run: a red one pauses the queue and
-// files its card, a green one ends a pause, and a pause past the bound
-// with no revert yet files it. A red one on a pause with no card, a
-// re-run's, is judged again: the re-run's own red files its card, a newer
-// run's red is judged as a first one.
+// mainState reads main's newest push run: a red one pauses the queue, a
+// green one ends a pause, and a pause past the bound with no revert yet
+// files it. A red one on a pause with no card, a re-run's, is judged
+// again (pause).
 // While the newest runs or waits (a red one's re-run too), or ended
 // neither green nor red, nothing changes: an older run says nothing of
 // main's head. runs are the poll's, newest first by id.
@@ -178,11 +173,7 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 		}
 		return nil
 	case newest.Status == "failure" && (!paused || pause.FixTask == ""):
-		var rerunAt time.Time
-		if pause.RunID == newest.ID {
-			rerunAt = pause.RerunAt
-		}
-		return r.pause(ctx, *newest, rerunAt)
+		return r.pause(ctx, *newest)
 	case paused && time.Since(pause.Since) >= mainRedBound:
 		return r.revert(ctx, pause)
 	}
@@ -200,15 +191,18 @@ func newestMain(runs []ActionRun) *ActionRun {
 	return newest
 }
 
-// pause pauses the queue on the red run and files the fix-forward card.
-// When every failed job lost its runner (lostRunners), it re-runs the run
-// and pauses with no card; once rerunAt holds that one re-run, the human
-// card to re-run the jobs follows, as it does when the re-run fails. The
-// pause goes first, with no card: a plan's revert that paused the queue
-// since mainState read it keeps the queue, and the red files nothing. A
+// pause pauses the queue on the red run, then re-runs each of its failed
+// jobs once, a job's attempt telling its re-run (2 and up) from its first
+// run. The pause goes first, with no card: a plan's revert that paused the
+// queue since mainState read it keeps the queue, and the red files
+// nothing; a crash before the re-run leaves a pause the next poll re-runs
+// from. While a job of the run waits or runs, as a re-run does, nothing
+// more happens. A failed job at attempt 2 or up, or a re-run Forgejo
+// refuses, files the card: the human card to re-run the jobs when every
+// failed one lost its runner (lostRunners), else the fix-forward card. A
 // filing that fails leaves the pause with no card, which the next poll
-// judges again.
-func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) error {
+// judges again, its since kept.
+func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
 		return err
@@ -216,8 +210,34 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 	if !ok {
 		return fmt.Errorf("no project has the repository %s", r.Repo)
 	}
-	if wrote, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: rerunAt}); err != nil || !wrote {
+	if wrote, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now()}); err != nil || !wrote {
 		return err
+	}
+	jobs, err := r.Forgejo.ActionRunJobs(ctx, r.Token, r.Repo.Owner, r.Repo.Name, run.ID)
+	if err != nil {
+		return err
+	}
+	var redJobs []ActionJob
+	for _, j := range jobs {
+		if !doneStatus(j.Status) {
+			return nil
+		}
+		if j.Status == "failure" {
+			redJobs = append(redJobs, j)
+		}
+	}
+	var refused error
+	if len(redJobs) > 0 && !slices.ContainsFunc(redJobs, func(j ActionJob) bool { return j.Attempt > 1 }) {
+		for _, j := range redJobs {
+			if refused = r.Forgejo.RerunActionJob(ctx, r.Forgejo.Access(p).Actions, r.Repo.Owner, r.Repo.Name, j.ID); refused != nil {
+				log.Printf("roller: re-run job %s of main's run %d: %v: the card at once", j.Name, run.ID, refused)
+				break
+			}
+		}
+		if refused == nil {
+			log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses while factoryd re-runs its failed jobs once", run.CommitSHA, run.ID, p.Repository)
+			return nil
+		}
 	}
 	failed, lost := "main CI", []string(nil)
 	if cs, err := r.Forgejo.CombinedStatus(ctx, r.Repo.Owner, r.Repo.Name, run.CommitSHA); err == nil {
@@ -240,20 +260,11 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 	if lost != nil {
 		why := "factoryd re-ran it once, and the re-run's jobs lost their runner too: the runner or its node is at fault, not the code. " +
 			"Check the forgejo-runner pod in namespace forgejo (its restarts, its dind container, its node), then re-run the run from its page."
-		if rerunAt.IsZero() {
-			err := r.Forgejo.RerunActionRun(ctx, r.Forgejo.Access(p).Actions, r.Repo.Owner, r.Repo.Name, run.ID)
-			if err == nil {
-				if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: time.Now()}); err != nil {
-					return err
-				}
-				log.Printf("roller: main is red at %s (run %d), every failed job lost its runner: the merge queue of %s pauses while factoryd re-runs the run", run.CommitSHA, run.ID, p.Repository)
-				return nil
-			}
-			log.Printf("roller: re-run main's run %d: %v: the re-run card at once", run.ID, err)
-			why = fmt.Sprintf("factoryd re-runs such a run once itself, but its re-run failed (%v).", err)
-			if errors.Is(err, ErrNoRerun) {
-				why = "factoryd re-runs such a run once itself, but Forgejo offered no re-run: it has no rerun API (that came with Forgejo 17), or the project's Actions token lacks the right."
-			}
+		switch {
+		case errors.Is(refused, ErrNoRerun):
+			why = "factoryd re-runs such a run once itself, but Forgejo offered no re-run: it has no rerun API (that came with Forgejo 17), or the project's Actions token lacks the right."
+		case refused != nil:
+			why = fmt.Sprintf("factoryd re-runs such a run once itself, but its re-run failed (%v).", refused)
 		}
 		card = "re-run card"
 		t, err = EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), rerunQuestion(run.Index, run.CommitSHA, failed, lost, why), "factoryd", Task{
@@ -273,7 +284,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 	if err != nil {
 		return err
 	}
-	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: rerunAt, FixTask: t.ID}); err != nil {
+	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), FixTask: t.ID}); err != nil {
 		return err
 	}
 	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)

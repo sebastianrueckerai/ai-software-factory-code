@@ -251,12 +251,16 @@ From change id `red-head-restage` on (roadmap 202 with 67), a queue head
 whose checks are red at its merge (`merge_red_head`) does not wait for a
 human: its approval request is withdrawn (an approval sent meanwhile
 finds none open) and it takes its turn again. A red main pauses the
-queue and files a fix-forward card. The green run that ends the pause
-also ends that card, with a comment naming the run, unless the card's own
-merge made main green. A red run whose failed jobs all lost their runner
-pauses with no card while factoryd re-runs it once (Forgejo 17's rerun
-API); the human card to re-run it comes when the re-run fails, Forgejo
-offers none, or the re-run lost its runner too. So that turn comes once main is green again; main is merged in,
+queue, and factoryd re-runs each failed job of the run once (Forgejo
+17's job rerun API; a job's `attempt` above 1 marks its re-run), so a
+flake ends the pause with no card. A re-run red too, or one Forgejo
+refuses, files the fix-forward card; with no fix landed two hours after
+the pause began, the revert of the red commit follows. The green run that
+ends the pause also ends that card, with a comment naming the run, unless
+the card's own merge made main green. When every failed job of the red
+re-run lost its runner, or of a red whose re-run Forgejo refused, the
+card is the human one to re-run it instead, and nothing reverts. So that
+turn comes once main is green again; main is merged in,
 and a head that moved runs its checks. With nothing new from main the
 head's own checks are waited on and the red ones run again on an empty
 commit (`RerunChecks`); red checks that pass there, on the same tree, are

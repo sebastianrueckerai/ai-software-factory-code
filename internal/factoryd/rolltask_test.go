@@ -317,8 +317,9 @@ type rollForgejo struct {
 	logs        map[string]string              // a job's target_url -> its raw log, served to the bot's session
 	unreadable  map[string]bool                // a job's target_url whose log Forgejo cannot open
 	closed      []string                       // the number of every issue closed
-	rerun       int                            // the status a re-run answers; 0 is 204
-	reruns      []string                       // "token run" of every re-run asked
+	jobs        map[int64][]map[string]any     // run id -> its jobs (actionJob), as actions/runs/{id}/jobs lists them
+	rerun       int                            // the status a job's re-run answers; 0 is 204
+	reruns      []string                       // "token job" of every job re-run asked
 
 	// the roll branch's writes: what each contents commit changed on it,
 	// the pull request updates (its rebases), and the pull requests the
@@ -413,9 +414,31 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			json.NewDecoder(r.Body).Decode(&in)
 			dep := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies") + " on " + fmt.Sprint(in["index"])
 			f.deps = slices.DeleteFunc(f.deps, func(d string) bool { return d == dep })
-		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
-			f.reruns = append(f.reruns, strings.TrimPrefix(r.Header.Get("Authorization"), "token ")+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/rerun"))
-			w.WriteHeader(cmp.Or(f.rerun, http.StatusNoContent))
+		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/jobs"):
+			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/jobs"), 10, 64)
+			jobs, ok := f.jobs[id]
+			if !ok {
+				t.Errorf("jobs of run %d, which the fake does not know", id)
+				http.NotFound(w, r)
+				return
+			}
+			reply(jobs)
+		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
+			id := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun")
+			f.reruns = append(f.reruns, strings.TrimPrefix(r.Header.Get("Authorization"), "token ")+" "+id)
+			if status := cmp.Or(f.rerun, http.StatusNoContent); status != http.StatusNoContent {
+				w.WriteHeader(status)
+				return
+			}
+			// as Forgejo 17's PrepareNextAttempt: the job's next attempt waits
+			for _, jobs := range f.jobs {
+				for _, j := range jobs {
+					if fmt.Sprint(j["id"]) == id {
+						j["attempt"], j["status"] = j["attempt"].(int)+1, "waiting"
+					}
+				}
+			}
+			w.WriteHeader(http.StatusNoContent)
 		case repo == codeRepo && p == "/actions/runs":
 			if q.Get("event") != "push" {
 				t.Errorf("runs query %v", q)
@@ -700,6 +723,12 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 		&Registry{BaseURL: srv.URL, User: "puller", Password: "pw"}
 }
 
+// actionJob is a job of a run as Forgejo 17's actions/runs/{id}/jobs
+// lists it.
+func actionJob(id int64, name, status string, attempt int) map[string]any {
+	return map[string]any{"id": id, "name": name, "status": status, "attempt": attempt}
+}
+
 func pushRun(id int64, sha, status string) map[string]any {
 	return map[string]any{"id": id, "commit_sha": sha, "event": "push", "status": status, "prettyref": "main", "created": "2026-09-29T10:00:00Z"}
 }
@@ -965,6 +994,7 @@ func TestRollerWaitsForMainsHeadToPassItsTests(t *testing.T) {
 	f.mu.Lock()
 	f.runs[0]["status"] = "failure"
 	f.statuses[commitC2] = []map[string]string{{"status": "failure", "context": "ci / test (push)", "target_url": "https://git.example"}}
+	f.jobs = map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1)}}
 	f.mu.Unlock()
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)

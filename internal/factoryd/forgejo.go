@@ -571,8 +571,8 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 }
 
 // ErrNoRerun is Forgejo's answer that it offers no re-run of an action
-// run: a 404 from a Forgejo before 17, which has no rerun route, or a 403
-// to a token without the right, such as a read-only actions token.
+// run or job: a 404 from a Forgejo before 17, which has no rerun route, or
+// a 403 to a token without the right, such as a read-only actions token.
 var ErrNoRerun = errors.New("forgejo offers no re-run of an action run")
 
 // RerunActionRun re-runs owner/repo's action run runID through Forgejo
@@ -581,6 +581,42 @@ func (f *Forgejo) RerunActionRun(ctx context.Context, token, owner, repo string,
 	_, err := f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs/%d/rerun", owner, repo, runID), nil, anySuccess)
 	if errors.Is(err, ErrNotFound) || errors.Is(err, errForgejoForbidden) {
 		return fmt.Errorf("run %d of %s/%s: %w: %v", runID, owner, repo, ErrNoRerun, err)
+	}
+	return err
+}
+
+// ActionJob is one job of an action run as Forgejo 17's
+// actions/runs/{run_id}/jobs lists it. Status is its latest attempt's, the
+// outcome once done: the API has no conclusion of its own. Attempt is 1
+// for the job's first run; a re-run raises it as it queues the job.
+type ActionJob struct {
+	ID      int64  `json:"id"`
+	Name    string `json:"name"`
+	Status  string `json:"status"`
+	Attempt int64  `json:"attempt"`
+}
+
+// ActionRunJobs lists the jobs of owner/repo's action run runID, the id
+// actions/runs answers, not the run's number.
+func (f *Forgejo) ActionRunJobs(ctx context.Context, token, owner, repo string, runID int64) ([]ActionJob, error) {
+	body, err := f.tokenCall(token)(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/actions/runs/%d/jobs", owner, repo, runID), nil, http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var jobs []ActionJob
+	if err := json.Unmarshal(body, &jobs); err != nil {
+		return nil, fmt.Errorf("forgejo jobs of run %d of %s/%s: %w", runID, owner, repo, err)
+	}
+	return jobs, nil
+}
+
+// RerunActionJob re-runs owner/repo's done job jobID, and the jobs that
+// need it, through Forgejo 17's rerun API; a 404 or a 403 answers
+// ErrNoRerun.
+func (f *Forgejo) RerunActionJob(ctx context.Context, token, owner, repo string, jobID int64) error {
+	_, err := f.tokenCall(token)(ctx, http.MethodPost, fmt.Sprintf("/api/v1/repos/%s/%s/actions/jobs/%d/rerun", owner, repo, jobID), nil, anySuccess)
+	if errors.Is(err, ErrNotFound) || errors.Is(err, errForgejoForbidden) {
+		return fmt.Errorf("job %d of %s/%s: %w: %v", jobID, owner, repo, ErrNoRerun, err)
 	}
 	return err
 }

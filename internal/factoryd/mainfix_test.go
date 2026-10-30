@@ -15,10 +15,11 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
-// A red push run of main pauses the project's merge queue once and files
-// the fix-forward card, named after the failed jobs, when any of them
-// failed a step, though another lost its runner, and re-runs nothing; the
-// next poll files no second card.
+// A red push run of main pauses the project's merge queue and re-runs
+// each failed job once, with no card yet. The re-run red too files the
+// fix-forward card, named after the failed jobs, when any of them failed a
+// step, though another lost its runner; the next poll files no second
+// card and re-runs nothing more.
 func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	test, image := "/"+codeRepo+"/actions/runs/0/jobs/0", "/"+codeRepo+"/actions/runs/0/jobs/1"
 	f := &rollForgejo{
@@ -27,11 +28,24 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx, "sf/opencode-worker/manifests/c1c1c1c": workerOldIdx, "sf/ci-runner/manifests/c1c1c1c": runnerIdx}, gwOldIdx, workerOldIdx, runnerIdx),
 		statuses: map[string][]map[string]string{commitC2: {{"status": "failure", "context": "ci / test (push)", "target_url": test}, {"status": "failure", "context": "ci / image (push)", "target_url": image}}},
 		logs:     map[string]string{test: readTestdata(t, "joblog-run1208-test.log"), image: readTestdata(t, "joblog-run1198-image.log")},
+		jobs:     map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "failure", 1)}},
 	}
 	roller, store, _ := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
+	roller.Forgejo.Seeded = map[string]string{policy.SecretCIRegistrar: "actions-tok"}
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
 	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if pause, ok := store.pauses[codeRepo]; !ok || pause.RunID != 58 || pause.FixTask != "" || len(f.issues) != 0 ||
+		!slices.Equal(f.reruns, []string{"actions-tok 5801", "actions-tok 5802"}) {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want run 58's pause, both failed jobs re-run, no card", pause, ok, f.reruns, f.issues)
+	}
+	// the re-run is red too
+	for _, j := range f.jobs[58] {
+		j["status"] = "failure"
+	}
 	for range 2 {
 		if err := roller.poll(ctx); err != nil {
 			t.Fatal(err)
@@ -49,8 +63,8 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	if fix.Source != SourceMainFix || fix.Track != "direct" || fix.Status != "queued" || fix.SHA != commitC2 || fix.Kind != "agent" {
 		t.Fatalf("fix card %+v, want a ready coder card on the red commit", fix)
 	}
-	if len(f.reruns) != 0 {
-		t.Fatalf("re-runs %q, want none", f.reruns)
+	if len(f.reruns) != 2 {
+		t.Fatalf("re-runs %q, want the first two alone", f.reruns)
 	}
 }
 
@@ -349,10 +363,10 @@ func TestRollerEndsTheFixCardWhenMainTurnsGreenWithoutIt(t *testing.T) {
 	}
 }
 
-// A re-run's pause round-trips through Postgres with its re-run and no
-// card; the card that follows the re-run's red takes the row, its re-run
-// kept, and a pause with no re-run reads none.
-func TestPGStoreQueuePauseRerun(t *testing.T) {
+// A re-run's pause round-trips through Postgres with no card; the card
+// that follows the re-run's red takes the row and keeps its since, main
+// red since then, and a pause written after the clear has its own.
+func TestPGStoreQueuePauseKeepsItsSince(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
@@ -363,26 +377,102 @@ func TestPGStoreQueuePauseRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
-	rerun := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC2, Since: at, RerunAt: at}
+	rerun := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC2, Since: at}
 	if wrote, err := s.PauseQueue(ctx, rerun); err != nil || !wrote {
 		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
-	if p, ok, err := s.QueuePause(ctx, codeRepo); err != nil || !ok || p.RunID != 58 || p.SHA != commitC2 || !p.Since.Equal(at) || !p.RerunAt.Equal(at) || p.FixTask != "" {
-		t.Fatalf("re-run's pause = %+v (%v, %v), want run 58's re-run of %s with no card", p, ok, err, at)
+	if p, ok, err := s.QueuePause(ctx, codeRepo); err != nil || !ok || p.RunID != 58 || p.SHA != commitC2 || !p.Since.Equal(at) || p.FixTask != "" {
+		t.Fatalf("re-run's pause = %+v (%v, %v), want run 58's since %s with no card", p, ok, err, at)
 	}
 	card := rerun
 	card.Since, card.FixTask = at.Add(20*time.Minute), "t-card"
 	if wrote, err := s.PauseQueue(ctx, card); err != nil || !wrote {
 		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
-	if p, _, err := s.QueuePause(ctx, codeRepo); err != nil || !p.Since.Equal(card.Since) || !p.RerunAt.Equal(at) || p.FixTask != "t-card" {
-		t.Fatalf("pause = %+v (%v), want the card since %s, the re-run of %s kept", p, err, card.Since, at)
+	if p, _, err := s.QueuePause(ctx, codeRepo); err != nil || !p.Since.Equal(at) || p.FixTask != "t-card" {
+		t.Fatalf("pause = %+v (%v), want the card, since %s kept", p, err, at)
 	}
-	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: "sf/other", RunID: 7, SHA: commitC1, Since: at, FixTask: "t-fix"}); err != nil || !wrote {
+	if err := s.ClearQueuePause(ctx, codeRepo); err != nil {
+		t.Fatal(err)
+	}
+	if wrote, err := s.PauseQueue(ctx, card); err != nil || !wrote {
 		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
-	if p, _, err := s.QueuePause(ctx, "sf/other"); err != nil || !p.RerunAt.IsZero() || p.FixTask != "t-fix" {
-		t.Fatalf("pause = %+v (%v), want no re-run", p, err)
+	if p, _, err := s.QueuePause(ctx, codeRepo); err != nil || !p.Since.Equal(card.Since) || p.FixTask != "t-card" {
+		t.Fatalf("pause = %+v (%v), want a new one since %s", p, err, card.Since)
+	}
+}
+
+// Main's push run 3176 failed in one job, image-runner, whose push found
+// the build cache unreachable for a few seconds: a flake, which the fix
+// card and then the revert of a deployed roll took for a fault
+// (2026-10-30, card #1331). A red run re-runs each failed job once, by its
+// id among the jobs of the run's id, not its number, with the project's
+// actions token: the queue pauses with no card and no agent starts. While
+// the job's re-run waits, though the run still reads red, nothing is sent
+// again; its green ends the pause and wakes the queue's head, with no card
+// to end.
+func TestRollerReRunsAFlakyMainOnce(t *testing.T) {
+	run3176 := func(status string) []map[string]any {
+		r := pushRun(3090, commitC2, status)
+		r["index_in_repo"] = 3176
+		return []map[string]any{r, pushRun(3089, commitC1, "success")}
+	}
+	f := &rollForgejo{
+		runs:  run3176("failure"),
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx, "sf/opencode-worker/manifests/c1c1c1c": workerOldIdx, "sf/ci-runner/manifests/c1c1c1c": runnerIdx,
+			"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+		jobs: map[int64][]map[string]any{3090: {
+			actionJob(9410, "upstream", "success", 1), actionJob(9411, "test", "success", 1), actionJob(9412, "image", "success", 1),
+			actionJob(9413, "image-sandbox", "success", 1), actionJob(9414, "image-runner", "failure", 1),
+		}},
+	}
+	roller, store, wf := newTestRoller(t, f)
+	roller.Forgejo.Seeded = map[string]string{policy.SecretCIRegistrar: "actions-tok"}
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
+	store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.RunID != 3090 || pause.SHA != commitC2 || pause.FixTask != "" || pause.RevertTask != "" {
+		t.Fatalf("pause = %+v (%v), want run 3090's with no card", pause, ok)
+	}
+	if !slices.Equal(f.reruns, []string{"actions-tok 9414"}) || !slices.Contains(f.calls, "GET /api/v1/repos/"+codeRepo+"/actions/runs/3090/jobs") ||
+		!slices.Contains(f.calls, "POST /api/v1/repos/"+codeRepo+"/actions/jobs/9414/rerun") || len(f.issues) != 0 || len(wf.started) != 0 {
+		t.Fatalf("re-runs %q, issues %q, workflows started %q; want image-runner re-run with the actions token, no card, no agent", f.reruns, f.issues, wf.started)
+	}
+
+	// the run still reads red while the job's second attempt waits, then runs
+	for _, runs := range [][]map[string]any{run3176("failure"), run3176("running")} {
+		f.runs = runs
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if p, ok := store.pauses[codeRepo]; !ok || !reflect.DeepEqual(p, pause) || len(f.reruns) != 1 || len(f.issues) != 0 || len(wf.signals) != 0 {
+			t.Fatalf("run %s: pause = %+v (%v), re-runs %q, issues %q, signals %q; want the pause alone", runs[0]["status"], p, ok, f.reruns, f.issues, wf.signals)
+		}
+	}
+
+	// the re-run is green
+	f.jobs[3090][4]["status"] = "success"
+	f.runs = run3176("success")
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.pauses[codeRepo]; ok {
+		t.Fatal("the pause survived the re-run's green")
+	}
+	if !slices.Contains(wf.signals, "w1 queue_turn  #0: ") {
+		t.Fatalf("signals = %q, want the waiting head woken", wf.signals)
+	}
+	if len(f.reruns) != 1 || len(f.comments) != 0 || len(f.closed) != 0 || len(f.issues) != 0 {
+		t.Fatalf("re-runs %q, comments %q, closed issues %q, issues %q; want one re-run and no card", f.reruns, f.comments, f.closed, f.issues)
 	}
 }
 
@@ -413,6 +503,7 @@ func lostMain(t *testing.T) (*rollForgejo, *Roller, *fakeStore, *fakeWorkflows) 
 		}},
 		// 30000 lines of 40 bytes ahead of run 1208's tail
 		logs: map[string]string{job: strings.Repeat("2026-10-14T20:28:00.0000000Z #31 filler\n", 30000) + readTestdata(t, "joblog-run1208-test.log")},
+		jobs: map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "success", 1)}},
 	}
 	roller, store, wf := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
@@ -424,11 +515,11 @@ func lostMain(t *testing.T) (*rollForgejo, *Roller, *fakeStore, *fakeWorkflows) 
 }
 
 // A red push run whose every failed job lost its runner is no commit's
-// fault: factoryd re-runs it once by its id with the project's actions
-// token and pauses the queue with no card, and no agent starts. While the
-// re-run runs the pause holds, past the bound too, with no second re-run
-// and no revert; the re-run's green ends the pause and wakes the queue's
-// head, with no card to end.
+// fault: factoryd re-runs the job once, as any red run's, by its id with
+// the project's actions token and pauses the queue with no card, and no
+// agent starts. While the re-run runs the pause holds, past the bound too,
+// with no second re-run and no revert; the re-run's green ends the pause
+// and wakes the queue's head, with no card to end.
 func TestRollerReRunsMainWhenItsRunnerWasLost(t *testing.T) {
 	f, roller, store, wf := lostMain(t)
 	ctx := context.Background()
@@ -436,12 +527,12 @@ func TestRollerReRunsMainWhenItsRunnerWasLost(t *testing.T) {
 		t.Fatal(err)
 	}
 	pause, ok := store.pauses[codeRepo]
-	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.RerunAt.IsZero() || pause.FixTask != "" || pause.RevertTask != "" {
-		t.Fatalf("pause = %+v (%v), want run 58's, re-run, with no card", pause, ok)
+	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask != "" || pause.RevertTask != "" {
+		t.Fatalf("pause = %+v (%v), want run 58's with no card", pause, ok)
 	}
-	if !slices.Equal(f.reruns, []string{"actions-tok 58"}) || !slices.Contains(f.calls, "POST /api/v1/repos/"+codeRepo+"/actions/runs/58/rerun") ||
+	if !slices.Equal(f.reruns, []string{"actions-tok 5801"}) || !slices.Contains(f.calls, "POST /api/v1/repos/"+codeRepo+"/actions/jobs/5801/rerun") ||
 		len(f.issues) != 0 || len(wf.started) != 0 {
-		t.Fatalf("re-runs %q, issues %q, workflows started %q; want run 58 re-run with the actions token, no card, no agent", f.reruns, f.issues, wf.started)
+		t.Fatalf("re-runs %q, issues %q, workflows started %q; want job 5801 re-run with the actions token, no card, no agent", f.reruns, f.issues, wf.started)
 	}
 
 	// the re-run runs past the bound: run 57's green says nothing of main's head
@@ -489,20 +580,20 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	rerunAt := store.pauses[codeRepo].RerunAt
 	f.runs = []map[string]any{run1208("running"), pushRun(57, commitC1, "success")}
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
 	f.runs = []map[string]any{run1208("failure"), pushRun(57, commitC1, "success")}
+	f.jobs[58][0]["status"] = "failure"
 	for range 2 {
 		if err := roller.poll(ctx); err != nil {
 			t.Fatal(err)
 		}
 	}
 	pause, ok := store.pauses[codeRepo]
-	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || !pause.RerunAt.Equal(rerunAt) || pause.RevertTask != "" {
-		t.Fatalf("pause = %+v (%v), want run 58's with its re-run of %s and its card", pause, ok, rerunAt)
+	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RevertTask != "" {
+		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
 	}
 	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n\n```\nmain is red at c2c2c2c: re-run ci / test (push), its runner was lost.\n```\n\nWhy: Main CI's push run 1208 of "+commitC2+" failed, but none of its steps did") ||
 		!strings.Contains(f.issues[0], "No change to the code fixes that, so no agent works on this card. factoryd re-ran it once, and the re-run's jobs lost their runner too: "+
@@ -567,8 +658,8 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 }
 
 // A re-run red in a step failed on the code after all: its red files the
-// fix-forward card as any such red does, the bound counted from it, and
-// past the bound the revert of the red commit follows.
+// fix-forward card as any such red does, the bound counted from the
+// pause, and past the bound the revert of the red commit follows.
 func TestRollerFilesTheFixCardWhenTheReRunFailsAStep(t *testing.T) {
 	f, roller, store, _ := lostMain(t)
 	job := "/" + codeRepo + "/actions/runs/1208/jobs/0"
@@ -576,16 +667,17 @@ func TestRollerFilesTheFixCardWhenTheReRunFailsAStep(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
+	paused := store.pauses[codeRepo].Since
 	// run 1199's test job failed go vet
 	f.logs[job] = readTestdata(t, "joblog-run1199-test.log")
 	f.runs = []map[string]any{run1208("failure"), pushRun(57, commitC1, "success")}
-	redAgain := time.Now()
+	f.jobs[58][0]["status"] = "failure"
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
 	pause, ok := store.pauses[codeRepo]
-	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || pause.RerunAt.IsZero() || pause.Since.Before(redAgain) {
-		t.Fatalf("pause = %+v (%v), want run 58's with its re-run and its fix card, since %s or later", pause, ok, redAgain)
+	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask == "" || !pause.Since.Equal(paused) {
+		t.Fatalf("pause = %+v (%v), want run 58's with its fix card, since the pause at %s", pause, ok, paused)
 	}
 	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: ci / test (push)\n\n") ||
 		!strings.Contains(f.issues[0], "The run: https://git.example/"+codeRepo+"/actions/runs/1208.") {
@@ -635,6 +727,7 @@ func TestRollerFilesARerunCardWhenARunnerWasKilledOrItsDockerRestarted(t *testin
 			{"status": "failure", "context": "ci / image (push)", "target_url": image, "created_at": "2026-10-15T07:04:49Z"},
 		}},
 		logs:  map[string]string{test: readTestdata(t, "joblog-runner-killed.log"), image: readTestdata(t, "joblog-dind-restart.log")},
+		jobs:  map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "failure", 1)}},
 		rerun: http.StatusNotFound,
 	}
 	roller, store, wf := newTestRoller(t, f)
@@ -683,6 +776,7 @@ func TestRollerFilesARerunCardWhenAJobLeftNoLog(t *testing.T) {
 		}},
 		logs:       map[string]string{test: ""},
 		unreadable: map[string]bool{image: true},
+		jobs:       map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "failure", 1)}},
 		rerun:      http.StatusInternalServerError,
 	}
 	roller, store, wf := newTestRoller(t, f)
@@ -699,7 +793,7 @@ func TestRollerFilesARerunCardWhenAJobLeftNoLog(t *testing.T) {
 		!strings.Contains(f.issues[0], "ci / test (push), https://git.example"+test+": its log is empty, its runner lost before the job's first line.") ||
 		!strings.Contains(f.issues[0], "ci / image (push), https://git.example"+image+": factoryd cannot read its log (forgejo job log "+image+": status 500); a runner lost before the job's first line leaves none.") ||
 		!strings.Contains(f.issues[0], "No change to the code fixes that, so no agent works on this card. factoryd re-runs such a run once itself, but its re-run failed "+
-			"(forgejo POST /api/v1/repos/"+codeRepo+"/actions/runs/58/rerun: status 500: ).") {
+			"(forgejo POST /api/v1/repos/"+codeRepo+"/actions/jobs/5801/rerun: status 500: ).") {
 		t.Fatalf("issues %q, want the one re-run card naming both jobs and the failed re-run", f.issues)
 	}
 	if len(f.reruns) != 1 {
@@ -883,7 +977,7 @@ func TestPGStorePauseQueueLeavesAPlanPause(t *testing.T) {
 	if ok, err := s.PauseQueueForRevert(ctx, group); err != nil || !ok {
 		t.Fatalf("PauseQueueForRevert = %v, %v", ok, err)
 	}
-	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since.Add(time.Hour), FixTask: "t-fix", RerunAt: group.Since}); err != nil || wrote {
+	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since.Add(time.Hour), FixTask: "t-fix"}); err != nil || wrote {
 		t.Fatalf("PauseQueue = %t, %v; want nothing written", wrote, err)
 	}
 	got, ok, err := s.QueuePause(ctx, "sf/r")
@@ -955,9 +1049,10 @@ func TestRollerRedFilesNothingWhenAPlanPausedFirst(t *testing.T) {
 
 // A red main pauses the queue before it files its card: a filing that
 // fails leaves the pause with no card, and the next poll files the card
-// and links it.
+// and links it, the pause's since kept for the revert bound.
 func TestRollerRedPausesBeforeItsCard(t *testing.T) {
-	f := &rollForgejo{}
+	// run 59's test job is red at its re-run too: the card is due
+	f := &rollForgejo{jobs: map[int64][]map[string]any{59: {actionJob(5901, "test", "failure", 2)}}}
 	roller, store, _ := newTestRoller(t, f)
 	store.createFails = 1
 	ctx := context.Background()
@@ -965,14 +1060,15 @@ func TestRollerRedPausesBeforeItsCard(t *testing.T) {
 	if err := roller.mainState(ctx, runs); err == nil || !strings.Contains(err.Error(), "insert failed") {
 		t.Fatalf("error = %v, want the filing's", err)
 	}
-	if p, ok := store.pauses[codeRepo]; !ok || p.RunID != 59 || p.SHA != commitC2 || p.FixTask != "" {
-		t.Fatalf("pause = %+v (%t), want run 59's with no card", p, ok)
+	first, ok := store.pauses[codeRepo]
+	if !ok || first.RunID != 59 || first.SHA != commitC2 || first.FixTask != "" {
+		t.Fatalf("pause = %+v (%t), want run 59's with no card", first, ok)
 	}
 	if err := roller.mainState(ctx, runs); err != nil {
 		t.Fatal(err)
 	}
 	p := store.pauses[codeRepo]
-	if fix := store.tasks[p.FixTask]; p.RunID != 59 || fix.Source != SourceMainFix || fix.SHA != commitC2 {
+	if fix := store.tasks[p.FixTask]; p.RunID != 59 || !p.Since.Equal(first.Since) || fix.Source != SourceMainFix || fix.SHA != commitC2 {
 		t.Fatalf("pause %+v, its card %+v; want run 59's fix-forward card linked", p, fix)
 	}
 }
