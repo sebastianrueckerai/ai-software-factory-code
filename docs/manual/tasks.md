@@ -141,8 +141,10 @@ writer's filed `medium` or `large` runs no session: the card goes to the
 planner. Otherwise an `analyzer` report task of source `sizing` reads the
 issue and the repository and answers a size, a reason and the files; an
 outsider's filed size is no floor. The step is recorded first, then the
-size is written, so a retry completes the write. The sizing sets the size,
-not the budget: the card keeps the budget its filing gave it. A `small`
+size is written, so a retry completes the write. The write sets the size,
+and the budget of that size (`small` 4, `medium` 5, `large` 10 EUR) when
+the card still holds the budget its filing's size gave it; a `Budget:` line
+or a fund keeps its value. A `small`
 card runs the coder. A `medium` or `large` card turns plan-track through
 `BecomePlan`, and the planner starts from the files the sizing named. A
 `to_plan` a person sent during the sizing joins that switch. If

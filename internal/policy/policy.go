@@ -1397,9 +1397,9 @@ func (b Budget) ClampBudget(requested float64) float64 {
 var CardSizes = []string{"small", "medium", "large"}
 
 // sizeEUR is a card's budget by its size.
-var sizeEUR = map[string]float64{"small": 2, "medium": 5, "large": 10}
+var sizeEUR = map[string]float64{"small": 4, "medium": 5, "large": 10}
 
-// SizeBudget is a card's budget by its size: small 2, medium 5, large 10,
+// SizeBudget is a card's budget by its size: small 4, medium 5, large 10,
 // any other size the default.
 func (b Budget) SizeBudget(size string) float64 {
 	if eur, ok := sizeEUR[size]; ok {

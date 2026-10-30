@@ -881,7 +881,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 }
 
 // A card's budget follows its size (policy budget 5 by default, 15 at
-// most): small 2, medium 5, large 10, a large one at most the project's
+// most): small 4, medium 5, large 10, a large one at most the project's
 // card maximum.
 func TestChildrenBudgetBySize(t *testing.T) {
 	p := testPlan()
@@ -901,7 +901,7 @@ func TestChildrenBudgetBySize(t *testing.T) {
 			t.Fatalf("ref %+v, want four cards", ref)
 		}
 		cards := cardsByKey(t, store)
-		for key, want := range map[string]float64{"foundation": min(5, tc.large), "links-api": tc.large, "redirects": 2} {
+		for key, want := range map[string]float64{"foundation": min(5, tc.large), "links-api": tc.large, "redirects": min(4, tc.large)} {
 			if got := cards[key].BudgetEUR; got != want {
 				t.Errorf("project budget %+v: card %s budget %g, want %g", tc.budget, key, got, want)
 			}
@@ -910,7 +910,7 @@ func TestChildrenBudgetBySize(t *testing.T) {
 }
 
 // A small card the plan files on the frontier rung gets a medium card's
-// budget, 5 under the test policy; a small cheap card keeps a small one's 2.
+// budget, 5 under the test policy; a small cheap card keeps a small one's 4.
 func TestChildrenBudgetOfAFrontierCard(t *testing.T) {
 	p := testPlan()
 	p.Cards[1].Rung = RungFrontier
@@ -919,7 +919,7 @@ func TestChildrenBudgetOfAFrontierCard(t *testing.T) {
 		t.Fatalf("ref %+v, want four cards", ref)
 	}
 	cards := cardsByKey(t, store)
-	for key, want := range map[string]float64{"links-api": 5, "redirects": 2} {
+	for key, want := range map[string]float64{"links-api": 5, "redirects": 4} {
 		if got := cards[key].BudgetEUR; got != want {
 			t.Errorf("card %s budget %g, want %g", key, got, want)
 		}

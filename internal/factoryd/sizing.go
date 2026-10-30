@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -38,10 +39,11 @@ func sizedSwitch(size, reason string, files []string) *PlanSwitch {
 // carries a pull request is not sized: its work exists. A writer's filed
 // medium or large goes to the planner without a session; an outsider's
 // filed size is no floor. Otherwise the sizing report task sizes it, and
-// a sizing with no size keeps the card as filed. The sizing sets the size
-// and leaves the budget. The sizing step is recorded once and first; the
-// size write follows from it, and a call that finds the step completes
-// that write and answers from it.
+// a sizing with no size keeps the card as filed. The sizing sets the size,
+// and the budget of its size when the card still holds its filing's: a
+// raise keeps its value. The sizing step is recorded once and first; the
+// write follows from it, and a call that finds the step completes that
+// write and answers from it.
 func (r *Runner) SizeCard(ctx context.Context, taskID string) (SizeResult, error) {
 	defer beatUntilDone(ctx, "sizing")()
 	step, err := r.sizingStep(ctx, taskID)
@@ -87,7 +89,10 @@ func (r *Runner) sizingStep(ctx context.Context, taskID string) (map[string]any,
 }
 
 // sizing is card t's sizing step, its gate's end included. Only a step
-// whose session answered a size carries it as sized.
+// whose session answered a size carries it as sized. A sized step that
+// changes the card's size carries held_cents, the budget the card holds,
+// and budget_eur, the budget the write sets: the sized size's when the
+// card holds its filing's, else the one it holds.
 func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if t.CarryPR > 0 {
 		return gateEnd(t, GateSizing, map[string]any{"skipped": fmt.Sprintf("the card carries pull request #%d, whose work exists", t.CarryPR)}), nil
@@ -109,23 +114,32 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if !ok {
 		return gateEnd(t, GateSizing, map[string]any{"size": t.Size, "filed": t.Size, "reason": reason, "report": child.ID, "plan": false}), nil
 	}
-	return gateEnd(t, GateSizing, map[string]any{"size": v.Size, "filed": t.Size, "sized": v.Size, "reason": v.Reason, "files": v.Files,
-		"report": child.ID, "plan": v.Size != "small"}), nil
+	detail := map[string]any{"size": v.Size, "filed": t.Size, "sized": v.Size, "reason": v.Reason, "files": v.Files,
+		"report": child.ID, "plan": v.Size != "small"}
+	if v.Size != t.Size {
+		p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
+		if err != nil {
+			return nil, err
+		}
+		b, strong := r.cfg.Policy().Document.Budget, t.Rung == RungFrontier
+		budget := t.BudgetEUR
+		if Cents(budget) == Cents(policy.CardBudget(b, p.Budget, t.Size, strong, 0)) {
+			budget = policy.CardBudget(b, p.Budget, v.Size, strong, 0)
+		}
+		detail["held_cents"], detail["budget_eur"] = Cents(t.BudgetEUR), budget
+	}
+	return gateEnd(t, GateSizing, detail), nil
 }
 
-// sized completes the size write of card taskID's sizing step, when the
-// card does not hold the size the step's session answered, and answers
-// from the step.
+// sized completes the write of card taskID's sizing step, when the step
+// carries one, and answers from the step. A budget that moved since the
+// step read it stays.
 func (r *Runner) sized(ctx context.Context, taskID string, step map[string]any) (SizeResult, error) {
-	if sized, _ := step["sized"].(string); sized != "" {
-		t, _, err := r.task(ctx, taskID)
-		if err != nil {
+	if held, ok := step["held_cents"].(float64); ok {
+		sized, _ := step["sized"].(string)
+		budget, _ := step["budget_eur"].(float64)
+		if err := r.store.SetTaskSizeBudget(ctx, taskID, sized, int64(held), budget); err != nil {
 			return SizeResult{}, err
-		}
-		if t.Size != sized {
-			if err := r.store.SetTaskSize(ctx, taskID, sized); err != nil {
-				return SizeResult{}, err
-			}
 		}
 	}
 	if plan, _ := step["plan"].(bool); !plan {

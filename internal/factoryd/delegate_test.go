@@ -49,7 +49,7 @@ func TestDelegationFilesAChildWithADependency(t *testing.T) {
 	}
 	child := store.tasks[res.TaskID]
 	if child.Source != SourceDelegate || child.Parent != "t-parent" || child.Rung != RungCheap || child.Size != "small" || child.Track != policy.TrackDirect ||
-		child.Status != "queued" || child.BudgetEUR != 2 || child.Priority != 2 || child.IssueNumber != res.Issue {
+		child.Status != "queued" || child.BudgetEUR != 4 || child.Priority != 2 || child.IssueNumber != res.Issue {
 		t.Fatalf("child = %+v", child)
 	}
 	if !strings.HasPrefix(child.Objective, "Add the index\n\nDelegated by card #41 (t-parent)") || !strings.HasSuffix(child.Objective, "Size: small\nRung: cheap, delegated routine work") {

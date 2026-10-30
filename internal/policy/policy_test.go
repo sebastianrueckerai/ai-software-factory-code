@@ -828,12 +828,12 @@ func TestClampBudget(t *testing.T) {
 	}
 }
 
-// A card's budget follows its size: small 2, medium 5, large 10, anything
+// A card's budget follows its size: small 4, medium 5, large 10, anything
 // else the policy's default; an asked budget wins over the size, bounded by
 // the project's card maximum (else a large card's budget) and the policy's.
 func TestCardBudget(t *testing.T) {
 	b := Budget{TaskDefaultEUR: 5, TaskMaxEUR: 15}
-	for size, want := range map[string]float64{"small": 2, "medium": 5, "large": 10, "": 5, "huge": 5} {
+	for size, want := range map[string]float64{"small": 4, "medium": 5, "large": 10, "": 5, "huge": 5} {
 		if got := b.SizeBudget(size); got != want {
 			t.Errorf("SizeBudget(%q) = %g, want %g", size, got, want)
 		}
@@ -885,8 +885,8 @@ func TestCardBudgetOfAStrongCard(t *testing.T) {
 			t.Errorf("CardBudget(strong, %+v, %q, %g) = %g, want %g", tc.p, tc.size, tc.requested, got, tc.want)
 		}
 	}
-	if got := CardBudget(b, nil, "small", false, 0); got != 2 {
-		t.Errorf("CardBudget(cheap, small) = %g, want 2", got)
+	if got := CardBudget(b, nil, "small", false, 0); got != 4 {
+		t.Errorf("CardBudget(cheap, small) = %g, want 4", got)
 	}
 }
 

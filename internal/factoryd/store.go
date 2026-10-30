@@ -458,8 +458,10 @@ type Store interface {
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
-	// SetTaskSize sets the task's size.
-	SetTaskSize(ctx context.Context, id, size string) error
+	// SetTaskSizeBudget sets the task's size, and its budget to eur when it
+	// still holds heldCents, in one statement. A task that already has the
+	// size has had its write: nothing changes and the call succeeds.
+	SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error
 	// DeliverySeen reports whether a webhook delivery was processed.
 	DeliverySeen(ctx context.Context, id string) (bool, error)
 	// RecordDelivery marks a webhook delivery processed.
@@ -1152,9 +1154,24 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 	return oneRow(res, err, "task "+id)
 }
 
-func (s *PGStore) SetTaskSize(ctx context.Context, id, size string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET size = $2 WHERE id = $1`, id, size)
-	return oneRow(res, err, "task "+id)
+func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET size = $2,
+		budget_eur = CASE WHEN round(budget_eur * 100) = $3::bigint THEN $4::numeric ELSE budget_eur END
+		WHERE id = $1 AND size IS DISTINCT FROM $2`, id, size, heldCents, eur)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil || n == 1 {
+		return err
+	}
+	var known bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, id).Scan(&known); err != nil {
+		return err
+	}
+	if !known {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	return nil
 }
 
 func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
