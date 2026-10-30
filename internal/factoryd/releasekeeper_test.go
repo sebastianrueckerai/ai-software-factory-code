@@ -623,6 +623,27 @@ func TestReleaseKeeperEndsTheHoldThoughItsAskCannotClose(t *testing.T) {
 	}
 }
 
+// An ask whose issue Forgejo refuses to close for good ends closed in the
+// store at the hold's end, so the next hold files its own ask after its
+// hours.
+func TestReleaseKeeperAsksInTheNextHoldAfterAnAskThatCannotClose(t *testing.T) {
+	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+	store.chainNow = func() time.Time { return *clock }
+	f.closeFail = http.StatusNotFound
+	keeperPass(t, k)
+	if got := store.tasks["t-ask"]; got.Status != "closed" || got.FinishedAt == nil || !got.FinishedAt.Equal(keeperAt(18, 0)) {
+		t.Fatalf("ask %s finished %v, want closed at 18:00", got.Status, got.FinishedAt)
+	}
+	openPlanIn(store, demoRepo, "t-next", 13, keeperAt(18, 30))
+	*clock = keeperAt(18, 31)
+	keeperPass(t, k)
+	*clock = keeperAt(18, 30).Add(HoldAskAfter)
+	keeperPass(t, k)
+	if card, ok, _ := store.ChainCard(context.Background(), demoRepo, SourceProductionHeld); len(f.issues) != 1 || !ok || card.ID == "t-ask" {
+		t.Errorf("issues %q, newest ask %+v; want the next hold's ask filed", f.issues, card)
+	}
+}
+
 func TestReleaseKeeperRunsThePromoteOnlyOfTheToldCommit(t *testing.T) {
 	ctx := context.Background()
 	t.Run("a newer commit", func(t *testing.T) {
