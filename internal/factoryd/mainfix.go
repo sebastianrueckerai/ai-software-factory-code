@@ -51,10 +51,11 @@ type QueuePause struct {
 }
 
 // PauseQueue writes the project's pause; a pause that stands, a re-run's,
-// takes p's run and card.
+// takes p's run and card. A plan's pause stands as it is.
 func (s *PGStore) PauseQueue(ctx context.Context, p QueuePause) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at`,
+		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at
+		WHERE queue_pauses.plan = ''`,
 		p.Project, p.RunID, p.SHA, p.Since, p.FixTask, nullTime(p.RerunAt))
 	return err
 }
@@ -220,6 +221,12 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 			failed = strings.Join(names, ", ")
 		}
 		lost = r.lostRunners(ctx, run, red)
+	}
+	// a plan's revert may have paused the queue since mainState read it
+	if pause, paused, err := r.Store.QueuePause(ctx, p.Repository); err != nil {
+		return err
+	} else if paused && pause.Plan != "" {
+		return nil
 	}
 	short := run.CommitSHA[:min(7, len(run.CommitSHA))]
 	var t Task

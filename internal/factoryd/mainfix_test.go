@@ -825,6 +825,67 @@ func TestPGStoreQueuePauseForRevert(t *testing.T) {
 	}
 }
 
+// A red main's pause that comes after a plan's pause leaves the plan's
+// row as it stood: the red's run, commit, time and fix card go nowhere.
+func TestPGStorePauseQueueLeavesAPlanPause(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE queue_pauses`); err != nil {
+		t.Fatal(err)
+	}
+	group := QueuePause{Project: "sf/r", Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv", Since: time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)}
+	if ok, err := s.PauseQueueForRevert(ctx, group); err != nil || !ok {
+		t.Fatalf("PauseQueueForRevert = %v, %v", ok, err)
+	}
+	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since.Add(time.Hour), FixTask: "t-fix", RerunAt: group.Since}); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.QueuePause(ctx, "sf/r")
+	if err != nil || !ok {
+		t.Fatalf("QueuePause = %v, %v", ok, err)
+	}
+	got.Since = got.Since.UTC()
+	if !reflect.DeepEqual(got, group) {
+		t.Fatalf("pause = %+v, want %+v", got, group)
+	}
+}
+
+// firstReadMisses is a store whose first QueuePause finds no pause: a
+// plan's pause that came after mainState's read.
+type firstReadMisses struct {
+	*fakeStore
+	read bool
+}
+
+func (s *firstReadMisses) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+	if !s.read {
+		s.read = true
+		return QueuePause{}, false, nil
+	}
+	return s.fakeStore.QueuePause(ctx, project)
+}
+
+// A plan's revert that pauses the queue between mainState's read and the
+// red's filing keeps the queue: the red files no fix card, and the plan's
+// pause stays as it stood.
+func TestMainStateRedYieldsToAPlanPauseThatCameMeanwhile(t *testing.T) {
+	f := &rollForgejo{}
+	roller, store, _ := newTestRoller(t, f)
+	group := QueuePause{Project: codeRepo, Plan: "p", Reverts: []string{"c1"}, RevertTask: "t-rv", Since: time.Now()}
+	store.pauses = map[string]QueuePause{codeRepo: group}
+	roller.Store = &firstReadMisses{fakeStore: store}
+	if err := roller.mainState(context.Background(), []ActionRun{{ID: 59, CommitSHA: commitC2, PrettyRef: "main", Status: "failure"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.pauses[codeRepo]; !reflect.DeepEqual(got, group) || len(f.issues) != 0 {
+		t.Fatalf("pause %+v, issues %q; want the plan's pause as it stood and no card", got, f.issues)
+	}
+}
+
 // ClearRevertPause ends a project's pause only while it names the revert
 // card: a pause on another card stays, and the right card clears it.
 func TestPGStoreClearRevertPause(t *testing.T) {

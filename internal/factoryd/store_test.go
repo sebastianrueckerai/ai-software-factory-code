@@ -1157,7 +1157,10 @@ func (s *fakeStore) PauseQueue(ctx context.Context, p QueuePause) error {
 		s.pauses = map[string]QueuePause{}
 	}
 	old := s.pauses[p.Project]
-	p.RevertTask, p.Plan, p.Reverts = old.RevertTask, old.Plan, old.Reverts
+	if old.Plan != "" {
+		return nil
+	}
+	p.RevertTask = old.RevertTask
 	s.pauses[p.Project] = p
 	return nil
 }
