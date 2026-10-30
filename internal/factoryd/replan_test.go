@@ -2306,3 +2306,52 @@ func TestOffMainRevertEndRetriesAFailedStop(t *testing.T) {
 		t.Fatalf("pause = %+v, want it gone", pause)
 	}
 }
+
+// pauseAppears is a store that finds no pause until a revert asks for one:
+// a pause that took the project between a press's read and the revert.
+type pauseAppears struct {
+	*fakeStore
+	asked bool
+}
+
+func (s *pauseAppears) PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error) {
+	s.asked = true
+	return s.fakeStore.PauseQueueForRevert(ctx, p)
+}
+
+func (s *pauseAppears) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+	if !s.asked {
+		return QueuePause{}, false, nil
+	}
+	return s.fakeStore.QueuePause(ctx, project)
+}
+
+// An off-main press whose revert a pause refuses that appeared after the
+// press read none ends its step with the refusal and comments nothing: the
+// person may replan without taking work off main.
+func TestReplanOffMainRefusedAfterItsStep(t *testing.T) {
+	ctx := context.Background()
+	g := offMainRig(t)
+	if err := g.store.CreateTask(ctx, Task{ID: "q", Kind: "agent", Track: policy.TrackPlan, Repository: "sf/repo", IssueNumber: 12, Status: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	other := QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"}
+	g.store.pauses = map[string]QueuePause{"sf/repo": other}
+	g.r.store = &pauseAppears{fakeStore: g.store}
+	refusal := "The merge queue of sf/repo is paused: plan #12 is being taken off main. Replan without taking work off main, or wait until the queue goes on."
+	if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != ErrNoReplan(refusal) {
+		t.Fatalf("the press: %v, want %q", err, refusal)
+	}
+	if steps, want := groupSteps(t, g.r, "off_main_failed"), []map[string]any{{"step": "off_main_failed", "error": refusal}}; !reflect.DeepEqual(steps, want) {
+		t.Fatalf("steps %v, want %v", steps, want)
+	}
+	if c := g.fj.commentsOn(10); len(c) != 0 {
+		t.Fatalf("plan comments %q, want none", c)
+	}
+	if p := g.store.pauses["sf/repo"]; !reflect.DeepEqual(p, other) || len(g.calls) != 0 {
+		t.Fatalf("pause %+v, reverts %q; want the other plan's pause and no revert", p, g.calls)
+	}
+	if note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "plan it again"}); err != nil || note != "Plan #10 goes back to the planner: no card stops." {
+		t.Fatalf("a plain press then = %q, %v", note, err)
+	}
+}
