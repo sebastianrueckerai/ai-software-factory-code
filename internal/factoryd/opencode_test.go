@@ -1004,6 +1004,11 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"small (a change under about",
 		"0 to 5",
 		"2 to 5 short choices",
+		// judgePlan's round rules (TestValidatePlanRounds)
+		"comes in the last round",
+		"wants at most one",
+		// outlineFindings (TestValidatePlanOutline)
+		"parts; want at most",
 		// deployOwner/ErrNoDeployOwner: CreateChildren returns it to the
 		// planner as a finding, AcceptPlan refuses the plan without an owner
 		"needs one card whose directories include deploy/",

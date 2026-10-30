@@ -72,24 +72,33 @@ const (
 	FinderPlanner   = "planner"
 )
 
-// The plan's caps are counts, never lengths: the transports that carry a
-// plan (the file-plan body cap, maxReport) are its only ceiling.
+// The plan's caps are counts, and one length: an outline part is one short
+// line, in runes. The transports that carry a plan (the file-plan body cap,
+// maxReport) are its only other ceiling.
 const (
 	maxCardDirs       = 10
 	MaxCardAcceptance = 10
 	maxQuestions      = 5
+	maxOutline        = 10
+	maxOutlinePart    = 100
 )
 
 // Plan is the planner's answer: one fenced json block of its last message.
 type Plan struct {
-	Spec      *Spec           `json:"spec,omitempty"`
-	Summary   string          `json:"summary"`
+	Spec    *Spec  `json:"spec,omitempty"`
+	Summary string `json:"summary"`
+	// Outline are the parts of the work later rounds plan, one line each;
+	// empty when this revision's round is the last
+	Outline   []string        `json:"outline,omitempty"`
 	Criteria  []PlanCriterion `json:"criteria,omitempty"`
 	Cards     []PlanCard      `json:"cards"`
 	Questions []PlanQuestion  `json:"questions,omitempty"`
 	// TakeOffMain are the keys of the merged cards whose work the revision
 	// takes off main once it filed
 	TakeOffMain []string `json:"take_off_main,omitempty"`
+	// Round is the planning round this revision files, factoryd's stamp: 1
+	// for a plan's first, 0 on a plan filed before rounds
+	Round int `json:"round,omitempty"`
 }
 
 // Spec is the spec the planning session drafts (the spec-intake
@@ -175,6 +184,8 @@ type PlanCard struct {
 	// #<issue> of a card the findings name without a key (the plan card's
 	// own work after a direct card's cut or replan)
 	From string `json:"from,omitempty"`
+	// Round is the planning round that filed the card, factoryd's stamp
+	Round int `json:"round,omitempty"`
 }
 
 // PlanRevision is one valid plan of a plan task, as stored.
@@ -273,10 +284,19 @@ func deployOwner(spec string, p Plan) (needed bool, owner string) {
 	return true, ""
 }
 
-// readPlan decodes the planner's last message and judges it against the
-// process's plan shape, the pinned limits and the project's image pins
-// (nil: none): the plan, and one line per finding, none for a valid plan.
+// readPlan decodes the planner's last message and judges it: decodePlan,
+// then judgePlan.
 func readPlan(text string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
+	p, out := decodePlan(text)
+	if len(out) > 0 {
+		return p, out
+	}
+	return judgePlan(p, shape, limits, pins)
+}
+
+// decodePlan decodes the last fenced json block of the planner's last
+// message as a plan: the plan, or the one finding why there is none.
+func decodePlan(text string) (Plan, []string) {
 	blocks := planBlock.FindAllStringSubmatch(text, -1)
 	if len(blocks) == 0 {
 		return Plan{}, []string{"plan: no fenced json block in the last message"}
@@ -292,33 +312,58 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, pins ma
 	if err != nil {
 		return Plan{}, []string{"plan: json: " + strings.TrimPrefix(err.Error(), "json: ")}
 	}
+	return p, nil
+}
+
+// judgePlan judges p against the process's plan shape, the pinned limits
+// and the project's image pins (nil: none): p with its images normalised,
+// and one line per finding, none for a valid plan. The checks read the
+// cards of the round p files (roundCards). The cards of earlier rounds are
+// settled: only the key duplicates, the keys a card depends on, the cycle
+// and the criteria every card cites read them too. take_off_main is
+// replanFindings' to judge.
+func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
+	round := roundCards(p)
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf("plan: "+format, args...)) }
-	if n := len(p.Cards); n < shape.Minimum() || n > shape.MaxCards {
+	if n := len(round); n < shape.Minimum() || n > shape.MaxCards {
 		add("%d cards; this process allows %d to %d", n, shape.Minimum(), shape.MaxCards)
 	}
-	keys := map[string]int{}
-	for i, c := range p.Cards {
+	for i, c := range round {
 		if !cardKey.MatchString(c.Key) {
 			add("card %d: key %q: lowercase letters, digits and dashes, 2 to 32", i+1, c.Key)
 		}
+	}
+	keys := map[string]int{}
+	for _, c := range p.Cards {
 		if keys[c.Key]++; keys[c.Key] == 2 {
 			add("card key %s is used twice", c.Key)
 		}
 	}
-	for _, c := range p.Cards {
+	for _, c := range round {
 		if !slices.Contains(roles, c.Role) {
 			add("card %s: role %q, want one of %v", c.Key, c.Role, roles)
 		}
 	}
-	foundation, integration := cardsOf(p, RoleFoundation), cardsOf(p, RoleIntegration)
-	if shape.Foundation && len(p.Cards) > 1 && len(foundation) != 1 {
+	foundation, integration := cardsOf(round, RoleFoundation), cardsOf(round, RoleIntegration)
+	switch {
+	case !shape.Foundation:
+	case p.Round > 1 && len(foundation) > 1:
+		add("%d cards with role foundation; a later round wants at most one", len(foundation))
+	case p.Round <= 1 && len(round) > 1 && len(foundation) != 1:
 		add("%d cards with role foundation; the process wants exactly one", len(foundation))
 	}
-	if shape.Integration && len(integration) != 1 {
+	switch {
+	case !shape.Integration:
+	case len(p.Outline) > 0:
+		for _, k := range integration {
+			add("card %s: the integration card comes in the last round, and the outline still lists later rounds: "+
+				"keep it for the round that empties the outline, or take the rest into this round and empty the outline", k)
+		}
+	case len(integration) != 1:
 		add("%d cards with role integration; the process wants exactly one", len(integration))
 	}
-	for _, c := range p.Cards {
+	for _, c := range round {
 		if c.Role == RoleFoundation && len(c.DependsOn) > 0 {
 			add("card %s: a foundation card depends on nothing", c.Key)
 		}
@@ -336,19 +381,52 @@ func readPlan(text string, shape policy.PlanShape, limits policy.Limits, pins ma
 	if cycle := planCycle(p, planEdges(p)); cycle != nil {
 		add("the dependencies form a cycle: %s", strings.Join(cycle, " -> "))
 	}
-	for _, c := range p.Cards {
+	for _, c := range round {
 		out = append(out, cardFindings(c, limits)...)
 		if _, ok := pins[c.Image]; c.Image != "" && c.Image != "default" && !ok {
 			add("card %s: image %q is not one of this project's pinned images (%s)", c.Key, c.Image,
 				cmp.Or(strings.Join(slices.Sorted(maps.Keys(pins)), ", "), "none"))
 		}
 	}
-	for i := range p.Cards {
-		p.Cards[i].Image = cardImage(p.Cards[i].Image)
+	for i, c := range p.Cards {
+		if c.Round == p.Round {
+			p.Cards[i].Image = cardImage(c.Image)
+		}
 	}
 	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
-	return p, append(out, questionFindings(p.Questions)...)
+	out = append(out, questionFindings(p.Questions)...)
+	return p, append(out, outlineFindings(p.Outline)...)
+}
+
+// roundCards are p's cards of the round p files, in p's order: every card
+// of a plan filed before rounds.
+func roundCards(p Plan) []PlanCard {
+	var out []PlanCard
+	for _, c := range p.Cards {
+		if c.Round == p.Round {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// outlineFindings are the outline's findings: at most maxOutline parts,
+// each one line of at most maxOutlinePart characters.
+func outlineFindings(outline []string) []string {
+	var out []string
+	if len(outline) > maxOutline {
+		out = append(out, fmt.Sprintf("plan: outline: %d parts; want at most %d", len(outline), maxOutline))
+	}
+	for i, part := range outline {
+		switch {
+		case strings.TrimSpace(part) == "":
+			out = append(out, fmt.Sprintf("plan: outline part %d is empty", i+1))
+		case utf8.RuneCountInString(part) > maxOutlinePart || strings.ContainsAny(part, "\r\n"):
+			out = append(out, fmt.Sprintf("plan: outline part %d: one line of at most %d characters", i+1, maxOutlinePart))
+		}
+	}
+	return out
 }
 
 // questionFindings are the findings on a plan's questions: 0 to 5, each
@@ -459,9 +537,10 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // per criterion inside its own cap); each criterion is well formed for
 // its kind, every field the kind uses present and within the item cap,
 // every other field empty; and, when the plan carries criteria, every
-// citation names a criterion of the plan, every criterion is cited by a
-// card, every card but the foundation cites one, and the integration
-// card's items are the criteria, one item per criterion by id. A plan
+// citation of the round's cards names a criterion of the plan, every card
+// of the round but the foundation cites one, and the integration card's
+// items are the criteria, one item per criterion by id. Once the outline
+// is empty, every criterion is cited by a card of some round. A plan
 // without criteria passes the citation rules; a shape without an
 // integration card does not ask for criteria.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
@@ -521,20 +600,23 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 	if len(p.Criteria) == 0 {
 		return out
 	}
-	for _, c := range p.Cards {
+	round := roundCards(p)
+	for _, c := range round {
 		for i, it := range c.Acceptance {
 			if it.Criterion != "" && !slices.ContainsFunc(p.Criteria, func(k PlanCriterion) bool { return k.ID == it.Criterion }) {
 				out = append(out, fmt.Sprintf("plan: card %s: acceptance item %d cites %q, which is no criterion of the plan", c.Key, i+1, it.Criterion))
 			}
 		}
 	}
-	cited := citations(p)
-	for _, k := range p.Criteria {
-		if len(cited[k.ID]) == 0 {
-			out = append(out, fmt.Sprintf("plan: criterion %s is cited by no card", k.ID))
+	if len(p.Outline) == 0 {
+		cited := citations(p)
+		for _, k := range p.Criteria {
+			if len(cited[k.ID]) == 0 {
+				out = append(out, fmt.Sprintf("plan: criterion %s is cited by no card", k.ID))
+			}
 		}
 	}
-	for _, c := range p.Cards {
+	for _, c := range round {
 		if c.Role == RoleFoundation {
 			continue
 		}
@@ -542,7 +624,7 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			out = append(out, fmt.Sprintf("plan: card %s: no acceptance item cites a criterion", c.Key))
 		}
 	}
-	for _, c := range p.Cards {
+	for _, c := range round {
 		if c.Role != RoleIntegration {
 			continue
 		}
@@ -609,10 +691,10 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	return out
 }
 
-// cardsOf are the keys of p's cards of role.
-func cardsOf(p Plan, role string) []string {
+// cardsOf are the keys of the cards of role.
+func cardsOf(cards []PlanCard, role string) []string {
 	var keys []string
-	for _, c := range p.Cards {
+	for _, c := range cards {
 		if c.Role == role {
 			keys = append(keys, c.Key)
 		}
@@ -622,20 +704,21 @@ func cardsOf(p Plan, role string) []string {
 
 // planEdges are each card's dependencies as factoryd files them: the ones
 // the planner listed among the plan's cards, every card's on the
-// foundation card, the integration card's on every other card. Edges
-// readPlan refuses on their own (out of the foundation, into the
-// integration card, onto itself or no card) are left out, so a cycle is
-// only ever one of the feature cards.
+// foundation card, the integration card's on every other card, all of
+// them within one round, since the earlier rounds are merged before a
+// round starts. Edges readPlan refuses on their own (out of the
+// foundation, into the integration card, onto itself or no card) are left
+// out, so a cycle is only ever one of the feature cards.
 func planEdges(p Plan) map[string][]string {
-	foundation, integration := cardsOf(p, RoleFoundation), cardsOf(p, RoleIntegration)
-	keys := map[string]bool{}
+	foundation, integration := cardsOf(p.Cards, RoleFoundation), cardsOf(p.Cards, RoleIntegration)
+	rounds := map[string]int{}
 	for _, c := range p.Cards {
-		keys[c.Key] = true
+		rounds[c.Key] = c.Round
 	}
 	edges := map[string][]string{}
-	add := func(from, to string) {
-		if from != to && !slices.Contains(edges[from], to) {
-			edges[from] = append(edges[from], to)
+	add := func(from PlanCard, to string) {
+		if r, ok := rounds[to]; ok && r == from.Round && from.Key != to && !slices.Contains(edges[from.Key], to) {
+			edges[from.Key] = append(edges[from.Key], to)
 		}
 	}
 	for _, c := range p.Cards {
@@ -643,17 +726,17 @@ func planEdges(p Plan) map[string][]string {
 			continue
 		}
 		for _, f := range foundation {
-			add(c.Key, f)
+			add(c, f)
 		}
 		for _, d := range c.DependsOn {
-			if keys[d] && !slices.Contains(integration, d) {
-				add(c.Key, d)
+			if !slices.Contains(integration, d) {
+				add(c, d)
 			}
 		}
 		if c.Role == RoleIntegration {
 			for _, o := range p.Cards {
 				if o.Role != RoleIntegration {
-					add(c.Key, o.Key)
+					add(c, o.Key)
 				}
 			}
 		}

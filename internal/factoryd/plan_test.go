@@ -65,6 +65,34 @@ func testPlan() Plan {
 		}}
 }
 
+// roundOne is testPlan's first round of two: its cards without the
+// integration card, which the outline's last round brings.
+func roundOne() Plan {
+	p := testPlan()
+	p.Round, p.Outline, p.Cards = 1, []string{"click stats", "the acceptance tests"}, p.Cards[:3]
+	for i := range p.Cards {
+		p.Cards[i].Round = 1
+	}
+	return p
+}
+
+// twoRounds is testPlan's second and last round: the three cards of round
+// one, then the stats card and the integration card.
+func twoRounds() Plan {
+	p := testPlan()
+	p.Round = 2
+	for i := range p.Cards {
+		p.Cards[i].Round = 1
+	}
+	integration := p.Cards[3]
+	integration.Round = 2
+	p.Cards = append(p.Cards[:3], PlanCard{Key: "stats", Role: RoleFeature, Title: "Click stats", Brief: "GET /api/links/{id}/stats answers the clicks.",
+		Directories: []string{"internal/stats"}, DependsOn: []string{"redirects"},
+		Acceptance: []PlanItem{{Criterion: "redirect_302", Text: "TestStats in internal/stats: two redirects: clicks 2"}}, Size: "small", Round: 2},
+		integration)
+	return p
+}
+
 func fencePlan(p Plan) string {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -207,6 +235,96 @@ func TestValidatePlan(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := validatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
+				t.Fatalf("validatePlan = %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A plan in rounds is judged on the cards of the round it files: the
+// count, the roles and each card's own fields read that round alone, the
+// cards of earlier rounds are settled. The integration card waits for the
+// round that empties the outline, and only that round asks every
+// criterion to be cited.
+func TestValidatePlanRounds(t *testing.T) {
+	integration := testPlan().Cards[3]
+	integration.Round = 1
+	feature := func(key, title, brief, criterion string) PlanCard {
+		return PlanCard{Key: key, Role: RoleFeature, Title: title, Brief: brief, Acceptance: []PlanItem{{Criterion: criterion, Text: "x"}}, Size: "small", Round: 2}
+	}
+	contracts := func(key string) PlanCard {
+		return PlanCard{Key: key, Role: RoleFoundation, Title: "Contracts", Brief: "The stats contract.", Acceptance: []PlanItem{{Text: "x"}}, Size: "small", Round: 2}
+	}
+	statsPage := PlanCriterion{ID: "stats_page", Kind: CriterionTest, Test: "TestStatsPage in web", Inputs: "GET /links/abc", Expected: "the page shows 2 clicks"}
+	extras := func(n int) Plan {
+		p := twoRounds()
+		for i := range n {
+			p.Cards = append(p.Cards, feature("extra-"+strconv.Itoa(i), "Extra "+strconv.Itoa(i), "More of the links API.", "links_crud"))
+		}
+		return p
+	}
+	change := func(p Plan, edit func(p *Plan)) Plan {
+		edit(&p)
+		return p
+	}
+	for name, tc := range map[string]struct {
+		plan Plan
+		want []string
+	}{
+		"two rounds": {twoRounds(), nil},
+		"round one":  {roundOne(), nil},
+		"integration early": {change(roundOne(), func(p *Plan) { p.Cards = append(p.Cards, integration) }),
+			[]string{"plan: card integration: the integration card comes in the last round, and the outline still lists later rounds: keep it for the round that empties the outline, or take the rest into this round and empty the outline"}},
+		"integration with an outline": {change(twoRounds(), func(p *Plan) { p.Outline = []string{"dashboards"} }),
+			[]string{"plan: card integration: the integration card comes in the last round, and the outline still lists later rounds: keep it for the round that empties the outline, or take the rest into this round and empty the outline"}},
+		"twelve in the round":   {extras(10), nil},
+		"thirteen in the round": {extras(11), []string{"plan: 13 cards; this process allows 2 to 12"}},
+		"two foundations": {change(twoRounds(), func(p *Plan) { p.Cards = append(p.Cards, contracts("contracts-a"), contracts("contracts-b")) }),
+			[]string{"plan: 2 cards with role foundation; a later round wants at most one"}},
+		"one foundation": {change(twoRounds(), func(p *Plan) { p.Cards = append(p.Cards, contracts("contracts-a")) }), nil},
+		"criterion uncited": {change(twoRounds(), func(p *Plan) { p.Criteria = append(p.Criteria, statsPage) }),
+			[]string{"plan: criterion stats_page is cited by no card", "plan: card integration: criterion stats_page is cited by no item"}},
+		"criterion for a later round": {change(twoRounds(), func(p *Plan) {
+			p.Criteria = append(p.Criteria, statsPage)
+			p.Outline = []string{"dashboards"}
+			p.Cards = append(p.Cards[:4], feature("stats-ui", "Stats page", "Show a link's clicks.", "redirect_302"))
+		}), nil},
+		"settled cards": {change(twoRounds(), func(p *Plan) {
+			p.Cards[2].Acceptance[0].Criterion = "gone"
+			p.Cards[1].Brief = ""
+			p.Cards[2].DependsOn = []string{"gone-card"}
+		}), nil},
+		"round card cites gone": {change(twoRounds(), func(p *Plan) { p.Cards[3].Acceptance[0].Criterion = "gone" }),
+			[]string{`plan: card stats: acceptance item 1 cites "gone", which is no criterion of the plan`}},
+		"round card on gone-card": {change(twoRounds(), func(p *Plan) { p.Cards[3].DependsOn = []string{"gone-card"} }),
+			[]string{`plan: card stats: depends on "gone-card", which is no card of the plan`}},
+		"before rounds": {testPlan(), nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := validatePlan(fencePlan(tc.plan), testShape, testLimits, nil); !slices.Equal(got, tc.want) {
+				t.Fatalf("validatePlan = %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The outline holds at most ten parts, each one line of at most a hundred
+// characters, counted in runes.
+func TestValidatePlanOutline(t *testing.T) {
+	for name, tc := range map[string]struct {
+		outline []string
+		want    []string
+	}{
+		"eleven parts": {slices.Repeat([]string{"a part"}, 11), []string{"plan: outline: 11 parts; want at most 10"}},
+		"empty part":   {[]string{"a", ""}, []string{"plan: outline part 2 is empty"}},
+		"long part":    {[]string{strings.Repeat("x", 101)}, []string{"plan: outline part 1: one line of at most 100 characters"}},
+		"two lines":    {[]string{"a\nb"}, []string{"plan: outline part 1: one line of at most 100 characters"}},
+		"100 runes":    {[]string{strings.Repeat("é", 100)}, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p := roundOne()
+			p.Outline = tc.outline
+			if got := validatePlan(fencePlan(p), testShape, testLimits, nil); !slices.Equal(got, tc.want) {
 				t.Fatalf("validatePlan = %q\nwant %q", got, tc.want)
 			}
 		})
@@ -474,6 +592,31 @@ func TestFactoryAddsFoundationAndIntegrationEdges(t *testing.T) {
 	}
 	if !slices.Equal(keys, []string{"foundation", "links-api", "redirects", "integration"}) {
 		t.Fatalf("order = %v", keys)
+	}
+}
+
+// No dependency crosses a round: the earlier rounds are merged before a
+// round starts, so factoryd's edges and the listed ones stay among the
+// cards of one round.
+func TestPlanEdgesStayInTheRound(t *testing.T) {
+	edges := planEdges(twoRounds())
+	for key, want := range map[string][]string{
+		"stats":       nil,
+		"integration": {"stats"},
+		"redirects":   {"foundation", "links-api"},
+		"links-api":   {"foundation"},
+	} {
+		if !slices.Equal(edges[key], want) {
+			t.Fatalf("edges of %s = %v, want %v (all: %v)", key, edges[key], want, edges)
+		}
+	}
+	rows := PlanRows(twoRounds())
+	var keys []string
+	for _, r := range rows {
+		keys = append(keys, r.Key)
+	}
+	if !slices.Equal(keys, []string{"foundation", "links-api", "redirects", "stats", "integration"}) || !slices.Equal(rows[4].DependsOn, []string{"stats"}) {
+		t.Fatalf("rows = %+v, want the integration row last, on stats alone", rows)
 	}
 }
 
