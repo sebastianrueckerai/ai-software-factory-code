@@ -709,6 +709,37 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	}
 }
 
+// Deploy now refuses while main's newest push run concluded red, failure
+// or cancelled: nothing is written, closed or recorded. A run still
+// running is taken.
+func TestReleaseKeeperDeployNowRefusesARedMain(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []string{"failure", "cancelled", "running"} {
+		t.Run(status, func(t *testing.T) {
+			k, f, store, clock := endedHold(t, demoCommit, pushRun(22, "e2e2e2e2e2", status), pushRun(21, demoCommit, "success"))
+			delete(store.closed, "t-plan")
+			*clock = keeperAt(12, 0)
+			commit, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton, "member")
+			if status == "running" {
+				if err != nil || commit != "e2e2e2e2e2" {
+					t.Fatalf("DeployNow = %q, %v; want the running head e2e2e2e2e2 taken", commit, err)
+				}
+				return
+			}
+			var red ErrMainRed
+			if !errors.As(err, &red) || red.Commit != "e2e2e2e2e2" || commit != "" {
+				t.Fatalf("DeployNow = %q, %v; want ErrMainRed of e2e2e2e2e2", commit, err)
+			}
+			if got := releaseRow(store, demoRepo); got.DeployNow != "" || !got.HeldSince.Equal(keeperAt(10, 0)) {
+				t.Errorf("row %+v, want the hold since 10:00 with no Deploy now", got)
+			}
+			if len(f.closed) != 0 || len(releasedRows(store)) != 0 {
+				t.Errorf("closed %q, %d rows; want the ask open and nothing recorded", f.closed, len(releasedRows(store)))
+			}
+		})
+	}
+}
+
 // A Deploy now outlives a move of main: while the plan is open, the next
 // pass runs the promote job of the released commit's newest run, though
 // another commit's run is main's newest now; it waits while that run runs,

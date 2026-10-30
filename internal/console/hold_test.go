@@ -134,6 +134,20 @@ func TestDeployNowRefusesAFreeProduction(t *testing.T) {
 	}
 }
 
+func TestDeployNowRefusesARedMain(t *testing.T) {
+	r, calls := holdRig(t)
+	r.c.cfg.DeployNow = func(_ context.Context, repository, by, via, decider string) (string, error) {
+		*calls = append(*calls, deployCall{repository, by, via, decider})
+		return "", factoryd.ErrMainRed{Commit: "e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2e2"}
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/projects/"+holdProject+"/deploy-now", url.Values{"csrf": {s.csrf}}), ck)
+	want := "Main of " + holdProject + " at e2e2e2e is red: Deploy now waits for a green run on main. Press it again once main is green."
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("Deploy now on a red main = %d %q, want 409 %q", rec.Code, rec.Body, want)
+	}
+}
+
 type replanCall struct {
 	id, by, comment string
 	offMain         bool

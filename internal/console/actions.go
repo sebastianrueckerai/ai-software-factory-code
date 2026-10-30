@@ -2139,9 +2139,13 @@ func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string
 		return "", refuse(http.StatusNotFound, "There is no project "+name+".")
 	}
 	commit, err := c.cfg.DeployNow(ctx, p.Repository, a.s.user, a.via, cmp.Or(a.decider, "member"))
+	var red factoryd.ErrMainRed
 	switch {
 	case errors.Is(err, factoryd.ErrNotHeld):
 		return "", refuse(http.StatusConflict, "Production of "+name+" is not held: every merge goes to production on its own.")
+	case errors.As(err, &red):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Main of %s at %s is red: Deploy now waits for a green run on main. Press it again once main is green.",
+			name, red.Commit[:min(7, len(red.Commit))]))
 	case err != nil:
 		log.Printf("console: %s deploys %s now: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: see the factoryd log, then press Deploy now again.")

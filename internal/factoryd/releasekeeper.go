@@ -36,6 +36,15 @@ const (
 // ErrNotHeld refuses a Deploy now while no plan holds production.
 var ErrNotHeld = errors.New("production is not held")
 
+// ErrMainRed refuses a Deploy now while main's newest push run, of
+// Commit, concluded failure or cancelled: nothing of it would go to
+// production.
+type ErrMainRed struct{ Commit string }
+
+func (e ErrMainRed) Error() string {
+	return "main's newest push run at " + e.Commit[:min(7, len(e.Commit))] + " is red"
+}
+
 // promoteJob is the job of a project's main run that asks /release and
 // rolls prod (the template's ci.yml).
 const promoteJob = "promote"
@@ -395,7 +404,8 @@ func (k *ReleaseKeeper) Hold(ctx context.Context, repository string) (Hold, erro
 // production, by whom, via what and decided by whom: the commit, the
 // clock's restart and the cleared ask in one write, the standing ask
 // closed, the release recorded. The roller, /release and the next Pass do
-// the rest.
+// the rest. A newest run that concluded red refuses (ErrMainRed); one
+// still running is taken.
 func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, decider string) (string, error) {
 	h, err := k.Hold(ctx, repository)
 	if err != nil {
@@ -411,6 +421,9 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, deci
 	head := newestMain(runs)
 	if head == nil {
 		return "", fmt.Errorf("main of %s has no push run, so no commit can go to production: push to main first", repository)
+	}
+	if head.Status == "failure" || head.Status == "cancelled" {
+		return "", ErrMainRed{Commit: head.CommitSHA}
 	}
 	now, commit := k.Now(), head.CommitSHA
 	if err := k.Store.SetDeployNow(ctx, repository, commit, now); err != nil {

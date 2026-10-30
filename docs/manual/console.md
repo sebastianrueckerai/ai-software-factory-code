@@ -64,7 +64,10 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   confirm, main goes to production as it is, and the answer names the
   commit. A writer sees the cell and the section without the button and is
   refused the route with 403. A production that is not held refuses the
-  route with 409. The board's text for the agent starts with the hold.
+  route with 409, and so does a red main: while main's newest push run
+  concluded `failure` or `cancelled`, Deploy now waits for a green run on
+  main (a run still running is taken). The board's text for the agent
+  starts with the hold.
 - Filing a card: no card waits undecided and none moves between columns
   by hand (roadmap 225). The new-task form's track select (Direct by
   default, Plan, Human) sets `agent`, `plan` or `human` on the issue;
