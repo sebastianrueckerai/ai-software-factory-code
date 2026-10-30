@@ -568,6 +568,40 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	}
 }
 
+// A Deploy now outlives a move of main: while the plan is open, the next
+// pass runs the promote job of the released commit's newest run, though
+// another commit's run is main's newest now; it waits while that run runs,
+// and clears a commit no run read names.
+func TestReleaseKeeperDeployNowOutlivesAMoveOfMain(t *testing.T) {
+	ctx := context.Background()
+	moved := pushRun(22, "e2e2e2e2e2", "running")
+	for _, c := range []struct {
+		name   string
+		runs   []map[string]any
+		reruns []string
+		told   string
+	}{
+		{"the released run done", []map[string]any{moved, pushRun(21, demoCommit, "success")}, []string{demoRepo + " 212"}, ""},
+		{"the released run running", []map[string]any{moved, pushRun(21, demoCommit, "running")}, nil, demoCommit},
+		{"the released run not read", []map[string]any{moved}, nil, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+			delete(store.closed, "t-plan")
+			*clock = keeperAt(12, 0)
+			if _, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton); err != nil {
+				t.Fatal(err)
+			}
+			f.runs[demoRepo] = c.runs
+			*clock = keeperAt(12, 1)
+			keeperPass(t, k)
+			if !slices.Equal(f.jobReruns, c.reruns) || releaseRow(store, demoRepo).ToldHeld != c.told {
+				t.Errorf("job re-runs %q, told held %q; want %q and %q", f.jobReruns, releaseRow(store, demoRepo).ToldHeld, c.reruns, c.told)
+			}
+		})
+	}
+}
+
 func TestReleaseKeeperHold(t *testing.T) {
 	ctx := context.Background()
 	k, store, _ := newKeeper(t, &chainForgejo{})

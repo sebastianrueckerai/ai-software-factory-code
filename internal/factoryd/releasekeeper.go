@@ -137,7 +137,7 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 	case repository == k.Own.String(), row.ToldHeld == "" && !ended, len(groups) > 0 && row.ToldHeld != row.DeployNow:
 		return err
 	}
-	return errors.Join(err, k.promoteAgain(ctx, repository, row.ToldHeld))
+	return errors.Join(err, k.promoteAgain(ctx, repository, row.ToldHeld, len(groups) > 0))
 }
 
 // hold starts the clock of row's hold at the first merge unless it runs,
@@ -292,24 +292,30 @@ func fixRefs(fixes []Task) string {
 // hours is d in whole hours: "1 hour", "6 hours".
 func hours(d time.Duration) string { return textutil.Plural(int(d/time.Hour), "hour", "hours") }
 
-// promoteAgain runs the promote job of repository's newest main run again
-// once the run finished, where told, the commit a promote job was told
-// held, is that run's: it asks /release again and promotes. A newer commit
-// clears told, since its own run asks. An empty told is unknown: the
-// newest run's promote job runs again. Forgejo without a re-run is logged
-// and clears told; another failure keeps it for the next pass.
-func (k *ReleaseKeeper) promoteAgain(ctx context.Context, repository, told string) error {
-	p, head, err := k.mainHead(ctx, repository)
+// promoteAgain runs a promote job again once its run finished, so it asks
+// /release again and promotes; told is the commit a promote job was told
+// held. While held, told is Deploy now's commit: its newest run's job runs,
+// wherever main moved since. Once the hold ended, only main's newest run's
+// does: a newer commit clears told, since its own run asks, and an empty
+// told is unknown, so the newest run's job runs. A told commit with no run
+// is cleared. Forgejo without a re-run is logged and clears told; another
+// failure keeps it for the next pass.
+func (k *ReleaseKeeper) promoteAgain(ctx context.Context, repository, told string, held bool) error {
+	p, runs, err := k.pushRuns(ctx, repository)
 	if err != nil {
 		return err
 	}
+	if held {
+		runs = slices.DeleteFunc(runs, func(r ActionRun) bool { return r.CommitSHA != told })
+	}
+	run := newestMain(runs)
 	switch {
-	case told != "" && (head == nil || head.CommitSHA != told):
+	case told != "" && (run == nil || run.CommitSHA != told):
 		return k.Store.ClearToldHeld(ctx, repository, told)
-	case head == nil || !head.Finished():
+	case run == nil || !run.Finished():
 		return nil
 	}
-	err = k.rerunPromote(ctx, p, *head)
+	err = k.rerunPromote(ctx, p, *run)
 	if errors.Is(err, ErrNoRerun) {
 		log.Printf("release keeper: %s: %v: production waits for main's next run", repository, err)
 	} else if err != nil {
@@ -373,10 +379,11 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via strin
 	if !h.Held() {
 		return "", ErrNotHeld
 	}
-	_, head, err := k.mainHead(ctx, repository)
+	_, runs, err := k.pushRuns(ctx, repository)
 	if err != nil {
 		return "", err
 	}
+	head := newestMain(runs)
 	if head == nil {
 		return "", fmt.Errorf("main of %s has no push run, so no commit can go to production: push to main first", repository)
 	}
@@ -401,9 +408,9 @@ func (k *ReleaseKeeper) project(ctx context.Context, repository string) (Project
 	return p, err
 }
 
-// mainHead is repository's project and its newest main push run, nil
-// without one, read with the project's Actions token.
-func (k *ReleaseKeeper) mainHead(ctx context.Context, repository string) (Project, *ActionRun, error) {
+// pushRuns are repository's project and its newest push runs, read with
+// the project's Actions token.
+func (k *ReleaseKeeper) pushRuns(ctx context.Context, repository string) (Project, []ActionRun, error) {
 	p, err := k.project(ctx, repository)
 	if err != nil {
 		return Project{}, nil, err
@@ -411,10 +418,7 @@ func (k *ReleaseKeeper) mainHead(ctx context.Context, repository string) (Projec
 	repo := p.Repo()
 	runs, err := k.Forgejo.ActionRuns(ctx, k.Forgejo.Access(p).Actions, repo.Owner, repo.Name,
 		url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
-	if err != nil {
-		return Project{}, nil, err
-	}
-	return p, newestMain(runs), nil
+	return p, runs, err
 }
 
 // closeAsk closes repository's standing ask with comment, where one stands.
