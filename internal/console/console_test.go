@@ -2901,6 +2901,20 @@ func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 	}
 }
 
+// A merged card whose row still names gate merge-queue holds no queue
+// place: its drawer claims no wait after an open plan.
+func TestMergedCardClaimsNoQueuePlace(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	since := time.Now().Add(-(6*time.Minute + 30*time.Second))
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "merged", Objective: "queued work",
+		Repository: "linkshort/linkshort", CreatedAt: since, FinishedAt: &since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: -1}}
+	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String(); strings.Contains(drawer, "merge queue") {
+		t.Fatalf("the merged card's drawer names the merge queue:\n%s", drawer)
+	}
+}
+
 // The timeline page opens with a table of the gates: each step that ended
 // a gate is a row from its start, the task's open gate a row "open for N
 // min", CI jobs rows under their checks, and every bar is scaled to the
