@@ -94,6 +94,11 @@ type Merge struct {
 	// merges one of the project's pull requests at a time, main merged in
 	// and the checks run again when main moved.
 	Queue string `yaml:"queue" json:"queue"`
+	// Groups: free merges the cards of every plan as they come, and
+	// production waits until no plan is open on main; one_at_a_time admits a
+	// plan's card to the merge queue only while no other plan is open on
+	// main, and needs queue project. Absent: free.
+	Groups string `yaml:"groups,omitempty" json:"groups,omitempty"`
 }
 
 // Stage is one named stage of a process and what its findings do.
@@ -178,6 +183,15 @@ const (
 
 // Queues are the merge.queue values.
 var Queues = []string{QueueNone, QueueProject}
+
+// Merge groups.
+const (
+	GroupsFree       = "free"
+	GroupsOneAtATime = "one_at_a_time"
+)
+
+// GroupsValues are the merge.groups values.
+var GroupsValues = []string{GroupsFree, GroupsOneAtATime}
 
 // Stage names.
 const (
@@ -268,6 +282,12 @@ func (p Process) Validate() error {
 	}
 	if !slices.Contains(Queues, p.Merge.Queue) {
 		bad("merge", "queue %q, want one of %v", p.Merge.Queue, Queues)
+	}
+	if g := p.Merge.Groups; g != "" && !slices.Contains(GroupsValues, g) {
+		bad("merge", "groups %q, want one of %v", g, GroupsValues)
+	}
+	if p.Merge.Groups == GroupsOneAtATime && p.Merge.Queue != QueueProject {
+		bad("merge", "groups one_at_a_time needs queue project: the merge queue admits one plan's cards at a time")
 	}
 	if p.Time != nil {
 		if err := p.Time.validate(); err != nil {

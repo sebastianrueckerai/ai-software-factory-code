@@ -214,3 +214,21 @@ func TestTreeValidateWithoutSessionsSaysItOnce(t *testing.T) {
 		t.Fatalf("Validate =\n%v\nwant:\n%s", err, want)
 	}
 }
+
+func TestMergeGroups(t *testing.T) {
+	for _, c := range []struct{ groups, want string }{
+		{", groups: one_at_a_time", GroupsOneAtATime},
+		{", groups: free", GroupsFree},
+		{"", ""},
+	} {
+		files := fixtureTree(t)
+		edit(t, files, "processes/spec.yaml", "merge: {queue: project}", "merge: {queue: project"+c.groups+"}")
+		tree, err := ParseTree(files)
+		if err != nil {
+			t.Fatalf("groups %q: %v", c.groups, err)
+		}
+		if got := tree.Processes["spec"].Merge.Groups; got != c.want {
+			t.Errorf("groups %q: Merge.Groups = %q, want %q", c.groups, got, c.want)
+		}
+	}
+}

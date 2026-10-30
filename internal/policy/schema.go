@@ -67,6 +67,7 @@ var enums = map[string][]string{
 	"Dependencies.WaitUntil":  WaitUntilValues,
 	"Dependencies.OnFailed":   OnFailedValues,
 	"Merge.Queue":             Queues,
+	"Merge.Groups":            GroupsValues,
 	"ChatConfig.Model":        ChatModels,
 	"ChatConfig.VisionModel":  VisionModels,
 	"Class.VisionModel":       VisionModels,
