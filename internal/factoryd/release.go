@@ -104,12 +104,16 @@ func (s *PGStore) RecordReleaseAsk(ctx context.Context, repository, commit strin
 	return err
 }
 
-func (s *PGStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO releases (repository, held_since, asked_at) VALUES ($1, $2, $3)
-		ON CONFLICT (repository) DO UPDATE SET held_since = COALESCE(releases.held_since, EXCLUDED.held_since),
-			asked_at = CASE WHEN releases.asked_at IS NOT DISTINCT FROM $4 THEN EXCLUDED.asked_at ELSE releases.asked_at END`,
+func (s *PGStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO releases (repository, held_since, asked_at) VALUES ($1, $2, $3)
+		ON CONFLICT (repository) DO UPDATE SET held_since = COALESCE(releases.held_since, EXCLUDED.held_since), asked_at = EXCLUDED.asked_at
+		WHERE releases.asked_at IS NOT DISTINCT FROM $4`,
 		repository, nullTime(since), nullTime(asked), nullTime(was))
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
 }
 
 func (s *PGStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {

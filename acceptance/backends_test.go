@@ -892,8 +892,8 @@ func (s *acceptanceStore) RecordReleaseAsk(context.Context, string, string, bool
 	return nil
 }
 
-func (s *acceptanceStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time) error {
-	return nil
+func (s *acceptanceStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time) (bool, error) {
+	return true, nil
 }
 
 func (s *acceptanceStore) SetDeployNow(context.Context, string, string, time.Time) error {

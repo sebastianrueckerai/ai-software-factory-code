@@ -392,17 +392,17 @@ func (s *fakeStore) RecordReleaseAsk(ctx context.Context, repository, commit str
 	return nil
 }
 
-func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) error {
-	_, ok := s.releases[repository]
+func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) (bool, error) {
+	if r, ok := s.releases[repository]; ok && !r.AskedAt.Equal(was) {
+		return false, nil
+	}
 	s.putRelease(repository, func(r *Release) {
 		if r.HeldSince.IsZero() {
 			r.HeldSince = since
 		}
-		if !ok || r.AskedAt.Equal(was) {
-			r.AskedAt = asked
-		}
+		r.AskedAt = asked
 	})
-	return nil
+	return true, nil
 }
 
 func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {

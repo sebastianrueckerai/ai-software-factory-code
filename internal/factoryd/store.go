@@ -559,11 +559,12 @@ type Store interface {
 	// RecordReleaseAsk records the project CI's ask of /release at, and
 	// commit as told held when held.
 	RecordReleaseAsk(ctx context.Context, repository, commit string, held bool, at time.Time) error
-	// PutReleaseHold is the keeper's write: the clock since unless one runs,
-	// and asked only where asked_at is still was, the value the keeper
-	// read, so a Deploy now meanwhile stands. Zero is none in all three.
-	// Only the keeper's Pass calls it.
-	PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) error
+	// PutReleaseHold is the keeper's write of the clock since, unless one
+	// runs, and of the ask asked. It writes only where asked_at is still
+	// was, the value the keeper read, so a Deploy now meanwhile stands, and
+	// answers whether it wrote. Zero is none in all three. Only the
+	// keeper's Pass calls it.
+	PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) (bool, error)
 	// SetDeployNow releases commit: the clock restarts at since and the
 	// last ask is cleared.
 	SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error
