@@ -295,7 +295,9 @@ type labScene struct {
 	projects []factoryd.Project
 	config   *policy.ProjectConfig
 	monthCap float64
-	prFiles  map[string]string
+	// hold: plan #12 holds the code project's production, 3 of 5 merged
+	hold    bool
+	prFiles map[string]string
 	// remote is the mirror's remote, "" for the code project's
 	remote    string
 	tasks     []factoryd.BoardTask
@@ -346,7 +348,7 @@ type labScene struct {
 	costs *policy.Costs
 }
 
-var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
+var labScenes = map[string]func(now time.Time) labScene{"busy": heldBusyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
 	"history": historyScene, "wake": wakeScene, "metrics": metricsScene}
 
@@ -704,6 +706,16 @@ func (r *rig) seedScene(s labScene) string {
 		r.ledger.costs = labCosts(now, s.spend, s.tasks)
 	}
 	r.figures.SetMetrics(s.metrics)
+	r.c.cfg.Hold = nil
+	if s.hold {
+		r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
+			if repository != project.Repository {
+				return factoryd.Hold{}, nil
+			}
+			return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), Groups: []factoryd.Group{
+				{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+		}
+	}
 	r.alerts.rows = s.alerts
 	r.resources.rows = s.resources
 	r.resources.use = map[string]cloudres.EnvelopeUse{repository: {OpenServers: 1, MonthEUR: 0.43}}
@@ -883,6 +895,13 @@ func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
 		{"step": "pushed", "time": stamp(start.Add(19*time.Minute + 5*time.Second)), "session": "s-1", "commit": "4be1c07"},
 		checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed),
 	}
+}
+
+// heldBusyScene is the busy board under a production hold.
+func heldBusyScene(now time.Time) labScene {
+	s := busyScene(now)
+	s.hold = true
+	return s
 }
 
 func busyScene(now time.Time) labScene {

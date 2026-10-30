@@ -754,6 +754,9 @@ func boardWords(d boardData) string {
 		listed("\n  ", lines, whole)
 		b.WriteString("\n")
 	}
+	if h := d.Status.Hold; h != nil {
+		fmt.Fprintf(&b, "Production held for %s: %s.\n", h.For, h.Reason)
+	}
 	b.WriteString("Open cards:\n")
 	for _, col := range d.Columns {
 		if col.Finished == "" {

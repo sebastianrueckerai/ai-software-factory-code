@@ -1194,6 +1194,7 @@ func newRig(t *testing.T) *rig {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
 			return nil
 		},
+		DeployNow: func(context.Context, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
 		SetIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error {
 			edge := fmt.Sprintf("%s#%d on #%d", repo, number, dependency)
 			r.issueDeps = slices.DeleteFunc(r.issueDeps, func(e string) bool { return e == edge })

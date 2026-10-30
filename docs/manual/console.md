@@ -55,6 +55,16 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan's card `part of plan #n`.
+- The production hold: while a plan's group is open on the project's main,
+  the status strip shows the cell `production held · <time>` after the
+  routine cell, and the status panel has a Production section after Spend.
+  The section names the hold (`Held for 7 h: plan #12 is open on main.`)
+  and each open plan as `plan #12 · 3 of 5 merged`. An approver of the
+  project also gets Deploy now, `POST /projects/{name}/deploy-now`: after a
+  confirm, main goes to production as it is, and the answer names the
+  commit. A writer sees the cell and the section without the button and is
+  refused the route with 403. A production that is not held refuses the
+  route with 409. The board's text for the agent starts with the hold.
 - Filing a card: no card waits undecided and none moves between columns
   by hand (roadmap 225). The new-task form's track select (Direct by
   default, Plan, Human) sets `agent`, `plan` or `human` on the issue;

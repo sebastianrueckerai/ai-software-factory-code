@@ -249,6 +249,13 @@ type Config struct {
 	// and answers the note for the person; a card or plan that takes no
 	// replan answers factoryd.ErrNoReplan.
 	Replan func(ctx context.Context, taskID, by, comment string, offMain bool) (string, error)
+	// Hold is what holds repository's production now (factoryd's
+	// ReleaseKeeper.Hold); nil shows no hold line.
+	Hold func(ctx context.Context, repository string) (factoryd.Hold, error)
+	// DeployNow releases main of a held repository to production for by
+	// and answers the commit (ReleaseKeeper.DeployNow); a free production
+	// answers factoryd.ErrNotHeld.
+	DeployNow func(ctx context.Context, repository, by, via string) (string, error)
 	// AnswerWhole signals card taskID's workflow that comment, which the
 	// answer box posted for by, is a whole answer
 	// (factoryd.SignalAnswerWhole): the card resumes on it without the
@@ -485,6 +492,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
+		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
 		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},

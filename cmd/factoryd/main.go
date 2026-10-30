@@ -576,6 +576,8 @@ func main() {
 		Replan: func(ctx context.Context, taskID, by, comment string, offMain bool) (string, error) {
 			return runner.Replan(ctx, taskID, factoryd.ReplanAsk{By: by, Comment: comment, OffMain: offMain})
 		},
+		Hold:      releases.Hold,
+		DeployNow: releases.DeployNow,
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},

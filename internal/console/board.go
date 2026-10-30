@@ -1250,6 +1250,14 @@ type statusLine struct {
 	DepsDown     bool
 	DepsDegraded bool
 	DepsUp       bool
+	// Hold is what holds the project's production, nil when nothing does.
+	Hold *holdLine
+}
+
+// holdLine is the hold as the strip and the panel show it.
+type holdLine struct {
+	For, Reason string
+	Groups      []string
 }
 
 // depRow is one dependency's state as the panel shows it: its latest
@@ -2458,6 +2466,18 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		d.Problems = append(d.Problems, "the chat's budget could not be read")
 	} else if stop.stopped {
 		s.ChatSpent, s.ChatTask = true, stop.task.ID
+	}
+	if c.cfg.Hold != nil {
+		if h, err := c.cfg.Hold(ctx, p.Repository); err != nil {
+			log.Printf("console: the production hold of %s: %v", p.Repository, err)
+			d.Problems = append(d.Problems, "the production hold could not be read")
+		} else if h.Held() {
+			s.Hold = &holdLine{For: coarse(time.Since(h.Since)), Reason: factoryd.HoldReason(h.Groups)}
+			for _, g := range h.Groups {
+				merged, total := g.Merged()
+				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("plan #%d · %d of %d merged", g.Issue, merged, total))
+			}
+		}
 	}
 	if c.cfg.Mirrors == nil {
 		return

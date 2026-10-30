@@ -2058,3 +2058,25 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 	c.record(ctx, a, p.Repository, "", 0, factoryd.EventMemberInvited, map[string]any{"login": login})
 	return login + " is a member; the console admits them within a minute.", nil
 }
+
+// doDeployNow releases main of the project's held production, an
+// approver's call (access rule "deploy a held production").
+func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string, error) {
+	p, ok, err := c.projectOf(ctx, name)
+	switch {
+	case err != nil:
+		log.Printf("console: the projects: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+	case !ok:
+		return "", refuse(http.StatusNotFound, "There is no project "+name+".")
+	}
+	commit, err := c.cfg.DeployNow(ctx, p.Repository, a.s.user, a.via)
+	switch {
+	case errors.Is(err, factoryd.ErrNotHeld):
+		return "", refuse(http.StatusConflict, "Production of "+name+" is not held: every merge goes to production on its own.")
+	case err != nil:
+		log.Printf("console: %s deploys %s now: %v", a.s.user, p.Repository, err)
+		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: see the factoryd log, then press Deploy now again.")
+	}
+	return fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.", name, commit[:min(7, len(commit))]), nil
+}

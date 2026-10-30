@@ -203,6 +203,8 @@ async function viewChange(p, query, fails) {
   await page.locator("#status-line > summary").click();
   await page.waitForTimeout(200);
   if (!(await page.locator("#status-panel").isVisible())) fails.push(label + ": the strip does not open the panel");
+  if ((await page.locator("#status-line .cell.hold").count()) !== 1) fails.push(label + ": the strip lacks the production hold cell");
+  if ((await page.locator("#status-panel form[action$=deploy-now] button", { hasText: "Deploy now" }).count()) !== 1) fails.push(label + ": the panel lacks Deploy now");
   await page.locator("#status-line > summary").click();
   await page.waitForTimeout(200);
   if (!(await page.locator("#status-panel").isHidden())) fails.push(label + ": the strip does not close the panel");

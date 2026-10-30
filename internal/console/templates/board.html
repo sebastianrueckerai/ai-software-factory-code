@@ -51,6 +51,7 @@
 {{if gt .PremiumCapEUR 0.0}}<span class="cell spend{{gaugeClass .PremiumEUR .PremiumCapEUR}}" title="spend on the premium model this UTC month against its cap, budget.premium_month_eur; past it, premium calls run on big"><span><span class="of">premium</span> <b class="n">{{eur2 .PremiumEUR}}</b> <span class="of">/ {{eur2 .PremiumCapEUR}}</span></span><span class="gauge"><meter min="0" max="100" value="{{pct100 .PremiumEUR .PremiumCapEUR}}" aria-label="Premium spend of its month cap">{{pct .PremiumEUR .PremiumCapEUR}} percent</meter></span><span class="pct">{{pct .PremiumEUR .PremiumCapEUR}}%</span></span>
 {{end}}{{if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
 {{end}}{{if .RoutineCell}}<span class="cell routine{{if .RoutineHeld}} warn{{end}}">{{.RoutineCell}}</span>
+{{end}}{{with .Hold}}<span class="cell warn hold" title="{{.Reason}}: production waits until no plan is open on main">production held · {{.For}}</span>
 {{end}}{{with .GitHub}}<span class="cell gh">GitHub: {{.}}</span>
 {{end}}{{if .DepsDown}}<span class="cell deps down" data-tip="a factory dependency is down; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>
 {{else if .DepsDegraded}}<span class="cell deps warn" data-tip="a factory dependency is slow; the status in detail names it"><i class="dot" aria-hidden="true"></i>dependencies</span>
@@ -65,6 +66,10 @@
 <input type="text" id="chat-fund-note" name="reason" maxlength="{{maxAnswer}}" required>
 <button type="submit">Fund the chat</button>
 </form>{{end}}{{end}}</section>
+{{with .Hold}}<section><h3>Production</h3><p class="sp-note">Held for {{.For}}: {{.Reason}}.</p><div class="chiprow">{{range .Groups}}<span class="lchip wait">{{.}}</span>{{end}}</div>{{if $.Status.Approver}}<form method="post" action="/projects/{{$.Status.Project}}/deploy-now" hx-post="/projects/{{$.Status.Project}}/deploy-now" hx-target="#board" hx-swap="outerHTML" hx-confirm="Deploy main of {{$.Status.Project}} as it is? The open plans' merged cards go live half-built." class="inline">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Status.Filter}}
+<button type="submit">Deploy now</button>
+</form>{{end}}</section>{{end}}
 <section><h3>Factory</h3>{{if or .Dependencies .GitHub $.PolicyCommit .Waiting}}<div class="chiprow">{{range .Dependencies}}{{if eq .State "down"}}<span class="lchip down" data-tip="down{{with .Detail}} · {{.}}{{end}} · {{.Age}} ago"><i class="dot" aria-hidden="true"></i>{{.Name}} · down {{.Age}}</span>{{else if eq .State "degraded"}}<span class="lchip wait" data-tip="degraded{{with .Detail}} · {{.}}{{end}} · {{.Age}} ago"><i class="dot" aria-hidden="true"></i>{{.Name}} · degraded {{.Age}}</span>{{else}}<span class="lchip" data-tip="{{.State}}{{with .Detail}} · {{.}}{{end}} · {{.Age}} ago"><i class="dot" aria-hidden="true"></i>{{.Name}}</span>{{end}}
 {{end}}{{if .GitHub}}<a class="lchip" href="{{.GitHubURL}}" target="_blank" rel="noopener" data-tip="GitHub: {{.GitHub}}">github</a>{{end}}{{if $.PolicyCommit}}<a class="lchip" href="{{$.PolicyTreeURL}}" target="_blank" rel="noopener" data-tip="version {{$.PolicyVersion}} · {{$.PolicyCommit}}">config</a>{{end}}{{if .Waiting}}<span class="lchip wait" data-tip="{{.Waiting}} cards wait on a provider answer; the strip's need-you cell links here"><i class="dot" aria-hidden="true"></i>provider · {{.Waiting}} waiting</span>{{end}}{{if not .Dependencies}}<p class="none">unknown</p>{{end}}</div>{{else}}<p class="none">unknown</p>{{end}}</section>
 </div>{{end}}{{end}}

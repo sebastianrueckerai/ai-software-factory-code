@@ -76,3 +76,13 @@ func (c *Console) showNote(w http.ResponseWriter, r *http.Request, action func(c
 	}
 	c.showBoard(w, r, http.StatusOK, note, nil)
 }
+
+// deployNow is the panel's Deploy now (doDeployNow).
+func (c *Console) deployNow(w http.ResponseWriter, r *http.Request) {
+	note, err := c.doDeployNow(r.Context(), button(r), r.PathValue("name"))
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	c.showBoard(w, r, http.StatusOK, note, nil)
+}
