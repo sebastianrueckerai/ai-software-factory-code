@@ -373,7 +373,8 @@ spec:
       object.metadata.name == object.metadata.labels['factory/project'] + '-git' &&
       (!has(object.type) || object.type == 'Opaque')
   # factoryd's suspend and resume of the factory's own Kustomization
-  # (rolltask.go): flux-system/factory, spec.suspend and nothing else
+  # (rolltask.go): flux-system/factory, spec.suspend and nothing else; an
+  # owner reference would have the garbage collector delete it
   - name: factorySuspend
     expression: >-
       variables.kind == 'Kustomization' && request.namespace == 'flux-system' &&
@@ -383,7 +384,11 @@ spec:
       has(object.metadata.labels) == has(oldObject.metadata.labels) &&
       (!has(object.metadata.labels) || object.metadata.labels == oldObject.metadata.labels) &&
       has(object.metadata.annotations) == has(oldObject.metadata.annotations) &&
-      (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations)
+      (!has(object.metadata.annotations) || object.metadata.annotations == oldObject.metadata.annotations) &&
+      has(object.metadata.ownerReferences) == has(oldObject.metadata.ownerReferences) &&
+      (!has(object.metadata.ownerReferences) || object.metadata.ownerReferences == oldObject.metadata.ownerReferences) &&
+      has(object.metadata.finalizers) == has(oldObject.metadata.finalizers) &&
+      (!has(object.metadata.finalizers) || object.metadata.finalizers == oldObject.metadata.finalizers)
   validations:
   - expression: variables.task || variables.projectNamespace || variables.inProject || variables.projectSource || variables.projectGitSecret || variables.releasedCache || variables.factorySuspend
     message: factoryd may only act in factory-agents-* namespaces, in its projects' namespaces, on its projects' Flux sources, on released cache volumes and on the suspend of flux-system/factory

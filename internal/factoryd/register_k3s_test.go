@@ -261,4 +261,43 @@ func TestRegistrationClusterOnAnAPIServer(t *testing.T) {
 		!(errors.Is(err, ErrForbidden) || strings.Contains(err.Error(), "ValidatingAdmissionPolicy 'factoryd-task-namespaces'")) {
 		t.Errorf("factoryd suspends flux-system/platform: %v, want refused", err)
 	}
+
+	// patches of other types, as factoryd: a dangling owner reference would
+	// have the garbage collector delete factory, and with prune the factory
+	saToken, err := os.ReadFile(filepath.Join(dir, "token"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	patch := func(contentType, body string) (int, string) {
+		t.Helper()
+		req, _ := http.NewRequestWithContext(ctx, http.MethodPatch, kube.Host+fks+"/factory", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(saToken)))
+		req.Header.Set("Content-Type", contentType)
+		res, err := kube.HTTP.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer res.Body.Close()
+		raw, _ := io.ReadAll(res.Body)
+		return res.StatusCode, string(raw)
+	}
+	const mergePatch = "application/merge-patch+json"
+	patchRefused := func(name, contentType, body string) {
+		t.Helper()
+		if code, raw := patch(contentType, body); code != http.StatusForbidden && !strings.Contains(raw, "ValidatingAdmissionPolicy 'factoryd-task-namespaces'") {
+			t.Errorf("%s: %d %s, want refused", name, code, raw)
+		}
+	}
+	patchRefused("an owner reference on factory", mergePatch,
+		`{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","name":"gone","uid":"00000000-0000-0000-0000-000000000001"}]}}`)
+	patchRefused("a finalizer on factory", mergePatch, `{"metadata":{"finalizers":["example.com/hold"]}}`)
+	var meta struct {
+		Metadata struct {
+			OwnerReferences []any `json:"ownerReferences"`
+			Finalizers      []any `json:"finalizers"`
+		} `json:"metadata"`
+	}
+	if code := asAdmin(http.MethodGet, fks+"/factory", nil, &meta); code != http.StatusOK || meta.Metadata.OwnerReferences != nil || meta.Metadata.Finalizers != nil {
+		t.Fatalf("admin reads flux-system/factory: %d, %+v; want it there without owners or finalizers", code, meta.Metadata)
+	}
 }
