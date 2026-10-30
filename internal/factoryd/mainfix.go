@@ -210,6 +210,9 @@ func newestMain(runs []ActionRun) *ActionRun {
 // the human card to re-run the jobs when every failed one lost its runner
 // (lostRunners), else the fix-forward card. A filing that fails leaves the
 // pause with no card, which the next poll judges again, its since kept.
+// A job's re-run re-runs the jobs that need it, so a dependent skipped at
+// attempt 1 first runs at attempt 2: two flakes in one run, the second in
+// such a dependent, file the card without a re-run of the second.
 func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
