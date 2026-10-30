@@ -69,16 +69,21 @@ func (r *Runner) pendingReplan(ctx context.Context, p Task) (ReplanStep, bool, e
 	return step, true, nil
 }
 
-// fundPlanner tops card t up to the default card budget left for the
-// planner's session; a card with that much left gets nothing.
-func (r *Runner) fundPlanner(ctx context.Context, t Task) error {
+// fundPlanner tops card id up to the default card budget left for the
+// planner's session; a card with that much left gets nothing. It reads
+// the row itself: a caller's copy may predate another replan's funding.
+func (r *Runner) fundPlanner(ctx context.Context, id string) error {
+	t, _, err := r.task(ctx, id)
+	if err != nil {
+		return err
+	}
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	short := Cents(policy.CardBudget(v.Document.Budget, project.Budget, "", false, 0)) - (Cents(t.BudgetEUR) - Cents(t.SpentEUR))
 	if short <= 0 {
 		return nil
 	}
-	_, _, err := r.store.FundCard(ctx, t.ID, float64(short)/100, nil, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber,
+	_, _, err = r.store.FundCard(ctx, t.ID, float64(short)/100, nil, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber,
 		Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the planner's session"}})
 	return err
 }
@@ -114,7 +119,7 @@ func (r *Runner) reopenPlan(ctx context.Context, p Task) error {
 	if err := r.store.SetTaskUsage(ctx, p.ID, TaskUsage{}); err != nil {
 		return err
 	}
-	if err := r.fundPlanner(ctx, p); err != nil {
+	if err := r.fundPlanner(ctx, p.ID); err != nil {
 		return err
 	}
 	if err := r.reopenIssue(ctx, p); err != nil {

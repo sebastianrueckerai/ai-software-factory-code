@@ -291,7 +291,7 @@ func TestFundPlannerLeavesTheDefaultBudget(t *testing.T) {
 	p.BudgetEUR, p.SpentEUR = 10, 8
 	store.tasks["p"] = p
 	for range 2 {
-		if err := r.fundPlanner(ctx, store.tasks["p"]); err != nil {
+		if err := r.fundPlanner(ctx, "p"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -304,11 +304,26 @@ func TestFundPlannerLeavesTheDefaultBudget(t *testing.T) {
 	p = store.tasks["p"]
 	p.BudgetEUR, p.SpentEUR = 10, 2
 	store.tasks["p"] = p
-	if err := r.fundPlanner(ctx, store.tasks["p"]); err != nil {
+	if err := r.fundPlanner(ctx, "p"); err != nil {
 		t.Fatal(err)
 	}
 	if got := fundings(store, "p"); len(got) != 1 {
 		t.Fatalf("fundings %+v, want no new one with 8 EUR left", got)
+	}
+
+	// two replans that read the plan before either reopened it fund it once
+	r, store, _ = replanRig(t, "done", 1)
+	r.cfg.Policy = func() policy.Version { return v }
+	p = store.tasks["p"]
+	p.BudgetEUR, p.SpentEUR = 10, 8
+	store.tasks["p"] = p
+	for range 2 {
+		if err := r.reopenPlan(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := fundings(store, "p"); len(got) != 1 || got[0].Detail["amount_eur"] != 3.0 || store.tasks["p"].BudgetEUR != 13 {
+		t.Fatalf("fundings %+v, budget %v; want one of 3.00 EUR, the budget 13", got, store.tasks["p"].BudgetEUR)
 	}
 }
 

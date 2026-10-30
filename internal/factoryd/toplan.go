@@ -126,7 +126,7 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 			return PlanSwitchResult{}, err
 		}
 	}
-	if err := r.fundPlanner(ctx, t); err != nil {
+	if err := r.fundPlanner(ctx, t.ID); err != nil {
 		return PlanSwitchResult{}, err
 	}
 	if t.IssueNumber != 0 {
