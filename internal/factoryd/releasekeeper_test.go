@@ -569,6 +569,25 @@ func TestReleaseKeeperEndsTheHoldOnceItsAskClosed(t *testing.T) {
 	}
 }
 
+// An ask whose issue Forgejo refuses to close for good does not keep the
+// hold: the refusal is logged, the hold ends, and the told promote job runs
+// again.
+func TestReleaseKeeperEndsTheHoldThoughItsAskCannotClose(t *testing.T) {
+	logs := captureLog(t)
+	k, f, store, _ := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
+	f.closeFail = http.StatusNotFound
+	keeperPass(t, k)
+	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0)}); !reflect.DeepEqual(got, want) {
+		t.Errorf("row %+v, want %+v: the hold ended", got, want)
+	}
+	if len(releasedRows(store)) != 1 || !slices.Equal(f.jobReruns, []string{demoRepo + " 212"}) {
+		t.Errorf("%d rows, job re-runs %q; want the release recorded and run 21's promote job run again", len(releasedRows(store)), f.jobReruns)
+	}
+	if !strings.Contains(logs.String(), "release keeper: sf/demo-app: Forgejo refused the ask's close for good: ") {
+		t.Errorf("log %q, want the refused close said", logs.String())
+	}
+}
+
 func TestReleaseKeeperRunsThePromoteOnlyOfTheToldCommit(t *testing.T) {
 	ctx := context.Background()
 	t.Run("a newer commit", func(t *testing.T) {

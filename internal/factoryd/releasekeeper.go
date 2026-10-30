@@ -113,8 +113,8 @@ func (k *ReleaseKeeper) Pass(ctx context.Context) error {
 
 // keep is one repository's pass over its row as read: the hold while
 // groups are open on its main, else its end where a clock runs (the ask
-// closed first, so a failed close leaves the hold for the next pass), then
-// a promote job to run again. A promote job told held runs again once no
+// closed first, so a failed close leaves the hold for the next pass; one
+// Forgejo refuses for good does not), then a promote job to run again. A promote job told held runs again once no
 // group is open, or while one is when its commit is Deploy now's; at the
 // hold's end an empty ToldHeld is unknown (a failed ask record leaves it
 // unwritten), so the newest run's promote job runs again. Own's roll is
@@ -128,7 +128,9 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 	case len(groups) > 0:
 		err = k.hold(ctx, row, groups, now)
 	case !row.HeldSince.IsZero():
-		if err := k.closeAsk(ctx, repository, "factoryd: no plan is open on main any more, so production goes ahead. Closing this issue."); err != nil {
+		if err := k.closeAsk(ctx, repository, "factoryd: no plan is open on main any more, so production goes ahead. Closing this issue."); forgejoTerminal(err) {
+			log.Printf("release keeper: %s: Forgejo refused the ask's close for good: %v; the hold ends without it", repository, err)
+		} else if err != nil {
 			return err
 		}
 		if err := k.Store.EndReleaseHold(ctx, repository); err != nil {

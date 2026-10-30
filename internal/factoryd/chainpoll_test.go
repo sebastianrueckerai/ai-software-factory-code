@@ -377,6 +377,7 @@ type chainForgejo struct {
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
 	issues    []string                                  // "title\n\nbody" of every issue filed
 	fileIssue int                                       // the status an issue's filing answers; 0 is 201
+	closeFail int                                       // the status an issue's close answers; 0 closes it
 	open      map[string][]map[string]any               // repository -> its open issues
 	status    []string                                  // the sha of every combined status read
 	reads     []string                                  // "repository dir" of every workflow-list read
@@ -489,6 +490,8 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			f.comments = append(f.comments, repo+"#"+strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments")+" "+in["body"])
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"id": len(f.comments)})
+		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/") && f.closeFail != 0:
+			http.Error(w, "refused", f.closeFail)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
