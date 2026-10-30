@@ -1275,7 +1275,11 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string) (strin
 		return "", refuse(http.StatusConflict, no.Error())
 	case err != nil:
 		log.Printf("console: %s replans %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Card #%d could not go back to the planner: see the factoryd log, then replan it again.", t.IssueNumber))
+		card := "Card " + t.ID
+		if t.IssueNumber != 0 {
+			card = fmt.Sprintf("Card #%d", t.IssueNumber)
+		}
+		return "", refuse(http.StatusInternalServerError, card+" could not go back to the planner: see the factoryd log, then replan it again.")
 	}
 	comment := factoryd.ReplanComment(note)
 	if t.IssueNumber != 0 {

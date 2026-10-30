@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"net/http"
@@ -33,6 +34,8 @@ func TestReplanCard(t *testing.T) {
 			return "", factoryd.ErrNoReplan("Card #5 merged, so its work is on main: file a new card for what is still missing.")
 		case "t-x":
 			return "Card #0 goes to the planner at its next step.", nil
+		case "t-y":
+			return "", errors.New("the store is down")
 		}
 		return "Card #11 stops its session and goes to the planner.", nil
 	}
@@ -43,7 +46,9 @@ func TestReplanCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-roll", Kind: "agent", Status: "running", Track: policy.TrackDirect, Source: factoryd.SourceRoll,
 			Repository: "sf/code", IssueNumber: 41, Objective: "Roll."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
-			Repository: "sf/code", Objective: "No issue yet."}})
+			Repository: "sf/code", Objective: "No issue yet."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-y", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
+			Repository: "sf/code", Objective: "No issue either."}})
 	r.tasks.mu.Unlock()
 	ck, s := r.loggedIn(t)
 
@@ -155,6 +160,11 @@ func TestReplanCard(t *testing.T) {
 	r.fg.mu.Unlock()
 	rows = r.events.all()[before:]
 	equal(t, "the refused post", []any{rec.Code, posts() - sent, len(rows), rows[0].Kind}, []any{http.StatusSeeOther, 1, 1, factoryd.EventCardReplanned})
+
+	// a card without an issue that factoryd fails is named by its id
+	status, msg = refused(t, r, "replan", toolInput{TaskID: "t-y", Note: note})
+	equal(t, "the failed replan of a card without an issue", []any{status, msg},
+		[]any{http.StatusInternalServerError, "Card t-y could not go back to the planner: see the factoryd log, then replan it again."})
 
 	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","task_id":"t-r"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #11"}})
