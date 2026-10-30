@@ -1256,11 +1256,11 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 
 // doReplan sends card id, or the plan it belongs to, back to the planner
 // for the member, note saying why; offMain takes the plan's merged cards
-// off main first. Only once factoryd accepts does the
-// note go on the issue of the card, or of the plan a child replans, as
-// the member, in the words the replan step holds: the plan loop knows
-// that comment for the replan's own, not a writer's ask. factoryd carries
-// the words, so a failed read or post is logged.
+// off main first. Only once factoryd accepts does the note go on the issue
+// of the card, or of the plan a child replans, as the member, in the words
+// the replan step holds: the plan loop knows that comment for the replan's
+// own, not a writer's ask. factoryd carries the words, so a failed read or
+// post is logged.
 func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMain bool) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 || strings.TrimSpace(factoryd.ReplanComment(note)) == "" {
