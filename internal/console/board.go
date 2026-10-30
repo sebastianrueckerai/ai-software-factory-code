@@ -3083,11 +3083,10 @@ var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"ac
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
 // line and its body, the plan's rounds and what is still to plan, its
-// table, a pending merge's
-// reviews and audit, and the related cards. Activity: the timeline
-// page's gates and steps. Files: the pull request's changed files. Chat:
-// the newest session's messages, and the input that steers it while it
-// runs.
+// table, a pending merge's reviews and audit, and the related cards.
+// Activity: the timeline page's gates and steps. Files: the pull
+// request's changed files. Chat: the newest session's messages, and the
+// input that steers it while it runs.
 type drawerData struct {
 	Card                       card
 	Tab                        string
