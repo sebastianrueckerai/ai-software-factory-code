@@ -2652,8 +2652,17 @@ func (t *taskRun) gate(commit string) verdict {
 // autoMerge merges on the project's merge rule auto (versionAutoMerge):
 // the note on the timeline, then the gate's approval naming met and the
 // merge as factory-merge. done with the task's verdict, or why it did not
-// go through: the card then.
+// go through: the card then. A person's replan that waited behind the
+// gates goes first (versionReplan): the card goes to the planner, or, on
+// a refused switch, merges.
 func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []string) (v verdict, done bool, failed string) {
+	if t.replans() {
+		if sw, step, ok := t.takeToPlan(); ok {
+			if final, why, switched := t.switchFromWait(sw, step, "in-review"); switched {
+				return verdict{final: final, reason: why}, true, ""
+			}
+		}
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivityAutoMergeNote, t.taskID, t.pr.Number, commit, g, rv).Get(t.ctx, nil); err != nil {
 		return verdict{}, false, "the auto merge's note failed: " + errMessage(err)
 	}

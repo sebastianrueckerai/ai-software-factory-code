@@ -4760,6 +4760,58 @@ func TestReplanWakesTheQueueTurn(t *testing.T) {
 	}
 }
 
+// A replan that comes while the checks run, which take none, is taken
+// right before the auto merge, queued or not: the card goes to the
+// planner, and nothing merges. A refused switch moves the card back to
+// in-review, and it merges.
+func TestReplanBeforeAnAutoMerge(t *testing.T) {
+	rig := func(t *testing.T, become func() (PlanSwitchResult, error), queue string) (*planHarness, *[]becomePlanCall, *int) {
+		h, calls := directCardHarness(t, become, timedSession{res: pushed("s1", "c1")})
+		h.taskConfig.Queue = queue
+		h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+		h.env.OnActivity(ActivitySyncWithMain, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
+				return SyncResult{To: from}, nil
+			})
+		h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+			PolicyGate{Class: "normal", Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto}, nil)
+		h.env.OnActivity(ActivityGateReproduction, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+			ReproResult{Ran: true, Exit: 0, BaseExit: 1, Command: "go test ./x"}, nil)
+		yes := true
+		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			Review{Verdict: "approve", Summary: "fine", StrictImprovement: &yes}, nil)
+		merges := 0
+		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
+				merges++
+				return MergeResult{Merged: true}, nil
+			})
+		h.toPlanAfter(10*time.Minute, toPlanTooBig)
+		return h, calls, &merges
+	}
+	for _, queue := range []string{policy.QueueNone, policy.QueueProject} {
+		t.Run(queue, func(t *testing.T) {
+			h, calls, merges := rig(t, becomeSwitched, queue)
+			if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			if want := []becomePlanCall{{"t1", toPlanAsked, "running in-review running"}}; !slices.Equal(*calls, want) || *merges != 0 || len(h.autoNotes) != 0 {
+				t.Fatalf("BecomePlan calls %+v, merges %d, auto merge notes %q; want %+v, none, none", *calls, *merges, h.autoNotes, want)
+			}
+		})
+	}
+
+	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
+	h, calls, merges := rig(t, becomeRefused(refused), policy.QueueNone)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged by factory-merge on the merge rule auto" {
+		t.Fatalf("refused: finals %v", h.finals)
+	}
+	if !slices.Equal(h.states, []string{"running", "in-review", "running", "in-review"}) || len(*calls) != 1 || *merges != 1 {
+		t.Fatalf("refused: states %q, BecomePlan calls %d, merges %d; want running, in-review, running, in-review, 1, 1", h.states, len(*calls), *merges)
+	}
+}
+
 // A replan pending when a card in review starts its run is refused: the
 // card goes back to in-review, and its head is verified again.
 func TestReplanRefusedAtTheStartVerifiesAgain(t *testing.T) {
