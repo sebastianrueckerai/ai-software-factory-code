@@ -1540,7 +1540,8 @@ func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (f
 
 // replanCut sends a card whose session stopped for a replan
 // (OutcomeReplan) to the planner: a direct card, cut by the check-in or
-// stopped by a person, turns plan-track and the plan loop runs on; a
+// stopped by a person, turns plan-track and the plan loop runs on, a
+// person's replan that came with a cut joining it; a
 // plan's child goes back to its plan and ends closed. done with the run's
 // end, else refused says why not, for a person.
 func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool, err error) {
@@ -1563,6 +1564,9 @@ func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool
 		if sw, step, ok = t.takeToPlan(); !ok {
 			sw, step = PlanSwitch{Reason: reason, Work: work}, ReplanStep{Origin: ReplanPerson, Comment: reason, Card: t.taskID}
 		}
+	} else if asked, person, ok := t.takeToPlan(); ok {
+		// a person's replan sent while the check-in cut the card joins the cut
+		sw, step.By, step.Comment = sw.and(asked), person.By, person.Comment
 	}
 	if final, switched, err := t.replanToPlan(step, sw); switched {
 		return final, "", true, err

@@ -4252,6 +4252,22 @@ func TestCheckinReplanSwitchesADirectCard(t *testing.T) {
 	if len(h.sessions) != 1 || len(h.plans) != 1 {
 		t.Fatalf("coding sessions %d, planner sessions %d; want 1, 1", len(h.sessions), len(h.plans))
 	}
+
+	// a person's replan sent while the check-in cut the card joins the
+	// cut: their name and note on its step, their words after its own
+	h, calls = toPlanHarness(t, becomeSwitched,
+		timedSession{took: 10 * time.Minute, res: SessionResult{Outcome: OutcomeReplan, SessionID: "s1", Trip: "size", Reason: "two packages", Replan: "R"}})
+	h.toPlanAfter(5*time.Minute, toPlanTooBig)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("with a person's replan: finals %v", h.finals)
+	}
+	want = map[string]any{"origin": ReplanCut, "card": "t1", "work": "R", "by": "ana", "comment": "too big"}
+	if got := h.replanSteps(); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
+		t.Fatalf("with a person's replan: replan steps %v, want %v", got, want)
+	}
+	if want := []becomePlanCall{{"t1", PlanSwitch{Reason: "cut: two packages; too big", Work: "R\nAsked by ana."}, "running"}}; !slices.Equal(*calls, want) {
+		t.Fatalf("with a person's replan: BecomePlan calls %+v, want %+v", *calls, want)
+	}
 }
 
 // A person's replan stops the running session; the stop takes the

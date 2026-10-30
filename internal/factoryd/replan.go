@@ -231,7 +231,8 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 
 // ReplanWait is ReplanStopped's answer: Stopped when the planner may run,
 // else Open the stopped cards whose work still runs (stoppable); By and
-// Comment are the person's name and note of their replan.
+// Comment are the person's name and note of their replan, or of the one a
+// cut took.
 type ReplanWait struct {
 	Stopped     bool
 	Open        []string
@@ -252,7 +253,7 @@ func (r *Runner) ReplanStopped(ctx context.Context, planID string) (ReplanWait, 
 		return ReplanWait{}, err
 	}
 	var w ReplanWait
-	if pending && step.Origin == ReplanPerson {
+	if pending {
 		w.By, w.Comment = step.By, step.Comment
 	}
 	for _, id := range step.Stops {

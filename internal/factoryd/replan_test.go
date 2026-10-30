@@ -465,6 +465,22 @@ func TestReplanStoppedWaitsForTheStops(t *testing.T) {
 	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true, By: "ana", Comment: "too wide"}) {
 		t.Fatalf("every stop final: %+v, %v; want stopped with the note", got, err)
 	}
+
+	// a cut that took a person's replan carries their name and note
+	for _, s := range []struct {
+		step   string
+		detail map[string]any
+	}{
+		{"replanned", map[string]any{"revision": 2}},
+		{stepReplan, map[string]any{"origin": ReplanCut, "card": "p", "work": "R", "by": "bo", "comment": "smaller"}},
+	} {
+		if err := r.timeline.Append(ctx, "p", s.step, s.detail); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true, By: "bo", Comment: "smaller"}) {
+		t.Fatalf("a cut with a person's replan: %+v, %v; want stopped with bo's note", got, err)
+	}
 }
 
 // addRevisions stores plan p's revisions, oldest first.
