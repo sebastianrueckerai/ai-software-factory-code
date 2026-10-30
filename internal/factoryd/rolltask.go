@@ -387,8 +387,9 @@ type Roller struct {
 	Scrub *redact.Scrubber
 
 	held string // main's head the roll last waited on, said once
-	// heldPosted is main's newest commit markHeld last said held
-	heldPosted string
+	// heldPosted is main's newest commit markHeld last said held; heldErr
+	// the text of its last refused mark, logged once
+	heldPosted, heldErr string
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
@@ -524,7 +525,8 @@ func (r *Roller) poll(ctx context.Context) error {
 // context on main's head, so without it no merged card would end done, a
 // plan's cards that wait on done would never start, and the hold would
 // never end. A judged commit keeps its verdict: an open roll's pending, a
-// failed roll's failure.
+// failed roll's failure. A mark Forgejo refuses is posted again by the next
+// poll, and the poll goes on.
 func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group, deploy string) error {
 	head := newestMain(runs)
 	if head == nil || head.CommitSHA == deploy || head.CommitSHA == r.heldPosted {
@@ -534,8 +536,16 @@ func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group,
 	if seen, err := r.Store.RollRequestSeen(ctx, head.CommitSHA); err != nil {
 		return err
 	} else if !seen {
-		r.rollStatus(ctx, head.CommitSHA, "success", "held: "+reason+"; the roll follows once no plan is open on main")
+		mark := CommitStatus{State: "success", Context: rollStatusContext, Description: "held: " + reason + "; the roll follows once no plan is open on main"}
+		if err := r.Forgejo.CreateCommitStatus(ctx, r.Repo.Owner, r.Repo.Name, head.CommitSHA, mark); err != nil {
+			if err.Error() != r.heldErr {
+				log.Printf("roller: %s: mark %s held: %v: the next poll posts it again", reason, head.CommitSHA, err)
+				r.heldErr = err.Error()
+			}
+			return nil
+		}
 	}
+	r.heldErr = ""
 	log.Printf("roller: %s: no roll until no plan is open on main", reason)
 	r.heldPosted = head.CommitSHA
 	return nil

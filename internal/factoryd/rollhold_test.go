@@ -183,6 +183,39 @@ func TestRollerRollsTheDeployNowCommitWhileHeld(t *testing.T) {
 	}
 }
 
+// A held status Forgejo refuses is posted again by the next poll, its error
+// logged once per text; the poll goes on, so Deploy now's commit rolls in
+// the poll whose mark failed. The hold is said once the mark lands.
+func TestRollerPostsARefusedHeldStatusAgain(t *testing.T) {
+	logs := captureLog(t)
+	roller, f, store, _ := newHeldRoller(t)
+	store.releases = map[string]Release{codeRepo: {Repository: codeRepo, DeployNow: commitC1}}
+	f.statusFails = map[string]int{commitC2: 2}
+	refused := "roller: plan #40 is open on main: mark " + commitC2 + " held: "
+	ctx := context.Background()
+	for poll := 1; poll <= 2; poll++ {
+		if err := roller.poll(ctx); err != nil {
+			t.Fatalf("poll %d: %v, want the poll to go on", poll, err)
+		}
+		rolledC1(t, f, store)
+		if !slices.Equal(f.reported, []string{commitC1 + " pending " + rollStatusContext}) {
+			t.Fatalf("poll %d: reported %q, want c1's roll pending alone: c2's mark refused", poll, f.reported)
+		}
+		if n := strings.Count(logs.String(), refused); n != 1 || strings.Contains(logs.String(), planHeldLog) {
+			t.Fatalf("poll %d: the refusal logged %d times, want once, and the hold not yet: %q", poll, n, logs.String())
+		}
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(f.reported, []string{commitC1 + " pending " + rollStatusContext, commitC2 + " success " + rollStatusContext}) {
+		t.Fatalf("reported %q, want c2 marked held at the third poll", f.reported)
+	}
+	if n := strings.Count(logs.String(), planHeldLog); n != 1 {
+		t.Fatalf("the hold logged %d times, want once: %q", n, logs.String())
+	}
+}
+
 // A retry answered while held resets the ladder and says the fresh roll
 // waits for the hold; no roll is filed. The retried commit, unjudged again,
 // is marked held.

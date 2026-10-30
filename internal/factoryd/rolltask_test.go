@@ -313,6 +313,7 @@ type rollForgejo struct {
 	forkDiffs   map[string][]string            // fork "base...head" -> the files it changes
 	statuses    map[string][]map[string]string // commit -> its statuses (status, context, target_url, created_at)
 	reported    []string                       // "sha state context" of every status the roller reported
+	statusFails map[string]int                 // commit -> how many status posts on it answer 500 first
 	pulls       []string                       // "head title" of every pull request opened
 	deps        []string                       // "issue on dependency" of every issue dependency added
 	depsDown    bool                           // Forgejo answers 500 on the issue dependencies
@@ -390,6 +391,11 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
 			sha := strings.TrimPrefix(p, "/statuses/")
+			if f.statusFails[sha] > 0 {
+				f.statusFails[sha]--
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
 			if f.statuses == nil {
 				f.statuses = map[string][]map[string]string{}
 			}
