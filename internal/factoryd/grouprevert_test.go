@@ -665,6 +665,26 @@ func TestRevertMergedMarksTheCardsAndGoesOn(t *testing.T) {
 	}
 }
 
+// A revert that landed counts each card it newly marks reverted in
+// factory.task.reverted{project}, as the daily pass does: c1, marked
+// before, counts no more, and the end run again counts nothing new.
+func TestRevertMergedCountsTheCardsItMarks(t *testing.T) {
+	g := revertEndRig(t)
+	g.landed()
+	m, reader := testMetrics(t)
+	g.r.cfg.Metrics = m
+	c1 := g.store.tasks["c1"]
+	c1.RevertedAt = finishedAgo(time.Hour)
+	g.store.tasks["c1"] = c1
+	pause := g.store.pauses["sf/repo"]
+	if err := g.r.Finish(context.Background(), "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	g.store.pauses["sf/repo"] = pause
+	g.r.revertEnded(context.Background(), g.store.tasks["t-rv"], "done", true)
+	wantSums(t, sums(t, reader, "factory.task.reverted"), map[string]float64{"project=sf-repo": 1})
+}
+
 // The plan's revert card that ends without its merge leaves the cards on
 // main: none is marked, the pause goes, the plan is told once, and the
 // replan that waited for the revert sends the plan to its planner all the

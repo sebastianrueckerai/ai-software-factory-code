@@ -380,10 +380,11 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // its agent card's, ended final; merged says its change landed on main, as
 // a merge commit on t does. It acts only while t's project's pause names a
 // plan and t: a main-red pause, or a pause that moved on to another card,
-// passes untouched. A revert that landed marks the plan's cards reverted.
-// Any other end (a person closed the card, the agent card ended, a hard
-// failure such as the wall clock or an error) tells the plan once that its
-// cards stay on main. At the session cap the agent card asks a person
+// passes untouched. A revert that landed marks the plan's cards reverted
+// and counts each card it newly marks, as the daily pass does. Any other
+// end (a person closed the card, the agent card ended, a hard failure such
+// as the wall clock or an error) tells the plan once that its cards stay
+// on main. At the session cap the agent card asks a person
 // first, as spec H wants; a hard failure lifts the pause with no person's
 // decision, since nothing else could lift it. The end's step goes on the
 // plan's timeline next, so a stopped card's cut finds the revert ended
@@ -426,8 +427,12 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 	if landed {
 		now := time.Now()
 		for _, id := range pause.Reverts {
-			if _, err := r.store.MarkReverted(ctx, id, now); err != nil {
+			marked, err := r.store.MarkReverted(ctx, id, now)
+			if err != nil {
 				return err
+			}
+			if marked {
+				countReverted(ctx, r.cfg.Metrics, r.store, p.Repository)
 			}
 		}
 	} else {

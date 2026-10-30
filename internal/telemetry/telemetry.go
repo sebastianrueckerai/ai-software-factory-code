@@ -177,7 +177,7 @@ func (m *Metrics) Tasks(meter metric.Meter) error {
 		desc string
 	}{
 		{&m.TaskOutcome, "factory.task.outcome", "finished tasks by project, final state, last alias, attempts, merge rule, process and track"},
-		{&m.TaskReverted, "factory.task.reverted", "merged agent tasks the daily pass marked reverted"},
+		{&m.TaskReverted, "factory.task.reverted", "merged agent tasks marked reverted, by the daily pass or a plan's group revert"},
 		{&m.ReviewVerdict, "factory.review.verdict", "model review answers by verdict, strict improvement, round, process and track"},
 		{&m.HumanIntervention, "factory.human.intervention", "a human stepping into a task, by kind, process and track"},
 	} {

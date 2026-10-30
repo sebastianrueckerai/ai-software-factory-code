@@ -95,7 +95,7 @@ func (p *RevertPass) Run(ctx context.Context) error {
 	refiled, err := p.Book.MarkRefiledFixes(ctx, since, RevertWindow)
 	for _, t := range refiled {
 		log.Printf("revert pass: task %s (%s) reverted: its alert was filed again after the fix", t.ID, t.Repository)
-		p.count(ctx, t)
+		countReverted(ctx, p.Metrics, p.Book, t.Repository)
 	}
 	return errors.Join(append(errs, err)...)
 }
@@ -168,15 +168,17 @@ func (p *RevertPass) task(ctx context.Context, t Task, prs []MergedPullRequest, 
 			return err
 		}
 		log.Printf("revert pass: task %s (%s #%d) reverted by #%d, merged %s", t.ID, t.Repository, t.PRNumber, pr.Number, pr.MergedAt.Format(time.RFC3339))
-		p.count(ctx, t)
+		countReverted(ctx, p.Metrics, p.Book, t.Repository)
 		return nil
 	}
 	return nil
 }
 
-func (p *RevertPass) count(ctx context.Context, t Task) {
-	project, _ := projectLabels(ctx, p.Book, t.Repository)
-	p.Metrics.TaskReverted.Add(ctx, 1, metric.WithAttributes(attribute.String("project", project)))
+// countReverted counts a card of repository newly marked reverted, by the
+// daily pass or a plan's group revert, in factory.task.reverted{project}.
+func countReverted(ctx context.Context, m *telemetry.Metrics, store projectLookup, repository string) {
+	project, _ := projectLabels(ctx, store, repository)
+	m.TaskReverted.Add(ctx, 1, metric.WithAttributes(attribute.String("project", project)))
 }
 
 // diffFiles reads a git diff into its files (the "diff --git" header's
