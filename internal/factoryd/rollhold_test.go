@@ -832,71 +832,131 @@ func TestRollerSuspendsFluxForACardThatMergesBetweenItsReads(t *testing.T) {
 	}
 }
 
+// commitC3 is main's head in fluxOnlyRoller: run 63, its tests green, its
+// images not yet.
+const commitC3 = "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3"
+
+// fluxOnlyRoller is the rig of a commit that goes live through Flux alone
+// (kind "only k8s": only k8s/ changed; "no image": no image changed) while
+// plan #40's card t-c1 holds a merge queue entry: c2 (run 62) has its
+// images green, c3 (run 63) is main's head, c1 (run 61) the commit Flux
+// applied.
+func fluxOnlyRoller(t *testing.T, kind string) (*Roller, *rollForgejo, *fakeStore, *fakeFluxSwitch) {
+	t.Helper()
+	statuses := imageGreen(commitC2)
+	statuses[commitC3] = []map[string]string{{"status": "success", "context": testContext, "target_url": "https://git.example"}}
+	f := &rollForgejo{runs: []map[string]any{pushRun(63, commitC3, "running"), pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")},
+		statuses: statuses}
+	if kind == "only k8s" {
+		f.touched = map[string][]string{commitC2: {"k8s/factoryd.yaml"}}
+	} else {
+		f.files = map[string]map[string]string{codeRepo + "@main": mainPins()}
+		f.registry = registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:b1"),
+			"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
+			"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt2,
+		}, gwOldIdx, workerOldIdx, runnerIdx)
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-plan"] = Task{ID: "t-plan", IssueNumber: 40, Repository: codeRepo, Track: "plan"}
+	store.tasks["t-c1"] = Task{ID: "t-c1", Source: SourcePlan, Parent: "t-plan", PlanKey: "a", Repository: codeRepo, Status: "in-review"}
+	store.queue = []queueEntry{{project: codeRepo, task: "t-c1", at: time.Now()}}
+	flux := roller.Flux.(*fakeFluxSwitch)
+	flux.applied = "main@sha1:" + commitC1
+	return roller, f, store, flux
+}
+
 // A queued plan card blocks no other work: a commit that goes live through
-// Flux alone (only k8s/ changed, or no image) while the card holds Flux
-// suspended resumes Flux before it is judged live, as a roll's filing
-// does. The next poll suspends again for the queued card and judges
-// nothing twice. A resume Flux refuses ends the poll, the commit unjudged.
-func TestRollerResumesFluxForACommitLiveThroughFluxAlone(t *testing.T) {
-	for name, f := range map[string]func() *rollForgejo{
-		"only k8s": func() *rollForgejo {
-			return &rollForgejo{runs: []map[string]any{pushRun(62, commitC2, "success")}, statuses: imageGreen(commitC2),
-				touched: map[string][]string{commitC2: {"k8s/factoryd.yaml"}}}
-		},
-		"no image": func() *rollForgejo {
-			return &rollForgejo{runs: []map[string]any{pushRun(62, commitC2, "success")}, statuses: imageGreen(commitC2),
-				files: map[string]map[string]string{codeRepo + "@main": mainPins()},
-				registry: registryOf(map[string]string{
-					"sf/factory-gateway/manifests/c2c2c2c": imageIndex(gwOld, "sha256:b1"),
-					"sf/opencode-worker/manifests/c2c2c2c": workerRebuilt,
-					"sf/ci-runner/manifests/c2c2c2c":       runnerRebuilt2,
-				}, gwOldIdx, workerOldIdx, runnerIdx)}
-		},
-	} {
-		queued := func(t *testing.T) (*Roller, *rollForgejo, *fakeStore, *fakeFluxSwitch) {
-			fg := f()
-			roller, store, _ := newTestRoller(t, fg)
-			store.tasks["t-plan"] = Task{ID: "t-plan", IssueNumber: 40, Repository: codeRepo, Track: "plan"}
-			store.tasks["t-c1"] = Task{ID: "t-c1", Source: SourcePlan, Parent: "t-plan", PlanKey: "a", Repository: codeRepo, Status: "in-review"}
-			store.queue = []queueEntry{{project: codeRepo, task: "t-c1", at: time.Now()}}
-			return roller, fg, store, roller.Flux.(*fakeFluxSwitch)
+// Flux alone, met while the card holds Flux suspended, resumes Flux and
+// waits unjudged, Flux held resumed, until the factory's Kustomization
+// applied it or a newer push commit of main. Then it is judged live and
+// the card suspends Flux again. A plan that opens on main meanwhile
+// suspends Flux, the commit still unjudged, and after the hold it is
+// judged as any other. A restart forgets the wait and takes the same path
+// again. A resume Flux refuses ends the poll, the commit unjudged.
+func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *testing.T) {
+	ctx := context.Background()
+	poll := func(t *testing.T, roller *Roller) {
+		t.Helper()
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
 		}
-		t.Run(name, func(t *testing.T) {
-			roller, f, store, flux := queued(t)
-			judged := -1
-			flux.onChange = func() {
-				if !flux.suspended {
-					judged = len(store.rolls)
-				}
+	}
+	unjudged := func(t *testing.T, f *rollForgejo, store *fakeStore, flux *fakeFluxSwitch, suspended bool, changes int) {
+		t.Helper()
+		if flux.suspended != suspended || flux.changes != changes || len(store.rolls) != 0 || slices.Contains(f.reported, commitC2+" success "+rollStatusContext) {
+			t.Fatalf("suspended %v, changes %d, rolls %+v, reported %q; want suspended %v, %d changes, c2 unjudged",
+				flux.suspended, flux.changes, store.rolls, f.reported, suspended, changes)
+		}
+	}
+	judged := func(t *testing.T, f *rollForgejo, store *fakeStore) {
+		t.Helper()
+		if len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollSkipped ||
+			!slices.Equal(f.reported, []string{commitC2 + " success " + rollStatusContext}) {
+			t.Fatalf("rolls %+v, reported %q; want c2 judged live once", store.rolls, f.reported)
+		}
+	}
+	for _, kind := range []string{"only k8s", "no image"} {
+		t.Run(kind+", applied", func(t *testing.T) {
+			roller, f, store, flux := fluxOnlyRoller(t, kind)
+			poll(t, roller)
+			unjudged(t, f, store, flux, false, 2)
+			poll(t, roller)
+			unjudged(t, f, store, flux, false, 2)
+
+			flux.applied = "main@sha1:" + commitC2
+			poll(t, roller)
+			judged(t, f, store)
+			if !flux.suspended || flux.changes != 3 {
+				t.Fatalf("suspended %v, changes %d; want suspended again for the queued card", flux.suspended, flux.changes)
 			}
-			ctx := context.Background()
-			if err := roller.poll(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if flux.suspended || flux.changes != 2 || judged != 0 {
-				t.Fatalf("suspended %v, changes %d, judged at the resume %d; want suspended, then resumed before c2 is judged", flux.suspended, flux.changes, judged)
-			}
-			if len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollSkipped ||
-				!slices.Equal(f.reported, []string{commitC2 + " success " + rollStatusContext}) {
-				t.Fatalf("rolls %+v, reported %q; want c2 judged live", store.rolls, f.reported)
-			}
-			if err := roller.poll(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if !flux.suspended || flux.changes != 3 || len(store.rolls) != 1 || len(f.reported) != 1 {
-				t.Fatalf("poll 2: suspended %v, changes %d, rolls %+v, reported %q; want suspended again, c2 judged once",
-					flux.suspended, flux.changes, store.rolls, f.reported)
+			poll(t, roller)
+			judged(t, f, store)
+			if !flux.suspended || flux.changes != 3 {
+				t.Fatalf("poll 4: suspended %v, changes %d; want suspended", flux.suspended, flux.changes)
 			}
 		})
-		t.Run(name+", its resume refused", func(t *testing.T) {
-			roller, f, store, flux := queued(t)
+		t.Run(kind+", a newer commit applied", func(t *testing.T) {
+			roller, f, store, flux := fluxOnlyRoller(t, kind)
+			poll(t, roller)
+			unjudged(t, f, store, flux, false, 2)
+			flux.applied = "main@sha1:" + commitC3
+			poll(t, roller)
+			judged(t, f, store)
+			if !flux.suspended {
+				t.Fatal("resumed once Flux applied c3, want suspended for the queued card")
+			}
+		})
+		t.Run(kind+", a plan opens", func(t *testing.T) {
+			roller, f, store, flux := fluxOnlyRoller(t, kind)
+			poll(t, roller)
+			unjudged(t, f, store, flux, false, 2)
+			openPlan(store)
+			poll(t, roller)
+			unjudged(t, f, store, flux, true, 3)
+
+			store.closed["t-plan"] = time.Now()
+			poll(t, roller)
+			if flux.suspended || len(store.rolls) != 1 || store.rolls[0].SHA != commitC2 || store.rolls[0].State != RollSkipped {
+				t.Fatalf("suspended %v, rolls %+v; want c2 judged live after the hold, Flux resumed", flux.suspended, store.rolls)
+			}
+		})
+		t.Run(kind+", a restart", func(t *testing.T) {
+			roller, f, store, flux := fluxOnlyRoller(t, kind)
+			poll(t, roller)
+			unjudged(t, f, store, flux, false, 2)
+			fresh := &Roller{Forgejo: roller.Forgejo, Registry: roller.Registry, SigningKey: roller.SigningKey, Store: roller.Store,
+				Workflows: roller.Workflows, Repo: roller.Repo, Token: roller.Token, Budget: roller.Budget, Scrub: roller.Scrub, Flux: roller.Flux}
+			poll(t, fresh)
+			unjudged(t, f, store, flux, false, 4)
+		})
+		t.Run(kind+", its resume refused", func(t *testing.T) {
+			roller, f, store, flux := fluxOnlyRoller(t, kind)
 			flux.resumeErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
-			if err := roller.poll(context.Background()); !errors.Is(err, flux.resumeErr) {
+			if err := roller.poll(ctx); !errors.Is(err, flux.resumeErr) {
 				t.Fatalf("poll: %v, want the resume's error", err)
 			}
-			if !flux.suspended || len(store.rolls) != 0 || len(f.reported) != 0 {
-				t.Fatalf("suspended %v, rolls %+v, reported %q; want c2 unjudged while Flux stays suspended", flux.suspended, store.rolls, f.reported)
-			}
+			unjudged(t, f, store, flux, true, 1)
 		})
 	}
 }

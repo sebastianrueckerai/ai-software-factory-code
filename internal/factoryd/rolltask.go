@@ -412,6 +412,11 @@ type Roller struct {
 	// once; fluxNoted is the hold's ask a refused suspend was noted on
 	fluxLevel, fluxErr, fluxReadErr string
 	fluxNoted                       int64
+	// fluxWaiting is the newest commit that goes live through Flux alone
+	// met while a queued plan card held Flux: Flux stays resumed until it
+	// applied that commit or a newer one (judgedLive, setFlux). A restart
+	// forgets it, and the commit, still unjudged, takes the same path again.
+	fluxWaiting ActionRun
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.
@@ -472,12 +477,13 @@ func (r *Roller) poll(ctx context.Context) error {
 	if !held {
 		r.heldPosted = ""
 	}
-	// with no Deploy now the level needs no runs: set before they are read,
-	// so a poll that fails on them or on main's state holds a queued plan
-	// card's merge all the same; a refused resume ends the poll after
-	// main's state
+	// with no Deploy now and no commit waiting on Flux the level needs no
+	// runs: set before they are read, so a poll that fails on them or on
+	// main's state holds a queued plan card's merge all the same; a refused
+	// resume ends the poll after main's state
 	var level error
-	if deploy == "" {
+	early := deploy == "" && r.fluxWaiting.ID == 0
+	if early {
 		_, level = r.setFlux(ctx, nil, groups, queued, "")
 	}
 	if err := r.consumeRetry(ctx, held); err != nil {
@@ -495,7 +501,7 @@ func (r *Roller) poll(ctx context.Context) error {
 			return errors.Join(level, err)
 		}
 	}
-	if deploy != "" {
+	if !early {
 		deploy, level = r.setFlux(ctx, runs, groups, queued, deploy)
 	}
 	if level != nil {
@@ -551,7 +557,7 @@ func (r *Roller) poll(ctx context.Context) error {
 		green = green[:1] // the first judgement: the newest only
 	}
 	for _, run := range green {
-		if done, err := r.judge(ctx, run); err != nil || done {
+		if done, err := r.judge(ctx, run, runs, !held && len(queued) > 0); err != nil || done {
 			return err
 		}
 	}
@@ -598,9 +604,11 @@ func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group,
 // first merge included. An open roll and deploy, Deploy now's commit, go out through
 // Flux: deploy has gone out once it was judged, no roll is open and Flux
 // applied main's newest push commit; then its Deploy now is spent and
-// setFlux answers "". A refused resume ends the poll: no roll goes out
-// without Flux. A refused suspend does not, since rolls stay held: it is
-// logged and noted on the hold's ask.
+// setFlux answers "". The commit waiting on Flux (fluxWaiting) keeps it
+// resumed while no group is open, until Flux applied it or a newer push
+// commit; a group forgets it, and the hold suspends. A refused resume ends
+// the poll: no roll goes out without Flux. A refused suspend does not,
+// since rolls stay held: it is logged and noted on the hold's ask.
 func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, queued []int64, deploy string) (string, error) {
 	reason := fluxHold(groups, queued)
 	_, rollOpen, err := r.Store.OpenRollTask(ctx, r.Repo.String())
@@ -619,6 +627,13 @@ func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, 
 				return deploy, err
 			}
 			deploy = ""
+		}
+	}
+	if r.fluxWaiting.ID != 0 {
+		if len(groups) > 0 || r.fluxApplied(ctx, runs, r.fluxWaiting) {
+			r.fluxWaiting = ActionRun{}
+		} else {
+			goingOut = true
 		}
 	}
 	return deploy, r.setLevel(ctx, reason != "" && !rollOpen && !goingOut, reason)
@@ -677,20 +692,28 @@ func fluxHold(groups []Group, queued []int64) string {
 }
 
 // fluxBehind answers whether the factory's Kustomization has not applied
-// main's newest push commit yet. A state Flux does not tell counts as
-// behind, logged once.
+// main's newest push commit yet.
 func (r *Roller) fluxBehind(ctx context.Context, runs []ActionRun) bool {
+	head := newestMain(runs)
+	return head == nil || !r.fluxApplied(ctx, runs, *head)
+}
+
+// fluxApplied answers whether the factory's Kustomization has applied
+// run's commit or a newer push commit of main, by run order among runs. A
+// state Flux does not tell counts as not yet, logged once.
+func (r *Roller) fluxApplied(ctx context.Context, runs []ActionRun, run ActionRun) bool {
 	state, err := r.Flux.KustomizationState(ctx, fluxNamespace, factoryKustomization)
 	if err != nil {
 		if err.Error() != r.fluxReadErr {
-			log.Printf("roller: the factory's Kustomization could not be read (%v): it stays resumed and Deploy now stands", err)
+			log.Printf("roller: the factory's Kustomization could not be read (%v): it stays resumed, and what goes out through it waits", err)
 			r.fluxReadErr = err.Error()
 		}
-		return true
+		return false
 	}
 	r.fluxReadErr = ""
-	head := newestMain(runs)
-	return head == nil || !strings.HasSuffix(state.Applied, head.CommitSHA)
+	return slices.ContainsFunc(runs, func(x ActionRun) bool {
+		return x.PrettyRef == prBase && x.ID >= run.ID && len(x.CommitSHA) >= 7 && strings.HasSuffix(state.Applied, x.CommitSHA)
+	})
 }
 
 // fluxRefusedNote is what a refused suspend notes on the hold's ask.
@@ -892,8 +915,9 @@ func (r *Roller) consumeRetry(ctx context.Context, held bool) error {
 // task, or a fold into the open one. done: it filed or folded, or waits
 // while the open roll has no pull request yet; the older runs wait for the
 // next poll. A skip says the commit is live through Flux alone
-// (judgedLive).
-func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error) {
+// (judgedLive); queued says a queued plan card holds Flux, runs are the
+// poll's.
+func (r *Roller) judge(ctx context.Context, run ActionRun, runs []ActionRun, queued bool) (done bool, err error) {
 	open, folding, err := r.Store.OpenRollTask(ctx, r.Repo.String())
 	if err != nil {
 		return false, err
@@ -916,7 +940,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 	if only, err := r.onlyK8s(ctx, run.CommitSHA); err != nil {
 		return false, err
 	} else if only {
-		return false, r.judgedLive(ctx, run, req, "changes nothing outside k8s/", "nothing to roll outside k8s/: already live")
+		return false, r.judgedLive(ctx, run, runs, queued, req, "changes nothing outside k8s/", "nothing to roll outside k8s/: already live")
 	}
 	at, ref := r.Repo, prBase
 	if folding {
@@ -927,7 +951,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 		return false, err
 	}
 	if len(changes) == 0 {
-		return false, r.judgedLive(ctx, run, req, "changed no image", "no image changed: already live")
+		return false, r.judgedLive(ctx, run, runs, queued, req, "changed no image", "no image changed: already live")
 	}
 	req.Changes = changes
 	if len(unsigned) > 0 {
@@ -944,13 +968,21 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 }
 
 // judgedLive judges run's commit live through Flux alone, its skip req
-// recorded with status, what saying why in the log. Flux resumes first,
-// as for a roll (file): a queued plan card may hold it suspended though
-// no roll is held, and blocks no other work. A refused resume ends the
-// poll, the commit unjudged.
-func (r *Roller) judgedLive(ctx context.Context, run ActionRun, req RollRequest, what, status string) error {
-	if err := r.setLevel(ctx, false, ""); err != nil {
-		return err
+// recorded with status, what saying why in the log. While a queued plan
+// card holds Flux (queued), which blocks no other work, the commit waits
+// unjudged until the factory's Kustomization applied it or a newer push
+// commit among runs: Flux resumes, and setFlux keeps it resumed for the
+// newest such commit (fluxWaiting). A refused resume ends the poll.
+func (r *Roller) judgedLive(ctx context.Context, run ActionRun, runs []ActionRun, queued bool, req RollRequest, what, status string) error {
+	if queued && !r.fluxApplied(ctx, runs, run) {
+		if err := r.setLevel(ctx, false, ""); err != nil {
+			return err
+		}
+		if run.ID > r.fluxWaiting.ID {
+			log.Printf("roller: %s (run %d) %s: it waits until Flux applied it", run.CommitSHA, run.ID, what)
+			r.fluxWaiting = run
+		}
+		return nil
 	}
 	log.Printf("roller: %s (run %d) %s; nothing to roll", run.CommitSHA, run.ID, what)
 	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
