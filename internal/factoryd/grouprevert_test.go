@@ -308,7 +308,7 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 // and answers the same. A failure before the card exists lifts the pause.
 func TestRevertGroupResumesItsOwnPause(t *testing.T) {
 	g := newGroupRevertRig(t)
-	own := QueuePause{Project: "sf/repo", Since: time.Now().Add(-time.Minute), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv"}
+	own := QueuePause{Project: "sf/repo", Since: time.Now().Add(-time.Minute), Plan: "p", Reverts: []string{"c2", "c1"}, RevertTask: "t-rv"}
 	g.store.pauses = map[string]QueuePause{"sf/repo": own}
 	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21."
 	for i := range 2 {
@@ -358,22 +358,33 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 }
 
 // Another pause refuses with its cause and leaves it standing: main red
-// since its time in UTC, or another plan's revert by its issue.
+// since its time in UTC, or a plan's revert by the plan's issue. A pause
+// of the same plan is another revert when it takes other cards off main,
+// or when its card ended.
 func TestRevertGroupRefusals(t *testing.T) {
 	cet := time.FixedZone("CET", 3600)
+	ownRefusal := "The merge queue of sf/repo is paused: plan #10 is being taken off main. Replan without taking work off main, or wait until the queue goes on."
 	for name, tc := range map[string]struct {
 		pause QueuePause
+		card  string // the status of the pause's card t-rv; "" for none
 		want  string
 	}{
-		"main red": {QueuePause{Project: "sf/repo", RunID: 58, SHA: "c1c1", Since: time.Date(2026, 11, 7, 11, 0, 0, 0, cet), FixTask: "fix1"},
+		"main red": {QueuePause{Project: "sf/repo", RunID: 58, SHA: "c1c1", Since: time.Date(2026, 11, 7, 11, 0, 0, 0, cet), FixTask: "fix1"}, "",
 			"The merge queue of sf/repo is paused: main is red since 2026-11-07T10:00:00Z. Replan without taking work off main, or wait until the queue goes on."},
-		"another plan": {QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"},
+		"another plan": {QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"}, "",
 			"The merge queue of sf/repo is paused: plan #12 is being taken off main. Replan without taking work off main, or wait until the queue goes on."},
+		"the plan's revert of other cards": {QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "p", Reverts: []string{"c1"}, RevertTask: "t-rv"}, "", ownRefusal},
+		"the plan's revert that ended":     {QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv"}, "done", ownRefusal},
 	} {
 		t.Run(name, func(t *testing.T) {
 			g := newGroupRevertRig(t)
 			if err := g.store.CreateTask(context.Background(), Task{ID: "q", Kind: "agent", Track: policy.TrackPlan, Repository: "sf/repo", IssueNumber: 12, Status: "done"}); err != nil {
 				t.Fatal(err)
+			}
+			if tc.card != "" {
+				if err := g.store.CreateTask(context.Background(), Task{ID: "t-rv", Kind: "agent", Track: policy.TrackDirect, Source: SourceRevert, Repository: "sf/repo", IssueNumber: 21, Status: tc.card}); err != nil {
+					t.Fatal(err)
+				}
 			}
 			g.store.pauses = map[string]QueuePause{"sf/repo": tc.pause}
 			_, err := g.revert(t)

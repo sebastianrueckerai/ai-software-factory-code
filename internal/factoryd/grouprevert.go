@@ -120,7 +120,7 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 
 // revertPause pauses p's project's merge queue for the revert of cards and
 // answers the id of the revert's card: a new one, or the card of a pause
-// that names p already.
+// that names p and the same cards already, while that card has not ended.
 func (r *Runner) revertPause(ctx context.Context, p Task, cards []Task) (string, error) {
 	pause := QueuePause{Project: p.Repository, Since: time.Now(), Plan: p.ID, RevertTask: NewTaskID()}
 	for _, c := range cards {
@@ -134,13 +134,20 @@ func (r *Runner) revertPause(ctx context.Context, p Task, cards []Task) (string,
 		return pause.RevertTask, nil
 	}
 	standing, ok, err := r.store.QueuePause(ctx, p.Repository)
+	set := func(ids []string) []string { return slices.Compact(slices.Sorted(slices.Values(ids))) }
 	switch {
 	case err != nil:
 		return "", err
 	case !ok:
 		return "", fmt.Errorf("the merge queue's pause of %s ended while plan #%d's revert began", p.Repository, p.IssueNumber)
-	case standing.Plan == p.ID:
-		return standing.RevertTask, nil
+	case standing.Plan == p.ID && slices.Equal(set(standing.Reverts), set(pause.Reverts)):
+		card, filed, err := r.store.Task(ctx, standing.RevertTask)
+		if err != nil {
+			return "", err
+		}
+		if !filed || !Final(card.Status) {
+			return standing.RevertTask, nil
+		}
 	}
 	cause := "main is red since " + standing.Since.UTC().Format(time.RFC3339)
 	if standing.Plan != "" {
