@@ -66,7 +66,7 @@
 <input type="text" id="chat-fund-note" name="reason" maxlength="{{maxAnswer}}" required>
 <button type="submit">Fund the chat</button>
 </form>{{end}}{{end}}</section>
-{{with .Hold}}<section><h3>Production</h3><p class="sp-note">Held for {{.For}}: {{.Reason}}.</p><div class="chiprow">{{range .Groups}}<span class="lchip wait">{{.}}</span>{{end}}</div>{{if $.Status.Approver}}<form method="post" action="/projects/{{$.Status.Project}}/deploy-now" hx-post="/projects/{{$.Status.Project}}/deploy-now" hx-target="#board" hx-swap="outerHTML" hx-confirm="Deploy main of {{$.Status.Project}} as it is? The open plans' merged cards go live half-built." class="inline">
+{{with .Hold}}<section><h3>Production</h3><p class="sp-note warn">Held for {{.For}}: {{.Reason}}.</p><div class="chiprow">{{range .Groups}}<span class="lchip wait">{{.}}</span>{{end}}</div>{{if $.Status.Approver}}<form method="post" action="/projects/{{$.Status.Project}}/deploy-now" hx-post="/projects/{{$.Status.Project}}/deploy-now" hx-target="#board" hx-swap="outerHTML" hx-confirm="Deploy main of {{$.Status.Project}} as it is? The open plans' merged cards go live half-built." class="inline">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Status.Filter}}
 <button type="submit">Deploy now</button>
 </form>{{end}}</section>{{end}}

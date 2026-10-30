@@ -43,7 +43,7 @@ func TestBoardShowsTheProductionHold(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	for _, want := range []string{`production held · 7 h</span>`, `plan #12 · 3 of 5 merged`, `action="/projects/` + holdProject + `/deploy-now"`,
-		"Held for 7 h: plan #12 is open on main.", "Deploy now</button>"} {
+		`<p class="sp-note warn">Held for 7 h: plan #12 is open on main.`, "Deploy now</button>"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the approver's board lacks %q", want)
 		}
