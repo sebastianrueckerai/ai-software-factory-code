@@ -322,6 +322,7 @@ type rollForgejo struct {
 	closed      []string                       // the number of every issue closed
 	jobs        map[int64][]map[string]any     // run id -> its jobs (actionJob), as actions/runs/{id}/jobs lists them
 	jobsDown    bool                           // actions/runs/{id}/jobs answers 500
+	runsDown    bool                           // actions/runs answers 500
 	jobLogs     map[string]string              // "job id/attempt" -> that attempt's log, as actions/jobs/{id}/logs serves it; unlisted: 404
 	rerun       int                            // the status a job's re-run answers; 0 is 204
 	rerunOf     map[int64]int                  // job id -> the status its re-run answers, over rerun
@@ -473,6 +474,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				}
 			}
 			w.WriteHeader(http.StatusNoContent)
+		case repo == codeRepo && f.runsDown && p == "/actions/runs":
+			http.Error(w, "boom", http.StatusInternalServerError)
 		case repo == codeRepo && p == "/actions/runs":
 			if q.Get("event") != "push" {
 				t.Errorf("runs query %v", q)

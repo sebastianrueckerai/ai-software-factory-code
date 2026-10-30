@@ -108,6 +108,34 @@ func TestRollerHoldsWhileAPlanIsOpenOnMain(t *testing.T) {
 	}
 }
 
+// A free poll forgets the held mark before anything can fail it: after a
+// free poll whose push runs Forgejo would not list, plan #41 opening on the
+// same unjudged head marks it again.
+func TestRollerFreePollThatFailsForgetsTheHeldMark(t *testing.T) {
+	roller, f, store, _ := newHeldRoller(t)
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	store.closed["t-plan"] = time.Now()
+	f.runsDown = true
+	if err := roller.poll(ctx); err == nil {
+		t.Fatal("the free poll read the push runs Forgejo refused")
+	}
+	f.runsDown = false
+	store.tasks["t-plan2"] = Task{ID: "t-plan2", IssueNumber: 41, Repository: codeRepo, Track: "plan"}
+	store.tasks["t-d1"] = Task{ID: "t-d1", Source: SourcePlan, Parent: "t-plan2", PlanKey: "a", Repository: codeRepo, Status: "merged", MergeCommit: "d1d1", FinishedAt: justNow()}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{commitC2 + " success " + rollStatusContext, commitC2 + " success " + rollStatusContext}; !slices.Equal(f.reported, want) {
+		t.Fatalf("reported %q, want %q: c2 marked again for plan #41", f.reported, want)
+	}
+	if len(store.rolls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("rolls %+v, issues %q; want none", store.rolls, f.issues)
+	}
+}
+
 // The held status spares a commit the roller has judged: a failed roll's
 // failure and an open roll's pending stand. No roll is filed, and the log
 // says why once.

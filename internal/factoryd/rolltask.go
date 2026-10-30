@@ -444,6 +444,9 @@ func (r *Roller) poll(ctx context.Context) error {
 	}
 	groups, deploy := all[r.Repo.String()], release.DeployNow
 	held := len(groups) > 0
+	if !held {
+		r.heldPosted = ""
+	}
 	if err := r.consumeRetry(ctx, held); err != nil {
 		return err
 	}
@@ -458,8 +461,6 @@ func (r *Roller) poll(ctx context.Context) error {
 		if err := r.markHeld(ctx, runs, groups, deploy); err != nil {
 			return err
 		}
-	} else {
-		r.heldPosted = ""
 	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
 	if err != nil {
