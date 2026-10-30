@@ -278,6 +278,30 @@ func TestGatePolicyCountsLines(t *testing.T) {
 	}
 }
 
+// A plain group revert is factoryd's own change: it merges on green checks
+// under the merge rule whatever its size. The agent card that resolves a
+// conflicting one writes new code and takes the large class.
+func TestPlainGroupRevertSkipsTheLargeClass(t *testing.T) {
+	large := "large change: 1200 lines over 1000; approve it, or deny it (requesting changes sends it back to the agent)"
+	for source, wantLarge := range map[string]bool{SourceRevert: false, SourceGroupRevert: true} {
+		task := gateTask
+		task.Source = source
+		r, _, _ := newGateRunner(t, task, &gateForgejo{files: []string{`{"filename":"internal/a.go","additions":200,"deletions":1000}`}})
+		v := testPolicyVersion()
+		v.Document.Risk.LargeLines = 1000
+		r.cfg.Policy = func() policy.Version { return v }
+		val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+		g := getInto[PolicyGate](t, val, err)
+		_, met, unmet := AutoMerge(GateResults{Policy: g, ChecksPassed: true}, Review{}, source)
+		if got := slices.Contains(unmet, large); got != wantLarge {
+			t.Errorf("a %s card: unmet %q, want the large change %t", source, unmet, wantLarge)
+		}
+		if got := slices.Contains(met, "mechanical source revert: factoryd wrote the change, no agent"); got == wantLarge {
+			t.Errorf("a %s card: met %q, want the mechanical source %t", source, met, !wantLarge)
+		}
+	}
+}
+
 // The policy gate reads the diff: a skipped or removed test is a cheat the
 // workflow sends to the agent, and the gate records it.
 func TestGatePolicyFlagsCheats(t *testing.T) {

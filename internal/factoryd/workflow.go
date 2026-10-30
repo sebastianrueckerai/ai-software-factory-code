@@ -229,6 +229,10 @@ type TaskConfig struct {
 	// 188), so the audit stage is skipped at its turn and starts nothing
 	// beside the checks (versionAuditBeside).
 	NoAudit bool
+	// Sessions overrides WorkflowConfig.MaxSessions for the task when
+	// above 0: groupRevertSessions for a group revert's agent card. A run
+	// from before it decodes 0.
+	Sessions int
 }
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
@@ -607,6 +611,9 @@ func (t *taskRun) program() (string, error) {
 	t.cfg.Task, t.cfg.Stages = tc, tc.Stages
 	if tc.AgentTime != 0 {
 		t.cfg.WallClockCap = tc.AgentTime
+	}
+	if tc.Sessions != 0 {
+		t.cfg.MaxSessions = tc.Sessions
 	}
 	switch tc.Session {
 	case policy.SessionCode, policy.SessionReport:

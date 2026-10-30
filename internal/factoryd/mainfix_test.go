@@ -111,11 +111,15 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	f.runs = []map[string]any{pushRun(58, commitC1, "failure")}
 	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}}
 	var reverted []string
-	revertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, sha, branch string) error {
-		reverted = append(reverted, sha+" "+branch)
-		return nil
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		if salvage != "" || salvageExists {
+			t.Errorf("the main-red revert has the salvage branch %q (exists %t)", salvage, salvageExists)
+		}
+		reverted = append(reverted, strings.Join(shas, ",")+" "+branch)
+		return "", nil
 	}
-	t.Cleanup(func() { revertBranch = nil })
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -139,6 +143,34 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	}
 	if len(f.pulls) != 1 || len(reverted) != 1 {
 		t.Fatalf("pull requests %q, reverts %q; want one of each", f.pulls, reverted)
+	}
+}
+
+// A main-red revert that conflicts with main is an error and files no
+// card: the pause waits on, and the next poll tries again.
+func TestRollerRevertThatConflictsFilesNothing(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+	pause := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}
+	store.pauses = map[string]QueuePause{codeRepo: pause}
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		return shas[0], nil
+	}
+	err := roller.poll(context.Background())
+	if want := "revert " + commitC1 + ": it conflicts with main"; err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if p := store.pauses[codeRepo]; !reflect.DeepEqual(p, pause) || len(f.pulls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("pause %+v, pull requests %q, issues %q; want the pause as it stood and no card", p, f.pulls, f.issues)
 	}
 }
 
@@ -277,11 +309,12 @@ func TestRollerReRunsMainWhenItsRunnerWasLost(t *testing.T) {
 	// the re-run runs past the bound: run 57's green says nothing of main's head
 	pause.Since = time.Now().Add(-mainRedBound - time.Minute)
 	store.pauses[codeRepo] = pause
-	revertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, sha, branch string) error {
-		t.Errorf("reverted %s on %s", sha, branch)
-		return nil
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		t.Errorf("reverted %q on %s", shas, branch)
+		return "", nil
 	}
-	t.Cleanup(func() { revertBranch = nil })
 	f.runs = []map[string]any{run1208("running"), pushRun(57, commitC1, "success")}
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
@@ -351,11 +384,12 @@ func TestRollerFilesARerunCardWhenTheReRunLostItsRunnerToo(t *testing.T) {
 	// the bound passes: the pause holds, nothing reverts
 	pause.Since = time.Now().Add(-mainRedBound - time.Minute)
 	store.pauses[codeRepo] = pause
-	revertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, sha, branch string) error {
-		t.Errorf("reverted %s on %s", sha, branch)
-		return nil
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		t.Errorf("reverted %q on %s", shas, branch)
+		return "", nil
 	}
-	t.Cleanup(func() { revertBranch = nil })
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -427,11 +461,12 @@ func TestRollerFilesTheFixCardWhenTheReRunFailsAStep(t *testing.T) {
 	pause.Since = time.Now().Add(-mainRedBound - time.Minute)
 	store.pauses[codeRepo] = pause
 	var reverted []string
-	revertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, sha, branch string) error {
-		reverted = append(reverted, sha)
-		return nil
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		reverted = append(reverted, shas...)
+		return "", nil
 	}
-	t.Cleanup(func() { revertBranch = nil })
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}

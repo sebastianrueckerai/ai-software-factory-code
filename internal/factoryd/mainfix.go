@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -30,14 +28,18 @@ const (
 	SourceMainFix = "mainfix"
 	SourceRerun   = "rerun"
 	SourceRevert  = "revert"
-	mainRedBound  = 2 * time.Hour
+	// SourceGroupRevert is the agent card of a plan's group revert whose
+	// plain git revert conflicts (RevertGroup).
+	SourceGroupRevert = "group-revert"
+	mainRedBound      = 2 * time.Hour
 )
 
 // QueuePause is a project's paused merge queue: main is red since the run.
 // RerunAt is factoryd's one re-run of the run, zero without one; a pause
 // on a re-run has no card until the re-run is red again.
 // A pause with a Plan is that plan's group revert instead: Reverts are the
-// commits it undoes, RevertTask its card. Main's own runs leave it alone.
+// cards whose merges it undoes, RevertTask its card. Main's own runs leave
+// it alone.
 type QueuePause struct {
 	Project             string
 	RunID               int64
@@ -389,35 +391,6 @@ func runnerLost(log []byte, recorded time.Time) (line string, silent time.Durati
 	return stripLogTimestamp(last), recorded.Sub(at), true
 }
 
-// revertBranch writes the revert of sha on a new branch of the bot's fork
-// and answers the branch; a test substitutes it, git being no fake's.
-var revertBranch = func(ctx context.Context, f *Forgejo, repo Repo, sha, branch string) error {
-	dir, err := os.MkdirTemp("", "revert-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(dir)
-	login := basicLogin(f.BotUser, f.BotPassword)
-	src := filepath.Join(dir, "src")
-	if _, err := git(ctx, dir, login, "clone", "-q", "--depth=50", "--branch", prBase, f.BaseURL+"/"+repo.String()+".git", src); err != nil {
-		return err
-	}
-	parents, err := f.CommitParents(ctx, repo.Owner, repo.Name, sha)
-	if err != nil {
-		return err
-	}
-	args := []string{"-c", "user.name=" + f.BotUser, "-c", "user.email=" + f.BotUser + "@factory", "revert", "--no-edit"}
-	if len(parents) > 1 {
-		args = append(args, "-m", "1")
-	}
-	if _, err := git(ctx, src, login, append(args, sha)...); err != nil {
-		return err
-	}
-	fork := f.Fork(repo)
-	_, err = git(ctx, src, login, "push", "-q", f.BaseURL+"/"+fork.String()+".git", "HEAD:refs/heads/"+branch)
-	return err
-}
-
 // revert files the revert of the pause's red commit: a branch on the
 // bot's fork, its pull request, and a factory-PR card the gates and the
 // approval take like a roll's, exempt from the pause. A pause on a
@@ -441,8 +414,12 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	}
 	taskID := NewTaskID()
 	branch := "factory/" + taskID
-	if err := revertBranch(ctx, r.Forgejo, r.Repo, pause.SHA, branch); err != nil {
+	conflict, err := groupRevertBranch(ctx, r.Forgejo, r.Repo, []string{pause.SHA}, "", false, branch)
+	if err != nil {
 		return fmt.Errorf("revert %s: %w", pause.SHA, err)
+	}
+	if conflict != "" {
+		return fmt.Errorf("revert %s: it conflicts with main", pause.SHA)
 	}
 	short := pause.SHA[:min(7, len(pause.SHA))]
 	title := fmt.Sprintf("Revert %s: main red since %s, no fix landed", short, pause.Since.UTC().Format(time.RFC3339))

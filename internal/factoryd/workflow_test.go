@@ -756,6 +756,42 @@ func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
 	}
 }
 
+// A group revert's agent card has two sessions, not the policy's three:
+// its TaskConfig says so, and the workflow asks a person after the second.
+func TestGroupRevertCardHasTwoSessions(t *testing.T) {
+	pinned := fixtureVersion(t)
+	for source, want := range map[string]int{SourceGroupRevert: groupRevertSessions, SourceRevert: 0, "webhook": 0} {
+		r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Source: source, Track: "direct"}, &prForgejo{})
+		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+		val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+		if got := getInto[TaskConfig](t, val, err); got.Sessions != want {
+			t.Errorf("a %s card's TaskConfig has %d sessions, want %d", source, got.Sessions, want)
+		}
+	}
+
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, Sessions: groupRevertSessions}
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push", Findings: []string{"f1"}},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push", Findings: []string{"f2"}},
+		pushed("s3", "c3"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "keep the later fix", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v", final, h.finals)
+	}
+	wantCard := capReached + "\nlast: no changes to push\n- session, attempt 1: f1\n- session, attempt 2: f2"
+	if !slices.Equal(h.escalated, []string{wantCard}) {
+		t.Fatalf("escalations = %q, want the card after the second session %q", h.escalated, wantCard)
+	}
+	if len(h.sessions) != 3 || h.sessions[0].Sessions != 2 || h.sessions[2].Attempt != 3 {
+		t.Fatalf("sessions = %+v, want two of two, then the one the answer bought", h.sessions)
+	}
+}
+
 // A run that starts with every attempt used opens the card before any
 // session.
 func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {

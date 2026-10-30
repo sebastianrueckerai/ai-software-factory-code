@@ -52,8 +52,9 @@ func IssueTrack(names []string, tracks policy.Tracks) string {
 
 // unboundSources are the sources of the agent cards the work bound leaves
 // out: a roll and a factory pull request's card verify a pull request, a
-// screening reads an issue, and none waits for a work slot.
-var unboundSources = []string{SourceRoll, SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceRevert, SourceScreening, SourceSizing}
+// screening reads an issue, a group revert's agent card works while the
+// merge queue stands paused, and none waits for a work slot.
+var unboundSources = []string{SourceRoll, SourceGitHubSync, SourceSchemaCopy, SourceTemplateUpdate, SourceRevert, SourceScreening, SourceSizing, SourceGroupRevert}
 
 // Unbound reports whether agent card t runs outside the work bound.
 func (t Task) Unbound() bool { return slices.Contains(unboundSources, t.Source) }
