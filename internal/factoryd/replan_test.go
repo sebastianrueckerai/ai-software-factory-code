@@ -1192,8 +1192,17 @@ func TestReplanFindings(t *testing.T) {
 			st.old[2].Status = "closed"
 			p.Cards = append(p.Cards, st.prev.Cards[2])
 		}, []string{"card docs ended closed before it started: leave its key out, and add its work under a new key"}},
-		{"R5 a merged card left out", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] },
-			[]string{"card api merged: keep its key; a later card changes its work"}},
+		{"a merged card on main left out, to come off main", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] }, nil},
+		{"a card taken off main kept", func(st *replanState, _ *Plan) { st.reverted = map[string]bool{"t-api": true} },
+			[]string{`card api was taken off main: leave its key out, and add a card with "from": "api" to land it again from salvage`}},
+		{"a card taken off main landed again from salvage", func(st *replanState, p *Plan) {
+			st.reverted = map[string]bool{"t-api": true}
+			p.Cards[0] = fromCard("api2", "api")
+		}, nil},
+		{"the integration card taken off main kept", func(st *replanState, p *Plan) {
+			st.reverted = map[string]bool{"t-int": true}
+			p.Cards = append(p.Cards, st.prev.Cards[4])
+		}, []string{`card int was taken off main: leave its key out, and add a card with "from": "int" to land it again from salvage`}},
 		{"R6 the merged integration card kept", func(st *replanState, p *Plan) { p.Cards = append(p.Cards, st.prev.Cards[4]) },
 			[]string{"card int is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again"}},
 		{"R7 a started card changed", func(_ *replanState, p *Plan) { p.Cards[1].Brief = "the ui, wider" },
@@ -1264,7 +1273,7 @@ func TestReplanState(t *testing.T) {
 	c.PlanRevision = 1
 	store.tasks["c"] = c
 	for _, k := range []Task{
-		{ID: "m", PlanKey: "docs", IssueNumber: 16, Status: "done", MergeCommit: "m1", PlanRevision: 1},
+		{ID: "m", PlanKey: "docs", IssueNumber: 16, Status: "done", MergeCommit: "m1", PlanRevision: 1, RevertedAt: finishedAgo(time.Hour)},
 		{ID: "x", PlanKey: "fix", IssueNumber: 17, Status: "running", PlanRevision: 2},
 	} {
 		k.Kind, k.Track, k.Source, k.Parent, k.Repository = "agent", policy.TrackDirect, SourcePlan, "p", "sf/repo"
@@ -1289,8 +1298,8 @@ func TestReplanState(t *testing.T) {
 	if len(st.started) != 1 || st.started["api"].Brief != "the api" {
 		t.Fatalf("started = %+v, want api's entry of revision 1 alone", st.started)
 	}
-	if !reflect.DeepEqual(st.merged, map[string]bool{"m": true}) || st.cut != "c" || !st.cutWork {
-		t.Fatalf("merged %v, cut %q, work %t", st.merged, st.cut, st.cutWork)
+	if !reflect.DeepEqual(st.merged, map[string]bool{"m": true}) || !reflect.DeepEqual(st.reverted, map[string]bool{"m": true}) || st.cut != "c" || !st.cutWork {
+		t.Fatalf("merged %v, reverted %v, cut %q, work %t", st.merged, st.reverted, st.cut, st.cutWork)
 	}
 
 	// a direct card's own replan: the card is among the old cards, a
@@ -1869,5 +1878,330 @@ func TestReplanRecord(t *testing.T) {
 		"From session s-1, stopped at 23:03 UTC, branch at commit d4. Written before your session started. Where they differ from the code on the branch, the code is right.\n\n" +
 		"Todo list at the stop:\n- [pending] split the work\n"; rec.files[0].Text != want {
 		t.Fatalf("card-1.md\n%s\nwant\n%s", rec.files[0].Text, want)
+	}
+}
+
+// offMainRig is newGroupRevertRig's plan p done at revision 1 of api, int
+// (the integration card) and ui, whose cards c1 (api) and c2 (int) merged
+// and are still on main.
+func offMainRig(t *testing.T) *groupRevertRig {
+	t.Helper()
+	g := newGroupRevertRig(t)
+	p := g.store.tasks["p"]
+	p.Status = "done"
+	g.store.tasks["p"], g.plan = p, p
+	raw := planJSON(t, Plan{Summary: "s", Cards: []PlanCard{replanCard("api", RoleFeature, "the api"), replanCard("int", RoleIntegration, "the whole"),
+		replanCard("ui", RoleFeature, "the ui")}})
+	if _, err := g.store.AddPlanRevision(context.Background(), "p", json.RawMessage(raw), "sha-1"); err != nil {
+		t.Fatal(err)
+	}
+	for id, key := range map[string]string{"c1": "api", "c2": "int"} {
+		c := g.store.tasks[id]
+		c.PlanKey, c.PlanRevision = key, 1
+		g.store.tasks[id] = c
+	}
+	return g
+}
+
+// offMainStep is sebastian's replan of p with off main, pending.
+func offMainStep(t *testing.T, g *groupRevertRig) {
+	t.Helper()
+	if err := g.r.timeline.Append(context.Background(), "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "comment": "the api is wrong",
+		"off_main": true, "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// stepsWithoutTime are p's replan steps with their time left out.
+func stepsWithoutTime(t *testing.T, g *groupRevertRig) []ReplanStep {
+	t.Helper()
+	steps := replanSteps(t, g.r, "p")
+	for i := range steps {
+		steps[i].Time = time.Time{}
+	}
+	return steps
+}
+
+// A person's Replan with off main records the step with off_main and the
+// started open cards it stops, then takes the plan's merged cards still
+// on main off main, the integration card among them; a card taken off
+// main before stays out. The plan stays done and its started card runs on
+// until the revert ends. The note is the stops' and the revert's.
+func TestReplanOffMain(t *testing.T) {
+	ctx := context.Background()
+	g := offMainRig(t)
+	c1 := g.store.tasks["c1"]
+	c1.RevertedAt = finishedAgo(time.Hour)
+	g.store.tasks["c1"] = c1
+	if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true})
+	want := "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch. " +
+		"Plan #10's 1 merged card comes off main: the merge queue waits for the revert, card #21."
+	if err != nil || note != want {
+		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
+	}
+	if got, want := stepsWithoutTime(t, g), []ReplanStep{{Origin: ReplanPerson, By: "sebastian", Comment: "the api is wrong", Stops: []string{"c3"},
+		OffMain: true, Revision: 1}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
+	}
+	pause := g.store.pauses["sf/repo"]
+	id := pause.RevertTask
+	if want := (QueuePause{Project: "sf/repo", Since: pause.Since, Plan: "p", Reverts: []string{"c2"}, RevertTask: id}); !reflect.DeepEqual(pause, want) {
+		t.Fatalf("pause = %+v, want %+v", pause, want)
+	}
+	if want := []string{fmt.Sprintf(`sf/repo ["m2"] salvage/p false factory/%s, paused for %s: true`, id, id)}; !slices.Equal(g.calls, want) {
+		t.Fatalf("groupRevertBranch calls = %q, want %q", g.calls, want)
+	}
+	if len(g.fj.pulls) != 1 || !strings.Contains(g.fj.pulls[0], "\n\nWhy: asked by sebastian: the api is wrong\n\n") {
+		t.Fatalf("pull requests %q, want one with the person's why", g.fj.pulls)
+	}
+	if p, c3 := g.store.tasks["p"], g.store.tasks["c3"]; p.Status != "done" || len(g.wf.reopens) != 0 || c3.Status != "running" {
+		t.Fatalf("plan %s, reopens %+v, c3 %s; want the plan done, not reopened, and c3 running", p.Status, g.wf.reopens, c3.Status)
+	}
+}
+
+// An off-main Replan of a plan with no merged card on main, or under a
+// standing pause, refuses and records nothing.
+func TestReplanOffMainRefusals(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pause    *QueuePause
+		reverted bool
+		want     ErrNoReplan
+	}{
+		"no card on main": {nil, true, "Plan #10 has no card on main: replan without taking work off main."},
+		"main red": {&QueuePause{Project: "sf/repo", RunID: 58, SHA: "c1c1", Since: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC), FixTask: "fix1"}, false,
+			"The merge queue of sf/repo is paused: main is red since 2026-11-07T10:00:00Z. Replan without taking work off main, or wait until the queue goes on."},
+		"another plan's revert": {&QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"}, false,
+			"The merge queue of sf/repo is paused: plan #12 is being taken off main. Replan without taking work off main, or wait until the queue goes on."},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			g := offMainRig(t)
+			if err := g.store.CreateTask(ctx, Task{ID: "q", Kind: "agent", Track: policy.TrackPlan, Repository: "sf/repo", IssueNumber: 12, Status: "done"}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.reverted {
+				for _, id := range []string{"c1", "c2"} {
+					c := g.store.tasks[id]
+					c.RevertedAt = finishedAgo(time.Hour)
+					g.store.tasks[id] = c
+				}
+			}
+			if tc.pause != nil {
+				g.store.pauses = map[string]QueuePause{"sf/repo": *tc.pause}
+			}
+			if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != tc.want {
+				t.Fatalf("Replan: %v, want %q", err, tc.want)
+			}
+			if steps := replanSteps(t, g.r, "p"); len(steps) != 0 || len(g.calls) != 0 || len(g.wf.reopens) != 0 || g.store.tasks["p"].Status != "done" {
+				t.Fatalf("steps %+v, reverts %q, reopens %+v, plan %s; want nothing done", steps, g.calls, g.wf.reopens, g.store.tasks["p"].Status)
+			}
+			if p, ok := g.store.pauses["sf/repo"]; tc.pause == nil && ok || tc.pause != nil && !reflect.DeepEqual(p, *tc.pause) {
+				t.Fatalf("pause = %+v, want it as it stood", p)
+			}
+		})
+	}
+}
+
+// A second press during the off-main revert, with or without off main,
+// names the revert's card, here the agent card that took the pause over,
+// and reopens nothing: the plan stays done until the revert ends.
+func TestReplanDuringAnOffMainRevert(t *testing.T) {
+	ctx := context.Background()
+	g := offMainRig(t)
+	if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.store.CreateTask(ctx, Task{ID: "t-ag", Kind: "agent", Track: policy.TrackDirect, Source: SourceGroupRevert, Repository: "sf/repo",
+		IssueNumber: 22, Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.store.SetQueuePauseRevert(ctx, "sf/repo", "t-ag"); err != nil {
+		t.Fatal(err)
+	}
+	for _, offMain := range []bool{false, true} {
+		_, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller", OffMain: offMain})
+		if want := ErrNoReplan("Plan #10's merged cards are coming off main: wait for the revert, card #22."); err != want {
+			t.Fatalf("a press with off main %t: %v, want %q", offMain, err, want)
+		}
+	}
+	if steps := replanSteps(t, g.r, "p"); len(steps) != 1 || steps[0].By != "sebastian" || len(g.calls) != 1 || len(g.wf.reopens) != 0 || g.store.tasks["p"].Status != "done" {
+		t.Fatalf("steps %+v, reverts %q, reopens %+v, plan %s; want the first press's alone", steps, g.calls, g.wf.reopens, g.store.tasks["p"].Status)
+	}
+}
+
+// An off-main replan whose press stopped after its step, before the
+// revert's pause, is completed by the next press, whoever makes it: the
+// revert runs with the step's words.
+func TestReplanOffMainCompletesAnUnstartedRevert(t *testing.T) {
+	ctx := context.Background()
+	g := offMainRig(t)
+	offMainStep(t, g)
+	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller"})
+	want := "Plan #10 goes back to the planner: no card stops. Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21."
+	if err != nil || note != want {
+		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
+	}
+	if p := g.store.pauses["sf/repo"]; p.Plan != "p" || !slices.Equal(p.Reverts, []string{"c1", "c2"}) {
+		t.Fatalf("pause = %+v, want the plan's of c1 and c2", p)
+	}
+	if len(g.fj.pulls) != 1 || !strings.Contains(g.fj.pulls[0], "Why: asked by sebastian: the api is wrong") {
+		t.Fatalf("pull requests %q, want the step's why", g.fj.pulls)
+	}
+	if steps := replanSteps(t, g.r, "p"); len(steps) != 1 || len(g.wf.reopens) != 0 || g.store.tasks["p"].Status != "done" {
+		t.Fatalf("steps %+v, reopens %+v, plan %s; want the one step, nothing reopened", steps, g.wf.reopens, g.store.tasks["p"].Status)
+	}
+}
+
+// A revert that cannot start lifts its pause with no card; the off-main
+// replan that waits for it ends with a step that names the error, the plan
+// is told once and stays done, and a person can replan again. It holds for
+// the press and for the minute pass's heal of a lost filing.
+func TestOffMainRevertThatCannotStart(t *testing.T) {
+	ctx := context.Background()
+	cause := "revert plan #10's merges: git push: the fork is gone"
+	ended := func(t *testing.T, g *groupRevertRig) {
+		t.Helper()
+		if p, ok := g.store.pauses["sf/repo"]; ok {
+			t.Fatalf("pause = %+v, want it lifted", p)
+		}
+		if steps, want := groupSteps(t, g.r, "off_main_failed"), []map[string]any{{"step": "off_main_failed", "error": cause}}; !reflect.DeepEqual(steps, want) {
+			t.Fatalf("steps %v, want %v", steps, want)
+		}
+		if _, pending, err := g.r.pendingReplan(ctx, g.store.tasks["p"]); err != nil || pending {
+			t.Fatalf("the replan pending %t, %v; want it ended", pending, err)
+		}
+		want := []string{"factoryd: the revert of plan #10 could not start: " + cause + ". Its cards stay on main; replan again."}
+		if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
+			t.Fatalf("plan comments %q, want %q", c, want)
+		}
+		if p := g.store.tasks["p"]; p.Status != "done" || len(g.wf.reopens) != 0 {
+			t.Fatalf("plan %s, reopens %+v; want it done", p.Status, g.wf.reopens)
+		}
+	}
+	fails := func() (string, error) { return "", errors.New("git push: the fork is gone") }
+
+	g := offMainRig(t)
+	g.answer = fails
+	if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err == nil || err.Error() != cause {
+		t.Fatalf("the press: %v, want %q", err, cause)
+	}
+	ended(t, g)
+	if note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "plan it again"}); err != nil || note != "Plan #10 goes back to the planner: no card stops." {
+		t.Fatalf("the press again = %q, %v", note, err)
+	}
+	if p := g.store.tasks["p"]; p.Status != "queued" || len(g.wf.reopens) != 1 {
+		t.Fatalf("plan %s, reopens %+v; want it queued and reopened", p.Status, g.wf.reopens)
+	}
+
+	g = offMainRig(t)
+	g.answer = fails
+	offMainStep(t, g)
+	g.store.pauses = map[string]QueuePause{"sf/repo": {Project: "sf/repo", Since: time.Now().Add(-11 * time.Minute), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-lost"}}
+	g.r.RevertPausePass(ctx)
+	ended(t, g)
+}
+
+// A child's cut while its plan waits for an off-main revert is refused:
+// the planner runs once the revert has ended, and the plan stays done.
+func TestReplanChildDuringAnOffMainRevert(t *testing.T) {
+	ctx := context.Background()
+	g := offMainRig(t)
+	if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := g.r.ReplanChild(ctx, "c3", "the rest")
+	want := ReplanChildResult{Refused: "Plan #10's merged cards are coming off main, so this card's work cannot go back to its planner until the revert ends: answer to go on with the card, or close it."}
+	if err != nil || res != want {
+		t.Fatalf("ReplanChild = %+v, %v; want %+v", res, err, want)
+	}
+	if p := g.store.tasks["p"]; p.Status != "done" || len(g.wf.reopens) != 0 || len(stepsNamed(t, g.r, "c3", "replan_stop")) != 0 {
+		t.Fatalf("plan %s, reopens %+v, c3's replan_stop %s; want nothing done", p.Status, g.wf.reopens, stepsNamed(t, g.r, "c3", "replan_stop"))
+	}
+}
+
+// The off-main revert's end carries out the replan that waited for it:
+// the plan reopens, then each card its step stops that still runs stops.
+func TestOffMainRevertEndStopsTheCards(t *testing.T) {
+	ctx := context.Background()
+	g := revertEndRig(t)
+	g.landed()
+	if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "comment": "the api is wrong",
+		"stops": []string{"c3"}, "off_main": true, "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if p := g.store.tasks["p"]; p.Status != "queued" || !reflect.DeepEqual(g.wf.reopens, []reopenCall{{taskID: "p"}}) {
+		t.Fatalf("plan %s, reopens %+v; want it queued and its run reopened", p.Status, g.wf.reopens)
+	}
+	if c3 := g.store.tasks["c3"]; c3.Status != "closed" || finalReason(t, g.r, "c3") != "stopped for the replan of plan #10" {
+		t.Fatalf("c3 %s (%q), want closed for the replan", c3.Status, finalReason(t, g.r, "c3"))
+	}
+}
+
+// A person's off-main replan says on the plan that its merged cards came
+// off main, once they did; a revert that did not land says nothing of it.
+func TestRecordReplanOffMain(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().Add(-time.Hour).UTC()
+	for _, tc := range []struct {
+		name     string
+		reverted *time.Time
+		want     string
+	}{
+		{"landed", finishedAgo(time.Minute), "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong. Its merged cards came off main."},
+		{"not landed", nil, "factoryd: replanned at revision 2: kept 0, changed 0, dropped 1, added 1.\nAsked by ana: the api is wrong."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, _, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the api is wrong.", "off_main": true, "revision": 1},
+				Task{ID: "t-api", PlanKey: "api", IssueNumber: 21, Status: "done", MergeCommit: "m-api", PlanRevision: 1, RevertedAt: tc.reverted})
+			p, repo, err := r.task(ctx, "t-plan")
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := Plan{Summary: "s", Cards: []PlanCard{{Key: "api2", Role: RoleFeature, Title: "api2", Brief: "api2", Size: "small"}}}
+			if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
+				t.Fatal(err)
+			}
+			if got := commentsOn(fj, 1); !slices.Equal(got, []string{tc.want}) {
+				t.Fatalf("the plan's comments %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A replan's record names a card taken off main by the merge it had, and
+// the fork's salvage branch of the plan goes to the clone as salvage.
+func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
+	r, store, _, hub, _ := oldCardsRig(t, personReplan)
+	api := store.tasks["t-api"]
+	api.RevertedAt = finishedAgo(time.Hour)
+	store.tasks["t-api"] = api
+	hub.branches["salvage/t-plan"] = "s1"
+	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"])
+	if err != nil || !ok {
+		t.Fatalf("replanRecord: %t, %v", ok, err)
+	}
+	if want := "#30 Links API (feature, key api): taken off main (it was merged as 0123abcd); spent 1.20 of 3.00 EUR in 2 sessions; its record is card-30.md"; rec.findings[1] != want {
+		t.Fatalf("api's finding %q, want %q", rec.findings[1], want)
+	}
+	if want := []string{"factory/t-ui:card/31", "salvage/t-plan:salvage"}; !slices.Equal(rec.branches, want) {
+		t.Fatalf("branches %q, want %q", rec.branches, want)
+	}
+	if text := rec.files[0].Text; !strings.HasPrefix(text, "# #30 Links API\n\ntaken off main (it was merged as 0123abcd); spent 1.20 of 3.00 EUR in 2 sessions\n\n") {
+		t.Fatalf("card-30.md starts %.120q", text)
 	}
 }

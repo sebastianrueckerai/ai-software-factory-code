@@ -533,8 +533,9 @@ type sessionSpec struct {
 	// handover is the note the workflow hands the session as its brief's
 	// first section (a mid-session handover); "" when none
 	handover string
-	// branches are the fork's branches a replan's planner clones, each
-	// <fork branch>:<local branch>
+	// branches are the fork's branches the clone fetches, each <fork
+	// branch>:<local branch>: a replan planner's old cards' and salvage, a
+	// plan child's salvage
 	branches []string
 	// record is what a planner session is handed in its brief's fence in
 	// place of a parent's working state: the old cards' records, the work
@@ -2094,13 +2095,15 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.report != "" {
 		env = append(env, map[string]any{"name": "MODE", "value": "report"}, map[string]any{"name": "REPORT_GUIDE", "value": fit.text("REPORT_GUIDE", s.report, "the report's guide")})
 		if len(s.branches) > 0 {
-			cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))},
-				map[string]any{"name": "BRANCHES", "value": strings.Join(s.branches, " ")})
+			cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": r.repoURL(r.forgejo.Fork(s.repo))})
 		}
 	} else {
 		fork := r.repoURL(r.forgejo.Fork(s.repo))
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PUSH_URL", "value": fork})
 		env = append(env, map[string]any{"name": "PUSH_URL", "value": fork})
+	}
+	if len(s.branches) > 0 {
+		cloneEnv = append(cloneEnv, map[string]any{"name": "BRANCHES", "value": strings.Join(s.branches, " ")})
 	}
 	if s.parent != "" {
 		env = append(env, map[string]any{"name": "PARENT_SESSION_ID", "value": s.parent})

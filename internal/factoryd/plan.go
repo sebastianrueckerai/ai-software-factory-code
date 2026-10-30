@@ -943,6 +943,13 @@ func goneLine(k Task) string {
 	return fmt.Sprintf("The branch of #%d is gone: start from main.", k.IssueNumber)
 }
 
+// againLine is the start line of a card that lands again the work of k,
+// taken off main.
+func againLine(k Task) string {
+	return fmt.Sprintf("Lands again the work of #%d (%s), which was taken off main: apply its changes from the salvage branch, salvage in your clone "+
+		"(git diff %s^1 %s shows them), make it build green, and land it.", k.IssueNumber, k.PlanKey, k.MergeCommit, k.MergeCommit)
+}
+
 // planGuide is the planner's guide: the spec is the issue, the answer a
 // plan filed with the file_plan tool, a card one session of the pinned
 // limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
@@ -2697,7 +2704,8 @@ const stepFiling = "filing"
 // on the direct track at main's head, with the card's author as the
 // cards' (plans do not nest: the children are direct cards); records the
 // edges in Forgejo and task_deps; puts the issues into the plan's comment;
-// and, for a replan, records it, which ends the replan.
+// for a replan, records it, which ends the replan; and takes off main the
+// merged cards the revision drops (revertDropped).
 func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.Version, rev PlanRevision) (ChildrenResult, error) {
 	revision := rev.Revision
 	shape, process, err := planShape(v, t)
@@ -2766,7 +2774,65 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 			return ChildrenResult{}, err
 		}
 	}
+	if err := r.revertDropped(ctx, t, repo, tl, revision, p); err != nil {
+		return ChildrenResult{}, err
+	}
 	return ChildrenResult{Issues: issues}, nil
+}
+
+// revertDropped takes off main the merged cards of plan task t that
+// revision n, p, drops: each card on main whose key the revision filed
+// before n held and p leaves out, but the integration card, which p's own
+// supersedes and whose code stays on main. A filing run again finds the
+// revert's own pause and goes on with it. A refusal is told on the plan,
+// and the cards stay on main. tl is t's timeline.
+func (r *Runner) revertDropped(ctx context.Context, t Task, repo Repo, tl []byte, n int, p Plan) error {
+	before := n - 1
+	for line := range strings.SplitSeq(string(tl), "\n") {
+		var m struct {
+			Step     string
+			Revision int
+		}
+		if json.Unmarshal([]byte(line), &m) == nil && m.Step == stepFiling && m.Revision < n {
+			before = m.Revision
+		}
+	}
+	if before == 0 {
+		return nil
+	}
+	prev, _, err := r.planAt(ctx, t.ID, before)
+	if err != nil || prev == nil {
+		return err
+	}
+	cards, err := r.store.PlanCards(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	var dropped []Task
+	var refs []string
+	for _, k := range onMain(cards) {
+		held := slices.ContainsFunc(prev.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey })
+		kept := slices.ContainsFunc(p.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey })
+		if held && !kept && roleOf(*prev, k.PlanKey) != RoleIntegration {
+			dropped = append(dropped, k)
+			refs = append(refs, fmt.Sprintf("#%d", k.IssueNumber))
+		}
+	}
+	if len(dropped) == 0 {
+		return nil
+	}
+	_, err = r.RevertGroup(ctx, t, dropped, fmt.Sprintf("plan revision %d drops them", n))
+	var no ErrNoReplan
+	if !errors.As(err, &no) {
+		return err
+	}
+	stay := "they stay"
+	if len(dropped) == 1 {
+		stay = "it stays"
+	}
+	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: revision %d drops %s (%s), and %s on main. %s",
+		n, plural(len(dropped), "merged card"), strings.Join(refs, ", "), stay, no))
+	return nil
 }
 
 // fileChildren files p's cards of task t, its process's, the cards of
@@ -2780,7 +2846,9 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 // names one of old, the plan's record (oldCards), starts from its work,
 // unless a row of its key started or ended: it files at the old card's
 // base, and its branch is the old card's before its issue exists; an old
-// card whose branch is gone leaves it to start from main.
+// card whose branch is gone leaves it to start from main. One whose old
+// card was taken off main files at main's head and lands that work again
+// from the salvage branch.
 func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
@@ -2817,7 +2885,10 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		if row, filed := rows[c.Key]; c.From == "" || filed && (row.PlanRevision > 0 || Final(row.Status)) {
 			continues = false
 		}
-		if continues {
+		switch {
+		case continues && from.RevertedAt != nil:
+			start, continues = againLine(from), false
+		case continues:
 			switch _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, taskBranch(from)); {
 			case errors.Is(err, ErrNotFound):
 				start, continues = goneLine(from), false

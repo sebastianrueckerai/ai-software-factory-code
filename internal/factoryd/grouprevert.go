@@ -47,6 +47,19 @@ const revertHookOwns = time.Minute
 // plan's group revert, the plan's work on it.
 func salvageBranch(plan string) string { return "salvage/" + plan }
 
+// salvagePair is the clone's branch pair of plan's salvage branch on
+// repo's fork, salvage/<plan>:salvage, when the fork holds it, else "".
+func (r *Runner) salvagePair(ctx context.Context, repo Repo, plan string) (string, error) {
+	fork := r.forgejo.Fork(repo)
+	switch _, err := r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, salvageBranch(plan)); {
+	case errors.Is(err, ErrNotFound):
+		return "", nil
+	case err != nil:
+		return "", err
+	}
+	return salvageBranch(plan) + ":salvage", nil
+}
+
 // groupRevertBranch reverts shas on a full clone of main as the bot,
 // newest first by their place in main's first-parent history; it sorts
 // shas in place in that order. A merge commit reverts with -m 1. Before
@@ -113,7 +126,8 @@ var groupRevertBranch = func(ctx context.Context, f *Forgejo, repo Repo, shas []
 // resolves it. The card holds the pause. A call that finds p's own pause,
 // a retry's, goes on with its card, and once the card exists answers from
 // it. Any other pause refuses (ErrNoReplan). An error lifts the pause,
-// and closes the pull request the call opened, unless the card exists.
+// closes the pull request the call opened and ends an off-main replan
+// that waits for the revert (revertUnstarted), unless the card exists.
 // The answer is the note for the person. Calls for one project run one at
 // a time: a replan's filing and the minute pass's heal may meet.
 func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why string) (string, error) {
@@ -141,6 +155,8 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 			closeOpened(ctx, r.forgejo, repo, opened)
 			if cerr := r.store.ClearRevertPause(context.WithoutCancel(ctx), p.Repository, id); cerr != nil {
 				log.Printf("plan %s: lift the merge queue's pause of %s: %v", p.ID, p.Repository, cerr)
+			} else {
+				r.revertUnstarted(ctx, p, err)
 			}
 		}
 		return "", err
@@ -150,6 +166,38 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 		verb = "comes"
 	}
 	return fmt.Sprintf("Plan #%d's %s %s off main: the merge queue waits for the revert, card #%d.", p.IssueNumber, plural(len(cards), "merged card"), verb, issue), nil
+}
+
+// revertUnstarted ends plan p's pending replan that waits with off_main
+// for a revert that could not start (cause), past ctx's end: a closer
+// step names the error and the plan is told once; it stays done, so a
+// person can replan again. A failure is logged: the next press starts the
+// revert again (awaitOffMain).
+func (r *Runner) revertUnstarted(ctx context.Context, p Task, cause error) {
+	ctx = context.WithoutCancel(ctx)
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+	if err != nil {
+		log.Printf("plan %s: the timeline: %v", p.ID, err)
+		return
+	}
+	step, pending, err := pendingIn(tl, p.ID)
+	if err != nil {
+		log.Printf("plan %s: %v", p.ID, err)
+		return
+	}
+	if !revertWaits(tl, step, pending) {
+		return
+	}
+	if err := r.timeline.Append(ctx, p.ID, stepOffMainFailed, map[string]any{"error": cause.Error()}); err != nil {
+		log.Printf("plan %s: record %s: %v", p.ID, stepOffMainFailed, err)
+		return
+	}
+	repo, err := SplitRepo(p.Repository)
+	if err != nil {
+		log.Printf("plan %s: %v", p.ID, err)
+		return
+	}
+	r.commentOnce(ctx, p, repo, p.IssueNumber, fmt.Sprintf("factoryd: the revert of plan #%d could not start: %v. Its cards stay on main; replan again.", p.IssueNumber, cause))
 }
 
 // unfiled tells that card id has no row, read past ctx's end: a call that
@@ -208,15 +256,21 @@ func (r *Runner) revertPause(ctx context.Context, p Task, cards []Task) (string,
 			return standing.RevertTask, nil
 		}
 	}
-	cause := "main is red since " + standing.Since.UTC().Format(time.RFC3339)
-	if standing.Plan != "" {
-		other, _, err := r.task(ctx, standing.Plan)
+	return "", r.pauseRefusal(ctx, p, standing)
+}
+
+// pauseRefusal refuses the revert of plan p's cards under pause, which
+// stands in its project: main red since its time, or a plan's revert.
+func (r *Runner) pauseRefusal(ctx context.Context, p Task, pause QueuePause) error {
+	cause := "main is red since " + pause.Since.UTC().Format(time.RFC3339)
+	if pause.Plan != "" {
+		other, _, err := r.task(ctx, pause.Plan)
 		if err != nil {
-			return "", err
+			return err
 		}
 		cause = fmt.Sprintf("plan #%d is being taken off main", other.IssueNumber)
 	}
-	return "", ErrNoReplan(fmt.Sprintf("The merge queue of %s is paused: %s. Replan without taking work off main, or wait until the queue goes on.", p.Repository, cause))
+	return ErrNoReplan(fmt.Sprintf("The merge queue of %s is paused: %s. Replan without taking work off main, or wait until the queue goes on.", p.Repository, cause))
 }
 
 // fileGroupRevert reverts cards' merges on the branch of card id and files
@@ -331,8 +385,9 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // cards stay on main. At the session cap the agent card asks a person
 // first, as spec H wants; a hard failure lifts the pause with no person's
 // decision, since nothing else could lift it. Then a replan that waits
-// with off_main for the revert sends the plan to its planner, and the
-// pause goes last, the queue's waiting heads woken.
+// with off_main for the revert is carried out (completeReplan): the plan
+// goes to its planner, then the cards its step stops stop. The pause goes
+// last, the queue's waiting heads woken.
 // A step that fails leaves the pause for RevertPausePass, which runs it
 // all again; a comment or a reopen Forgejo refuses is logged and passed
 // instead, as no retry changes it and the queue must go on. Safe to
@@ -384,9 +439,11 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		return err
 	}
 	if pending && replan.OffMain && slices.Contains(reopenFrom, p.Status) {
-		if err := r.reopenPlan(ctx, p); forgejoTerminal(err) {
-			log.Printf("plan %s: Forgejo refused a step of its reopen after the revert: %v", p.ID, err)
-		} else if err != nil {
+		_, err := r.completeReplan(ctx, p, replan)
+		switch {
+		case forgejoTerminal(err):
+			log.Printf("plan %s: Forgejo refused a step of its replan after the revert: %v", p.ID, err)
+		case err != nil && !errors.As(err, new(ErrNoReplan)):
 			return err
 		}
 	}

@@ -491,6 +491,8 @@ type planForgejo struct {
 	failStatus int
 	// onIssue runs as an issue is created, with its title
 	onIssue func(title string)
+	// pulls are "head title\n\nbody" of each pull request created
+	pulls []string
 }
 
 type planIssue struct {
@@ -627,6 +629,14 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			w.Write([]byte(`{}`))
 		case r.Method == "GET" && r.URL.Path == "/api/v1/repos/linkshort/linkshort":
 			w.Write([]byte(`{"default_branch":"main"}`))
+		case r.Method == "GET" && r.URL.Path == "/api/v1/repos/factory-agent/linkshort":
+			call = "GET fork"
+			w.Write([]byte(`{"fork":true,"private":true,"has_actions":false,"parent":{"full_name":"linkshort/linkshort"}}`))
+		case r.Method == "POST" && rest == "pulls":
+			f.pulls = append(f.pulls, fmt.Sprintf("%s %s\n\n%s", body["head"], body["title"], body["body"]))
+			owner, ref, _ := strings.Cut(body["head"].(string), ":")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"number":%d,"head":{"ref":%q,"repo":{"full_name":%q}}}`, 90+len(f.pulls), ref, owner+"/linkshort")
 		case r.Method == "GET" && rest == "branches/main":
 			w.Write([]byte(`{"commit":{"id":"m1"}}`))
 		case r.Method == "PATCH" && len(parts) == 3 && parts[1] == "comments":
@@ -2561,8 +2571,7 @@ func TestFilingJudgesAgainstTheRevisionBefore(t *testing.T) {
 	store.tasks[k.ID] = k
 
 	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
-	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out",
-		"card cli merged: keep its key; a later card changes its work"}
+	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out"}
 	if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 0 || !slices.Equal(ref.Refused, want) {
 		t.Fatalf("the filing: %+v, want no card filed and the findings %q", ref, want)
 	}
@@ -2744,8 +2753,7 @@ func TestReplanJudgesAgainstTheNewestFiledRevision(t *testing.T) {
 	store.tasks[k.ID] = k
 	p.Cards[2].Key, p.Cards[2].From = "redirects2", "redirects"
 	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
-	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out",
-		"card cli merged: keep its key; a later card changes its work"}
+	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out"}
 	if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, want) {
 		t.Fatalf("revision 3: %+v, %v; want refused with %q", res, err, want)
 	}
@@ -3646,5 +3654,202 @@ func TestCardLineBound(t *testing.T) {
 		if lines, sized := cardLineBound(c.size, c.large); lines != c.lines || sized != c.sized {
 			t.Errorf("cardLineBound(%q, %d) = %d, %v, want %d, %v", c.size, c.large, lines, sized, c.lines, c.sized)
 		}
+	}
+}
+
+// dropRig is fileRig's plan with revision 1 filed, links-api and the
+// integration card merged on main at revision 1, a person's replan
+// pending, and revision 2 stored: it drops both and adds links-api-2 and
+// integration-2. groupRevertBranch is a stub that records the merges of
+// each call.
+func dropRig(t *testing.T) (*Runner, *fakeStore, *planForgejo, *[][]string) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	for key, merge := range map[string]string{"links-api": "m-api", "integration": "m-int"} {
+		k := cardsByKey(t, store)[key]
+		k.Status, k.PlanRevision, k.MergeCommit = "done", 1, merge
+		store.tasks[k.ID] = k
+	}
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the api is wrong", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	p := testPlan()
+	p.Cards[1].Key, p.Cards[1].Title = "links-api-2", "Links API, again"
+	p.Cards[2].DependsOn = []string{"links-api-2"}
+	p.Cards[3].Key = "integration-2"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	var calls [][]string
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, f *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		calls = append(calls, slices.Clone(shas))
+		return "", nil
+	}
+	return r, store, fj, &calls
+}
+
+// fileRevision2 runs RequestPlan of revision 2 and wants its 4 cards filed.
+func fileRevision2(t *testing.T, r *Runner) {
+	t.Helper()
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 4 || len(ref.Refused) != 0 {
+		t.Fatalf("the filing of revision 2: %+v", ref)
+	}
+}
+
+// revertCards are the store's plain revert cards.
+func revertCards(store *fakeStore) []Task {
+	var out []Task
+	for _, k := range store.tasks {
+		if k.Source == SourceRevert {
+			out = append(out, k)
+		}
+	}
+	return out
+}
+
+// A revision that drops merged cards takes them off main once it filed:
+// links-api goes to the group revert, the integration card, which the
+// revision's own supersedes, stays on main. A filing run again resumes the
+// revert and files no second card.
+func TestFilingDropsMergedCards(t *testing.T) {
+	r, store, fj, calls := dropRig(t)
+	api, integration := cardsByKey(t, store)["links-api"], cardsByKey(t, store)["integration"]
+	fileRevision2(t, r)
+	if want := [][]string{{"m-api"}}; !reflect.DeepEqual(*calls, want) {
+		t.Fatalf("groupRevertBranch merges %q, want %q", *calls, want)
+	}
+	pause := store.pauses["linkshort/linkshort"]
+	if pause.Plan != "t-plan" || !slices.Equal(pause.Reverts, []string{api.ID}) || store.tasks[pause.RevertTask].Source != SourceRevert {
+		t.Fatalf("pause %+v, its card %+v; want the plan's of links-api alone on a plain revert card", pause, store.tasks[pause.RevertTask])
+	}
+	if len(fj.pulls) != 1 || !strings.Contains(fj.pulls[0], "\n\nWhy: plan revision 2 drops them\n\n") {
+		t.Fatalf("pull requests %q, want the revision's why", fj.pulls)
+	}
+	if k := store.tasks[integration.ID]; k.RevertedAt != nil || slices.Contains(pause.Reverts, integration.ID) {
+		t.Fatalf("the integration card %+v, want it on main", k)
+	}
+	fileRevision2(t, r)
+	if len(*calls) != 1 || len(revertCards(store)) != 1 || len(fj.pulls) != 1 {
+		t.Fatalf("after a run again: merges %q, revert cards %d, pull requests %q; want one of each", *calls, len(revertCards(store)), fj.pulls)
+	}
+}
+
+// A filing retried after its revert's pause began, before the revert's
+// card filed, files that card under the pause's id, once.
+func TestFilingThatDropsMergedCardsRetried(t *testing.T) {
+	r, store, _, calls := dropRig(t)
+	api := cardsByKey(t, store)["links-api"]
+	own := QueuePause{Project: "linkshort/linkshort", Since: time.Now(), Plan: "t-plan", Reverts: []string{api.ID}, RevertTask: "t-rv"}
+	store.pauses = map[string]QueuePause{"linkshort/linkshort": own}
+	for range 2 {
+		fileRevision2(t, r)
+	}
+	if len(*calls) != 1 || store.tasks["t-rv"].Source != SourceRevert || len(revertCards(store)) != 1 {
+		t.Fatalf("merges %q, t-rv %+v, revert cards %d; want t-rv filed once", *calls, store.tasks["t-rv"], len(revertCards(store)))
+	}
+	if p := store.pauses["linkshort/linkshort"]; !reflect.DeepEqual(p, own) {
+		t.Fatalf("pause = %+v, want it as it stood", p)
+	}
+}
+
+// A revision whose revert a standing pause refuses files its cards all
+// the same; the plan is told that the dropped cards stay on main.
+func TestFilingDropsMergedCardsUnderAPause(t *testing.T) {
+	r, store, fj, calls := dropRig(t)
+	api := cardsByKey(t, store)["links-api"]
+	red := QueuePause{Project: "linkshort/linkshort", RunID: 58, SHA: "c1c1", Since: time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC), FixTask: "fix1"}
+	store.pauses = map[string]QueuePause{"linkshort/linkshort": red}
+	fileRevision2(t, r)
+	if p := store.pauses["linkshort/linkshort"]; len(*calls) != 0 || !reflect.DeepEqual(p, red) || store.tasks[api.ID].RevertedAt != nil {
+		t.Fatalf("merges %q, pause %+v; want no revert and the pause as it stood", *calls, p)
+	}
+	want := fmt.Sprintf("factoryd: revision 2 drops 1 merged card (#%d), and it stays on main. The merge queue of linkshort/linkshort is paused: "+
+		"main is red since 2026-11-07T10:00:00Z. Replan without taking work off main, or wait until the queue goes on.", api.IssueNumber)
+	if !slices.Contains(commentsOn(fj, 1), want) {
+		t.Fatalf("the plan's comments %q, want %q", commentsOn(fj, 1), want)
+	}
+}
+
+// A card whose from names a card taken off main files at main's head,
+// with no branch copied, and its issue says to land the work again from
+// the salvage branch.
+func TestFilingLandsAgainFromSalvage(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	api := cardsByKey(t, store)["links-api"]
+	api.Status, api.PlanRevision, api.MergeCommit, api.SHA, api.RevertedAt = "done", 1, "4f1c2a9e", "a0", finishedAgo(time.Hour)
+	store.tasks[api.ID] = api
+	fj.branches = map[string]string{taskBranch(api): "a1"}
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "land it again", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	p := testPlan()
+	p.Cards[1].Key, p.Cards[1].From = "links-api-2", "links-api"
+	p.Cards[2].DependsOn = []string{"links-api-2"}
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	fileRevision2(t, r)
+	again := cardsByKey(t, store)["links-api-2"]
+	line := fmt.Sprintf("Lands again the work of #%d (links-api), which was taken off main: apply its changes from the salvage branch, salvage in your clone "+
+		"(git diff 4f1c2a9e^1 4f1c2a9e shows them), make it build green, and land it.", api.IssueNumber)
+	if again.SHA != "m1" || !strings.Contains(fj.issues[again.IssueNumber].body, "\n"+line+"\n") {
+		t.Fatalf("links-api-2 at %s, its issue:\n%s\nwant main's head m1 and the line %q", again.SHA, fj.issues[again.IssueNumber].body, line)
+	}
+	if slices.ContainsFunc(fj.calls, func(c string) bool { return strings.HasPrefix(c, "POST fork branches") }) {
+		t.Fatalf("calls %q, want no branch copied", fj.calls)
+	}
+}
+
+// A plan child's coding session fetches its plan's salvage branch into its
+// clone as branch salvage when the fork holds one.
+func TestLandsAgainSessionClonesTheSalvage(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		branches map[string]string
+		want     string
+	}{
+		{"a salvage branch", map[string]string{"salvage/t-plan": "s1"}, "salvage/t-plan:salvage"},
+		{"none", map[string]string{}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+				IssueNumber: 4, Source: SourcePlan, Parent: "t-plan", PlanKey: "links-api", Author: "sebastian", AuthorWriter: true,
+				RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Links API\n\nCreate links."}
+			kube := newFakeKube()
+			runner, hub, store := newTestRunner(t, card, kube, &fakeObjectStore{})
+			hub.branches = tc.branches
+			if err := store.CreateTask(ctx, Task{ID: "t-plan", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener", Track: policy.TrackPlan}); err != nil {
+				t.Fatal(err)
+			}
+			raw, sha, _ := planSHA(testPlan())
+			if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil, resultLine(true, "built")); err != nil {
+				t.Fatal(err)
+			}
+			clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone"))
+			if clone["BRANCHES"] != tc.want || podEnv(kube.podAt(0))["BRANCHES"] != "" {
+				t.Fatalf("clone BRANCHES %q, the agent's %q; want %q and none", clone["BRANCHES"], podEnv(kube.podAt(0))["BRANCHES"], tc.want)
+			}
+		})
 	}
 }

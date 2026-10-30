@@ -13,8 +13,10 @@ import (
 const BranchRetention = 30 * 24 * time.Hour
 
 // SweepBranches deletes the factory/<id> branches on the bot's forks whose
-// card ended BranchRetention ago or longer. Finish keeps the branch of a card
-// whose work never merged. One project's error does not stop the others.
+// card ended BranchRetention ago or longer, and the salvage/<plan> branches
+// of plans that closed (plan_closed) and finished as long ago. Finish keeps
+// the branch of a card whose work never merged. One project's error does
+// not stop the others.
 func (r *Runner) SweepBranches(ctx context.Context, now time.Time) error {
 	var errs []error
 	for name, p := range r.cfg.Policy().Tree.Projects {
@@ -40,16 +42,12 @@ func (r *Runner) sweepProjectBranches(ctx context.Context, repository string, no
 	}
 	var errs []error
 	for _, b := range branches {
-		id, ok := strings.CutPrefix(b.Name, "factory/")
-		if !ok {
-			continue
-		}
-		t, found, err := r.store.Task(ctx, id)
+		outlived, err := r.branchOutlived(ctx, b.Name, now)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		if !found || !Final(t.Status) || t.FinishedAt == nil || now.Sub(*t.FinishedAt) < BranchRetention {
+		if !outlived {
 			continue
 		}
 		if err := r.forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, b.Name); err != nil {
@@ -57,4 +55,26 @@ func (r *Runner) sweepProjectBranches(ctx context.Context, repository string, no
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// branchOutlived tells whether fork branch name has outlived
+// BranchRetention: a card's factory/<id> since the card ended, a plan's
+// salvage/<plan> since the plan, closed, finished.
+func (r *Runner) branchOutlived(ctx context.Context, name string, now time.Time) (bool, error) {
+	id, card := strings.CutPrefix(name, "factory/")
+	plan, salvage := strings.CutPrefix(name, "salvage/")
+	switch {
+	case salvage:
+		if closed, err := r.store.PlanClosed(ctx, plan); err != nil || !closed {
+			return false, err
+		}
+		id = plan
+	case !card:
+		return false, nil
+	}
+	t, found, err := r.store.Task(ctx, id)
+	if err != nil || !found || !salvage && !Final(t.Status) {
+		return false, err
+	}
+	return t.FinishedAt != nil && now.Sub(*t.FinishedAt) >= BranchRetention, nil
 }

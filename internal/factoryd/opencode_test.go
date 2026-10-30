@@ -1020,8 +1020,8 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"and add a card with",
 		// replanFindings, R4 for a card that never started
 		"and add its work under a new key",
-		// replanFindings, R5
-		"keep its key; a later card changes its work",
+		// replanFindings, a card taken off main kept
+		"to land it again from salvage",
 		// replanFindings, R6
 		"the revision's new integration card checks",
 		// replanFindings, R7
