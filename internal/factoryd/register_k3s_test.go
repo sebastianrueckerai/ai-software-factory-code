@@ -291,6 +291,27 @@ func TestRegistrationClusterOnAnAPIServer(t *testing.T) {
 	patchRefused("an owner reference on factory", mergePatch,
 		`{"metadata":{"ownerReferences":[{"apiVersion":"v1","kind":"ConfigMap","name":"gone","uid":"00000000-0000-0000-0000-000000000001"}]}}`)
 	patchRefused("a finalizer on factory", mergePatch, `{"metadata":{"finalizers":["example.com/hold"]}}`)
+	// every patch type may change spec.suspend, and nothing else of factory
+	const jsonPatch = "application/json-patch+json"
+	for _, c := range []struct{ name, contentType, body, want string }{
+		{"a merge patch of suspend", mergePatch, `{"spec":{"suspend":true}}`, "true"},
+		{"a JSON patch of suspend", jsonPatch, `[{"op":"replace","path":"/spec/suspend","value":false}]`, "false"},
+	} {
+		if code, raw := patch(c.contentType, c.body); code != http.StatusOK || !strings.Contains(raw, `"suspend":`+c.want) {
+			t.Errorf("%s: %d %s, want admitted", c.name, code, raw)
+		}
+	}
+	patchRefused("an annotation on factory", mergePatch, `{"metadata":{"annotations":{"x":"y"}}}`)
+	patchRefused("a merge patch of suspend and path", mergePatch, `{"spec":{"suspend":true,"path":"./x"}}`)
+	patchRefused("a JSON patch of path", jsonPatch, `[{"op":"replace","path":"/spec/path","value":"./x"}]`)
+	patchRefused("a JSON patch of suspend and a target namespace", jsonPatch,
+		`[{"op":"replace","path":"/spec/suspend","value":true},{"op":"add","path":"/spec/targetNamespace","value":"x"}]`)
+	refused("an apply of suspend and path", http.MethodPatch, apply(fks+"/factory"), fk("factory", nil, map[string]any{"suspend": true, "path": "./x"}))
+	refused("an apply of suspend and a label", http.MethodPatch, apply(fks+"/factory"), fk("factory", map[string]string{"x": "y"}, map[string]any{"suspend": true}))
+	var spec struct{ Spec map[string]any }
+	if code := asAdmin(http.MethodGet, fks+"/factory", nil, &spec); code != http.StatusOK || spec.Spec["path"] != "./k8s" || spec.Spec["suspend"] != false || spec.Spec["targetNamespace"] != nil {
+		t.Fatalf("admin reads flux-system/factory: %d, spec %v; want path ./k8s, suspend false and nothing else changed", code, spec.Spec)
+	}
 	var meta struct {
 		Metadata struct {
 			OwnerReferences []any `json:"ownerReferences"`
