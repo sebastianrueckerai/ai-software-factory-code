@@ -391,8 +391,9 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // A step that fails leaves the pause for RevertPausePass, which runs it
 // all again; a comment or a reopen Forgejo refuses is logged and passed
 // instead, as no retry changes it and the queue must go on. Safe to
-// repeat: MarkReverted sets only nulls, the plan comment goes once, the
-// reopen takes only a plan that waits, and the clear of t's pause is
+// repeat: MarkReverted sets only nulls, the plan comment goes once, a
+// replan carried out again reopens a running plan as a no-op and stops
+// only the cards that still run, and the clear of t's pause is
 // idempotent. finish runs it twice for a merged card with a chain (merged,
 // then EndCovered): the first call clears the pause, so the second finds
 // no pause naming the card.
@@ -438,7 +439,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 	if err != nil {
 		return err
 	}
-	if pending && replan.OffMain && slices.Contains(reopenFrom, p.Status) {
+	if pending && replan.OffMain && p.Status != "closed" && p.Status != "closing" {
 		_, err := r.completeReplan(ctx, p, replan)
 		switch {
 		case forgejoTerminal(err):

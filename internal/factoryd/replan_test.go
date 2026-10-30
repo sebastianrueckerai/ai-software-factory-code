@@ -2258,3 +2258,51 @@ func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
 		t.Fatalf("card-30.md starts %.120q", text)
 	}
 }
+
+// movesFail is a store whose MoveDependents fails while fails is above 0.
+type movesFail struct {
+	*fakeStore
+	fails int
+}
+
+func (s *movesFail) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
+	if s.fails > 0 {
+		s.fails--
+		return nil, errors.New("the database is gone")
+	}
+	return s.fakeStore.MoveDependents(ctx, from, to)
+}
+
+// An off-main revert's end whose stop failed after the plan reopened keeps
+// its pause; the pass's retry finds the plan running and still makes the
+// stop.
+func TestOffMainRevertEndRetriesAFailedStop(t *testing.T) {
+	ctx := context.Background()
+	g := revertEndRig(t)
+	g.landed()
+	if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "comment": "the api is wrong",
+		"stops": []string{"c3"}, "off_main": true, "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	g.r.store = &movesFail{fakeStore: g.store, fails: 1}
+	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := g.store.pauses["sf/repo"]; !ok || g.store.tasks["c3"].Status != "running" {
+		t.Fatalf("paused %t, c3 %s; want the pause kept for the failed stop", ok, g.store.tasks["c3"].Status)
+	}
+	p, rv := g.store.tasks["p"], g.store.tasks["t-rv"]
+	p.Status, rv.FinishedAt = "running", finishedAgo(2*time.Minute)
+	g.store.tasks["p"], g.store.tasks["t-rv"] = p, rv
+	g.r.RevertPausePass(ctx)
+	if c3 := g.store.tasks["c3"]; c3.Status != "closed" || finalReason(t, g.r, "c3") != "stopped for the replan of plan #10" {
+		t.Fatalf("c3 %s (%q), want closed for the replan", c3.Status, finalReason(t, g.r, "c3"))
+	}
+	if pause, ok := g.store.pauses["sf/repo"]; ok {
+		t.Fatalf("pause = %+v, want it gone", pause)
+	}
+}
