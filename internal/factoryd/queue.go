@@ -124,8 +124,9 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 	if spot.New {
 		r.record(ctx, t.ID, "queue_entered", map[string]any{"project": t.Repository, "ahead": spot.Ahead})
 	}
-	// a paused queue (main is red, mainfix.go) counts as one entry ahead
-	// of every task but the pause's own cards
+	// a paused queue (main is red, mainfix.go, or a plan's revert,
+	// grouprevert.go) counts as one entry ahead of every task but the
+	// pause's own cards
 	if p, paused, err := r.store.QueuePause(ctx, t.Repository); err != nil {
 		return 0, err
 	} else if paused && (t.ID == p.FixTask || t.ID == p.RevertTask) {
