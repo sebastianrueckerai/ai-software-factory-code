@@ -880,6 +880,42 @@ func (s *acceptanceStore) PlanClosed(context.Context, string) (time.Time, bool, 
 	return time.Time{}, false, nil
 }
 
+func (s *acceptanceStore) Release(_ context.Context, repository string) (factoryd.Release, error) {
+	return factoryd.Release{Repository: repository}, nil
+}
+
+func (s *acceptanceStore) Releases(context.Context) ([]factoryd.Release, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) RecordReleaseAsk(context.Context, string, string, bool, time.Time) error {
+	return nil
+}
+
+func (s *acceptanceStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time) error {
+	return nil
+}
+
+func (s *acceptanceStore) SetDeployNow(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (s *acceptanceStore) ClearDeployNow(context.Context, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) EndReleaseHold(context.Context, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) ClearToldHeld(context.Context, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) FixesMergedSince(context.Context, string, time.Time) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) error {
 	return nil
 }

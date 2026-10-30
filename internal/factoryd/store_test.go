@@ -113,6 +113,7 @@ type fakeStore struct {
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
 	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
+	releases      map[string]Release
 }
 
 func (s *fakeStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -356,6 +357,90 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	for _, gs := range out {
 		slices.SortFunc(gs, func(a, b Group) int { return cmp.Or(a.FirstMerge.Compare(b.FirstMerge), cmp.Compare(a.Plan, b.Plan)) })
 	}
+	return out, nil
+}
+
+func (s *fakeStore) Release(ctx context.Context, repository string) (Release, error) {
+	if r, ok := s.releases[repository]; ok {
+		return r, nil
+	}
+	return Release{Repository: repository}, nil
+}
+
+func (s *fakeStore) Releases(ctx context.Context) ([]Release, error) {
+	return slices.SortedFunc(maps.Values(s.releases), func(a, b Release) int { return strings.Compare(a.Repository, b.Repository) }), nil
+}
+
+// putRelease writes repository's row as change makes it, the row created
+// when it has none.
+func (s *fakeStore) putRelease(repository string, change func(*Release)) {
+	if s.releases == nil {
+		s.releases = map[string]Release{}
+	}
+	r, _ := s.Release(context.Background(), repository)
+	change(&r)
+	s.releases[repository] = r
+}
+
+func (s *fakeStore) RecordReleaseAsk(ctx context.Context, repository, commit string, held bool, at time.Time) error {
+	s.putRelease(repository, func(r *Release) {
+		r.AsksAt = at
+		if held {
+			r.ToldHeld = commit
+		}
+	})
+	return nil
+}
+
+func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) error {
+	s.putRelease(repository, func(r *Release) {
+		if r.HeldSince.IsZero() {
+			r.HeldSince = since
+		}
+		if r.AskedAt.Equal(was) {
+			r.AskedAt = asked
+		}
+	})
+	return nil
+}
+
+func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {
+	s.putRelease(repository, func(r *Release) { r.DeployNow, r.HeldSince, r.AskedAt = commit, since, time.Time{} })
+	return nil
+}
+
+func (s *fakeStore) ClearDeployNow(ctx context.Context, repository, commit string) error {
+	if r, ok := s.releases[repository]; ok && r.DeployNow == commit {
+		r.DeployNow = ""
+		s.releases[repository] = r
+	}
+	return nil
+}
+
+func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string) error {
+	if r, ok := s.releases[repository]; ok {
+		r.HeldSince, r.AskedAt, r.DeployNow = time.Time{}, time.Time{}, ""
+		s.releases[repository] = r
+	}
+	return nil
+}
+
+func (s *fakeStore) ClearToldHeld(ctx context.Context, repository, commit string) error {
+	if r, ok := s.releases[repository]; ok && r.ToldHeld == commit {
+		r.ToldHeld = ""
+		s.releases[repository] = r
+	}
+	return nil
+}
+
+func (s *fakeStore) FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && slices.Contains(fixSources, t.Source) && t.MergeCommit != "" && t.FinishedAt != nil && t.FinishedAt.After(since) {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return cmp.Or(a.FinishedAt.Compare(*b.FinishedAt), strings.Compare(a.ID, b.ID)) })
 	return out, nil
 }
 

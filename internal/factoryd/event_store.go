@@ -225,8 +225,7 @@ func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted 
 	return e, true, nil
 }
 
-// nullTime is t as a SQL NULL when it is the zero time, so the column
-// default (now()) takes it.
+// nullTime is t, or SQL NULL for the zero time.
 func nullTime(t time.Time) any {
 	if t.IsZero() {
 		return nil

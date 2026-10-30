@@ -551,6 +551,33 @@ type Store interface {
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.
 	PlanClosed(ctx context.Context, plan string) (at time.Time, closed bool, err error)
+	// Release is repository's production hold, Release{Repository:
+	// repository} when it has no row; Releases are every row, by
+	// repository.
+	Release(ctx context.Context, repository string) (Release, error)
+	Releases(ctx context.Context) ([]Release, error)
+	// RecordReleaseAsk records the project CI's ask of /release at, and
+	// commit as told held when held.
+	RecordReleaseAsk(ctx context.Context, repository, commit string, held bool, at time.Time) error
+	// PutReleaseHold is the keeper's write: the clock since unless one runs,
+	// and asked only where asked_at is still was, the value the keeper
+	// read, so a Deploy now meanwhile stands. Zero is none in all three.
+	// Only the keeper's Pass calls it.
+	PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) error
+	// SetDeployNow releases commit: the clock restarts at since and the
+	// last ask is cleared.
+	SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error
+	// ClearDeployNow ends the Deploy now window of commit; a newer Deploy
+	// now stands.
+	ClearDeployNow(ctx context.Context, repository, commit string) error
+	// EndReleaseHold is the release: the clock, the last ask and Deploy now
+	// cleared.
+	EndReleaseHold(ctx context.Context, repository string) error
+	// ClearToldHeld forgets commit as told held; a newer one stands.
+	ClearToldHeld(ctx context.Context, repository, commit string) error
+	// FixesMergedSince are repository's fix cards (fixSources) merged
+	// after since, by their merge.
+	FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error)
 	// SetTaskPlanRevision records the plan revision a card first runs
 	// against; the guard makes it once.
 	SetTaskPlanRevision(ctx context.Context, id string, revision int) error

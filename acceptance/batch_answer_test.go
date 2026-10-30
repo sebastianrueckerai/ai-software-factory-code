@@ -738,6 +738,42 @@ func (s *accBatchStore) PlanClosed(context.Context, string) (time.Time, bool, er
 	panic("unused")
 }
 
+func (s *accBatchStore) Release(context.Context, string) (factoryd.Release, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) Releases(context.Context) ([]factoryd.Release, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) RecordReleaseAsk(context.Context, string, string, bool, time.Time) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) SetDeployNow(context.Context, string, string, time.Time) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) ClearDeployNow(context.Context, string, string) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) EndReleaseHold(context.Context, string) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) ClearToldHeld(context.Context, string, string) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) FixesMergedSince(context.Context, string, time.Time) ([]factoryd.Task, error) {
+	panic("unused")
+}
+
 func (s *accBatchStore) SetTaskPlanRevision(context.Context, string, int) error {
 	panic("unused")
 }
