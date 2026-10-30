@@ -179,7 +179,11 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 		return nil
 	case newest.Status == "failure" && (!paused || pause.FixTask == ""),
 		newest.Status == "cancelled" && paused && pause.FixTask == "" && pause.RunID == newest.ID:
-		return r.pause(ctx, *newest)
+		since := time.Now()
+		if paused {
+			since = pause.Since
+		}
+		return r.pause(ctx, *newest, since)
 	case newest.Status == "cancelled":
 		return nil
 	case paused && time.Since(pause.Since) >= mainRedBound:
@@ -199,21 +203,22 @@ func newestMain(runs []ActionRun) *ActionRun {
 	return newest
 }
 
-// pause pauses the queue on the red run, then re-runs each of its failed
-// jobs once, a job's attempt telling its re-run (2 and up) from its first
-// run. The pause goes first, with no card: a plan's revert that paused the
-// queue since mainState read it keeps the queue, and the red files
-// nothing; a crash before the re-run leaves a pause the next poll re-runs
-// from. While a job of the run waits or runs, as a re-run does, nothing
-// more happens. A failed or cancelled job at attempt 2 or up, a re-run
-// Forgejo refuses, or a job list Forgejo does not answer files the card:
-// the human card to re-run the jobs when every failed one lost its runner
-// (lostRunners), else the fix-forward card. A filing that fails leaves the
-// pause with no card, which the next poll judges again, its since kept.
+// pause pauses the queue on the red run since since, a standing pause's
+// or now, then re-runs each of its failed jobs once, a job's attempt
+// telling its re-run (2 and up) from its first run. The pause goes first,
+// with no card: a plan's revert that paused the queue since mainState read
+// it keeps the queue, and the red files nothing; a crash before the re-run
+// leaves a pause the next poll re-runs from. While a job of the run waits
+// or runs, as a re-run does, nothing more happens. A failed or cancelled
+// job at attempt 2 or up, a re-run Forgejo refuses, or a job list Forgejo
+// does not answer files the card: the human card to re-run the jobs when
+// every failed one lost its runner (lostRunners), else the fix-forward
+// card. A filing that fails leaves the pause with no card, which the next
+// poll judges again, its since kept.
 // A job's re-run re-runs the jobs that need it, so a dependent skipped at
 // attempt 1 first runs at attempt 2: two flakes in one run, the second in
 // such a dependent, file the card without a re-run of the second.
-func (r *Roller) pause(ctx context.Context, run ActionRun) error {
+func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) error {
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
 		return err
@@ -221,7 +226,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	if !ok {
 		return fmt.Errorf("no project has the repository %s", r.Repo)
 	}
-	if wrote, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now()}); err != nil || !wrote {
+	if wrote, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: since}); err != nil || !wrote {
 		return err
 	}
 	jobs, unlisted := r.Forgejo.ActionRunJobs(ctx, r.Token, r.Repo.Owner, r.Repo.Name, run.ID)
@@ -286,8 +291,8 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 		body := fmt.Sprintf("Main CI's push run %d of %s failed: %s. The run: %s/%s/actions/runs/%d.\n\n"+
 			"The project's merge queue is paused until a push run of main is green. Read the run's log, find the cause in main at %s, "+
 			"fix it on this card's branch from main's head, and push: this card merges ahead of the queue, and main's next green run "+
-			"ends the pause. A fix that does not land within %s has factoryd file the revert of %s.",
-			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short)
+			"ends the pause. A fix that does not land by %s has factoryd file the revert of %s.",
+			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, since.Add(mainRedBound).UTC().Format(time.RFC3339), short)
 		if unlisted != nil {
 			body += fmt.Sprintf("\n\nfactoryd cannot list the run's jobs, so this card carries no log lines (%s).", textutil.Truncate(oneLine(cmp.Or(r.Scrub, redact.New()).String(unlisted.Error())), mainLogBytes))
 		} else {
@@ -300,7 +305,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	if err != nil {
 		return err
 	}
-	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), FixTask: t.ID}); err != nil {
+	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: since, FixTask: t.ID}); err != nil {
 		return err
 	}
 	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)

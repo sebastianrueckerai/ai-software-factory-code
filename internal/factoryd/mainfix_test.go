@@ -492,6 +492,7 @@ func TestRollerReRunsAFlakyMainOnce(t *testing.T) {
 // factoryd knows and a token-like string scrubbed out, and for a log
 // Forgejo cannot serve a line saying so; the card is filed all the same.
 // Jobs whose re-run is red already file it at once and re-run nothing.
+// The card names the revert's deadline, two hours after the pause began.
 func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 	runner, image := "/"+codeRepo+"/actions/runs/3176/jobs/4", "/"+codeRepo+"/actions/runs/3176/jobs/2"
 	log := "2026-10-30T03:41:09.0000000Z #17 auth: token=ghp_1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ12 user=factory-ci\n" +
@@ -517,6 +518,8 @@ func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 	roller.Forgejo.PublicURL = "https://git.example"
 	roller.Scrub = redact.New("s3cret-actions-token")
 	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	// factoryd paused at 03:30:07 and re-ran the jobs: the deadline is two hours on
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 3090, SHA: commitC2, Since: mustTime(t, "2026-10-30T03:30:07Z")}}
 	if err := roller.poll(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -534,7 +537,7 @@ func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 		"\U0001F3C1  Job failed\n```"
 	fix := store.tasks[pause.FixTask]
 	for what, text := range map[string]string{"objective": fix.Objective, "issue": f.issues[0]} {
-		if !strings.Contains(text, "Read the run's log, find the cause in main at c2c2c2c, ") || !strings.HasSuffix(text, ". A fix that does not land within 2h0m0s has factoryd file the revert of c2c2c2c."+tails) {
+		if !strings.Contains(text, "Read the run's log, find the cause in main at c2c2c2c, ") || !strings.HasSuffix(text, ". A fix that does not land by 2026-10-30T05:30:07Z has factoryd file the revert of c2c2c2c."+tails) {
 			t.Errorf("the card's %s %q, want its sentences, then the log tails %q", what, text, tails)
 		}
 	}
