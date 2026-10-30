@@ -2571,6 +2571,63 @@ func TestFilingJudgesAgainstTheRevisionBefore(t *testing.T) {
 	}
 }
 
+// replanAtRevision1 is fileRig's testPlan filed as revision 1 under
+// version 7, its redirects card running against it, and ana's replan of
+// the plan, which stops redirects.
+func replanAtRevision1(t *testing.T) (*Runner, *fakeStore, Task) {
+	t.Helper()
+	r, store, _, _, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	k := cardsByKey(t, store)["redirects"]
+	k.Status, k.PlanRevision = "running", 1
+	store.tasks[k.ID] = k
+	if err := r.timeline.Append(context.Background(), "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana",
+		"comment": "split redirects", "revision": 1, "stops": []string{k.ID}}); err != nil {
+		t.Fatal(err)
+	}
+	return r, store, k
+}
+
+// A filing's start belongs to the replan it ran under: revision 1, filed
+// before the replan, filed again under it (by number, or because the
+// planner answered it unchanged) is judged again, against itself, so the
+// card the replan stopped and that ended is refused with its finding, and
+// the replan stays pending.
+func TestFilingAgainUnderANewReplanJudgesAgain(t *testing.T) {
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		status, want string
+		unchanged    bool
+	}{
+		"again":     {"closed", `card redirects ended closed: leave its key out, and add a card with "from": "redirects" to go on from its work`, false},
+		"unchanged": {"failed", `card redirects ended failed: leave its key out, and add a card with "from": "redirects" to go on from its work`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, store, k := replanAtRevision1(t)
+			if c.unchanged {
+				if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 1 || len(res.Findings) != 0 {
+					t.Fatalf("the unchanged answer: %+v, %v; want revision 1 handed back", res, err)
+				}
+			}
+			k = store.tasks[k.ID]
+			k.Status = c.status
+			store.tasks[k.ID] = k
+			val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
+			if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 0 || !slices.Equal(ref.Refused, []string{c.want}) {
+				t.Fatalf("the filing: %+v, want no card filed and the finding %q", ref, c.want)
+			}
+			if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || !pending {
+				t.Fatalf("after the filing: pending %t, %v; want pending", pending, err)
+			}
+		})
+	}
+}
+
 // A filing judges its revision once, before its first card files: a run
 // again after the cards filed, one of them closed since, answers the same
 // cards, no refusal and no comment that it files none.

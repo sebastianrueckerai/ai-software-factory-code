@@ -58,13 +58,18 @@ func (r *Runner) pendingReplan(ctx context.Context, p Task) (ReplanStep, bool, e
 	if err != nil {
 		return ReplanStep{}, false, fmt.Errorf("the timeline of %s: %w", p.ID, err)
 	}
+	return pendingIn(tl, p.ID)
+}
+
+// pendingIn is pendingReplan of plan id's timeline tl.
+func pendingIn(tl []byte, id string) (ReplanStep, bool, error) {
 	line := openStep(tl, stepReplan, replanClosers...)
 	if line == nil {
 		return ReplanStep{}, false, nil
 	}
 	var step ReplanStep
 	if err := json.Unmarshal(line, &step); err != nil {
-		return ReplanStep{}, false, fmt.Errorf("the replan step of %s: %w", p.ID, err)
+		return ReplanStep{}, false, fmt.Errorf("the replan step of %s: %w", id, err)
 	}
 	return step, true, nil
 }
@@ -611,12 +616,13 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 }
 
 // replanState is what a revision of plan is judged against: the revision
-// before (nil: none) and its number, the old cards, each started open
-// card's entry in the revision it started against by key, the pending
-// cut's card and whether its branch holds a commit past its base, and the
-// old cards with a merge commit by id.
+// before (nil: none), the newest stored and its number, the old cards,
+// each started open card's entry in the revision it started against by
+// key, the pending cut's card and whether its branch holds a commit past
+// its base, and the old cards with a merge commit by id.
 type replanState struct {
 	prev     *Plan
+	newest   *Plan
 	revision int
 	old      []Task
 	started  map[string]PlanCard
@@ -626,29 +632,47 @@ type replanState struct {
 	merged   map[string]bool
 }
 
-// replanState reads plan p's record for replanFindings of revision of, 0
-// for the one to store next: its timeline and each revision once. The
-// revision before is the newest for the next, of-1 for a stored one.
-func (r *Runner) replanState(ctx context.Context, p Task, of int) (replanState, error) {
+// replanState reads plan p's record for replanFindings of its revision
+// of, 0 for the one to store next, from its timeline tl and each revision
+// once. The revision before is the newest that filed, the last filing
+// step's: a revision refused at its filing holds nothing a later one is
+// judged by. A plan that never wrote one has the newest stored before of.
+func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (replanState, error) {
 	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}}
 	var err error
-	switch {
-	case of == 0:
-		st.prev, st.revision, err = r.planAt(ctx, p.ID, 0)
-	case of > 1:
-		st.prev, st.revision, err = r.planAt(ctx, p.ID, of-1)
-	}
-	if err != nil {
+	if st.newest, st.revision, err = r.planAt(ctx, p.ID, 0); err != nil {
 		return replanState{}, err
 	}
-	step, pending, err := r.pendingReplan(ctx, p)
+	revisions := map[int]*Plan{0: nil, st.revision: st.newest}
+	at := func(n int) (*Plan, error) {
+		plan, read := revisions[n]
+		if !read {
+			var err error
+			if plan, _, err = r.planAt(ctx, p.ID, n); err != nil {
+				return nil, err
+			}
+			revisions[n] = plan
+		}
+		return plan, nil
+	}
+	before, filed := openRevision(tl, stepFiling)
+	switch {
+	case filed:
+	case of == 0:
+		before = st.revision
+	default:
+		before = of - 1
+	}
+	if st.prev, err = at(before); err != nil {
+		return replanState{}, err
+	}
+	step, pending, err := pendingIn(tl, p.ID)
 	if err != nil {
 		return replanState{}, err
 	}
 	if st.old, err = r.oldCardsOf(ctx, p, step, pending); err != nil {
 		return replanState{}, err
 	}
-	revisions := map[int]*Plan{st.revision: st.prev}
 	for _, k := range st.old {
 		if k.MergeCommit != "" {
 			st.merged[k.ID] = true
@@ -656,18 +680,15 @@ func (r *Runner) replanState(ctx context.Context, p Task, of int) (replanState, 
 		if k.PlanKey == "" || k.PlanRevision == 0 || !stoppable(k) {
 			continue
 		}
-		at, read := revisions[k.PlanRevision]
-		if !read {
-			if at, _, err = r.planAt(ctx, p.ID, k.PlanRevision); err != nil {
-				return replanState{}, err
-			}
-			revisions[k.PlanRevision] = at
+		ran, err := at(k.PlanRevision)
+		if err != nil {
+			return replanState{}, err
 		}
-		if at == nil {
+		if ran == nil {
 			continue
 		}
-		if i := slices.IndexFunc(at.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey }); i >= 0 {
-			st.started[k.PlanKey] = at.Cards[i]
+		if i := slices.IndexFunc(ran.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey }); i >= 0 {
+			st.started[k.PlanKey] = ran.Cards[i]
 		}
 	}
 	if pending && step.Origin == ReplanCut {

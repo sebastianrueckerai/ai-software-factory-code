@@ -2203,12 +2203,16 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	// the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
 	// against the plan's record of cards
-	st, err := r.replanState(ctx, t, 0)
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return PlanResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
+	}
+	st, err := r.replanState(ctx, t, tl, 0)
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if st.prev != nil {
-		found = revisionFindings(*st.prev, p)
+	if st.newest != nil {
+		found = revisionFindings(*st.newest, p)
 	}
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
@@ -2221,8 +2225,8 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if st.prev != nil && n > st.revision {
-		r.recordCriteria(ctx, taskID, n, *st.prev, p)
+	if st.newest != nil && n > st.revision {
+		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
 	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
@@ -2669,7 +2673,8 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 }
 
 // stepFiling marks the start of a revision's filing: its cards file from
-// there, and a run again completes it.
+// there, and a run again under the same replan completes it. The newest
+// one names the newest revision that filed.
 const stepFiling = "filing"
 
 // fileRevision files the cards of plan task t's revision rev, which asks
@@ -2693,14 +2698,14 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
 	// a card may have ended or merged since the revision was stored: it is
-	// judged again as at its storing, against the revision before; once
-	// the filing started, its own cards are in the record, and it goes on
+	// judged again, as at its storing; once its filing started under this
+	// replan, its own cards are in the record, and it goes on
 	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
 		return ChildrenResult{}, fmt.Errorf("the timeline of %s: %w", t.ID, err)
 	}
-	if n, started := lastStep(tl, stepFiling)["revision"].(float64); !started || int(n) != revision {
-		st, err := r.replanState(ctx, t, revision)
+	if n, started := openRevision(tl, stepFiling, stepReplan); !started || n != revision {
+		st, err := r.replanState(ctx, t, tl, revision)
 		if err != nil {
 			return ChildrenResult{}, err
 		}
@@ -2724,7 +2729,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if err != nil {
 		return ChildrenResult{}, err
 	}
-	if _, err := r.timeline.AppendOnceFor(ctx, t.ID, stepFiling, revision, map[string]any{"revision": revision}); err != nil {
+	if _, err := r.timeline.AppendOnceFor(ctx, t.ID, stepFiling, revision, map[string]any{"revision": revision}, stepReplan); err != nil {
 		return ChildrenResult{}, fmt.Errorf("record %s: %w", stepFiling, err)
 	}
 	author := cmp.Or(t.Author, r.forgejo.BotUser)

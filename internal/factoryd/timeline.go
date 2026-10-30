@@ -83,14 +83,27 @@ func (tl *Timeline) AppendOnce(ctx context.Context, taskID, step string, detail 
 }
 
 // AppendOnceFor appends the step unless the timeline's last one of its
-// name is of revision, the check and the write under one lock; it tells
-// whether it wrote.
-func (tl *Timeline) AppendOnceFor(ctx context.Context, taskID, step string, revision int, detail map[string]any) (bool, error) {
+// name is of revision and none of closers follows it, the check and the
+// write under one lock; it tells whether it wrote.
+func (tl *Timeline) AppendOnceFor(ctx context.Context, taskID, step string, revision int, detail map[string]any, closers ...string) (bool, error) {
 	defer tl.lock(taskID)()
 	return tl.append(ctx, taskID, step, detail, func(prev []byte) bool {
-		n, ok := lastStep(prev, step)["revision"].(float64)
-		return ok && int(n) == revision
+		n, ok := openRevision(prev, step, closers...)
+		return ok && n == revision
 	})
+}
+
+// openRevision is the revision of the timeline's last step of its name
+// when none of closers follows it (openStep).
+func openRevision(timeline []byte, step string, closers ...string) (int, bool) {
+	var m struct {
+		Revision *int `json:"revision"`
+	}
+	line := openStep(timeline, step, closers...)
+	if line == nil || json.Unmarshal(line, &m) != nil || m.Revision == nil {
+		return 0, false
+	}
+	return *m.Revision, true
 }
 
 // AppendUnlessPending appends the step unless the timeline's last one of

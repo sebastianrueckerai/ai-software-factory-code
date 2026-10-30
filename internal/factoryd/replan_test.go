@@ -62,6 +62,16 @@ func replanChild(t *testing.T, r *Runner, child, work string) ReplanChildResult 
 	return getInto[ReplanChildResult](t, val, err)
 }
 
+// timelineOf is task id's timeline.
+func timelineOf(t *testing.T, r *Runner, id string) []byte {
+	t.Helper()
+	b, err := r.timeline.Objects.Get(context.Background(), "sessions/"+id+"/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 // stepsNamed are task id's timeline lines of step, oldest first.
 func stepsNamed(t *testing.T, r *Runner, id, step string) []json.RawMessage {
 	t.Helper()
@@ -1265,7 +1275,7 @@ func TestReplanState(t *testing.T) {
 	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "c", "stops": []string{"c"}, "revision": 2}); err != nil {
 		t.Fatal(err)
 	}
-	st, err := r.replanState(ctx, store.tasks["p"], 0)
+	st, err := r.replanState(ctx, store.tasks["p"], timelineOf(t, r, "p"), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1290,7 +1300,7 @@ func TestReplanState(t *testing.T) {
 	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "card": "p"}); err != nil {
 		t.Fatal(err)
 	}
-	if st, err = r.replanState(ctx, store.tasks["p"], 0); err != nil {
+	if st, err = r.replanState(ctx, store.tasks["p"], timelineOf(t, r, "p"), 0); err != nil {
 		t.Fatal(err)
 	}
 	if n := len(st.old); st.prev != nil || n != 3 || st.old[n-1].ID != "p" || st.cut != "" || st.cutWork {
@@ -1306,7 +1316,7 @@ func TestReplanState(t *testing.T) {
 	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "p"}); err != nil {
 		t.Fatal(err)
 	}
-	if st, err = r.replanState(ctx, store.tasks["p"], 0); err != nil || st.cut != "p" || st.cutWork {
+	if st, err = r.replanState(ctx, store.tasks["p"], timelineOf(t, r, "p"), 0); err != nil || st.cut != "p" || st.cutWork {
 		t.Fatalf("a cut with its branch gone: cut %q, work %t, %v", st.cut, st.cutWork, err)
 	}
 }
