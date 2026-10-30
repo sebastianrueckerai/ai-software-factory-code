@@ -357,6 +357,58 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	}
 }
 
+// readFailing is a store whose Task reads fail where fail says, by their
+// number from 1.
+type readFailing struct {
+	*fakeStore
+	reads int
+	fail  func(n int) bool
+}
+
+func (s *readFailing) Task(ctx context.Context, id string) (Task, bool, error) {
+	s.reads++
+	if s.fail(s.reads) {
+		return Task{}, false, errors.New("the database is gone")
+	}
+	return s.fakeStore.Task(ctx, id)
+}
+
+// A call that fails lifts the pause only when a read past the error finds
+// no row of its card: a card that exists holds the pause, and so does a
+// pause whose card no read can tell.
+func TestRevertGroupLiftsThePauseOnlyWithoutItsCard(t *testing.T) {
+	own := QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv"}
+	for name, tc := range map[string]struct {
+		pause  *QueuePause
+		fail   func(n int) bool
+		lifted bool
+	}{
+		"the card's read fails":       {nil, func(n int) bool { return n == 1 }, true},
+		"the read after it fails too": {nil, func(n int) bool { return n <= 2 }, false},
+		"the card exists":             {&own, func(n int) bool { return n == 2 }, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGroupRevertRig(t)
+			if tc.pause != nil {
+				g.store.pauses = map[string]QueuePause{"sf/repo": *tc.pause}
+				if err := g.store.CreateTask(context.Background(), Task{ID: "t-rv", Kind: "agent", Track: policy.TrackDirect, Source: SourceRevert, Repository: "sf/repo", IssueNumber: 21, Status: "queued"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			g.r.store = &readFailing{fakeStore: g.store, fail: tc.fail}
+			if _, err := g.revert(t); err == nil || !strings.Contains(err.Error(), "the database is gone") {
+				t.Fatalf("error = %v, want the read's", err)
+			}
+			if p, ok := g.store.pauses["sf/repo"]; ok == tc.lifted || ok && p.Plan != "p" {
+				t.Errorf("pause = %+v (%t), want it lifted %t", p, ok, tc.lifted)
+			}
+			if len(g.calls) != 0 || len(g.fj.issues) != 0 {
+				t.Errorf("reverts %q, issues %q; want none", g.calls, g.fj.issues)
+			}
+		})
+	}
+}
+
 // Another pause refuses with its cause and leaves it standing: main red
 // since its time in UTC, or a plan's revert by the plan's issue. A pause
 // of the same plan is another revert when it takes other cards off main,

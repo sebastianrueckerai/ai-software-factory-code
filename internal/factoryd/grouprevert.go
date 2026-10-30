@@ -88,8 +88,8 @@ var groupRevertBranch = func(ctx context.Context, f *Forgejo, repo Repo, shas []
 // on green checks; a revert that conflicts files an agent card that
 // resolves it. The card holds the pause. A call that finds p's own pause,
 // a retry's, goes on with its card, and once the card exists answers from
-// it. Any other pause refuses (ErrNoReplan). An error before the card
-// exists lifts the pause. The answer is the note for the person.
+// it. Any other pause refuses (ErrNoReplan). An error lifts the pause
+// unless the card exists. The answer is the note for the person.
 func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why string) (string, error) {
 	repo, err := SplitRepo(p.Repository)
 	if err != nil {
@@ -102,20 +102,33 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 	if err != nil {
 		return "", err
 	}
-	card, ok, err := r.store.Task(ctx, id)
-	if err != nil {
-		return "", err
-	}
+	card, filed, err := r.store.Task(ctx, id)
 	issue := card.IssueNumber
-	if !ok {
-		if issue, err = r.fileGroupRevert(ctx, p, repo, cards, why, id); err != nil {
+	if err == nil && !filed {
+		issue, err = r.fileGroupRevert(ctx, p, repo, cards, why, id)
+	}
+	if err != nil {
+		if unfiled(ctx, r.store, id) {
 			if cerr := r.store.ClearQueuePause(context.WithoutCancel(ctx), p.Repository); cerr != nil {
 				log.Printf("plan %s: lift the merge queue's pause of %s: %v", p.ID, p.Repository, cerr)
 			}
-			return "", err
 		}
+		return "", err
 	}
 	return fmt.Sprintf("Plan #%d's %d merged cards come off main: the merge queue waits for the revert, card #%d.", p.IssueNumber, len(cards), issue), nil
+}
+
+// unfiled tells that card id has no row, read past ctx's end: a call that
+// failed before it filed the card undoes what it began. A read that fails
+// tells nothing, and nothing is undone.
+func unfiled(ctx context.Context, store interface {
+	Task(ctx context.Context, id string) (Task, bool, error)
+}, id string) bool {
+	_, ok, err := store.Task(context.WithoutCancel(ctx), id)
+	if err != nil {
+		log.Printf("card %s: read its row: %v: nothing is undone", id, err)
+	}
+	return err == nil && !ok
 }
 
 // revertPause pauses p's project's merge queue for the revert of cards and
