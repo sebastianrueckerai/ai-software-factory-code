@@ -2668,11 +2668,16 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 	return r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body)
 }
 
+// stepFiling marks the start of a revision's filing: its cards file from
+// there, and a run again completes it.
+const stepFiling = "filing"
+
 // fileRevision files the cards of plan task t's revision rev, which asks
 // no question, under version v, once however often it runs: it judges the
-// revision again, the deploy owner its spec needs and the replan rules
-// against the plan's record as it stands now included (a finding refuses
-// the filing, the planner gets it); files each card in topological order
+// revision again, the deploy owner its spec needs and, until its filing
+// started (stepFiling), the replan rules against the plan's record as it
+// stands now included (a finding refuses the filing, the planner gets
+// it); files each card in topological order
 // on the direct track at main's head, with the card's author as the
 // cards' (plans do not nest: the children are direct cards); records the
 // edges in Forgejo and task_deps; puts the issues into the plan's comment;
@@ -2687,12 +2692,20 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
-	// a card may have ended since the revision was stored
-	st, err := r.replanState(ctx, t)
+	// a card may have ended since the revision was stored; once the
+	// filing started, its own cards are in the record, and it goes on
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
-		return ChildrenResult{}, err
+		return ChildrenResult{}, fmt.Errorf("the timeline of %s: %w", t.ID, err)
 	}
-	if findings = append(findings, replanFindings(st, p)...); len(findings) > 0 {
+	if n, started := lastStep(tl, stepFiling)["revision"].(float64); !started || int(n) != revision {
+		st, err := r.replanState(ctx, t)
+		if err != nil {
+			return ChildrenResult{}, err
+		}
+		findings = append(findings, replanFindings(st, p)...)
+	}
+	if len(findings) > 0 {
 		note := fmt.Sprintf("revision %d files no cards: %s", revision, strings.Join(findings, "; "))
 		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: "+r.untrusted(t, note))
 		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})
@@ -2709,6 +2722,9 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	old, err := r.oldCardsOf(ctx, t, step, pending)
 	if err != nil {
 		return ChildrenResult{}, err
+	}
+	if _, err := r.timeline.AppendOnceFor(ctx, t.ID, stepFiling, revision, map[string]any{"revision": revision}); err != nil {
+		return ChildrenResult{}, fmt.Errorf("record %s: %w", stepFiling, err)
 	}
 	author := cmp.Or(t.Author, r.forgejo.BotUser)
 	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha, old)

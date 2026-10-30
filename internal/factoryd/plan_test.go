@@ -2528,6 +2528,68 @@ func TestFilingRefusesARevisionACardEndedUnder(t *testing.T) {
 	}
 }
 
+// A filing judges its revision once, before its first card files: a run
+// again after the cards filed, one of them closed since, answers the same
+// cards, no refusal and no comment that it files none.
+func TestFilingAgainAfterACardClosedFilesTheSame(t *testing.T) {
+	r, store, _, fj, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	first := requestPlan(t, r)
+	if len(first.Filed) != 4 {
+		t.Fatalf("the children: %+v", first)
+	}
+	k := cardsByKey(t, store)["redirects"]
+	k.Status = "closed"
+	store.tasks[k.ID] = k
+	if again := requestPlan(t, r); !slices.Equal(again.Filed, first.Filed) || len(again.Refused) != 0 {
+		t.Fatalf("the filing again: %+v, want the cards %v and no refusal", again, first.Filed)
+	}
+	if slices.ContainsFunc(commentsOn(fj, 1), func(c string) bool { return strings.Contains(c, "files no cards") }) {
+		t.Fatalf("the plan's comments %q, want none that the revision files no cards", commentsOn(fj, 1))
+	}
+}
+
+// A replan's filing that failed after its cards filed files on retry,
+// though a card the revision keeps closed meanwhile, and ends the replan.
+func TestReplanFilingRetriedAfterAKeptCardClosed(t *testing.T) {
+	ctx := context.Background()
+	r, store, objects, _, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	k := cardsByKey(t, store)["redirects"]
+	k.Status, k.PlanRevision = "running", 1
+	store.tasks[k.ID] = k
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "a command line", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	p := testPlan()
+	p.Cards = slices.Insert(p.Cards, 3, PlanCard{Key: "cli", Role: RoleFeature, Title: "A command line", Brief: "cmd/cli creates links.",
+		Directories: []string{"cmd/cli"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestCLICreate in cmd/cli exits 0"}}, Size: "small"})
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	r.timeline.Objects = &stepFails{fakeObjectStore: objects, task: "t-plan", step: "replanned", fails: 1}
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7)); err == nil || !strings.Contains(err.Error(), "the object store is down") {
+		t.Fatalf("the filing with its replanned step failing: %v", err)
+	}
+	k = store.tasks[k.ID]
+	k.Status = "closed"
+	store.tasks[k.ID] = k
+
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 5 || len(ref.Refused) != 0 {
+		t.Fatalf("the retry: %+v, want the 5 cards and no refusal", ref)
+	}
+	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
+		t.Fatalf("after the retry: pending %t, %v; want ended", pending, err)
+	}
+}
+
 // revisionReads counts the plan revision reads by number (0: the newest).
 type revisionReads struct {
 	*fakeStore
