@@ -941,6 +941,27 @@ func TestRollerHoldsFluxResumedUntilItAppliedACommitLiveThroughFluxAlone(t *test
 				t.Fatalf("suspended %v, rolls %+v; want c2 judged live after the hold, Flux resumed", flux.suspended, store.rolls)
 			}
 		})
+		for name, fail := range map[string]func(*Roller, *rollForgejo, *fakeStore){
+			"the run read": func(_ *Roller, f *rollForgejo, _ *fakeStore) { f.runsDown = true },
+			"main's state": func(r *Roller, f *rollForgejo, s *fakeStore) {
+				f.runs[0]["status"] = "success" // main's state reads the pause of a finished head
+				r.Store = &pauseReadFails{s}
+			},
+		} {
+			t.Run(kind+", a plan opens while "+name+" fails", func(t *testing.T) {
+				roller, f, store, flux := fluxOnlyRoller(t, kind)
+				poll(t, roller)
+				unjudged(t, f, store, flux, false, 2)
+				openPlan(store)
+				fail(roller, f, store)
+				for range 2 {
+					if err := roller.poll(ctx); err == nil {
+						t.Fatal("poll: nil, want the failure")
+					}
+				}
+				unjudged(t, f, store, flux, true, 3)
+			})
+		}
 		t.Run(kind+", a restart", func(t *testing.T) {
 			roller, f, store, flux := fluxOnlyRoller(t, kind)
 			poll(t, roller)

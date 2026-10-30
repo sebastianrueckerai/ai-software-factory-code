@@ -477,12 +477,13 @@ func (r *Roller) poll(ctx context.Context) error {
 	if !held {
 		r.heldPosted = ""
 	}
-	// with no Deploy now and no commit waiting on Flux the level needs no
-	// runs: set before they are read, so a poll that fails on them or on
-	// main's state holds a queued plan card's merge all the same; a refused
-	// resume ends the poll after main's state
+	// with no Deploy now the level needs no runs, unless a commit waits on
+	// Flux while no plan is open (an open plan forgets it): set before they
+	// are read, so a poll that fails on them or on main's state holds a
+	// plan's merge all the same; a refused resume ends the poll after
+	// main's state
 	var level error
-	early := deploy == "" && r.fluxWaiting.ID == 0
+	early := deploy == "" && (r.fluxWaiting.ID == 0 || held)
 	if early {
 		_, level = r.setFlux(ctx, nil, groups, queued, "")
 	}
