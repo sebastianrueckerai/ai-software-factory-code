@@ -2875,20 +2875,29 @@ func TestBoardCardShowsWaitingOn(t *testing.T) {
 }
 
 // A card waiting in its project's merge queue reads how many entries are
-// ahead of it and since when it waits.
+// ahead of it and since when it waits; a card held out of the queue
+// (QueueAhead -1) waits after the open plan.
 func TestBoardCardShowsMergeQueuePlace(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
 	since := time.Now().Add(-(6*time.Minute + 30*time.Second))
-	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
-		Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: 2}}
-	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if strings.Contains(body, "merge queue") {
-		t.Fatalf("the face names the merge queue:\n%s", faceOf(t, body, "t-q"))
-	}
-	if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, "<dd>verifying, 6 min, merge queue, 2 ahead, 6 min in all</dd>") {
-		t.Fatalf("the drawer's Status lacks the merge queue place:\n%s", drawer)
+	for _, c := range []struct {
+		ahead int
+		want  string
+	}{
+		{2, "<dd>verifying, 6 min, merge queue, 2 ahead, 6 min in all</dd>"},
+		{-1, "<dd>verifying, 6 min, merge queue, after the open plan, 6 min in all</dd>"},
+	} {
+		r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-q", Kind: "agent", Status: "in-review", Objective: "queued work",
+			Repository: "linkshort/linkshort", CreatedAt: since, Gate: factoryd.GateMergeQueue, GateSince: &since}, QueueAhead: c.ahead}}
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+		if strings.Contains(body, "merge queue") {
+			t.Fatalf("%d ahead: the face names the merge queue:\n%s", c.ahead, faceOf(t, body, "t-q"))
+		}
+		if drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-q/drawer?tab=overview", nil), ck).Body.String(); !strings.Contains(drawer, c.want) {
+			t.Fatalf("%d ahead: the drawer's Status lacks %s:\n%s", c.ahead, c.want, drawer)
+		}
 	}
 }
 

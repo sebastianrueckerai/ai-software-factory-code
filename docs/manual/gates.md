@@ -286,6 +286,18 @@ stage's green read after a cheap turn reads the head whose checks hold,
 not the synced head whose checks just started, and no checked head
 outlives its pass.
 
+`merge: {groups: one_at_a_time}` holds a plan's card out of the queue
+while another plan is open on main. A plan is open from its first merged
+card until its `plan_closed`; a reverted card does not count. The held
+card is in gate `merge-queue` from then on, through its wait in the
+queue once admitted (the drawer reads `merge queue, after the open
+plan`). It records `queue_group_wait {project, plan, issue}` once and
+leaves the queue if it was in it, its `queue_left` naming the open plan's
+issue. It asks again on `queue_turn` or after 5 minutes. A card whose own
+plan is open on main is never held back, so plans already open finish
+side by side. A direct card is not held back, nor is a revert. `free`,
+the default, admits every card.
+
 
 ## Supervision
 

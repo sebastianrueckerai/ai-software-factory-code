@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -162,7 +163,7 @@ func TestQueueOneAtATime(t *testing.T) {
 		if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
 			t.Fatal(err)
 		}
-		for _, id := range []string{"a1", "a2", "b1"} {
+		for _, id := range []string{"a1", "a2", "b1", "c9"} {
 			repo := "linkshort/linkshort"
 			if id == "b1" {
 				repo = "sf/other"
@@ -190,7 +191,8 @@ func TestQueueOneAtATime(t *testing.T) {
 		// task's queue entries per project (o.project = me.project), so
 		// merging the boards observes the same values one board over
 		// every project's cards would: a2 stays behind a1, b1's own
-		// queue stays empty ahead of it
+		// queue stays empty ahead of it, and c9, never in the queue, holds
+		// no place
 		ahead := map[string]int{}
 		for _, repo := range []string{"linkshort/linkshort", "sf/other"} {
 			board, err := s.BoardTasks(ctx, repo)
@@ -201,7 +203,7 @@ func TestQueueOneAtATime(t *testing.T) {
 				ahead[b.ID] = b.QueueAhead
 			}
 		}
-		if want := map[string]int{"a1": 0, "a2": 1, "b1": 0}; fmt.Sprint(ahead) != fmt.Sprint(want) {
+		if want := map[string]int{"a1": 0, "a2": 1, "b1": 0, "c9": -1}; fmt.Sprint(ahead) != fmt.Sprint(want) {
 			t.Fatalf("board's queue ahead = %v, want %v", ahead, want)
 		}
 		if head, ok, err := s.QueueHead(ctx, "linkshort/linkshort"); head != "a1" || !ok || err != nil {
@@ -354,6 +356,130 @@ func TestQueueOneAtATime(t *testing.T) {
 		if want := []time.Duration{0, 5 * time.Minute, 10 * time.Minute}; !slices.Equal(q.enters, want) {
 			t.Fatalf("EnterQueue at %v, want %v", q.enters, want)
 		}
+	})
+}
+
+// Under merge: {groups: one_at_a_time} a plan's card waits out of the
+// queue while another plan is open on main. A card whose own plan is open,
+// a direct card and every card under free are not held back.
+func TestQueueAdmitsOnePlanAtATime(t *testing.T) {
+	const repo = "linkshort/linkshort"
+	ctx := context.Background()
+	fixture := func(t *testing.T, groups string, more ...Task) (*Runner, *fakeStore) {
+		t.Helper()
+		merged := time.Now().Add(-time.Hour)
+		card := func(id, parent, key string, pr int64) Task {
+			c := Task{ID: id, Status: "in-review", Repository: repo, Track: policy.TrackDirect, Process: "maintenance", PRNumber: pr}
+			if parent != "" {
+				c.Source, c.Parent, c.PlanKey = SourcePlan, parent, key
+			}
+			return c
+		}
+		g1 := card("g1", "p-g", "a", 10)
+		g1.Status, g1.MergeCommit, g1.FinishedAt = "merged", "m1", &merged
+		r, _, store := newTestRunner(t, Task{ID: "p-g", Status: "done", Repository: repo, Track: policy.TrackPlan, Process: "maintenance", IssueNumber: 30},
+			newFakeKube(), &fakeObjectStore{})
+		for _, c := range append([]Task{
+			{ID: "p-h", Status: "done", Repository: repo, Track: policy.TrackPlan, Process: "maintenance", IssueNumber: 31},
+			g1, card("g2", "p-g", "b", 11), card("h1", "p-h", "a", 12), card("d1", "", "", 13),
+		}, more...) {
+			if err := store.CreateTask(ctx, c); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if groups != "" {
+			v := r.cfg.Policy()
+			v.Processes = maps.Clone(v.Processes)
+			p := v.Processes["maintenance"]
+			p.Merge = policy.Merge{Queue: policy.QueueProject, Groups: groups}
+			v.Processes["maintenance"] = p
+			r.cfg.Policy = func() policy.Version { return v }
+		}
+		return r, store
+	}
+	enter := func(t *testing.T, r *Runner, id string, want int) {
+		t.Helper()
+		if ahead, err := r.EnterQueue(ctx, id); ahead != want || err != nil {
+			t.Fatalf("EnterQueue(%s) = %d %v, want %d", id, ahead, err, want)
+		}
+	}
+	queued := func(store *fakeStore, id string) bool {
+		return slices.ContainsFunc(store.queue, func(e queueEntry) bool { return e.task == id })
+	}
+	steps := func(t *testing.T, r *Runner, id, step string) []map[string]any {
+		t.Helper()
+		var out []map[string]any
+		for _, l := range timelineLines(t, r, id) {
+			if l["step"] == step {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+
+	r, store := fixture(t, policy.GroupsOneAtATime)
+	enter(t, r, "h1", 1)
+	if queued(store, "h1") || store.tasks["h1"].Gate != GateMergeQueue {
+		t.Fatalf("h1 queued %v in gate %q, want held out of the queue in gate merge-queue", queued(store, "h1"), store.tasks["h1"].Gate)
+	}
+	wait := steps(t, r, "h1", "queue_group_wait")
+	if len(wait) != 1 || wait[0]["project"] != repo || wait[0]["plan"] != "p-g" || wait[0]["issue"] != float64(30) {
+		t.Fatalf("queue_group_wait steps = %v, want one naming plan p-g, issue 30", wait)
+	}
+	enter(t, r, "h1", 1)
+	if n := len(steps(t, r, "h1", "queue_group_wait")); n != 1 {
+		t.Fatalf("%d queue_group_wait steps after a re-check, want 1", n)
+	}
+	enter(t, r, "g2", 0)
+	enter(t, r, "d1", 1)
+	// once the plan closed, h1 queues behind g2 and d1, its wait unbroken
+	held := *store.tasks["h1"].GateSince
+	store.closed["p-g"] = time.Now()
+	enter(t, r, "h1", 2)
+	if h1 := store.tasks["h1"]; h1.Gate != GateMergeQueue || !h1.GateSince.Equal(held) {
+		t.Fatalf("h1 in gate %q since %v, want merge-queue since it was held back at %v", h1.Gate, h1.GateSince, held)
+	}
+
+	t.Run("admitted then held back", func(t *testing.T) {
+		r, store := fixture(t, policy.GroupsOneAtATime)
+		merged := store.tasks["g1"]
+		g1 := merged
+		g1.Status, g1.MergeCommit, g1.FinishedAt = "in-review", "", nil
+		store.tasks["g1"] = g1
+		enter(t, r, "h1", 0)
+		if !queued(store, "h1") {
+			t.Fatal("h1 is not in the queue while no plan is open")
+		}
+		store.tasks["g1"] = merged
+		enter(t, r, "h1", 1)
+		left := steps(t, r, "h1", "queue_left")
+		if queued(store, "h1") || len(left) != 1 || left[0]["why"] != "waits for plan #30 to close on main: merge.groups is one_at_a_time" {
+			t.Fatalf("h1 queued %v, queue_left steps %v; want it left for plan #30", queued(store, "h1"), left)
+		}
+	})
+
+	t.Run("closed", func(t *testing.T) {
+		r, store := fixture(t, policy.GroupsOneAtATime)
+		store.closed["p-g"] = time.Now()
+		enter(t, r, "h1", 0)
+	})
+
+	t.Run("two open", func(t *testing.T) {
+		merged := time.Now().Add(-30 * time.Minute)
+		r, store := fixture(t, policy.GroupsOneAtATime, Task{ID: "h0", Status: "merged", Repository: repo, Track: policy.TrackDirect,
+			Process: "maintenance", Source: SourcePlan, Parent: "p-h", PlanKey: "b", MergeCommit: "m2", FinishedAt: &merged})
+		enter(t, r, "h1", 0)
+		enter(t, r, "g2", 1)
+		for _, id := range []string{"h1", "g2"} {
+			if !queued(store, id) || len(steps(t, r, id, "queue_group_wait")) != 0 {
+				t.Fatalf("%s queued %v with a queue_group_wait step: its own plan is open, so it is never held back", id, queued(store, id))
+			}
+		}
+	})
+
+	t.Run("free", func(t *testing.T) {
+		r, _ := fixture(t, "")
+		enter(t, r, "h1", 0)
 	})
 }
 

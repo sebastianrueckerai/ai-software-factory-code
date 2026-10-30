@@ -110,12 +110,25 @@ func (s *PGStore) WaitingQueueHeads(ctx context.Context) ([]string, error) {
 
 // EnterQueue is the activity that puts the task into its project's merge
 // queue and answers how many entries are ahead of it. A task behind
-// others is in gate merge-queue since it entered; the head records its
-// turn.
+// others is in gate merge-queue since it began to wait; the head records
+// its turn. A plan's card that groupWait holds back leaves the queue and
+// answers 1, in gate merge-queue too.
 func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
+	}
+	if g, wait, err := r.groupWait(ctx, t); err != nil {
+		return 0, err
+	} else if wait {
+		if err := r.leaveQueue(ctx, t.ID, fmt.Sprintf("waits for plan #%d to close on main: merge.groups is one_at_a_time", g.Issue)); err != nil {
+			return 0, err
+		}
+		if t.Gate == GateMergeQueue {
+			return 1, nil
+		}
+		r.record(ctx, t.ID, "queue_group_wait", map[string]any{"project": t.Repository, "plan": g.Plan, "issue": g.Issue})
+		return 1, r.store.SetGate(ctx, t.ID, GateMergeQueue, r.clock())
 	}
 	spot, err := r.store.EnterQueue(ctx, t.Repository, t.ID)
 	if err != nil {
@@ -138,6 +151,9 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 		spot.Ahead++
 	}
 	if spot.Ahead > 0 {
+		if t.Gate == GateMergeQueue {
+			return spot.Ahead, nil
+		}
 		return spot.Ahead, r.store.SetGate(ctx, t.ID, GateMergeQueue, spot.EnteredAt)
 	}
 	r.record(ctx, t.ID, "queue_turn", gateEnd(t, GateMergeQueue, map[string]any{"project": t.Repository, "entered": rfc3339(spot.EnteredAt)}))
@@ -145,6 +161,34 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 		return 0, r.store.SetGate(ctx, t.ID, "", time.Now())
 	}
 	return 0, nil
+}
+
+// groupWait answers the open group a plan's card t waits for under
+// merge.groups one_at_a_time: the project's earliest open group, while
+// t's own group is not open on main. A card whose own group is open is
+// never held back, so two open groups never wait for each other.
+func (r *Runner) groupWait(ctx context.Context, t Task) (Group, bool, error) {
+	if GroupOf(t) == t.ID {
+		return Group{}, false, nil
+	}
+	v := r.cfg.Policy()
+	name := t.Process
+	if name == "" {
+		_, project, _ := v.ProjectOf(t.Repository)
+		name = project.Process
+	}
+	if v.Processes[name].Merge.Groups != policy.GroupsOneAtATime {
+		return Group{}, false, nil
+	}
+	groups, err := r.store.OpenGroups(ctx)
+	if err != nil {
+		return Group{}, false, err
+	}
+	open := groups[t.Repository]
+	if len(open) == 0 || slices.ContainsFunc(open, func(g Group) bool { return g.Plan == GroupOf(t) }) {
+		return Group{}, false, nil
+	}
+	return open[0], true, nil
 }
 
 // SyncResult is SyncWithMain's answer: the head From the task passed its

@@ -1861,7 +1861,10 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if bt.Dependencies != "" && bt.WaitingOn == "" {
 		k.Blocked, k.BlockedOn = depsCount(bt.Dependencies), bt.Dependencies
 	}
-	if t.Gate == factoryd.GateMergeQueue {
+	switch {
+	case t.Gate == factoryd.GateMergeQueue && bt.QueueAhead < 0:
+		k.GateText = "merge queue, after the open plan,"
+	case t.Gate == factoryd.GateMergeQueue:
 		k.GateText = fmt.Sprintf("merge queue, %d ahead,", bt.QueueAhead)
 	}
 	k.Ask = bt.Escalation != ""

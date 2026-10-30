@@ -17,8 +17,9 @@ import (
 // (WaitingOn: "#3, #5"), in any status the issues of the
 // cards it depends on that are not done (Dependencies: "#3, #5", for the
 // face's "blocked by n" chip), and the entries ahead of it in its merge
-// queue. Question is the escalation's five-part question when a template
-// shaped it (nil on the older and unshaped rows); AnswersPending counts
+// queue (-1 when it holds no entry). Question is the escalation's
+// five-part question when a template shaped it (nil on the older and
+// unshaped rows); AnswersPending counts
 // the trusted answers the card's workflow has not taken: a card that
 // holds some cannot process another, so its answer box yields to the
 // liveness warning. ChainState is the verdict of the newest run that
@@ -91,8 +92,8 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.status <> 'done'), '') ELSE '' END,
 		        COALESCE((SELECT string_agg('#' || d.issue_number, ', ' ORDER BY d.issue_number)
 		        FROM task_deps td JOIN tasks d ON d.id = td.depends_on WHERE td.task_id = tasks.id AND d.issue_number > 0 AND d.status <> 'done'), ''),
-		        (SELECT count(*) FROM merge_queue me JOIN merge_queue o ON o.project = me.project
-		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id),
+		        COALESCE((SELECT count(o.task_id) FROM merge_queue me LEFT JOIN merge_queue o ON o.project = me.project
+		        AND (o.entered_at, o.task_id) < (me.entered_at, me.task_id) WHERE me.task_id = tasks.id GROUP BY me.task_id), -1),
 		        esc.question,
 		        (SELECT count(*) FROM intake_events ans WHERE ans.task_id = tasks.id AND ans.kind = 'issue_comment'
 		        AND ans.trusted AND NOT ans.signalled AND ans.id > COALESCE(esc.esc_id, 0)),
