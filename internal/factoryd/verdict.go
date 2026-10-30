@@ -756,18 +756,14 @@ func (r *Runner) planClosed(ctx context.Context, id string) bool {
 	return closed
 }
 
-// planAtRest says plan t is at rest: closed, whatever its replan step (a
-// person's close ends a pending replan), or done or failed with no replan
+// planAtRest says plan t is at rest: done or failed with no replan
 // pending (a failed plan keeps its step for a press to heal). The minute
 // pass neither closes, asks about nor drafts for a plan whose planner
 // runs or is to run. It reads the plan's timeline, so each caller asks it
 // right before it acts. A failed read counts as under replan until the
 // next pass.
 func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
-	switch {
-	case t.Status == "closed":
-		return true
-	case !Final(t.Status):
+	if !Final(t.Status) {
 		return false
 	}
 	_, pending, err := r.pendingReplan(ctx, t)
@@ -807,9 +803,13 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
 		}
-		if !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
-			r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main.")
+		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+			return
 		}
+		if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteria, "denied", FactoryDecider, "the plan card was closed"); err != nil {
+			log.Printf("plan %s: deny the criteria approval: %v", parent, err)
+		}
+		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main.")
 		return
 	}
 	if len(p.Outline) > 0 {
@@ -922,13 +922,13 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 }
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the
-// plans with verdict rows and the plans of the open groups: it closes the
-// plans whose criteria are all met or waived and those without criteria
-// whose cards are all done, opens the gap question of a plan whose cards
-// ran out with a criterion still open, starts the next round of a plan
-// whose round is over, and drafts the delta cards the reviews and the
-// grants asked for. One model call per delta due, in the sweep's own
-// time: no activity holds it.
+// plans with verdict rows, the plans of the open groups and the plans
+// between rounds: it closes the plans whose criteria are all met or
+// waived and those without criteria whose cards are all done, opens the
+// gap question of a plan whose cards ran out with a criterion still open,
+// starts the next round of a plan whose round is over, and drafts the
+// delta cards the reviews and the grants asked for. One model call per
+// delta due, in the sweep's own time: no activity holds it.
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {
@@ -954,6 +954,13 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 		for _, g := range open {
 			parents[g.Plan] = true
 		}
+	}
+	between, err := r.store.PlansBetweenRounds(ctx)
+	if err != nil {
+		log.Printf("criteria pass: the plans between rounds: %v", err)
+	}
+	for _, id := range between {
+		parents[id] = true
 	}
 	for _, parent := range slices.Sorted(maps.Keys(parents)) {
 		r.planCloseCheck(ctx, parent)

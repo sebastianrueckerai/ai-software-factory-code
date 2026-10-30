@@ -548,6 +548,9 @@ type Store interface {
 	// FirstMerge first, then by plan: the plans with a merged card (a merge
 	// commit or a pull_request_merged event) and no plan_closed event.
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
+	// PlansBetweenRounds are the done plan cards without a plan_closed
+	// event whose newest revision's outline has parts, by id.
+	PlansBetweenRounds(ctx context.Context) ([]string, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.
 	PlanClosed(ctx context.Context, plan string) (at time.Time, closed bool, err error)

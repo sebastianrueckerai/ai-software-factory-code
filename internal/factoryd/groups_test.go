@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"slices"
 	"strings"
@@ -127,6 +128,47 @@ func TestOpenGroups(t *testing.T) {
 		if at, closed, err := s.PlanClosed(ctx, plan); err != nil || closed != !want.IsZero() || !at.Equal(want) {
 			t.Errorf("PlanClosed(%s) = %v, %v, %v; want %v, %v", plan, at, closed, err, want, !want.IsZero())
 		}
+	}
+}
+
+// The plans between rounds are the done plan cards without a plan_closed
+// row whose newest revision holds an outline: p1, and p8, whose newest
+// revision added one. p2's newest revision dropped its outline, p3 runs,
+// p4 is closed by its row, p5's outline is empty, p6's null, and p7's
+// card a person closed.
+func TestPlansBetweenRounds(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_rounds"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, finished_at) VALUES
+		('p1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 1, '2026-10-01T09:00:00Z'),
+		('p2', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 2, '2026-10-01T09:00:00Z'),
+		('p3', 1, 0, 'running', 'sf/r', 'agent', 'webhook', 'plan', 3, NULL),
+		('p4', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 4, '2026-10-01T09:00:00Z'),
+		('p5', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 5, '2026-10-01T09:00:00Z'),
+		('p6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 6, '2026-10-01T09:00:00Z'),
+		('p7', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'plan', 7, '2026-10-01T09:00:00Z'),
+		('p8', 1, 0, 'done', 'sf/q', 'agent', 'webhook', 'plan', 8, '2026-10-01T09:00:00Z')`); err != nil {
+		t.Fatal(err)
+	}
+	outline, last := `{"round": 1, "outline": ["the console"]}`, `{"round": 2}`
+	for _, r := range []struct{ id, plan string }{
+		{"p1", outline}, {"p2", outline}, {"p2", last}, {"p3", outline}, {"p4", outline},
+		{"p5", `{"round": 1, "outline": []}`}, {"p6", `{"round": 1, "outline": null}`}, {"p7", outline}, {"p8", last}, {"p8", outline},
+	} {
+		if _, err := s.AddPlanRevision(ctx, r.id, json.RawMessage(r.plan), r.id+r.plan); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
+		('2026-10-02T08:00:00Z', 'sf/r', 'p4', 4, 'plan_closed', 'factoryd', 'factoryd')`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.PlansBetweenRounds(ctx); err != nil || !slices.Equal(got, []string{"p1", "p8"}) {
+		t.Fatalf("PlansBetweenRounds = %v, %v; want [p1 p8]", got, err)
 	}
 }
 

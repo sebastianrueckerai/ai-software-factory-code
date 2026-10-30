@@ -180,15 +180,11 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 	if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" }) {
 		return
 	}
-	var p Plan
-	rev, ok, err := store.PlanRevision(ctx, t.Parent, 0)
-	if err == nil && ok {
-		err = json.Unmarshal(rev.Plan, &p)
-	}
-	if err != nil || len(p.Outline) > 0 {
-		if err != nil {
-			log.Printf("task %s: the newest revision of plan %s: %v", t.ID, t.Parent, err)
-		}
+	switch later, err := leavesRounds(ctx, store, t.Parent); {
+	case err != nil:
+		log.Printf("task %s: the newest revision of plan %s: %v", t.ID, t.Parent, err)
+		return
+	case later:
 		return
 	}
 	tl.recordEvent(ctx, t.Parent, EventAllChildrenDone, map[string]any{"cards": len(cards)})

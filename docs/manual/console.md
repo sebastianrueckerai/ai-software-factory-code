@@ -286,7 +286,8 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   `new_card` takes a `track` (`direct`, `plan` or `human`) and a one-line
   `track_reason`, both required. `close` closes the card's issue as the member (the face's Close
   button too; a failed card's close ends it `closed`, with an issue or without, and
-  Close shows on every failed card), `edit` its title or body and the task's objective, which the
+  Close shows on every failed card; a done plan whose later rounds are still to plan
+  shows Close too, and its close ends it `closed`: no later round starts), `edit` its title or body and the task's objective, which the
   next session's brief reads, `grant_session` answers a card at its session
   cap, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added

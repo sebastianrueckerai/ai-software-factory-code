@@ -554,6 +554,9 @@ type card struct {
 	// each count bound to its word by a no-break space, so a narrow column
 	// wraps between the parts.
 	Children string
+	// BetweenRounds is a done plan whose later rounds are still to plan
+	// (factoryd.BetweenRounds).
+	BetweenRounds bool
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
 	Blocked   int
@@ -579,12 +582,12 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed, which has no other way out. A card
-// whose question offers a close, or a choice card, offers its choices
-// alone.
+// a human, or failed, which has no other way out, or a plan between
+// rounds. A card whose question offers a close, or a choice card, offers
+// its choices alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
-	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed")
+	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.BetweenRounds)
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free
@@ -1897,6 +1900,12 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			}
 			k.Children = planRollup(k.Plan)
 		}
+		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
+		if err != nil {
+			log.Printf("console: the plan of %s: %v", t.ID, err)
+			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
+		}
+		k.BetweenRounds = between
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]

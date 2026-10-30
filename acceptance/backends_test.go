@@ -880,6 +880,10 @@ func (s *acceptanceStore) PlanClosed(context.Context, string) (time.Time, bool, 
 	return time.Time{}, false, nil
 }
 
+func (s *acceptanceStore) PlansBetweenRounds(context.Context) ([]string, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) Release(_ context.Context, repository string) (factoryd.Release, error) {
 	return factoryd.Release{Repository: repository}, nil
 }

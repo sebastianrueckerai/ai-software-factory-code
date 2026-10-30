@@ -151,6 +151,12 @@ var reopenFrom = []string{"done", "failed", "queued"}
 // zero, money for a session, its issue open and labelled queued, and a
 // new run of its workflow. Each step is safe to repeat.
 func (r *Runner) reopenPlan(ctx context.Context, p Task) error {
+	return r.requeuePlan(ctx, p, true)
+}
+
+// requeuePlan is reopenPlan; without openIssue it leaves p's issue as it
+// is, as a round's start does: it never opens an issue a person closed.
+func (r *Runner) requeuePlan(ctx context.Context, p Task, openIssue bool) error {
 	if err := r.store.TransitionTask(ctx, p.ID, reopenFrom, "queued"); err != nil {
 		return err
 	}
@@ -160,8 +166,10 @@ func (r *Runner) reopenPlan(ctx context.Context, p Task) error {
 	if err := r.fundPlanner(ctx, p.ID); err != nil {
 		return err
 	}
-	if err := r.reopenIssue(ctx, p); err != nil {
-		return err
+	if openIssue {
+		if err := r.reopenIssue(ctx, p); err != nil {
+			return err
+		}
 	}
 	mirrorTaskState(ctx, r.forgejo, p, "queued")
 	return r.cfg.Workflows.Reopen(ctx, p.ID, "", TaskSignal{})

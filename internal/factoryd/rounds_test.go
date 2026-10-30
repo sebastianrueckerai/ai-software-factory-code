@@ -781,16 +781,15 @@ func TestRoundItems(t *testing.T) {
 	}
 }
 
-// roundRig is replanRig's plan p (issue 10, done and finished, its issue
-// closed) without its cards c and s: revision 1 is roundOne, and its
-// three cards are done with merge commits.
+// roundRig is replanRig's plan p (issue 10, open; done and finished)
+// without its cards c and s: revision 1 is roundOne, and its three cards
+// are done with merge commits.
 func roundRig(t *testing.T) (*Runner, *fakeStore, *prForgejo) {
 	t.Helper()
 	ctx := context.Background()
 	r, store, fj := replanRig(t, "done", 0)
 	delete(store.tasks, "c")
 	delete(store.tasks, "s")
-	fj.issueOff = true
 	finished := replanAt
 	p := store.tasks["p"]
 	p.FinishedAt = &finished
@@ -820,9 +819,9 @@ var roundTwoStep = []ReplanStep{{Origin: ReplanRound, Revision: 1, Round: 2, Tim
 
 // A plan whose round is done and whose outline still holds parts goes
 // back to its planner for the next round: the replan step of round 2,
-// the plan queued with its counters at zero, its issue open and its
-// workflow reopened. The second check finds the plan queued and does
-// nothing.
+// the plan queued with its counters at zero and its workflow reopened,
+// its open issue left as it is. The second check finds the plan queued
+// and does nothing.
 func TestRoundCheckStartsTheNextRound(t *testing.T) {
 	r, store, fj := roundRig(t)
 	for check := 1; check <= 2; check++ {
@@ -836,9 +835,55 @@ func TestRoundCheckStartsTheNextRound(t *testing.T) {
 		if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) {
 			t.Fatalf("check %d: reopens %+v, want p's alone", check, got)
 		}
-		if !slices.Equal(fj.reopened, []int64{10}) {
-			t.Fatalf("check %d: issues reopened %v, want #10 once", check, fj.reopened)
+		if len(fj.reopened) != 0 {
+			t.Fatalf("check %d: issues reopened %v, want none", check, fj.reopened)
 		}
+	}
+}
+
+// A plan whose issue is closed when its next round would start was closed
+// by a person, whose close the webhook did not end: the plan card ends
+// closed, nothing starts and the issue stays closed, as when the round's
+// step was written and its reopen lost. The close check then closes the
+// group, every card being done.
+func TestRoundCheckEndsAPlanWhoseIssueIsClosed(t *testing.T) {
+	ctx := context.Background()
+	for _, written := range []bool{false, true} {
+		r, store, fj := roundRig(t)
+		fj.issueOff = true
+		if written {
+			if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		steps := len(replanSteps(t, r, "p"))
+		r.roundCheck(ctx, "p")
+		if got := store.tasks["p"].Status; got != "closed" || len(replanSteps(t, r, "p")) != steps || len(reopens(r)) != 0 || len(fj.reopened) != 0 || !fj.issueOff {
+			t.Fatalf("step written %t: plan %s, replan steps %d, reopens %+v, issues reopened %v; want closed, %d, none, none",
+				written, got, len(replanSteps(t, r, "p")), reopens(r), fj.reopened, steps)
+		}
+		r.planCloseCheck(ctx, "p")
+		r.planCloseCheck(ctx, "p")
+		want := []string{"factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+		if n := len(stepsNamed(t, r, "p", "plan_closed")); n != 1 || !slices.Equal(fj.comments, want) {
+			t.Fatalf("step written %t: plan_closed %d times, comments %q; want 1 and %q", written, n, fj.comments, want)
+		}
+	}
+}
+
+// A plan between rounds whose cards carry no merge commit has no open
+// group and no verdict rows: the minute pass still visits it and starts
+// its next round.
+func TestCriteriaPassVisitsAPlanBetweenRounds(t *testing.T) {
+	r, store, _ := roundRig(t)
+	for _, id := range []string{"t-foundation", "t-links-api", "t-redirects"} {
+		k := store.tasks[id]
+		k.MergeCommit = ""
+		store.tasks[id] = k
+	}
+	r.CriteriaPass(context.Background())
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) || store.tasks["p"].Status != "queued" {
+		t.Fatalf("replan steps %+v, plan %s; want %+v and queued", got, store.tasks["p"].Status, roundTwoStep)
 	}
 }
 

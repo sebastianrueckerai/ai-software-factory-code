@@ -290,6 +290,12 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			body := f.statuses[min(f.polls, len(f.statuses)-1)]
 			f.polls++
 			io.WriteString(w, body)
+		case r.Method == "GET" && strings.HasSuffix(p, "/comments"):
+			out := []map[string]string{}
+			for _, c := range f.comments {
+				out = append(out, map[string]string{"body": c})
+			}
+			json.NewEncoder(w).Encode(out)
 		case r.Method == "POST" && strings.HasSuffix(p, "/comments"):
 			var body struct{ Body string }
 			json.NewDecoder(r.Body).Decode(&body)

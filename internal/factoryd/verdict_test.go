@@ -1303,3 +1303,32 @@ func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 		t.Fatalf("a closed plan with c1 unmet: plan_closed %d, pending %+v; want one close and no question", closeRows(s), pending)
 	}
 }
+
+// A failed plan's gap question stands until a person closes the plan
+// card: the close denies it, then closes the plan.
+func TestClosedPlanCardDeniesItsCriteriaApproval(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	setStatus(s, "t-plan", "failed")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.planCloseCheck(ctx, "t-plan")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
+		t.Fatalf("the failed plan's gap: pending %+v, want the criteria approval", pending)
+	}
+	if err := s.TransitionTask(ctx, "t-plan", []string{"failed"}, "closed"); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	denied, _ := s.ApprovalRequests(ctx, "denied")
+	if closeRows(s) != 1 || len(pending) != 0 || len(denied) != 1 || denied[0].Kind != ApprovalCriteria ||
+		denied[0].DecidedBy != FactoryDecider || denied[0].DecisionNote != "the plan card was closed" {
+		t.Fatalf("after the close: plan_closed %d, pending %+v, denied %+v; want 1, none, the criteria approval denied by factoryd", closeRows(s), pending, denied)
+	}
+}

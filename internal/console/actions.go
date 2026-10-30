@@ -1278,11 +1278,11 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 }
 
 // doClose closes card id's issue as the member, its note commented first
-// when given; intake ends the card as on any writer's close. A card with
-// no issue factoryd closes alone, a failed one too, its note on the row,
-// and a failed card with an issue ends closed by intake like any other,
-// and so a merged card: its merge closed its issue already, and closing
-// a closed issue sends no webhook.
+// when given; intake ends the card as on any writer's close, a failed
+// card or a done plan between rounds closed. A card with no issue
+// factoryd closes alone, a failed one too, its note on the row, and so a
+// merged card: its merge closed its issue already, and closing a closed
+// issue sends no webhook.
 func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 {
@@ -1293,7 +1293,14 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 		return "", err
 	}
 	if factoryd.Final(t.Status) && t.Status != "failed" {
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
+		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
+		if err != nil {
+			log.Printf("console: %s closes %s: the plan: %v", a.s.user, t.ID, err)
+			return "", refuse(http.StatusInternalServerError, "The plan could not be read; see the factoryd log.")
+		}
+		if !between {
+			return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
+		}
 	}
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, nil); err != nil {

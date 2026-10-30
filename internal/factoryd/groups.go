@@ -127,3 +127,25 @@ func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	}
 	return out, nil
 }
+
+func (s *PGStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id FROM plan_revisions r JOIN tasks t ON t.id = r.task_id
+		WHERE t.status = 'done'
+			AND r.revision = (SELECT max(revision) FROM plan_revisions WHERE task_id = r.task_id)
+			AND jsonb_typeof(r.plan->'outline') = 'array' AND r.plan->'outline' <> '[]'::jsonb
+			AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = r.task_id AND kind = 'plan_closed')
+		ORDER BY r.task_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}

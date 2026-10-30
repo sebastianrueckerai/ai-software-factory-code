@@ -738,6 +738,10 @@ func (s *accBatchStore) PlanClosed(context.Context, string) (time.Time, bool, er
 	panic("unused")
 }
 
+func (s *accBatchStore) PlansBetweenRounds(context.Context) ([]string, error) {
+	panic("unused")
+}
+
 func (s *accBatchStore) Release(context.Context, string) (factoryd.Release, error) {
 	panic("unused")
 }

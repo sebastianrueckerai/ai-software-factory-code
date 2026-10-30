@@ -1,12 +1,16 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"reflect"
 	"slices"
 	"strconv"
@@ -2254,6 +2258,32 @@ func TestAllChildrenDoneWaitsForTheLastRound(t *testing.T) {
 	}
 	if !slices.Equal(said, []string{fj.comments[0].body}) {
 		t.Fatalf("plan issue comments %q, want the plan comment alone", said)
+	}
+}
+
+// revisionFails is a store whose plan revisions cannot be read.
+type revisionFails struct{ *fakeStore }
+
+func (revisionFails) PlanRevision(context.Context, string, int) (PlanRevision, bool, error) {
+	return PlanRevision{}, false, errors.New("the database is down")
+}
+
+// A plan whose newest revision cannot be read records no
+// all_children_done: the read's error is logged.
+func TestAllChildrenDoneWaitsOnAFailedRevisionRead(t *testing.T) {
+	r, store, objects, fj, _ := fileRig(t, testPlan())
+	requestPlan(t, r)
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	for _, k := range cardsByKey(t, store) {
+		setStatus(store, k.ID, "done")
+	}
+	c := store.tasks[cardsByKey(t, store)["integration"].ID]
+	taskEnded(context.Background(), r.timeline, revisionFails{store}, r.forgejo, nil, c, "done", "")
+	if got := events(t, objects, "t-plan"); len(got) != 0 || len(fj.comments) != 1 ||
+		!strings.Contains(logs.String(), "task "+c.ID+": the newest revision of plan t-plan: the database is down") {
+		t.Fatalf("plan events %v, %d comments, log %q; want none, the plan comment alone and the read's error", got, len(fj.comments), logs.String())
 	}
 }
 

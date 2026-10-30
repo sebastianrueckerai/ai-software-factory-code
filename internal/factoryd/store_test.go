@@ -365,6 +365,22 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	return out, nil
 }
 
+func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
+	var out []string
+	for id, t := range s.tasks {
+		if _, closed := s.closed[id]; t.Status != "done" || closed {
+			continue
+		}
+		if later, err := leavesRounds(ctx, s, id); err != nil {
+			return nil, err
+		} else if later {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, c := range s.tasks {

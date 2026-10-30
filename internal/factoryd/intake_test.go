@@ -1902,6 +1902,49 @@ func TestClosingAFailedCardEndsItClosed(t *testing.T) {
 	}
 }
 
+// A trusted close of a done plan's issue between rounds, while its newest
+// revision leaves parts to later rounds, ends the plan card closed in the
+// store and signals nothing, under the trust rule of a failed card's
+// close. A done plan in its last round keeps phase 4's way: the close is
+// its workflow's signal.
+func TestClosingAPlanBetweenRoundsEndsItClosed(t *testing.T) {
+	last := roundOne()
+	last.Outline = nil
+	for _, tc := range []struct {
+		name, closer, after string
+		plan                Plan
+		recorded            bool
+		signals             []string
+	}{
+		{name: "between rounds", plan: roundOne(), closer: "sebastian", after: "closed"},
+		{name: "between rounds, factoryd's recorded close", plan: roundOne(), closer: "factory-agent", recorded: true, after: "closed"},
+		{name: "between rounds, the bot's unrecorded close", plan: roundOne(), closer: "factory-agent", after: "done"},
+		{name: "between rounds, a stranger's close", plan: roundOne(), closer: "mallory", after: "done"},
+		{name: "the last round", plan: last, closer: "sebastian", after: "done", signals: []string{"t-plan issue_closed sebastian #0: "}},
+	} {
+		in, store, _ := newTestIntake(t)
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", Status: "done", Kind: "agent", Track: policy.TrackPlan, IssueNumber: 4}
+		if _, err := store.AddPlanRevision(context.Background(), "t-plan", json.RawMessage(planJSON(t, tc.plan)), "sha-1"); err != nil {
+			t.Fatal(err)
+		}
+		if tc.recorded {
+			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t-plan", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
+		}
+		body, _ := json.Marshal(map[string]any{
+			"action":     "closed",
+			"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "sebastian"}},
+			"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"sender":     map[string]string{"login": tc.closer},
+		})
+		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", tc.name, rr.Code)
+		}
+		if after := store.tasks["t-plan"].Status; after != tc.after || !slices.Equal(workflowsOf(in).signals, tc.signals) {
+			t.Errorf("%s: status %q, signals %q; want %q, %q", tc.name, after, workflowsOf(in).signals, tc.after, tc.signals)
+		}
+	}
+}
+
 func TestReproCommand(t *testing.T) {
 	for body, want := range map[string]string{
 		"":         "",

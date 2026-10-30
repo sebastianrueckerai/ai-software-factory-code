@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"slices"
@@ -180,9 +181,11 @@ func RoundItems(p Plan, cards []Task) []RoundItem {
 
 // roundCheck starts plan parent's next round: once the plan is done, its
 // newest revision leaves parts to later rounds and its round is over, the
-// round's replan step sends it back to its planner. A round step whose
-// reopen was lost is reopened. A closed plan, one under another replan
-// and one whose own group revert runs are left as they are.
+// round's replan step sends it back to its planner, its issue left as it
+// is. A round step whose reopen was lost is reopened. A plan issue closed
+// at that point is a person's close the webhook missed: the card ends
+// closed and nothing starts. A closed plan, one under another replan and
+// one whose own group revert runs are left as they are.
 func (r *Runner) roundCheck(ctx context.Context, parent string) {
 	if err := r.nextRound(ctx, parent); err != nil {
 		log.Printf("plan %s: the round check: %v", parent, err)
@@ -190,9 +193,9 @@ func (r *Runner) roundCheck(ctx context.Context, parent string) {
 }
 
 // nextRound is roundCheck's work, its error the check's log line. It
-// reads no timeline for a plan without an outline.
+// reads no timeline for a plan without an outline or whose round runs.
 func (r *Runner) nextRound(ctx context.Context, parent string) error {
-	t, _, err := r.task(ctx, parent)
+	t, repo, err := r.task(ctx, parent)
 	if err != nil || t.Status != "done" {
 		return err
 	}
@@ -203,23 +206,57 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 	if pause, paused, err := r.store.QueuePause(ctx, t.Repository); err != nil || paused && pause.Plan == t.ID {
 		return err
 	}
-	step, pending, err := r.pendingReplan(ctx, t)
-	switch {
-	case err != nil:
-		return err
-	case pending && step.Origin == ReplanRound:
-		return r.reopenPlan(ctx, t)
-	case pending:
-		return nil
-	}
 	cards, err := r.store.PlanCards(ctx, parent)
 	if err != nil || !roundComplete(p, cards) {
 		return err
 	}
-	wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
-		map[string]any{"origin": ReplanRound, "revision": revision, "round": p.Round + 1}, replanClosers...)
-	if err != nil || !wrote {
+	step, pending, err := r.pendingReplan(ctx, t)
+	if err != nil || pending && step.Origin != ReplanRound {
 		return err
 	}
-	return r.reopenPlan(ctx, t)
+	switch closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); {
+	case err != nil:
+		return err
+	case closed:
+		return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+	}
+	if !pending {
+		wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
+			map[string]any{"origin": ReplanRound, "revision": revision, "round": p.Round + 1}, replanClosers...)
+		if err != nil || !wrote {
+			return err
+		}
+	}
+	return r.requeuePlan(ctx, t, false)
+}
+
+// planRevisions reads plan revisions: the Store does, and the console's
+// tasks.
+type planRevisions interface {
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
+}
+
+// leavesRounds tells whether plan id's newest revision leaves parts to
+// later rounds: its outline has parts. A plan without a revision leaves
+// none.
+func leavesRounds(ctx context.Context, store planRevisions, id string) (bool, error) {
+	rev, ok, err := store.PlanRevision(ctx, id, 0)
+	if err != nil || !ok {
+		return false, err
+	}
+	var p Plan
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return false, fmt.Errorf("plan %s revision %d: %w", id, rev.Revision, err)
+	}
+	return len(p.Outline) > 0, nil
+}
+
+// BetweenRounds tells whether plan card t is done while its newest
+// revision leaves parts to later rounds: a person's close ends it closed,
+// as a failed card's does.
+func BetweenRounds(ctx context.Context, store planRevisions, t Task) (bool, error) {
+	if t.Status != "done" {
+		return false, nil
+	}
+	return leavesRounds(ctx, store, t.ID)
 }

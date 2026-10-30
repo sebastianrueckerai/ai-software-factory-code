@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -571,6 +572,46 @@ func TestCloseAFailedCardWithAnIssue(t *testing.T) {
 	equal(t, "Do it", done, ran("close", args, "Closed #31; factoryd ends the card."))
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/31 {"state":"closed"}`})
 	equal(t, "CloseCard", r.closed, []string(nil))
+}
+
+// A done plan whose newest revision leaves parts to later rounds is
+// between rounds: the face offers a writer Close behind a failed card's
+// confirm, and Close closes the plan's issue alone, which intake turns
+// into the card's end. A done plan in its last round offers none, and its
+// close is refused as any final card's.
+func TestCloseAPlanBetweenRounds(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 50,
+			Objective: "Build the stats."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 51,
+			Objective: "Build the links."}})
+	if r.tasks.plans == nil {
+		r.tasks.plans = map[string][]factoryd.PlanRevision{}
+	}
+	r.tasks.plans["t-br"] = []factoryd.PlanRevision{{TaskID: "t-br", Revision: 1, Plan: json.RawMessage(`{"round": 1, "outline": ["the console"]}`)}}
+	r.tasks.plans["t-lr"] = []factoryd.PlanRevision{{TaskID: "t-lr", Revision: 1, Plan: json.RawMessage(`{"round": 2}`)}}
+	r.tasks.mu.Unlock()
+	ck, s := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	closeForm := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" hx-target="#board" hx-swap="outerHTML" ` +
+		`hx-confirm="Close #50? Its issue closes as you, and the card ends." class="inline close" data-to="closed">`
+	if face := faceOf(t, body, "t-br"); !strings.Contains(face, closeForm) {
+		t.Errorf("the plan between rounds' face =\n%s\nwant it to hold\n%s", face, closeForm)
+	}
+	if face := faceOf(t, body, "t-lr"); strings.Contains(face, `action="/tasks/t-lr/close"`) {
+		t.Errorf("the plan in its last round's face =\n%s\nwant no Close", face)
+	}
+	rec := r.do(post("/tasks/t-br/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the button", rec.Code, http.StatusSeeOther)
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/50 {"state":"closed"}`})
+	equal(t, "CloseCard", r.closed, []string(nil))
+	_, done, _ := proposeAndDo(t, r, g, "close", `{"task_id":"t-br"}`)
+	equal(t, "Do it", done, ran("close", `{"task_id":"t-br"}`, "Closed #50; factoryd ends the card."))
+	code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr"})
+	equal(t, "close of the plan in its last round", []any{code, msg},
+		[]any{http.StatusConflict, "Card #51 is done, not a card that is not final: the card is final: a new card continues the work."})
 }
 
 // The face offers a writer Close on a card waiting on a human, behind a
