@@ -112,6 +112,10 @@ func (p *RevertPass) repository(ctx context.Context, repository string, tasks []
 		}
 	}
 	prs, err := p.Forgejo.MergedPullRequestsSince(ctx, repo.Owner, repo.Name, since)
+	if errors.Is(err, ErrNotFound) {
+		// a removed project's repository: nothing on it can revert its cards
+		return nil
+	}
 	if err != nil {
 		return err
 	}

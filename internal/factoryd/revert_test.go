@@ -202,6 +202,8 @@ func revertForgejo(t *testing.T, prs []map[string]any, diffs map[int64]string) *
 				return
 			}
 			io.WriteString(w, d)
+		case strings.HasPrefix(r.URL.Path, "/api/v1/repos/gone/"):
+			http.NotFound(w, r)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL)
 			http.NotFound(w, r)
@@ -209,6 +211,25 @@ func revertForgejo(t *testing.T, prs []map[string]any, diffs map[int64]string) *
 	}))
 	t.Cleanup(srv.Close)
 	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+}
+
+// A removed project's repository is gone from Forgejo: its merged cards
+// have nothing left to revert, and the pass goes on without an error.
+func TestRevertPassSkipsARemovedRepository(t *testing.T) {
+	now := time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)
+	done := now.Add(-48 * time.Hour)
+	book := &fakeRevertBook{tasks: []Task{
+		{ID: "t-gone", Repository: "gone/gone", PRNumber: 3, Status: "done", FinishedAt: &done, Track: "direct"},
+		{ID: "t-here", Repository: "sf/repo", PRNumber: 7, Status: "done", FinishedAt: &done, Track: "direct"},
+	}}
+	m, _ := testMetrics(t)
+	pass := &RevertPass{Book: book, Forgejo: revertForgejo(t, []map[string]any{mergedPR(20, now.Add(-24*time.Hour))}, map[int64]string{7: agentDiff, 20: revertSlug + revertTest}), Metrics: m, Now: func() time.Time { return now }}
+	if err := pass.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if want := []string{"t-here " + now.Add(-24*time.Hour).Format(time.RFC3339)}; !slices.Equal(book.marked, want) {
+		t.Fatalf("marked = %q, want %q", book.marked, want)
+	}
 }
 
 func mergedPR(number int64, mergedAt time.Time) map[string]any {
