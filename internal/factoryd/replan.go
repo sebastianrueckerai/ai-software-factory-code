@@ -525,7 +525,9 @@ func (r *Runner) completeReplan(ctx context.Context, p Task, step ReplanStep) (s
 // replanDirect sends direct card t to the planner. The person's words go
 // first, as the to_plan signal, which the workflow takes at its next step
 // and records as the card's replan step; then a running session is asked
-// to stop. A failed or closed card is queued again for a new run.
+// to stop. A failed or closed card is queued again for a new run. A card
+// that waits on its screening refuses: the note posted on its issue would
+// answer the screening's question.
 func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (string, error) {
 	card := fmt.Sprintf("Card #%d", t.IssueNumber)
 	switch {
@@ -533,6 +535,14 @@ func (r *Runner) replanDirect(ctx context.Context, t Task, ask ReplanAsk) (strin
 		return "", ErrNoReplan(mergedRefusal(t))
 	case t.Status == "closing":
 		return "", ErrNoReplan(card + " is closing: replan it once it has ended.")
+	case t.Status == "waiting-human":
+		events, err := r.store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			return "", err
+		}
+		if waitsOnScreening(events) {
+			return "", ErrNoReplan(card + " waits for a person to judge its screening: let it run or close its issue, then replan it.")
+		}
 	}
 	project, _, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
