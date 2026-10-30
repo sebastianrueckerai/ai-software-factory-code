@@ -228,3 +228,39 @@ func TestPlanClosedBackfill(t *testing.T) {
 		}
 	}
 }
+
+// The plans of sf/r with a card in the merge queue: p1's c1 holds a queue
+// entry, p2's c2 waits in gate merge-queue outside it (held back for
+// another group). p3's c3 is in review out of the queue, p4's c4 is in
+// sf/q's queue, p5's c5 failed in gate merge-queue, and d1, a direct card,
+// is in the queue but no plan's.
+func TestQueuedPlans(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_queuedplans"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, parent_task, track, plan_key, issue_number, gate, finished_at) VALUES
+			('p1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 1, '', '2026-10-01T00:00:00Z'),
+			('c1', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'p1', 'direct', 'one', 11, '', NULL),
+			('p2', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 2, '', '2026-10-01T00:00:00Z'),
+			('c2', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'p2', 'direct', 'one', 21, 'merge-queue', NULL),
+			('p3', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 3, '', '2026-10-01T00:00:00Z'),
+			('c3', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'p3', 'direct', 'one', 31, '', NULL),
+			('p4', 1, 0, 'done', 'sf/q', 'agent', 'webhook', NULL, 'plan', NULL, 4, '', '2026-10-01T00:00:00Z'),
+			('c4', 1, 0, 'in-review', 'sf/q', 'agent', 'plan', 'p4', 'direct', 'one', 41, '', NULL),
+			('p5', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 5, '', '2026-10-01T00:00:00Z'),
+			('c5', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'p5', 'direct', 'one', 51, 'merge-queue', '2026-10-01T00:00:00Z'),
+			('d1', 1, 0, 'in-review', 'sf/r', 'agent', 'webhook', NULL, 'direct', NULL, 9, '', NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range [][2]string{{"sf/r", "c1"}, {"sf/q", "c4"}, {"sf/r", "d1"}} {
+		if _, err := s.EnterQueue(ctx, e[0], e[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got, err := s.QueuedPlans(ctx, "sf/r"); err != nil || !slices.Equal(got, []int64{1, 2}) {
+		t.Fatalf("QueuedPlans(sf/r) = %v, %v; want plans #1 and #2", got, err)
+	}
+}

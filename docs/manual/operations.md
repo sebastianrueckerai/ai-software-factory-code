@@ -489,10 +489,13 @@ port 8090 only.
   entries differ from the base's, closing an already open one. Object ids
   are compared, not diff path listings, so renames out of the directory
   and quoted non-ASCII names cannot slip past.
-- While a plan of the code repository is open on `main`, factoryd keeps
-  the Flux Kustomization `flux-system/factory` suspended, so no change
-  under `k8s/` goes live; it resumes it when the hold ends and while a
-  roll or a Deploy now goes out. Every roller poll sets the level, so
+- While a plan of the code repository is open on `main`, or has a card
+  in the merge queue (in gate `merge-queue` or holding a queue entry),
+  factoryd keeps the Flux Kustomization `flux-system/factory` suspended,
+  so no change under `k8s/` goes live, the plan's first merge included;
+  it resumes it once neither holds, and while a roll or a Deploy now goes
+  out. Rolls themselves are held only while a plan is open on `main`.
+  Every roller poll sets the level, so
   while factoryd runs it undoes a hand suspend or resume within 15
   seconds: before suspending a Kustomization by hand (a shutdown's
   `flux suspend kustomization --all`, an incident), scale factoryd to 0
@@ -578,7 +581,9 @@ pushed to both remotes:
 While a plan of the code repository is open on `main` (from its first
 merged card until its `plan_closed`; a reverted card does not count), the
 roller opens no roll and keeps the Flux Kustomization `flux-system/factory`
-suspended, so no change under `k8s/` goes live either (Operating it). It logs
+suspended, so no change under `k8s/` goes live either (Operating it); Flux
+is suspended from the moment a card of the plan is in the merge queue,
+before its first merge. It logs
 `roller: plan #N is open on main: no roll until no plan is open on main`
 once per commit and posts `factory/roll` `success` with a description
 starting `held:` on `main`'s newest commit it has not judged, so a merged

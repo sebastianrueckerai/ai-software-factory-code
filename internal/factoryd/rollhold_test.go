@@ -602,3 +602,98 @@ func TestRollerResumesFluxForDeployNow(t *testing.T) {
 		t.Fatalf("poll 5: suspended %v, Deploy now %q; want suspended and Deploy now spent", flux.suspended, store.releases[codeRepo].DeployNow)
 	}
 }
+
+// A plan card in the merge queue suspends Flux before the plan's first
+// merge, though no plan is open on main and rolls are not held: a card
+// holding a queue entry, and one held back in gate merge-queue. Once the
+// card leaves the queue without merging, the next poll resumes.
+func TestRollerSuspendsFluxForAQueuedPlanCard(t *testing.T) {
+	logs := captureLog(t)
+	f := &rollForgejo{runs: []map[string]any{pushRun(58, commitC2, "running")}}
+	roller, store, _ := newTestRoller(t, f)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	store.tasks["t-plan"] = Task{ID: "t-plan", IssueNumber: 40, Repository: codeRepo, Track: "plan"}
+	store.tasks["t-c1"] = Task{ID: "t-c1", Source: SourcePlan, Parent: "t-plan", PlanKey: "a", Repository: codeRepo, Status: "in-review"}
+	ctx := context.Background()
+	poll := func(want bool) {
+		t.Helper()
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if flux.suspended != want {
+			t.Fatalf("suspended %v, want %v", flux.suspended, want)
+		}
+	}
+	poll(false)
+
+	store.queue = []queueEntry{{project: codeRepo, task: "t-c1", at: time.Now()}}
+	poll(true)
+	if n := strings.Count(logs.String(), "roller: plan #40 has a card in the merge queue: the factory's Kustomization is suspended"); n != 1 {
+		t.Fatalf("the suspend logged %d times, want once: %q", n, logs.String())
+	}
+	if len(f.reported) != 0 || strings.Contains(logs.String(), "no roll until") {
+		t.Fatalf("reported %q, log %q; want no roll hold: no plan is open on main", f.reported, logs.String())
+	}
+
+	store.queue = nil
+	c1 := store.tasks["t-c1"]
+	c1.Gate = GateMergeQueue
+	store.tasks["t-c1"] = c1
+	poll(true)
+
+	c1.Gate = ""
+	store.tasks["t-c1"] = c1
+	poll(false)
+}
+
+// queuedPlanRoller is newHeldRoller's rig with plan #40 not yet on main:
+// its card t-c1 holds a merge queue entry, so no roll is held, c1's roll
+// is filed, and Flux is suspended for the queued card.
+func queuedPlanRoller(t *testing.T) (*Roller, *rollForgejo, *fakeStore, *fakeFluxSwitch) {
+	t.Helper()
+	roller, f, store, _ := newHeldRoller(t)
+	c1 := store.tasks["t-c1"]
+	c1.Status, c1.MergeCommit, c1.FinishedAt = "in-review", "", nil
+	store.tasks["t-c1"] = c1
+	store.queue = []queueEntry{{project: codeRepo, task: "t-c1", at: time.Now()}}
+	return roller, f, store, roller.Flux.(*fakeFluxSwitch)
+}
+
+// A roll filed while a queued plan card holds Flux suspended resumes Flux
+// before the roll is filed: the roll goes live through it. The open roll
+// keeps it resumed.
+func TestRollerResumesFluxToFileARoll(t *testing.T) {
+	roller, f, store, flux := queuedPlanRoller(t)
+	issues := -1
+	flux.onChange = func() {
+		if !flux.suspended {
+			issues = len(f.issues)
+		}
+	}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended || flux.changes != 2 || issues != 0 {
+		t.Fatalf("suspended %v, changes %d, issues at the resume %d; want suspended, then resumed before the roll is filed", flux.suspended, flux.changes, issues)
+	}
+	rolledC1(t, f, store)
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if flux.suspended || flux.changes != 2 {
+		t.Fatalf("poll 2: suspended %v, changes %d; want resumed while the roll is open", flux.suspended, flux.changes)
+	}
+}
+
+// A resume refused before the filing files no roll.
+func TestRollerFilesNoRollWhenItsResumeFails(t *testing.T) {
+	roller, f, store, flux := queuedPlanRoller(t)
+	flux.resumeErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+	if err := roller.poll(context.Background()); !errors.Is(err, flux.resumeErr) {
+		t.Fatalf("poll: %v, want the resume's error", err)
+	}
+	if len(f.issues) != 0 || len(store.rolls) != 0 || !flux.suspended {
+		t.Fatalf("issues %q, rolls %+v, suspended %v; want no roll and Flux still suspended", f.issues, store.rolls, flux.suspended)
+	}
+}

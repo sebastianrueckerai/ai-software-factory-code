@@ -42,6 +42,29 @@ func (s *PGStore) PlanClosed(ctx context.Context, plan string) (time.Time, bool,
 	return at.Time, at.Valid, err
 }
 
+// QueuedPlans are the issues of repository's plans with a card in the
+// merge queue, holding an entry or waiting in gate merge-queue: its merge
+// would open the plan's group on main.
+func (s *PGStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT p.issue_number FROM tasks c JOIN tasks p ON p.id = c.parent_task
+		WHERE c.repository = $1 AND c.source = 'plan' AND c.plan_key IS NOT NULL AND c.status <> ALL($2)
+			AND (c.gate = $3 OR EXISTS (SELECT 1 FROM merge_queue q WHERE q.task_id = c.id))
+		ORDER BY 1`, repository, FinalStatuses, GateMergeQueue)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []int64
+	for rows.Next() {
+		var issue int64
+		if err := rows.Scan(&issue); err != nil {
+			return nil, err
+		}
+		out = append(out, issue)
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH merged AS (
 			SELECT c.parent_task AS plan,

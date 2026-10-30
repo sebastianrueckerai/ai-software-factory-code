@@ -354,6 +354,7 @@ type RollerStore interface {
 	Release(ctx context.Context, repository string) (Release, error)
 	ClearDeployNow(ctx context.Context, repository, commit string) error
 	ChainCard(ctx context.Context, repository, source string) (Task, bool, error)
+	QueuedPlans(ctx context.Context, repository string) ([]int64, error)
 }
 
 // FluxSwitch reads and sets the suspend of a Flux Kustomization.
@@ -375,7 +376,8 @@ type FluxSwitch interface {
 // without a signature by SigningKey refuses the commit: a human card says
 // why, and nothing of it rolls. It judges each commit once. While a plan's
 // group is open on main, only Deploy now's commit rolls (markHeld), and the
-// factory's Kustomization stays suspended but while a roll goes out (setFlux).
+// factory's Kustomization stays suspended, from the plan's first card in the
+// merge queue on, but while a roll goes out (setFlux).
 type Roller struct {
 	Forgejo  *Forgejo
 	Registry *Registry
@@ -574,14 +576,19 @@ func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group,
 
 // setFlux keeps the factory's Kustomization, which applies the code
 // repository's k8s/ at every merge to main, suspended while groups hold
-// production, and resumed otherwise, so no manifest goes live during a
-// hold. An open roll and deploy, Deploy now's commit, go out through
+// production or a plan's card is in the merge queue (fluxHold), and
+// resumed otherwise, so no manifest goes live during a hold, the plan's
+// first merge included. An open roll and deploy, Deploy now's commit, go out through
 // Flux: deploy has gone out once it was judged, no roll is open and Flux
 // applied main's newest push commit; then its Deploy now is spent and
 // setFlux answers "". A refused resume ends the poll: no roll goes out
 // without Flux. A refused suspend does not, since rolls stay held: it is
 // logged and noted on the hold's ask.
 func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, deploy string) (string, error) {
+	reason, err := r.fluxHold(ctx, groups)
+	if err != nil {
+		return deploy, err
+	}
 	_, rollOpen, err := r.Store.OpenRollTask(ctx, r.Repo.String())
 	if err != nil {
 		return deploy, err
@@ -600,17 +607,23 @@ func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, 
 			deploy = ""
 		}
 	}
-	suspend := len(groups) > 0 && !rollOpen && !goingOut
+	return deploy, r.setLevel(ctx, reason != "" && !rollOpen && !goingOut, reason)
+}
+
+// setLevel sends the factory's Kustomization its suspend, reason naming
+// what holds it. A refused resume is the error. A refused suspend is
+// logged and noted on the hold's ask, and is no error.
+func (r *Roller) setLevel(ctx context.Context, suspend bool, reason string) error {
 	if err := r.Flux.SuspendKustomization(ctx, fluxNamespace, factoryKustomization, suspend); err != nil {
 		r.fluxLevel = "" // unknown: the next success says the level
 		if !suspend {
-			return deploy, fmt.Errorf("the factory's Kustomization could not be resumed: %w: no roll until it is", err)
+			return fmt.Errorf("the factory's Kustomization could not be resumed: %w: no roll until it is", err)
 		}
 		if err.Error() != r.fluxErr {
-			log.Printf("roller: %s: the factory's Kustomization could not be suspended (%v): a change under k8s/ goes live at its merge", HoldReason(groups), err)
+			log.Printf("roller: %s: the factory's Kustomization could not be suspended (%v): a change under k8s/ goes live at its merge", reason, err)
 			r.fluxErr = err.Error()
 		}
-		return deploy, r.noteFluxRefused(ctx)
+		return r.noteFluxRefused(ctx)
 	}
 	r.fluxErr = ""
 	level := "resumed"
@@ -619,13 +632,35 @@ func (r *Roller) setFlux(ctx context.Context, runs []ActionRun, groups []Group, 
 	}
 	if level != r.fluxLevel {
 		if suspend {
-			log.Printf("roller: %s: the factory's Kustomization is suspended", HoldReason(groups))
+			log.Printf("roller: %s: the factory's Kustomization is suspended", reason)
 		} else {
 			log.Printf("roller: the factory's Kustomization is resumed")
 		}
 		r.fluxLevel = level
 	}
-	return deploy, nil
+	return nil
+}
+
+// fluxHold names what holds the factory's Kustomization: the plans open
+// on main, else the plans with a card in the merge queue, whose merge
+// would open their group; "" when none does. Rolls stay held by the open
+// groups alone (markHeld).
+func (r *Roller) fluxHold(ctx context.Context, groups []Group) (string, error) {
+	if len(groups) > 0 {
+		return HoldReason(groups), nil
+	}
+	queued, err := r.Store.QueuedPlans(ctx, r.Repo.String())
+	if err != nil || len(queued) == 0 {
+		return "", err
+	}
+	plans := make([]string, len(queued))
+	for i, issue := range queued {
+		plans[i] = fmt.Sprintf("#%d", issue)
+	}
+	if len(plans) == 1 {
+		return "plan " + plans[0] + " has a card in the merge queue", nil
+	}
+	return "plans " + andList(plans) + " have cards in the merge queue", nil
 }
 
 // fluxBehind answers whether the factory's Kustomization has not applied
@@ -1114,6 +1149,11 @@ func (r *Roller) carried(ctx context.Context, head string) ([]ComparedCommit, []
 // task exists leaves a request the next settle forgets, then the issue,
 // the task and its workflow.
 func (r *Roller) file(ctx context.Context, req RollRequest) error {
+	// a roll goes live through Flux, which a queued plan card may hold
+	// suspended though rolls are not held
+	if err := r.setLevel(ctx, false, ""); err != nil {
+		return err
+	}
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
 		return err

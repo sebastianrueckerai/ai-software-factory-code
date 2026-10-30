@@ -360,6 +360,19 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	return out, nil
 }
 
+func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
+	var out []int64
+	for _, c := range s.tasks {
+		queued := c.Gate == GateMergeQueue || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
+		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
+			!Final(c.Status) && queued && !slices.Contains(out, issue) {
+			out = append(out, issue)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
 func (s *fakeStore) Release(ctx context.Context, repository string) (Release, error) {
 	if r, ok := s.releases[repository]; ok {
 		return r, nil
