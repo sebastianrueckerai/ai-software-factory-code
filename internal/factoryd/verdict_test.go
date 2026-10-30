@@ -1032,11 +1032,13 @@ func TestCriteriaPassLeavesAPlanUnderReplan(t *testing.T) {
 	}
 }
 
-// A plan at rest is a final one, done, failed or closed, with no replan
-// pending: each closes once its cards are, and none under its replan.
+// A plan at rest is a final one with no replan pending, done or failed,
+// and a closed one whatever its step: a person's close ends a pending
+// replan. Each closes once its cards are, and a done or failed one not
+// under its replan.
 func TestPlanCloseCheckClosesAFinalPlan(t *testing.T) {
 	ctx := context.Background()
-	for _, status := range []string{"done", "failed", "closed"} {
+	for status, closes := range map[string]int{"done": 0, "failed": 0, "closed": 1} {
 		r, s, objs, _ := planWithoutCriteria(t, "done", "closed")
 		p := s.tasks["t-plan"]
 		p.Status = status
@@ -1045,8 +1047,8 @@ func TestPlanCloseCheckClosesAFinalPlan(t *testing.T) {
 			t.Fatal(err)
 		}
 		r.planCloseCheck(ctx, "t-plan")
-		if n := planCloses(t, objs); n != 0 {
-			t.Fatalf("plan %s under replan: plan_closed %d times, want none", status, n)
+		if n := planCloses(t, objs); n != closes {
+			t.Fatalf("plan %s under replan: plan_closed %d times, want %d", status, n, closes)
 		}
 		if err := r.timeline.Append(ctx, "t-plan", "to_plan_refused", nil); err != nil {
 			t.Fatal(err)
