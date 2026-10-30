@@ -31,18 +31,21 @@ const stepOffMainFailed = "off_main_failed"
 // replanClosers are the steps that end a pending replan.
 var replanClosers = []string{"replanned", "to_plan_refused", stepOffMainFailed}
 
-// The origins of a replan: a person's, or the cut of a running card.
+// The origins of a replan: a person's, the cut of a running card, or the
+// next round of a plan whose round is done.
 const (
 	ReplanPerson = "person"
 	ReplanCut    = "cut"
+	ReplanRound  = "round"
 )
 
 // ReplanStep is the replan step's detail. Card is the card whose work goes
 // back (the cut card, or a direct card replanned as itself), Stops the
 // cards the replan stops, OffMain that the plan's merged cards come off
 // main first (the revert's end sends the plan to its planner), Revision
-// the plan's newest revision at the ask (0: none), Time when the step was
-// written.
+// the plan's newest revision at the ask (0: none), Round the planning
+// round the replan files (0: the newest revision's), Time when the step
+// was written.
 type ReplanStep struct {
 	Origin   string    `json:"origin"`
 	By       string    `json:"by,omitempty"`
@@ -52,6 +55,7 @@ type ReplanStep struct {
 	Stops    []string  `json:"stops,omitempty"`
 	OffMain  bool      `json:"off_main,omitempty"`
 	Revision int       `json:"revision"`
+	Round    int       `json:"round,omitempty"`
 	Time     time.Time `json:"time"`
 }
 
@@ -788,16 +792,17 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 }
 
 // replanState is what a revision of plan is judged against: the revision
-// before (nil: none), the newest stored and its number, the old cards,
-// each started open card's entry in the revision it started against by
-// key, the pending cut's card and whether its branch holds a commit past
-// its base, and the old cards with a merge commit, those of them taken
-// off main, and those that are the integration card of the revision they
-// ran against, by id.
+// before (nil: none), the newest stored and its number, the pending
+// replan step (zero: none), the old cards, each started open card's entry
+// in the revision it started against by key, the pending cut's card and
+// whether its branch holds a commit past its base, and the old cards with
+// a merge commit, those of them taken off main, and those that are the
+// integration card of the revision they ran against, by id.
 type replanState struct {
 	prev        *Plan
 	newest      *Plan
 	revision    int
+	step        ReplanStep
 	old         []Task
 	started     map[string]PlanCard
 	plan        Task
@@ -846,6 +851,7 @@ func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (re
 	if err != nil {
 		return replanState{}, err
 	}
+	st.step = step
 	if st.old, err = r.oldCardsOf(ctx, p, step, pending); err != nil {
 		return replanState{}, err
 	}

@@ -546,6 +546,30 @@ func TestPlanGuideSpec(t *testing.T) {
 	}
 }
 
+// Roadmap 336: the guide shows the outline in the plan's shape, tells how
+// a feature too big for one round is planned in rounds, and that the
+// last plan of a later round leaves the merged cards of earlier rounds
+// out, so the planner answers it again, not the whole plan.
+func TestPlanGuideRounds(t *testing.T) {
+	got := planGuide(testShape, testLimits, nil)
+	for _, want := range []string{
+		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,
+		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
+			"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
+			"A feature too big for one round of cards is planned in rounds: file the first round's cards, foundation first, and keep the rest in outline; " +
+			"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
+			"The merged cards of earlier rounds are not in your last plan. " +
+			"When the criteria fall into two sets whose cards share nothing but a foundation, you may ask in a question whether they should be two plans. ",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("planGuide = %q, want it to contain %q", got, want)
+		}
+	}
+	if !strings.HasSuffix(got, "with your last plan: answer it again.") {
+		t.Fatalf("planGuide = %q, want it to end with the last plan answered again", got)
+	}
+}
+
 // stage12-design 5.2 (plan.go:502): the foundation's brief names the
 // contracts every other card builds on.
 func TestPlanGuideFoundationContractsSentence(t *testing.T) {

@@ -1058,9 +1058,14 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
+		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
+		"A feature too big for one round of cards is planned in rounds: file the first round's cards, foundation first, and keep the rest in outline; " +
+		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
+		"The merged cards of earlier rounds are not in your last plan. " +
+		"When the criteria fall into two sets whose cards share nothing but a foundation, you may ask in a question whether they should be two plans. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
 		"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
@@ -1104,7 +1109,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +
-		"answer the whole plan again."
+		"answer it again."
 }
 
 // imageField is a card's image field in the plan's shape where the
@@ -2154,7 +2159,8 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 }
 
 // RunPlan is one planner session under the pinned version, with findings,
-// the last plan and the members' answers to its questions. The session
+// the last plan as its planner reads it again (planView) and the members'
+// answers to its questions. The session
 // answers by the file_plan tool, which checks the whole plan json while it
 // runs: RunPlan takes the filing the tool stored (FilePlan) and returns
 // it; a session that ends without filing one says so, with its last
@@ -2172,14 +2178,32 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
-	last, ok, err := r.store.PlanRevision(ctx, taskID, 0)
+	last, revision, err := r.planAt(ctx, taskID, 0)
 	if err != nil {
 		return PlanResult{}, err
 	}
 	var answers []string
-	if ok {
-		findings = append(slices.Clone(findings), fmt.Sprintf("your last plan, revision %d: answer the whole plan again, changed as the findings ask:\n```json\n%s\n```", last.Revision, last.Plan))
-		qs, err := r.store.PlanQuestions(ctx, taskID, last.Revision)
+	if last != nil {
+		step, _, err := r.pendingReplan(ctx, t)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		cards, err := r.store.PlanCards(ctx, taskID)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		settled := settledCards(*last, cards, filingRound(step, last))
+		view, err := json.Marshal(planView(*last, settled))
+		if err != nil {
+			return PlanResult{}, err
+		}
+		head := fmt.Sprintf("your last plan, revision %d: answer the whole plan again, changed as the findings ask:", revision)
+		if len(settled) > 0 {
+			head = fmt.Sprintf("your last plan, revision %d, without the %d merged cards of its earlier rounds, which the plan keeps as they are: answer it again, changed as the findings ask:",
+				revision, len(settled))
+		}
+		findings = append(slices.Clone(findings), head+"\n```json\n"+string(view)+"\n```")
+		qs, err := r.store.PlanQuestions(ctx, taskID, revision)
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -2279,7 +2303,10 @@ func readsFinding(paths []string) string {
 
 // FilePlan is the file_plan tool's hand-over: the complete plan json of
 // the planner session that runs, checked at once under the version in
-// force. A refusal carries every finding back into the session; a valid
+// force. The plan files the round filingRound names: factoryd stamps it
+// on the plan and its cards, overwriting the planner's, and puts the
+// settled cards of earlier rounds first, as the newest revision holds
+// them. A refusal carries every finding back into the session; a valid
 // plan is stored as the task's next revision and held as the session's
 // answer, which RunPlan returns when the session ends.
 func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult, error) {
@@ -2298,7 +2325,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
-	p, found := readPlan("```json\n"+plan+"\n```", shape, v.Document.Limits, projectPins(v, t.Repository))
+	p, found := decodePlan("```json\n" + plan + "\n```")
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
@@ -2312,6 +2339,21 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	st, err := r.replanState(ctx, t, tl, 0)
 	if err != nil {
 		return PlanResult{}, err
+	}
+	round := filingRound(st.step, st.newest)
+	p.Round = round
+	for i := range p.Cards {
+		p.Cards[i].Round = round
+	}
+	if st.newest != nil {
+		settled := settledCards(*st.newest, st.old, round)
+		if found := settledFindings(p, settled); len(found) > 0 {
+			return PlanResult{Findings: found}, nil
+		}
+		p.Cards = append(settled, p.Cards...)
+	}
+	if p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository)); len(found) > 0 {
+		return PlanResult{Findings: found}, nil
 	}
 	if st.newest != nil {
 		found = revisionFindings(*st.newest, p)
