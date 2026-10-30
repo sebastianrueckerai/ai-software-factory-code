@@ -88,8 +88,9 @@ var groupRevertBranch = func(ctx context.Context, f *Forgejo, repo Repo, shas []
 // on green checks; a revert that conflicts files an agent card that
 // resolves it. The card holds the pause. A call that finds p's own pause,
 // a retry's, goes on with its card, and once the card exists answers from
-// it. Any other pause refuses (ErrNoReplan). An error lifts the pause
-// unless the card exists. The answer is the note for the person.
+// it. Any other pause refuses (ErrNoReplan). An error lifts the pause,
+// and closes the pull request the call opened, unless the card exists.
+// The answer is the note for the person.
 func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why string) (string, error) {
 	repo, err := SplitRepo(p.Repository)
 	if err != nil {
@@ -103,12 +104,13 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 		return "", err
 	}
 	card, filed, err := r.store.Task(ctx, id)
-	issue := card.IssueNumber
+	issue, opened := card.IssueNumber, int64(0)
 	if err == nil && !filed {
-		issue, err = r.fileGroupRevert(ctx, p, repo, cards, why, id)
+		issue, opened, err = r.fileGroupRevert(ctx, p, repo, cards, why, id)
 	}
 	if err != nil {
 		if unfiled(ctx, r.store, id) {
+			closeOpened(ctx, r.forgejo, repo, opened)
 			if cerr := r.store.ClearQueuePause(context.WithoutCancel(ctx), p.Repository); cerr != nil {
 				log.Printf("plan %s: lift the merge queue's pause of %s: %v", p.ID, p.Repository, cerr)
 			}
@@ -129,6 +131,18 @@ func unfiled(ctx context.Context, store interface {
 		log.Printf("card %s: read its row: %v: nothing is undone", id, err)
 	}
 	return err == nil && !ok
+}
+
+// closeOpened closes pull request pr of repo, which a call that failed
+// before it filed the pull request's card opened, past ctx's end; 0 is
+// none. A failure is logged.
+func closeOpened(ctx context.Context, f *Forgejo, repo Repo, pr int64) {
+	if pr == 0 {
+		return
+	}
+	if err := f.ClosePullRequest(context.WithoutCancel(ctx), repo.Owner, repo.Name, pr); err != nil {
+		log.Printf("close pull request #%d of %s: %v", pr, repo, err)
+	}
 }
 
 // revertPause pauses p's project's merge queue for the revert of cards and
@@ -176,24 +190,25 @@ func (r *Runner) revertPause(ctx context.Context, p Task, cards []Task) (string,
 // fileGroupRevert reverts cards' merges on the branch of card id and files
 // the card on main's head: a factory pull request card for the plain
 // revert, an agent card for one that conflicts. It records the
-// group_revert step on plan p and answers the card's issue.
-func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards []Task, why, id string) (int64, error) {
+// group_revert step on plan p and answers the card's issue, and the pull
+// request it opened, 0 for none, also with an error.
+func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards []Task, why, id string) (issue, opened int64, err error) {
 	project, ok, err := r.store.ProjectByRepository(ctx, p.Repository)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if !ok {
-		return 0, fmt.Errorf("no project has the repository %s", p.Repository)
+		return 0, 0, fmt.Errorf("no project has the repository %s", p.Repository)
 	}
 	fork, salvage, branch := r.forgejo.Fork(repo), salvageBranch(p.ID), "factory/"+id
 	_, err = r.forgejo.BranchHeadSHA(ctx, fork.Owner, fork.Name, salvage)
 	salvageExists := err == nil
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return 0, err
+		return 0, 0, err
 	}
 	main, err := r.forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, prBase)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	bySHA := map[string]Task{}
 	shas := make([]string, len(cards))
@@ -202,7 +217,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	}
 	conflict, err := groupRevertBranch(ctx, r.forgejo, repo, shas, salvage, salvageExists, branch)
 	if err != nil {
-		return 0, fmt.Errorf("revert plan #%d's merges: %w", p.IssueNumber, err)
+		return 0, 0, fmt.Errorf("revert plan #%d's merges: %w", p.IssueNumber, err)
 	}
 	merges := make([]Task, len(shas))
 	for i, sha := range shas {
@@ -221,14 +236,14 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 			p.IssueNumber, strings.Join(named, ", "), why, p.Repository, salvage)
 		var pr *PullRequestRef
 		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch); err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if pr == nil {
-			created, err := r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, title, body)
-			if err != nil {
-				return 0, err
+			var created PullRequestRef
+			if created, err = r.forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, prBase, title, body); err != nil {
+				return 0, 0, err
 			}
-			pr = &created
+			pr, opened = &created, created.Number
 		}
 		_, ref, err = FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, budget, project, title, body, nil, Task{
 			ID: id, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: main, Source: SourceRevert,
@@ -240,10 +255,10 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 		})
 	}
 	if err != nil {
-		return 0, err
+		return 0, opened, err
 	}
 	r.record(ctx, p.ID, "group_revert", map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict})
-	return ref.Number, nil
+	return ref.Number, opened, nil
 }
 
 // groupRevertObjective is the body of the agent card that takes plan p's

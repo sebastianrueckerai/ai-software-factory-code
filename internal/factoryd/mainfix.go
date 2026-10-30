@@ -434,6 +434,9 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		ID: taskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: pause.SHA, Source: SourceRevert,
 	}, pr.Number)
 	if err != nil {
+		if unfiled(ctx, r.Store, taskID) {
+			closeOpened(ctx, r.Forgejo, r.Repo, pr.Number)
+		}
 		return err
 	}
 	if err := r.Store.SetQueuePauseRevert(ctx, p.Repository, t.ID); err != nil {

@@ -146,6 +146,33 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	}
 }
 
+// A main-red revert whose card fails to file closes the pull request it
+// opened: the next poll opens its own.
+func TestRollerRevertWhoseCardFailsClosesItsPullRequest(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}}
+	store.createFails = 1
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		return "", nil
+	}
+	if err := roller.poll(context.Background()); err == nil || !strings.Contains(err.Error(), "insert failed") {
+		t.Fatalf("error = %v, want the filing's", err)
+	}
+	if len(f.pulls) != 1 || !slices.Equal(f.closedPRs, []int64{71}) || store.pauses[codeRepo].RevertTask != "" {
+		t.Fatalf("pull requests %q, closed %v, pause %+v; want the one opened, closed, and no revert card", f.pulls, f.closedPRs, store.pauses[codeRepo])
+	}
+}
+
 // A main-red revert that conflicts with main is an error and files no
 // card: the pause waits on, and the next poll tries again.
 func TestRollerRevertThatConflictsFilesNothing(t *testing.T) {

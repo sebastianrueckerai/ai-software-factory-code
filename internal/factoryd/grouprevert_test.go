@@ -126,6 +126,7 @@ type groupForgejo struct {
 	issues   []string // "title\n\nbody" of each issue created
 	pulls    []string // "head title\n\nbody" of each pull request created
 	noIssue  bool     // POST /issues answers 500
+	closed   []int64  // the pull requests closed
 }
 
 func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
@@ -165,6 +166,12 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, `{"number":%d}`, 20+len(f.issues))
 		case r.Method == "PUT" && strings.HasSuffix(p, "/labels"):
 			io.WriteString(w, `[]`)
+		case r.Method == "PATCH" && strings.HasPrefix(p, "/api/v1/repos/sf/repo/pulls/"):
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, "/api/v1/repos/sf/repo/pulls/"), "%d", &n)
+			f.closed = append(f.closed, n)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, p)
 			w.WriteHeader(http.StatusNotImplemented)
@@ -340,8 +347,9 @@ func TestRevertGroupResumesItsOwnPause(t *testing.T) {
 	}
 }
 
-// A plain revert whose card fails to file answers the error and lifts
-// the pause.
+// A plain revert whose card fails to file answers the error, closes the
+// pull request the call opened and lifts the pause. A pull request an
+// earlier call opened stays open.
 func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	g := newGroupRevertRig(t)
 	g.fj.noIssue = true
@@ -352,8 +360,22 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	if p, ok := g.store.pauses["sf/repo"]; ok {
 		t.Errorf("pause = %+v, want it lifted", p)
 	}
+	if len(g.fj.pulls) != 1 || !slices.Equal(g.fj.closed, []int64{71}) {
+		t.Errorf("pull requests %q, closed %v; want the one opened, closed", g.fj.pulls, g.fj.closed)
+	}
 	if steps := groupRevertSteps(t, g.r); len(steps) != 0 {
 		t.Errorf("steps = %v, want none", steps)
+	}
+
+	g = newGroupRevertRig(t)
+	g.fj.noIssue = true
+	g.store.pauses = map[string]QueuePause{"sf/repo": {Project: "sf/repo", Since: time.Now(), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv"}}
+	g.fj.open = []map[string]any{{"number": 70, "head": map[string]any{"ref": "factory/t-rv", "repo": map[string]any{"full_name": "factory-agent/repo"}}}}
+	if _, err := g.revert(t); err == nil {
+		t.Fatal("RevertGroup answered no error")
+	}
+	if _, ok := g.store.pauses["sf/repo"]; ok || len(g.fj.pulls) != 0 || len(g.fj.closed) != 0 {
+		t.Errorf("paused %t, pull requests %q, closed %v; want the pause lifted and pull request #70 reused and left open", ok, g.fj.pulls, g.fj.closed)
 	}
 }
 
