@@ -2336,7 +2336,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	if err := r.store.ResolveApprovals(ctx, taskID, "", "denied", FactoryDecider, "the task ended "+state+": "+reason); err != nil {
 		return err
 	}
-	if err := r.leaveQueue(ctx, taskID, "the task ended "+state); err != nil {
+	if _, err := r.leaveQueue(ctx, taskID, "the task ended "+state); err != nil {
 		return err
 	}
 	v := alertVerdict(final, reason)

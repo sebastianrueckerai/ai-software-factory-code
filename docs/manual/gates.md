@@ -291,8 +291,8 @@ while another plan is open on main. A plan is open from its first merged
 card until its `plan_closed`; a reverted card does not count. The held
 card is in gate `merge-queue` from then on, through its wait in the
 queue once admitted (the drawer reads `merge queue, after the open
-plan`). It records `queue_group_wait {project, plan, issue}` once and
-leaves the queue if it was in it, its `queue_left` naming the open plan's
+plan`). It records `queue_group_wait {project, plan, issue}` once a
+hold and leaves the queue if it was in it, its `queue_left` naming the open plan's
 issue. It asks again once the plan it waits for closes or its revert
 ends (`queue_turn`), else after 5 minutes. A card whose own plan is open
 on main is never held back, so plans already open finish side by side. A direct card is not held back, nor is a revert. `free`,

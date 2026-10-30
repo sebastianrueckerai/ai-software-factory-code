@@ -116,7 +116,7 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 	if err := r.store.ResolveApprovals(ctx, taskID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
 		return PlanSwitchResult{}, err
 	}
-	if err := r.leaveQueue(ctx, taskID, toPlanner); err != nil {
+	if _, err := r.leaveQueue(ctx, taskID, toPlanner); err != nil {
 		return PlanSwitchResult{}, err
 	}
 	if p, ok, err := r.store.ImagePark(ctx, taskID); err != nil {

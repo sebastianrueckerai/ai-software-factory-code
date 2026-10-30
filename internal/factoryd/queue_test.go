@@ -440,23 +440,35 @@ func TestQueueAdmitsOnePlanAtATime(t *testing.T) {
 		t.Fatalf("h1 in gate %q since %v, want merge-queue since it was held back at %v", h1.Gate, h1.GateSince, held)
 	}
 
-	t.Run("admitted then held back", func(t *testing.T) {
-		r, store := fixture(t, policy.GroupsOneAtATime)
-		merged := store.tasks["g1"]
-		g1 := merged
-		g1.Status, g1.MergeCommit, g1.FinishedAt = "in-review", "", nil
-		store.tasks["g1"] = g1
-		enter(t, r, "h1", 0)
-		if !queued(store, "h1") {
-			t.Fatal("h1 is not in the queue while no plan is open")
-		}
-		store.tasks["g1"] = merged
-		enter(t, r, "h1", 1)
-		left := steps(t, r, "h1", "queue_left")
-		if queued(store, "h1") || len(left) != 1 || left[0]["why"] != "waits for plan #30 to close on main: merge.groups is one_at_a_time" {
-			t.Fatalf("h1 queued %v, queue_left steps %v; want it left for plan #30", queued(store, "h1"), left)
-		}
-	})
+	// h1 is admitted at its turn, or behind d1 in gate merge-queue; held
+	// back either way, it leaves the queue and records one
+	// queue_group_wait for the hold
+	for _, ahead := range []int{0, 1} {
+		t.Run(fmt.Sprintf("admitted %d ahead then held back", ahead), func(t *testing.T) {
+			r, store := fixture(t, policy.GroupsOneAtATime)
+			merged := store.tasks["g1"]
+			g1 := merged
+			g1.Status, g1.MergeCommit, g1.FinishedAt = "in-review", "", nil
+			store.tasks["g1"] = g1
+			if ahead > 0 {
+				enter(t, r, "d1", 0)
+			}
+			enter(t, r, "h1", ahead)
+			if !queued(store, "h1") {
+				t.Fatal("h1 is not in the queue while no plan is open")
+			}
+			store.tasks["g1"] = merged
+			enter(t, r, "h1", 1)
+			left := steps(t, r, "h1", "queue_left")
+			if queued(store, "h1") || len(left) != 1 || left[0]["why"] != "waits for plan #30 to close on main: merge.groups is one_at_a_time" {
+				t.Fatalf("h1 queued %v, queue_left steps %v; want it left for plan #30", queued(store, "h1"), left)
+			}
+			enter(t, r, "h1", 1)
+			if wait := steps(t, r, "h1", "queue_group_wait"); len(wait) != 1 || wait[0]["plan"] != "p-g" || wait[0]["issue"] != float64(30) {
+				t.Fatalf("queue_group_wait steps = %v, want one naming plan p-g, issue 30", wait)
+			}
+		})
+	}
 
 	t.Run("closed", func(t *testing.T) {
 		r, store := fixture(t, policy.GroupsOneAtATime)

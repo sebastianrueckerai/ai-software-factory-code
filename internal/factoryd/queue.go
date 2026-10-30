@@ -121,13 +121,16 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 	if g, wait, err := r.groupWait(ctx, t); err != nil {
 		return 0, err
 	} else if wait {
-		if err := r.leaveQueue(ctx, t.ID, fmt.Sprintf("waits for plan #%d to close on main: merge.groups is one_at_a_time", g.Issue)); err != nil {
+		left, err := r.leaveQueue(ctx, t.ID, fmt.Sprintf("waits for plan #%d to close on main: merge.groups is one_at_a_time", g.Issue))
+		if err != nil {
 			return 0, err
+		}
+		if left || t.Gate != GateMergeQueue {
+			r.record(ctx, t.ID, "queue_group_wait", map[string]any{"project": t.Repository, "plan": g.Plan, "issue": g.Issue})
 		}
 		if t.Gate == GateMergeQueue {
 			return 1, nil
 		}
-		r.record(ctx, t.ID, "queue_group_wait", map[string]any{"project": t.Repository, "plan": g.Plan, "issue": g.Issue})
 		return 1, r.store.SetGate(ctx, t.ID, GateMergeQueue, r.clock())
 	}
 	spot, err := r.store.EnterQueue(ctx, t.Repository, t.ID)
@@ -276,24 +279,26 @@ func (r *Runner) syncOverlap(ctx context.Context, repo Repo, pr int64, base, mai
 // LeaveQueue is the activity that takes the task out of its project's
 // merge queue, why being the way out, and wakes the new head.
 func (r *Runner) LeaveQueue(ctx context.Context, taskID, why string) error {
-	return r.leaveQueue(ctx, taskID, why)
+	_, err := r.leaveQueue(ctx, taskID, why)
+	return err
 }
 
-func (r *Runner) leaveQueue(ctx context.Context, taskID, why string) error {
+// leaveQueue answers whether the task left: it was in a queue.
+func (r *Runner) leaveQueue(ctx context.Context, taskID, why string) (bool, error) {
 	project, left, err := r.store.LeaveQueue(ctx, taskID)
 	if err != nil || !left {
-		return err
+		return false, err
 	}
 	r.record(ctx, taskID, "queue_left", map[string]any{"project": project, "why": why})
 	head, ok, err := r.store.QueueHead(ctx, project)
 	if err != nil || !ok {
-		return err
+		return true, err
 	}
 	if err := r.cfg.Workflows.Signal(ctx, head, SignalQueueTurn, TaskSignal{}); err != nil {
 		// the heal pass signals a waiting head within the minute
 		log.Printf("task %s: signal the queue's new head %s: %v", taskID, head, err)
 	}
-	return nil
+	return true, nil
 }
 
 // signalQueueHeads wakes every queue head still waiting for its turn (a
