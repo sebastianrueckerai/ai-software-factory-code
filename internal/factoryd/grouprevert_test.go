@@ -715,7 +715,7 @@ func TestClosedRevertLeavesTheCardsOnMain(t *testing.T) {
 	if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
 		t.Errorf("plan comments %q, want %q", c, want)
 	}
-	if steps, want := groupSteps(t, g.r, "group_revert_ended"), []map[string]any{{"step": "group_revert_ended", "card": "t-rv", "state": "closed"}}; !reflect.DeepEqual(steps, want) {
+	if steps, want := groupSteps(t, g.r, "group_revert_ended"), []map[string]any{{"step": "group_revert_ended", "card": "t-rv", "state": "closed", "cards": []any{"c1", "c2"}}}; !reflect.DeepEqual(steps, want) {
 		t.Errorf("steps = %v, want %v", steps, want)
 	}
 

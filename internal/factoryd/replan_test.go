@@ -2441,6 +2441,28 @@ func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
 	}
 }
 
+// A replan's record says of a merged card on main that the revert that was
+// to take it off main ended without landing, so the planner knows a
+// person stopped it; a card no ended revert named reads as merged.
+func TestReplanRecordOfARevertThatDidNotLand(t *testing.T) {
+	r, store, _, _, _ := oldCardsRig(t, personReplan)
+	if err := r.timeline.Append(context.Background(), "t-plan", stepGroupRevertEnded, map[string]any{"card": "t-rv", "state": "closed", "cards": []string{"t-api"}}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"])
+	if err != nil || !ok {
+		t.Fatalf("replanRecord: %t, %v", ok, err)
+	}
+	want := "#30 Links API (feature, key api): merged as 0123abcd; the revert that was to take it off main ended closed without landing; " +
+		"spent 1.20 of 3.00 EUR in 2 sessions; its record is card-30.md"
+	if rec.findings[1] != want {
+		t.Fatalf("api's finding %q, want %q", rec.findings[1], want)
+	}
+	if text := rec.files[0].Text; !strings.HasPrefix(text, "# #30 Links API\n\nmerged as 0123abcd; the revert that was to take it off main ended closed without landing; spent") {
+		t.Fatalf("card-30.md starts %.160q", text)
+	}
+}
+
 // movesFail is a store whose MoveDependents fails while fails is above 0.
 type movesFail struct {
 	*fakeStore

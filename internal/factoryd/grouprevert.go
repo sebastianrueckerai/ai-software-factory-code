@@ -24,7 +24,8 @@ const groupRevertSessions = 2
 
 // The group revert's steps. On its plan's timeline group_revert records
 // card's git work, its merges' shas newest first, and group_reverted or
-// group_revert_ended the revert's end, landed or not. On a plain revert
+// group_revert_ended the revert's end, landed or not, with the cards it
+// was to take off main. On a plain revert
 // card's own timeline group_revert_handover names the agent card that took
 // it over, its checks red.
 const (
@@ -436,7 +437,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 			}
 		}
 	} else {
-		step, detail = stepGroupRevertEnded, map[string]any{"card": t.ID, "state": final}
+		step, detail = stepGroupRevertEnded, map[string]any{"card": t.ID, "state": final, "cards": pause.Reverts}
 		msg := fmt.Sprintf("factoryd: the revert of plan #%d did not land (card #%d ended %s): its cards stay on main.", p.IssueNumber, t.IssueNumber, final)
 		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, msg); forgejoTerminal(err) {
 			log.Printf("plan %s: Forgejo refused the comment that its revert did not land: %v", p.ID, err)

@@ -1197,11 +1197,29 @@ type replanRecord struct {
 }
 
 // replanRecord is plan p's record for the planner session of its pending
-// replan, and whether one is pending.
+// replan, and whether one is pending. A merged card a group revert was to
+// take off main, and that revert ended without landing, says so: a person
+// stopped that take-off.
 func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, error) {
-	step, pending, err := r.pendingReplan(ctx, p)
+	ptl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+	if err != nil {
+		return replanRecord{}, false, fmt.Errorf("the timeline of %s: %w", p.ID, err)
+	}
+	step, pending, err := pendingIn(ptl, p.ID)
 	if err != nil || !pending {
 		return replanRecord{}, false, err
+	}
+	unlanded := map[string]string{}
+	for line := range bytes.SplitSeq(ptl, []byte("\n")) {
+		var end struct {
+			Step, State string
+			Cards       []string
+		}
+		if json.Unmarshal(line, &end) == nil && end.Step == stepGroupRevertEnded {
+			for _, id := range end.Cards {
+				unlanded[id] = end.State
+			}
+		}
 	}
 	cards, err := r.oldCardsOf(ctx, p, step, true)
 	if err != nil {
@@ -1257,6 +1275,9 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 			state = "taken off main (it was merged as " + k.MergeCommit[:min(8, len(k.MergeCommit))] + ")"
 		case k.MergeCommit != "":
 			state = "merged as " + k.MergeCommit[:min(8, len(k.MergeCommit))]
+			if final, ok := unlanded[k.ID]; ok {
+				state += "; the revert that was to take it off main ended " + final + " without landing"
+			}
 		case k.ID == p.ID:
 			state = work
 		case k.ID == step.Card || slices.Contains(step.Stops, k.ID):
