@@ -158,6 +158,9 @@ type Runner struct {
 	// filed is what a running session's file_plan tool stored, by task:
 	// its answer, taken by the loop that ran the session
 	filed map[string]PlanResult
+	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
+	// once at a time per project
+	revertLocks sync.Map
 	// audits is the hold-out an audit session audits, by task: only it
 	// may file that hold-out's verdict (the file_verdict tool)
 	audits map[string]int

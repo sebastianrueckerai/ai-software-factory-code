@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -113,12 +114,16 @@ var groupRevertBranch = func(ctx context.Context, f *Forgejo, repo Repo, shas []
 // a retry's, goes on with its card, and once the card exists answers from
 // it. Any other pause refuses (ErrNoReplan). An error lifts the pause,
 // and closes the pull request the call opened, unless the card exists.
-// The answer is the note for the person.
+// The answer is the note for the person. Calls for one project run one at
+// a time: a replan's filing and the minute pass's heal may meet.
 func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why string) (string, error) {
 	repo, err := SplitRepo(p.Repository)
 	if err != nil {
 		return "", err
 	}
+	lock, _ := r.revertLocks.LoadOrStore(p.Repository, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
 	if err := r.forgejo.EnsureFork(ctx, repo); err != nil {
 		return "", err
 	}

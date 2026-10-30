@@ -887,3 +887,33 @@ func TestRevertEndPassesARefusedReopen(t *testing.T) {
 		t.Errorf("signals = %q, want the waiting head woken", g.wf.signals)
 	}
 }
+
+// Two calls for one project at once, a replan's filing and the minute
+// pass's heal, file one card: the second waits for the first and answers
+// from its card.
+func TestRevertGroupRunsOneAtATimePerProject(t *testing.T) {
+	g := newGroupRevertRig(t)
+	g.answer = func() (string, error) {
+		time.Sleep(100 * time.Millisecond)
+		return "", nil
+	}
+	var wg sync.WaitGroup
+	notes, errs := make([]string, 2), make([]error, 2)
+	for i := range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			notes[i], errs[i] = g.r.RevertGroup(context.Background(), g.plan, g.cards, "asked by sebastian: the api is wrong")
+		}()
+	}
+	wg.Wait()
+	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21."
+	for i := range 2 {
+		if errs[i] != nil || notes[i] != want {
+			t.Errorf("call %d = %q, %v; want %q", i+1, notes[i], errs[i], want)
+		}
+	}
+	if len(g.calls) != 1 || len(g.fj.pulls) != 1 || len(g.fj.issues) != 1 || len(g.wf.started) != 1 {
+		t.Errorf("reverts %q, pull requests %q, issues %q, started %q; want one of each", g.calls, g.fj.pulls, g.fj.issues, g.wf.started)
+	}
+}
