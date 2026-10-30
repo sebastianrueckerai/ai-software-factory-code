@@ -732,7 +732,7 @@ func (s *accBatchStore) OpenGroups(context.Context) (map[string][]factoryd.Group
 	panic("unused")
 }
 
-func (s *accBatchStore) PlanClosed(context.Context, string) (bool, error) {
+func (s *accBatchStore) PlanClosed(context.Context, string) (time.Time, bool, error) {
 	panic("unused")
 }
 

@@ -14,9 +14,9 @@ const BranchRetention = 30 * 24 * time.Hour
 
 // SweepBranches deletes the factory/<id> branches on the bot's forks whose
 // card ended BranchRetention ago or longer, and the salvage/<plan> branches
-// of plans that closed (plan_closed) and finished as long ago. Finish keeps
-// the branch of a card whose work never merged. One project's error does
-// not stop the others.
+// of plans that closed (plan_closed) as long ago. Finish keeps the branch
+// of a card whose work never merged. One project's error does not stop the
+// others.
 func (r *Runner) SweepBranches(ctx context.Context, now time.Time) error {
 	var errs []error
 	for name, p := range r.cfg.Policy().Tree.Projects {
@@ -59,21 +59,18 @@ func (r *Runner) sweepProjectBranches(ctx context.Context, repository string, no
 
 // branchOutlived tells whether fork branch name has outlived
 // BranchRetention: a card's factory/<id> since the card ended, a plan's
-// salvage/<plan> since the plan, closed, finished.
+// salvage/<plan> since the plan closed.
 func (r *Runner) branchOutlived(ctx context.Context, name string, now time.Time) (bool, error) {
+	if plan, salvage := strings.CutPrefix(name, "salvage/"); salvage {
+		at, closed, err := r.store.PlanClosed(ctx, plan)
+		return closed && now.Sub(at) >= BranchRetention, err
+	}
 	id, card := strings.CutPrefix(name, "factory/")
-	plan, salvage := strings.CutPrefix(name, "salvage/")
-	switch {
-	case salvage:
-		if closed, err := r.store.PlanClosed(ctx, plan); err != nil || !closed {
-			return false, err
-		}
-		id = plan
-	case !card:
+	if !card {
 		return false, nil
 	}
 	t, found, err := r.store.Task(ctx, id)
-	if err != nil || !found || !salvage && !Final(t.Status) {
+	if err != nil || !found || !Final(t.Status) {
 		return false, err
 	}
 	return t.FinishedAt != nil && now.Sub(*t.FinishedAt) >= BranchRetention, nil

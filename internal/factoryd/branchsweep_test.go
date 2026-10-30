@@ -10,10 +10,10 @@ import (
 )
 
 // The sweep deletes a fork branch of a card that ended 30 days ago or more,
-// and a plan's salvage branch once the plan closed and its card finished
-// 30 days ago or more, and no other: not a younger end, a live card, a
-// branch with no card row, a plan that did not close, nor a branch that is
-// neither a card's nor a plan's salvage.
+// and a plan's salvage branch once the plan closed 30 days ago or more,
+// and no other: not a younger end, a live card, a branch with no card row,
+// a plan that closed later than its last filing, a plan that did not
+// close, nor a branch that is neither a card's nor a plan's salvage.
 func TestSweepBranches(t *testing.T) {
 	ctx := context.Background()
 	day := func(s string) *time.Time {
@@ -45,19 +45,20 @@ func TestSweepBranches(t *testing.T) {
 		}
 	}
 	for id, plan := range map[string]struct {
-		ended  *time.Time
-		closed bool
+		ended, closed *time.Time
 	}{
-		"p-old":   {day("2026-10-30T00:00:00Z"), true},
-		"p-young": {day("2026-11-01T00:00:00Z"), true},
-		"p-open":  {day("2026-09-30T00:00:00Z"), false},
+		"p-old":   {day("2026-10-20T00:00:00Z"), day("2026-10-31T00:00:00Z")},
+		"p-young": {day("2026-09-30T00:00:00Z"), day("2026-11-01T00:00:00Z")},
+		"p-open":  {day("2026-09-30T00:00:00Z"), nil},
 	} {
 		task := prTask
 		task.ID, task.Track, task.Status, task.FinishedAt = id, policy.TrackPlan, "done", plan.ended
 		if err := store.CreateTask(ctx, task); err != nil {
 			t.Fatal(err)
 		}
-		store.closed[id] = plan.closed
+		if plan.closed != nil {
+			store.closed[id] = *plan.closed
+		}
 	}
 	if err := r.SweepBranches(ctx, *day("2026-11-30T00:00:00Z")); err != nil {
 		t.Fatal(err)

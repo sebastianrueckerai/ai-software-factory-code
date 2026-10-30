@@ -123,9 +123,9 @@ func TestOpenGroups(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OpenGroups =\n%+v\nwant\n%+v", got, want)
 	}
-	for plan, want := range map[string]bool{"p3": true, "p1": false} {
-		if closed, err := s.PlanClosed(ctx, plan); err != nil || closed != want {
-			t.Errorf("PlanClosed(%s) = %v, %v; want %v", plan, closed, err, want)
+	for plan, want := range map[string]time.Time{"p3": time.Date(2026, 10, 2, 8, 0, 0, 0, time.UTC), "p1": {}} {
+		if at, closed, err := s.PlanClosed(ctx, plan); err != nil || closed != !want.IsZero() || !at.Equal(want) {
+			t.Errorf("PlanClosed(%s) = %v, %v, %v; want %v, %v", plan, at, closed, err, want, !want.IsZero())
 		}
 	}
 }

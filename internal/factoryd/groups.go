@@ -36,10 +36,10 @@ type Group struct {
 	Children map[string]int
 }
 
-func (s *PGStore) PlanClosed(ctx context.Context, plan string) (bool, error) {
-	var closed bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE task_id = $1 AND kind = 'plan_closed')`, plan).Scan(&closed)
-	return closed, err
+func (s *PGStore) PlanClosed(ctx context.Context, plan string) (time.Time, bool, error) {
+	var at sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT min(at) FROM events WHERE task_id = $1 AND kind = 'plan_closed'`, plan).Scan(&at)
+	return at.Time, at.Valid, err
 }
 
 func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {

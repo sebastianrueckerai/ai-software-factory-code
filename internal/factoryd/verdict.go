@@ -744,7 +744,7 @@ type CriteriaSpec struct {
 // planClosed says plan id has its plan_closed row, the fact the open
 // groups read. A failed read counts as closed until the next pass.
 func (r *Runner) planClosed(ctx context.Context, id string) bool {
-	closed, err := r.store.PlanClosed(ctx, id)
+	_, closed, err := r.store.PlanClosed(ctx, id)
 	if err != nil {
 		log.Printf("plan %s: the close row: %v", id, err)
 		return true

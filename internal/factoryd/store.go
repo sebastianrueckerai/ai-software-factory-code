@@ -546,8 +546,8 @@ type Store interface {
 	// commit or a pull_request_merged event) and no plan_closed event.
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
-	// fact OpenGroups reads.
-	PlanClosed(ctx context.Context, plan string) (bool, error)
+	// fact OpenGroups reads, and the time of its first.
+	PlanClosed(ctx context.Context, plan string) (at time.Time, closed bool, err error)
 	// SetTaskPlanRevision records the plan revision a card first runs
 	// against; the guard makes it once.
 	SetTaskPlanRevision(ctx context.Context, id string, revision int) error

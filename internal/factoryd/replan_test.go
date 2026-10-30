@@ -244,7 +244,9 @@ func TestReplanChildRefused(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, _ := replanRig(t, tc.status, tc.revisions)
-			store.closed["p"] = tc.closed
+			if tc.closed {
+				store.closed["p"] = replanAt
+			}
 			if got := replanChild(t, r, "c", "w"); got != (ReplanChildResult{Refused: tc.want}) {
 				t.Fatalf("answer %+v, want the refusal %q", got, tc.want)
 			}
@@ -896,7 +898,9 @@ func TestReplanRefusesAPlan(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, store, _ := replanRig(t, tc.status, tc.revisions)
-			store.closed["p"] = tc.closed
+			if tc.closed {
+				store.closed["p"] = replanAt
+			}
 			c := store.tasks["c"]
 			c.PlanRevision = 1
 			store.tasks["c"] = c

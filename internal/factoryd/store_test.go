@@ -112,7 +112,7 @@ type fakeStore struct {
 	routineStates map[string]RoutineState
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
-	closed        map[string]bool // the plans with a plan_closed event row
+	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
 }
 
 func (s *fakeStore) RemoveTaskDeps(ctx context.Context, id string, dependsOn []string) error {
@@ -215,7 +215,7 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},
-		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]bool{}}
+		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]time.Time{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -320,15 +320,16 @@ func (s *fakeStore) PlanCards(ctx context.Context, plan string) ([]Task, error) 
 	return out, nil
 }
 
-func (s *fakeStore) PlanClosed(ctx context.Context, plan string) (bool, error) {
-	return s.closed[plan], nil
+func (s *fakeStore) PlanClosed(ctx context.Context, plan string) (time.Time, bool, error) {
+	at, ok := s.closed[plan]
+	return at, ok, nil
 }
 
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
 	for _, c := range s.tasks {
-		if c.Source != SourcePlan || c.Parent == "" || c.PlanKey == "" || s.closed[c.Parent] {
+		if _, closed := s.closed[c.Parent]; c.Source != SourcePlan || c.Parent == "" || c.PlanKey == "" || closed {
 			continue
 		}
 		g := groups[c.Parent]
@@ -763,8 +764,8 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 // doc_written rows are read back.
 func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	s.events = append(s.events, e)
-	if e.Kind == EventPlanClosed {
-		s.closed[e.TaskID] = true
+	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
+		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
 	}
 	return int64(len(s.events)), nil
 }

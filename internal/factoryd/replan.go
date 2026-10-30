@@ -136,7 +136,7 @@ func (r *Runner) planReplannable(ctx context.Context, p Task) (replannable, clos
 	default:
 		return false, false, nil
 	}
-	closed, err = r.store.PlanClosed(ctx, p.ID)
+	_, closed, err = r.store.PlanClosed(ctx, p.ID)
 	return !closed, closed, err
 }
 

@@ -868,8 +868,8 @@ func (s *acceptanceStore) OpenGroups(context.Context) (map[string][]factoryd.Gro
 	return nil, nil
 }
 
-func (s *acceptanceStore) PlanClosed(context.Context, string) (bool, error) {
-	return false, nil
+func (s *acceptanceStore) PlanClosed(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
 }
 
 func (s *acceptanceStore) SetTaskPlanRevision(context.Context, string, int) error {
