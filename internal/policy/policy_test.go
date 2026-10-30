@@ -639,7 +639,12 @@ func TestParseModelInfo(t *testing.T) {
 	   "regional_processing_uplift_multiplier_eu":1.1,"regional_processing_uplift_multiplier_us":1.1,
 	   "search_context_cost_per_query":{"search_context_size_low":0.01,"search_context_size_medium":0.01,"search_context_size_high":0.01}},
 	  "litellm_params":{"model":"openai/gpt-6.1-sol"}},
-	 {"model_name":"off-peak-flat","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":1.2e-6,
+	 {"model_name":"string-rates","model_info":{"litellm_provider":"openai","max_output_tokens":"128000",
+		   "input_cost_per_token":2e-6,"input_cost_per_token_above_272k_tokens":"4e-6",
+		   "cache_creation_input_token_cost":2.5e-6,"cache_creation_input_token_cost_above_272k_tokens":"5e-6",
+		   "cache_read_input_token_cost":1e-7,"cache_read_input_token_cost_above_272k_tokens":"2e-7",
+		   "output_cost_per_token":1e-5,"output_cost_per_token_above_272k_tokens":"1.5e-5"}},
+		 {"model_name":"off-peak-flat","model_info":{"input_cost_per_token":3e-7,"output_cost_per_token":1.2e-6,
 	   "off_peak_pricing":{"input_cost_per_token":5e-7,"output_cost_per_token":6e-7,"hours_utc":"16:30-00:30","weekday_timezone":"Asia/Shanghai"}}},
 	 {"model_name":"off-peak-odd","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"off_peak_pricing":{"output_cost_per_second":1,"windows":[]}}},
 	 {"model_name":"odd-tier","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"tiered_pricing":[{"output_cost_per_second":1}]}},
@@ -664,6 +669,9 @@ func TestParseModelInfo(t *testing.T) {
 		// the batch API, the 12-hour cache, web search and the regional
 		// uplifts bill no gateway call; the long-context rates do
 		"openai-tiers": {In: 4e-6, CacheRead: 1e-7, Out: 1.5e-5, MaxOutput: 128000},
+		// LiteLLM's /model/info writes an OpenAI deployment's long-context
+		// tiers and max_output_tokens as strings
+		"string-rates": {In: 5e-6, CacheRead: 2e-7, Out: 1.5e-5, MaxOutput: 128000},
 	}
 	if !reflect.DeepEqual(prices, want) {
 		t.Fatalf("prices = %+v, want %+v", prices, want)

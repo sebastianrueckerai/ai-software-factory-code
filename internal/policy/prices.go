@@ -9,6 +9,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -161,11 +162,11 @@ func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, erro
 		}
 		switch {
 		case k == "max_output_tokens":
-			var n int
-			if err := json.Unmarshal(raw, &n); err != nil {
+			n, err := number(raw)
+			if err != nil {
 				return Price{}, fmt.Errorf("%s: %w", k, err)
 			}
-			p.MaxOutput = n
+			p.MaxOutput = int(n)
 		case k == "tiered_pricing":
 			var tiers []map[string]json.RawMessage
 			if err := json.Unmarshal(raw, &tiers); err != nil {
@@ -241,8 +242,8 @@ func (p *Price) addRate(k string, raw json.RawMessage) error {
 	default:
 		return fmt.Errorf("unrecognised cost field %s", k)
 	}
-	var v float64
-	if err := json.Unmarshal(raw, &v); err != nil {
+	v, err := number(raw)
+	if err != nil {
 		return fmt.Errorf("%s: %w", k, err)
 	}
 	if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
@@ -258,4 +259,19 @@ func (p *Price) addRate(k string, raw json.RawMessage) error {
 		p.Out = max(p.Out, v)
 	}
 	return nil
+}
+
+// number reads a JSON number or a string holding one: LiteLLM's
+// /model/info writes some rates (an OpenAI deployment's long-context
+// tiers, max_output_tokens) as strings.
+func number(raw json.RawMessage) (float64, error) {
+	var v float64
+	if err := json.Unmarshal(raw, &v); err == nil {
+		return v, nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return 0, err
+	}
+	return strconv.ParseFloat(s, 64)
 }
