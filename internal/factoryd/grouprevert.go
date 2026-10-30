@@ -464,8 +464,10 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		if err != nil {
 			return err
 		}
+		// no revision files while the replan waits for the revert, so a card
+		// of a newer one started after an earlier run of this end
 		for _, k := range cards {
-			if k.PlanRevision > 0 && stoppable(k) && !slices.Contains(replan.Stops, k.ID) {
+			if k.PlanRevision > 0 && k.PlanRevision <= replan.Revision && stoppable(k) && !slices.Contains(replan.Stops, k.ID) {
 				replan.Stops = append(replan.Stops, k.ID)
 			}
 		}

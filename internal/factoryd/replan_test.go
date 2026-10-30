@@ -2324,6 +2324,32 @@ func TestOffMainRevertEndStopsTheCardsThatStartedSince(t *testing.T) {
 	}
 }
 
+// An end run again while the replan is still pending (its first run left
+// the pause standing), after the planner filed revision 2, leaves that
+// revision's started card alone: only cards of the revision the replan
+// was asked at, or earlier, started during the revert.
+func TestOffMainRevertEndRunAgainLeavesTheNewRevisionsCards(t *testing.T) {
+	ctx := context.Background()
+	g := revertEndRig(t)
+	g.landed()
+	pause := g.store.pauses["sf/repo"]
+	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if err := g.store.CreateTask(ctx, Task{ID: "c7", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+		PlanKey: "api2", IssueNumber: 27, Status: "running", PlanRevision: 2}); err != nil {
+		t.Fatal(err)
+	}
+	g.store.pauses["sf/repo"] = pause
+	g.r.revertEnded(ctx, g.store.tasks["t-rv"], "done", true)
+	if c7 := g.store.tasks["c7"]; c7.Status != "running" || finalReason(t, g.r, "c7") != "" {
+		t.Fatalf("c7 %s (%q), want it running", c7.Status, finalReason(t, g.r, "c7"))
+	}
+	if ends := groupSteps(t, g.r, "group_reverted"); len(ends) != 2 || ends[1]["stops"] != nil {
+		t.Fatalf("the end steps %v, want two, the second with no stops", ends)
+	}
+}
+
 // A revert card that ended before its end was carried out (its hook lost,
 // the minute pass not yet run) refuses a press and a child's cut with its
 // state: the press records nothing, and the replan still waits for the
