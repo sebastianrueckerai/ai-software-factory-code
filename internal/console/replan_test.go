@@ -74,6 +74,12 @@ func TestReplanCard(t *testing.T) {
 		t.Error("the drawer offers Replan to a writer who is no approver")
 	}
 	r.ledger.approvers = nil
+	tracks := r.projects.rows[0].Tracks
+	r.projects.rows[0].Tracks = testProcesses()["maintenance"].Tracks
+	if strings.Contains(drawer("t-r"), `data-sec="replan"`) {
+		t.Error("the drawer offers Replan on a direct card whose project has no plan track")
+	}
+	r.projects.rows[0].Tracks = tracks
 
 	const said = "Card #11 stops its session and goes to the planner."
 	const note = "The cache needs a plan, the reader apart from the writer."
