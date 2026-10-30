@@ -2430,7 +2430,8 @@ func PlanFileHandler(runner *Runner) http.HandlerFunc {
 }
 
 // RequestPlan asks revision's questions of plan task taskID (the newest
-// revision for 0; none yet answers PlanRef{}). A revision that asks none
+// revision for 0; none yet answers PlanRef{}, as does the newest while a
+// replan asked at it is pending). A revision that asks none
 // files its cards (fileRevision) and the plan card ends done in the same
 // step; one whose questions all carry their answers goes back to the
 // planner; one with open questions posts the plan and waits for the
@@ -2450,6 +2451,16 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 		return PlanRef{}, nil
 	case !ok:
 		return PlanRef{}, terminalError("task %s has no plan revision %d", taskID, revision)
+	}
+	if revision == 0 {
+		// a replan asked at the newest revision waits for its planner's
+		step, pending, err := r.pendingReplan(ctx, t)
+		if err != nil {
+			return PlanRef{}, err
+		}
+		if pending && step.Revision >= rev.Revision {
+			return PlanRef{}, nil
+		}
 	}
 	var p Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {

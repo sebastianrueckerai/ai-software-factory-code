@@ -2571,6 +2571,57 @@ func TestFilingJudgesAgainstTheRevisionBefore(t *testing.T) {
 	}
 }
 
+// A healed run asks for the newest revision: while a replan asked at that
+// revision is pending, it is the replan's planner that answers, so none
+// waits and none files, whether or not a card the replan stopped ended.
+// A revision stored after the ask files.
+func TestRequestPlanWaitsForTheReplansRevision(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []string{"running", "closed"} {
+		r, store, k := replanAtRevision1(t)
+		k.Status = status
+		store.tasks[k.ID] = k
+		val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 0, int64(7))
+		if ref := getInto[PlanRef](t, val, err); !reflect.DeepEqual(ref, PlanRef{}) {
+			t.Fatalf("redirects %s: %+v, want no revision", status, ref)
+		}
+		if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || !pending {
+			t.Fatalf("redirects %s: pending %t, %v; want pending", status, pending, err)
+		}
+	}
+
+	r, store, k := replanAtRevision1(t)
+	p := testPlan()
+	p.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	store.tasks[k.ID] = k
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 0, int64(7))
+	if ref := getInto[PlanRef](t, val, err); ref.Revision != 2 || len(ref.Filed) != 4 {
+		t.Fatalf("revision 2 stored: %+v, want it filed", ref)
+	}
+}
+
+// A healed run that finds no revision to wait on or file goes back to the
+// planner, whose revision files.
+func TestPlanLoopHealedWithNoRevisionRunsThePlanner(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.requestPlan = func(taskID string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{}, nil
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+	}
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 1 || !slices.Equal(h.requests, []int{0, 2}) || len(h.escalated) != 0 {
+		t.Fatalf("plans %q requests %v escalated %q; want one planner session, then the filing", h.plans, h.requests, h.escalated)
+	}
+}
+
 // replanAtRevision1 is fileRig's testPlan filed as revision 1 under
 // version 7, its redirects card running against it, and ana's replan of
 // the plan, which stops redirects.
