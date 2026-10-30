@@ -4631,8 +4631,7 @@ func TestHealedScreeningEscalationScreensBeforeTheSession(t *testing.T) {
 		t.Fatalf("activities %q, want one screening before the first session", *order)
 	}
 	if len(h.sessions) != 1 || h.sessions[0].Sessions != testWorkflowConfig.MaxSessions {
-		t.Fatalf("sessions %d, the first of %d; want one of %d: the answer runs the screening again and buys no session",
-			len(h.sessions), h.sessions[0].Sessions, testWorkflowConfig.MaxSessions)
+		t.Fatalf("sessions %+v; want one of %d: the answer runs the screening again and buys no session", h.sessions, testWorkflowConfig.MaxSessions)
 	}
 }
 
