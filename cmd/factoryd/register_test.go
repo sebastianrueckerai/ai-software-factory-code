@@ -358,7 +358,7 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 	var role []rule
 	var roleRef *ref
 	var subjects []subject
-	var variable bool
+	var suspendRule string
 	var validations []string
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	for {
@@ -388,7 +388,9 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 			subjects = doc.Subjects
 		case doc.Kind == "ValidatingAdmissionPolicy" && doc.Metadata.Name == "factoryd-task-namespaces":
 			for _, v := range doc.Spec.Variables {
-				variable = variable || v.Name == "factorySuspend"
+				if v.Name == "factorySuspend" {
+					suspendRule = v.Expression
+				}
 			}
 			for _, v := range doc.Spec.Validations {
 				validations = append(validations, v.Expression)
@@ -407,8 +409,17 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 	if !slices.Equal(subjects, []subject{{"ServiceAccount", "factoryd", "factory"}}) {
 		t.Errorf("RoleBinding flux-system/factoryd-flux subjects %+v, want ServiceAccount factory/factoryd alone", subjects)
 	}
-	if !variable {
-		t.Error("policy factoryd-task-namespaces has no variable factorySuspend")
+	// the API-server case (register_k3s_test.go) proves the rule; CI, with
+	// no API server, checks it still names the Flux API group and keeps
+	// the owner references and finalizers
+	for _, clause := range []string{
+		"request.kind.group == 'kustomize.toolkit.fluxcd.io'",
+		"object.metadata.ownerReferences == oldObject.metadata.ownerReferences",
+		"object.metadata.finalizers == oldObject.metadata.finalizers",
+	} {
+		if !strings.Contains(suspendRule, clause) {
+			t.Errorf("policy factoryd-task-namespaces' variable factorySuspend lacks %s: %q", clause, suspendRule)
+		}
 	}
 	var first, kustomization bool
 	for i, v := range validations {
