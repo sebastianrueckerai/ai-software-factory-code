@@ -621,9 +621,10 @@ func offMainNote(p Task, n int) string {
 // revertCard is the refusal of a replan of plan p while its project's
 // pause names p with a filed revert card, a person's off-main revert or
 // one the planner's revision started: it names the card while the card
-// runs, and the pending end of one that ended; "" for none, and once the
-// plan's timeline records the card's end (endGroupRevert), whose stops
-// may cut themselves before the pause lifts.
+// runs, and says so of a card that ended before the plan's timeline
+// recorded its end (endGroupRevert). "" for none, and for a card whose end
+// is recorded: the cards that end stops may cut themselves before the
+// pause lifts.
 func (r *Runner) revertCard(ctx context.Context, p Task) (string, error) {
 	pause, paused, err := r.store.QueuePause(ctx, p.Repository)
 	if err != nil || !paused || pause.Plan != p.ID {

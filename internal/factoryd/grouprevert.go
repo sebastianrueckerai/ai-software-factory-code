@@ -34,9 +34,9 @@ func SessionCap(t Task, limit int) int {
 // The group revert's steps. On its plan's timeline group_revert records
 // card's git work, its merges' shas newest first, and group_reverted or
 // group_revert_ended the revert's end, landed or not, with the cards it
-// was to take off main. On a plain revert
-// card's own timeline group_revert_handover names the agent card that took
-// it over, its checks red.
+// was to take off main. On a plain revert card's own timeline
+// group_revert_handover names the agent card that took it over, its
+// checks red.
 const (
 	stepGroupRevert         = "group_revert"
 	stepGroupRevertHandover = "group_revert_handover"
@@ -394,15 +394,15 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // and counts each card it newly marks, as the daily pass does. Any other
 // end (a person closed the card, the agent card ended, a hard failure such
 // as the wall clock or an error) tells the plan once that its cards stay
-// on main. At the session cap the agent card asks a person
-// first, as spec H wants; a hard failure lifts the pause with no person's
-// decision, since nothing else could lift it. The end's step goes on the
-// plan's timeline next, so a stopped card's cut finds the revert ended
-// (revertCard). Then a replan that waits with off_main for the revert is
-// carried out (completeReplan): the plan goes to its planner, then the
-// cards its step stops stop, and with them the plan's cards that started
-// while the revert ran, which the end's step names (pendingIn). The pause
-// goes last, the queue's waiting heads woken.
+// on main. At the session cap the agent card asks a person first, as spec
+// H wants; a hard failure lifts the pause with no person's decision, since
+// nothing else could lift it. The end's step goes on the plan's timeline
+// next, so a stopped card's cut finds the revert ended (revertCard). Then
+// a replan that waits with off_main for the revert is carried out
+// (completeReplan): the plan goes to its planner, then the cards its step
+// stops stop, and with them the plan's cards that started while the
+// revert ran, which the end's step names (pendingIn). The pause goes
+// last, the queue's waiting heads woken.
 // A step that fails leaves the pause for RevertPausePass, which runs it
 // all again; a comment or a reopen Forgejo refuses is logged and passed
 // instead, as no retry changes it and the queue must go on. Safe to
