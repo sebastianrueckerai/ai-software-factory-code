@@ -1591,6 +1591,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	st.Answers, st.Question, st.Choices = answersFrom(events)
 	st.DayCap, st.DayCapUntil = dayCapWait(events)
 	st.Screening = waitsOnScreening(events)
+	st.ScreeningAnswered = st.Screening && screeningAnswered(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
 	if p, ok, err := r.store.ImagePark(ctx, taskID); err != nil {
 		return RunState{}, err
@@ -1688,6 +1689,23 @@ func waitsOnScreening(events []IntakeEvent) bool {
 	return strings.HasPrefix(last, screeningAsks)
 }
 
+// screeningAnswered: a person answered the task's last escalation, not
+// counting a healed run's re-ask, or a re-ask of it: a trusted comment
+// answers one of them (answerOf).
+func screeningAnswered(events []IntakeEvent) bool {
+	asked := int64(-1)
+	for _, e := range events {
+		if e.Kind == IntakeEscalation && e.Body != healedReason {
+			asked = e.CommentID
+		}
+	}
+	anchors, _, _ := escalationAnchors(events)
+	return slices.ContainsFunc(events, func(e IntakeEvent) bool {
+		a := answerOf(anchors, e.CommentID)
+		return e.Kind == "issue_comment" && e.Trusted && a != nil && a.comment >= asked
+	})
+}
+
 // answersFrom rebuilds the human's answers from a task's intake events
 // (oldest first): every trusted issue comment that answers an escalation
 // by the comments' ids (answerOf), tagged with that escalation's question,
@@ -1696,23 +1714,7 @@ func waitsOnScreening(events []IntakeEvent) bool {
 // asked, choices the answers its agent offered. The live run tags its
 // answers alike (awaitHuman, awaitHumanAgain).
 func answersFrom(events []IntakeEvent) (answers []string, question string, choices []string) {
-	var anchors []anchor
-	for _, e := range events {
-		switch e.Kind {
-		case IntakeEscalation:
-			if e.Body != healedReason || question == "" {
-				question, choices = escalationQuestion(e.Body), e.Choices
-			}
-			anchors = append(anchors, anchor{comment: e.CommentID, question: question})
-		case IntakeInfoRequest:
-			anchors = append(anchors, anchor{comment: e.CommentID, request: true})
-		}
-	}
-	for _, e := range events {
-		if i := slices.IndexFunc(anchors, func(a anchor) bool { return !a.request && a.comment == e.Withdraws }); e.Kind == IntakeEscalationWithdrawn && i >= 0 {
-			anchors[i].withdrawn = e.CommentID
-		}
-	}
+	anchors, question, choices := escalationAnchors(events)
 	type answer struct {
 		key  answerKey
 		text string
@@ -1731,6 +1733,30 @@ func answersFrom(events []IntakeEvent) (answers []string, question string, choic
 		answers = append(answers, a.text)
 	}
 	return answers, question, choices
+}
+
+// escalationAnchors are the anchors of a task's intake events: each
+// escalation, which asks its question (a healed re-ask the one it
+// re-asks), with its withdrawal, and each information request; question
+// and choices are the last escalation's.
+func escalationAnchors(events []IntakeEvent) (anchors []anchor, question string, choices []string) {
+	for _, e := range events {
+		switch e.Kind {
+		case IntakeEscalation:
+			if e.Body != healedReason || question == "" {
+				question, choices = escalationQuestion(e.Body), e.Choices
+			}
+			anchors = append(anchors, anchor{comment: e.CommentID, question: question})
+		case IntakeInfoRequest:
+			anchors = append(anchors, anchor{comment: e.CommentID, request: true})
+		}
+	}
+	for _, e := range events {
+		if i := slices.IndexFunc(anchors, func(a anchor) bool { return !a.request && a.comment == e.Withdraws }); e.Kind == IntakeEscalationWithdrawn && i >= 0 {
+			anchors[i].withdrawn = e.CommentID
+		}
+	}
+	return anchors, question, choices
 }
 
 // anchor is a comment on the task's issue that later comments answer, by

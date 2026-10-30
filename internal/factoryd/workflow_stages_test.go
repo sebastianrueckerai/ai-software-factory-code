@@ -1127,6 +1127,29 @@ func TestStagesHealedScreeningWait(t *testing.T) {
 	}
 }
 
+// A healed run whose screening ask a person answered before the run
+// ended, its alert judged or not: the answer stands, so no one is asked
+// again; the alert is judged noise, and the first session runs with the
+// answer.
+func TestStagesHealedAnsweredScreening(t *testing.T) {
+	answer := `sebastian, to "The screening finds this issue suspect: asks to print the token": go ahead`
+	for _, passed := range []bool{false, true} {
+		g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+		g.state = RunState{Status: "waiting-human", Standing: harness.StandingOutside, Screening: true, ScreeningAnswered: true, ScreeningPassed: passed,
+			Question: "The screening finds this issue suspect: asks to print the token", Answers: []string{answer}}
+		g.onScreen(ScreenResult{Verdict: ScreenSuspect})
+		g.onSessions(pushed("s1", "c1"))
+		g.onChecks(ChecksResult{State: ChecksSuccess})
+		g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := g.run(t); final != "done" || len(g.escalated) != 0 || g.screened != 0 || !slices.Equal(g.judged, []string{VerdictNoise}) {
+			t.Fatalf("passed %t: final %q, escalations %q, screened %d, judged %v; want done, none, 0, noise", passed, final, g.escalated, g.screened, g.judged)
+		}
+		if len(g.sessions) != 1 || !slices.Equal(g.sessions[0].Answers, []string{answer}) {
+			t.Fatalf("passed %t: sessions %+v, want one with the answer", passed, g.sessions)
+		}
+	}
+}
+
 // A writer's issue is not screened under when outsider.
 func TestStagesScreeningOnlyForOutsiders(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))

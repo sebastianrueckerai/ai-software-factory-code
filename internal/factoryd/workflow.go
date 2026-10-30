@@ -428,8 +428,8 @@ type RunState struct {
 	// Standing is the issue author's (Task.Standing), for a stage's when.
 	Standing string
 	// Screening: the human the task waits on answers its screening's
-	// suspect verdict.
-	Screening bool
+	// suspect verdict; ScreeningAnswered: one did, before the run ended.
+	Screening, ScreeningAnswered bool
 	// ScreeningPassed: the card's own screening recorded a clear verdict,
 	// or a person let its suspect screening run (its alert judged noise).
 	ScreeningPassed bool
@@ -1590,9 +1590,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			return t.factoryPR(st.Head)
 		case t.v16 >= versionStages && st.Status == "waiting-human" && st.Screening:
 			// the screening's human, asked again; the answer runs the next
-			// session, whose rebuilt answers are screened again
+			// session, whose rebuilt answers are screened again. One who
+			// answered before the run ended is not asked again: the answer,
+			// in the rebuilt ones, judges the screening (versionReplan)
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.screeningWait(func() (string, string, []string) { return t.awaitHumanAgain(st.Question, nil) })
+			wait := func() (string, string, []string) { return t.awaitHumanAgain(st.Question, nil) }
+			if t.replan >= versionReplan && st.ScreeningAnswered {
+				wait = func() (string, string, []string) { return "", "", nil }
+			}
+			final, why, answer := t.screeningWait(wait)
 			if final != "" {
 				return t.finish(final, why)
 			}

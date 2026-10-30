@@ -1893,8 +1893,23 @@ func TestReconcileRebuildsTheAnswers(t *testing.T) {
 		store.InsertIntakeEvent(context.Background(), e)
 	}
 	val, err = execActivity(t, r, ActivityReconcile, "t1")
-	if err != nil || val.Get(&got) != nil || !got.Screening {
+	if err != nil || val.Get(&got) != nil || !got.Screening || got.ScreeningAnswered {
 		t.Fatalf("Reconcile after the screening's escalation: %+v %v", got, err)
+	}
+	// a reader's comment answers nothing; a writer's answers the re-ask
+	for _, c := range []struct {
+		e    IntakeEvent
+		want bool
+	}{
+		{IntakeEvent{Kind: "issue_comment", Author: "reader", Body: "run it", CommentID: 608}, false},
+		{IntakeEvent{Kind: "issue_comment", Author: "sebastian", Body: "go ahead", CommentID: 609, Trusted: true, Signalled: true}, true},
+	} {
+		c.e.TaskID = "t1"
+		store.InsertIntakeEvent(context.Background(), c.e)
+		val, err = execActivity(t, r, ActivityReconcile, "t1")
+		if err != nil || val.Get(&got) != nil || !got.Screening || got.ScreeningAnswered != c.want {
+			t.Fatalf("Reconcile after comment %d: screening %t, answered %t, %v; want true, %t", c.e.CommentID, got.Screening, got.ScreeningAnswered, err, c.want)
+		}
 	}
 }
 
