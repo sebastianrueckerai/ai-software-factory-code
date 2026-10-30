@@ -1172,9 +1172,14 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 	}
 
 	s, objs, r := rig("in-review")
+	reads := &timelineReads{fakeObjectStore: objs, n: map[string]int{}}
+	r.timeline.Objects = reads
 	r.CriteriaPass(ctx)
 	if got := closed(objs); got != 0 {
 		t.Fatalf("plan_closed recorded %d times while the integration card is in-review, want 0", got)
+	}
+	if reads.n["t-plan"] != 0 {
+		t.Fatalf("%d timeline reads while the integration card is in-review, want 0", reads.n["t-plan"])
 	}
 	set := func(status string) {
 		c := s.tasks["t-int"]
