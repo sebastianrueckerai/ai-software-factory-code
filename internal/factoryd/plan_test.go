@@ -2571,6 +2571,29 @@ func TestFilingJudgesAgainstTheRevisionBefore(t *testing.T) {
 	}
 }
 
+// A filing that started passed its pins: a retry under the same replan
+// files the cards left though the project's image pin went meanwhile, and
+// the card keeps its image's name.
+func TestFilingRetriedAfterAPinWent(t *testing.T) {
+	p := testPlan()
+	p.Cards[1].Image = "browser"
+	r, store, _, fj, _ := fileRig(t, p)
+	inForce := browserInForce(t)
+	r.cfg.Policy = func() policy.Version { return inForce }
+	fj.failLabel = 2 // links-api's issue is filed, its labels fail
+	if _, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7)); err == nil {
+		t.Fatal("RequestPlan succeeded through a failing label call")
+	}
+	without := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return without }
+	if ref := requestPlan(t, r); len(ref.Filed) != 4 || len(ref.Refused) != 0 {
+		t.Fatalf("the retry: %+v, want four cards and no refusal", ref)
+	}
+	if got := cardsByKey(t, store)["links-api"].Image; got != "browser" {
+		t.Fatalf("links-api's image %q, want browser", got)
+	}
+}
+
 // A healed run asks for the newest revision: while a replan asked at that
 // revision is pending, it is the replan's planner that answers, so none
 // waits and none files, whether or not a card the replan stopped ended.

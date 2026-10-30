@@ -2689,11 +2689,11 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 const stepFiling = "filing"
 
 // fileRevision files the cards of plan task t's revision rev, which asks
-// no question, under version v, once however often it runs: it judges the
-// revision again, the deploy owner its spec needs and, until its filing
-// started (stepFiling), the replan rules against the plan's record as it
-// stands now included (a finding refuses the filing, the planner gets
-// it); files each card in topological order
+// no question, under version v, once however often it runs: until its
+// filing started with no replan asked since (stepFiling), it judges the
+// revision again, the deploy owner its spec needs and the replan rules
+// against the plan's record as it stands now included (a finding refuses
+// the filing, the planner gets it); files each card in topological order
 // on the direct track at main's head, with the card's author as the
 // cards' (plans do not nest: the children are direct cards); records the
 // edges in Forgejo and task_deps; puts the issues into the plan's comment;
@@ -2710,12 +2710,15 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	}
 	// a card may have ended or merged since the revision was stored: it is
 	// judged again, as at its storing; once its filing started under this
-	// replan, its own cards are in the record, and it goes on
+	// replan, it passed every check, its own cards are in the record, and
+	// it goes on
 	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
 		return ChildrenResult{}, fmt.Errorf("the timeline of %s: %w", t.ID, err)
 	}
-	if n, started := openRevision(tl, stepFiling, stepReplan); !started || n != revision {
+	if n, started := openRevision(tl, stepFiling, stepReplan); started && n == revision {
+		findings = nil
+	} else {
 		st, err := r.replanState(ctx, t, tl, revision)
 		if err != nil {
 			return ChildrenResult{}, err
