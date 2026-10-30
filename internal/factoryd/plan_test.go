@@ -365,7 +365,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 			`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-			"take_off_main: the keys of merged cards whose work comes off main; a card that lands it again names it in from.",
+			"take_off_main: the keys of merged cards whose work comes off main; a card of a later revision that lands it again names it in from.",
 		`"rung_reason": "one line"}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `,
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
 	} {

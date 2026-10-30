@@ -893,6 +893,10 @@ func replanFindings(st replanState, next Plan) []string {
 		_, row := old[c.Key]
 		adds = adds || !row
 	}
+	off := map[string]bool{}
+	for _, x := range next.TakeOffMain {
+		off[x] = true
+	}
 	var found []string
 	first := map[string]string{}
 	for _, c := range next.Cards {
@@ -919,16 +923,19 @@ func replanFindings(st replanState, next Plan) []string {
 		switch {
 		case !known:
 			found = append(found, fmt.Sprintf("card %s: from %s names no card of this plan's record; name an old card's key, or #<issue> of a card the findings list without a key", c.Key, c.From))
+		case off[c.From]:
+			found = append(found, fmt.Sprintf("card %s: from %s, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet; "+
+				"leave %s out of take_off_main and start %s from main to change it there, or leave from out", c.Key, c.From, c.From, c.Key))
 		case st.merged[k.ID] && !st.reverted[k.ID]:
 			found = append(found, fmt.Sprintf("card %s: from %s, which merged: its work is on main, so start from main and leave from out", c.Key, c.From))
 		}
 	}
-	off := map[string]bool{}
+	named := map[string]bool{}
 	for _, x := range next.TakeOffMain {
-		if off[x] {
+		if named[x] {
 			continue
 		}
-		off[x] = true
+		named[x] = true
 		k, known := old[x]
 		_, keeps := kept[x]
 		switch {

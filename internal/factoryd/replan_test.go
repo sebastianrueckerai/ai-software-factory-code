@@ -1199,6 +1199,11 @@ func TestReplanFindings(t *testing.T) {
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
 		}, nil},
+		{"R2 a from of a card the revision takes off main", func(_ *replanState, p *Plan) {
+			p.Cards = append(p.Cards[1:], fromCard("api2", "api"))
+			p.TakeOffMain = []string{"api"}
+		}, []string{"card api2: from api, which this revision takes off main: its work leaves main only after this filing, so no card can land it yet; " +
+			"leave api out of take_off_main and start api2 from main to change it there, or leave from out"}},
 		{"take_off_main names no card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"nope"} },
 			[]string{"take_off_main names nope, which is no card of this plan's record; name the key of a merged card"}},
 		{"take_off_main names a card that did not merge", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"ui"} },
