@@ -59,7 +59,7 @@ const (
 	// hold (roadmap 336), a row of the project: detail {"how", "held_since",
 	// "hours"}, how closed when no plan is open on main any more (by
 	// factoryd), deploy_now when an approver chose Deploy now (by them, with
-	// "commit"). A quiet record, no poke.
+	// "commit" and "decider"). A quiet record, no poke.
 	EventProductionReleased = "production_released"
 )
 

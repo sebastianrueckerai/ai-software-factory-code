@@ -56,6 +56,7 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   issue's `created_at`) and the gate it is in with the gate's age, from the
   row's `gate` and `gate_since`; a plan's card `part of plan #n`.
 - The production hold: while a plan's group is open on the project's main,
+  for the factory's own project or a project whose CI asked `/release`,
   the status strip shows the cell `production held · <time>` after the
   routine cell, and the status panel has a Production section after Spend.
   The section names the hold (`Held for 7 h: plan #12 is open on main.`)
@@ -70,6 +71,24 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   refuses with 409 too: while main's newest push run concluded `failure`
   or `cancelled`, Deploy now waits for a green run on main (a run still
   running is taken). The board's text for the agent starts with the hold.
+- The held-production ask: a human card that asks the project's approvers
+  what to do about the hold. factoryd files it once production has waited
+  6 hours (the clock starts at the plan's first merge and again at each
+  Deploy now), and again 6 hours after the last ask or its close; it files
+  it at once when a fix merges during the hold (an alert's card, a red
+  main's or a chain repair's), and a standing ask gets a comment naming
+  the fix instead. Its answers: Wait keeps the hold and asks again in 6
+  hours; Deploy anyway is Deploy now; Replan plan #n on top replans the
+  plan that holds longest on top of what is merged; Take plan #n off main
+  and replan reverts its merged cards first. Other open plans are named,
+  to be replanned from their drawers. A close without an answer acts as
+  Wait. Deploy anyway is a person's press: the project agent's `answer`
+  refuses it at every autonomy level and points to Deploy now in the
+  status panel or the card in the console. The ask closes itself once no
+  plan is open on main and after a Deploy now. Each release of held
+  production is recorded as the project's `production_released` row: `how`
+  (`closed` when the last plan closed, by factoryd; `deploy_now` with the
+  `commit` and its `decider`, by the approver), `held_since` and `hours`.
 - Filing a card: no card waits undecided and none moves between columns
   by hand (roadmap 225). The new-task form's track select (Direct by
   default, Plan, Human) sets `agent`, `plan` or `human` on the issue;
@@ -648,7 +667,8 @@ released this commit. Otherwise it answers `{"held":true,"reason":"plan #12
 is open on main"}`, naming every open plan. The answer is never cached. Each
 ask is recorded in the project's `releases` row, which makes the project one
 factoryd holds. The promote job of the ts-go template asks it before its 15
-minutes on staging.
+minutes on staging, once infra Task 10 of roadmap 336 has landed; until then
+no project's CI asks, and only the factory's own production is held.
 
 `POST /webhooks/signoz` on 8080 is SigNoz's webhook channel `factoryd`
 (written by the infra's `signoz-objects` job, basic auth user `signoz` with
