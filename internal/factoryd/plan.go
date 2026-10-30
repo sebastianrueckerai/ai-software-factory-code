@@ -2665,9 +2665,10 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 }
 
 // fileRevision files the cards of plan task t's revision rev, which asks
-// no question, under version v, once however often it runs: it judges the revision again, the
-// deploy owner its spec needs included (a finding refuses the filing, the
-// planner gets it); files each card in topological order on the direct
+// no question, under version v, once however often it runs: it judges the
+// revision again, the deploy owner its spec needs and the replan rules
+// against the plan's record as it stands now included (a finding refuses
+// the filing, the planner gets it); files each card in topological order on the direct
 // track at main's head, with the card's author as the cards' (plans do not
 // nest: the children are direct cards); records the edges in Forgejo and
 // task_deps; puts the issues into the plan's comment; and, for a replan,
@@ -2682,7 +2683,12 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
-	if len(findings) > 0 {
+	// a card may have ended since the revision was stored
+	st, err := r.replanState(ctx, t)
+	if err != nil {
+		return ChildrenResult{}, err
+	}
+	if findings = append(findings, replanFindings(st, p)...); len(findings) > 0 {
 		note := fmt.Sprintf("revision %d files no cards: %s", revision, strings.Join(findings, "; "))
 		r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: "+r.untrusted(t, note))
 		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})

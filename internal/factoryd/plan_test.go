@@ -2489,6 +2489,45 @@ func TestFilePlanRefusesABrokenReplan(t *testing.T) {
 	}
 }
 
+// A replan's revision is judged again when it files: a card the stored
+// revision keeps, cut and closed between the storing and the filing, gets
+// its finding back to the planner, and no card files.
+func TestFilingRefusesARevisionACardEndedUnder(t *testing.T) {
+	ctx := context.Background()
+	p := testPlan()
+	p.Cards = slices.Insert(p.Cards, 3, PlanCard{Key: "cli", Role: RoleFeature, Title: "A command line", Brief: "cmd/cli creates links.",
+		Directories: []string{"cmd/cli"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestCLICreate in cmd/cli exits 0"}}, Size: "small"})
+	r, store, _, _, _ := fileRig(t, p)
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 5 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	cli := cardsByKey(t, store)["cli"]
+	cli.Status, cli.PlanRevision = "running", 1
+	store.tasks[cli.ID] = cli
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too wide", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	p.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	cli.Status = "closed"
+	store.tasks[cli.ID] = cli
+
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	ref := getInto[PlanRef](t, val, err)
+	want := `card cli ended closed: leave its key out, and add a card with "from": "cli" to go on from its work`
+	if len(ref.Filed) != 0 || !slices.Contains(ref.Refused, want) {
+		t.Fatalf("the filing: %+v, want no card filed and the finding %q", ref, want)
+	}
+	if cards, _ := store.PlanCards(ctx, "t-plan"); len(cards) != 5 {
+		t.Fatalf("the plan holds %d cards, want the 5 of revision 1", len(cards))
+	}
+}
+
 // revisionReads counts the plan revision reads by number (0: the newest).
 type revisionReads struct {
 	*fakeStore
