@@ -991,7 +991,10 @@ func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, 
 		default:
 			state = "running" + onBranch
 		}
-		title, _, _ := strings.Cut(k.Objective, "\n")
+		// the title is planner text drawn from an issue, and a finding is
+		// one line
+		title, _, _ := strings.Cut(sanitize.Inbound(k.Objective), "\n")
+		title = oneLine(title)
 		name := fmt.Sprintf("card-%d.md", k.IssueNumber)
 		role, spend := roles[k.PlanKey], ""
 		if k.ID == p.ID {

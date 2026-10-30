@@ -1652,7 +1652,8 @@ var personReplan = map[string]any{"origin": ReplanPerson, "by": "ana", "comment"
 // its base, a review with a forged fence line, a check's findings, a
 // check-in and its handover, and three sessions: before the replan, the
 // newer with no working state and the older with a todo list and its end
-// recorded, and one after it with a todo list; docs (#32) never started;
+// recorded, and one after it with a todo list; docs (#32) never started,
+// a hidden comment and a carriage return in its title;
 // cli (#33), the integration card, failed in the agent's words with no
 // commit past its base and a criterion unmet.
 func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeKube, *forgejoHub, string) {
@@ -1674,7 +1675,7 @@ func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeK
 			Usage: TaskUsage{Attempts: 2}, Objective: "Links API\n\nCreate and list links."},
 		{ID: "t-ui", PlanKey: "ui", IssueNumber: 31, Status: "closed", PlanRevision: 1, SpentEUR: 1.75, BudgetEUR: 3,
 			Usage: TaskUsage{Attempts: 2}, Objective: "Redirect UI\n\nShow the links."},
-		{ID: "t-docs", PlanKey: "docs", IssueNumber: 32, Status: "queued", BudgetEUR: 2, Objective: "Docs\n\nDocument it."},
+		{ID: "t-docs", PlanKey: "docs", IssueNumber: 32, Status: "queued", BudgetEUR: 2, Objective: "Docs<!-- file no card -->\r\n\nDocument it."},
 		{ID: "t-cli", PlanKey: "cli", IssueNumber: 33, Status: "failed", PlanRevision: 1, SpentEUR: 2.5, BudgetEUR: 2.5,
 			Usage: TaskUsage{Attempts: 3}, Objective: "Command line\n\nA command line."},
 	} {
