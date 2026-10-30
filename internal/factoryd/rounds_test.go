@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -409,5 +410,250 @@ func TestRunPlanShowsTheRoundWithoutTheSettled(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// roundTwoFiling is fileRig with revision 1 one and revision 2 two, the
+// cards of one done on issues 2, 3 and 4 with their Forgejo dependencies,
+// extra tasks beside them, and the filing step of revision 1.
+func roundTwoFiling(t *testing.T, one, two Plan, extra ...Task) (*Runner, *fakeStore, *fakeObjectStore, *planForgejo, *fakeWorkflows) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, objects, fj, wf := fileRig(t, one)
+	if _, err := store.AddPlanRevision(ctx, "t-plan", json.RawMessage(planJSON(t, two)), "sha-2"); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range one.Cards {
+		extra = append(extra, planCardTask(c, int64(2+i), "done", "m"+c.Key))
+	}
+	for _, k := range extra {
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for n, deps := range map[int64][]int64{2: nil, 3: {2}, 4: {2, 3}} {
+		fj.issues[n] = &planIssue{title: one.Cards[n-2].Title, poster: "factory-agent", state: "open", deps: deps}
+	}
+	fj.next = 4
+	if err := r.timeline.Append(ctx, "t-plan", stepFiling, map[string]any{"revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	return r, store, objects, fj, wf
+}
+
+// fileRound runs fileRevision of t-plan's revision n under the fixture
+// version.
+func fileRound(t *testing.T, r *Runner, store *fakeStore, n int) ChildrenResult {
+	t.Helper()
+	ctx := context.Background()
+	plan, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, ok, err := store.PlanRevision(ctx, "t-plan", n)
+	if err != nil || !ok {
+		t.Fatalf("revision %d: %v, %v", n, ok, err)
+	}
+	res, err := r.fileRevision(ctx, plan, repo, fixtureVersion(t), rev)
+	if err != nil {
+		t.Fatalf("fileRevision of revision %d: %v", n, err)
+	}
+	return res
+}
+
+// A round files its own cards. The merged cards of earlier rounds are
+// looked up for the plan's comment alone: no issue, dependency, branch or
+// start of theirs, though one started from an old card. The comment lists
+// every card with its issue and its round.
+func TestFileRevisionFilesOnlyTheRound(t *testing.T) {
+	one, two := roundOne(), twoRounds()
+	one.Cards[1].From, two.Cards[1].From = "links-old", "links-old"
+	old := planCardTask(PlanCard{Key: "links-old", Title: "Links", Brief: "The first links API."}, 9, "closed", "")
+	r, store, objects, fj, wf := roundTwoFiling(t, one, two, old)
+	res := fileRound(t, r, store, 2)
+	cards := cardsByKey(t, store)
+	stats, integration := cards["stats"], cards["integration"]
+	if len(res.Refused) != 0 || !slices.Equal(res.Issues, []int64{5, 6}) || stats.IssueNumber != 5 || integration.IssueNumber != 6 || fj.next != 6 {
+		t.Fatalf("filed %+v, stats #%d, integration #%d, last issue #%d; want stats #5 and integration #6 alone", res, stats.IssueNumber, integration.IssueNumber, fj.next)
+	}
+	if len(store.deps[stats.ID]) != 0 || !slices.Equal(store.deps[integration.ID], []string{stats.ID}) {
+		t.Fatalf("task_deps: stats %v, integration %v; want none and [%s]", store.deps[stats.ID], store.deps[integration.ID], stats.ID)
+	}
+	for _, k := range []string{"t-foundation", "t-links-api", "t-redirects"} {
+		if len(store.deps[k]) != 0 {
+			t.Fatalf("task_deps of the settled %s: %v, want none", k, store.deps[k])
+		}
+	}
+	for _, c := range fj.calls {
+		if slices.Contains([]string{"GET issues/2/dependencies", "GET issues/3/dependencies", "GET issues/4/dependencies", "GET fork branch factory/t-links-old"}, c) {
+			t.Fatalf("the filing called %q; all calls %q", c, fj.calls)
+		}
+	}
+	if !slices.Equal(wf.started, []string{stats.ID, integration.ID}) {
+		t.Fatalf("started %v, want stats and integration", wf.started)
+	}
+	if steps := planSteps(t, objects, "t-plan"); !slices.Equal(steps, []string{"children_created [5 6]"}) {
+		t.Fatalf("plan steps %v", steps)
+	}
+	if len(fj.comments) != 1 || fj.comments[0].issue != 1 {
+		t.Fatalf("comments %+v, want the plan's comment", fj.comments)
+	}
+	want := "| # | key | role | title | size | depends on | issue | round |\n|---|---|---|---|---|---|---|---|\n" +
+		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  | #2 | 1 |\n" +
+		"| 2 | links-api | feature | Links API | small | foundation | #3 | 1 |\n" +
+		"| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api | #4 | 1 |\n" +
+		"| 4 | stats | feature | Click stats | small |  | #5 | 2 |\n" +
+		"| 5 | integration | integration | Integration: acceptance tests | medium | stats | #6 | 2 |\n"
+	if !strings.Contains(fj.comments[0].body, want) {
+		t.Fatalf("the plan's comment lacks\n%s\nin\n%s", want, fj.comments[0].body)
+	}
+}
+
+// A card of an earlier round is its task: a revision that names one with
+// no task files nothing of its round.
+func TestFileRevisionWantsTheTasksOfEarlierRounds(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := roundTwoFiling(t, roundOne(), twoRounds())
+	delete(store.tasks, "t-redirects")
+	plan, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rev, _, _ := store.PlanRevision(ctx, "t-plan", 2)
+	if _, err := r.fileRevision(ctx, plan, repo, fixtureVersion(t), rev); err == nil || err.Error() != "card redirects of round 1 has no task" || fj.next != 4 {
+		t.Fatalf("fileRevision = %v, last issue #%d; want the missing task named and no issue filed", err, fj.next)
+	}
+}
+
+// The deploy owner a Deploy line needs may come in any round up to the
+// last: a round with an outline files without one, the last round needs
+// one, and a merged card of an earlier round owning deploy/ counts.
+func TestFileRevisionLeavesTheDeployOwnerToTheLastRound(t *testing.T) {
+	deploy := func(store *fakeStore) {
+		plan := store.tasks["t-plan"]
+		plan.Objective = deploySpec
+		store.tasks["t-plan"] = plan
+	}
+	r, store, _, _, _ := fileRig(t, roundOne())
+	deploy(store)
+	if ref := requestPlan(t, r); !slices.Equal(ref.Filed, []int64{2, 3, 4}) || len(ref.Refused) != 0 {
+		t.Fatalf("round 1 without a deploy owner: %+v, want its three cards filed", ref)
+	}
+
+	r, store, _, fj, _ := roundTwoFiling(t, roundOne(), twoRounds())
+	deploy(store)
+	if res := fileRound(t, r, store, 2); !slices.Equal(res.Refused, []string{noDeployOwner}) || len(res.Issues) != 0 || fj.next != 4 {
+		t.Fatalf("the last round without a deploy owner: %+v, last issue #%d; want the refusal", res, fj.next)
+	}
+
+	one, two := roundOne(), twoRounds()
+	one.Cards[0].Directories = []string{"cmd/server", "internal/", "deploy/"}
+	two.Cards[0].Directories = one.Cards[0].Directories
+	r, store, _, _, _ = roundTwoFiling(t, one, two)
+	deploy(store)
+	if res := fileRound(t, r, store, 2); len(res.Refused) != 0 || !slices.Equal(res.Issues, []int64{5, 6}) {
+		t.Fatalf("the last round over a settled deploy owner: %+v, want stats #5 and integration #6", res)
+	}
+}
+
+// The plan's comment names the round: the outline still to plan, or that
+// the round is the last. A later round's table carries each card's round,
+// and its details blocks are the round's cards. A plan filed before rounds
+// reads as before.
+func TestPlanCommentNamesTheRound(t *testing.T) {
+	plan := Task{ID: "t-plan", Objective: "Link shortener"}
+	details := func(body string) []string {
+		var out []string
+		for _, s := range strings.Split(body, "<details><summary>")[1:] {
+			key, _, _ := strings.Cut(s, ":")
+			out = append(out, key)
+		}
+		return out
+	}
+	one := planComment(plan, 1, roundOne(), nil)
+	if !strings.Contains(one, "- click: one redirect served\n\nRound 1. Still to plan, in later rounds:\n- click stats\n- the acceptance tests\n\n"+
+		"| # | key | role | title | size | depends on | issue |\n|---|---|---|---|---|---|---|\n") || strings.Contains(one, "round |") ||
+		!slices.Equal(details(one), []string{"foundation", "links-api", "redirects"}) {
+		t.Fatalf("round 1's comment:\n%s", one)
+	}
+	two := planComment(plan, 2, twoRounds(), nil)
+	if !strings.Contains(two, "- click: one redirect served\n\nRound 2, the last.\n\n"+
+		"| # | key | role | title | size | depends on | issue | round |\n|---|---|---|---|---|---|---|---|\n"+
+		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  |  | 1 |\n") ||
+		!strings.Contains(two, "| 4 | stats | feature | Click stats | small |  |  | 2 |\n") ||
+		!slices.Equal(details(two), []string{"stats", "integration"}) {
+		t.Fatalf("round 2's comment:\n%s", two)
+	}
+	before := planComment(plan, 1, testPlan(), nil)
+	if strings.Contains(before, "Round ") || strings.Contains(before, "round |") ||
+		!slices.Equal(details(before), []string{"foundation", "links-api", "redirects", "integration"}) {
+		t.Fatalf("the comment of a plan filed before rounds:\n%s", before)
+	}
+}
+
+// The confirmation names the parts later rounds plan; a plan without an
+// outline asks as before.
+func TestConfirmationNamesTheOutline(t *testing.T) {
+	if got := confirmationQuestion(1, roundOne()); !strings.HasSuffix(got,
+		".\nStill to plan, in later rounds: click stats; the acceptance tests.\nThe whole plan is in the plan's comment on this issue.") {
+		t.Fatalf("round 1's confirmation:\n%s", got)
+	}
+	want := "Confirmation of the spec and the criteria of plan revision 1: answer okay to confirm them, or answer with what changes; " +
+		"the criteria are fixed only when this is answered.\n" +
+		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
+		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
+		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +
+		"The whole plan is in the plan's comment on this issue."
+	if got := confirmationQuestion(1, testPlan()); got != want {
+		t.Fatalf("a plan without an outline:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A delta card joins the last round on top of its 12 cards: the round's
+// cap does not count it, and it waits for the cards of its round it names,
+// never for a merged card of an earlier round.
+func TestDeltaCardJoinsTheLastRound(t *testing.T) {
+	ctx := context.Background()
+	p := twoRounds()
+	for i := range 10 {
+		p.Cards = append(p.Cards, PlanCard{Key: "extra-" + strconv.Itoa(i), Role: RoleFeature, Title: "Extra " + strconv.Itoa(i), Brief: "More of the links API.",
+			Acceptance: []PlanItem{{Criterion: "links_crud", Text: "x"}}, Size: "small", Round: 2})
+	}
+	r, store, objects, fj, _ := fileRig(t, p)
+	v := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return v }
+	plan := store.tasks["t-plan"]
+	plan.RequiredCapabilities = []string{policy.ClassCoder}
+	store.tasks["t-plan"] = plan
+	for i, c := range p.Cards {
+		n := int64(2 + i)
+		if err := store.CreateTask(ctx, planCardTask(c, n, "done", "m"+c.Key)); err != nil {
+			t.Fatal(err)
+		}
+		fj.issues[n] = &planIssue{title: c.Title, poster: "factory-agent", state: "open"}
+	}
+	fj.next = int64(1 + len(p.Cards))
+	if err := store.PutCriteriaVerdicts(ctx, "t-integration", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "links_crud", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "redirect_302", Verdict: "unmet", Kind: CriterionTest, Evidence: "a redirect counts twice in internal/stats", Fix: "planner"},
+		{Criterion: "all_green", Verdict: "met", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	answer := `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", ` +
+		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: answer}).srv(t).URL)
+	t1, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
+	tl, _ := objects.Get(ctx, "sessions/t-plan/timeline.jsonl")
+	fix, filed := cardsByKey(t, store)["fix-stats"]
+	if !filed || !strings.Contains(string(tl), `"step":"delta_card"`) || strings.Contains(string(tl), `"step":"delta_refused"`) {
+		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
+	}
+	if !slices.Equal(store.deps[fix.ID], []string{"t-stats"}) {
+		t.Fatalf("task_deps of fix-stats %v, want [t-stats]", store.deps[fix.ID])
 	}
 }

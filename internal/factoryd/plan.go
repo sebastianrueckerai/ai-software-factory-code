@@ -869,11 +869,6 @@ func cell(s string) string {
 	return strings.ReplaceAll(strings.Join(strings.Fields(s), " "), "|", `\|`)
 }
 
-// planComment is revision's comment on plan task t's issue before its
-// marker: the summary and one row per card in filing order, with its issue
-// once filed (issues by key) and, when t's spec has a Deploy line, the
-// deploy owner's mark, the keys it takes off main, and each brief in a
-// details block.
 // specBlock is the plan's spec as the plan's comment and the integration
 // card's body carry it: the outcome, then the glossary line by line; ""
 // when the plan carries no spec.
@@ -892,6 +887,13 @@ func specBlock(p Plan) string {
 	return b.String()
 }
 
+// planComment is revision's comment on plan task t's issue before its
+// marker: the summary, the spec, the round with the outline still to plan,
+// and one row per card in filing order, with its issue once filed (issues
+// by key), its round in a later round's plan and, when t's spec has a
+// Deploy line, the deploy owner's mark; then the keys it takes off main,
+// the criteria, the questions, and the brief of each card of the round in
+// a details block.
 func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
 	needed, owner := deployOwner(t.Objective, p)
@@ -905,7 +907,20 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	if s := specBlock(p); s != "" {
 		b.WriteString(s + "\n\n")
 	}
+	switch {
+	case laterRounds(p):
+		fmt.Fprintf(&b, "Round %d. Still to plan, in later rounds:", p.Round)
+		for _, part := range p.Outline {
+			b.WriteString("\n- " + part)
+		}
+		b.WriteString("\n\n")
+	case p.Round > 1:
+		fmt.Fprintf(&b, "Round %d, the last.\n\n", p.Round)
+	}
 	head, rule := "| # | key | role | title | size | depends on | issue |", "|---|---|---|---|---|---|---|"
+	if p.Round > 1 {
+		head, rule = head+" round |", rule+"---|"
+	}
 	if needed {
 		head, rule = head+" deploy |", rule+"---|"
 	}
@@ -918,6 +933,9 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		}
 		fmt.Fprintf(&b, "| %d | %s | %s | %s | %s | %s | %s |", i+1, cell(c.Key), cell(c.Role), cell(c.Title), cell(c.Size),
 			cell(strings.Join(dependsOn(order, edges, c.Key), ", ")), issue)
+		if p.Round > 1 {
+			fmt.Fprintf(&b, " %d |", c.Round)
+		}
 		switch {
 		case needed && c.Key == owner:
 			b.WriteString(" deploy |")
@@ -951,6 +969,9 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		}
 	}
 	for _, c := range order {
+		if c.Round != p.Round {
+			continue
+		}
 		fmt.Fprintf(&b, "\n<details><summary>%s: %s</summary>\n\n%s\n\n%s</details>\n", cell(c.Key), cell(c.Title), strings.TrimSpace(c.Brief), cardFacts(c))
 	}
 	return b.String()
@@ -2801,8 +2822,8 @@ func specChanged(prev, next Plan) bool {
 }
 
 // confirmationQuestion is the confirmation question's text: what an
-// answer does, the spec inline, the criteria by id and kind, and where
-// the whole plan reads.
+// answer does, the spec inline, the criteria by id and kind, the outline
+// later rounds plan, and where the whole plan reads.
 func confirmationQuestion(revision int, p Plan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: answer okay to confirm them, or answer with what changes; the criteria are fixed only when this is answered.",
@@ -2819,7 +2840,11 @@ func confirmationQuestion(revision int, p Plan) string {
 	for i, c := range p.Criteria {
 		ids[i] = c.ID + " (" + c.Kind + ")"
 	}
-	fmt.Fprintf(&b, "\nCriteria: %s.\nThe whole plan is in the plan's comment on this issue.", strings.Join(ids, ", "))
+	fmt.Fprintf(&b, "\nCriteria: %s.", strings.Join(ids, ", "))
+	if laterRounds(p) {
+		fmt.Fprintf(&b, "\nStill to plan, in later rounds: %s.", strings.Join(p.Outline, "; "))
+	}
+	b.WriteString("\nThe whole plan is in the plan's comment on this issue.")
 	return b.String()
 }
 
@@ -2852,14 +2877,16 @@ const stepFiling = "filing"
 // fileRevision files the cards of plan task t's revision rev, which asks
 // no question, under version v, once however often it runs: until its
 // filing started with no replan asked since (stepFiling), it judges the
-// revision again, the deploy owner its spec needs and the replan rules
-// against the plan's record as it stands now included (a finding refuses
-// the filing, the planner gets it); files each card in topological order
-// on the direct track at main's head, with the card's author as the
-// cards' (plans do not nest: the children are direct cards); records the
-// edges in Forgejo and task_deps; puts the issues into the plan's comment;
-// for a replan, records it, which ends the replan; and takes off main the
-// merged cards the revision names in take_off_main (revertTakenOff).
+// revision again, the deploy owner its spec needs by its last round and
+// the replan rules against the plan's record as it stands now included (a
+// finding refuses the filing, the planner gets it); files each card of
+// its round in topological order on the direct track at main's head, with
+// the card's author as the cards' (plans do not nest: the children are
+// direct cards); records the edges in Forgejo and task_deps; puts every
+// card's issue into the plan's comment; for a replan, records it, which
+// ends the replan; and takes off main the merged cards the revision names
+// in take_off_main (revertTakenOff). Its result and children_created hold
+// the issues of the round's cards.
 func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.Version, rev PlanRevision) (ChildrenResult, error) {
 	revision := rev.Revision
 	shape, process, err := planShape(v, t)
@@ -2867,7 +2894,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		return ChildrenResult{}, err
 	}
 	p, findings := readPlan("```json\n"+string(rev.Plan)+"\n```", shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository))
-	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
+	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" && !laterRounds(p) {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
 	// a card may have ended or merged since the revision was stored: it is
@@ -2913,11 +2940,14 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if err != nil {
 		return ChildrenResult{}, err
 	}
+	round := roundCards(p)
 	byKey := map[string]int64{}
 	var issues []int64
 	for _, c := range cards {
 		byKey[c.PlanKey] = c.IssueNumber
-		issues = append(issues, c.IssueNumber)
+		if slices.ContainsFunc(round, func(rc PlanCard) bool { return rc.Key == c.PlanKey }) {
+			issues = append(issues, c.IssueNumber)
+		}
 	}
 	if _, err := r.postPlan(ctx, t, repo, revision, p, byKey); err != nil {
 		return ChildrenResult{}, err
@@ -2987,7 +3017,9 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // base, and its branch is the old card's before its issue exists; an old
 // card whose branch is gone leaves it to start from main. One whose old
 // card was taken off main files at main's head and lands that work again
-// from its merge in main's history (againLine).
+// from its merge in main's history (againLine). A card of an earlier round
+// is merged: its row in old stands for it, and nothing is filed, recorded
+// or started for it.
 func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
@@ -3007,6 +3039,14 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	cards := map[string]Task{}
 	var open []webhookIssue
 	for i, c := range order {
+		if c.Round < p.Round {
+			row, ok := rows[c.Key]
+			if !ok {
+				return nil, fmt.Errorf("card %s of round %d has no task", c.Key, c.Round)
+			}
+			cards[c.Key] = row
+			continue
+		}
 		var deps []Dependency
 		for _, d := range dependsOn(order, edges, c.Key) {
 			deps = append(deps, Dependency{TaskID: cards[d].ID, Issue: cards[d].IssueNumber, Key: d})
@@ -3094,7 +3134,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		cards[c.Key] = card
 	}
 	for _, c := range order {
-		if len(edges[c.Key]) == 0 {
+		if c.Round < p.Round || len(edges[c.Key]) == 0 {
 			continue
 		}
 		child := cards[c.Key]

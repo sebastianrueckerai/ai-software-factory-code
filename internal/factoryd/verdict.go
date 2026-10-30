@@ -584,11 +584,12 @@ type deltaCriterion struct {
 }
 
 // draftDelta runs one delta round on plan t (the planner's one model call,
-// the hold-out round's shape) and files the card it answers: the card is
-// merged into the plan and judged by the plan rules again (readPlan), then
-// filed like any child (ruling 225). Dues are the catch rows the round
-// answers; they are marked filed or refused when it ends, so the round runs
-// once per due. A failed call stays due: the next pass tries again.
+// the hold-out round's shape) and files the card it answers: the card
+// joins the round of the plan's newest revision, is merged into the plan
+// and judged by the plan rules again (judgePlan), then filed like any
+// child (ruling 225). Dues are the catch rows the round answers; they are
+// marked filed or refused when it ends, so the round runs once per due. A
+// failed call stays due: the next pass tries again.
 func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanCatch) {
 	p, revision, err := planOfStore(ctx, r.store, t.ID, "")
 	if err != nil {
@@ -653,13 +654,9 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		r.refuseDelta(ctx, t, repo, dues, "the answer is not a card: "+err.Error())
 		return
 	}
+	answer.Card.Round = p.Round
 	merged := p
 	merged.Cards = append(slices.Clone(p.Cards), answer.Card)
-	b, err := json.Marshal(merged)
-	if err != nil {
-		r.refuseDelta(ctx, t, repo, dues, err.Error())
-		return
-	}
 	v, err := r.pinnedVersion(ctx, 0)
 	if err != nil {
 		log.Printf("plan %s: the delta round: %v", t.ID, err)
@@ -670,7 +667,10 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		r.refuseDelta(ctx, t, repo, dues, err.Error())
 		return
 	}
-	if _, findings := readPlan("```json\n"+string(b)+"\n```", shape, v.Document.Limits, projectPins(v, t.Repository)); len(findings) > 0 {
+	// a delta card closes a gap on top of its round: the round's cap does not count it
+	shape.MaxCards++
+	merged, findings := judgePlan(merged, shape, v.Document.Limits, projectPins(v, t.Repository))
+	if len(findings) > 0 {
 		r.refuseDelta(ctx, t, repo, dues, "the card broke the plan rules: "+strings.Join(findings, "; "))
 		return
 	}
