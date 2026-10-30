@@ -569,8 +569,9 @@ roller opens no roll. It logs
 `roller: plan #N is open on main: no roll until no plan is open on main`
 once per commit and posts `factory/roll` `success` with a description
 starting `held:` on `main`'s newest commit it has not judged, so a merged
-card still ends `done`. During a hold that status means green on `main`,
-not live. A commit whose roll is open or failed keeps its `pending` or
+card still ends `done`. During a hold that status does not block the
+commit: its CI runs decide, and green then means green on `main`, not
+live. A commit whose roll is open or failed keeps its `pending` or
 `failure`. The commit an approver released with Deploy now rolls. Once no
 plan is open on `main`, the next poll rolls every commit since the last
 roll. A Retry the roll answered during a hold resets the failed attempts;

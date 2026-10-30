@@ -603,9 +603,9 @@ func (r *Roller) headTested(ctx context.Context, runs, green []ActionRun) (strin
 // rollStatusContext is the commit-status context the roller reports its
 // verdict under, and the factory's project file requires: success means the
 // commit's change runs live or, with a description starting held:, that the
-// commit is green on main and its roll waits until no plan is open on main;
-// failure means it will not run live, pending means a roll task is carrying
-// it.
+// roller does not block the commit while no roll may start; its runs alone
+// decide its chain verdict. Failure means it will not run live, pending
+// means a roll task is carrying it.
 const rollStatusContext = "factory/roll"
 
 // rollStatus reports the roller's verdict on sha as a commit status. A
