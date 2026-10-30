@@ -820,7 +820,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		if r.planClosed(ctx, parent) || !r.planAtRest(ctx, t) {
+		if r.planClosed(ctx, parent) || (integration.Status != "merged" && integration.Status != "done") || !r.planAtRest(ctx, t) {
 			return
 		}
 		if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteria, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {

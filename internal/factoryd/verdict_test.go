@@ -1147,3 +1147,57 @@ func TestCriteriaPassSkipsAnsweredDeltaDues(t *testing.T) {
 		t.Fatalf("pending = %+v, want the gap question alone", pending)
 	}
 }
+
+func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	closed := func(objs *fakeObjectStore) int {
+		body, _ := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
+		return strings.Count(string(body), `"event":"`+EventPlanClosed+`"`)
+	}
+	rig := func(status string) (*fakeStore, *fakeObjectStore, *Runner) {
+		s := seedVerdictPlan(t, "t-plan", "t-int", status)
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+			{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{
+			{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+			{Criterion: "c3", Verdict: "waived", Kind: CriterionInvariant},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		objs := &fakeObjectStore{}
+		return s, objs, &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+	}
+
+	s, objs, r := rig("in-review")
+	r.CriteriaPass(ctx)
+	if got := closed(objs); got != 0 {
+		t.Fatalf("plan_closed recorded %d times while the integration card is in-review, want 0", got)
+	}
+	set := func(status string) {
+		c := s.tasks["t-int"]
+		c.Status = status
+		s.tasks["t-int"] = c
+	}
+	set("running")
+	r.CriteriaPass(ctx)
+	if got := closed(objs); got != 0 {
+		t.Fatalf("plan_closed recorded %d times while the integration card is running, want 0", got)
+	}
+	set("merged")
+	r.CriteriaPass(ctx)
+	r.CriteriaPass(ctx)
+	if got := closed(objs); got != 1 {
+		t.Fatalf("plan_closed recorded %d times once the integration card merged, want 1", got)
+	}
+
+	for status, want := range map[string]int{"done": 1, "failed": 0, "closed": 0} {
+		_, objs, r := rig(status)
+		r.CriteriaPass(ctx)
+		if got := closed(objs); got != want {
+			t.Errorf("integration card %s: plan_closed recorded %d times, want %d", status, got, want)
+		}
+	}
+}
