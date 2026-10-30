@@ -550,7 +550,9 @@ type card struct {
 	// session last reported, an input to the stale ring beside the newest
 	// event.
 	stepAt time.Time
-	// Children roll up a done plan: n running, n done, n waiting, n queued.
+	// Children roll up a done plan: n running, n done, n waiting, n queued,
+	// each count bound to its word by a no-break space, so a narrow column
+	// wraps between the parts.
 	Children string
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
@@ -842,16 +844,16 @@ func planRollup(cards []card) string {
 	}
 	var parts []string
 	if running > 0 {
-		parts = append(parts, fmt.Sprintf("%d running", running))
+		parts = append(parts, fmt.Sprintf("%d\u00a0running", running))
 	}
 	if done > 0 {
-		parts = append(parts, fmt.Sprintf("%d done", done))
+		parts = append(parts, fmt.Sprintf("%d\u00a0done", done))
 	}
 	if waiting > 0 {
-		parts = append(parts, fmt.Sprintf("%d waiting", waiting))
+		parts = append(parts, fmt.Sprintf("%d\u00a0waiting", waiting))
 	}
 	if queued > 0 {
-		parts = append(parts, fmt.Sprintf("%d queued", queued))
+		parts = append(parts, fmt.Sprintf("%d\u00a0queued", queued))
 	}
 	return strings.Join(parts, " \u00b7 ")
 }

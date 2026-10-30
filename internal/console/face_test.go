@@ -243,12 +243,12 @@ func TestCardFacePlanChildren(t *testing.T) {
 	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "running", Track: "direct",
 		Process: "spec", Objective: "card 9", Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}})
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">1 running · 1 done · 1 waiting · 2 queued</span>`) {
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, "<span class=\"chip rollup\">1\u00a0running · 1\u00a0done · 1\u00a0waiting · 2\u00a0queued</span>") {
 		t.Errorf("the plan's face lacks its rollup:\n%s", face)
 	}
 	r.tasks.tasks = planTasks()[:3]
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip rollup">2 queued</span>`) {
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, "<span class=\"chip rollup\">2\u00a0queued</span>") {
 		t.Errorf("a plan with only queued cards lacks their rollup:\n%s", face)
 	}
 }

@@ -263,7 +263,7 @@ func TestDonePlanRollsUpItsChildren(t *testing.T) {
 	r.tasks.tasks = planTasks()
 	ck, _ := r.loggedIn(t)
 	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
-	if !strings.Contains(done, `<span class="chip rollup">1 done · 1 waiting · 2 queued</span>`) || strings.Contains(done, "Start plan") || strings.Contains(done, "start-plan") {
+	if !strings.Contains(done, "<span class=\"chip rollup\">1\u00a0done · 1\u00a0waiting · 2\u00a0queued</span>") || strings.Contains(done, "Start plan") || strings.Contains(done, "start-plan") {
 		t.Errorf("the plan in Done: want its rollup and no Start plan:\n%s", done)
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
