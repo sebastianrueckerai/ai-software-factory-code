@@ -327,13 +327,15 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // first, as spec H wants; a hard failure lifts the pause with no person's
 // decision, since nothing else could lift it. Then a replan that waits
 // with off_main for the revert sends the plan to its planner, and the
-// pause goes last, the queue's waiting heads woken. A step that fails
-// leaves the pause for RevertPausePass, which runs it all again: safe to
-// repeat, as MarkReverted sets only nulls, the plan comment goes once, the
-// reopen takes only a plan that waits, and the pause's clear, of t's
-// pause only, is idempotent. finish runs it twice for a merged card with a chain
-// (merged, then EndCovered): the first call clears the pause, so the
-// second finds no pause naming the card.
+// pause goes last, the queue's waiting heads woken.
+// A step that fails leaves the pause for RevertPausePass, which runs it
+// all again; a comment or a reopen Forgejo refuses is logged and passed
+// instead, as no retry changes it and the queue must go on. Safe to
+// repeat: MarkReverted sets only nulls, the plan comment goes once, the
+// reopen takes only a plan that waits, and the clear of t's pause is
+// idempotent. finish runs it twice for a merged card with a chain (merged,
+// then EndCovered): the first call clears the pause, so the second finds
+// no pause naming the card.
 func (r *Runner) revertEnded(ctx context.Context, t Task, final string, merged bool) {
 	if t.Source != SourceRevert && t.Source != SourceGroupRevert {
 		return
@@ -377,7 +379,9 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		return err
 	}
 	if pending && replan.OffMain && slices.Contains(reopenFrom, p.Status) {
-		if err := r.reopenPlan(ctx, p); err != nil {
+		if err := r.reopenPlan(ctx, p); forgejoTerminal(err) {
+			log.Printf("plan %s: Forgejo refused a step of its reopen after the revert: %v", p.ID, err)
+		} else if err != nil {
 			return err
 		}
 	}

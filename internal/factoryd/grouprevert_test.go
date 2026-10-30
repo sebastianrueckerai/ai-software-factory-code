@@ -132,6 +132,7 @@ type groupForgejo struct {
 	comments     []string // "#n body" of each comment
 	issuesClosed []int64
 	reopened     []int64
+	refuseReopen bool // PATCH /issues/{n} to open answers 403
 }
 
 // commentsOn are the bodies of the comments on issue n.
@@ -230,6 +231,10 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 					state = "closed"
 				}
 				fmt.Fprintf(w, `{"state":%q}`, state)
+				return
+			}
+			if body.State == "open" && f.refuseReopen {
+				http.Error(w, "forbidden", http.StatusForbidden)
 				return
 			}
 			if body.State == "open" {
@@ -862,5 +867,23 @@ func TestRevertEndKeepsAPauseThatTookItsPlace(t *testing.T) {
 	g.r.revertEnded(context.Background(), g.store.tasks["t-rv"], "done", true)
 	if p := g.store.pauses["sf/repo"]; !reflect.DeepEqual(p, newer) {
 		t.Errorf("pause = %+v, want the newer one kept", p)
+	}
+}
+
+// A reopen of the plan that Forgejo refuses (its closed issue stays shut)
+// is logged and passed, as the comment's refusal is: no retry changes it,
+// and the queue must not stay paused for it.
+func TestRevertEndPassesARefusedReopen(t *testing.T) {
+	g := revertEndRig(t)
+	g.landed()
+	g.fj.issuesClosed, g.fj.refuseReopen = []int64{10}, true
+	if err := g.r.Finish(context.Background(), "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok || g.store.tasks["c1"].RevertedAt == nil || len(groupSteps(t, g.r, "group_reverted")) != 1 {
+		t.Errorf("pause %+v (%t), c1 reverted at %v, steps %v; want the pause gone, the cards marked and the step", p, ok, g.store.tasks["c1"].RevertedAt, groupSteps(t, g.r, "group_reverted"))
+	}
+	if !slices.Contains(g.wf.signals, "w1 queue_turn  #0: ") {
+		t.Errorf("signals = %q, want the waiting head woken", g.wf.signals)
 	}
 }
