@@ -1237,24 +1237,11 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // (BetweenRounds). A merged card is left as it is: its own
 // merge closes its issue (Closes #N), a close no webhook tells from a
 // human's, and its workflow ended at the merge; the chain ends it, or
-// the console's Close (CloseCard). An issue's author can close it without any
-// repository access, so only a user trusted to steer counts, and the bot
-// account only where factoryd recorded the close as its own
-// (IntakeFactoryClosed): a leaked bot login ends no task.
+// the console's Close (CloseCard). Only a close that counts acts
+// (closeCounts).
 func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error {
-	if closer == in.BotUser {
-		events, err := in.Store.IntakeEvents(ctx, t.ID)
-		if err != nil {
-			return err
-		}
-		if !botCloseRecorded(events, t) {
-			log.Printf("intake: issue #%d on %s closed by %s, which factoryd did not record as its own: task %s left as it is", t.IssueNumber, t.Repository, closer, t.ID)
-			return nil
-		}
-	} else {
-		if ok, err := in.trusted(ctx, t.Repository, closer); err != nil || !ok {
-			return err
-		}
+	if counts, err := closeCounts(ctx, in.Store, in.BotUser, in.trusted, t, closer); err != nil || !counts {
+		return err
 	}
 	switch {
 	case t.Kind == "human" && t.PRNumber != 0 && closer == in.BotUser:
@@ -1291,6 +1278,29 @@ func (in *Intake) CloseCard(ctx context.Context, id, by string) error {
 		return in.CloseMerged(ctx, id, by)
 	}
 	return in.Workflows.Signal(ctx, id, SignalIssueClosed, TaskSignal{Author: by})
+}
+
+// closeCounts tells whether closer's close of card t's issue counts, for
+// the webhook and the round check alike. An issue's author can close it
+// without any repository access, so only a user whom writes trusts to
+// steer counts, and the bot account only where factoryd recorded the
+// close as its own (IntakeFactoryClosed): a leaked bot login ends no
+// task.
+func closeCounts(ctx context.Context, store interface {
+	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
+}, bot string, writes func(ctx context.Context, repository, user string) (bool, error), t Task, closer string) (bool, error) {
+	if closer != bot {
+		return writes(ctx, t.Repository, closer)
+	}
+	events, err := store.IntakeEvents(ctx, t.ID)
+	switch {
+	case err != nil:
+		return false, err
+	case botCloseRecorded(events, t):
+		return true, nil
+	}
+	log.Printf("issue #%d on %s closed by %s, which factoryd did not record as its own: task %s left as it is", t.IssueNumber, t.Repository, closer, t.ID)
+	return false, nil
 }
 
 // closeFailed ends failed card id closed in the store.

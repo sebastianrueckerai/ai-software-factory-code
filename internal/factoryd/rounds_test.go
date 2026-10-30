@@ -783,11 +783,14 @@ func TestRoundItems(t *testing.T) {
 
 // roundRig is replanRig's plan p (issue 10, open; done and finished)
 // without its cards c and s: revision 1 is roundOne, and its three cards
-// are done with merge commits.
+// are done with merge commits. sebastian alone writes sf/repo.
 func roundRig(t *testing.T) (*Runner, *fakeStore, *prForgejo) {
 	t.Helper()
 	ctx := context.Background()
 	r, store, fj := replanRig(t, "done", 0)
+	r.Writes = func(_ context.Context, repository, login string) (bool, error) {
+		return repository == "sf/repo" && login == "sebastian", nil
+	}
 	delete(store.tasks, "c")
 	delete(store.tasks, "s")
 	finished := replanAt
@@ -841,16 +844,16 @@ func TestRoundCheckStartsTheNextRound(t *testing.T) {
 	}
 }
 
-// A plan whose issue is closed when its next round would start was closed
-// by a person, whose close the webhook did not end: the plan card ends
-// closed, nothing starts and the issue stays closed, as when the round's
-// step was written and its reopen lost. The close check then closes the
-// group, every card being done.
+// A plan whose issue a writer closed when its next round would start was
+// closed by a person, whose close the webhook did not end: the plan card
+// ends closed, nothing starts and the issue stays closed, as when the
+// round's step was written and its reopen lost. The close check then
+// closes the group, every card being done.
 func TestRoundCheckEndsAPlanWhoseIssueIsClosed(t *testing.T) {
 	ctx := context.Background()
 	for _, written := range []bool{false, true} {
 		r, store, fj := roundRig(t)
-		fj.issueOff = true
+		fj.issueOff, fj.closer = true, "sebastian"
 		if written {
 			if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {
 				t.Fatal(err)
@@ -871,6 +874,53 @@ func TestRoundCheckEndsAPlanWhoseIssueIsClosed(t *testing.T) {
 	}
 }
 
+// A close the webhook does not count does not count at a round's start
+// either: an author without write access, the bot account without
+// factoryd's record of its close, a timeline that names no closer. The
+// issue opens again and the round starts. The bot's close factoryd
+// recorded ends the plan, as a writer's does.
+func TestRoundCheckCountsTheWebhooksClosesAlone(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name, closer       string
+		recorded, noCloser bool
+		after              string
+	}{
+		{name: "an author without write access", closer: "mallory", after: "queued"},
+		{name: "the bot without a record", closer: "factory-agent", after: "queued"},
+		{name: "a timeline that names no closer", noCloser: true, after: "queued"},
+		{name: "the bot with factoryd's record", closer: "factory-agent", recorded: true, after: "closed"},
+	} {
+		r, store, fj := roundRig(t)
+		fj.issueOff, fj.closer, fj.noCloser = true, tc.closer, tc.noCloser
+		if tc.recorded {
+			store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "p", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 10})
+		}
+		r.roundCheck(ctx, "p")
+		want, reopened, wf := roundTwoStep, []int64{10}, []reopenCall{{taskID: "p"}}
+		if tc.after == "closed" {
+			want, reopened, wf = nil, nil, nil
+		}
+		if got := store.tasks["p"].Status; got != tc.after || !reflect.DeepEqual(replanSteps(t, r, "p"), want) ||
+			!slices.Equal(fj.reopened, reopened) || !reflect.DeepEqual(reopens(r), wf) {
+			t.Fatalf("%s: plan %s, replan steps %+v, issues reopened %v, reopens %+v; want %s, %+v, %v, %+v",
+				tc.name, got, replanSteps(t, r, "p"), fj.reopened, reopens(r), tc.after, want, reopened, wf)
+		}
+	}
+}
+
+// A round's start reads the plan's issue once and leaves it as it read it:
+// a person who closes it right after that read keeps it closed, and the
+// planner's run, which reads the close, ends the plan.
+func TestRoundCheckLeavesAnIssueClosedAfterItsRead(t *testing.T) {
+	r, store, fj := roundRig(t)
+	fj.issueOff, fj.openReads = true, 1
+	r.roundCheck(context.Background(), "p")
+	if got := store.tasks["p"].Status; got != "queued" || len(fj.reopened) != 0 || !fj.issueOff || !reflect.DeepEqual(reopens(r), []reopenCall{{taskID: "p"}}) {
+		t.Fatalf("plan %s, issues reopened %v, issue closed %t, reopens %+v; want queued, none, closed, p's", got, fj.reopened, fj.issueOff, reopens(r))
+	}
+}
+
 // A plan between rounds whose cards carry no merge commit has no open
 // group and no verdict rows: the minute pass still visits it and starts
 // its next round.
@@ -884,6 +934,24 @@ func TestCriteriaPassVisitsAPlanBetweenRounds(t *testing.T) {
 	r.CriteriaPass(context.Background())
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) || store.tasks["p"].Status != "queued" {
 		t.Fatalf("replan steps %+v, plan %s; want %+v and queued", got, store.tasks["p"].Status, roundTwoStep)
+	}
+}
+
+// Such a plan whose card a person closed is visited too, and closes: one
+// plan_closed and the closed card's comment.
+func TestCriteriaPassClosesAClosedPlanBetweenRounds(t *testing.T) {
+	r, store, fj := roundRig(t)
+	for _, id := range []string{"t-foundation", "t-links-api", "t-redirects"} {
+		k := store.tasks[id]
+		k.MergeCommit = ""
+		store.tasks[id] = k
+	}
+	setStatus(store, "p", "closed")
+	want := []string{"factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+	r.CriteriaPass(context.Background())
+	r.CriteriaPass(context.Background())
+	if n := len(stepsNamed(t, r, "p", "plan_closed")); n != 1 || !slices.Equal(fj.comments, want) {
+		t.Fatalf("plan_closed %d times, comments %q; want 1 and %q", n, fj.comments, want)
 	}
 }
 

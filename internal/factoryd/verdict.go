@@ -923,12 +923,13 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the
 // plans with verdict rows, the plans of the open groups and the plans
-// between rounds: it closes the plans whose criteria are all met or
-// waived and those without criteria whose cards are all done, opens the
-// gap question of a plan whose cards ran out with a criterion still open,
-// starts the next round of a plan whose round is over, and drafts the
-// delta cards the reviews and the grants asked for. One model call per
-// delta due, in the sweep's own time: no activity holds it.
+// between rounds, a person's closed ones too: it closes the plans whose
+// criteria are all met or waived and those without criteria whose cards
+// are all done, opens the gap question of a plan whose cards ran out with
+// a criterion still open, starts the next round of a plan whose round is
+// over, and drafts the delta cards the reviews and the grants asked for.
+// One model call per delta due, in the sweep's own time: no activity
+// holds it.
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {

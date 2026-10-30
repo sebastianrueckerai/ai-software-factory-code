@@ -59,11 +59,13 @@ type prForgejo struct {
 	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
 	pulls         map[int64]string    // GET /pulls/{n} bodies
 	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it, or opens it with state open
+	openReads     int                 // GET /issues/{n} reports open this many times first, whatever issueOff
 	issuesClosed  []int64             // PATCH /issues/{n} closes
 	reopened      []int64             // PATCH /issues/{n} with state open
 	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
 	depsDown      bool                // /issues/{n}/dependencies answers 500
 	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
+	noCloser      bool                // GET /issues/{n}/timeline lists no close
 	open          []map[string]any    // open pull requests
 	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
 	statuses      []string            // combined-status bodies, served in order, the last repeating
@@ -176,13 +178,16 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				w.WriteHeader(http.StatusCreated)
 			}
 			io.WriteString(w, `{}`)
+		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/timeline") && f.noCloser:
+			io.WriteString(w, `[]`)
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/timeline"):
 			fmt.Fprintf(w, `[{"type":"close","user":{"login":%q}}]`, cmp.Or(f.closer, "sebastian"))
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && !strings.HasSuffix(p, "/labels") && !strings.HasSuffix(p, "/comments"):
 			state := "open"
-			if f.issueOff {
+			if f.issueOff && f.openReads == 0 {
 				state = "closed"
 			}
+			f.openReads = max(f.openReads-1, 0)
 			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
 			var n int64

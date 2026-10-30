@@ -185,6 +185,10 @@ type Runner struct {
 	// value; factoryd sets the one built from its boot secrets before the
 	// worker starts.
 	Scrub *redact.Scrubber
+	// Writes reports whether login writes repository's code
+	// (Intake.Writes), the trust rule of a person's close of a plan's
+	// issue; factoryd sets it before the minute pass starts.
+	Writes func(ctx context.Context, repository, login string) (bool, error)
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send

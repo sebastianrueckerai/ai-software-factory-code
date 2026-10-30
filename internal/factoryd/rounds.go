@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"slices"
@@ -181,11 +182,13 @@ func RoundItems(p Plan, cards []Task) []RoundItem {
 
 // roundCheck starts plan parent's next round: once the plan is done, its
 // newest revision leaves parts to later rounds and its round is over, the
-// round's replan step sends it back to its planner, its issue left as it
-// is. A round step whose reopen was lost is reopened. A plan issue closed
-// at that point is a person's close the webhook missed: the card ends
-// closed and nothing starts. A closed plan, one under another replan and
-// one whose own group revert runs are left as they are.
+// round's replan step sends it back to its planner, its open issue left
+// as it is. A round step whose reopen was lost is reopened. A plan issue
+// closed at that point by a close that counts (closeCounts) is a
+// person's close the webhook missed: the card ends closed and nothing
+// starts. Any other close does not count, as on the webhook: the issue
+// opens again and the round starts. A closed plan, one under another
+// replan and one whose own group revert runs are left as they are.
 func (r *Runner) roundCheck(ctx context.Context, parent string) {
 	if err := r.nextRound(ctx, parent); err != nil {
 		log.Printf("plan %s: the round check: %v", parent, err)
@@ -214,11 +217,20 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 	if err != nil || pending && step.Origin != ReplanRound {
 		return err
 	}
-	switch closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber); {
+	closer, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	closed := closer != "" || errors.Is(err, errNoCloser)
+	switch {
+	case errors.Is(err, errNoCloser):
+		log.Printf("plan %s: issue #%d closed, its timeline names no closer: not counted", t.ID, t.IssueNumber)
 	case err != nil:
 		return err
 	case closed:
-		return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+		switch counts, err := closeCounts(ctx, r.store, r.forgejo.BotUser, r.Writes, t, closer); {
+		case err != nil:
+			return err
+		case counts:
+			return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+		}
 	}
 	if !pending {
 		wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
@@ -227,7 +239,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 			return err
 		}
 	}
-	return r.requeuePlan(ctx, t, false)
+	return r.requeuePlan(ctx, t, closed)
 }
 
 // planRevisions reads plan revisions: the Store does, and the console's
