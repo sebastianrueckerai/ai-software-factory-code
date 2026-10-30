@@ -333,8 +333,7 @@ func TestSizeCardKeepsAskedBudgetEqualToTheDefault(t *testing.T) {
 	}
 }
 
-// A person raises the budget between the record and the write; a new run
-// finds the size written and leaves a raise that lands on the held cents.
+// A person raises the budget after the write, onto the held cents; a new run leaves it.
 func TestSizeCardKeepsARaiseOfANewRun(t *testing.T) {
 	r, store, _, _ := sizingRig(t, sizingCard(), "done", `{"size": "small", "reason": "r"}`)
 	sizeCard(t, r)
