@@ -77,7 +77,7 @@ func recordFetch(log func(string, ...any), ws string, err error) int {
 	if err == nil {
 		return 0
 	}
-	if werr := os.WriteFile(fetchFailed(ws), []byte(err.Error()), 0o600); werr != nil {
+	if werr := os.WriteFile(fetchFailed(ws), []byte(err.Error()), 0o600); werr != nil { // #nosec G703 -- the path is the workspace's own file; only the text written names BRANCHES
 		log("record the fetch failure %q: %v", err, werr)
 		return 1
 	}
