@@ -500,9 +500,10 @@ func (r *Runner) Replan(ctx context.Context, taskID string, ask ReplanAsk) (stri
 }
 
 // replanPlan sends plan planID back to its planner: the replan step with
-// the plan's started open cards as its stops, then completeReplan. With
-// off main the step waits for the revert of the plan's merged cards still
-// on main (takeOffMain), and the revert's end completes it.
+// the plan's started open cards as its stops, and the next round when
+// the plan's round is complete (askRound), then completeReplan. With off
+// main the step waits for the revert of the plan's merged cards still on
+// main (takeOffMain), and the revert's end completes it.
 func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (string, error) {
 	p, _, err := r.task(ctx, planID)
 	if err != nil {
@@ -544,7 +545,7 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	case !replannable:
 		return "", ErrNoReplan(plan + " is " + p.Status + ": it has not filed its cards yet. Comment on its issue to change the plan.")
 	}
-	newest, _, err := r.store.PlanRevision(ctx, p.ID, 0)
+	newest, revision, err := r.planAt(ctx, p.ID, 0)
 	if err != nil {
 		return "", err
 	}
@@ -552,13 +553,19 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	if err != nil {
 		return "", err
 	}
-	step = ReplanStep{Origin: ReplanPerson, By: ask.By, Comment: ask.Comment, OffMain: ask.OffMain, Revision: newest.Revision}
+	step = ReplanStep{Origin: ReplanPerson, By: ask.By, Comment: ask.Comment, OffMain: ask.OffMain, Revision: revision}
 	for _, k := range cards {
 		if k.PlanRevision > 0 && stoppable(k) {
 			step.Stops = append(step.Stops, k.ID)
 		}
 	}
 	detail := map[string]any{"origin": step.Origin, "by": step.By, "comment": step.Comment, "stops": step.Stops, "revision": step.Revision}
+	if newest != nil {
+		step.Round = askRound(*newest, cards)
+	}
+	if step.Round > 0 {
+		detail["round"] = step.Round
+	}
 	var merged []Task
 	if step.OffMain {
 		if merged = onMain(cards); len(merged) == 0 {
@@ -1064,8 +1071,12 @@ func sameEntry(a, b PlanCard) bool {
 // card's issue what it was cut into, at which session and spend, and
 // steps it. The plan's replanned step comes last, as it ends the pending
 // replan: a failure before it fails the filing, which runs again, and
-// writes the comments, the cut and each old card's step once.
+// writes the comments, the cut and each old card's step once. A round's
+// step records its round alone (recordRound).
 func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision int, next Plan, step ReplanStep, issues map[string]int64) error {
+	if step.Origin == ReplanRound {
+		return r.recordRound(ctx, p, repo, revision, next, issues)
+	}
 	cards, err := r.oldCardsOf(ctx, p, step, true)
 	if err != nil {
 		return err
@@ -1189,10 +1200,10 @@ const (
 )
 
 // replanRecord is a replan's record for its planner. findings are
-// factoryd's lines: a person's opener and one line per old card; work are
-// the agent's words, the cut's opener, which stand in the brief's fence;
-// branches are the fork's branches of the old cards that hold work and
-// did not merge, and the plan's salvage branch, each <fork
+// factoryd's lines: a person's or a round's opener and one line per old
+// card; work are the agent's words, the cut's opener, which stand in the
+// brief's fence; branches are the fork's branches of the old cards that
+// hold work and did not merge, and the plan's salvage branch, each <fork
 // branch>:<local branch>; files are one record per old card.
 type replanRecord struct {
 	findings, branches []string
@@ -1203,7 +1214,9 @@ type replanRecord struct {
 // replanRecord is plan p's record for the planner session of its pending
 // replan, and whether one is pending, from its timeline ptl. A merged card
 // a group revert was to take off main, and that revert ended without
-// landing, says so: a person stopped that take-off.
+// landing, says so: a person stopped that take-off. The merged cards of
+// earlier rounds that the revision keeps as they are (settledCards) have
+// no line, file or branch: the planner never sees them.
 func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRecord, bool, error) {
 	step, pending, err := pendingIn(ptl, p.ID)
 	if err != nil || !pending {
@@ -1226,12 +1239,19 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		return replanRecord{}, false, err
 	}
 	var rec replanRecord
-	if step.Origin == ReplanPerson {
+	switch step.Origin {
+	case ReplanPerson:
 		opener := fmt.Sprintf("This is a replan of plan #%d, asked by %s", p.IssueNumber, cmp.Or(step.By, "a person"))
 		if comment := sanitize.Inbound(step.Comment); comment != "" {
 			opener += ": " + comment
 		}
 		rec.findings = append(rec.findings, opener)
+		if step.Round > 0 {
+			rec.findings = append(rec.findings, fmt.Sprintf("It files round %d: every card of round %d ended.", step.Round, step.Round-1))
+		}
+	case ReplanRound:
+		rec.findings = append(rec.findings, fmt.Sprintf("This is round %d of plan #%d: the cards of round %d are done. Plan round %d from your outline, on top of what the earlier rounds built.",
+			step.Round, p.IssueNumber, step.Round-1, step.Round))
 	}
 	if i := slices.IndexFunc(cards, func(k Task) bool { return k.ID == step.Card }); step.Origin == ReplanCut && i >= 0 {
 		session, spent, err := r.cutAt(ctx, p, cards[i])
@@ -1240,16 +1260,22 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		}
 		rec.work = append(rec.work, fmt.Sprintf("This is the cut of #%d at session %d, %.2f EUR spent: %s", cards[i].IssueNumber, session, spent, sanitize.Inbound(step.Work)))
 	}
-	roles := map[string]string{}
+	roles, settled := map[string]string{}, map[string]bool{}
 	if newest, _, err := r.planAt(ctx, p.ID, 0); err != nil {
 		return replanRecord{}, false, err
 	} else if newest != nil {
 		for _, c := range newest.Cards {
 			roles[c.Key] = c.Role
 		}
+		for _, c := range settledCards(*newest, cards, filingRound(step, newest)) {
+			settled[c.Key] = true
+		}
 	}
 	revisions := map[int]*Plan{}
 	for _, k := range cards {
+		if settled[k.PlanKey] {
+			continue
+		}
 		var head string
 		if k.MergeCommit == "" {
 			if head, err = r.BranchHead(ctx, k.ID); err != nil {

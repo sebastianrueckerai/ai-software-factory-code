@@ -786,6 +786,13 @@ func TestRoundItems(t *testing.T) {
 // are done with merge commits. sebastian alone writes sf/repo.
 func roundRig(t *testing.T) (*Runner, *fakeStore, *prForgejo) {
 	t.Helper()
+	return roundRigOf(t, roundOne())
+}
+
+// roundRigOf is roundRig with revision 1 one, whose cards (issue 20 on)
+// are done with merge commits.
+func roundRigOf(t *testing.T, one Plan) (*Runner, *fakeStore, *prForgejo) {
+	t.Helper()
 	ctx := context.Background()
 	r, store, fj := replanRig(t, "done", 0)
 	r.Writes = func(_ context.Context, repository, login string) (bool, error) {
@@ -797,10 +804,10 @@ func roundRig(t *testing.T) (*Runner, *fakeStore, *prForgejo) {
 	p := store.tasks["p"]
 	p.FinishedAt = &finished
 	store.tasks["p"] = p
-	if _, err := store.AddPlanRevision(ctx, "p", json.RawMessage(planJSON(t, roundOne())), "sha-1"); err != nil {
+	if _, err := store.AddPlanRevision(ctx, "p", json.RawMessage(planJSON(t, one)), "sha-1"); err != nil {
 		t.Fatal(err)
 	}
-	for i, c := range roundOne().Cards {
+	for i, c := range one.Cards {
 		k := planCardTask(c, int64(20+i), "done", "m"+c.Key)
 		k.Parent, k.Repository, k.FinishedAt = "p", "sf/repo", &finished
 		if err := store.CreateTask(ctx, k); err != nil {
@@ -1044,5 +1051,173 @@ func TestCriteriaPassStartsTheNextRound(t *testing.T) {
 	r.CriteriaPass(context.Background())
 	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) || store.tasks["p"].Status != "queued" {
 		t.Fatalf("replan steps %+v, plan %s; want %+v and queued", got, store.tasks["p"].Status, roundTwoStep)
+	}
+}
+
+// Review Focus 5: a person's replan of a plan whose round is complete
+// files the next round, and its step names it; the round check then adds
+// no step. A round that still runs replans itself, and a plan filed
+// before rounds replans as it did: their step names no round. A last
+// round that is complete files a round after it.
+func TestReplanAfterACompleteRoundFilesTheNext(t *testing.T) {
+	ctx := context.Background()
+	r, _, _ := roundRig(t)
+	if _, err := r.Replan(ctx, "p", ReplanAsk{By: "ana", Comment: "stats first"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []ReplanStep{{Origin: ReplanPerson, By: "ana", Comment: "stats first", Revision: 1, Round: 2, Time: replanAt}}
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("replan steps %+v, want %+v", got, want)
+	}
+	r.roundCheck(ctx, "p")
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("replan steps after the round check %+v, want %+v", got, want)
+	}
+
+	last := testPlan()
+	last.Round = 1
+	for i := range last.Cards {
+		last.Cards[i].Round = 1
+	}
+	for _, tc := range []struct {
+		name    string
+		one     Plan
+		running bool
+		round   any
+	}{
+		{"redirects running", roundOne(), true, nil},
+		{"a last round 1 done", last, false, 2.0},
+		{"a plan filed before rounds", testPlan(), false, nil},
+	} {
+		r, store, _ := roundRigOf(t, tc.one)
+		if tc.running {
+			k := store.tasks["t-redirects"]
+			k.Status, k.MergeCommit = "running", ""
+			store.tasks["t-redirects"] = k
+		}
+		if _, err := r.Replan(ctx, "p", ReplanAsk{By: "ana", Comment: "stats first"}); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		lines := stepsNamed(t, r, "p", stepReplan)
+		var step map[string]any
+		if len(lines) != 1 || json.Unmarshal(lines[0], &step) != nil {
+			t.Fatalf("%s: replan steps %s", tc.name, lines)
+		}
+		if round, ok := step["round"]; round != tc.round || ok != (tc.round != nil) {
+			t.Fatalf("%s: the step's round %v (set %t), want %v", tc.name, round, ok, tc.round)
+		}
+	}
+}
+
+// A round's replan opens its planner's record with the round, and the
+// merged cards of earlier rounds, which the plan keeps as they are, have
+// no line, file or branch there: a card of the round that closed has. A
+// person's replan that files a round says so after its opener.
+func TestReplanRecordOpensARound(t *testing.T) {
+	ctx := context.Background()
+	record := func(t *testing.T, step map[string]any, closed bool) replanRecord {
+		t.Helper()
+		r, store, fj := roundRig(t)
+		fj.branchGone = true
+		if closed {
+			k := store.tasks["t-redirects"]
+			k.Status, k.MergeCommit = "closed", ""
+			store.tasks["t-redirects"] = k
+		}
+		if err := r.timeline.Append(ctx, "p", stepReplan, step); err != nil {
+			t.Fatal(err)
+		}
+		rec, ok, err := r.replanRecord(ctx, store.tasks["p"], timelineOf(t, r, "p"))
+		if err != nil || !ok {
+			t.Fatalf("replanRecord: %t, %v", ok, err)
+		}
+		return rec
+	}
+	opener := "This is round 2 of plan #10: the cards of round 1 are done. Plan round 2 from your outline, on top of what the earlier rounds built."
+	round := map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}
+	if rec := record(t, round, false); !slices.Equal(rec.findings, []string{opener}) || len(rec.files) != 0 || len(rec.branches) != 0 {
+		t.Fatalf("the round's record %+v, want the opener alone", rec)
+	}
+
+	rec := record(t, round, true)
+	line := "#22 Redirects and clicks (feature, key redirects): ended closed, no commit past its base; spent 0.00 of 2.00 EUR in 0 sessions; its record is card-22.md"
+	if !slices.Equal(rec.findings, []string{opener, line}) || len(rec.files) != 1 || rec.files[0].Name != "card-22.md" || len(rec.branches) != 0 {
+		t.Fatalf("the record with redirects closed %+v, want the opener, then redirects' line and file alone", rec)
+	}
+
+	rec = record(t, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "x", "round": 3}, false)
+	if want := []string{"This is a replan of plan #10, asked by ana: x", "It files round 3: every card of round 2 ended."}; !slices.Equal(rec.findings, want) {
+		t.Fatalf("a person's round findings %q, want %q", rec.findings, want)
+	}
+}
+
+// A round's filing records its cards, in filing order, on the plan's
+// issue once, with the parts still to plan or that it is the last round;
+// the plan's replanned step and its event name them. An old card gets no
+// step, and no card is counted kept or dropped.
+func TestRecordReplanOfARound(t *testing.T) {
+	ctx := context.Background()
+	console := extras(2)
+	console.Outline = []string{"the console"}
+	console.Cards = slices.DeleteFunc(console.Cards, func(c PlanCard) bool { return c.Role == RoleIntegration })
+	console.Cards[4].DependsOn = []string{"extra-1"}
+	for _, tc := range []struct {
+		name    string
+		next    Plan
+		issues  map[string]int64
+		comment string
+		cards   []int64
+	}{
+		{"the last round", twoRounds(), map[string]int64{"stats": 21, "integration": 22},
+			"factoryd: round 2 planned at revision 3, 2 cards: #21, #22. It is the last round.", []int64{21, 22}},
+		{"the console still to plan", console, map[string]int64{"stats": 21, "extra-1": 22, "extra-0": 23},
+			"factoryd: round 2 planned at revision 3, 3 cards: #21, #22, #23. Still to plan: the console.", []int64{21, 22, 23}},
+	} {
+		r, store, fj := roundRig(t)
+		if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {
+			t.Fatal(err)
+		}
+		p, repo, err := r.task(ctx, "p")
+		if err != nil {
+			t.Fatal(err)
+		}
+		step, _, err := r.pendingReplan(ctx, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range 2 {
+			if err := r.recordReplan(ctx, p, repo, 3, tc.next, step, tc.issues); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+		}
+		if !slices.Equal(fj.comments, []string{tc.comment}) {
+			t.Fatalf("%s: comments %q, want %q once", tc.name, fj.comments, tc.comment)
+		}
+		var cards []any
+		for _, n := range tc.cards {
+			cards = append(cards, float64(n))
+		}
+		lines := stepsNamed(t, r, "p", "replanned")
+		var got map[string]any
+		if len(lines) == 0 || json.Unmarshal(lines[0], &got) != nil {
+			t.Fatalf("%s: the plan's replanned steps %s", tc.name, lines)
+		}
+		delete(got, "step")
+		delete(got, "time")
+		if want := map[string]any{"revision": 3.0, "origin": "round", "round": 2.0, "cards": cards}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("%s: the plan's replanned step %v, want %v", tc.name, got, want)
+		}
+		i := slices.IndexFunc(store.events, func(e Event) bool { return e.Kind == EventPlanReplanned })
+		if want := map[string]any{"revision": 3, "origin": ReplanRound, "round": 2, "cards": tc.cards}; i < 0 || store.events[i].TaskID != "p" || !reflect.DeepEqual(store.events[i].Detail, want) {
+			t.Fatalf("%s: events %+v, want plan_replanned on p with %v", tc.name, store.events, want)
+		}
+		for _, id := range []string{"t-foundation", "t-links-api", "t-redirects"} {
+			if lines := stepsNamed(t, r, id, "replanned"); len(lines) != 0 {
+				t.Fatalf("%s: %s's replanned steps %s, want none", tc.name, id, lines)
+			}
+		}
+		if _, pending, err := r.pendingReplan(ctx, store.tasks["p"]); err != nil || pending {
+			t.Fatalf("%s: pending %t, %v after the record; want ended", tc.name, pending, err)
+		}
 	}
 }

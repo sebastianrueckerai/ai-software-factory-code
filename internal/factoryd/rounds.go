@@ -114,6 +114,46 @@ func roundComplete(p Plan, cards []Task) bool {
 	return !slices.ContainsFunc(cards, func(k Task) bool { return !keys[k.PlanKey] && !Final(k.Status) })
 }
 
+// askRound is the round a person's replan of a plan files, given its
+// newest revision and its cards: the next once the newest's round is
+// complete, else 0 for the newest's own. A plan filed before rounds
+// answers 0.
+func askRound(newest Plan, cards []Task) int {
+	if newest.Round > 0 && roundComplete(newest, cards) {
+		return newest.Round + 1
+	}
+	return 0
+}
+
+// recordRound is recordReplan of a round's replan step: the cards of
+// next's round in filing order and what is still to plan, on plan p's
+// issue once, then the plan's replanned step and its event.
+func (r *Runner) recordRound(ctx context.Context, p Task, repo Repo, revision int, next Plan, issues map[string]int64) error {
+	var cards []int64
+	var refs []string
+	for _, c := range planOrder(next, planEdges(next)) {
+		if c.Round == next.Round {
+			cards = append(cards, issues[c.Key])
+			refs = append(refs, fmt.Sprintf("#%d", issues[c.Key]))
+		}
+	}
+	note := fmt.Sprintf("round %d planned at revision %d, %s: %s.", next.Round, revision, plural(len(cards), "card"), strings.Join(refs, ", "))
+	if len(next.Outline) > 0 {
+		note += " Still to plan: " + strings.Join(next.Outline, ", ") + "."
+	} else {
+		note += " It is the last round."
+	}
+	if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, "factoryd: "+r.untrusted(p, note)); err != nil {
+		return fmt.Errorf("comment round %d on #%d: %w", next.Round, p.IssueNumber, err)
+	}
+	detail := map[string]any{"revision": revision, "origin": ReplanRound, "round": next.Round, "cards": cards}
+	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {
+		return fmt.Errorf("record replanned: %w", err)
+	}
+	r.timeline.RecordRow(ctx, p.ID, EventPlanReplanned, FactoryDecider, ViaFactoryd, detail)
+	return nil
+}
+
 // cardsDone is "<n> card(s), <d> done" of tasks.
 func cardsDone(tasks []Task) string {
 	done := 0
