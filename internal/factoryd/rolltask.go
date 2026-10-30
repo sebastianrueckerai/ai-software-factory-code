@@ -380,6 +380,9 @@ type Roller struct {
 	Poll      time.Duration
 
 	held string // main's head the roll last waited on, said once
+	// conflicted is "<red sha> <main's head>" of the main-red revert that
+	// last conflicted: the revert clones main again only once main moved
+	conflicted string
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.

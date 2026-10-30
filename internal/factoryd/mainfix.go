@@ -409,7 +409,8 @@ func runnerLost(log []byte, recorded time.Time) (line string, silent time.Durati
 // card's id before any of it, so a call that finds the id with no card
 // files that card, and one that finds the card does nothing. A pause on a
 // re-run or on a re-run card, its jobs having lost their runner, reverts
-// nothing.
+// nothing. A revert that conflicted clones main again only once main's
+// head moved: on the same head it conflicts again.
 func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	if fix, ok, err := r.Store.Task(ctx, pause.FixTask); err != nil {
 		return err
@@ -424,6 +425,13 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		}
 	} else if _, filed, err := r.Store.Task(ctx, taskID); err != nil || filed {
 		return err
+	}
+	head, err := r.Forgejo.DefaultBranchHeadSHA(ctx, r.Repo.Owner, r.Repo.Name, prBase)
+	if err != nil {
+		return err
+	}
+	if r.conflicted == pause.SHA+" "+head {
+		return fmt.Errorf("revert %s: it conflicts with main", pause.SHA)
 	}
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
@@ -441,6 +449,7 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		return fmt.Errorf("revert %s: %w", pause.SHA, err)
 	}
 	if conflict != "" {
+		r.conflicted = pause.SHA + " " + head
 		return fmt.Errorf("revert %s: it conflicts with main", pause.SHA)
 	}
 	short := pause.SHA[:min(7, len(pause.SHA))]

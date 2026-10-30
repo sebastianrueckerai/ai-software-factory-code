@@ -295,6 +295,7 @@ type rollForgejo struct {
 	registry map[string]string            // "sf/<image>/manifests/<reference>" -> body
 	branches map[string]string            // fork branch -> head
 	behind   int                          // the fork's main behind upstream
+	mainHead string                       // the code repository's main head, m1 when empty
 
 	issues      []string // "title\n\nbody"
 	comments    []string // "#n body"
@@ -606,6 +607,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			reply(map[string]any{"id": 900})
 		case repo == forkRepo && p == "":
 			reply(map[string]any{"fork": true, "private": true, "has_actions": false, "parent": map[string]string{"full_name": codeRepo}})
+		case repo == codeRepo && r.Method == "GET" && p == "/branches/main":
+			reply(map[string]any{"commit": map[string]string{"id": cmp.Or(f.mainHead, "m1")}})
 		case repo == forkRepo && p == "/sync_fork" && r.Method == "GET":
 			reply(map[string]any{"allowed": f.behind > 0, "commits_behind": f.behind})
 		case repo == forkRepo && p == "/sync_fork" && r.Method == "POST":

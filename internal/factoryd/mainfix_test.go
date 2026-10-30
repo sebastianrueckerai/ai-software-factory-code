@@ -270,6 +270,48 @@ func TestRollerRevertThatConflictsFilesNothing(t *testing.T) {
 	}
 }
 
+// A main-red revert that conflicts clones main once for each head of main:
+// a second poll on the same head reverts nothing and answers the conflict
+// again, and a poll after main moved tries the revert again.
+func TestRollerRevertThatConflictsWaitsForMainToMove(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}}
+	clones := 0
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		clones++
+		return shas[0], nil
+	}
+	ctx := context.Background()
+	want := "revert " + commitC1 + ": it conflicts with main"
+	for range 2 {
+		if err := roller.poll(ctx); err == nil || err.Error() != want {
+			t.Fatalf("error = %v, want %q", err, want)
+		}
+	}
+	if clones != 1 {
+		t.Fatalf("clones = %d after two polls on main's head m1, want 1", clones)
+	}
+	f.mu.Lock()
+	f.mainHead = "m2"
+	f.mu.Unlock()
+	if err := roller.poll(ctx); err == nil || err.Error() != want {
+		t.Fatalf("error = %v, want %q", err, want)
+	}
+	if clones != 2 {
+		t.Fatalf("clones = %d after main moved to m2, want 2", clones)
+	}
+}
+
 // Main green again without the fix-forward card's merge (card #1220 worked
 // on for 24 minutes on a red another commit had fixed): the green run ends
 // the card. A comment names the run and the issue closes as factoryd's
