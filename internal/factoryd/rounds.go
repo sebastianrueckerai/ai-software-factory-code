@@ -180,10 +180,11 @@ func RoundLine(p Plan, cards []Task) string {
 }
 
 // RoundItem is one line of a plan's rounds on the board: a round's cards,
-// Current for the plan's round, or a part still to plan.
+// Current for the plan's round, or Still for a part still to plan.
 type RoundItem struct {
 	Text    string
 	Current bool
+	Still   bool
 }
 
 // RoundItems are the board's lines of p's rounds, given the plan's cards:
@@ -215,7 +216,7 @@ func RoundItems(p Plan, cards []Task) []RoundItem {
 		out = append(out, item)
 	}
 	for _, part := range p.Outline {
-		out = append(out, RoundItem{Text: "still to plan: " + part})
+		out = append(out, RoundItem{Text: "still to plan: " + part, Still: true})
 	}
 	return out
 }

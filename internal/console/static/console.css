@@ -338,7 +338,7 @@ footer#live:empty { display: none; }
 .face.final:hover .line1 { color: var(--text-muted); }
 .dmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 0 5px; margin: 1px 0 0; color: var(--text-faint); font: 11px/1.5 var(--font-mono); letter-spacing: -.02em; }
 .dmeta > * { white-space: nowrap; }
-.dmeta > *:not(:last-child)::after { content: "·"; margin-left: 5px; }
+.dmeta > * + *::before { content: "·"; margin-right: 5px; }
 .dmeta .g { margin-right: 4px; }
 .dmeta .chip { height: auto; padding: 0; border: 0; color: inherit; }
 .dmeta > .rollup { white-space: normal; max-width: 100%; }
@@ -583,6 +583,8 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .sec-body .edit-form { margin: 0 0 8px; }
 .sec-body .edit-form label { display: block; margin: 0; }
 .sec-body .links { display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.sec-body ol { padding-left: 1.25em; }
+ol li[aria-current="step"] { font-weight: 600; }
 .files td code { word-break: break-all; }
 .files td:nth-child(3) { color: var(--st-done); }
 .files td:nth-child(4) { color: var(--st-failed); }

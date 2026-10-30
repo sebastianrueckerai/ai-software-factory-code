@@ -3082,7 +3082,8 @@ var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"ac
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
-// line and its body, the plan's rounds and its table, a pending merge's
+// line and its body, the plan's rounds and what is still to plan, its
+// table, a pending merge's
 // reviews and audit, and the related cards. Activity: the timeline
 // page's gates and steps. Files: the pull request's changed files. Chat:
 // the newest session's messages, and the input that steers it while it
@@ -3094,6 +3095,7 @@ type drawerData struct {
 	Headline, Provenance, Body string
 	PlanSummary                string
 	PlanRounds                 []factoryd.RoundItem
+	PlanStill                  []string
 	PlanRows                   []factoryd.PlanRow
 	TakeOffMain                []string
 	Merge                      *approvalCard
@@ -3335,7 +3337,8 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
 						problem("plan's cards", err)
 					} else {
-						d.PlanRounds = factoryd.RoundItems(p, cards)
+						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })
+						d.PlanStill = p.Outline
 					}
 				}
 			}

@@ -767,10 +767,10 @@ func TestRoundLine(t *testing.T) {
 
 func TestRoundItems(t *testing.T) {
 	want := [][]RoundItem{
-		{{"round 1: 1 card, 1 done.", false}, {"round 2: 5 cards, 4 done. This round.", true},
-			{"still to plan: the console", false}, {"still to plan: the scheduler", false}},
-		{{"round 3: 1 card, 0 done. This round.", true}},
-		{{"round 1: 1 card, 1 done. This round.", true}, {"still to plan: x", false}},
+		{{"round 1: 1 card, 1 done.", false, false}, {"round 2: 5 cards, 4 done. This round.", true, false},
+			{"still to plan: the console", false, true}, {"still to plan: the scheduler", false, true}},
+		{{"round 3: 1 card, 0 done. This round.", true, false}},
+		{{"round 1: 1 card, 1 done. This round.", true, false}, {"still to plan: x", false, true}},
 		nil,
 		nil,
 	}

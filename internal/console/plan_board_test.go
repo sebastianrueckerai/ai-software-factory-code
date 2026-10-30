@@ -301,7 +301,7 @@ func TestDonePlanShowsItsRound(t *testing.T) {
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
 	if want := `<ol aria-label="The plan's rounds"><li>round 1: 1 card, 1 done.</li><li aria-current="step">round 2: 4 cards, 1 done. This round.</li>` +
-		`<li>still to plan: the console</li><li>still to plan: the scheduler</li></ol>`; !strings.Contains(drawer, want) {
+		`</ol><p>Still to plan: the console, the scheduler.</p>`; !strings.Contains(drawer, want) {
 		t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
 	}
 }
