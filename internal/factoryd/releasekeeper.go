@@ -136,9 +136,8 @@ func (k *ReleaseKeeper) Pass(ctx context.Context) error {
 // groups are open on its main, else its end where a clock runs (the ask
 // closed first, so a failed close leaves the hold for the next pass; one
 // Forgejo refuses for good does not, and its card ends closed), then a
-// promote job to run again. A
-// promote job told held runs again once no group is open, or while one
-// is when its commit is Deploy now's; at the
+// promote job to run again. A promote job told held runs again once no
+// group is open, or while one is when its commit is Deploy now's; at the
 // hold's end an empty ToldHeld is unknown (a failed ask record leaves it
 // unwritten), so the newest run's promote job runs again. Own's roll is
 // the roller's.

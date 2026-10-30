@@ -856,11 +856,12 @@ func choiceCard(t factoryd.Task) bool {
 // and keep waiting record the answer, nothing posted; go hands the card
 // to the factory; every other choice closes the card on its label. The
 // held-production ask's deploy anyway is a Deploy now, answered only once
-// it went through, and refused to the chat (chatDeploysAnyway); its replans are phase 4's doReplan of the plan the
-// value names, and the card closes once factoryd accepted. Words
-// that name no choice are the member's comment on a card that is no
-// choice card, the card still waiting; on a choice card they are refused
-// with the choices, as is a value the question does not offer.
+// it went through, and refused to the chat (chatDeploysAnyway); its
+// replans are phase 4's doReplan of the plan the value names, and the card
+// closes once factoryd accepted. Words that name no choice are the
+// member's comment on a card that is no choice card, the card still
+// waiting; on a choice card they are refused with the choices, as is a
+// value the question does not offer.
 func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, text, value string) (string, error) {
 	bt, _, err := c.cfg.Tasks.BoardTask(ctx, t.ID)
 	if err != nil {
