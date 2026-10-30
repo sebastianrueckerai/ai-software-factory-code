@@ -131,19 +131,21 @@ func TestSizeCardTakesTheFilersSizeAsAFloor(t *testing.T) {
 	}
 }
 
-// An outsider's filed size is no floor: the session sizes the card.
+// An outsider's filed size is no floor: the session sizes the card. Filed
+// large on the frontier rung it holds 10 EUR, its filing's; sized small it
+// goes to a strong card's 5.
 func TestSizeCardSizesAnOutsidersCard(t *testing.T) {
 	card := sizingCard()
-	card.Author, card.AuthorWriter, card.Size = "mallory", false, "large"
+	card.Author, card.AuthorWriter, card.Size, card.Rung, card.BudgetEUR = "mallory", false, "large", RungFrontier, 10
 	r, store, objects, wf := sizingRig(t, card, "done", `{"size": "small", "reason": "one handler", "files": ["h.go"]}`)
 	if res := sizeCard(t, r); res != (SizeResult{}) || len(wf.started) != 1 {
 		t.Fatalf("result %+v, started %v, want one sizing and the card to stay direct", res, wf.started)
 	}
-	if got := store.tasks["t1"].Size; got != "small" {
-		t.Fatalf("size = %q, want small", got)
+	if got := store.tasks["t1"]; got.Size != "small" || got.BudgetEUR != 5 {
+		t.Fatalf("size %q, budget %v, want small and 5", got.Size, got.BudgetEUR)
 	}
 	wantSizingStep(t, objects, map[string]any{"size": "small", "filed": "large", "sized": "small", "reason": "one handler",
-		"files": []any{"h.go"}, "report": wf.started[0], "plan": false, "held_cents": 500.0, "budget_eur": 5.0})
+		"files": []any{"h.go"}, "report": wf.started[0], "plan": false, "held_cents": 1000.0, "budget_eur": 5.0})
 }
 
 func TestSizeCardWithoutAVerdictKeepsTheCardAsFiled(t *testing.T) {
@@ -290,6 +292,32 @@ func TestSizeCardKeepsARaisedBudget(t *testing.T) {
 	card.BudgetEUR = 7
 	if _, _, got := sizedBudget(t, card, "small"); got.Size != "small" || got.BudgetEUR != 7 {
 		t.Fatalf("card size %q, budget %v, want small and the raised 7", got.Size, got.BudgetEUR)
+	}
+}
+
+// A strong card holds at least a medium card's budget: unsized 5, small
+// stays 5, large goes to 10.
+func TestSizeCardOfAStrongCard(t *testing.T) {
+	for size, want := range map[string]float64{"small": 5, "large": 10} {
+		card := sizingCard()
+		card.Rung = RungFrontier
+		if _, _, got := sizedBudget(t, card, size); got.BudgetEUR != want {
+			t.Errorf("sized %s: budget %v, want %v", size, got.BudgetEUR, want)
+		}
+	}
+}
+
+// A project whose card maximum is 3 files its cards at 3, whatever their size.
+func TestSizeCardUnderAProjectMaximum(t *testing.T) {
+	for _, size := range []string{"small", "medium", "large"} {
+		card := sizingCard()
+		card.BudgetEUR = 3
+		r, store, _, _ := sizingRig(t, card, "done", `{"size": "`+size+`", "reason": "r"}`)
+		store.projects = []Project{{Name: "r", Repository: "sf/r", Budget: &policy.ProjectBudget{MonthEUR: 50, TaskMaxEUR: 3}}}
+		sizeCard(t, r)
+		if got := store.tasks["t1"]; got.Size != size || got.BudgetEUR != 3 {
+			t.Errorf("sized %s: size %q, budget %v, want 3", size, got.Size, got.BudgetEUR)
+		}
 	}
 }
 
