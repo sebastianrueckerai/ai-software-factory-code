@@ -214,6 +214,12 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 		return ReplanChildResult{Refused: fmt.Sprintf("Plan #%d is %s, so this card's work cannot go back to its planner: answer to go on with the card, or close it.",
 			p.IssueNumber, status)}, nil
 	}
+	switch wait, err := r.revertCard(ctx, p); {
+	case err != nil:
+		return ReplanChildResult{}, err
+	case wait != "":
+		return ReplanChildResult{Refused: wait}, nil
+	}
 	if replannable {
 		tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
 		if err != nil {
@@ -488,6 +494,12 @@ func (r *Runner) replanPlan(ctx context.Context, planID string, ask ReplanAsk) (
 	if err != nil {
 		return "", err
 	}
+	switch wait, err := r.revertCard(ctx, p); {
+	case err != nil:
+		return "", err
+	case wait != "":
+		return "", ErrNoReplan(wait)
+	}
 	if revertWaits(tl, step, pending) {
 		return r.awaitOffMain(ctx, p, step)
 	}
@@ -588,25 +600,27 @@ func offMainNote(p Task, n int) string {
 	return fmt.Sprintf("%s and %d cards stop; their work stays on their branches.", head, n)
 }
 
-// awaitOffMain answers a press on plan p while its pending replan step
-// waits for the revert of its merged cards: the revert's card while the
-// plan's pause names one. A step whose revert did not start, its press
-// stopped after the step, starts it; one with no card left on main
-// completes as any replan does.
-func (r *Runner) awaitOffMain(ctx context.Context, p Task, step ReplanStep) (string, error) {
+// revertCard is the refusal of a replan of plan p while its project's
+// pause names p with a filed revert card, a person's off-main revert or
+// one the planner's revision started: it names the card; "" for none.
+func (r *Runner) revertCard(ctx context.Context, p Task) (string, error) {
 	pause, paused, err := r.store.QueuePause(ctx, p.Repository)
-	if err != nil {
+	if err != nil || !paused || pause.Plan != p.ID {
 		return "", err
 	}
-	if paused && pause.Plan == p.ID {
-		card, filed, err := r.store.Task(ctx, pause.RevertTask)
-		if err != nil {
-			return "", err
-		}
-		if filed {
-			return "", ErrNoReplan(fmt.Sprintf("Plan #%d's merged cards are coming off main: wait for the revert, card #%d.", p.IssueNumber, card.IssueNumber))
-		}
+	card, filed, err := r.store.Task(ctx, pause.RevertTask)
+	if err != nil || !filed {
+		return "", err
 	}
+	return fmt.Sprintf("Plan #%d's merged cards are coming off main: wait for the revert, card #%d.", p.IssueNumber, card.IssueNumber), nil
+}
+
+// awaitOffMain answers a press on plan p while its pending replan step
+// waits for the revert of its merged cards and no revert card is filed
+// (revertCard): its press stopped after the step, so the press starts
+// the revert; with no card left on main the step completes as any replan
+// does.
+func (r *Runner) awaitOffMain(ctx context.Context, p Task, step ReplanStep) (string, error) {
 	cards, err := r.store.PlanCards(ctx, p.ID)
 	if err != nil {
 		return "", err

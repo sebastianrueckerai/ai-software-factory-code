@@ -2131,23 +2131,37 @@ func TestOffMainRevertThatCannotStart(t *testing.T) {
 
 // A child's cut while its plan waits for an off-main revert is refused:
 // the planner runs once the revert has ended, and the plan stays done.
+// With the revert's card filed the refusal names it; before, it says the
+// revert must end first.
 func TestReplanChildDuringAnOffMainRevert(t *testing.T) {
 	ctx := context.Background()
-	g := offMainRig(t)
-	if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
-		PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != nil {
-		t.Fatal(err)
-	}
-	res, err := g.r.ReplanChild(ctx, "c3", "the rest")
-	want := ReplanChildResult{Refused: "Plan #10's merged cards are coming off main, so this card's work cannot go back to its planner until the revert ends: answer to go on with the card, or close it."}
-	if err != nil || res != want {
-		t.Fatalf("ReplanChild = %+v, %v; want %+v", res, err, want)
-	}
-	if p := g.store.tasks["p"]; p.Status != "done" || len(g.wf.reopens) != 0 || len(stepsNamed(t, g.r, "c3", "replan_stop")) != 0 {
-		t.Fatalf("plan %s, reopens %+v, c3's replan_stop %s; want nothing done", p.Status, g.wf.reopens, stepsNamed(t, g.r, "c3", "replan_stop"))
+	for _, tc := range []struct {
+		name  string
+		press bool // the press ran and filed the revert's card; else only its step stands
+		want  string
+	}{
+		{"its card filed", true, "Plan #10's merged cards are coming off main: wait for the revert, card #21."},
+		{"no card yet", false, "Plan #10's merged cards are coming off main, so this card's work cannot go back to its planner until the revert ends: answer to go on with the card, or close it."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := offMainRig(t)
+			if err := g.store.CreateTask(ctx, Task{ID: "c3", Kind: "agent", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", Repository: "sf/repo",
+				PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1}); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.press {
+				offMainStep(t, g)
+			} else if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true}); err != nil {
+				t.Fatal(err)
+			}
+			res, err := g.r.ReplanChild(ctx, "c3", "the rest")
+			if want := (ReplanChildResult{Refused: tc.want}); err != nil || res != want {
+				t.Fatalf("ReplanChild = %+v, %v; want %+v", res, err, want)
+			}
+			if p := g.store.tasks["p"]; p.Status != "done" || len(g.wf.reopens) != 0 || len(stepsNamed(t, g.r, "c3", "replan_stop")) != 0 {
+				t.Fatalf("plan %s, reopens %+v, c3's replan_stop %s; want nothing done", p.Status, g.wf.reopens, stepsNamed(t, g.r, "c3", "replan_stop"))
+			}
+		})
 	}
 }
 
@@ -2357,5 +2371,33 @@ func TestReplanOffMainRefusedAfterItsStep(t *testing.T) {
 	}
 	if note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "plan it again"}); err != nil || note != "Plan #10 goes back to the planner: no card stops." {
 		t.Fatalf("a plain press then = %q, %v", note, err)
+	}
+}
+
+// While a revert the planner's revision started takes the plan's cards off
+// main, a person's plain Replan and a child's cut wait for its card, and
+// nothing reopens.
+func TestReplanWaitsForThePlannersRevert(t *testing.T) {
+	ctx := context.Background()
+	g := offMainRig(t)
+	for _, k := range []Task{
+		{ID: "t-rv", Track: policy.TrackDirect, Source: SourceRevert, IssueNumber: 21, Status: "in-review"},
+		{ID: "c3", Track: policy.TrackDirect, Source: SourcePlan, Parent: "p", PlanKey: "ui", IssueNumber: 16, Status: "running", PlanRevision: 1},
+	} {
+		k.Kind, k.Repository = "agent", "sf/repo"
+		if err := g.store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.store.pauses = map[string]QueuePause{"sf/repo": {Project: "sf/repo", Since: time.Now(), Plan: "p", Reverts: []string{"c1"}, RevertTask: "t-rv"}}
+	want := "Plan #10's merged cards are coming off main: wait for the revert, card #21."
+	if _, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller"}); err != ErrNoReplan(want) {
+		t.Fatalf("Replan: %v, want %q", err, want)
+	}
+	if res, err := g.r.ReplanChild(ctx, "c3", "the rest"); err != nil || res != (ReplanChildResult{Refused: want}) {
+		t.Fatalf("ReplanChild = %+v, %v; want refused with %q", res, err, want)
+	}
+	if steps := replanSteps(t, g.r, "p"); len(steps) != 0 || len(g.wf.reopens) != 0 || g.store.tasks["p"].Status != "done" || len(stepsNamed(t, g.r, "c3", "replan_stop")) != 0 {
+		t.Fatalf("steps %+v, reopens %+v, plan %s; want nothing done", steps, g.wf.reopens, g.store.tasks["p"].Status)
 	}
 }
