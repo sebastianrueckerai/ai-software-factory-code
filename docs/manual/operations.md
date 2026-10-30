@@ -603,8 +603,10 @@ any other time.
 `kubectl rollout restart deployment/factoryd` restarts it twice: Flux
 reverts the `restartedAt` annotation about five minutes later and rolls
 it again. Both restarts are safe (Temporal retries the interrupted
-activity), but plan for the second one: factoryd undoes a hand suspend
-of the `factory` Kustomization within 15 seconds (Operating it).
+activity). `kubectl -n factory delete pod -l app=factoryd` restarts it
+once: the Deployment's template stays as Flux applied it, so nothing
+reverts. A hand suspend of the `factory` Kustomization does not spare
+the second restart: factoryd undoes it within 15 seconds (Operating it).
 
 Order when a change spans them: the infra policy first (new keys before
 the factoryd that reads them), then the gateway, then factoryd once the
