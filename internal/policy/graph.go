@@ -130,13 +130,14 @@ func (b *builder) planPath(plan Track) {
 	if plan.Plan != nil {
 		bounds = *plan.Plan
 	}
-	shape := fmt.Sprintf("answers a plan of %d to %d cards", bounds.Minimum(), bounds.MaxCards)
+	shape := fmt.Sprintf("answers a plan of %d to %d cards a round", bounds.Minimum(), bounds.MaxCards)
 	if bounds.Foundation {
 		shape += ", one foundation first"
 	}
 	if bounds.Integration {
 		shape += ", one integration last"
 	}
+	shape += "; a bigger plan files its next round once every card of a round is done"
 	session := b.node(Node{ID: "plan/session", Name: plan.Class + " session", Head: plan.Class + " session on the stronger rung: " + shape,
 		Ref: "back to the " + plan.Class, Cap: fmt.Sprintf("every %s session counts against limits.sessions (%d)", plan.Class, b.d.Limits.Sessions)})
 	children := b.node(Node{ID: "plan/children", Name: "children filed",

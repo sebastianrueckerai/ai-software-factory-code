@@ -159,7 +159,7 @@ func TestExplainSpecPlan(t *testing.T) {
 	const want = `process spec (processes/spec.yaml), card kind plan
  1. card created on track plan: an issue labelled plan by a writer
  2. track plan: starts a task of class planner (session plan) once a work slot is free
- 3. planner session on the stronger rung: answers a plan of 1 to 12 cards, one foundation first, one integration last
+ 3. planner session on the stronger rung: answers a plan of 1 to 12 cards a round, one foundation first, one integration last; a bigger plan files its next round once every card of a round is done
       plan invalid -> back to the planner (step 3); an open question -> human card: the last answer, or a writer's comment -> back to the planner (step 3), the issue closed -> end: closed
  4. a plan with no open question: factoryd files one card per planned card on track direct, with their dependencies (card kind child)
       a cycle or any finding -> back to the planner (step 3)

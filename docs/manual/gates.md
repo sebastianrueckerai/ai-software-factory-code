@@ -505,9 +505,22 @@ the plan track runs report-mode sessions of its class (the `planner`) on the
 stronger rung with the plan guide: the issue is the spec, the answer one
 fenced json block (a summary and `min_cards` to `max_cards` cards, each with key,
 role, title, brief, directories, depends_on, acceptance and size), a card
-one session of the pinned `agent_time` and `steps`. `ValidatePlan` judges
+one session of the pinned `agent_time` and `steps`. A plan bigger than
+one round of cards runs in rounds: the answer carries an `outline` of
+the parts its later rounds plan, one line each, and the planner files
+the first round's cards. `Plan.Round` and each card's `round` are
+factoryd's stamps, the round the revision files. A later round's answer
+holds only its own cards: factoryd keeps the settled cards of the
+earlier rounds (done and still on main) in the stored revision, and the
+planner reads its last plan without them. The round rules: the first
+round files `min_cards` to `max_cards` cards, a later round 1 to
+`max_cards`; a later round holds at most one foundation card; the
+integration card comes only in the round that empties the outline, in
+its count, on its round's cards only; every criterion is cited by some
+card of some round, checked in the last round. `ValidatePlan` judges
 it (one line per finding); factoryd adds every card's edge to the
-foundation card and the integration card's to every other, and refuses
+foundation card and the integration card's to every other, within one
+round (the earlier rounds are merged before a round starts), and refuses
 a cycle. An invalid
 plan goes back to the planner as its findings. A valid one is the task's
 next revision (`plan_revisions`, timeline `plan_revision`), and
@@ -525,7 +538,15 @@ issue dependencies and `task_deps`; then starts each card under the work
 bound, where it waits for its dependencies; the issues in the plan's
 comment under `<!-- factoryd plan <task> revision <n> -->` (sanitised:
 summary, a table of the cards, each brief in a details block); the plan
-task ends `done` (`plan revision <n> filed <k> cards`). Plans do not
+task ends `done` (`plan revision <n> filed <k> cards`). A plan whose
+outline still holds parts stays `done` between rounds, its issue open:
+`roundCheck`, in the criteria pass, starts the next round once every
+card of the round is done or closed, one at least done, through the
+replan step of origin `round`, which sends the plan back to its
+planner. The plan closes, and `all_children_done` comes, only in the
+last round. A person's close of the plan card ends its round: the card
+ends `closed` and nothing starts, and the group closes once none of its
+cards is open (done, failed or closed). Plans do not
 nest: a plan files direct cards only. A revision with open questions is
 posted with no cards, an approval request of kind `plan` (`{"revision",
 "sha256"}`) records what waits, and the task waits in `waiting-human`
