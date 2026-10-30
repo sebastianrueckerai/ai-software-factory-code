@@ -576,7 +576,8 @@ type Store interface {
 	// ClearToldHeld forgets commit as told held; a newer one stands.
 	ClearToldHeld(ctx context.Context, repository, commit string) error
 	// FixesMergedSince are repository's fix cards (fixSources) merged
-	// after since, by their merge.
+	// after since, by their merge: its pull_request_merged event, else the
+	// finish of a card with a merge commit, as OpenGroups reads it.
 	FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error)
 	// SetTaskPlanRevision records the plan revision a card first runs
 	// against; the guard makes it once.

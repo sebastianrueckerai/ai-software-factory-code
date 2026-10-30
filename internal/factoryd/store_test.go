@@ -434,14 +434,25 @@ func (s *fakeStore) ClearToldHeld(ctx context.Context, repository, commit string
 	return nil
 }
 
+// FixesMergedSince takes a card's merge as its earliest merge event, else
+// its finish when it has a merge commit, as OpenGroups does.
 func (s *fakeStore) FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error) {
+	merged := map[string]time.Time{}
+	for _, e := range s.events {
+		if at, ok := merged[e.TaskID]; e.Kind == EventPullRequestMerged && (!ok || e.At.Before(at)) {
+			merged[e.TaskID] = e.At
+		}
+	}
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && slices.Contains(fixSources, t.Source) && t.MergeCommit != "" && t.FinishedAt != nil && t.FinishedAt.After(since) {
+		if _, ok := merged[t.ID]; !ok && t.MergeCommit != "" && t.FinishedAt != nil {
+			merged[t.ID] = *t.FinishedAt
+		}
+		if at, ok := merged[t.ID]; ok && at.After(since) && t.Repository == repository && slices.Contains(fixSources, t.Source) {
 			out = append(out, t)
 		}
 	}
-	slices.SortFunc(out, func(a, b Task) int { return cmp.Or(a.FinishedAt.Compare(*b.FinishedAt), strings.Compare(a.ID, b.ID)) })
+	slices.SortFunc(out, func(a, b Task) int { return cmp.Or(merged[a.ID].Compare(merged[b.ID]), strings.Compare(a.ID, b.ID)) })
 	return out, nil
 }
 

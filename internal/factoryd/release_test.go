@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -40,46 +41,12 @@ func TestPGStoreReleases(t *testing.T) {
 	}
 	defer s.Close()
 	checkReleaseRows(t, s)
-
-	// The fixes of sf/a merged after 10:00: the alert, then the mainfix,
-	// by their merge events. Each card's finish is later than its merge
-	// and in the other order; the chain-repair's finish is after 10:00,
-	// its merge before.
-	for _, q := range []string{
-		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, merge_commit, finished_at) VALUES
-			('f1', 1, 0, 'done', 'sf/a', 'agent', 'alert', 'direct', 31, 'a31', '2026-11-08T11:30:00Z'),
-			('f2', 1, 0, 'done', 'sf/a', 'agent', 'mainfix', 'direct', 32, 'a32', '2026-11-08T11:05:00Z'),
-			('f3', 1, 0, 'done', 'sf/a', 'agent', 'chain-repair', 'direct', 33, 'a33', '2026-11-08T10:10:00Z'),
-			('f4', 1, 0, 'done', 'sf/a', 'agent', 'revert', 'direct', 34, 'a34', '2026-11-08T10:46:00Z'),
-			('f5', 1, 0, 'done', 'sf/a', 'agent', 'webhook', 'direct', 35, 'a35', '2026-11-08T10:41:00Z'),
-			('f6', 1, 0, 'done', 'sf/b', 'agent', 'alert', 'direct', 36, 'b36', '2026-11-08T10:51:00Z')`,
-		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
-			('2026-11-08T10:30:00Z', 'sf/a', 'f1', 31, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-11-08T11:00:00Z', 'sf/a', 'f2', 32, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-11-08T09:00:00Z', 'sf/a', 'f3', 33, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-11-08T10:45:00Z', 'sf/a', 'f4', 34, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-11-08T10:40:00Z', 'sf/a', 'f5', 35, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-11-08T10:50:00Z', 'sf/b', 'f6', 36, 'pull_request_merged', 'factory-merge', 'factoryd')`,
-	} {
-		if _, err := s.db.ExecContext(ctx, q); err != nil {
-			t.Fatalf("%s: %v", q, err)
-		}
-	}
-	fixes, err := s.FixesMergedSince(ctx, "sf/a", releaseAt(10, 0))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ids []string
-	for _, f := range fixes {
-		ids = append(ids, f.ID)
-	}
-	if want := []string{"f1", "f2"}; !reflect.DeepEqual(ids, want) {
-		t.Errorf("FixesMergedSince = %v, want %v", ids, want)
-	}
+	checkFixesMergedSince(t, s)
 }
 
 func TestFakeStoreReleases(t *testing.T) {
 	checkReleaseRows(t, newFakeStore())
+	checkFixesMergedSince(t, newFakeStore())
 }
 
 func releaseAt(h, m int) time.Time { return time.Date(2026, 11, 8, h, m, 0, 0, time.UTC) }
@@ -167,6 +134,60 @@ func checkReleaseRows(t *testing.T, s Store) {
 	}
 	if all := []Release{want, {Repository: "sf/b", AsksAt: at(8, 0)}, newHold, newDeploy}; !reflect.DeepEqual(rows, all) {
 		t.Errorf("Releases = %+v, want %+v", rows, all)
+	}
+}
+
+// checkFixesMergedSince: the fixes of sf/a merged after 10:00 are the
+// alert (its merge event at 10:30), the chain-repair merged with no event
+// (its finish at 10:50 stands in) and the mainfix (11:00), in that order.
+// The alert and the mainfix finished after their merges, in the other
+// order; the first chain-repair merged at 09:00 and finished after 10:00.
+// The revert, the webhook card and sf/b's alert are no fixes of sf/a, and
+// the failed alert never merged.
+func checkFixesMergedSince(t *testing.T, s Store) {
+	t.Helper()
+	ctx := context.Background()
+	at := releaseAt
+	for i, c := range []struct {
+		id, repository, source, status, commit string
+		merged, finished                       time.Time // merged: the merge event's, zero for none
+	}{
+		{"f1", "sf/a", SourceAlert, "done", "a1", at(10, 30), at(11, 30)},
+		{"f2", "sf/a", SourceMainFix, "done", "a2", at(11, 0), at(11, 5)},
+		{"f3", "sf/a", SourceChainRepair, "done", "a3", at(9, 0), at(10, 10)},
+		{"f4", "sf/a", SourceRevert, "done", "a4", at(10, 45), at(10, 46)},
+		{"f5", "sf/a", "webhook", "done", "a5", at(10, 40), at(10, 41)},
+		{"f6", "sf/b", SourceAlert, "done", "b6", at(10, 50), at(10, 51)},
+		{"f7", "sf/a", SourceChainRepair, "done", "a7", time.Time{}, at(10, 50)},
+		{"f8", "sf/a", SourceAlert, "failed", "", time.Time{}, at(10, 55)},
+	} {
+		issue := int64(31 + i)
+		if err := s.CreateTask(ctx, Task{ID: c.id, BudgetEUR: 1, Status: c.status, Repository: c.repository, Source: c.source,
+			Track: policy.TrackDirect, IssueNumber: issue, CreatedAt: c.finished}); err != nil {
+			t.Fatal(err)
+		}
+		if c.commit != "" {
+			if err := s.SetTaskMergeCommit(ctx, c.id, c.commit); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if !c.merged.IsZero() {
+			if _, err := s.Record(ctx, Event{At: c.merged, Repository: c.repository, TaskID: c.id, IssueNumber: issue,
+				Kind: EventPullRequestMerged, Actor: MergeUser, Via: "factoryd"}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	fixes, err := s.FixesMergedSince(ctx, "sf/a", at(10, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, f := range fixes {
+		ids = append(ids, f.ID)
+	}
+	if want := []string{"f1", "f7", "f2"}; !reflect.DeepEqual(ids, want) {
+		t.Errorf("FixesMergedSince = %v, want %v", ids, want)
 	}
 }
 

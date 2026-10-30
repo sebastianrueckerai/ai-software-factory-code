@@ -136,7 +136,8 @@ func (s *PGStore) ClearToldHeld(ctx context.Context, repository, commit string) 
 
 func (s *PGStore) FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
-		CROSS JOIN LATERAL (SELECT min(e.at) AS merged_at FROM events e WHERE e.task_id = tasks.id AND e.kind = 'pull_request_merged') m
+		CROSS JOIN LATERAL (SELECT COALESCE(min(e.at), CASE WHEN tasks.merge_commit <> '' THEN tasks.finished_at END) AS merged_at
+			FROM events e WHERE e.task_id = tasks.id AND e.kind = 'pull_request_merged') m
 		WHERE repository = $1 AND source = ANY($2) AND m.merged_at > $3
 		ORDER BY m.merged_at, id`, repository, fixSources, since)
 }
