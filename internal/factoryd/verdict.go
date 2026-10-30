@@ -778,13 +778,15 @@ func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
 	return !pending
 }
 
-// planCloseCheck is the plan-close rule (piece 8): a plan closes when
-// every criterion is met or waived, a plan without criteria when every
-// card is done or closed. When its cards are all final and a criterion
-// is still open, its gap is a criterion row, visible and owned:
-// a criteria approval asks the human to grant one more bounded card or
-// waive, and pokes them. A gap it asked about before, in the same shape,
-// asks again never: only a changed gap re-opens the question.
+// planCloseCheck is the plan-close rule (piece 8): a plan in its last
+// round closes when every criterion is met or waived, a plan without
+// criteria when every card is done or closed. When its cards are all
+// final and a criterion is still open, its gap is a criterion row,
+// visible and owned: a criteria approval asks the human to grant one more
+// bounded card or waive, and pokes them. A gap it asked about before, in
+// the same shape, asks again never: only a changed gap re-opens the
+// question. A plan whose card a person closed closes once none of its
+// cards is open, in any round and whatever its criteria.
 func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
@@ -794,6 +796,23 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	p, _, err := planOfStore(ctx, r.store, parent, "")
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
+		return
+	}
+	if t.Status == "closed" {
+		if r.planClosed(ctx, parent) {
+			return
+		}
+		cards, err := r.store.PlanCards(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		if !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+			r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main.")
+		}
+		return
+	}
+	if len(p.Outline) > 0 {
 		return
 	}
 	if len(p.Criteria) == 0 {
@@ -877,8 +896,7 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 			}
 		}
 	}
-	// a person closed the plan: nothing more is asked of it
-	if t.Status == "closed" || !r.planAtRest(ctx, t) {
+	if !r.planAtRest(ctx, t) {
 		return
 	}
 	spec, err := json.Marshal(CriteriaSpec{Task: integration.ID})
@@ -907,9 +925,10 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 // plans with verdict rows and the plans of the open groups: it closes the
 // plans whose criteria are all met or waived and those without criteria
 // whose cards are all done, opens the gap question of a plan whose cards
-// ran out with a criterion still open, and drafts the delta
-// cards the reviews and the grants asked for. One model call per delta due,
-// in the sweep's own time: no activity holds it.
+// ran out with a criterion still open, starts the next round of a plan
+// whose round is over, and drafts the delta cards the reviews and the
+// grants asked for. One model call per delta due, in the sweep's own
+// time: no activity holds it.
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {
@@ -938,6 +957,7 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 	}
 	for _, parent := range slices.Sorted(maps.Keys(parents)) {
 		r.planCloseCheck(ctx, parent)
+		r.roundCheck(ctx, parent)
 		r.draftDue(ctx, parent)
 	}
 }

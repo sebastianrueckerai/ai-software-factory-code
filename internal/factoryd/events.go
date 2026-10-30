@@ -145,7 +145,8 @@ var allDoneMu sync.Mutex
 // told (a failure's reason as its issue comment carries it, which its
 // poke tells), ends the run of a routine's card and wakes the cards
 // waiting on it (wf nil wakes none). When t is the last of a plan's cards
-// to turn done, the plan records all_children_done and its issue says so.
+// to turn done and the plan's newest revision leaves no part to a later
+// round, the plan records all_children_done and its issue says so.
 func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo, wf Workflows, t Task, final, why string) {
 	detail := map[string]any{"state": final}
 	if why != "" {
@@ -177,6 +178,17 @@ func taskEnded(ctx context.Context, tl *Timeline, store Store, forgejo *Forgejo,
 		return
 	}
 	if slices.ContainsFunc(cards, func(c Task) bool { return c.Status != "done" }) {
+		return
+	}
+	var p Plan
+	rev, ok, err := store.PlanRevision(ctx, t.Parent, 0)
+	if err == nil && ok {
+		err = json.Unmarshal(rev.Plan, &p)
+	}
+	if err != nil || len(p.Outline) > 0 {
+		if err != nil {
+			log.Printf("task %s: the newest revision of plan %s: %v", t.ID, t.Parent, err)
+		}
 		return
 	}
 	tl.recordEvent(ctx, t.Parent, EventAllChildrenDone, map[string]any{"cards": len(cards)})

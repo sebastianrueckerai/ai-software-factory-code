@@ -2230,6 +2230,33 @@ func TestAllChildrenDoneEvent(t *testing.T) {
 	}
 }
 
+// A round with later rounds still to plan is not the plan's end: its
+// last card's done records no all_children_done and tells the plan's
+// issue nothing.
+func TestAllChildrenDoneWaitsForTheLastRound(t *testing.T) {
+	r, store, objects, fj, _ := fileRig(t, roundOne())
+	requestPlan(t, r)
+	cards := cardsByKey(t, store)
+	for _, key := range []string{"foundation", "links-api", "redirects"} {
+		c := store.tasks[cards[key].ID]
+		c.Status = "done"
+		store.tasks[c.ID] = c
+		taskEnded(context.Background(), r.timeline, store, r.forgejo, nil, c, "done", "")
+	}
+	if got := events(t, objects, "t-plan"); len(got) != 0 {
+		t.Fatalf("plan events %v, want none", got)
+	}
+	var said []string
+	for _, c := range fj.comments {
+		if c.issue == 1 {
+			said = append(said, c.body)
+		}
+	}
+	if !slices.Equal(said, []string{fj.comments[0].body}) {
+		t.Fatalf("plan issue comments %q, want the plan comment alone", said)
+	}
+}
+
 // Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL): a plan's
 // revisions count up and an equal plan is the newest revision again; a
 // plan's card is one row per key, found again; an approval of kind plan

@@ -1,12 +1,15 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"net/http"
+	"os"
 	"regexp"
 	"slices"
 	"strings"
@@ -1204,5 +1207,99 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 		if got := closed(objs); got != want {
 			t.Errorf("integration card %s: plan_closed recorded %d times, want %d", status, got, want)
 		}
+	}
+}
+
+// newRevision stores p as plan id's newest revision.
+func newRevision(t *testing.T, s *fakeStore, id string, p Plan) {
+	t.Helper()
+	if _, err := s.AddPlanRevision(context.Background(), id, json.RawMessage(planJSON(t, p)), fmt.Sprint("sha-", len(s.plans[id])+1)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// firstOfRounds is criteria plan t-plan (issue 7 of sf/code) in status,
+// its revision criteriaPlan's round 1 of the foundation card alone, done,
+// with the rest still to plan; the log goes to the returned buffer.
+func firstOfRounds(t *testing.T, status string) (*Runner, *fakeStore, *bytes.Buffer) {
+	t.Helper()
+	s := newFakeStore()
+	p := criteriaPlan()
+	p.Round, p.Outline, p.Cards = 1, []string{"the rest"}, p.Cards[:1]
+	p.Cards[0].Round = 1
+	newRevision(t, s, "t-plan", p)
+	s.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 7, Source: SourceChat, Status: status}
+	s.tasks["card-foundation"] = Task{ID: "card-foundation", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	return &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
+}
+
+// A plan with later rounds still to plan does not close with its round's
+// cards done, and asks about no gap; its last round closes it.
+func TestPlanCloseCheckWaitsForTheLastRound(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, fj := planWithoutCriteria(t, "done", "done")
+	newRevision(t, s, "t-plan", Plan{Summary: "the plan", Round: 1, Outline: []string{"more"}})
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 0 || len(fj.comments) != 0 {
+		t.Fatalf("round 1 of more: plan_closed %d times, comments %q; want none", n, commentBodies(fj))
+	}
+	newRevision(t, s, "t-plan", Plan{Summary: "the plan", Round: 1})
+	r.planCloseCheck(ctx, "t-plan")
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 {
+		t.Fatalf("the last round: plan_closed %d times, want 1", n)
+	}
+
+	r, s, logs := firstOfRounds(t, "done")
+	r.planCloseCheck(ctx, "t-plan")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 0 || len(pending) != 0 || strings.Contains(logs.String(), "has no integration card") {
+		t.Fatalf("a criteria plan's round 1: plan_closed %d, pending %+v, log %q; want none", closeRows(s), pending, logs.String())
+	}
+}
+
+// A person closed the plan card: once no card of the plan is open, the
+// plan closes and its group with it, whatever its criteria, its outline
+// or its pending round.
+func TestClosedPlanCardClosesItsGroup(t *testing.T) {
+	ctx := context.Background()
+	want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+	for second, closes := range map[string]int{"closed": 1, "failed": 1, "running": 0} {
+		r, s, objs, fj := planWithoutCriteria(t, "done", second)
+		newRevision(t, s, "t-plan", Plan{Summary: "the plan", Round: 1, Outline: []string{"more"}})
+		setStatus(s, "t-plan", "closed")
+		if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {
+			t.Fatal(err)
+		}
+		for check := 1; check <= 2; check++ {
+			r.planCloseCheck(ctx, "t-plan")
+			if n := planCloses(t, objs); n != closes {
+				t.Fatalf("card-2 %s, check %d: plan_closed %d times, want %d", second, check, n, closes)
+			}
+			if got := commentBodies(fj); !slices.Equal(got, want[:closes]) {
+				t.Fatalf("card-2 %s, check %d: comments %q, want %q", second, check, got, want[:closes])
+			}
+		}
+	}
+
+	r, s, logs := firstOfRounds(t, "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 1 || len(pending) != 0 || strings.Contains(logs.String(), "has no integration card") {
+		t.Fatalf("a criteria plan's round 1: plan_closed %d, pending %+v, log %q; want one close alone", closeRows(s), pending, logs.String())
+	}
+
+	s = seedVerdictPlan(t, "t-plan", "t-int", "done")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "unmet", Evidence: "x", Kind: CriterionTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setStatus(s, "t-plan", "closed")
+	r = &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.planCloseCheck(ctx, "t-plan")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 1 || len(pending) != 0 {
+		t.Fatalf("a closed plan with c1 unmet: plan_closed %d, pending %+v; want one close and no question", closeRows(s), pending)
 	}
 }

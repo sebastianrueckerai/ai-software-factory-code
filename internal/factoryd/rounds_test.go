@@ -685,3 +685,251 @@ func TestDeltaCardIsAFeature(t *testing.T) {
 		t.Fatalf("task_deps %v, want none", store.deps)
 	}
 }
+
+// A round is complete when every card of it ended done or closed, one at
+// least done, and no card outside the plan's keys is still open. A card
+// of an earlier round counts for its own round only.
+func TestRoundComplete(t *testing.T) {
+	p := Plan{Round: 2, Cards: []PlanCard{{Key: "a", Round: 1}, {Key: "b", Round: 2}, {Key: "c", Round: 2}}}
+	card := func(key, status string) Task { return Task{ID: "t-" + key, PlanKey: key, Status: status} }
+	for _, tc := range []struct {
+		a, b, c, fix string
+		want         bool
+	}{
+		{"done", "done", "done", "", true},
+		{"done", "done", "closed", "", true},
+		{"done", "closed", "closed", "", false},
+		{"done", "done", "merged", "", false},
+		{"done", "done", "failed", "", false},
+		{"done", "done", "done", "queued", false},
+		{"done", "done", "done", "closed", true},
+		{"closed", "done", "done", "", true},
+	} {
+		cards := []Task{card("a", tc.a), card("b", tc.b), card("c", tc.c)}
+		if tc.fix != "" {
+			cards = append(cards, card("fix", tc.fix))
+		}
+		if got := roundComplete(p, cards); got != tc.want {
+			t.Errorf("a %s, b %s, c %s, fix %q: %t, want %t", tc.a, tc.b, tc.c, tc.fix, got, tc.want)
+		}
+	}
+}
+
+// roundsOfFive is a Round-2 plan with two parts still to plan: card a of
+// round 1, done, and five cards of round 2, four of them done.
+func roundsOfFive() (Plan, []Task) {
+	p := Plan{Round: 2, Outline: []string{"the console", "the scheduler"}, Cards: []PlanCard{{Key: "a", Round: 1}}}
+	cards := []Task{{ID: "t-a", PlanKey: "a", Status: "done"}}
+	for i, status := range []string{"done", "done", "running", "done", "done"} {
+		key := fmt.Sprint("b", i)
+		p.Cards = append(p.Cards, PlanCard{Key: key, Round: 2})
+		cards = append(cards, Task{ID: "t-" + key, PlanKey: key, Status: status})
+	}
+	return p, cards
+}
+
+// roundCase is one plan of the board's round tests: its cards' tasks.
+type roundCase struct {
+	name  string
+	p     Plan
+	cards []Task
+}
+
+// roundCases are roundsOfFive; a last round 3 holding one queued card
+// alone; round 1 with one done card and x to plan; round 1 without an
+// outline; and a plan filed before rounds.
+func roundCases() []roundCase {
+	five, cards := roundsOfFive()
+	one := []Task{{ID: "t-a", PlanKey: "a", Status: "done"}}
+	return []roundCase{
+		{"round 2 of five", five, cards},
+		{"round 3", Plan{Round: 3, Cards: []PlanCard{{Key: "z", Round: 3}}}, []Task{{ID: "t-z", PlanKey: "z", Status: "queued"}}},
+		{"round 1 with x", Plan{Round: 1, Outline: []string{"x"}, Cards: []PlanCard{{Key: "a", Round: 1}}}, one},
+		{"round 1 alone", Plan{Round: 1, Cards: []PlanCard{{Key: "a", Round: 1}}}, one},
+		{"before rounds", Plan{Cards: []PlanCard{{Key: "a"}}}, one},
+	}
+}
+
+func TestRoundLine(t *testing.T) {
+	want := []string{
+		"round 2: 5 cards, 4 done. Still to plan: the console, the scheduler.",
+		"round 3: 1 card, 0 done.",
+		"round 1: 1 card, 1 done. Still to plan: x.",
+		"",
+		"",
+	}
+	for i, c := range roundCases() {
+		if got := RoundLine(c.p, c.cards); got != want[i] {
+			t.Errorf("%s: %q, want %q", c.name, got, want[i])
+		}
+	}
+}
+
+func TestRoundItems(t *testing.T) {
+	want := [][]RoundItem{
+		{{"round 1: 1 card, 1 done.", false}, {"round 2: 5 cards, 4 done. This round.", true},
+			{"still to plan: the console", false}, {"still to plan: the scheduler", false}},
+		{{"round 3: 1 card, 0 done. This round.", true}},
+		{{"round 1: 1 card, 1 done. This round.", true}, {"still to plan: x", false}},
+		nil,
+		nil,
+	}
+	for i, c := range roundCases() {
+		if got := RoundItems(c.p, c.cards); !reflect.DeepEqual(got, want[i]) {
+			t.Errorf("%s: %+v, want %+v", c.name, got, want[i])
+		}
+	}
+}
+
+// roundRig is replanRig's plan p (issue 10, done and finished, its issue
+// closed) without its cards c and s: revision 1 is roundOne, and its
+// three cards are done with merge commits.
+func roundRig(t *testing.T) (*Runner, *fakeStore, *prForgejo) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, fj := replanRig(t, "done", 0)
+	delete(store.tasks, "c")
+	delete(store.tasks, "s")
+	fj.issueOff = true
+	finished := replanAt
+	p := store.tasks["p"]
+	p.FinishedAt = &finished
+	store.tasks["p"] = p
+	if _, err := store.AddPlanRevision(ctx, "p", json.RawMessage(planJSON(t, roundOne())), "sha-1"); err != nil {
+		t.Fatal(err)
+	}
+	for i, c := range roundOne().Cards {
+		k := planCardTask(c, int64(20+i), "done", "m"+c.Key)
+		k.Parent, k.Repository, k.FinishedAt = "p", "sf/repo", &finished
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return r, store, fj
+}
+
+// setStatus puts task id of store in status.
+func setStatus(store *fakeStore, id, status string) {
+	k := store.tasks[id]
+	k.Status = status
+	store.tasks[id] = k
+}
+
+// roundTwoStep is the replan step that starts roundRig's second round.
+var roundTwoStep = []ReplanStep{{Origin: ReplanRound, Revision: 1, Round: 2, Time: replanAt}}
+
+// A plan whose round is done and whose outline still holds parts goes
+// back to its planner for the next round: the replan step of round 2,
+// the plan queued with its counters at zero, its issue open and its
+// workflow reopened. The second check finds the plan queued and does
+// nothing.
+func TestRoundCheckStartsTheNextRound(t *testing.T) {
+	r, store, fj := roundRig(t)
+	for check := 1; check <= 2; check++ {
+		r.roundCheck(context.Background(), "p")
+		if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) {
+			t.Fatalf("check %d: replan steps %+v, want %+v", check, got, roundTwoStep)
+		}
+		if p := store.tasks["p"]; p.Status != "queued" || p.Usage != (TaskUsage{}) || p.FinishedAt != nil {
+			t.Fatalf("check %d: plan %s with usage %+v, finished %v; want queued with none", check, p.Status, p.Usage, p.FinishedAt)
+		}
+		if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) {
+			t.Fatalf("check %d: reopens %+v, want p's alone", check, got)
+		}
+		if !slices.Equal(fj.reopened, []int64{10}) {
+			t.Fatalf("check %d: issues reopened %v, want #10 once", check, fj.reopened)
+		}
+	}
+}
+
+// The round check starts nothing while the plan's round or the plan
+// itself is not done with it.
+func TestRoundCheckWaits(t *testing.T) {
+	ctx := context.Background()
+	for name, change := range map[string]func(*testing.T, *Runner, *fakeStore){
+		"the newest revision has no outline": func(t *testing.T, r *Runner, store *fakeStore) {
+			last := roundOne()
+			last.Outline = nil
+			if _, err := store.AddPlanRevision(ctx, "p", json.RawMessage(planJSON(t, last)), "sha-2"); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"redirects merged": func(t *testing.T, r *Runner, store *fakeStore) { setStatus(store, "t-redirects", "merged") },
+		"redirects failed": func(t *testing.T, r *Runner, store *fakeStore) { setStatus(store, "t-redirects", "failed") },
+		"every card closed": func(t *testing.T, r *Runner, store *fakeStore) {
+			for _, id := range []string{"t-foundation", "t-links-api", "t-redirects"} {
+				setStatus(store, id, "closed")
+			}
+		},
+		"an open delta card": func(t *testing.T, r *Runner, store *fakeStore) {
+			if err := store.CreateTask(ctx, Task{ID: "t-fix", PlanKey: "fix", Status: "queued", Kind: "agent", Track: policy.TrackDirect,
+				Source: SourcePlan, Parent: "p", Repository: "sf/repo"}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"the plan runs":      func(t *testing.T, r *Runner, store *fakeStore) { setStatus(store, "p", "running") },
+		"the plan is queued": func(t *testing.T, r *Runner, store *fakeStore) { setStatus(store, "p", "queued") },
+		"the plan is closed": func(t *testing.T, r *Runner, store *fakeStore) { setStatus(store, "p", "closed") },
+		"a person's replan is pending": func(t *testing.T, r *Runner, store *fakeStore) {
+			if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "revision": 1}); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"the plan_closed row": func(t *testing.T, r *Runner, store *fakeStore) { store.closed["p"] = replanAt },
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, store, _ := roundRig(t)
+			change(t, r, store)
+			steps := len(replanSteps(t, r, "p"))
+			r.roundCheck(ctx, "p")
+			if got := len(replanSteps(t, r, "p")); got != steps || len(reopens(r)) != 0 {
+				t.Fatalf("replan steps %d, want %d; reopens %+v, want none", got, steps, reopens(r))
+			}
+		})
+	}
+}
+
+// While the project's queue pause names the plan, its own group revert
+// runs, and the next round waits for its end; a pause of another plan
+// does not hold it.
+func TestRoundCheckWaitsForThePlansRevert(t *testing.T) {
+	for plan, want := range map[string][]ReplanStep{"p": nil, "other": roundTwoStep} {
+		r, store, _ := roundRig(t)
+		store.pauses = map[string]QueuePause{"sf/repo": {Project: "sf/repo", Plan: plan, RevertTask: "t-revert"}}
+		r.roundCheck(context.Background(), "p")
+		if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) || len(reopens(r)) != len(want) {
+			t.Fatalf("a pause of plan %s: replan steps %+v, reopens %+v; want %+v and as many reopens", plan, got, reopens(r), want)
+		}
+	}
+}
+
+// A round step written whose reopen was lost is healed: the plan, still
+// done, reopens, and no second step is written. A queued plan is left to
+// its run.
+func TestRoundCheckReopensAfterAFailedReopen(t *testing.T) {
+	ctx := context.Background()
+	for status, want := range map[string]int{"done": 1, "queued": 0} {
+		r, store, _ := roundRig(t)
+		setStatus(store, "p", status)
+		if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}); err != nil {
+			t.Fatal(err)
+		}
+		r.roundCheck(ctx, "p")
+		if got := store.tasks["p"].Status; got != "queued" || len(reopens(r)) != want {
+			t.Fatalf("plan %s: now %s with reopens %+v; want queued and %d", status, got, reopens(r), want)
+		}
+		if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) {
+			t.Fatalf("plan %s: replan steps %+v, want %+v", status, got, roundTwoStep)
+		}
+	}
+}
+
+// The minute pass visits the plan through its open group and starts its
+// next round.
+func TestCriteriaPassStartsTheNextRound(t *testing.T) {
+	r, store, _ := roundRig(t)
+	r.CriteriaPass(context.Background())
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, roundTwoStep) || store.tasks["p"].Status != "queued" {
+		t.Fatalf("replan steps %+v, plan %s; want %+v and queued", got, store.tasks["p"].Status, roundTwoStep)
+	}
+}
