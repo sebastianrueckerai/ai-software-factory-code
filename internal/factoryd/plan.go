@@ -2940,12 +2940,15 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if err != nil {
 		return ChildrenResult{}, err
 	}
-	round := roundCards(p)
+	round := map[string]bool{}
+	for _, c := range roundCards(p) {
+		round[c.Key] = true
+	}
 	byKey := map[string]int64{}
 	var issues []int64
 	for _, c := range cards {
 		byKey[c.PlanKey] = c.IssueNumber
-		if slices.ContainsFunc(round, func(rc PlanCard) bool { return rc.Key == c.PlanKey }) {
+		if round[c.PlanKey] {
 			issues = append(issues, c.IssueNumber)
 		}
 	}
@@ -3042,7 +3045,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		if c.Round < p.Round {
 			row, ok := rows[c.Key]
 			if !ok {
-				return nil, fmt.Errorf("card %s of round %d has no task", c.Key, c.Round)
+				return nil, terminalError("card %s of round %d has no task", c.Key, c.Round)
 			}
 			cards[c.Key] = row
 			continue

@@ -3,13 +3,15 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -510,7 +512,7 @@ func TestFileRevisionFilesOnlyTheRound(t *testing.T) {
 }
 
 // A card of an earlier round is its task: a revision that names one with
-// no task files nothing of its round.
+// no task files nothing of its round, and no retry heals it.
 func TestFileRevisionWantsTheTasksOfEarlierRounds(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := roundTwoFiling(t, roundOne(), twoRounds())
@@ -520,8 +522,10 @@ func TestFileRevisionWantsTheTasksOfEarlierRounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	rev, _, _ := store.PlanRevision(ctx, "t-plan", 2)
-	if _, err := r.fileRevision(ctx, plan, repo, fixtureVersion(t), rev); err == nil || err.Error() != "card redirects of round 1 has no task" || fj.next != 4 {
-		t.Fatalf("fileRevision = %v, last issue #%d; want the missing task named and no issue filed", err, fj.next)
+	_, err = r.fileRevision(ctx, plan, repo, fixtureVersion(t), rev)
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Type() != errTerminal || app.Message() != "card redirects of round 1 has no task" || fj.next != 4 {
+		t.Fatalf("fileRevision = %v, last issue #%d; want the missing task named, terminal, and no issue filed", err, fj.next)
 	}
 }
 
@@ -549,10 +553,14 @@ func TestFileRevisionLeavesTheDeployOwnerToTheLastRound(t *testing.T) {
 	one, two := roundOne(), twoRounds()
 	one.Cards[0].Directories = []string{"cmd/server", "internal/", "deploy/"}
 	two.Cards[0].Directories = one.Cards[0].Directories
-	r, store, _, _, _ = roundTwoFiling(t, one, two)
+	r, store, _, fj, _ = roundTwoFiling(t, one, two)
 	deploy(store)
 	if res := fileRound(t, r, store, 2); len(res.Refused) != 0 || !slices.Equal(res.Issues, []int64{5, 6}) {
 		t.Fatalf("the last round over a settled deploy owner: %+v, want stats #5 and integration #6", res)
+	}
+	if want := "| # | key | role | title | size | depends on | issue | round | deploy |\n|---|---|---|---|---|---|---|---|---|\n" +
+		"| 1 | foundation | foundation | Foundation: layout, contract, schema | medium |  | #2 | 1 | deploy |\n"; len(fj.comments) != 1 || !strings.Contains(fj.comments[0].body, want) {
+		t.Fatalf("the plan's comment lacks\n%s\nin %+v", want, fj.comments)
 	}
 }
 
@@ -609,16 +617,14 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 	}
 }
 
-// A delta card joins the last round on top of its 12 cards: the round's
-// cap does not count it, and it waits for the cards of its round it names,
-// never for a merged card of an earlier round.
-func TestDeltaCardJoinsTheLastRound(t *testing.T) {
+// deltaRound runs draftDelta on twoRounds with ten more features of
+// round 2 (extras), 12 cards in the round, every card filed and done,
+// redirect_302 unmet in the integration card's review, and answer as the
+// delta round's model answer: the store and the plan's timeline after.
+func deltaRound(t *testing.T, answer string) (*fakeStore, string) {
+	t.Helper()
 	ctx := context.Background()
-	p := twoRounds()
-	for i := range 10 {
-		p.Cards = append(p.Cards, PlanCard{Key: "extra-" + strconv.Itoa(i), Role: RoleFeature, Title: "Extra " + strconv.Itoa(i), Brief: "More of the links API.",
-			Acceptance: []PlanItem{{Criterion: "links_crud", Text: "x"}}, Size: "small", Round: 2})
-	}
+	p := extras(10)
 	r, store, objects, fj, _ := fileRig(t, p)
 	v := fixtureVersion(t)
 	r.cfg.Policy = func() policy.Version { return v }
@@ -640,8 +646,6 @@ func TestDeltaCardJoinsTheLastRound(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	answer := `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", ` +
-		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: answer}).srv(t).URL)
 	t1, repo, err := r.task(ctx, "t-plan")
 	if err != nil {
@@ -649,11 +653,35 @@ func TestDeltaCardJoinsTheLastRound(t *testing.T) {
 	}
 	r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
 	tl, _ := objects.Get(ctx, "sessions/t-plan/timeline.jsonl")
+	return store, string(tl)
+}
+
+// A delta card joins the last round on top of its 12 cards: the round's
+// cap does not count it, and it waits for the cards of its round it names,
+// never for a merged card of an earlier round.
+func TestDeltaCardJoinsTheLastRound(t *testing.T) {
+	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", `+
+		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
 	fix, filed := cardsByKey(t, store)["fix-stats"]
-	if !filed || !strings.Contains(string(tl), `"step":"delta_card"`) || strings.Contains(string(tl), `"step":"delta_refused"`) {
+	if !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
 	if !slices.Equal(store.deps[fix.ID], []string{"t-stats"}) {
 		t.Fatalf("task_deps of fix-stats %v, want [t-stats]", store.deps[fix.ID])
+	}
+}
+
+// A delta card is a feature card: a foundation answer, which a later round
+// would take as its first, is refused, and no finished card of the round
+// is made to wait for it.
+func TestDeltaCardIsAFeature(t *testing.T) {
+	store, tl := deltaRound(t, `{"card": {"key": "stats-contract", "role": "foundation", "title": "Stats contract", "brief": "The stats schema.", `+
+		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
+	if _, filed := cardsByKey(t, store)["stats-contract"]; filed || strings.Contains(tl, `"step":"delta_card"`) ||
+		!strings.Contains(tl, `"why":"the delta card's role is foundation; a delta card is a feature card"`) {
+		t.Fatalf("stats-contract filed %v; the plan's timeline:\n%s", filed, tl)
+	}
+	if len(store.deps) != 0 {
+		t.Fatalf("task_deps %v, want none", store.deps)
 	}
 }

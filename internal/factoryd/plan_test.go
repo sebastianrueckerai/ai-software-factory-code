@@ -93,6 +93,17 @@ func twoRounds() Plan {
 	return p
 }
 
+// extras is twoRounds with n more features of round 2, extra-0 on, each
+// citing links_crud.
+func extras(n int) Plan {
+	p := twoRounds()
+	for i := range n {
+		p.Cards = append(p.Cards, PlanCard{Key: "extra-" + strconv.Itoa(i), Role: RoleFeature, Title: "Extra " + strconv.Itoa(i), Brief: "More of the links API.",
+			Acceptance: []PlanItem{{Criterion: "links_crud", Text: "x"}}, Size: "small", Round: 2})
+	}
+	return p
+}
+
 func fencePlan(p Plan) string {
 	b, err := json.Marshal(p)
 	if err != nil {
@@ -256,13 +267,6 @@ func TestValidatePlanRounds(t *testing.T) {
 		return PlanCard{Key: key, Role: RoleFoundation, Title: "Contracts", Brief: "The stats contract.", Acceptance: []PlanItem{{Text: "x"}}, Size: "small", Round: 2}
 	}
 	statsPage := PlanCriterion{ID: "stats_page", Kind: CriterionTest, Test: "TestStatsPage in web", Inputs: "GET /links/abc", Expected: "the page shows 2 clicks"}
-	extras := func(n int) Plan {
-		p := twoRounds()
-		for i := range n {
-			p.Cards = append(p.Cards, feature("extra-"+strconv.Itoa(i), "Extra "+strconv.Itoa(i), "More of the links API.", "links_crud"))
-		}
-		return p
-	}
 	change := func(p Plan, edit func(p *Plan)) Plan {
 		edit(&p)
 		return p

@@ -584,12 +584,12 @@ type deltaCriterion struct {
 }
 
 // draftDelta runs one delta round on plan t (the planner's one model call,
-// the hold-out round's shape) and files the card it answers: the card
-// joins the round of the plan's newest revision, is merged into the plan
-// and judged by the plan rules again (judgePlan), then filed like any
-// child (ruling 225). Dues are the catch rows the round answers; they are
-// marked filed or refused when it ends, so the round runs once per due. A
-// failed call stays due: the next pass tries again.
+// the hold-out round's shape) and files the card it answers: a feature
+// card, which joins the round of the plan's newest revision, is merged
+// into the plan and judged by the plan rules again (judgePlan), then filed
+// like any child (ruling 225). Dues are the catch rows the round answers;
+// they are marked filed or refused when it ends, so the round runs once
+// per due. A failed call stays due: the next pass tries again.
 func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanCatch) {
 	p, revision, err := planOfStore(ctx, r.store, t.ID, "")
 	if err != nil {
@@ -652,6 +652,10 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	if err := dec.Decode(&answer); err != nil {
 		log.Printf("plan %s: the delta round's answer: %v", t.ID, err)
 		r.refuseDelta(ctx, t, repo, dues, "the answer is not a card: "+err.Error())
+		return
+	}
+	if answer.Card.Role != RoleFeature {
+		r.refuseDelta(ctx, t, repo, dues, fmt.Sprintf("the delta card's role is %s; a delta card is a feature card", answer.Card.Role))
 		return
 	}
 	answer.Card.Round = p.Round
