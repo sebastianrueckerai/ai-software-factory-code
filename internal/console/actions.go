@@ -1256,9 +1256,10 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 
 // doReplan sends card id, or the plan it belongs to, back to the planner
 // for the member, note saying why. Only once factoryd accepts does the
-// note go on the card's issue as the member, in the words the replan step
-// holds: the plan loop knows that comment for the replan's own, not a
-// writer's ask. factoryd carries the words, so a failed post is logged.
+// note go on the issue of the card, or of the plan a child replans, as
+// the member, in the words the replan step holds: the plan loop knows
+// that comment for the replan's own, not a writer's ask. factoryd carries
+// the words, so a failed read or post is logged.
 func (c *Console) doReplan(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 || strings.TrimSpace(factoryd.ReplanComment(note)) == "" {
@@ -1282,9 +1283,15 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string) (strin
 		return "", refuse(http.StatusInternalServerError, card+" could not go back to the planner: see the factoryd log, then replan it again.")
 	}
 	comment := factoryd.ReplanComment(note)
-	if t.IssueNumber != 0 {
-		if err := c.comment(ctx, a, t, comment, nil); err != nil {
-			log.Printf("console: %s replanned %s, its note not posted on #%d: %v", a.s.user, t.ID, t.IssueNumber, err)
+	on := t
+	if g := factoryd.GroupOf(t); g != t.ID {
+		if on, err = c.cardIn(ctx, a, g); err != nil {
+			log.Printf("console: %s replanned %s, its note not posted: plan %s: %v", a.s.user, t.ID, g, err)
+		}
+	}
+	if err == nil && on.IssueNumber != 0 {
+		if err := c.comment(ctx, a, on, comment, nil); err != nil {
+			log.Printf("console: %s replanned %s, its note not posted on #%d: %v", a.s.user, t.ID, on.IssueNumber, err)
 		}
 	}
 	log.Printf("console: %s replanned %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)

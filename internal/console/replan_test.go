@@ -36,6 +36,8 @@ func TestReplanCard(t *testing.T) {
 			return "Card #0 goes to the planner at its next step.", nil
 		case "t-y":
 			return "", errors.New("the store is down")
+		case "t-ch":
+			return "Plan #50 goes back to the planner: 1 card stops, and its work stays on its branch.", nil
 		}
 		return "Card #11 stops its session and goes to the planner.", nil
 	}
@@ -48,7 +50,11 @@ func TestReplanCard(t *testing.T) {
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-x", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", Objective: "No issue yet."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-y", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "maintenance",
-			Repository: "sf/code", Objective: "No issue either."}})
+			Repository: "sf/code", Objective: "No issue either."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-pl", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
+			Repository: "sf/code", IssueNumber: 50, Objective: "A plan."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-ch", Kind: "agent", Status: "running", Track: policy.TrackDirect, Process: "spec",
+			Source: factoryd.SourcePlan, Parent: "t-pl", PlanKey: "api", Repository: "sf/code", IssueNumber: 51, Objective: "The plan's card."}})
 	r.tasks.mu.Unlock()
 	ck, s := r.loggedIn(t)
 
@@ -165,6 +171,12 @@ func TestReplanCard(t *testing.T) {
 	status, msg = refused(t, r, "replan", toolInput{TaskID: "t-y", Note: note})
 	equal(t, "the failed replan of a card without an issue", []any{status, msg},
 		[]any{http.StatusInternalServerError, "Card t-y could not go back to the planner: see the factoryd log, then replan it again."})
+
+	// a plan's child replans its plan, so the note goes on the plan's issue
+	rec = r.do(post("/tasks/t-ch/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)
+	equal(t, "the child's replan", []any{rec.Code, asked[len(asked)-1], r.fg.commentBodies("/api/v1/repos/sf/code/issues/50/comments"),
+		len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))},
+		[]any{http.StatusSeeOther, "t-ch by sebastian: " + note, []string{note}, 0})
 
 	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","task_id":"t-r"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #11"}})
