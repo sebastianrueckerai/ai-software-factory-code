@@ -293,6 +293,18 @@ func TestSizeCardKeepsARaisedBudget(t *testing.T) {
 	}
 }
 
+// A Budget: line is a person's own amount, even where it equals the
+// filing's budget: no size changes it.
+func TestSizeCardKeepsAskedBudgetEqualToTheDefault(t *testing.T) {
+	for _, size := range []string{"small", "large"} {
+		card := sizingCard()
+		card.Objective += "\n\nBudget: 5"
+		if _, _, got := sizedBudget(t, card, size); got.Size != size || got.BudgetEUR != 5 {
+			t.Errorf("sized %s: size %q, budget %v, want the asked 5", size, got.Size, got.BudgetEUR)
+		}
+	}
+}
+
 // A person raises the budget between the record and the write; a new run
 // finds the size written and leaves a raise that lands on the held cents.
 func TestSizeCardKeepsARaiseOfANewRun(t *testing.T) {

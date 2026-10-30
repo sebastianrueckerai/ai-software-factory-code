@@ -92,7 +92,7 @@ func (r *Runner) sizingStep(ctx context.Context, taskID string) (map[string]any,
 // whose session answered a size carries it as sized. A sized step that
 // changes the card's size carries held_cents, the budget the card holds,
 // and budget_eur, the budget the write sets: the sized size's when the
-// card holds its filing's, else the one it holds.
+// card asked no budget and holds its filing's, else the one it holds.
 func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 	if t.CarryPR > 0 {
 		return gateEnd(t, GateSizing, map[string]any{"skipped": fmt.Sprintf("the card carries pull request #%d, whose work exists", t.CarryPR)}), nil
@@ -123,7 +123,7 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 		}
 		b, strong := r.cfg.Policy().Document.Budget, t.Rung == RungFrontier
 		budget := t.BudgetEUR
-		if Cents(budget) == Cents(policy.CardBudget(b, p.Budget, t.Size, strong, 0)) {
+		if _, asked := askedBudget(t.Objective); asked == 0 && Cents(budget) == Cents(policy.CardBudget(b, p.Budget, t.Size, strong, 0)) {
 			budget = policy.CardBudget(b, p.Budget, v.Size, strong, 0)
 		}
 		detail["held_cents"], detail["budget_eur"] = Cents(t.BudgetEUR), budget
