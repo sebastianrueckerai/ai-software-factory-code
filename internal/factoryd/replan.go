@@ -626,12 +626,19 @@ type replanState struct {
 	merged   map[string]bool
 }
 
-// replanState reads plan p's record for replanFindings: its timeline and
-// each revision once.
-func (r *Runner) replanState(ctx context.Context, p Task) (replanState, error) {
+// replanState reads plan p's record for replanFindings of revision of, 0
+// for the one to store next: its timeline and each revision once. The
+// revision before is the newest for the next, of-1 for a stored one.
+func (r *Runner) replanState(ctx context.Context, p Task, of int) (replanState, error) {
 	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}}
 	var err error
-	if st.prev, st.revision, err = r.planAt(ctx, p.ID, 0); err != nil {
+	switch {
+	case of == 0:
+		st.prev, st.revision, err = r.planAt(ctx, p.ID, 0)
+	case of > 1:
+		st.prev, st.revision, err = r.planAt(ctx, p.ID, of-1)
+	}
+	if err != nil {
 		return replanState{}, err
 	}
 	step, pending, err := r.pendingReplan(ctx, p)

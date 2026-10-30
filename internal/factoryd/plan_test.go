@@ -2528,6 +2528,49 @@ func TestFilingRefusesARevisionACardEndedUnder(t *testing.T) {
 	}
 }
 
+// The filing judges its revision against the revision before it, as the
+// storing did: a card the revision changes into a new card, which merged
+// between the storing and the filing, gets the findings the storing would
+// have given it, and no card files.
+func TestFilingJudgesAgainstTheRevisionBefore(t *testing.T) {
+	ctx := context.Background()
+	cli := PlanCard{Key: "cli", Role: RoleFeature, Title: "A command line", Brief: "cmd/cli creates links.",
+		Directories: []string{"cmd/cli"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestCLICreate in cmd/cli exits 0"}}, Size: "small"}
+	p := testPlan()
+	p.Cards = slices.Insert(p.Cards, 3, cli)
+	r, store, _, _, _ := fileRig(t, p)
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 5 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	k := cardsByKey(t, store)["cli"]
+	k.Status, k.PlanRevision = "running", 1
+	store.tasks[k.ID] = k
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "a smaller cli", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	cli.Key, cli.From = "cli2", "cli"
+	p.Cards[3] = cli
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	k = store.tasks[k.ID]
+	k.Status, k.MergeCommit = "done", "4f1c2a9"
+	store.tasks[k.ID] = k
+
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out",
+		"card cli merged: keep its key; a later card changes its work"}
+	if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 0 || !slices.Equal(ref.Refused, want) {
+		t.Fatalf("the filing: %+v, want no card filed and the findings %q", ref, want)
+	}
+	if _, ok := cardsByKey(t, store)["cli2"]; ok {
+		t.Fatal("cli2 filed")
+	}
+}
+
 // A filing judges its revision once, before its first card files: a run
 // again after the cards filed, one of them closed since, answers the same
 // cards, no refusal and no comment that it files none.

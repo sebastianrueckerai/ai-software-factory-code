@@ -2203,7 +2203,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	// the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
 	// against the plan's record of cards
-	st, err := r.replanState(ctx, t)
+	st, err := r.replanState(ctx, t, 0)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -2692,14 +2692,15 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 	if needed, owner := deployOwner(t.Objective, p); needed && owner == "" {
 		findings = append(findings, ErrNoDeployOwner.Error())
 	}
-	// a card may have ended since the revision was stored; once the
-	// filing started, its own cards are in the record, and it goes on
+	// a card may have ended or merged since the revision was stored: it is
+	// judged again as at its storing, against the revision before; once
+	// the filing started, its own cards are in the record, and it goes on
 	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
 		return ChildrenResult{}, fmt.Errorf("the timeline of %s: %w", t.ID, err)
 	}
 	if n, started := lastStep(tl, stepFiling)["revision"].(float64); !started || int(n) != revision {
-		st, err := r.replanState(ctx, t)
+		st, err := r.replanState(ctx, t, revision)
 		if err != nil {
 			return ChildrenResult{}, err
 		}
