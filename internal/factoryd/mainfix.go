@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -35,12 +36,16 @@ const (
 // QueuePause is a project's paused merge queue: main is red since the run.
 // RerunAt is factoryd's one re-run of the run, zero without one; a pause
 // on a re-run has no card until the re-run is red again.
+// A pause with a Plan is that plan's group revert instead: Reverts are the
+// commits it undoes, RevertTask its card. Main's own runs leave it alone.
 type QueuePause struct {
 	Project             string
 	RunID               int64
 	SHA                 string
 	Since, RerunAt      time.Time
 	FixTask, RevertTask string
+	Plan                string
+	Reverts             []string
 }
 
 // PauseQueue writes the project's pause; a pause that stands, a re-run's,
@@ -52,16 +57,67 @@ func (s *PGStore) PauseQueue(ctx context.Context, p QueuePause) error {
 	return err
 }
 
-func (s *PGStore) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+// PauseQueueForRevert pauses the project's queue for a plan's group revert.
+// It answers false when a pause stands, whatever its kind.
+func (s *PGStore) PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error) {
+	reverts, err := json.Marshal(append([]string{}, p.Reverts...))
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, revert_task, plan, reverts) VALUES ($1, $2, $3, $4, $5, $6, $7)
+		ON CONFLICT (project) DO NOTHING`, p.Project, p.RunID, p.SHA, p.Since, p.RevertTask, p.Plan, reverts)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+const queuePauseColumns = `project, run_id, sha, since, rerun_at, fix_task, revert_task, plan, reverts`
+
+type rowScanner interface{ Scan(dest ...any) error }
+
+func scanQueuePause(row rowScanner) (QueuePause, error) {
 	var p QueuePause
 	var rerun sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT project, run_id, sha, since, rerun_at, fix_task, revert_task FROM queue_pauses WHERE project = $1`, project).
-		Scan(&p.Project, &p.RunID, &p.SHA, &p.Since, &rerun, &p.FixTask, &p.RevertTask)
+	var reverts []byte
+	if err := row.Scan(&p.Project, &p.RunID, &p.SHA, &p.Since, &rerun, &p.FixTask, &p.RevertTask, &p.Plan, &reverts); err != nil {
+		return QueuePause{}, err
+	}
+	p.RerunAt = rerun.Time
+	if err := json.Unmarshal(reverts, &p.Reverts); err != nil {
+		return QueuePause{}, err
+	}
+	if len(p.Reverts) == 0 {
+		p.Reverts = nil
+	}
+	return p, nil
+}
+
+func (s *PGStore) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+	p, err := scanQueuePause(s.db.QueryRowContext(ctx, `SELECT `+queuePauseColumns+` FROM queue_pauses WHERE project = $1`, project))
 	if errors.Is(err, sql.ErrNoRows) {
 		return QueuePause{}, false, nil
 	}
-	p.RerunAt = rerun.Time
 	return p, err == nil, err
+}
+
+// PlanQueuePauses are the pauses that name a plan, in project order.
+func (s *PGStore) PlanQueuePauses(ctx context.Context) ([]QueuePause, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+queuePauseColumns+` FROM queue_pauses WHERE plan <> '' ORDER BY project`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []QueuePause
+	for rows.Next() {
+		p, err := scanQueuePause(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 func (s *PGStore) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
@@ -91,6 +147,9 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	pause, paused, err := r.Store.QueuePause(ctx, project)
 	if err != nil {
 		return err
+	}
+	if pause.Plan != "" {
+		return nil
 	}
 	switch {
 	case newest.Status == "success" && paused:

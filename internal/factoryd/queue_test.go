@@ -1102,3 +1102,26 @@ func TestHealSignalsQueueHead(t *testing.T) {
 		t.Fatalf("queue_turn signals = %q, want %q", turns, want)
 	}
 }
+
+// A group pause holds every card but its revert card, and names the plan.
+func TestEnterQueueUnderAGroupPause(t *testing.T) {
+	r, _, store := newTestRunner(t, Task{ID: "a1", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 9, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
+	store.CreateTask(context.Background(), Task{ID: "t-rv", Status: "in-review", Repository: "linkshort/linkshort", PRNumber: 10, Track: "direct"})
+	store.pauses = map[string]QueuePause{"linkshort/linkshort": {Project: "linkshort/linkshort", Plan: "p", Reverts: []string{"c1"}, RevertTask: "t-rv"}}
+	ctx := context.Background()
+	if ahead, err := r.EnterQueue(ctx, "a1"); ahead != 1 || err != nil {
+		t.Fatalf("a1 ahead %d %v, want held by the group pause", ahead, err)
+	}
+	var paused []map[string]any
+	for _, l := range timelineLines(t, r, "a1") {
+		if l["step"] == "queue_paused" {
+			paused = append(paused, l)
+		}
+	}
+	if len(paused) != 1 || paused[0]["plan"] != "p" {
+		t.Fatalf("queue_paused steps = %v, want one naming plan p", paused)
+	}
+	if ahead, err := r.EnterQueue(ctx, "t-rv"); ahead != 0 || err != nil {
+		t.Fatalf("the revert card ahead %d %v, want its turn", ahead, err)
+	}
+}

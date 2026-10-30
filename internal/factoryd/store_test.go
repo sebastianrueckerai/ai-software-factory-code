@@ -1156,9 +1156,32 @@ func (s *fakeStore) PauseQueue(ctx context.Context, p QueuePause) error {
 	if s.pauses == nil {
 		s.pauses = map[string]QueuePause{}
 	}
-	p.RevertTask = s.pauses[p.Project].RevertTask
+	old := s.pauses[p.Project]
+	p.RevertTask, p.Plan, p.Reverts = old.RevertTask, old.Plan, old.Reverts
 	s.pauses[p.Project] = p
 	return nil
+}
+
+func (s *fakeStore) PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error) {
+	if _, ok := s.pauses[p.Project]; ok {
+		return false, nil
+	}
+	if s.pauses == nil {
+		s.pauses = map[string]QueuePause{}
+	}
+	s.pauses[p.Project] = p
+	return true, nil
+}
+
+func (s *fakeStore) PlanQueuePauses(ctx context.Context) ([]QueuePause, error) {
+	var out []QueuePause
+	for _, p := range s.pauses {
+		if p.Plan != "" {
+			out = append(out, p)
+		}
+	}
+	slices.SortFunc(out, func(a, b QueuePause) int { return strings.Compare(a.Project, b.Project) })
+	return out, nil
 }
 
 func (s *fakeStore) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {

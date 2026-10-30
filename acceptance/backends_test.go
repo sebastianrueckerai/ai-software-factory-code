@@ -1170,3 +1170,11 @@ func (s *acceptanceStore) OverHoldCall(context.Context, string, time.Time) (*fac
 func (s *acceptanceStore) BudgetRefused(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }
+
+func (s *acceptanceStore) PauseQueueForRevert(context.Context, factoryd.QueuePause) (bool, error) {
+	return false, nil
+}
+
+func (s *acceptanceStore) PlanQueuePauses(context.Context) ([]factoryd.QueuePause, error) {
+	return nil, nil
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -285,7 +286,7 @@ func TestRollerReRunsMainWhenItsRunnerWasLost(t *testing.T) {
 	if err := roller.poll(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if p, ok := store.pauses[codeRepo]; !ok || p != pause || len(f.reruns) != 1 || len(f.issues) != 0 || len(f.pulls) != 0 || len(wf.signals) != 0 {
+	if p, ok := store.pauses[codeRepo]; !ok || !reflect.DeepEqual(p, pause) || len(f.reruns) != 1 || len(f.issues) != 0 || len(f.pulls) != 0 || len(wf.signals) != 0 {
 		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q, pull requests %q, signals %q; want the pause alone", p, ok, f.reruns, f.issues, f.pulls, wf.signals)
 	}
 
@@ -632,4 +633,69 @@ func readTestdata(t *testing.T, name string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+func TestPGStoreQueuePauseForRevert(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE queue_pauses`); err != nil {
+		t.Fatal(err)
+	}
+	group := QueuePause{Project: "sf/r", Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv", RunID: 0, Since: time.Date(2026, 11, 7, 9, 0, 0, 0, time.UTC)}
+	if ok, err := s.PauseQueueForRevert(ctx, group); err != nil || !ok {
+		t.Fatalf("first call = %v, %v; want true", ok, err)
+	}
+	got, ok, err := s.QueuePause(ctx, "sf/r")
+	if err != nil || !ok || got.Plan != "p" || !slices.Equal(got.Reverts, group.Reverts) || got.RevertTask != "t-rv" || !got.Since.Equal(group.Since) {
+		t.Fatalf("pause = %+v (%v, %v), want %+v", got, ok, err, group)
+	}
+	other := group
+	other.Plan, other.Reverts, other.RevertTask = "q", []string{"c9"}, "t-other"
+	if ok, err := s.PauseQueueForRevert(ctx, other); err != nil || ok {
+		t.Fatalf("second call = %v, %v; want false", ok, err)
+	}
+	if again, _, _ := s.QueuePause(ctx, "sf/r"); again.Plan != "p" || again.RevertTask != "t-rv" {
+		t.Fatalf("pause = %+v, want it unchanged", again)
+	}
+	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/red", RunID: 7, SHA: commitC1, Since: group.Since, FixTask: "t-fix"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.PauseQueueForRevert(ctx, QueuePause{Project: "sf/red", Plan: "p"}); err != nil || ok {
+		t.Fatalf("on a main-red pause = %v, %v; want false", ok, err)
+	}
+	if red, _, _ := s.QueuePause(ctx, "sf/red"); red.Plan != "" || red.Reverts != nil {
+		t.Fatalf("main-red pause = %+v, want no plan", red)
+	}
+	pauses, err := s.PlanQueuePauses(ctx)
+	if err != nil || len(pauses) != 1 || pauses[0].Project != "sf/r" || pauses[0].Plan != "p" {
+		t.Fatalf("PlanQueuePauses = %+v, %v; want the group pause only", pauses, err)
+	}
+}
+
+// A group pause belongs to the group revert: main's own runs neither end
+// it on green nor file a fix card on red.
+func TestMainStateLeavesAGroupPauseAlone(t *testing.T) {
+	for _, status := range []string{"success", "failure"} {
+		t.Run(status, func(t *testing.T) {
+			f := &rollForgejo{}
+			roller, store, wf := newTestRoller(t, f)
+			group := QueuePause{Project: codeRepo, Plan: "p", Reverts: []string{"c1"}, RevertTask: "t-rv", Since: time.Now().Add(-mainRedBound - time.Minute)}
+			store.pauses = map[string]QueuePause{codeRepo: group}
+			store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
+			store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
+			if err := roller.mainState(context.Background(), []ActionRun{{ID: 59, CommitSHA: commitC2, PrettyRef: "main", Status: status}}); err != nil {
+				t.Fatal(err)
+			}
+			if got := store.pauses[codeRepo]; !slices.Equal(got.Reverts, group.Reverts) || got.Plan != "p" || got.FixTask != "" || got.RevertTask != "t-rv" {
+				t.Fatalf("pause = %+v, want it unchanged", got)
+			}
+			if len(wf.signals) != 0 || len(f.issues) != 0 || len(store.tasks) != 1 {
+				t.Fatalf("signals %q, issues %q, tasks %d; want none", wf.signals, f.issues, len(store.tasks))
+			}
+		})
+	}
 }

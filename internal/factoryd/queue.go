@@ -132,7 +132,7 @@ func (r *Runner) EnterQueue(ctx context.Context, taskID string) (int, error) {
 		spot.Ahead = 0
 	} else if paused {
 		if t.Gate != GateMergeQueue {
-			r.record(ctx, t.ID, "queue_paused", map[string]any{"project": t.Repository, "run": p.RunID, "sha": p.SHA, "fix": p.FixTask})
+			r.record(ctx, t.ID, "queue_paused", map[string]any{"project": t.Repository, "run": p.RunID, "sha": p.SHA, "fix": p.FixTask, "plan": p.Plan})
 		}
 		spot.Ahead++
 	}

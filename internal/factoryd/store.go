@@ -421,6 +421,10 @@ type Store interface {
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error
+	// PauseQueueForRevert pauses the queue for a plan's group revert; false
+	// when a pause stands. PlanQueuePauses are the pauses that name a plan.
+	PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error)
+	PlanQueuePauses(ctx context.Context) ([]QueuePause, error)
 	// PutLiveSession records a running session's sandbox; a retried
 	// RunSession reattaches to it (LiveSession), SetLiveSessionLines
 	// keeps how much of the pod's log the loop consumed, and the session's

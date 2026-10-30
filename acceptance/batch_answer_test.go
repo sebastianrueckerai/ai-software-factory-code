@@ -1535,3 +1535,11 @@ func (s *accBatchStore) OverHoldCall(ctx context.Context, taskID string, since t
 func (s *accBatchStore) BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error) {
 	panic("unused")
 }
+
+func (s *accBatchStore) PauseQueueForRevert(context.Context, factoryd.QueuePause) (bool, error) {
+	return false, nil
+}
+
+func (s *accBatchStore) PlanQueuePauses(context.Context) ([]factoryd.QueuePause, error) {
+	return nil, nil
+}
