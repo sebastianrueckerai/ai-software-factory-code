@@ -1414,7 +1414,7 @@ async function text(page) {
       // the open ask stays with its buttons, the cleared line counts, and
       // the button greys until a new row lands
       const logEl = p.page.locator("#chat-log");
-      await logEl.evaluate((e) => { e.style.height = "220px"; });
+      await logEl.evaluate((e) => { e.style.cssText += ";flex:none;min-height:0;height:120px"; });
       await logEl.evaluate((e) => { e.scrollTop = 0; });
       await p.page.evaluate(() => document.dispatchEvent(new CustomEvent("factoryevent", { detail: { kind: "task_ended" } })));
       await p.page.waitForTimeout(700);
