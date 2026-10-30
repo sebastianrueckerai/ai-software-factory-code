@@ -226,7 +226,8 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		return nil
 	}
 	if err != nil {
-		if _, undo := k.Store.PutReleaseHold(ctx, repository, since, row.AskedAt, now, since); undo != nil {
+		// a stop cancels ctx between the write and the filing; the time goes back all the same
+		if _, undo := k.Store.PutReleaseHold(context.WithoutCancel(ctx), repository, since, row.AskedAt, now, since); undo != nil {
 			log.Printf("release keeper: %s: put the ask's time back: %v", repository, undo)
 		}
 		return err

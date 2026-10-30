@@ -398,6 +398,41 @@ func TestReleaseKeeperAsksAgainAfterAFailedFiling(t *testing.T) {
 	}
 }
 
+// A stop between the ask's write and its filing, which cancels the pass's
+// context, still puts the ask's time back, so the next pass asks.
+func TestReleaseKeeperPutsTheAskTimeBackOnAStop(t *testing.T) {
+	f := &chainForgejo{}
+	k, store, clock := newKeeper(t, f)
+	ctx, cancel := context.WithCancel(context.Background())
+	k.Store = &cancelAfterAsk{store, cancel}
+	*clock = keeperAt(16, 0)
+	if err := k.Pass(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Pass = %v, want the filing cancelled", err)
+	}
+	if got := releaseRow(store, demoRepo).AskedAt; !got.IsZero() {
+		t.Errorf("AskedAt %v after the stop, want it put back", got)
+	}
+}
+
+// cancelAfterAsk cancels the pass's context right after an ask's write
+// lands, as a stop would, and refuses a write on a cancelled context, as
+// Postgres does.
+type cancelAfterAsk struct {
+	*fakeStore
+	cancel context.CancelFunc
+}
+
+func (s *cancelAfterAsk) PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	landed, err := s.fakeStore.PutReleaseHold(ctx, repository, since, asked, was, wasHeld)
+	if landed && !asked.IsZero() {
+		s.cancel()
+	}
+	return landed, err
+}
+
 // An ask Forgejo refuses for good keeps its time: no retry each minute,
 // the next ask comes HoldAskAfter later, and the refusal is logged.
 func TestReleaseKeeperKeepsTheAskTimeOfARefusedFiling(t *testing.T) {
