@@ -69,6 +69,7 @@ type toolInput struct {
 	Verdict     string   `json:"verdict,omitempty"`
 	DependsOn   string   `json:"depends_on,omitempty"`
 	Remove      bool     `json:"remove,omitempty"`
+	OffMain     bool     `json:"off_main,omitempty"`
 	Mode        string   `json:"mode,omitempty"`
 	Autonomy    string   `json:"autonomy,omitempty"`
 	Content     string   `json:"content,omitempty"`
@@ -467,6 +468,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if f.v != "" {
 			parts = append(parts, f.key+" "+textutil.Truncate(f.v, 120))
 		}
+	}
+	if in.OffMain {
+		parts = append(parts, "off_main")
 	}
 	if in.CarryPR > 0 {
 		parts = append(parts, fmt.Sprintf("carries #%d", in.CarryPR))
@@ -1491,10 +1495,11 @@ var tools = []chatTool{
 			return note, &inverse{"set_dependency", toolInput{TaskID: in.TaskID, DependsOn: in.DependsOn, Remove: !in.Remove}}, err
 		}},
 	{name: "replan", title: "Replan a card", write: true,
-		params: map[string]any{"task_id": taskParam, "note": str("why it goes back: the planner reads it")}, required: []string{"task_id", "note"},
+		params: map[string]any{"task_id": taskParam, "note": str("why it goes back: the planner reads it"),
+			"off_main": map[string]any{"type": "boolean", "description": "take the plan's merged cards off main first"}}, required: []string{"task_id", "note"},
 		about: "Send a card or its plan back to the planner, which plans on top of what was built.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note)
+			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note, in.OffMain)
 			return note, nil, err
 		}},
 	{name: "read_doc", title: "Read a document",

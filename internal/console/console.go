@@ -248,7 +248,7 @@ type Config struct {
 	// planner for by with comment saying why (factoryd's Runner.Replan),
 	// and answers the note for the person; a card or plan that takes no
 	// replan answers factoryd.ErrNoReplan.
-	Replan func(ctx context.Context, taskID, by, comment string) (string, error)
+	Replan func(ctx context.Context, taskID, by, comment string, offMain bool) (string, error)
 	// AnswerWhole signals card taskID's workflow that comment, which the
 	// answer box posted for by, is a whole answer
 	// (factoryd.SignalAnswerWhole): the card resumes on it without the

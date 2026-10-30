@@ -568,8 +568,8 @@ func main() {
 		CloseCardDone: func(ctx context.Context, taskID, by, evidence string) error {
 			return runner.CloseCardDone(ctx, taskID, by, evidence)
 		},
-		Replan: func(ctx context.Context, taskID, by, comment string) (string, error) {
-			return runner.Replan(ctx, taskID, factoryd.ReplanAsk{By: by, Comment: comment})
+		Replan: func(ctx context.Context, taskID, by, comment string, offMain bool) (string, error) {
+			return runner.Replan(ctx, taskID, factoryd.ReplanAsk{By: by, Comment: comment, OffMain: offMain})
 		},
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})

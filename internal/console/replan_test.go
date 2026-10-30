@@ -27,8 +27,11 @@ func TestReplanCard(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.projects.rows[0].Tracks = testProcesses()["spec"].Tracks
 	var asked []string
-	r.c.cfg.Replan = func(_ context.Context, taskID, by, comment string) (string, error) {
+	r.c.cfg.Replan = func(_ context.Context, taskID, by, comment string, offMain bool) (string, error) {
 		asked = append(asked, taskID+" by "+by+": "+comment)
+		if offMain {
+			asked[len(asked)-1] += " (off main)"
+		}
 		switch taskID {
 		case "t-m":
 			return "", factoryd.ErrNoReplan("Card #5 merged, so its work is on main: file a new card for what is still missing.")
@@ -74,6 +77,13 @@ func TestReplanCard(t *testing.T) {
 		`<button type="submit" aria-label="Replan #11">Replan</button></form></div></details>`
 	if got := drawer("t-r"); !strings.Contains(got, form) {
 		t.Fatalf("the running direct card's drawer lacks the Replan form:\n%s", got)
+	}
+	const box = `<input type="checkbox" name="off_main" value="on"> Take its merged cards off main first`
+	if strings.Contains(drawer("t-r"), box) {
+		t.Error("the direct card's drawer offers off main")
+	}
+	if got := drawer("t-ch"); !strings.Contains(got, `<label>`+box+`</label><button type="submit" aria-label="Replan #51">`) {
+		t.Errorf("the plan child's drawer lacks the off main box:\n%s", got)
 	}
 	for _, id := range []string{"t-mg", "t-roll"} {
 		if strings.Contains(drawer(id), `data-sec="replan"`) {
@@ -178,8 +188,20 @@ func TestReplanCard(t *testing.T) {
 		len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))},
 		[]any{http.StatusSeeOther, "t-ch by sebastian: " + note, []string{note}, 0})
 
+	// off main reaches factoryd from the button and the tool
+	rec = r.do(post("/tasks/t-ch/replan", url.Values{"csrf": {s.csrf}, "note": {note}, "off_main": {"on"}}), ck)
+	equal(t, "the off main button", []any{rec.Code, asked[len(asked)-1]}, []any{http.StatusSeeOther, "t-ch by sebastian: " + note + " (off main)"})
+	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","off_main":true,"task_id":"t-ch"}`)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #51 off main"}})
+	if !strings.Contains(events[0], `"description":"Replan a card, #51 t-ch \"api\", note `+note+`, off_main"`) {
+		t.Errorf("the proposal does not name off_main: %s", events[0])
+	}
+	calls = len(asked)
+	chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "the tool's off main", asked[calls:], []string{"t-ch by sebastian: " + note + " (off main)"})
+
 	g.replies = [][]string{{call(1, "replan", `{"note":"`+note+`","task_id":"t-r"}`)}}
-	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #11"}})
+	_, events, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #11"}})
 	equal(t, "the proposal", events, []string{
 		`proposal {"arguments":{"note":"` + note + `","task_id":"t-r"},"description":"Replan a card, #11 t-r \"Speed up the board.\", note ` + note +
 			`","id":"TOKEN","tool":"replan"}`, `done {}`})
