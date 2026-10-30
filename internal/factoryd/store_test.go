@@ -392,8 +392,8 @@ func (s *fakeStore) RecordReleaseAsk(ctx context.Context, repository, commit str
 	return nil
 }
 
-func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) (bool, error) {
-	if r, ok := s.releases[repository]; ok && !r.AskedAt.Equal(was) {
+func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error) {
+	if r, ok := s.releases[repository]; ok && (!r.AskedAt.Equal(was) || !r.HeldSince.Equal(wasHeld)) {
 		return false, nil
 	}
 	s.putRelease(repository, func(r *Release) {

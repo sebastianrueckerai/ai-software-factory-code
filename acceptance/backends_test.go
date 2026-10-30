@@ -892,7 +892,7 @@ func (s *acceptanceStore) RecordReleaseAsk(context.Context, string, string, bool
 	return nil
 }
 
-func (s *acceptanceStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time) (bool, error) {
+func (s *acceptanceStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time, time.Time) (bool, error) {
 	return true, nil
 }
 

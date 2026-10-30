@@ -87,11 +87,11 @@ func checkReleaseRows(t *testing.T, s Store) {
 		must(err)
 		return utcRelease(r)
 	}
-	hold := func(repository string, since, asked, was time.Time, landed bool) {
+	hold := func(repository string, since, asked, was, wasHeld time.Time, landed bool) {
 		t.Helper()
-		if got, err := s.PutReleaseHold(ctx, repository, since, asked, was); err != nil || got != landed {
-			t.Errorf("PutReleaseHold(%s, %s, %s, %s) = %v, %v; want %v", repository,
-				since.Format("15:04"), asked.Format("15:04"), was.Format("15:04"), got, err, landed)
+		if got, err := s.PutReleaseHold(ctx, repository, since, asked, was, wasHeld); err != nil || got != landed {
+			t.Errorf("PutReleaseHold(%s, %s, %s, %s, %s) = %v, %v; want %v", repository,
+				since.Format("15:04"), asked.Format("15:04"), was.Format("15:04"), wasHeld.Format("15:04"), got, err, landed)
 		}
 	}
 	check := func(step string, want Release) {
@@ -109,22 +109,24 @@ func checkReleaseRows(t *testing.T, s Store) {
 	want := Release{Repository: "sf/a", AsksAt: at(9, 10), ToldHeld: "c2"}
 	check("three asks", want)
 
-	hold("sf/a", at(10, 0), time.Time{}, time.Time{}, true)
+	hold("sf/a", at(10, 0), time.Time{}, time.Time{}, time.Time{}, true)
 	want.HeldSince = at(10, 0)
 	check("the clock starts", want)
-	hold("sf/a", at(10, 0), at(10, 20), time.Time{}, true)
+	hold("sf/a", at(10, 0), at(10, 20), time.Time{}, at(10, 0), true)
 	want.AskedAt = at(10, 20)
 	check("the ask", want)
 
 	must(s.SetDeployNow(ctx, "sf/a", "c9", at(10, 30)))
 	want.DeployNow, want.HeldSince, want.AskedAt = "c9", at(10, 30), time.Time{}
 	check("Deploy now", want)
-	hold("sf/a", at(10, 0), at(10, 35), at(10, 20), false)
+	hold("sf/a", at(10, 0), at(10, 35), at(10, 20), at(10, 0), false)
 	check("a pass that read the row before the press", want)
-	hold("sf/a", at(10, 30), at(10, 40), time.Time{}, true)
+	hold("sf/a", at(10, 0), at(10, 35), time.Time{}, at(10, 0), false)
+	check("a first ask whose read of the clock is older than the press", want)
+	hold("sf/a", at(10, 30), at(10, 40), time.Time{}, at(10, 30), true)
 	want.AskedAt = at(10, 40)
 	check("an ask after the press", want)
-	hold("sf/a", at(10, 30), at(10, 45), time.Time{}, false)
+	hold("sf/a", at(10, 30), at(10, 45), time.Time{}, at(10, 30), false)
 	check("a stale read once more", want)
 
 	must(s.ClearDeployNow(ctx, "sf/a", "c8"))
@@ -145,7 +147,7 @@ func checkReleaseRows(t *testing.T, s Store) {
 	want.ToldHeld = ""
 	check("ClearToldHeld", want)
 
-	hold("sf/c", at(10, 0), at(10, 20), at(9, 0), true)
+	hold("sf/c", at(10, 0), at(10, 20), at(9, 0), at(9, 0), true)
 	newHold := Release{Repository: "sf/c", HeldSince: at(10, 0), AskedAt: at(10, 20)}
 	check("PutReleaseHold on no row", newHold)
 	must(s.SetDeployNow(ctx, "sf/d", "d9", at(11, 0)))

@@ -112,11 +112,11 @@ func (s *PGStore) RecordReleaseAsk(ctx context.Context, repository, commit strin
 	return err
 }
 
-func (s *PGStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) (bool, error) {
+func (s *PGStore) PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO releases (repository, held_since, asked_at) VALUES ($1, $2, $3)
 		ON CONFLICT (repository) DO UPDATE SET held_since = COALESCE(releases.held_since, EXCLUDED.held_since), asked_at = EXCLUDED.asked_at
-		WHERE releases.asked_at IS NOT DISTINCT FROM $4`,
-		repository, nullTime(since), nullTime(asked), nullTime(was))
+		WHERE releases.asked_at IS NOT DISTINCT FROM $4 AND releases.held_since IS NOT DISTINCT FROM $5`,
+		repository, nullTime(since), nullTime(asked), nullTime(was), nullTime(wasHeld))
 	if err != nil {
 		return false, err
 	}

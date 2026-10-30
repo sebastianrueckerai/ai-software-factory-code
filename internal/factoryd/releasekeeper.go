@@ -55,7 +55,7 @@ type ReleaseStore interface {
 	OpenGroups(ctx context.Context) (map[string][]Group, error)
 	Release(ctx context.Context, repository string) (Release, error)
 	Releases(ctx context.Context) ([]Release, error)
-	PutReleaseHold(ctx context.Context, repository string, since, asked, was time.Time) (bool, error)
+	PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error)
 	SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error
 	EndReleaseHold(ctx context.Context, repository string) error
 	ClearToldHeld(ctx context.Context, repository, commit string) error
@@ -144,9 +144,10 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 // and asks a person: a standing ask hears of each new fix; else a new ask
 // is filed once a fix merged, or once HoldAskAfter passed since the
 // clock's start and since the last ask or its close. The ask's time is
-// written first, only where it is still the one this pass read, and the
-// ask goes out only where that write landed, so a Deploy now or another
-// pass meanwhile wins. An ask that does not go out puts its time back.
+// written first, only where the row's ask and clock are still the ones
+// this pass read, and the ask goes out only where that write landed, so a
+// Deploy now or another pass meanwhile wins. An ask that does not go out
+// puts its time back.
 func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, now time.Time) error {
 	repository, since := row.Repository, row.HeldSince
 	if since.IsZero() {
@@ -154,7 +155,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		if since.IsZero() {
 			since = now
 		}
-		if landed, err := k.Store.PutReleaseHold(ctx, repository, since, row.AskedAt, row.AskedAt); err != nil || !landed {
+		if landed, err := k.Store.PutReleaseHold(ctx, repository, since, row.AskedAt, row.AskedAt, row.HeldSince); err != nil || !landed {
 			return err
 		}
 	}
@@ -190,7 +191,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 			return err
 		}
 	}
-	if landed, err := k.Store.PutReleaseHold(ctx, repository, since, now, row.AskedAt); err != nil || !landed {
+	if landed, err := k.Store.PutReleaseHold(ctx, repository, since, now, row.AskedAt, since); err != nil || !landed {
 		return err
 	}
 	if standing {
@@ -203,7 +204,7 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		_, err = EscalateToHuman(ctx, k.Store, k.Forgejo, k.Timeline, repo, q, "the production hold", Task{Source: SourceProductionHeld})
 	}
 	if err != nil {
-		if _, undo := k.Store.PutReleaseHold(ctx, repository, since, row.AskedAt, now); undo != nil {
+		if _, undo := k.Store.PutReleaseHold(ctx, repository, since, row.AskedAt, now, since); undo != nil {
 			log.Printf("release keeper: %s: put the ask's time back: %v", repository, undo)
 		}
 		return err

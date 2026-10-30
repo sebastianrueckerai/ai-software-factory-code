@@ -194,7 +194,7 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 	ctx := context.Background()
 	f := &chainForgejo{}
 	k, store, clock := newKeeper(t, f)
-	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), time.Time{}, time.Time{}); err != nil {
+	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), time.Time{}, time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	fix := func(id, source string, issue int64, merged *time.Time) {
@@ -258,17 +258,23 @@ func TestReleaseKeeperAsksAtOnceOnAFix(t *testing.T) {
 }
 
 // A pass whose ask write lost to a writer that landed after its read files
-// no ask: a Deploy now's reset, or another pass's ask.
+// no ask: a Deploy now's reset, on a hold's first ask (asked_at still none,
+// the clock restarted) as on a later one, or another pass's ask.
 func TestReleaseKeeperFilesNoAskWhereItsWriteLost(t *testing.T) {
 	ctx := context.Background()
-	rig := func(t *testing.T, race func(*fakeStore)) (*chainForgejo, *fakeStore) {
+	// rig holds demoRepo since 10:00, last asked at asked (zero: never, else
+	// that ask's card closed at 10:30), and passes at 16:30 with race run
+	// between the pass's read and its write
+	rig := func(t *testing.T, asked time.Time, race func(*fakeStore)) (*chainForgejo, *fakeStore) {
 		f := &chainForgejo{}
 		k, store, clock := newKeeper(t, f)
-		if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), keeperAt(10, 20), time.Time{}); err != nil {
+		if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), asked, time.Time{}, time.Time{}); err != nil {
 			t.Fatal(err)
 		}
-		store.tasks["t-ask0"] = Task{ID: "t-ask0", Kind: "human", Source: SourceProductionHeld, Status: "closed", Repository: demoRepo,
-			IssueNumber: 70, CreatedAt: keeperAt(10, 20), FinishedAt: keeperAtPtr(10, 30)}
+		if !asked.IsZero() {
+			store.tasks["t-ask0"] = Task{ID: "t-ask0", Kind: "human", Source: SourceProductionHeld, Status: "closed", Repository: demoRepo,
+				IssueNumber: 70, CreatedAt: asked, FinishedAt: keeperAtPtr(10, 30)}
+		}
 		if race != nil {
 			k.Store = &releaseRaceStore{fakeStore: store, race: func() { race(store) }}
 		}
@@ -276,19 +282,24 @@ func TestReleaseKeeperFilesNoAskWhereItsWriteLost(t *testing.T) {
 		keeperPass(t, k)
 		return f, store
 	}
-
-	if f, _ := rig(t, nil); len(f.issues) != 1 {
-		t.Fatalf("issues %d, want the ask 6 hours after the last one closed", len(f.issues))
+	deployNow := func(s *fakeStore) { s.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(16, 30)) }
+	pressed := Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(16, 30), DeployNow: demoCommit}
+	for name, asked := range map[string]time.Time{"the first ask": {}, "a later ask": keeperAt(10, 20)} {
+		t.Run(name, func(t *testing.T) {
+			if f, _ := rig(t, asked, nil); len(f.issues) != 1 {
+				t.Fatalf("issues %d with no writer between, want the ask", len(f.issues))
+			}
+			f, store := rig(t, asked, deployNow)
+			if len(f.issues) != 0 {
+				t.Errorf("issues %q, want none after a Deploy now landed mid-pass", f.issues)
+			}
+			if got := releaseRow(store, demoRepo); !reflect.DeepEqual(got, pressed) {
+				t.Errorf("row %+v, want the Deploy now's %+v", got, pressed)
+			}
+		})
 	}
-	f, store := rig(t, func(s *fakeStore) { s.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(16, 30)) })
-	if len(f.issues) != 0 {
-		t.Errorf("issues %q, want none after a Deploy now landed mid-pass", f.issues)
-	}
-	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(16, 30), DeployNow: demoCommit}); !reflect.DeepEqual(got, want) {
-		t.Errorf("row %+v, want the Deploy now's %+v", got, want)
-	}
-	f, store = rig(t, func(s *fakeStore) {
-		s.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), keeperAt(16, 30), keeperAt(10, 20))
+	f, store := rig(t, keeperAt(10, 20), func(s *fakeStore) {
+		s.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), keeperAt(16, 30), keeperAt(10, 20), keeperAt(10, 0))
 	})
 	if card, _, _ := store.ChainCard(ctx, demoRepo, SourceProductionHeld); len(f.issues) != 0 || card.ID != "t-ask0" {
 		t.Errorf("issues %q, newest ask %s; want no ask after another pass asked mid-pass", f.issues, card.ID)
@@ -339,7 +350,7 @@ func endedHold(t *testing.T, told string, runs ...map[string]any) (*ReleaseKeepe
 		22: {actionJob(221, "checks", "success", 1), actionJob(222, "promote", "success", 1)},
 	}}
 	k, store, clock := newKeeper(t, f)
-	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), time.Time{}, time.Time{}); err != nil {
+	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(10, 0), time.Time{}, time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if told != "" {
@@ -357,7 +368,7 @@ func endedHold(t *testing.T, told string, runs ...map[string]any) (*ReleaseKeepe
 func TestReleaseKeeperEndsTheHoldAndRunsThePromoteAgain(t *testing.T) {
 	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
 	openPlanIn(store, codeRepo, "t-code", 7, keeperAt(9, 40))
-	store.PutReleaseHold(context.Background(), codeRepo, keeperAt(9, 40), time.Time{}, time.Time{})
+	store.PutReleaseHold(context.Background(), codeRepo, keeperAt(9, 40), time.Time{}, time.Time{}, time.Time{})
 	store.closed["t-code"] = time.Now()
 	keeperPass(t, k)
 	if !slices.Equal(f.jobReruns, []string{demoRepo + " 212"}) || len(f.reruns) != 0 {
@@ -511,7 +522,7 @@ func TestReleaseKeeperHold(t *testing.T) {
 	if err != nil || !h.Since.Equal(keeperAt(10, 0)) || len(h.Groups) != 1 || h.Groups[0].Plan != "t-plan" {
 		t.Fatalf("Hold before a pass = %+v, %v; want plan t-plan since 10:00", h, err)
 	}
-	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(9, 30), time.Time{}, time.Time{}); err != nil {
+	if _, err := store.PutReleaseHold(ctx, demoRepo, keeperAt(9, 30), time.Time{}, time.Time{}, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
 	if h, err := k.Hold(ctx, demoRepo); err != nil || !h.Since.Equal(keeperAt(9, 30)) {

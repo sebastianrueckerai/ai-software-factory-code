@@ -750,7 +750,7 @@ func (s *accBatchStore) RecordReleaseAsk(context.Context, string, string, bool, 
 	panic("unused")
 }
 
-func (s *accBatchStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time) (bool, error) {
+func (s *accBatchStore) PutReleaseHold(context.Context, string, time.Time, time.Time, time.Time, time.Time) (bool, error) {
 	panic("unused")
 }
 
