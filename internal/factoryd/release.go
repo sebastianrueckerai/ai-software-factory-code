@@ -51,7 +51,15 @@ func HoldReason(groups []Group) string {
 	if len(plans) == 1 {
 		return "plan " + plans[0] + " is open on main"
 	}
-	return "plans " + strings.Join(plans[:len(plans)-1], ", ") + " and " + plans[len(plans)-1] + " are open on main"
+	return "plans " + andList(plans) + " are open on main"
+}
+
+// andList joins items as a person reads them: "a", "a and b", "a, b and c".
+func andList(items []string) string {
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // fixSources are the sources of the cards that fix production: one merged

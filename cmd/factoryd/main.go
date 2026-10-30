@@ -361,6 +361,7 @@ func main() {
 		log.Fatalf("temporal worker: %v", err)
 	}
 	go routines.Loop(ctx, 10*time.Second)
+	releases := &factoryd.ReleaseKeeper{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Own: own.Repo(), Now: time.Now}
 	go func() {
 		// nudged is the stale sweep's memory of its signals, task id → when
 		nudged := map[string]time.Time{}
@@ -370,6 +371,9 @@ func main() {
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			runner.CriteriaPass(ctx)
 			runner.RevertPausePass(ctx)
+			if err := releases.Pass(ctx); err != nil {
+				log.Printf("release pass: %v", err)
+			}
 			if now := time.Now(); now.Sub(lastBranchSweep) >= time.Hour {
 				lastBranchSweep = now
 				if err := runner.SweepBranches(ctx, now); err != nil {

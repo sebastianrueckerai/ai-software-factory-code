@@ -381,8 +381,10 @@ type chainForgejo struct {
 	reads     []string                                  // "repository dir" of every workflow-list read
 	failing   map[string]bool                           // "base...head" compares that answer 500
 	compares  int                                       // the compare calls served
-	rerun     int                                       // the status a re-run answers; 0 is 204
+	rerun     int                                       // the status a run's or a job's re-run answers; 0 is 204
 	reruns    []string                                  // "repository run" of every re-run asked
+	jobs      map[int64][]map[string]any                // run id -> its jobs (actionJob); a run it does not name answers 404
+	jobReruns []string                                  // "repository job" of every job re-run asked
 	comments  []string                                  // "repository#issue body" of every comment posted
 	closed    []string                                  // "repository#issue" of every issue closed
 	labelled  []string                                  // "repository#issue label..." of every label set
@@ -456,6 +458,18 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			reply([]any{})
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/rerun"):
 			f.reruns = append(f.reruns, repo+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/rerun"))
+			w.WriteHeader(cmp.Or(f.rerun, http.StatusNoContent))
+		case r.Method == "GET" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/jobs"):
+			var id int64
+			fmt.Sscan(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/jobs"), &id)
+			jobs, ok := f.jobs[id]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			reply(jobs)
+		case r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
+			f.jobReruns = append(f.jobReruns, repo+" "+strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun"))
 			w.WriteHeader(cmp.Or(f.rerun, http.StatusNoContent))
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/comments"):
 			prefix := repo + "#" + strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments") + " "

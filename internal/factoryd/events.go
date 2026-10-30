@@ -55,6 +55,12 @@ const (
 	// count, with "backfill": true on a close the schema wrote for a plan
 	// that ended before the second rule. A quiet record, no poke.
 	EventPlanClosed = "plan_closed"
+	// EventProductionReleased records the end of a project's production
+	// hold (roadmap 336), a row of the project: detail {"how", "held_since",
+	// "hours"}, how closed when no plan is open on main any more (by
+	// factoryd), deploy_now when an approver chose Deploy now (by them, with
+	// "commit"). A quiet record, no poke.
+	EventProductionReleased = "production_released"
 )
 
 // StepEvent is the timeline step every event is recorded under.
