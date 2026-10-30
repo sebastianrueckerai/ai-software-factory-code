@@ -299,3 +299,17 @@ func TestHoldAskWait(t *testing.T) {
 		t.Errorf("typed words = %d %q, want 400 %q", rec.Code, rec.Body, want)
 	}
 }
+
+func TestHoldAskReplanNamesAFailedClose(t *testing.T) {
+	r, ev, _, replans := holdAskRig(t)
+	r.fg.failEdit = true
+	ck, s := r.loggedIn(t)
+	rec := answerAsk(r, ck, s.csrf, factoryd.AnswerReplanOnTop+":t-pl", "")
+	want := "Replanning plan #12 on top; #77 could not be closed, close it by hand. The planner replans on top of what is merged."
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("a failed close = %d, want 200 with %q: %s", rec.Code, want, rec.Body)
+	}
+	if len(*replans) != 1 || len(askRows(ev, factoryd.EventCardClosed)) != 0 || askStatus(r) != "waiting-human" {
+		t.Errorf("%d replans, %d closes, status %s; want 1, 0, waiting-human", len(*replans), len(askRows(ev, factoryd.EventCardClosed)), askStatus(r))
+	}
+}

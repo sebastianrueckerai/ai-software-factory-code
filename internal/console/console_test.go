@@ -60,6 +60,7 @@ type fakeForgejo struct {
 	comments  map[string]string // path -> body
 	expiresIn int
 	refuse    bool            // token endpoint answers 400
+	failEdit  bool            // issue PATCHes answer 500
 	spent     map[string]bool // refresh tokens used once: Forgejo invalidates them on use
 	tokenN    int
 	failAPI   bool
@@ -234,6 +235,10 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
 		// the issue as it stands after the edit: the rig's issues are titled
 		// "Fix the cache" with the body "It drops entries." until edited
+		if f.failEdit {
+			http.Error(w, `{"message":"edit refused"}`, http.StatusInternalServerError)
+			return
+		}
 		raw, _ := io.ReadAll(r.Body)
 		f.patched = append(f.patched, r.URL.Path+" "+string(raw))
 		var body map[string]string

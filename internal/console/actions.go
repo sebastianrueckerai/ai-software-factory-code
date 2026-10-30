@@ -953,7 +953,8 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 
 // answerHoldReplan replans plan on the held-production ask t's answer,
 // off main when takeOff, then closes the ask on label. A refusal closes
-// nothing. The note ends with factoryd's own answer, which says what
+// nothing. A close that fails after the replan went through is
+// named in the note, not answered as an error: a retry would meet ErrNoReplan. The note ends with factoryd's own answer, which says what
 // happens next.
 func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task, plan string, takeOff bool, label string) (string, error) {
 	if err := c.admit(ctx, accessTable["replan"], a, t.Repository, "task "+plan); err != nil {
@@ -967,13 +968,15 @@ func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task
 	if err != nil {
 		return "", err
 	}
-	if _, err := c.doClose(ctx, a, t.ID, label); err != nil {
-		return "", err
-	}
+	what, closed := fmt.Sprintf("Replanning plan #%d on top", pt.IssueNumber), fmt.Sprintf("#%d is closed", t.IssueNumber)
 	if takeOff {
-		return fmt.Sprintf("Taking plan #%d off main and replanning; #%d is closed. %s", pt.IssueNumber, t.IssueNumber, said), nil
+		what = fmt.Sprintf("Taking plan #%d off main and replanning", pt.IssueNumber)
 	}
-	return fmt.Sprintf("Replanning plan #%d on top; #%d is closed. %s", pt.IssueNumber, t.IssueNumber, said), nil
+	if _, err := c.doClose(ctx, a, t.ID, label); err != nil {
+		log.Printf("console: %s replanned %s on the ask %s, which stays open: %v", a.s.user, plan, t.ID, err)
+		closed = fmt.Sprintf("#%d could not be closed, close it by hand", t.IssueNumber)
+	}
+	return fmt.Sprintf("%s; %s. %s", what, closed, said), nil
 }
 
 // answerInChatNote is doAnswerValue's note when the member's own words
