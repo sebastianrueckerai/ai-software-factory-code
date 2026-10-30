@@ -1689,6 +1689,16 @@ func recordPlanTask() Task {
 		Objective: "Link shortener\n\nBuild a link shortener."}
 }
 
+// planTimeline is plan t-plan's timeline as r holds it.
+func planTimeline(t *testing.T, r *Runner) []byte {
+	t.Helper()
+	tl, err := r.timeline.Objects.Get(context.Background(), "sessions/t-plan/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tl
+}
+
 // personReplan is ana's replan of t-plan, which stops ui.
 var personReplan = map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the ui is too wide", "stops": []string{"t-ui"}, "revision": 1}
 
@@ -1798,14 +1808,14 @@ var oldCardLines = []string{
 func TestReplanRecord(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, _, _ := oldCardsRig(t, nil)
-	if _, ok, err := r.replanRecord(ctx, store.tasks["t-plan"]); err != nil || ok {
+	if _, ok, err := r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r)); err != nil || ok {
 		t.Fatalf("a record without a replan: %t, %v", ok, err)
 	}
 
 	r, store, _, _, _ = oldCardsRig(t, personReplan)
 	reads := &timelineReads{fakeObjectStore: r.objects.(*fakeObjectStore), n: map[string]int{}}
 	r.objects = reads
-	rec, ok, err := r.replanRecord(ctx, store.tasks["t-plan"])
+	rec, ok, err := r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r))
 	if err != nil || !ok {
 		t.Fatalf("replanRecord: %t, %v", ok, err)
 	}
@@ -1857,7 +1867,7 @@ func TestReplanRecord(t *testing.T) {
 
 	cut := map[string]any{"origin": ReplanCut, "card": "t-ui", "work": "the list endpoint is left<!-- hidden -->", "stops": []string{"t-ui"}, "revision": 1}
 	r, store, _, _, _ = oldCardsRig(t, cut)
-	if rec, ok, err = r.replanRecord(ctx, store.tasks["t-plan"]); err != nil || !ok {
+	if rec, ok, err = r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r)); err != nil || !ok {
 		t.Fatalf("a cut's record: %t, %v", ok, err)
 	}
 	if !slices.Equal(rec.findings, oldCardLines) || !slices.Equal(rec.work, []string{"This is the cut of #31 at session 2, 1.75 EUR spent: the list endpoint is left"}) {
@@ -1893,7 +1903,7 @@ func TestReplanRecord(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if rec, ok, err = r.replanRecord(ctx, store.tasks["t-plan"]); err != nil || !ok {
+	if rec, ok, err = r.replanRecord(ctx, store.tasks["t-plan"], planTimeline(t, r)); err != nil || !ok {
 		t.Fatalf("a direct card's record: %t, %v", ok, err)
 	}
 	if !slices.Equal(rec.findings, []string{"#1 (this card, no key): its work on branch card/1; its record is card-1.md"}) ||
@@ -2454,7 +2464,7 @@ func TestReplanRecordOfCardsTakenOffMain(t *testing.T) {
 	api.RevertedAt = finishedAgo(time.Hour)
 	store.tasks["t-api"] = api
 	hub.branches["salvage/t-plan"] = "s1"
-	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"])
+	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"], planTimeline(t, r))
 	if err != nil || !ok {
 		t.Fatalf("replanRecord: %t, %v", ok, err)
 	}
@@ -2477,7 +2487,7 @@ func TestReplanRecordOfARevertThatDidNotLand(t *testing.T) {
 	if err := r.timeline.Append(context.Background(), "t-plan", stepGroupRevertEnded, map[string]any{"card": "t-rv", "state": "closed", "cards": []string{"t-api"}}); err != nil {
 		t.Fatal(err)
 	}
-	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"])
+	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"], planTimeline(t, r))
 	if err != nil || !ok {
 		t.Fatalf("replanRecord: %t, %v", ok, err)
 	}

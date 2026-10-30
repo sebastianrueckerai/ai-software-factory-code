@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -198,24 +199,118 @@ func TestFilePlanRefusesAnEarlierRoundsKey(t *testing.T) {
 }
 
 // A settled card stays on main: take_off_main naming it gets the one
-// finding that says so, and not replanFindings' which asks to drop a kept
-// key the planner cannot drop.
+// finding that says so, once however often it names it, and not
+// replanFindings' which asks to drop a kept key the planner cannot drop.
 func TestFilePlanRefusesASettledKeyInTakeOffMain(t *testing.T) {
 	r, store, _, _ := roundTwoRig(t, nil)
-	answer := roundTwoAnswer()
-	answer.TakeOffMain = []string{"links-api"}
-	res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, answer))
 	want := []string{"plan: take_off_main names card links-api, settled in round 1: it stays on main as it is; a person's off-main replan can take it off main"}
-	if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, want) {
-		t.Fatalf("filed = %+v, %v; want the findings %q", res, err, want)
-	}
-	for _, f := range res.Findings {
-		if strings.Contains(f, "which this revision keeps") {
-			t.Fatalf("finding %q asks to leave a settled key out", f)
+	for _, off := range [][]string{{"links-api"}, {"links-api", "links-api"}} {
+		answer := roundTwoAnswer()
+		answer.TakeOffMain = off
+		res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, answer))
+		if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, want) {
+			t.Fatalf("take_off_main %q: filed = %+v, %v; want the findings %q", off, res, err, want)
+		}
+		for _, f := range res.Findings {
+			if strings.Contains(f, "which this revision keeps") {
+				t.Fatalf("finding %q asks to leave a settled key out", f)
+			}
 		}
 	}
 	if rev, _, _ := store.PlanRevision(context.Background(), "t-plan", 0); rev.Revision != 1 {
 		t.Fatalf("a refused round stored revision %d", rev.Revision)
+	}
+}
+
+// A card of a later round cannot start from a settled card: its work is
+// on main, and phase 4's merged rule says so.
+func TestFilePlanRefusesAFromOfASettledCard(t *testing.T) {
+	r, store, _, _ := roundTwoRig(t, nil)
+	answer := roundTwoAnswer()
+	answer.Cards[0].From = "links-api"
+	res, err := r.FilePlan(context.Background(), "t-plan", planJSON(t, answer))
+	want := []string{"card stats: from links-api, which merged: its work is on main, so start from main and leave from out"}
+	if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, want) {
+		t.Fatalf("filed = %+v, %v; want the findings %q", res, err, want)
+	}
+	if rev, _, _ := store.PlanRevision(context.Background(), "t-plan", 0); rev.Revision != 1 {
+		t.Fatalf("a refused round stored revision %d", rev.Revision)
+	}
+}
+
+// A revision of round 2 without a round step, a person's replan, still
+// files round 2 on top of round 1's merged cards.
+func TestFilePlanSettlesWithoutARoundStep(t *testing.T) {
+	ctx := context.Background()
+	r, store, _ := filePlanRig(t)
+	one, two := roundOne(), twoRounds()
+	for i, p := range []Plan{one, two} {
+		if _, err := store.AddPlanRevision(ctx, "t-plan", json.RawMessage(planJSON(t, p)), fmt.Sprintf("sha-%d", i+1)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i, c := range two.Cards {
+		k := planCardTask(c, int64(10+i), "done", "m"+c.Key)
+		if c.Round == 2 {
+			k.Status, k.MergeCommit, k.PlanRevision = "queued", "", 0
+		}
+		if err := store.CreateTask(ctx, k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "count unique clicks", "revision": 2}); err != nil {
+		t.Fatal(err)
+	}
+	answer := roundTwoAnswer()
+	answer.Cards[0].Brief = "GET /api/links/{id}/stats answers the unique clicks."
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, answer))
+	if err != nil || res.Revision != 3 || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, %v; want revision 3", res, err)
+	}
+	p := storedPlan(t, store, 3)
+	if p.Round != 2 || len(p.Cards) != 5 || !reflect.DeepEqual(p.Cards[:3], one.Cards) {
+		t.Fatalf("revision 3: round %d, cards %+v; want round 2 over round 1's entries", p.Round, p.Cards)
+	}
+	if c := p.Cards[3]; c.Key != "stats" || c.Round != 2 || c.Brief != answer.Cards[0].Brief {
+		t.Fatalf("card 4 %+v, want the changed stats card of round 2", c)
+	}
+}
+
+// timelineWrites is timelineReads that counts each timeline's writes too:
+// an append reads the timeline once and writes it once.
+type timelineWrites struct {
+	*timelineReads
+	puts map[string]int
+}
+
+func (o *timelineWrites) Put(ctx context.Context, key string, body []byte) error {
+	if id, ok := strings.CutSuffix(strings.TrimPrefix(key, "sessions/"), "/timeline.jsonl"); ok {
+		o.mu.Lock()
+		o.puts[id]++
+		o.mu.Unlock()
+	}
+	return o.fakeObjectStore.Put(ctx, key, body)
+}
+
+// RunPlan reads the plan's timeline once: the pending step, the work so
+// far and the replan's record read the same bytes. Its steps' appends read
+// it besides, one read per write.
+func TestRunPlanReadsTheTimelineOnce(t *testing.T) {
+	r, _, kube, _ := roundTwoRig(t, nil)
+	objs := &timelineWrites{timelineReads: &timelineReads{fakeObjectStore: r.objects.(*fakeObjectStore), n: map[string]int{}}, puts: map[string]int{}}
+	r.objects, r.timeline.Objects = objs, objs
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, r, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(true, "no plan"))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if reads := objs.n["t-plan"] - objs.puts["t-plan"]; reads != 1 {
+		t.Fatalf("RunPlan read the plan's timeline %d times beside its %d appends, want once", reads, objs.puts["t-plan"])
 	}
 }
 
@@ -231,6 +326,16 @@ func TestRunPlanShowsTheRoundWithoutTheSettled(t *testing.T) {
 	for i := range round1.Cards {
 		round1.Cards[i].Round = 0
 	}
+	oneSettled := roundOne()
+	oneSettled.Round, oneSettled.Cards = 0, slices.Clone(oneSettled.Cards[1:])
+	for i := range oneSettled.Cards {
+		oneSettled.Cards[i].Round = 0
+	}
+	roundTwo := twoRounds()
+	roundTwo.Round, roundTwo.Cards = 0, slices.Clone(roundTwo.Cards[3:])
+	for i := range roundTwo.Cards {
+		roundTwo.Cards[i].Round = 0
+	}
 	roundStep := map[string]any{"origin": ReplanRound, "revision": 1, "round": 2}
 	for name, tc := range map[string]struct {
 		last    Plan
@@ -238,17 +343,26 @@ func TestRunPlanShowsTheRoundWithoutTheSettled(t *testing.T) {
 		want    string
 		holds   []string
 		missing []string
+		closed  []string
 	}{
+		"round 2 over round 1's one merged card": {roundOne(), roundStep,
+			"your last plan, revision 1, without the 1 merged card of its earlier rounds, which the plan keeps as it is: answer it again, changed as the findings ask:\n```json\n" +
+				planJSON(t, oneSettled) + "\n```",
+			[]string{`"key":"links-api"`, `"key":"redirects"`}, []string{`"round"`, `"key":"foundation"`}, []string{"links-api", "redirects"}},
+		"a person's replan in round 2": {twoRounds(), map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "count unique clicks", "revision": 1},
+			"your last plan, revision 1, without the 3 merged cards of its earlier rounds, which the plan keeps as they are: answer it again, changed as the findings ask:\n```json\n" +
+				planJSON(t, roundTwo) + "\n```",
+			[]string{`"key":"stats"`, `"key":"integration"`}, []string{`"round"`, `"key":"foundation"`}, nil},
 		"round 2 over round 1's three merged cards": {roundOne(), roundStep,
 			"your last plan, revision 1, without the 3 merged cards of its earlier rounds, which the plan keeps as they are: answer it again, changed as the findings ask:\n```json\n" +
 				planJSON(t, round2) + "\n```",
-			[]string{`"cards":[]`, `"outline":["click stats","the acceptance tests"]`}, []string{`"round"`, `"key"`}},
+			[]string{`"cards":[]`, `"outline":["click stats","the acceptance tests"]`}, []string{`"round"`, `"key"`}, nil},
 		"round 1 with nothing settled": {roundOne(), nil,
 			"your last plan, revision 1: answer the whole plan again, changed as the findings ask:\n```json\n" + planJSON(t, round1) + "\n```",
-			[]string{`"key":"foundation"`, `"key":"links-api"`, `"key":"redirects"`}, []string{`"round"`}},
+			[]string{`"key":"foundation"`, `"key":"links-api"`, `"key":"redirects"`}, []string{`"round"`}, nil},
 		"a person's replan of a plan filed before rounds": {testPlan(), map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "too wide", "revision": 1},
 			"your last plan, revision 1: answer the whole plan again, changed as the findings ask:\n```json\n" + planJSON(t, testPlan()) + "\n```",
-			[]string{`"key":"integration"`}, []string{`"round"`}},
+			[]string{`"key":"integration"`}, []string{`"round"`}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			ctx := context.Background()
@@ -257,7 +371,11 @@ func TestRunPlanShowsTheRoundWithoutTheSettled(t *testing.T) {
 				t.Fatal(err)
 			}
 			for i, c := range tc.last.Cards {
-				if err := store.CreateTask(ctx, planCardTask(c, int64(10+i), "done", "m"+c.Key)); err != nil {
+				k := planCardTask(c, int64(10+i), "done", "m"+c.Key)
+				if slices.Contains(tc.closed, c.Key) {
+					k.Status, k.MergeCommit = "closed", ""
+				}
+				if err := store.CreateTask(ctx, k); err != nil {
 					t.Fatal(err)
 				}
 			}

@@ -51,6 +51,7 @@ func settledFindings(p Plan, settled []PlanCard) []string {
 	for _, k := range p.TakeOffMain {
 		if n, ok := round[k]; ok {
 			out = append(out, fmt.Sprintf("plan: take_off_main names card %s, settled in round %d: it stays on main as it is; a person's off-main replan can take it off main", k, n))
+			delete(round, k)
 		}
 	}
 	return out

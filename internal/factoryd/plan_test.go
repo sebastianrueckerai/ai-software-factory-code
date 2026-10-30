@@ -299,6 +299,13 @@ func TestValidatePlanRounds(t *testing.T) {
 		"round card on gone-card": {change(twoRounds(), func(p *Plan) { p.Cards[3].DependsOn = []string{"gone-card"} }),
 			[]string{`plan: card stats: depends on "gone-card", which is no card of the plan`}},
 		"before rounds": {testPlan(), nil},
+		"an outline before rounds": {change(testPlan(), func(p *Plan) { p.Outline = []string{"dashboards"} }),
+			[]string{"plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out"}},
+		"an outline before rounds, a criterion uncited": {change(testPlan(), func(p *Plan) {
+			p.Outline = []string{"dashboards"}
+			p.Criteria = append(p.Criteria, statsPage)
+		}), []string{"plan: criterion stats_page is cited by no card", "plan: card integration: criterion stats_page is cited by no item",
+			"plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if got := validatePlan(fencePlan(tc.plan), testShape, testLimits, nil); !slices.Equal(got, tc.want) {
@@ -549,8 +556,17 @@ func TestPlanGuideSpec(t *testing.T) {
 // Roadmap 336: the guide shows the outline in the plan's shape, tells how
 // a feature too big for one round is planned in rounds, and that the
 // last plan of a later round leaves the merged cards of earlier rounds
-// out, so the planner answers it again, not the whole plan.
+// out, so the planner answers it again, not the whole plan. A shape
+// without a foundation card reads no foundation in the paragraph.
 func TestPlanGuideRounds(t *testing.T) {
+	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil)
+	want := "A feature too big for one round of cards is planned in rounds: file the first round's cards and keep the rest in outline; " +
+		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
+		"The merged cards of earlier rounds are not in your last plan. " +
+		"When the criteria fall into two sets whose cards share nothing, you may ask in a question whether they should be two plans. "
+	if !strings.Contains(bare, want) || strings.Contains(bare, "foundation first") || strings.Contains(bare, "but a foundation") {
+		t.Fatalf("planGuide without a foundation = %q, want %q and no foundation in it", bare, want)
+	}
 	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,

@@ -319,7 +319,8 @@ func decodePlan(text string) (Plan, []string) {
 // and one line per finding, none for a valid plan. The checks read the
 // cards of the round p files (roundCards). The cards of earlier rounds are
 // settled: only the key duplicates, the keys a card depends on, the cycle
-// and the criteria every card cites read them too. take_off_main is
+// and the criteria every card cites read them too. A plan filed before
+// rounds files every card at once and holds no outline. take_off_main is
 // replanFindings' to judge.
 func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
 	round := roundCards(p)
@@ -357,7 +358,7 @@ func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[st
 	}
 	switch {
 	case !shape.Integration:
-	case len(p.Outline) > 0:
+	case laterRounds(p):
 		for _, k := range integration {
 			add("card %s: the integration card comes in the last round, and the outline still lists later rounds: "+
 				"keep it for the round that empties the outline, or take the rest into this round and empty the outline", k)
@@ -396,7 +397,16 @@ func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[st
 	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
 	out = append(out, questionFindings(p.Questions)...)
+	if p.Round == 0 && len(p.Outline) > 0 {
+		return p, append(out, "plan: outline: this plan was filed before planning rounds and files every card at once; leave the outline out")
+	}
 	return p, append(out, outlineFindings(p.Outline)...)
+}
+
+// laterRounds tells whether p's outline lists rounds after the one p
+// files.
+func laterRounds(p Plan) bool {
+	return p.Round > 0 && len(p.Outline) > 0
 }
 
 // roundCards are p's cards of the round p files, in p's order: every card
@@ -539,8 +549,8 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 // every other field empty; and, when the plan carries criteria, every
 // citation of the round's cards names a criterion of the plan, every card
 // of the round but the foundation cites one, and the integration card's
-// items are the criteria, one item per criterion by id. Once the outline
-// is empty, every criterion is cited by a card of some round. A plan
+// items are the criteria, one item per criterion by id. Once no later
+// round is left, every criterion is cited by a card of some round. A plan
 // without criteria passes the citation rules; a shape without an
 // integration card does not ask for criteria.
 func criteriaFindings(p Plan, shape policy.PlanShape) []string {
@@ -608,7 +618,7 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			}
 		}
 	}
-	if len(p.Outline) == 0 {
+	if !laterRounds(p) {
 		cited := citations(p)
 		for _, k := range p.Criteria {
 			if len(cited[k.ID]) == 0 {
@@ -1050,6 +1060,10 @@ func againLine(k Task) string {
 // readPlan's findings, not this prose (roadmap 186). pins are the
 // project's images a card may name.
 func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) string {
+	first, butFoundation := "file the first round's cards", ""
+	if shape.Foundation {
+		first, butFoundation = "file the first round's cards, foundation first,", " but a foundation"
+	}
 	g := "You are the planner. " +
 		"The issue's text tells what to build. Read it and the repository: " +
 		"every card follows the repository's conventions. " +
@@ -1062,10 +1076,10 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
-		"A feature too big for one round of cards is planned in rounds: file the first round's cards, foundation first, and keep the rest in outline; " +
+		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
 		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
 		"The merged cards of earlier rounds are not in your last plan. " +
-		"When the criteria fall into two sets whose cards share nothing but a foundation, you may ask in a question whether they should be two plans. " +
+		"When the criteria fall into two sets whose cards share nothing" + butFoundation + ", you may ask in a question whether they should be two plans. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
 		"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
@@ -2160,11 +2174,10 @@ func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
 
 // RunPlan is one planner session under the pinned version, with findings,
 // the last plan as its planner reads it again (planView) and the members'
-// answers to its questions. The session
-// answers by the file_plan tool, which checks the whole plan json while it
-// runs: RunPlan takes the filing the tool stored (FilePlan) and returns
-// it; a session that ends without filing one says so, with its last
-// message beside the finding.
+// answers to its questions. The session answers by the file_plan tool,
+// which checks the whole plan json while it runs: RunPlan takes the
+// filing the tool stored (FilePlan) and returns it; a session that ends
+// without filing one says so, with its last message beside the finding.
 func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2182,9 +2195,13 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if err != nil {
 		return PlanResult{}, err
 	}
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
+	if err != nil {
+		return PlanResult{}, fmt.Errorf("the timeline of %s: %w", taskID, err)
+	}
 	var answers []string
 	if last != nil {
-		step, _, err := r.pendingReplan(ctx, t)
+		step, _, err := pendingIn(tl, taskID)
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -2198,9 +2215,13 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			return PlanResult{}, err
 		}
 		head := fmt.Sprintf("your last plan, revision %d: answer the whole plan again, changed as the findings ask:", revision)
-		if len(settled) > 0 {
-			head = fmt.Sprintf("your last plan, revision %d, without the %d merged cards of its earlier rounds, which the plan keeps as they are: answer it again, changed as the findings ask:",
-				revision, len(settled))
+		if n := len(settled); n > 0 {
+			as := "they are"
+			if n == 1 {
+				as = "it is"
+			}
+			head = fmt.Sprintf("your last plan, revision %d, without the %s of its earlier rounds, which the plan keeps as %s: answer it again, changed as the findings ask:",
+				revision, plural(n, "merged card"), as)
 		}
 		findings = append(slices.Clone(findings), head+"\n```json\n"+string(view)+"\n```")
 		qs, err := r.store.PlanQuestions(ctx, taskID, revision)
@@ -2213,7 +2234,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
-	extra, findings, err := r.planRecord(ctx, t, findings)
+	extra, findings, err := r.planRecord(ctx, t, tl, findings)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -2259,19 +2280,15 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 }
 
 // planRecord is what plan t's planner session gets of the work before
-// it. A pending replan's findings go after findings as one, since the
-// session's fit drops the oldest first, and its old cards' branches go to
-// the clone. The agent's words, the cut's opener and the work so far of a
-// card that ran direct, stand in the brief's fence beside the old cards'
-// files, and in no finding.
-func (r *Runner) planRecord(ctx context.Context, t Task, findings []string) (reportExtra, []string, error) {
-	rec, replan, err := r.replanRecord(ctx, t)
+// it, from its timeline tl. A pending replan's findings go after findings
+// as one, since the session's fit drops the oldest first, and its old
+// cards' branches go to the clone. The agent's words, the cut's opener and
+// the work so far of a card that ran direct, stand in the brief's fence
+// beside the old cards' files, and in no finding.
+func (r *Runner) planRecord(ctx context.Context, t Task, tl []byte, findings []string) (reportExtra, []string, error) {
+	rec, replan, err := r.replanRecord(ctx, t, tl)
 	if err != nil {
 		return reportExtra{}, nil, err
-	}
-	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
-	if err != nil {
-		return reportExtra{}, nil, fmt.Errorf("the timeline of %s: %w", t.ID, err)
 	}
 	var extra reportExtra
 	var fenced []string

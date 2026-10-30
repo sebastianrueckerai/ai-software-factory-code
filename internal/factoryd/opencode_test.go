@@ -1044,6 +1044,8 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"which this revision keeps",
 		// settledFindings (TestFilePlanRefusesAnEarlierRoundsKey)
 		"the plan keeps that card as it is",
+		// settledFindings, R11 (TestFilePlanRefusesASettledKeyInTakeOffMain)
+		"it stays on main as it is",
 	}
 	for name, g := range guides {
 		for _, rule := range rules {

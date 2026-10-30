@@ -1193,14 +1193,10 @@ type replanRecord struct {
 }
 
 // replanRecord is plan p's record for the planner session of its pending
-// replan, and whether one is pending. A merged card a group revert was to
-// take off main, and that revert ended without landing, says so: a person
-// stopped that take-off.
-func (r *Runner) replanRecord(ctx context.Context, p Task) (replanRecord, bool, error) {
-	ptl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
-	if err != nil {
-		return replanRecord{}, false, fmt.Errorf("the timeline of %s: %w", p.ID, err)
-	}
+// replan, and whether one is pending, from its timeline ptl. A merged card
+// a group revert was to take off main, and that revert ended without
+// landing, says so: a person stopped that take-off.
+func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRecord, bool, error) {
 	step, pending, err := pendingIn(ptl, p.ID)
 	if err != nil || !pending {
 		return replanRecord{}, false, err
