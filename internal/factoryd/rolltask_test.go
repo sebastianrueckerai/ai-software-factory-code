@@ -28,6 +28,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // The fakeStore's roll requests, as PGStore keeps them.
@@ -802,7 +804,7 @@ func newTestRoller(t *testing.T, f *rollForgejo) (*Roller, *fakeStore, *fakeWork
 	fj, reg := f.srv(t)
 	store, wf := newFakeStore(), &fakeWorkflows{}
 	return &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: wf,
-		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget}, store, wf
+		Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Scrub: redact.New()}, store, wf
 }
 
 // mainPins is the code repository's main before the roll: every image at
