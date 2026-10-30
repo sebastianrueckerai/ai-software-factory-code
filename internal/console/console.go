@@ -252,10 +252,10 @@ type Config struct {
 	// Hold is what holds repository's production now (factoryd's
 	// ReleaseKeeper.Hold); nil shows no hold line.
 	Hold func(ctx context.Context, repository string) (factoryd.Hold, error)
-	// DeployNow releases main of a held repository to production for by
-	// and answers the commit (ReleaseKeeper.DeployNow); a free production
-	// answers factoryd.ErrNotHeld.
-	DeployNow func(ctx context.Context, repository, by, via string) (string, error)
+	// DeployNow releases main of a held repository to production for by,
+	// decided by decider, and answers the commit (ReleaseKeeper.DeployNow);
+	// a free production answers factoryd.ErrNotHeld.
+	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
 	// AnswerWhole signals card taskID's workflow that comment, which the
 	// answer box posted for by, is a whole answer
 	// (factoryd.SignalAnswerWhole): the card resumes on it without the

@@ -511,6 +511,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 		if err != nil {
 			return "", err
 		}
+		if bt.Question != nil {
+			if err := chatDeploysAnyway(t.a, k, bt.Question.ChoiceValue(strings.TrimSpace(in.Text))); err != nil {
+				return "", err
+			}
+		}
 		if len(bt.Choices) > 0 {
 			parts = append(parts, "choices "+numbered(bt.Choices))
 		}

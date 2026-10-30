@@ -137,7 +137,7 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 		if err := k.Store.EndReleaseHold(ctx, repository); err != nil {
 			return err
 		}
-		k.released(ctx, repository, "closed", row.HeldSince, now, FactoryDecider, ViaFactoryd, "")
+		k.released(ctx, repository, "closed", row.HeldSince, now, FactoryDecider, ViaFactoryd, "", "")
 		ended = true
 	}
 	switch {
@@ -392,10 +392,11 @@ func (k *ReleaseKeeper) Hold(ctx context.Context, repository string) (Hold, erro
 }
 
 // DeployNow releases main's newest push commit of held repository to
-// production, by whom and via what: the commit, the clock's restart and
-// the cleared ask in one write, the standing ask closed, the release
-// recorded. The roller, /release and the next Pass do the rest.
-func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via string) (string, error) {
+// production, by whom, via what and decided by whom: the commit, the
+// clock's restart and the cleared ask in one write, the standing ask
+// closed, the release recorded. The roller, /release and the next Pass do
+// the rest.
+func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, decider string) (string, error) {
 	h, err := k.Hold(ctx, repository)
 	if err != nil {
 		return "", err
@@ -419,7 +420,7 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via strin
 	if err := k.closeAsk(ctx, repository, note); err != nil {
 		log.Printf("release keeper: %s: close the ask after Deploy now: %v", repository, err)
 	}
-	k.released(ctx, repository, "deploy_now", h.Since, now, by, via, commit)
+	k.released(ctx, repository, "deploy_now", h.Since, now, by, via, commit, decider)
 	return commit, nil
 }
 
@@ -455,11 +456,14 @@ func (k *ReleaseKeeper) closeAsk(ctx context.Context, repository, comment string
 }
 
 // released records the end of repository's hold, held since since: how,
-// by actor via via, and Deploy now's commit.
-func (k *ReleaseKeeper) released(ctx context.Context, repository, how string, since, now time.Time, actor, via, commit string) {
+// by actor via via, and Deploy now's commit and who decided it.
+func (k *ReleaseKeeper) released(ctx context.Context, repository, how string, since, now time.Time, actor, via, commit, decider string) {
 	detail := map[string]any{"how": how, "held_since": since.UTC().Format(time.RFC3339), "hours": int(now.Sub(since) / time.Hour)}
 	if commit != "" {
 		detail["commit"] = commit
+	}
+	if decider != "" {
+		detail["decider"] = decider
 	}
 	k.Timeline.RecordProjectRow(ctx, Event{At: now, Repository: repository, Kind: EventProductionReleased, Actor: actor, Via: via, Detail: detail})
 }

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,7 +16,7 @@ import (
 
 const holdProject = "ai-software-factory-code"
 
-type deployCall struct{ repository, by, via string }
+type deployCall struct{ repository, by, via, decider string }
 
 // holdRig is a rig whose project sf/code is held 7 h 30 min by plan #12
 // (3 of 5 merged); the returned slice records each Deploy now.
@@ -32,8 +33,8 @@ func holdRig(t *testing.T) (*rig, *[]deployCall) {
 			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
 	}
 	calls := &[]deployCall{}
-	r.c.cfg.DeployNow = func(_ context.Context, repository, by, via string) (string, error) {
-		*calls = append(*calls, deployCall{repository, by, via})
+	r.c.cfg.DeployNow = func(_ context.Context, repository, by, via, decider string) (string, error) {
+		*calls = append(*calls, deployCall{repository, by, via, decider})
 		return "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d", nil
 	}
 	return r, calls
@@ -108,7 +109,7 @@ func TestDeployNowButton(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("Deploy now = %d, want 200 with %q: %s", rec.Code, want, rec.Body)
 	}
-	if len(*calls) != 1 || (*calls)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton}) {
+	if len(*calls) != 1 || (*calls)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton, "member"}) {
 		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the button", *calls)
 	}
 
@@ -124,7 +125,7 @@ func TestDeployNowButton(t *testing.T) {
 
 func TestDeployNowRefusesAFreeProduction(t *testing.T) {
 	r, _ := holdRig(t)
-	r.c.cfg.DeployNow = func(context.Context, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
+	r.c.cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/projects/"+holdProject+"/deploy-now", url.Values{"csrf": {s.csrf}}), ck)
 	want := "Production of " + holdProject + " is not held: every merge goes to production on its own."
@@ -152,18 +153,23 @@ func holdAskRig(t *testing.T) (*rig, *fakeEvents, *[]deployCall, *[]replanCall) 
 		}
 		return "The planner replans on top of what is merged.", nil
 	}
+	r.tasks.tasks = []factoryd.BoardTask{holdAsk(),
+		{Task: factoryd.Task{ID: "t-pl", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
+			Repository: "sf/code", IssueNumber: 12, Objective: "A plan."}},
+	}
+	return r, r.events, deploys, replans
+}
+
+// holdAsk is the ask t-ask (#77) as the release keeper files it for the
+// plan t-pl (#12).
+func holdAsk() factoryd.BoardTask {
 	q := &factoryd.HumanQuestion{Ask: "Production has waited 7 hours. Wait, deploy anyway, or replan?", Choices: []factoryd.QuestionChoice{
 		{Value: factoryd.AnswerHoldWait, Label: "Wait"},
 		{Value: factoryd.AnswerDeployAnyway, Label: "Deploy anyway"},
 		{Value: factoryd.AnswerReplanOnTop + ":t-pl", Label: "Replan plan #12 on top"},
 		{Value: factoryd.AnswerTakeOffMain + ":t-pl", Label: "Take plan #12 off main and replan"}}}
-	r.tasks.tasks = []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-ask", Kind: "human", Status: "waiting-human", Source: factoryd.SourceProductionHeld,
-			Repository: "sf/code", IssueNumber: 77, Objective: "needs you: production is held"}, Escalation: q.Ask, Question: q},
-		{Task: factoryd.Task{ID: "t-pl", Kind: "agent", Status: "done", Track: policy.TrackPlan, Process: "spec",
-			Repository: "sf/code", IssueNumber: 12, Objective: "A plan."}},
-	}
-	return r, r.events, deploys, replans
+	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "human", Status: "waiting-human", Source: factoryd.SourceProductionHeld,
+		Repository: "sf/code", IssueNumber: 77, Objective: "needs you: production is held"}, Escalation: q.Ask, Question: q}
 }
 
 func answerAsk(r *rig, ck *http.Cookie, csrf, value, words string) *httptest.ResponseRecorder {
@@ -172,10 +178,16 @@ func answerAsk(r *rig, ck *http.Cookie, csrf, value, words string) *httptest.Res
 	return r.do(req, ck)
 }
 
+// askStatus is the status of the ask t-ask.
 func askStatus(r *rig) string {
 	r.tasks.mu.Lock()
 	defer r.tasks.mu.Unlock()
-	return r.tasks.tasks[0].Status
+	for _, bt := range r.tasks.tasks {
+		if bt.ID == "t-ask" {
+			return bt.Status
+		}
+	}
+	return ""
 }
 
 func askRows(ev *fakeEvents, kind string) []factoryd.Event {
@@ -196,7 +208,7 @@ func TestHoldAskDeployAnyway(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("deploy anyway = %d, want 200 with %q: %s", rec.Code, want, rec.Body)
 	}
-	if len(*deploys) != 1 || (*deploys)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton}) {
+	if len(*deploys) != 1 || (*deploys)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton, "member"}) {
 		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the button", *deploys)
 	}
 	rows := askRows(ev, factoryd.EventQuestionAnswered)
@@ -212,7 +224,7 @@ func TestHoldAskDeployAnyway(t *testing.T) {
 	}
 
 	r, ev, _, _ = holdAskRig(t)
-	r.c.cfg.DeployNow = func(context.Context, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
+	r.c.cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
 	ck, s = r.loggedIn(t)
 	rec = answerAsk(r, ck, s.csrf, factoryd.AnswerDeployAnyway, "")
 	want = "Production of " + holdProject + " is not held: every merge goes to production on its own."
@@ -314,33 +326,37 @@ func TestHoldAskReplanNamesAFailedClose(t *testing.T) {
 	}
 }
 
-// The chat's answer tool takes a label for its choice's value and routes
-// and admits as the button does.
-func TestHoldAskDeployAnywayByChat(t *testing.T) {
-	answer := func(r *rig, s *session) (string, error) {
-		req := httptest.NewRequest(http.MethodGet, "/", nil)
-		tool, _ := r.c.chatTool("answer")
-		note, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
-			a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
-			p: factoryd.Project{Name: holdProject, Repository: "sf/code"}}, toolInput{TaskID: "t-ask", Text: "Deploy anyway"})
-		return note, err
-	}
-	r, ev, deploys, _ := holdAskRig(t)
-	_, s := r.loggedIn(t)
-	note, err := answer(r, s)
-	if err != nil || !strings.Contains(note, "Deploy now: main of "+holdProject+" at 9d9d9d9 goes to production.") {
-		t.Fatalf("the approver's answer = %q, %v; want the Deploy now note", note, err)
-	}
-	if len(*deploys) != 1 || (*deploys)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaChat}) {
-		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the chat", *deploys)
-	}
-	if rows := askRows(ev, factoryd.EventQuestionAnswered); len(rows) != 1 || rows[0].Detail["value"] != factoryd.AnswerDeployAnyway {
-		t.Errorf("question_answered rows = %+v, want one with deploy_anyway", rows)
-	}
-
-	r, _, deploys, _ = holdAskRig(t)
-	_, ws := memberLogin(t, r, "morgan")
-	if _, err := answer(r, ws); err == nil || len(*deploys) != 0 {
-		t.Errorf("the writer's answer = %v with %d calls, want a refusal and none", err, len(*deploys))
+// The project agent never presses Deploy anyway: the chat's answer on the
+// held-production ask refuses it at every autonomy level, run unconfirmed
+// at autonomous and before any proposal at manual. Nothing deploys and
+// nothing is answered.
+func TestHoldAskDeployAnywayRefusedInChat(t *testing.T) {
+	refused := `tool {"arguments":{"task_id":"#77","text":"Deploy anyway"},"duration_ms":0,"name":"answer","result":` +
+		`"Refused: Deploy anyway is a person's press: use Deploy now in the status panel, or answer card #77 in the console."}`
+	for _, level := range []string{policy.AutonomyAutonomous, policy.AutonomyManual} {
+		t.Run(level, func(t *testing.T) {
+			r, _, g := newChatRig(t)
+			r.ledger.files = map[string]policy.ProjectConfig{holdProject: {Repository: "sf/code", Autonomy: level, MergeRule: policy.MergeHuman}}
+			deploys := &[]deployCall{}
+			r.c.cfg.DeployNow = func(_ context.Context, repository, by, via, decider string) (string, error) {
+				*deploys = append(*deploys, deployCall{repository, by, via, decider})
+				return "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d", nil
+			}
+			r.tasks.tasks = append(r.tasks.tasks, holdAsk())
+			g.replies = [][]string{{call(1, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)}, {say("Use Deploy now in the status panel.")}}
+			ck, s := r.loggedIn(t)
+			code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"deploy anyway on the held ask"}})
+			equal(t, "code", code, 200)
+			if !slices.Contains(events, refused) {
+				t.Errorf("the stream lacks the refusal %s: %v", refused, events)
+			}
+			if slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "proposal ") }) {
+				t.Errorf("the stream proposes the answer: %v", events)
+			}
+			if len(*deploys) != 0 || len(askRows(r.events, factoryd.EventQuestionAnswered)) != 0 || askStatus(r) != "waiting-human" {
+				t.Errorf("DeployNow calls %+v, %d answers, status %s; want none, none, waiting-human",
+					*deploys, len(askRows(r.events, factoryd.EventQuestionAnswered)), askStatus(r))
+			}
+		})
 	}
 }

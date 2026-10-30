@@ -670,7 +670,7 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 	k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
 	delete(store.closed, "t-plan")
 	*clock = keeperAt(12, 0)
-	commit, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton)
+	commit, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton, "member")
 	if err != nil || commit != demoCommit {
 		t.Fatalf("DeployNow = %q, %v; want %s", commit, err, demoCommit)
 	}
@@ -682,7 +682,7 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 		t.Errorf("closed %q, comments %q; want #77 closed with %q", f.closed, f.comments, note)
 	}
 	want := []Event{{At: keeperAt(12, 0), Repository: demoRepo, Kind: EventProductionReleased, Actor: "sebastian", Via: ViaButton,
-		Detail: map[string]any{"how": "deploy_now", "held_since": "2026-10-29T10:00:00Z", "hours": 2, "commit": demoCommit}}}
+		Detail: map[string]any{"how": "deploy_now", "held_since": "2026-10-29T10:00:00Z", "hours": 2, "commit": demoCommit, "decider": "member"}}}
 	if got := releasedRows(store); !reflect.DeepEqual(got, want) {
 		t.Errorf("rows %+v, want %+v", got, want)
 	}
@@ -696,12 +696,12 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 		t.Errorf("issues %q, want no ask", f.issues)
 	}
 
-	if _, err := k.DeployNow(ctx, "sf/other", "sebastian", ViaButton); !errors.Is(err, ErrNotHeld) {
+	if _, err := k.DeployNow(ctx, "sf/other", "sebastian", ViaButton, "member"); !errors.Is(err, ErrNotHeld) {
 		t.Errorf("DeployNow(sf/other) = %v, want ErrNotHeld", err)
 	}
 	f.runs[demoRepo] = nil
 	*clock = keeperAt(12, 5)
-	if _, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton); err == nil || errors.Is(err, ErrNotHeld) {
+	if _, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton, "member"); err == nil || errors.Is(err, ErrNotHeld) {
 		t.Errorf("DeployNow with no push run = %v, want an error", err)
 	}
 	if got := releaseRow(store, demoRepo).HeldSince; !got.Equal(keeperAt(12, 0)) {
@@ -730,7 +730,7 @@ func TestReleaseKeeperDeployNowOutlivesAMoveOfMain(t *testing.T) {
 			k, f, store, clock := endedHold(t, demoCommit, pushRun(21, demoCommit, "success"))
 			delete(store.closed, "t-plan")
 			*clock = keeperAt(12, 0)
-			if _, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton); err != nil {
+			if _, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton, "member"); err != nil {
 				t.Fatal(err)
 			}
 			f.runs[demoRepo] = c.runs

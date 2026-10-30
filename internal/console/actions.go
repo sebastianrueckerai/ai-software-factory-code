@@ -856,7 +856,7 @@ func choiceCard(t factoryd.Task) bool {
 // and keep waiting record the answer, nothing posted; go hands the card
 // to the factory; every other choice closes the card on its label. The
 // held-production ask's deploy anyway is a Deploy now, answered only once
-// it went through; its replans are phase 4's doReplan of the plan the
+// it went through, and refused to the chat (chatDeploysAnyway); its replans are phase 4's doReplan of the plan the
 // value names, and the card closes once factoryd accepted. Words
 // that name no choice are the member's comment on a card that is no
 // choice card, the card still waiting; on a choice card they are refused
@@ -894,6 +894,9 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	var gone factoryd.ErrStallGone
 	switch value {
 	case factoryd.AnswerDeployAnyway:
+		if err := chatDeploysAnyway(a, t, value); err != nil {
+			return "", err
+		}
 		if err := c.admit(ctx, accessTable["POST /projects/{name}/deploy-now"], a, t.Repository, ""); err != nil {
 			return "", err
 		}
@@ -949,6 +952,16 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return c.doGo(ctx, a, t.ID)
 	}
 	return c.doClose(ctx, a, t.ID, label) // check again, close, any other choice
+}
+
+// chatDeploysAnyway refuses a chat's answer value of Deploy anyway on the
+// held-production ask t, at every autonomy level: Deploy is a person's
+// press, never the project agent's.
+func chatDeploysAnyway(a actor, t factoryd.Task, value string) error {
+	if a.via != factoryd.ViaChat || t.Source != factoryd.SourceProductionHeld || value != factoryd.AnswerDeployAnyway {
+		return nil
+	}
+	return refuse(http.StatusForbidden, fmt.Sprintf("Deploy anyway is a person's press: use Deploy now in the status panel, or answer card #%d in the console.", t.IssueNumber))
 }
 
 // answerHoldReplan replans plan on the held-production ask t's answer,
@@ -2114,7 +2127,8 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 }
 
 // doDeployNow releases main of the project's held production, an
-// approver's call (access rule "deploy a held production").
+// approver's call (access rule "deploy a held production"), decided by
+// the member.
 func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string, error) {
 	p, ok, err := c.projectOf(ctx, name)
 	switch {
@@ -2124,7 +2138,7 @@ func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string
 	case !ok:
 		return "", refuse(http.StatusNotFound, "There is no project "+name+".")
 	}
-	commit, err := c.cfg.DeployNow(ctx, p.Repository, a.s.user, a.via)
+	commit, err := c.cfg.DeployNow(ctx, p.Repository, a.s.user, a.via, cmp.Or(a.decider, "member"))
 	switch {
 	case errors.Is(err, factoryd.ErrNotHeld):
 		return "", refuse(http.StatusConflict, "Production of "+name+" is not held: every merge goes to production on its own.")
