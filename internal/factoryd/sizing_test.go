@@ -324,9 +324,10 @@ func TestSizeCardUnderAProjectMaximum(t *testing.T) {
 // A Budget: line is a person's own amount, even where it equals the
 // filing's budget: no size changes it.
 func TestSizeCardKeepsAskedBudgetEqualToTheDefault(t *testing.T) {
-	for _, size := range []string{"small", "large"} {
+	for _, line := range []string{"Budget: 5", "Budget: 5 EUR"} {
+		size := map[string]string{"Budget: 5": "small", "Budget: 5 EUR": "large"}[line]
 		card := sizingCard()
-		card.Objective += "\n\nBudget: 5"
+		card.Objective += "\n\n" + line
 		if got := sizedBudget(t, card, size); got.Size != size || got.BudgetEUR != 5 {
 			t.Errorf("sized %s: size %q, budget %v, want the asked 5", size, got.Size, got.BudgetEUR)
 		}

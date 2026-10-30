@@ -401,6 +401,28 @@ func TestCreateTaskHandlerBudgetFromPolicy(t *testing.T) {
 	}
 }
 
+// A budget the caller asks is a Budget: line of the objective and the issue,
+// the form the sizing and the intake read; none asked adds no line.
+func TestCreateTaskHandlerWritesTheAskedBudget(t *testing.T) {
+	for body, want := range map[string]string{
+		`{"objective":"Add X\n\nDetails.","repository":"sf/ai-software-factory-code","budget_eur":5}`: "Add X\n\nDetails.\n\nBudget: 5 EUR",
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":9}`:             "Add X\n\nBudget: 4 EUR",
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code","budget_eur":0.25}`:          "Add X\n\nBudget: 0.25 EUR",
+		`{"objective":"Add X","repository":"sf/ai-software-factory-code"}`:                            "Add X",
+	} {
+		var events []string
+		forgejo, _, _ := createTaskForgejoStub(t, &events, false)
+		store := &fakeTaskCreator{events: &events}
+		rec := postCreateTask(createTaskHandler(store, forgejo, &fakeStarter{events: &events}, nil, testBudget), body)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body)
+		}
+		if got := store.created[0].Objective; got != want {
+			t.Fatalf("%s: objective %q, want %q", body, got, want)
+		}
+	}
+}
+
 // A project's card maximum bounds the API task's budget, asked or default.
 func TestCreateTaskHandlerBudgetUnderAProjectMaximum(t *testing.T) {
 	project := factoryd.Project{Name: "p", Repository: "sf/ai-software-factory-code", Objects: "seed", Agents: "coder", File: true, Process: "maintenance",
