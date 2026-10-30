@@ -31,8 +31,8 @@ const (
 // project's row (the configuration's files joined in, so a file still in
 // the version in force is visible), its cards (the open ones refuse the
 // removal, the rest name their LiteLLM keys), and its rows (the project's,
-// its mirrors' and its images'; the tasks, events, ledger, audit and chat
-// rows stay as history).
+// its mirrors', its images' and its production hold's; the tasks, events,
+// ledger, audit and chat rows stay as history).
 type RemovalStore interface {
 	Project(ctx context.Context, name string) (Project, bool, error)
 	ProjectTasks(ctx context.Context, repository string) ([]Task, error)
@@ -43,6 +43,10 @@ type RemovalStore interface {
 	// DeleteProjectImages removes project's image_pins and image_builds
 	// rows and says how many.
 	DeleteProjectImages(ctx context.Context, project string) (int64, error)
+	// DeleteProjectRelease removes repository's releases row, so a project
+	// registered again starts with no hold and no ask of /release, and
+	// says how many went (0: none was left).
+	DeleteProjectRelease(ctx context.Context, repository string) (int64, error)
 }
 
 // RemovalKube is the slice of the Kubernetes API removal uses: the
@@ -134,7 +138,7 @@ func (rem *Remover) Remove(ctx context.Context, name string, dry bool) ([]string
 	for _, step := range []func(){
 		func() { run.forgejo(ctx, a, repo, dry) },
 		func() { run.litellmKeys(ctx, repo, dry) },
-		func() { run.rows(ctx, dry) },
+		func() { run.rows(ctx, repo, dry) },
 	} {
 		step()
 		if len(run.errs) > 0 {
@@ -340,9 +344,10 @@ func (run *removalRun) litellmKeys(ctx context.Context, repo Repo, dry bool) {
 }
 
 // rows is step 6: the projects row (with its tokens), the project's
-// project_mirrors rows and its image rows (image_pins, image_builds). The
-// tasks, events, ledger, audit and chat rows stay as history.
-func (run *removalRun) rows(ctx context.Context, dry bool) {
+// project_mirrors rows, its image rows (image_pins, image_builds) and its
+// repository's releases row. The tasks, events, ledger, audit and chat
+// rows stay as history.
+func (run *removalRun) rows(ctx context.Context, repo Repo, dry bool) {
 	rem, name := run.rem, run.name
 	_, ok, err := rem.Store.Project(ctx, name)
 	if run.fail("row", err) {
@@ -356,6 +361,7 @@ func (run *removalRun) rows(ctx context.Context, dry bool) {
 		}
 		run.line("project_mirrors rows", Change("would delete"))
 		run.line("image rows", Change("would delete"))
+		run.line("releases row", Change("would delete"))
 		return
 	}
 	if ok {
@@ -376,6 +382,11 @@ func (run *removalRun) rows(ctx context.Context, dry bool) {
 		return
 	}
 	run.line("image rows", count(int(n)))
+	n, err = rem.Store.DeleteProjectRelease(ctx, repo.String())
+	if run.fail("releases row", err) {
+		return
+	}
+	run.line("releases row", count(int(n)))
 }
 
 func count(n int) Change {

@@ -90,6 +90,7 @@ func newRemovalRig(t *testing.T) *removalRig {
 	rig.fj.forks = map[string]bool{"factory-agent": true, "factory-projects": true}
 	rig.store.mirrors = map[string]bool{"demo-app": true}
 	rig.store.images = map[string]int{"demo-app": 3, "other-app": 2}
+	rig.store.releases = map[string]bool{"demo-app/demo-app": true, "other-app/other-app": true}
 	rig.kube.labels = map[string]map[string]string{
 		"demo-staging": {ProjectLabel: "demo-app"}, "demo-prod": {ProjectLabel: "demo-app"}}
 	rig.store.tasks = []Task{
@@ -208,6 +209,7 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 		"project demo-app: row: deleted",
 		"project demo-app: project_mirrors rows: deleted 1",
 		"project demo-app: image rows: deleted 3",
+		"project demo-app: releases row: deleted 1",
 	}
 	if !slices.Equal(lines, want) {
 		t.Fatalf("lines:\n%s\nwant:\n%s", strings.Join(lines, "\n"), strings.Join(want, "\n"))
@@ -256,6 +258,9 @@ func TestRemovesWhatRegisterMade(t *testing.T) {
 	}
 	if want := map[string]int{"other-app": 2}; !reflect.DeepEqual(rig.store.images, want) {
 		t.Fatalf("image rows %v; want another project's %v", rig.store.images, want)
+	}
+	if want := map[string]bool{"other-app/other-app": true}; !reflect.DeepEqual(rig.store.releases, want) {
+		t.Fatalf("releases rows %v; want another project's %v", rig.store.releases, want)
 	}
 
 	// a second run makes nothing anew: its only writes are the gone
@@ -445,6 +450,7 @@ func TestRemoveDryRun(t *testing.T) {
 		"project demo-app: row: would delete",
 		"project demo-app: project_mirrors rows: would delete",
 		"project demo-app: image rows: would delete",
+		"project demo-app: releases row: would delete",
 	} {
 		if !slices.Contains(lines, want) {
 			t.Errorf("dry run lacks %q:\n%s", want, strings.Join(lines, "\n"))
@@ -458,6 +464,9 @@ func TestRemoveDryRun(t *testing.T) {
 	}
 	if _, ok, _ := rig.store.Project(context.Background(), "demo-app"); !ok {
 		t.Fatal("dry run deleted the row")
+	}
+	if !rig.store.releases["demo-app/demo-app"] {
+		t.Fatal("dry run deleted the releases row")
 	}
 	// no admin's login was read: a dry run needs none
 	if n := rig.kv.reads - reads; n != 0 {

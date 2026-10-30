@@ -692,6 +692,8 @@ type memProjects struct {
 	rows    map[string]bool
 	mirrors map[string]bool // projects with mirror rows
 	images  map[string]int  // project -> its image_pins and image_builds rows
+	// releases are the repositories with a releases row
+	releases map[string]bool
 	// the history a removal keeps (roadmap 272): the project's tasks and
 	// its events, ledger, audit and chat rows.
 	tasks   []Task
@@ -820,6 +822,17 @@ func (s *memProjects) DeleteProjectImages(_ context.Context, project string) (in
 	n := s.images[project]
 	delete(s.images, project)
 	return int64(n), nil
+}
+
+// DeleteProjectRelease drops repository's releases row and says how many.
+func (s *memProjects) DeleteProjectRelease(_ context.Context, repository string) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.releases[repository] {
+		return 0, nil
+	}
+	delete(s.releases, repository)
+	return 1, nil
 }
 
 // fakeKV is OpenBao's kv-v2 as the Registrar reads it.

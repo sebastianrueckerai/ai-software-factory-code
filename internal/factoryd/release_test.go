@@ -42,6 +42,24 @@ func TestPGStoreReleases(t *testing.T) {
 	defer s.Close()
 	checkReleaseRows(t, s)
 	checkFixesMergedSince(t, s)
+
+	// remove-project deletes the project's row; a second run finds none
+	for _, want := range []int64{1, 0} {
+		if n, err := s.DeleteProjectRelease(ctx, "sf/b"); err != nil || n != want {
+			t.Fatalf("DeleteProjectRelease(sf/b) = %d, %v; want %d", n, err, want)
+		}
+	}
+	rows, err := s.Releases(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var repositories []string
+	for _, r := range rows {
+		repositories = append(repositories, r.Repository)
+	}
+	if want := []string{"sf/a", "sf/c", "sf/d"}; !reflect.DeepEqual(repositories, want) {
+		t.Errorf("Releases after the removal = %v, want %v", repositories, want)
+	}
 }
 
 func TestFakeStoreReleases(t *testing.T) {
