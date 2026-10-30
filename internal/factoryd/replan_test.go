@@ -450,7 +450,16 @@ func TestReplanStoppedWaitsForTheStops(t *testing.T) {
 	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, want) {
 		t.Fatalf("c running: %+v, %v; want %+v", got, err, want)
 	}
+	// a stop that merged meanwhile has its work on main, and a closing one
+	// is ending: neither holds the planner
 	c := store.tasks["c"]
+	for _, status := range []string{"merged", "closing"} {
+		c.Status = status
+		store.tasks["c"] = c
+		if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true, By: "ana", Comment: "too wide"}) {
+			t.Fatalf("c %s: %+v, %v; want stopped with the note", status, got, err)
+		}
+	}
 	c.Status = "closed"
 	store.tasks["c"] = c
 	if got, err := r.ReplanStopped(ctx, "p"); err != nil || !reflect.DeepEqual(got, ReplanWait{Stopped: true, By: "ana", Comment: "too wide"}) {
