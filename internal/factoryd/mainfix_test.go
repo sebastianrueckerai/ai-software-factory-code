@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -619,10 +618,9 @@ func TestRollerFailedLogsAreBounded(t *testing.T) {
 	}
 }
 
-// A rollback to the image before this one runs on the same schema: that
-// image writes and reads queue_pauses.rerun_at, so the column stays,
-// NULL in a pause this image writes.
-func TestPGStoreQueuePauseReadsOnThePreviousImage(t *testing.T) {
+// The pause keeps no re-run of its own. A rollback to an image that reads
+// one first adds the column, as the migration's header says.
+func TestPGStoreQueuePauseHasNoRerunColumn(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
@@ -636,15 +634,13 @@ func TestPGStoreQueuePauseReadsOnThePreviousImage(t *testing.T) {
 	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: codeRepo, RunID: 3090, SHA: commitC2, Since: at, FixTask: "t-fix"}); err != nil || !wrote {
 		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
-	var rerun sql.NullTime
-	var fix string
-	if err := s.db.QueryRowContext(ctx, `SELECT rerun_at, fix_task FROM queue_pauses WHERE project = $1`, codeRepo).Scan(&rerun, &fix); err != nil || rerun.Valid || fix != "t-fix" {
-		t.Fatalf("the previous image's read: rerun_at %v, fix_task %q, %v; want NULL and t-fix", rerun, fix, err)
+	got, ok, err := s.QueuePause(ctx, codeRepo)
+	if err != nil || !ok || got.RunID != 3090 || got.FixTask != "t-fix" || !got.Since.Equal(at) {
+		t.Fatalf("QueuePause = %+v, %t, %v; want run 3090, fix t-fix, since %v", got, ok, err, at)
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at`,
-		codeRepo, 3091, commitC2, at, "", at); err != nil {
-		t.Fatalf("the previous image's write: %v", err)
+	var has bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'queue_pauses' AND column_name = 'rerun_at')`).Scan(&has); err != nil || has {
+		t.Fatalf("queue_pauses has rerun_at = %t, %v; want no such column", has, err)
 	}
 }
 
