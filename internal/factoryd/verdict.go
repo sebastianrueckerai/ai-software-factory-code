@@ -752,13 +752,13 @@ func (r *Runner) planClosed(ctx context.Context, id string) bool {
 	return closed
 }
 
-// planAtRest says plan t is final with no replan pending, done or failed,
-// or closed whatever its step: a person's close ends a pending replan,
-// while a failed plan keeps it for a press to heal. The minute pass
-// neither closes, asks about nor drafts for a plan whose planner runs or
-// is to run. It reads the plan's timeline, so each caller asks it right
-// before it acts. A failed read counts as under replan until the next
-// pass.
+// planAtRest says plan t is at rest: closed, whatever its replan step (a
+// person's close ends a pending replan), or done or failed with no replan
+// pending (a failed plan keeps its step for a press to heal). The minute
+// pass neither closes, asks about nor drafts for a plan whose planner
+// runs or is to run. It reads the plan's timeline, so each caller asks it
+// right before it acts. A failed read counts as under replan until the
+// next pass.
 func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
 	switch {
 	case t.Status == "closed":

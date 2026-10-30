@@ -2672,11 +2672,11 @@ func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, 
 // no question, under version v, once however often it runs: it judges the
 // revision again, the deploy owner its spec needs and the replan rules
 // against the plan's record as it stands now included (a finding refuses
-// the filing, the planner gets it); files each card in topological order on the direct
-// track at main's head, with the card's author as the cards' (plans do not
-// nest: the children are direct cards); records the edges in Forgejo and
-// task_deps; puts the issues into the plan's comment; and, for a replan,
-// records it, which ends the replan.
+// the filing, the planner gets it); files each card in topological order
+// on the direct track at main's head, with the card's author as the
+// cards' (plans do not nest: the children are direct cards); records the
+// edges in Forgejo and task_deps; puts the issues into the plan's comment;
+// and, for a replan, records it, which ends the replan.
 func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.Version, rev PlanRevision) (ChildrenResult, error) {
 	revision := rev.Revision
 	shape, process, err := planShape(v, t)
