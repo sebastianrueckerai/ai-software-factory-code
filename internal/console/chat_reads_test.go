@@ -227,6 +227,21 @@ func TestChatCardInFull(t *testing.T) {
 	}
 }
 
+// A group revert's agent card reads its own cap of 2 sessions, not the
+// policy's 3, in its sessions and at its cap.
+func TestChatCardReadsAGroupRevertsCap(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-gr", Kind: "agent", Repository: "sf/code", Status: "waiting-human",
+		Track: policy.TrackDirect, Process: "maintenance", IssueNumber: 23, Source: factoryd.SourceGroupRevert, BudgetEUR: 2,
+		Usage: factoryd.TaskUsage{Attempts: 2}, Objective: "Revert plan #20: 2 merges, newest first"},
+		Escalation: "the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed"})
+	r.tasks.mu.Unlock()
+	if got := reads(t, r, g, "card", `{"task_id":"t-gr"}`)[0]; !strings.Contains(got, "\nsessions: 2 of 2\nat its session cap: 2 of 2 sessions used, 0 granted\n") {
+		t.Errorf("the group revert's card reads\n%s", got)
+	}
+}
+
 // The pr read is a card's pull request: the newest checks' jobs, the
 // newest model review in full and the earlier ones' verdicts, the newest
 // audit with its findings, the files with their totals, and with with_diff

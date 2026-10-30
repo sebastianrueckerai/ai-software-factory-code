@@ -22,6 +22,15 @@ import (
 // session a person decides, with the queue still paused.
 const groupRevertSessions = 2
 
+// SessionCap is card t's cap of sessions under limit, the policy's: a
+// group revert's agent card has its own.
+func SessionCap(t Task, limit int) int {
+	if t.Source == SourceGroupRevert {
+		return groupRevertSessions
+	}
+	return limit
+}
+
 // The group revert's steps. On its plan's timeline group_revert records
 // card's git work, its merges' shas newest first, and group_reverted or
 // group_revert_ended the revert's end, landed or not, with the cards it

@@ -106,15 +106,15 @@ func (c *Console) capFactsOf(ctx context.Context, t factoryd.Task) capFacts {
 	return capFactsFrom(t, sessions, bt.Escalation, all)
 }
 
-// capFactsFrom are t's facts from the policy's sessions, its newest
-// escalation and the pending approval requests; a card neither waiting on
-// a human nor in review has none, and only one waiting on a human is
-// capped.
+// capFactsFrom are t's facts from the policy's sessions (its own cap where
+// it has one), its newest escalation and the pending approval requests; a
+// card neither waiting on a human nor in review has none, and only one
+// waiting on a human is capped.
 func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []factoryd.ApprovalRequest) capFacts {
 	if t.Status != "waiting-human" && t.Status != "in-review" {
 		return capFacts{}
 	}
-	f := capFacts{attempts: t.Usage.Attempts, sessions: sessions, extra: t.Usage.ExtraAttempts}
+	f := capFacts{attempts: t.Usage.Attempts, sessions: factoryd.SessionCap(t, sessions), extra: t.Usage.ExtraAttempts}
 	for _, q := range pending {
 		f.merge = f.merge || q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge
 		f.plan = f.plan || q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan

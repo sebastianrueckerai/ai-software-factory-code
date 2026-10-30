@@ -1520,9 +1520,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 	}
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
 	tc.NoAudit = !project.Audit
-	if t.Source == SourceGroupRevert {
-		tc.Sessions = groupRevertSessions
-	}
+	tc.Sessions = SessionCap(t, 0)
 	return tc, nil
 }
 
