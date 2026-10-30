@@ -563,6 +563,21 @@ pushed to both remotes:
 
     git push origin main && git push github main
 
+While a plan of the code repository is open on `main` (from its first
+merged card until its `plan_closed`; a reverted card does not count), the
+roller opens no roll. It logs
+`roller: plan #N is open on main: no roll until no plan is open on main`
+once per commit and posts `factory/roll` `success` with a description
+starting `held:` on `main`'s newest commit it has not judged, so a merged
+card still ends `done`. During a hold that status means green on `main`,
+not live. A commit whose roll is open or failed keeps its `pending` or
+`failure`. The commit an approver released with Deploy now rolls. Once no
+plan is open on `main`, the next poll rolls every commit since the last
+roll. A Retry the roll answered during a hold resets the failed attempts;
+the fresh roll starts once no plan is open on `main`. A red `main` pauses
+the queue, re-runs its failed jobs and files its card during a hold as at
+any other time.
+
 `kubectl rollout restart deployment/factoryd` restarts it twice: Flux
 reverts the `restartedAt` annotation about five minutes later and rolls
 it again. Both restarts are safe (Temporal retries the interrupted

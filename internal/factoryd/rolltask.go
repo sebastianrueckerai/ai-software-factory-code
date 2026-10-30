@@ -349,6 +349,9 @@ type RollerStore interface {
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error
+	// the hold while a plan is open on main (markHeld)
+	OpenGroups(ctx context.Context) (map[string][]Group, error)
+	Release(ctx context.Context, repository string) (Release, error)
 }
 
 // Roller opens the roll of the code repository (ruling 178): for the push
@@ -362,7 +365,8 @@ type RollerStore interface {
 // folded into it, its branch cut from main's head again. It cuts a roll
 // only while main's head has a green test job (headTested). A changed image
 // without a signature by SigningKey refuses the commit: a human card says
-// why, and nothing of it rolls. It judges each commit once.
+// why, and nothing of it rolls. It judges each commit once. While a plan's
+// group is open on main, only Deploy now's commit rolls (markHeld).
 type Roller struct {
 	Forgejo  *Forgejo
 	Registry *Registry
@@ -383,6 +387,8 @@ type Roller struct {
 	Scrub *redact.Scrubber
 
 	held string // main's head the roll last waited on, said once
+	// heldPosted is main's newest commit markHeld last said held
+	heldPosted string
 	// conflicted is "<red sha> <main's head>" of the main-red revert that
 	// last conflicted: the revert clones main again only once main moved
 	conflicted string
@@ -427,7 +433,17 @@ func (r *Roller) poll(ctx context.Context) error {
 	if stuck {
 		r.escalateRolls(ctx)
 	}
-	if err := r.consumeRetry(ctx); err != nil {
+	all, err := r.Store.OpenGroups(ctx)
+	if err != nil {
+		return err
+	}
+	release, err := r.Store.Release(ctx, r.Repo.String())
+	if err != nil {
+		return err
+	}
+	groups, deploy := all[r.Repo.String()], release.DeployNow
+	held := len(groups) > 0
+	if err := r.consumeRetry(ctx, held); err != nil {
 		return err
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
@@ -437,6 +453,13 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err := r.mainState(ctx, runs); err != nil {
 		return err
 	}
+	if held {
+		if err := r.markHeld(ctx, runs, groups, deploy); err != nil {
+			return err
+		}
+	} else {
+		r.heldPosted = ""
+	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
 	if err != nil {
 		return err
@@ -445,6 +468,9 @@ func (r *Roller) poll(ctx context.Context) error {
 	for _, run := range runs {
 		if run.PrettyRef != prBase || len(run.CommitSHA) < 7 {
 			continue
+		}
+		if held && run.CommitSHA != deploy {
+			continue // while held, only Deploy now's commit rolls
 		}
 		// a run older than the first judged, or than a commit a roll
 		// carries, would roll main back
@@ -488,6 +514,30 @@ func (r *Roller) poll(ctx context.Context) error {
 			return err
 		}
 	}
+	return nil
+}
+
+// markHeld says once per commit why main's newest push commit does not
+// roll while groups are open on main, unless it is deploy, the commit an
+// approver's Deploy now released. A commit the roller has not judged gets
+// factory/roll success with a held description: the chain requires the
+// context on main's head, so without it no merged card would end done, a
+// plan's cards that wait on done would never start, and the hold would
+// never end. A judged commit keeps its verdict: an open roll's pending, a
+// failed roll's failure.
+func (r *Roller) markHeld(ctx context.Context, runs []ActionRun, groups []Group, deploy string) error {
+	head := newestMain(runs)
+	if head == nil || head.CommitSHA == deploy || head.CommitSHA == r.heldPosted {
+		return nil
+	}
+	reason := HoldReason(groups)
+	if seen, err := r.Store.RollRequestSeen(ctx, head.CommitSHA); err != nil {
+		return err
+	} else if !seen {
+		r.rollStatus(ctx, head.CommitSHA, "success", "held: "+reason+"; the roll follows once no plan is open on main")
+	}
+	log.Printf("roller: %s: no roll until no plan is open on main", reason)
+	r.heldPosted = head.CommitSHA
 	return nil
 }
 
@@ -541,8 +591,10 @@ func (r *Roller) headTested(ctx context.Context, runs, green []ActionRun) (strin
 
 // rollStatusContext is the commit-status context the roller reports its
 // verdict under, and the factory's project file requires: success means the
-// commit's change runs live, failure means it will not, pending means a
-// roll task is carrying it.
+// commit's change runs live or, with a description starting held:, that the
+// commit is green on main and its roll waits until no plan is open on main;
+// failure means it will not run live, pending means a roll task is carrying
+// it.
 const rollStatusContext = "factory/roll"
 
 // rollStatus reports the roller's verdict on sha as a commit status. A
@@ -622,9 +674,10 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 // ladder. The failed attempts' requests go,
 // their commits unjudged again, and the card closes as factoryd's own,
 // so the judge of this very poll files one fresh roll of main's newest
-// green images; a failure after it climbs from zero. Park and close need
+// green images, or, while held, the first poll after no plan is open on
+// main; a failure after it climbs from zero. Park and close need
 // no consumer: park leaves the card waiting, close ends it.
-func (r *Roller) consumeRetry(ctx context.Context) error {
+func (r *Roller) consumeRetry(ctx context.Context, held bool) error {
 	t, standing, err := r.Store.StandingQuestion(ctx, r.Repo.String(), rollAskMarker)
 	if err != nil {
 		log.Printf("roller: read the standing question: %v", err)
@@ -655,9 +708,14 @@ func (r *Roller) consumeRetry(ctx context.Context) error {
 			return err
 		}
 	}
-	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again", len(reqs))
+	r.heldPosted = "" // a commit unjudged again is marked held
+	when := ""
+	if held {
+		when = " once no plan is open on main"
+	}
+	log.Printf("roller: the question's retry: %d failed attempts reset, the roll starts again%s", len(reqs), when)
 	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t,
-		"factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts. Closing this issue.")
+		"factoryd: retry ordered: the failed attempts' bound is reset and one roll task of main's newest green images starts"+when+". Closing this issue.")
 }
 
 // judge decides one run of main whose image jobs are green: a skip, a roll
