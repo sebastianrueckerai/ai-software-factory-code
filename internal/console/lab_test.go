@@ -295,9 +295,7 @@ type labScene struct {
 	projects []factoryd.Project
 	config   *policy.ProjectConfig
 	monthCap float64
-	// hold: plan #12 holds the code project's production, 3 of 5 merged
-	hold    bool
-	prFiles map[string]string
+	prFiles  map[string]string
 	// remote is the mirror's remote, "" for the code project's
 	remote    string
 	tasks     []factoryd.BoardTask
