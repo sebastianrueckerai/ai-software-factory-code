@@ -24,7 +24,9 @@ type codeIssues struct {
 	mu     sync.Mutex
 	issues []string // "title\n\nbody", the first numbered 71
 	closed []int64
-	labels map[int64][]string
+	// closeFails answers an issue's close 500
+	closeFails bool
+	labels     map[int64][]string
 	// older are open issues the bot filed before, by number: their titles
 	older map[int64]string
 	// holdOne, when set, parks the next issue POST until the test closes
@@ -68,6 +70,14 @@ func (c *codeIssues) srv(t *testing.T) *Forgejo {
 			c.issues = append(c.issues, in["title"]+"\n\n"+in["body"])
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(map[string]any{"number": 70 + len(c.issues)}) // #nosec G104 -- test stub
+		case r.Method == http.MethodPatch && strings.HasPrefix(path, "issues/"):
+			if c.closeFails {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			n, _ := strconv.ParseInt(strings.TrimPrefix(path, "issues/"), 10, 64)
+			c.closed = append(c.closed, n)
+			json.NewEncoder(w).Encode(map[string]any{}) // #nosec G104 -- test stub
 		case r.Method == http.MethodPut && strings.HasSuffix(path, "/labels"):
 			var in struct{ Labels []string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -851,12 +861,14 @@ func TestRoutineRunOfARoutineGone(t *testing.T) {
 }
 
 // An attempt whose issue was filed and whose task row then failed leaves
-// the run open: the retry takes on that issue, the bot's open one of the
-// card's title, and files no second.
+// the run open. Where that issue stayed open, its close failing too (or
+// factoryd stopping between the two), the retry takes it on, the bot's
+// open one of the card's title, and files no second.
 func TestRoutineRunRetryTakesOnTheIssueWhoseRowFailed(t *testing.T) {
 	ctx := context.Background()
+	captureLog(t)
 	r, store, issues, _ := routineRunner(t, routineTree(t))
-	store.createFails = 1
+	store.createFails, issues.closeFails = 1, true
 	in := RoutineRunInput{Project: codeProject, Routine: "weekly-bump", Trigger: "cron", Due: time.Now().Truncate(time.Minute)}
 	if _, err := r.RoutineRun(ctx, in); err == nil {
 		t.Fatal("a failed task row raised nothing")

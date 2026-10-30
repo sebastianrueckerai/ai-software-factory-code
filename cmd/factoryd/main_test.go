@@ -123,6 +123,9 @@ func createTaskForgejoStub(t *testing.T, events *[]string, failIssueCreate bool)
 			}
 			*appliedLabels = payload.Labels
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/42"):
+			*events = append(*events, "close-issue")
+			io.WriteString(w, `{}`)
 		default:
 			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 		}
@@ -304,6 +307,9 @@ func TestCreateTaskHandlerStoreFailureReturnsError(t *testing.T) {
 	}
 	if slices.Contains(events, "start-workflow") {
 		t.Fatalf("events = %v: no workflow for a task row that does not exist", events)
+	}
+	if !slices.Contains(events, "close-issue") {
+		t.Fatalf("events = %v: the issue of a row that does not exist stays open", events)
 	}
 }
 

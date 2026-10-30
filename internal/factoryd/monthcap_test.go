@@ -122,12 +122,15 @@ func (f *failingTasks) CreateTask(ctx context.Context, t Task) error {
 	return f.fakeStore.CreateTask(ctx, t)
 }
 
-// The cap's issue is filed once even when the task row after it fails:
-// the next check finds the open issue by its title and takes it on.
+// The cap's issue is filed once even when the task row after it fails and
+// the issue's close fails too: the next check finds the open issue by its
+// title and takes it on.
 func TestMonthAlarmFilesTheCapIssueOnce(t *testing.T) {
 	ctx := context.Background()
+	captureLog(t)
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 50)
+	fj.failClose = 1
 	book := &failingTasks{fakeStore: store, failNext: 1}
 	alarm.Store = book
 	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 50.2}
@@ -167,7 +170,7 @@ func TestMonthAlarmZeroCap(t *testing.T) {
 
 // A human card filed from a question anchors the ask by its intake row
 // and its question_asked row, filed fresh or adopted from the open issue
-// a failed task row left behind.
+// a failed task row left behind, its close failed too.
 func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 	ctx := context.Background()
 	q := HumanQuestion{Ask: "Raise the cap?", Why: "the cap is reached", Info: "a raise is a commit",
@@ -177,7 +180,8 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 		alarm, fj := monthAlarm(t, store, 50)
 		book := &failingTasks{fakeStore: store}
 		if adopt {
-			book.failNext = 1
+			captureLog(t)
+			book.failNext, fj.failClose = 1, 1
 			if _, _, err := fileHumanTask(ctx, book, alarm.Forgejo, nil, alarm.Repo, q, nil, Task{ID: "t-0", Kind: "human", Source: SourceMonthCap}, ""); err == nil {
 				t.Fatal("a failed task row raised nothing")
 			}

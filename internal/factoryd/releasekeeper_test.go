@@ -391,6 +391,9 @@ func TestReleaseKeeperAsksAgainAfterAFailedFiling(t *testing.T) {
 	if _, ok, _ := store.ChainCard(context.Background(), demoRepo, SourceProductionHeld); !ok || !releaseRow(store, demoRepo).AskedAt.Equal(keeperAt(16, 1)) {
 		t.Errorf("ask card %v, AskedAt %v; want the ask at 16:01", ok, releaseRow(store, demoRepo).AskedAt)
 	}
+	if len(f.issues) != 2 || !slices.Equal(f.closed, []string{demoRepo + "#31"}) {
+		t.Errorf("issues %d, closed %q; want the failed filing's #31 closed, one ask open", len(f.issues), f.closed)
+	}
 }
 
 // endedHold is a hold of demoRepo since 10:00 whose plan closed, its

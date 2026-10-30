@@ -230,7 +230,8 @@ func TestBadReproFilesAPersonsCard(t *testing.T) {
 	}
 }
 
-// fileStub is a Forgejo that files issue 40 and keeps its labels.
+// fileStub is a Forgejo that files issue 40, keeps its labels and takes
+// its close.
 func fileStub(t *testing.T) (*Forgejo, *[]string) {
 	t.Helper()
 	var labels []string
@@ -246,6 +247,8 @@ func fileStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&p) // #nosec G104 -- test stub
 			labels = p.Labels
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/issues/40"):
+			io.WriteString(w, `{}`)
 		default:
 			t.Fatalf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 		}
@@ -300,6 +303,22 @@ func TestRollRunsOutsideTheBound(t *testing.T) {
 	}
 	if got.Status != "waiting-human" || got.Track != "" || got.Process != "" || len(got.RequiredCapabilities) != 0 || len(wf.started) != 1 {
 		t.Fatalf("human task = %+v, started %v", got, wf.started)
+	}
+}
+
+// A card whose row cannot be stored leaves no issue open: FileTask closes
+// the issue it filed for it, and the filing's error stands.
+func TestFileTaskClosesTheIssueOfACardItCouldNotStore(t *testing.T) {
+	f := &chainForgejo{}
+	store := newFakeStore()
+	store.createFails = 1
+	_, _, err := FileTask(context.Background(), store, f.srv(t), Repo{Owner: "sf", Name: "r"}, "config", "body", []string{"human"},
+		Task{ID: "t-h", Kind: "human", Source: SourceConfig})
+	if err == nil || err.Error() != "insert failed" {
+		t.Fatalf("FileTask = %v, want the store's error", err)
+	}
+	if _, ok := store.tasks["t-h"]; ok || len(f.issues) != 1 || !slices.Equal(f.closed, []string{"sf/r#31"}) {
+		t.Errorf("task stored %v, issues %d, closed %q; want issue #31 filed and closed, no card", ok, len(f.issues), f.closed)
 	}
 }
 

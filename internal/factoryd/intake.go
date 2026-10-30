@@ -1137,7 +1137,8 @@ func mechanicalSource(source string) bool {
 // the bot, labelled labels and its state, then the task row linked to it.
 // A task of kind human waits on a human from the start and has no
 // workflow; an agent task's goes through FileAgentTask. No row exists
-// without its issue.
+// without its issue, and no issue stands open without its row: a row the
+// store refuses closes the issue filed for it, best effort.
 func FileTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 }, forgejo *Forgejo, repo Repo, title, body string, labels []string, t Task) (Task, IssueRef, error) {
@@ -1153,6 +1154,9 @@ func FileTask(ctx context.Context, store interface {
 	}
 	t.Repository, t.IssueNumber = repo.String(), ref.Number
 	if err := store.CreateTask(ctx, t); err != nil {
+		if cerr := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, ref.Number); cerr != nil {
+			log.Printf("task %s: issue #%d of %s stands without its card: close it: %v", t.ID, ref.Number, repo, cerr)
+		}
 		return Task{}, IssueRef{}, err
 	}
 	return t, ref, nil
