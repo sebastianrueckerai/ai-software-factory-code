@@ -492,6 +492,7 @@ func main() {
 	// a project's own workflow asks whether anything fires in a namespace
 	// of its, with its FACTORY_READ_TOKEN
 	mux.Handle("GET /projects/{name}/alerts", factoryd.ProjectAlertsHandler(store, store, kube, store))
+	mux.Handle("GET /projects/{name}/release", factoryd.ProjectReleaseHandler(store, store, time.Now))
 	mux.Handle("GET /tasks/{id}/sessions/{session}", requireBearer(intakeToken, recordHandler(store, objects)))
 
 	server := &http.Server{

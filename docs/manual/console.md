@@ -624,6 +624,17 @@ plus one
 left, every updated one available); `[]` when none. Cached 30 s per
 project and namespace; a source it cannot read answers 502, never `[]`.
 
+`GET /projects/{name}/release?commit=<sha>` on 8080: bearer the project's
+`FACTORY_READ_TOKEN`, as the alerts endpoint takes it (401 otherwise, an
+unknown project too). `commit` is the run's commit sha, 7 to 40 lower-case
+hex digits (400 otherwise). It answers `{"held":false}` while no plan's group
+is open on the project's repository, or when an approver's Deploy now
+released this commit. Otherwise it answers `{"held":true,"reason":"plan #12
+is open on main"}`, naming every open plan. The answer is never cached. Each
+ask is recorded in the project's `releases` row, which makes the project one
+factoryd holds. The promote job of the ts-go template asks it before its 15
+minutes on staging.
+
 `POST /webhooks/signoz` on 8080 is SigNoz's webhook channel `factoryd`
 (written by the infra's `signoz-objects` job, basic auth user `signoz` with
 the password of secret `signoz-webhook`, env `SIGNOZ_WEBHOOK_PASSWORD`;
