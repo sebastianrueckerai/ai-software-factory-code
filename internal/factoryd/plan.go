@@ -72,9 +72,8 @@ const (
 	FinderPlanner   = "planner"
 )
 
-// The plan's caps are counts, and one length: an outline part is one short
-// line, in runes. The transports that carry a plan (the file-plan body cap,
-// maxReport) are its only other ceiling.
+// The plan's caps: a card's directories and acceptance items, the
+// questions, the outline's parts, and an outline part's length in runes.
 const (
 	maxCardDirs       = 10
 	MaxCardAcceptance = 10
@@ -326,7 +325,10 @@ func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[st
 	round := roundCards(p)
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf("plan: "+format, args...)) }
-	if n := len(round); n < shape.Minimum() || n > shape.MaxCards {
+	switch n := len(round); {
+	case p.Round > 1 && (n < 1 || n > shape.MaxCards):
+		add("%d cards; a later round files 1 to %d", n, shape.MaxCards)
+	case p.Round <= 1 && (n < shape.Minimum() || n > shape.MaxCards):
 		add("%d cards; this process allows %d to %d", n, shape.Minimum(), shape.MaxCards)
 	}
 	for i, c := range round {
@@ -388,10 +390,8 @@ func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[st
 				cmp.Or(strings.Join(slices.Sorted(maps.Keys(pins)), ", "), "none"))
 		}
 	}
-	for i, c := range p.Cards {
-		if c.Round == p.Round {
-			p.Cards[i].Image = cardImage(c.Image)
-		}
+	for i := range p.Cards {
+		p.Cards[i].Image = cardImage(p.Cards[i].Image)
 	}
 	out = append(out, specFindings(p, shape)...)
 	out = append(out, criteriaFindings(p, shape)...)
@@ -706,7 +706,7 @@ func cardsOf(cards []PlanCard, role string) []string {
 // the planner listed among the plan's cards, every card's on the
 // foundation card, the integration card's on every other card, all of
 // them within one round, since the earlier rounds are merged before a
-// round starts. Edges readPlan refuses on their own (out of the
+// round starts. Edges judgePlan refuses on their own (out of the
 // foundation, into the integration card, onto itself or no card) are left
 // out, so a cycle is only ever one of the feature cards.
 func planEdges(p Plan) map[string][]string {

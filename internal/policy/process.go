@@ -51,19 +51,20 @@ type Track struct {
 	Plan *PlanShape `yaml:"plan,omitempty" json:"plan,omitempty"`
 }
 
-// PlanShape bounds a plan.
+// PlanShape bounds each planning round of a plan.
 type PlanShape struct {
-	// MinCards is the least cards one planning round files, 1 to 20 and at
-	// most MaxCards.
+	// MinCards is the least cards a plan's first planning round files, 1 to
+	// 20 and at most MaxCards; a later round files at least one.
 	MinCards int `yaml:"min_cards" json:"min_cards"`
 	// MaxCards is the most cards one planning round files, 2 to 20. A plan's
 	// later rounds, its delta cards and its replans add more.
 	MaxCards int `yaml:"max_cards" json:"max_cards"`
-	// Foundation: exactly one card of role foundation, which every other
-	// card depends on.
+	// Foundation: the first planning round holds exactly one card of role
+	// foundation, which every other card of the round depends on; a later
+	// round holds at most one.
 	Foundation bool `yaml:"foundation" json:"foundation"`
-	// Integration: exactly one card of role integration, which depends on
-	// every other card.
+	// Integration: exactly one card of role integration, in the last
+	// planning round, which depends on every other card of its round.
 	Integration bool `yaml:"integration" json:"integration"`
 }
 
@@ -71,8 +72,9 @@ type PlanShape struct {
 // min_cards existed.
 const DefaultMinCards = 2
 
-// Minimum is the least cards one planning round of this shape files: a
-// MinCards of 0, from such a stored version, keeps the two-card minimum.
+// Minimum is the least cards a plan's first planning round of this shape
+// files: a MinCards of 0, from such a stored version, keeps the two-card
+// minimum.
 func (s PlanShape) Minimum() int {
 	if s.MinCards == 0 {
 		return DefaultMinCards

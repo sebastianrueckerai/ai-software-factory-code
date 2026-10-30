@@ -278,7 +278,7 @@ func TestValidatePlanRounds(t *testing.T) {
 		"integration with an outline": {change(twoRounds(), func(p *Plan) { p.Outline = []string{"dashboards"} }),
 			[]string{"plan: card integration: the integration card comes in the last round, and the outline still lists later rounds: keep it for the round that empties the outline, or take the rest into this round and empty the outline"}},
 		"twelve in the round":   {extras(10), nil},
-		"thirteen in the round": {extras(11), []string{"plan: 13 cards; this process allows 2 to 12"}},
+		"thirteen in the round": {extras(11), []string{"plan: 13 cards; a later round files 1 to 12"}},
 		"two foundations": {change(twoRounds(), func(p *Plan) { p.Cards = append(p.Cards, contracts("contracts-a"), contracts("contracts-b")) }),
 			[]string{"plan: 2 cards with role foundation; a later round wants at most one"}},
 		"one foundation": {change(twoRounds(), func(p *Plan) { p.Cards = append(p.Cards, contracts("contracts-a")) }), nil},
@@ -308,6 +308,36 @@ func TestValidatePlanRounds(t *testing.T) {
 	}
 }
 
+// The process's minimum bounds a plan's first round: a later round files
+// 1 to max_cards, so a last round of the integration card alone files. A
+// shape without a foundation counts no foundation card in any round.
+func TestValidatePlanLaterRoundsUnderTheShape(t *testing.T) {
+	contracts := func(key string) PlanCard {
+		return PlanCard{Key: key, Role: RoleFoundation, Title: "Contracts", Brief: "The stats contract.", Acceptance: []PlanItem{{Text: "x"}}, Size: "small", Round: 2}
+	}
+	integrationAlone := twoRounds()
+	integrationAlone.Cards = append(integrationAlone.Cards[:3], integrationAlone.Cards[4])
+	empty := twoRounds()
+	empty.Cards, empty.Outline = empty.Cards[:3], []string{"dashboards"}
+	twoFoundations := twoRounds()
+	twoFoundations.Cards = append(twoFoundations.Cards, contracts("contracts-a"), contracts("contracts-b"))
+	for name, tc := range map[string]struct {
+		shape policy.PlanShape
+		plan  Plan
+		want  []string
+	}{
+		"integration alone under min_cards 2": {policy.PlanShape{MinCards: 2, MaxCards: 12, Foundation: true, Integration: true}, integrationAlone, nil},
+		"no card":                             {testShape, empty, []string{"plan: 0 cards; a later round files 1 to 12"}},
+		"no foundation in the shape":          {policy.PlanShape{MaxCards: 12, Integration: true}, twoFoundations, nil},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := validatePlan(fencePlan(tc.plan), tc.shape, testLimits, nil); !slices.Equal(got, tc.want) {
+				t.Fatalf("validatePlan = %q\nwant %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // The outline holds at most ten parts, each one line of at most a hundred
 // characters, counted in runes.
 func TestValidatePlanOutline(t *testing.T) {
@@ -315,11 +345,14 @@ func TestValidatePlanOutline(t *testing.T) {
 		outline []string
 		want    []string
 	}{
-		"eleven parts": {slices.Repeat([]string{"a part"}, 11), []string{"plan: outline: 11 parts; want at most 10"}},
-		"empty part":   {[]string{"a", ""}, []string{"plan: outline part 2 is empty"}},
-		"long part":    {[]string{strings.Repeat("x", 101)}, []string{"plan: outline part 1: one line of at most 100 characters"}},
-		"two lines":    {[]string{"a\nb"}, []string{"plan: outline part 1: one line of at most 100 characters"}},
-		"100 runes":    {[]string{strings.Repeat("é", 100)}, nil},
+		"eleven parts":  {slices.Repeat([]string{"a part"}, 11), []string{"plan: outline: 11 parts; want at most 10"}},
+		"empty part":    {[]string{"a", ""}, []string{"plan: outline part 2 is empty"}},
+		"long part":     {[]string{strings.Repeat("x", 101)}, []string{"plan: outline part 1: one line of at most 100 characters"}},
+		"two lines":     {[]string{"a\nb"}, []string{"plan: outline part 1: one line of at most 100 characters"}},
+		"blanks":        {[]string{"  "}, []string{"plan: outline part 1 is empty"}},
+		"a return":      {[]string{"\r"}, []string{"plan: outline part 1 is empty"}},
+		"return inside": {[]string{"a\rb"}, []string{"plan: outline part 1: one line of at most 100 characters"}},
+		"100 runes":     {[]string{strings.Repeat("é", 100)}, nil},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p := roundOne()
@@ -608,6 +641,19 @@ func TestPlanEdgesStayInTheRound(t *testing.T) {
 	} {
 		if !slices.Equal(edges[key], want) {
 			t.Fatalf("edges of %s = %v, want %v (all: %v)", key, edges[key], want, edges)
+		}
+	}
+	withContracts := twoRounds()
+	withContracts.Cards = slices.Insert(withContracts.Cards, 3, PlanCard{Key: "contracts", Role: RoleFoundation, Round: 2})
+	edges = planEdges(withContracts)
+	for key, want := range map[string][]string{
+		"contracts":   nil,
+		"stats":       {"contracts"},
+		"integration": {"contracts", "stats"},
+		"redirects":   {"foundation", "links-api"},
+	} {
+		if !slices.Equal(edges[key], want) {
+			t.Fatalf("with a round-2 foundation: edges of %s = %v, want %v (all: %v)", key, edges[key], want, edges)
 		}
 	}
 	rows := PlanRows(twoRounds())

@@ -1007,6 +1007,7 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		// judgePlan's round rules (TestValidatePlanRounds)
 		"comes in the last round",
 		"wants at most one",
+		"a later round files",
 		// outlineFindings (TestValidatePlanOutline)
 		"parts; want at most",
 		// deployOwner/ErrNoDeployOwner: CreateChildren returns it to the
