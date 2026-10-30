@@ -220,7 +220,8 @@
 {{template "brief-block" .}}
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
-{{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
+{{with .TakeOffMain}}<p>Takes off main: {{join . ", "}}</p>
+{{end}}{{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
 {{range $q := .Questions}}{{if $q.Answer}}<p class="answered">{{$q.Text}}: {{$q.Answer}} ({{$q.AnsweredBy}})</p>
 {{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>

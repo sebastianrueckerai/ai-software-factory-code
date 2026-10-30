@@ -557,14 +557,27 @@ func onMain(cards []Task) []Task {
 
 // takeOffMain starts the revert of plan p's merged cards, which its
 // pending replan step waits for; the plan stays done, and the revert's end
-// completes the step (endGroupRevert). The note is the step's stops' and
-// the revert's.
+// completes the step (endGroupRevert). The note is the revert's, then
+// what follows its end.
 func (r *Runner) takeOffMain(ctx context.Context, p Task, step ReplanStep, cards []Task) (string, error) {
 	note, err := r.RevertGroup(ctx, p, cards, "asked by "+cmp.Or(step.By, "a person")+": "+step.Comment)
 	if err != nil {
 		return "", err
 	}
-	return stopsNote(p, len(step.Stops)) + " " + note, nil
+	return note + " " + offMainNote(p, len(step.Stops)), nil
+}
+
+// offMainNote tells the person that plan p goes back to its planner, and
+// n cards stop, once the revert of its merged cards lands or ends.
+func offMainNote(p Task, n int) string {
+	head := fmt.Sprintf("Once the revert lands or ends, plan #%d goes back to the planner", p.IssueNumber)
+	switch n {
+	case 0:
+		return head + "; no card stops."
+	case 1:
+		return head + " and 1 card stops; its work stays on its branch."
+	}
+	return fmt.Sprintf("%s and %d cards stop; their work stays on their branches.", head, n)
 }
 
 // awaitOffMain answers a press on plan p while its pending replan step
@@ -735,19 +748,21 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 // before (nil: none), the newest stored and its number, the old cards,
 // each started open card's entry in the revision it started against by
 // key, the pending cut's card and whether its branch holds a commit past
-// its base, and the old cards with a merge commit, and those of them
-// taken off main, by id.
+// its base, and the old cards with a merge commit, those of them taken
+// off main, and those that are the integration card of the revision they
+// ran against, by id.
 type replanState struct {
-	prev     *Plan
-	newest   *Plan
-	revision int
-	old      []Task
-	started  map[string]PlanCard
-	plan     Task
-	cut      string
-	cutWork  bool
-	merged   map[string]bool
-	reverted map[string]bool
+	prev        *Plan
+	newest      *Plan
+	revision    int
+	old         []Task
+	started     map[string]PlanCard
+	plan        Task
+	cut         string
+	cutWork     bool
+	merged      map[string]bool
+	reverted    map[string]bool
+	integration map[string]bool
 }
 
 // replanState reads plan p's record for replanFindings of its revision
@@ -756,7 +771,7 @@ type replanState struct {
 // step's: a revision refused at its filing holds nothing a later one is
 // judged by. A plan that never wrote one has the newest stored before of.
 func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (replanState, error) {
-	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}, reverted: map[string]bool{}}
+	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}, reverted: map[string]bool{}, integration: map[string]bool{}}
 	var err error
 	if st.newest, st.revision, err = r.planAt(ctx, p.ID, 0); err != nil {
 		return replanState{}, err
@@ -794,6 +809,13 @@ func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (re
 	for _, k := range st.old {
 		if k.MergeCommit != "" {
 			st.merged[k.ID] = true
+			ran, err := at(k.PlanRevision)
+			if err != nil {
+				return replanState{}, err
+			}
+			if ran != nil && roleOf(*ran, k.PlanKey) == RoleIntegration {
+				st.integration[k.ID] = true
+			}
 		}
 		if k.RevertedAt != nil {
 			st.reverted[k.ID] = true
@@ -848,10 +870,11 @@ func fromRef(k Task) string {
 
 // replanFindings judges revision next against the plan's record st: a
 // card is kept by its key, changed by a new card whose from names it, and
-// dropped by leaving its key out; a merged card on main that is dropped
-// comes off main after the filing, and one taken off main lands again
-// from salvage. An old key is a key with a card row. A from the revision
-// before held for the same key was judged at its filing.
+// dropped by leaving its key out. A merged card on main stays unless
+// take_off_main names it, which takes its work off main after the filing;
+// one taken off main lands again from salvage. An old key is a key with a
+// card row. A from the revision before held for the same key was judged
+// at its filing.
 func replanFindings(st replanState, next Plan) []string {
 	old := map[string]Task{}
 	for _, k := range st.old {
@@ -900,11 +923,33 @@ func replanFindings(st replanState, next Plan) []string {
 			found = append(found, fmt.Sprintf("card %s: from %s, which merged: its work is on main, so start from main and leave from out", c.Key, c.From))
 		}
 	}
+	off := map[string]bool{}
+	for _, x := range next.TakeOffMain {
+		if off[x] {
+			continue
+		}
+		off[x] = true
+		k, known := old[x]
+		_, keeps := kept[x]
+		switch {
+		case !known || k.PlanKey == "":
+			found = append(found, fmt.Sprintf("take_off_main names %s, which is no card of this plan's record; name the key of a merged card", x))
+		case !st.merged[k.ID]:
+			found = append(found, fmt.Sprintf("take_off_main names %s, which has not merged: its work is not on main; leave it out of take_off_main", x))
+		case st.reverted[k.ID]:
+			found = append(found, fmt.Sprintf("take_off_main names %s, which was taken off main already; leave it out of take_off_main", x))
+		case st.integration[k.ID]:
+			found = append(found, fmt.Sprintf("take_off_main names %s, the integration card, whose code stays on main; leave it out of take_off_main", x))
+		case keeps:
+			found = append(found, fmt.Sprintf("take_off_main names %s, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main", x))
+		}
+	}
 	for _, k := range st.old {
 		if k.PlanKey == "" {
 			continue
 		}
 		c, keeps := kept[k.PlanKey]
+		_, held := prev[k.PlanKey]
 		integration := st.prev != nil && roleOf(*st.prev, k.PlanKey) == RoleIntegration
 		switch {
 		case keeps && (k.Status == "closed" || k.Status == "failed") && k.PlanRevision == 0:
@@ -915,6 +960,8 @@ func replanFindings(st replanState, next Plan) []string {
 			found = append(found, fmt.Sprintf(`card %s was taken off main: leave its key out, and add a card with "from": "%s" to land it again from salvage`, k.PlanKey, k.PlanKey))
 		case st.merged[k.ID] && integration && keeps && adds:
 			found = append(found, "card "+k.PlanKey+" is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again")
+		case st.merged[k.ID] && !st.reverted[k.ID] && !integration && held && !keeps && !off[k.PlanKey]:
+			found = append(found, "card "+k.PlanKey+" is merged on main: keep its key, or name it in take_off_main to take its work off main")
 		}
 		if entry, ok := st.started[k.PlanKey]; ok && keeps && !sameEntry(c, entry) {
 			found = append(found, fmt.Sprintf("card %s started against revision %d: keep its entry as revision %d has it, or leave its key out to stop it",
@@ -1001,6 +1048,15 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		}
 	}
 	note := fmt.Sprintf("replanned at revision %d: kept %d, changed %d, dropped %d, added %d.", revision, count["kept"], count["changed"], count["dropped"], added)
+	var off []string
+	for _, k := range cards {
+		if k.PlanKey != "" && slices.Contains(next.TakeOffMain, k.PlanKey) {
+			off = append(off, fmt.Sprintf("#%d (%s)", k.IssueNumber, k.PlanKey))
+		}
+	}
+	if len(off) > 0 {
+		note += fmt.Sprintf(" It takes %s off main.", strings.Join(off, ", "))
+	}
 	i := slices.IndexFunc(cards, func(k Task) bool { return k.ID == step.Card })
 	switch {
 	case step.Origin == ReplanPerson:
@@ -1046,6 +1102,9 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	}
 	detail := map[string]any{"revision": revision, "kept": count["kept"], "changed": count["changed"], "dropped": count["dropped"], "added": added,
 		"origin": step.Origin, "by": step.By, "comment": step.Comment}
+	if len(next.TakeOffMain) > 0 {
+		detail["take_off_main"] = next.TakeOffMain
+	}
 	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {
 		return fmt.Errorf("record replanned: %w", err)
 	}

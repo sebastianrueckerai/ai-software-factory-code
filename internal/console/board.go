@@ -3051,6 +3051,7 @@ type drawerData struct {
 	Headline, Provenance, Body string
 	PlanSummary                string
 	PlanRows                   []factoryd.PlanRow
+	TakeOffMain                []string
 	Merge                      *approvalCard
 	Related                    []related
 	Gates                      []gateRow
@@ -3282,9 +3283,10 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 	case "overview":
 		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
 		if bt.Track == policy.TrackPlan {
-			var err error
-			if _, d.PlanSummary, d.PlanRows, _, err = c.planTable(ctx, bt.ID, 0); err != nil {
+			if _, p, _, err := c.planTable(ctx, bt.ID, 0); err != nil {
 				problem("plan", err)
+			} else {
+				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
 			}
 		}
 		for _, a := range v.pending {

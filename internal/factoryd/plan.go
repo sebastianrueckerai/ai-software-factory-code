@@ -87,6 +87,9 @@ type Plan struct {
 	Criteria  []PlanCriterion `json:"criteria,omitempty"`
 	Cards     []PlanCard      `json:"cards"`
 	Questions []PlanQuestion  `json:"questions,omitempty"`
+	// TakeOffMain are the keys of the merged cards whose work the revision
+	// takes off main once it filed
+	TakeOffMain []string `json:"take_off_main,omitempty"`
 }
 
 // Spec is the spec the planning session drafts (the spec-intake
@@ -776,7 +779,8 @@ func cell(s string) string {
 // planComment is revision's comment on plan task t's issue before its
 // marker: the summary and one row per card in filing order, with its issue
 // once filed (issues by key) and, when t's spec has a Deploy line, the
-// deploy owner's mark, and each brief in a details block.
+// deploy owner's mark, the keys it takes off main, and each brief in a
+// details block.
 // specBlock is the plan's spec as the plan's comment and the integration
 // card's body carry it: the outcome, then the glossary line by line; ""
 // when the plan carries no spec.
@@ -828,6 +832,13 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 			b.WriteString("  |")
 		}
 		b.WriteString("\n")
+	}
+	if len(p.TakeOffMain) > 0 {
+		keys := make([]string, len(p.TakeOffMain))
+		for i, k := range p.TakeOffMain {
+			keys[i] = cell(k)
+		}
+		fmt.Fprintf(&b, "\nTakes off main: %s.\n", strings.Join(keys, ", "))
 	}
 	if len(p.Criteria) > 0 {
 		cited := citations(p)
@@ -965,7 +976,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
 		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
@@ -978,6 +989,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
+		"take_off_main: the keys of merged cards whose work comes off main; a card that lands it again names it in from. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	g += imagesLine(pins)
 	if shape.Foundation {
@@ -2705,7 +2717,7 @@ const stepFiling = "filing"
 // cards' (plans do not nest: the children are direct cards); records the
 // edges in Forgejo and task_deps; puts the issues into the plan's comment;
 // for a replan, records it, which ends the replan; and takes off main the
-// merged cards the revision drops (revertDropped).
+// merged cards the revision names in take_off_main (revertTakenOff).
 func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.Version, rev PlanRevision) (ChildrenResult, error) {
 	revision := rev.Revision
 	shape, process, err := planShape(v, t)
@@ -2774,35 +2786,20 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 			return ChildrenResult{}, err
 		}
 	}
-	if err := r.revertDropped(ctx, t, repo, tl, revision, p); err != nil {
+	if err := r.revertTakenOff(ctx, t, repo, revision, p); err != nil {
 		return ChildrenResult{}, err
 	}
 	return ChildrenResult{Issues: issues}, nil
 }
 
-// revertDropped takes off main the merged cards of plan task t that
-// revision n, p, drops: each card on main whose key the revision filed
-// before n held and p leaves out, but the integration card, which p's own
-// supersedes and whose code stays on main. A filing run again finds the
-// revert's own pause and goes on with it. A refusal is told on the plan,
-// and the cards stay on main. tl is t's timeline.
-func (r *Runner) revertDropped(ctx context.Context, t Task, repo Repo, tl []byte, n int, p Plan) error {
-	before := n - 1
-	for line := range strings.SplitSeq(string(tl), "\n") {
-		var m struct {
-			Step     string
-			Revision int
-		}
-		if json.Unmarshal([]byte(line), &m) == nil && m.Step == stepFiling && m.Revision < n {
-			before = m.Revision
-		}
-	}
-	if before == 0 {
+// revertTakenOff takes off main the merged cards of plan task t that
+// revision n, p, names in take_off_main and that are still on main; the
+// revision's findings let it name no other card. A filing run again finds
+// the revert's own pause and goes on with it. A refusal is told on the
+// plan, and the cards stay on main.
+func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p Plan) error {
+	if len(p.TakeOffMain) == 0 {
 		return nil
-	}
-	prev, _, err := r.planAt(ctx, t.ID, before)
-	if err != nil || prev == nil {
-		return err
 	}
 	cards, err := r.store.PlanCards(ctx, t.ID)
 	if err != nil {
@@ -2811,9 +2808,7 @@ func (r *Runner) revertDropped(ctx context.Context, t Task, repo Repo, tl []byte
 	var dropped []Task
 	var refs []string
 	for _, k := range onMain(cards) {
-		held := slices.ContainsFunc(prev.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey })
-		kept := slices.ContainsFunc(p.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey })
-		if held && !kept && roleOf(*prev, k.PlanKey) != RoleIntegration {
+		if slices.Contains(p.TakeOffMain, k.PlanKey) {
 			dropped = append(dropped, k)
 			refs = append(refs, fmt.Sprintf("#%d", k.IssueNumber))
 		}

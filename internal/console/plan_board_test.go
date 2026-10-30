@@ -411,3 +411,22 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
 	}
 }
+
+// A revision that takes merged cards off main says which, in each view
+// that lists it: the plan's approval card, its drawer and the chat's plan
+// read.
+func TestPlanViewsShowTakeOffMain(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"old-api", "old-ui"},
+		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.plans["t-plan"][1].Plan = plan
+	ck, _ := r.loggedIn(t)
+	want := "<p>Takes off main: old-api, old-ui</p>"
+	if card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you"); !strings.Contains(card, want) {
+		t.Errorf("the plan card lacks %q:\n%s", want, card)
+	}
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, want) {
+		t.Errorf("the drawer lacks %q:\n%s", want, d)
+	}
+}

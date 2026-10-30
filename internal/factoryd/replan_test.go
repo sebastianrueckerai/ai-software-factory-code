@@ -1143,8 +1143,9 @@ func replanFixture() (st replanState, clean Plan) {
 			{ID: "t-int", PlanKey: "int", IssueNumber: 15, Status: "done", MergeCommit: "m-int", PlanRevision: 2},
 			{ID: "t-ui", PlanKey: "ui", IssueNumber: 12, Status: "running", PlanRevision: 1},
 		},
-		started: map[string]PlanCard{"ui": rev1.Cards[1]},
-		merged:  map[string]bool{"t-api": true, "t-int": true}}
+		started:     map[string]PlanCard{"ui": rev1.Cards[1]},
+		merged:      map[string]bool{"t-api": true, "t-int": true},
+		integration: map[string]bool{"t-int": true}}
 	clean = Plan{Summary: "the replan", Cards: []PlanCard{rev2.Cards[0], rev2.Cards[1], fromCard("cli2", "cli"),
 		replanCard("int2", RoleIntegration, "the whole again")}}
 	return st, clean
@@ -1192,7 +1193,25 @@ func TestReplanFindings(t *testing.T) {
 			st.old[2].Status = "closed"
 			p.Cards = append(p.Cards, st.prev.Cards[2])
 		}, []string{"card docs ended closed before it started: leave its key out, and add its work under a new key"}},
-		{"a merged card on main left out, to come off main", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] }, nil},
+		{"R5 a merged card on main left out", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] },
+			[]string{"card api is merged on main: keep its key, or name it in take_off_main to take its work off main"}},
+		{"a merged card on main taken off main", func(_ *replanState, p *Plan) {
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+		}, nil},
+		{"take_off_main names no card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"nope"} },
+			[]string{"take_off_main names nope, which is no card of this plan's record; name the key of a merged card"}},
+		{"take_off_main names a card that did not merge", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"ui"} },
+			[]string{"take_off_main names ui, which has not merged: its work is not on main; leave it out of take_off_main"}},
+		{"take_off_main names a card taken off main already", func(st *replanState, p *Plan) {
+			st.reverted = map[string]bool{"t-api": true}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+		}, []string{"take_off_main names api, which was taken off main already; leave it out of take_off_main"}},
+		{"take_off_main names the integration card", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"int"} },
+			[]string{"take_off_main names int, the integration card, whose code stays on main; leave it out of take_off_main"}},
+		{"take_off_main names a card the revision keeps", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"api"} },
+			[]string{"take_off_main names api, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main"}},
 		{"a card taken off main kept", func(st *replanState, _ *Plan) { st.reverted = map[string]bool{"t-api": true} },
 			[]string{`card api was taken off main: leave its key out, and add a card with "from": "api" to land it again from salvage`}},
 		{"a card taken off main landed again from salvage", func(st *replanState, p *Plan) {
@@ -1298,8 +1317,8 @@ func TestReplanState(t *testing.T) {
 	if len(st.started) != 1 || st.started["api"].Brief != "the api" {
 		t.Fatalf("started = %+v, want api's entry of revision 1 alone", st.started)
 	}
-	if !reflect.DeepEqual(st.merged, map[string]bool{"m": true}) || !reflect.DeepEqual(st.reverted, map[string]bool{"m": true}) || st.cut != "c" || !st.cutWork {
-		t.Fatalf("merged %v, reverted %v, cut %q, work %t", st.merged, st.reverted, st.cut, st.cutWork)
+	if !reflect.DeepEqual(st.merged, map[string]bool{"m": true}) || !reflect.DeepEqual(st.reverted, map[string]bool{"m": true}) || len(st.integration) != 0 || st.cut != "c" || !st.cutWork {
+		t.Fatalf("merged %v, reverted %v, integration %v, cut %q, work %t", st.merged, st.reverted, st.integration, st.cut, st.cutWork)
 	}
 
 	// a direct card's own replan: the card is among the old cards, a
@@ -1938,8 +1957,8 @@ func TestReplanOffMain(t *testing.T) {
 		t.Fatal(err)
 	}
 	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true})
-	want := "Plan #10 goes back to the planner: 1 card stops, and its work stays on its branch. " +
-		"Plan #10's 1 merged card comes off main: the merge queue waits for the revert, card #21."
+	want := "Plan #10's 1 merged card comes off main: the merge queue waits for the revert, card #21. " +
+		"Once the revert lands or ends, plan #10 goes back to the planner and 1 card stops; its work stays on its branch."
 	if err != nil || note != want {
 		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
 	}
@@ -2041,7 +2060,7 @@ func TestReplanOffMainCompletesAnUnstartedRevert(t *testing.T) {
 	g := offMainRig(t)
 	offMainStep(t, g)
 	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller"})
-	want := "Plan #10 goes back to the planner: no card stops. Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21."
+	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21. Once the revert lands or ends, plan #10 goes back to the planner; no card stops."
 	if err != nil || note != want {
 		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
 	}
@@ -2180,6 +2199,35 @@ func TestRecordReplanOffMain(t *testing.T) {
 				t.Fatalf("the plan's comments %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A replan's record names the cards its revision takes off main, on the
+// plan's issue and in the plan's replanned step.
+func TestRecordReplanTakesOffMain(t *testing.T) {
+	ctx := context.Background()
+	at := time.Now().Add(-time.Hour).UTC()
+	r, _, fj, step := recordRig(t, at, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the api is wrong.", "revision": 1},
+		Task{ID: "t-api", PlanKey: "api", IssueNumber: 21, Status: "done", MergeCommit: "m-api", PlanRevision: 1},
+		Task{ID: "t-cli", PlanKey: "cli", IssueNumber: 23, Status: "done", MergeCommit: "m-cli", PlanRevision: 1})
+	p, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := Plan{Summary: "s", TakeOffMain: []string{"api", "cli"}, Cards: []PlanCard{{Key: "api2", Role: RoleFeature, Title: "api2", Brief: "api2", Size: "small"}}}
+	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
+		t.Fatal(err)
+	}
+	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api), #23 (cli) off main.\nAsked by ana: the api is wrong."
+	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
+		t.Fatalf("the plan's comments %q, want %q", got, want)
+	}
+	lines := stepsNamed(t, r, "t-plan", "replanned")
+	var got struct {
+		TakeOffMain []string `json:"take_off_main"`
+	}
+	if len(lines) != 1 || json.Unmarshal(lines[0], &got) != nil || !slices.Equal(got.TakeOffMain, []string{"api", "cli"}) {
+		t.Fatalf("the plan's replanned steps %s, want take_off_main api and cli", lines)
 	}
 }
 

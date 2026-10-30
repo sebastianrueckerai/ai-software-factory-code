@@ -50,10 +50,12 @@ type approvalCard struct {
 	// standing verdicts
 	CriteriaSpec factoryd.CriteriaSpec
 	Criteria     []criterionRow
-	// a plan: its revision, the summary and the cards in filing order
+	// a plan: its revision, the summary, the cards in filing order and the
+	// keys it takes off main
 	PlanSpec    factoryd.PlanSpec
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
+	TakeOffMain []string
 	Questions   []planQuestion
 	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
@@ -238,11 +240,11 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
 		return fmt.Errorf("spec: %w", err)
 	}
-	_, summary, rows, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
+	_, p, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
 	if err != nil || !ok {
 		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
 	}
-	k.PlanSummary, k.PlanRows = summary, rows
+	k.PlanSummary, k.PlanRows, k.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
 	if err != nil {
 		return fmt.Errorf("questions of revision %d of %s: %w", k.PlanSpec.Revision, k.TaskID, err)
@@ -280,18 +282,17 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 }
 
 // planTable is revision n (0 the newest) of plan task id's plan: the
-// revision, its summary and its cards in filing order; false when there
-// is none.
-func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.PlanRevision, string, []factoryd.PlanRow, bool, error) {
+// revision and its plan; false when there is none.
+func (c *Console) planTable(ctx context.Context, id string, n int) (factoryd.PlanRevision, factoryd.Plan, bool, error) {
 	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, id, n)
 	if err != nil || !ok {
-		return rev, "", nil, false, err
+		return rev, factoryd.Plan{}, false, err
 	}
 	var p factoryd.Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return rev, "", nil, false, fmt.Errorf("revision %d of %s: %w", rev.Revision, id, err)
+		return rev, factoryd.Plan{}, false, fmt.Errorf("revision %d of %s: %w", rev.Revision, id, err)
 	}
-	return rev, p.Summary, factoryd.PlanRows(p), true, nil
+	return rev, p, true, nil
 }
 
 // approve approves the approval request the path names (doApprove).

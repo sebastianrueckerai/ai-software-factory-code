@@ -235,7 +235,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 	case k.Track != policy.TrackPlan:
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d is no plan and belongs to none.", k.IssueNumber))
 	}
-	rev, summary, rows, ok, err := t.c.planTable(ctx, plan.ID, 0)
+	rev, p, ok, err := t.c.planTable(ctx, plan.ID, 0)
 	if err != nil {
 		return "", err
 	}
@@ -250,7 +250,10 @@ func (t *turn) planText(in toolInput) (string, error) {
 	for _, c := range cards {
 		issues[c.PlanKey] = c.IssueNumber
 	}
-	fmt.Fprintf(&b, "revision %d, sha256 %s\nsummary: %s", rev.Revision, rev.SHA256, summary)
+	fmt.Fprintf(&b, "revision %d, sha256 %s\nsummary: %s", rev.Revision, rev.SHA256, p.Summary)
+	if len(p.TakeOffMain) > 0 {
+		b.WriteString("\ntakes off main: " + strings.Join(p.TakeOffMain, ", "))
+	}
 	if totals, err := t.c.cfg.Costs.CallTotals(ctx, []string{plan.ID}); err != nil {
 		return "", err
 	} else if line := callsLine(totals[plan.ID]); line != "" {
@@ -282,7 +285,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 			break
 		}
 	}
-	for _, row := range rows {
+	for _, row := range factoryd.PlanRows(p) {
 		issue := "not filed"
 		if n := issues[row.Key]; n > 0 {
 			issue = fmt.Sprintf("issue #%d", n)
