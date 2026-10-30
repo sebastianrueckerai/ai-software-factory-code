@@ -40,6 +40,6 @@ func Text() string {
 		fmt.Fprintf(&b, "  %s: %s\n", g, GateMeaning(g))
 	}
 	b.WriteString("\nSandbox images:\n" + Images + "\n")
-	b.WriteString("\nA writer of your project can message you through the card's chat. Ask for a decision with escalate_to_human; ask the issue's author with request_info.\n")
+	b.WriteString("\nA writer of your project can message you through the card's chat. Ask for a decision with escalate_to_human; ask the issue's author with request_info. A code session asks to cut a card that is too big with request_cut.\n")
 	return b.String()
 }
