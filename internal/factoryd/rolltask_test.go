@@ -318,6 +318,7 @@ type rollForgejo struct {
 	unreadable  map[string]bool                // a job's target_url whose log Forgejo cannot open
 	closed      []string                       // the number of every issue closed
 	jobs        map[int64][]map[string]any     // run id -> its jobs (actionJob), as actions/runs/{id}/jobs lists them
+	jobsDown    bool                           // actions/runs/{id}/jobs answers 500
 	jobLogs     map[int64]string               // job id -> its log, as actions/jobs/{id}/logs serves it; unlisted: 404
 	rerun       int                            // the status a job's re-run answers; 0 is 204
 	reruns      []string                       // "token job" of every job re-run asked
@@ -415,6 +416,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			json.NewDecoder(r.Body).Decode(&in)
 			dep := strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/dependencies") + " on " + fmt.Sprint(in["index"])
 			f.deps = slices.DeleteFunc(f.deps, func(d string) bool { return d == dep })
+		case repo == codeRepo && f.jobsDown && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/jobs"):
+			http.Error(w, "boom", http.StatusInternalServerError)
 		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/jobs"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/runs/"), "/jobs"), 10, 64)
 			jobs, ok := f.jobs[id]

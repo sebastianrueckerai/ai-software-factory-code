@@ -147,13 +147,15 @@ func (s *PGStore) ClearRevertPause(ctx context.Context, project, revertTask stri
 // mainState reads main's newest push run: a red one pauses the queue, a
 // green one ends a pause, and a pause past the bound with no revert yet
 // files it. A red one on a pause with no card, a re-run's, is judged
-// again (pause).
+// again (pause), and so is the pause's own run when its re-run ended
+// cancelled: no run of it turns green or red then, and the pause would
+// hold with no card.
 // While the newest runs or waits (a red one's re-run too), or ended
-// neither green nor red, nothing changes: an older run says nothing of
-// main's head. runs are the poll's, newest first by id.
+// neither green nor red otherwise, nothing changes: an older run says
+// nothing of main's head. runs are the poll's, newest first by id.
 func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	newest := newestMain(runs)
-	if newest == nil || (newest.Status != "success" && newest.Status != "failure") {
+	if newest == nil || (newest.Status != "success" && newest.Status != "failure" && newest.Status != "cancelled") {
 		return nil
 	}
 	project := r.Repo.String()
@@ -175,8 +177,11 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 			log.Printf("roller: end the pause's card %s: %v", pause.FixTask, err)
 		}
 		return nil
-	case newest.Status == "failure" && (!paused || pause.FixTask == ""):
+	case newest.Status == "failure" && (!paused || pause.FixTask == ""),
+		newest.Status == "cancelled" && paused && pause.FixTask == "" && pause.RunID == newest.ID:
 		return r.pause(ctx, *newest)
+	case newest.Status == "cancelled":
+		return nil
 	case paused && time.Since(pause.Since) >= mainRedBound:
 		return r.revert(ctx, pause)
 	}
@@ -200,11 +205,11 @@ func newestMain(runs []ActionRun) *ActionRun {
 // queue since mainState read it keeps the queue, and the red files
 // nothing; a crash before the re-run leaves a pause the next poll re-runs
 // from. While a job of the run waits or runs, as a re-run does, nothing
-// more happens. A failed job at attempt 2 or up, or a re-run Forgejo
-// refuses, files the card: the human card to re-run the jobs when every
-// failed one lost its runner (lostRunners), else the fix-forward card. A
-// filing that fails leaves the pause with no card, which the next poll
-// judges again, its since kept.
+// more happens. A failed or cancelled job at attempt 2 or up, a re-run
+// Forgejo refuses, or a job list Forgejo does not answer files the card:
+// the human card to re-run the jobs when every failed one lost its runner
+// (lostRunners), else the fix-forward card. A filing that fails leaves the
+// pause with no card, which the next poll judges again, its since kept.
 func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
@@ -216,21 +221,21 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	if wrote, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now()}); err != nil || !wrote {
 		return err
 	}
-	jobs, err := r.Forgejo.ActionRunJobs(ctx, r.Token, r.Repo.Owner, r.Repo.Name, run.ID)
-	if err != nil {
-		return err
+	jobs, unlisted := r.Forgejo.ActionRunJobs(ctx, r.Token, r.Repo.Owner, r.Repo.Name, run.ID)
+	if unlisted != nil {
+		log.Printf("roller: jobs of main's run %d: %v: the card at once", run.ID, unlisted)
 	}
 	var redJobs []ActionJob
 	for _, j := range jobs {
 		if !doneStatus(j.Status) {
 			return nil
 		}
-		if j.Status == "failure" {
+		if j.Status == "failure" || j.Status == "cancelled" {
 			redJobs = append(redJobs, j)
 		}
 	}
-	var refused error
-	if len(redJobs) > 0 && !slices.ContainsFunc(redJobs, func(j ActionJob) bool { return j.Attempt > 1 }) {
+	refused := unlisted
+	if refused == nil && len(redJobs) > 0 && !slices.ContainsFunc(redJobs, func(j ActionJob) bool { return j.Attempt > 1 }) {
 		for _, j := range redJobs {
 			if refused = r.Forgejo.RerunActionJob(ctx, r.Forgejo.Access(p).Actions, r.Repo.Owner, r.Repo.Name, j.ID); refused != nil {
 				log.Printf("roller: re-run job %s of main's run %d: %v: the card at once", j.Name, run.ID, refused)
@@ -279,7 +284,12 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 			"The project's merge queue is paused until a push run of main is green. Read the run's log, find the cause in main at %s, "+
 			"fix it on this card's branch from main's head, and push: this card merges ahead of the queue, and main's next green run "+
 			"ends the pause. A fix that does not land within %s has factoryd file the revert of %s.",
-			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short) + r.failedLogs(ctx, redJobs)
+			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short)
+		if unlisted != nil {
+			body += fmt.Sprintf("\n\nfactoryd cannot list the run's jobs, so this card carries no log lines (%s).", textutil.Truncate(oneLine(cmp.Or(r.Scrub, redact.New()).String(unlisted.Error())), mainLogBytes))
+		} else {
+			body += r.failedLogs(ctx, redJobs)
+		}
 		t, _, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
 			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
 		})

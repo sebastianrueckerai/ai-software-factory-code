@@ -846,6 +846,53 @@ func TestRollerFilesTheFixCardWhenTheReRunFailsAStep(t *testing.T) {
 	}
 }
 
+// A pause is never left with no way out. Forgejo failing to list the red
+// run's jobs files the card at once, as a refused re-run does, and the
+// card says why it carries no log lines.
+func TestRollerFilesTheCardWhenTheRunsJobsCannotBeListed(t *testing.T) {
+	f, roller, store, _ := lostMain(t)
+	f.logs["/"+codeRepo+"/actions/runs/1208/jobs/0"] = readTestdata(t, "joblog-run1199-test.log")
+	f.jobsDown = true
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.RunID != 58 || pause.FixTask == "" || len(f.reruns) != 0 || len(f.issues) != 1 {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want the fix card at once, no re-run", pause, ok, f.reruns, f.issues)
+	}
+	note := "\n\nfactoryd cannot list the run's jobs, so this card carries no log lines (forgejo GET /api/v1/repos/" + codeRepo + "/actions/runs/58/jobs: status 500: boom)."
+	if fix := store.tasks[pause.FixTask]; fix.Source != SourceMainFix || !strings.HasSuffix(fix.Objective, note) {
+		t.Fatalf("card %+v, want the fix card whose objective ends %q", fix, note)
+	}
+}
+
+// The pause's own run, re-run by factoryd, ended cancelled: no run will
+// turn it green or red, so the card follows on the cancelled re-run's
+// jobs, and the pause has its way out.
+func TestRollerFilesTheCardWhenItsReRunIsCancelled(t *testing.T) {
+	f, roller, store, _ := lostMain(t)
+	ctx := context.Background()
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if p := store.pauses[codeRepo]; p.FixTask != "" || len(f.reruns) != 1 {
+		t.Fatalf("pause = %+v, re-runs %q; want the re-run's pause with no card", p, f.reruns)
+	}
+	f.logs["/"+codeRepo+"/actions/runs/1208/jobs/0"] = readTestdata(t, "joblog-run1199-test.log")
+	f.jobs[58][0]["status"] = "cancelled"
+	f.runs = []map[string]any{run1208("cancelled"), pushRun(57, commitC1, "success")}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.RunID != 58 || pause.FixTask == "" || len(f.reruns) != 1 || len(f.issues) != 1 {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want the card and no second re-run", pause, ok, f.reruns, f.issues)
+	}
+	if fix := store.tasks[pause.FixTask]; fix.Source != SourceMainFix || !strings.Contains(fix.Objective, "\n\ntest, attempt 2:") {
+		t.Fatalf("card %+v, want the fix card with the cancelled job's log", fix)
+	}
+}
+
 // A runner killed outright writes no line of its own: its job's log stops
 // mid-step, and Forgejo fails the job once the runner has been silent for
 // its zombie timeout, 10 minutes in production (the test job's record is
