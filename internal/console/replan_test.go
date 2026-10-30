@@ -59,7 +59,7 @@ func TestReplanCard(t *testing.T) {
 		`<form method="post" action="/tasks/t-r/replan" hx-post="/tasks/t-r/replan" hx-target="#board" hx-swap="outerHTML">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `">` +
 		`<label for="replan-t-r">Why it goes back to the planner, posted on the issue as you</label>` +
-		`<textarea id="replan-t-r" name="note" rows="2" maxlength="4000" required></textarea>` +
+		`<textarea id="replan-t-r" name="note" rows="2" maxlength="2000" required></textarea>` +
 		`<button type="submit" aria-label="Replan #11">Replan</button></form></div></details>`
 	if got := drawer("t-r"); !strings.Contains(got, form) {
 		t.Fatalf("the running direct card's drawer lacks the Replan form:\n%s", got)

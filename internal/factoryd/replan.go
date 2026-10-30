@@ -386,11 +386,14 @@ type ErrNoReplan string
 
 func (e ErrNoReplan) Error() string { return string(e) }
 
+// MaxReplanComment bounds a person's replan comment, in bytes.
+const MaxReplanComment = maxHandoverMessage
+
 // ReplanComment is a person's replan comment as the replan step holds it,
 // sanitised and cut. The console posts these words on the issue, so the
 // plan loop knows the comment for the replan's own note.
 func ReplanComment(s string) string {
-	return textutil.Truncate(sanitize.Inbound(s), maxHandoverMessage)
+	return textutil.Truncate(sanitize.Inbound(s), MaxReplanComment)
 }
 
 // MayReplan tells whether a person may send card t back to the planner: an

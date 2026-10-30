@@ -53,6 +53,8 @@ var funcs = template.FuncMap{
 	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
 	"maxAnswer": func() int { return factoryd.MaxAnswer },
+	// maxReplan is the Replan box's bound, the replan step's
+	"maxReplan": func() int { return factoryd.MaxReplanComment },
 	// lease renders minutes as whole hours when they are
 	"lease": func(minutes int) string {
 		if minutes%60 == 0 {
