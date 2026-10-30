@@ -490,7 +490,7 @@ port 8090 only.
   are compared, not diff path listings, so renames out of the directory
   and quoted non-ASCII names cannot slip past.
 - While a plan of the code repository is open on `main`, or has a card
-  in the merge queue (in gate `merge-queue` or holding a queue entry),
+  in the merge queue (in review, in gate `merge-queue` or holding a queue entry),
   factoryd keeps the Flux Kustomization `flux-system/factory` suspended,
   so no change under `k8s/` goes live; it resumes it once neither holds,
   and while a roll or a Deploy now goes out. Flux stays resumed while a

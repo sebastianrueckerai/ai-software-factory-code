@@ -605,7 +605,9 @@ func TestRollerResumesFluxForDeployNow(t *testing.T) {
 // A plan card in the merge queue suspends Flux before the plan's first
 // merge, though no plan is open on main and rolls are not held: a card
 // holding a queue entry, and one held back in gate merge-queue. Once the
-// card leaves the queue without merging, the next poll resumes.
+// card leaves the queue without merging, the next poll resumes. A card
+// merged by hand keeps its gate merge-queue but is out of the queue: once
+// its plan closed, Flux stays resumed.
 func TestRollerSuspendsFluxForAQueuedPlanCard(t *testing.T) {
 	logs := captureLog(t)
 	f := &rollForgejo{runs: []map[string]any{pushRun(58, commitC2, "running")}}
@@ -642,6 +644,11 @@ func TestRollerSuspendsFluxForAQueuedPlanCard(t *testing.T) {
 
 	c1.Gate = ""
 	store.tasks["t-c1"] = c1
+	poll(false)
+
+	c1.Status, c1.Gate, c1.MergeCommit, c1.FinishedAt = "merged", GateMergeQueue, mergePR12, justNow()
+	store.tasks["t-c1"] = c1
+	store.closed["t-plan"] = time.Now()
 	poll(false)
 }
 

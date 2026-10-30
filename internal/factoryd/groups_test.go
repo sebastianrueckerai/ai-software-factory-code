@@ -252,6 +252,8 @@ func TestQueuedPlans(t *testing.T) {
 			('c4', 1, 0, 'in-review', 'sf/q', 'agent', 'plan', 'p4', 'direct', 'one', 41, '', NULL),
 			('p5', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 5, '', '2026-10-01T00:00:00Z'),
 			('c5', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'p5', 'direct', 'one', 51, 'merge-queue', '2026-10-01T00:00:00Z'),
+			('p6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 6, '', '2026-10-01T00:00:00Z'),
+			('c6', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'merge-queue', '2026-10-01T00:00:00Z'),
 			('d1', 1, 0, 'in-review', 'sf/r', 'agent', 'webhook', NULL, 'direct', NULL, 9, '', NULL)`); err != nil {
 		t.Fatal(err)
 	}

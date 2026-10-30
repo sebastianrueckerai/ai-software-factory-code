@@ -370,7 +370,7 @@ func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64
 	for _, c := range s.tasks {
 		queued := c.Gate == GateMergeQueue || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
 		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
-			!Final(c.Status) && queued && !slices.Contains(out, issue) {
+			c.Status == "in-review" && queued && !slices.Contains(out, issue) {
 			out = append(out, issue)
 		}
 	}
