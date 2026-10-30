@@ -125,6 +125,7 @@ type groupForgejo struct {
 	open     []map[string]any
 	issues   []string // "title\n\nbody" of each issue created
 	pulls    []string // "head title\n\nbody" of each pull request created
+	noIssue  bool     // POST /issues answers 500
 }
 
 func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
@@ -156,6 +157,8 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 			f.open = append(f.open, pr)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(pr)
+		case r.Method == "POST" && p == "/api/v1/repos/sf/repo/issues" && f.noIssue:
+			http.Error(w, "forgejo down", http.StatusInternalServerError)
 		case r.Method == "POST" && p == "/api/v1/repos/sf/repo/issues":
 			f.issues = append(f.issues, body.Title+"\n\n"+body.Body)
 			w.WriteHeader(http.StatusCreated)
@@ -334,6 +337,23 @@ func TestRevertGroupResumesItsOwnPause(t *testing.T) {
 	}
 	if _, ok := g.store.tasks["t-rv"]; ok || len(g.fj.issues) != 0 {
 		t.Errorf("card t-rv filed, issues %q; want none", g.fj.issues)
+	}
+}
+
+// A plain revert whose card fails to file answers the error and lifts
+// the pause.
+func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
+	g := newGroupRevertRig(t)
+	g.fj.noIssue = true
+	note, err := g.revert(t)
+	if err == nil || !strings.Contains(err.Error(), "forgejo down") {
+		t.Fatalf("RevertGroup = %q, %v; want the filing's error", note, err)
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok {
+		t.Errorf("pause = %+v, want it lifted", p)
+	}
+	if steps := groupRevertSteps(t, g.r); len(steps) != 0 {
+		t.Errorf("steps = %v, want none", steps)
 	}
 }
 

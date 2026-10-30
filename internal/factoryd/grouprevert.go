@@ -199,8 +199,8 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 		body := fmt.Sprintf("Takes plan #%d's merged cards off main, newest first: %s.\n\nWhy: %s\n\n"+
 			"The merge queue of %s waits for this revert. Branch %s of the bot's fork keeps main as it was before it.",
 			p.IssueNumber, strings.Join(named, ", "), why, p.Repository, salvage)
-		pr, err := r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch)
-		if err != nil {
+		var pr *PullRequestRef
+		if pr, err = r.forgejo.FindOpenPullRequestForBranch(ctx, repo.Owner, repo.Name, fork, branch); err != nil {
 			return 0, err
 		}
 		if pr == nil {
