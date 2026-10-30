@@ -2841,3 +2841,18 @@ func TestRedPlainRevertHandsOverToTheAgentCard(t *testing.T) {
 		t.Errorf("approvals %+v, issues %q, t-rv %s; want a person asked and nothing filed", g.store.approvals, g.fj.issues, g.store.tasks["t-rv"].Status)
 	}
 }
+
+// A hand-over that cannot name the merges fails the plain card at once:
+// a missing group_revert step is no state a retry changes. Nothing files,
+// and the pause stays on the plain card for its end to lift.
+func TestRedPlainRevertWithoutItsStepFailsAtOnce(t *testing.T) {
+	g := revertEndRig(t)
+	red := ApprovalInput{PR: PullRequest{Number: 70}, Commit: "rv1", RedChecks: true, Factory: true}
+	err := g.r.RequestApproval(context.Background(), "t-rv", red)
+	if want := "plan #10's timeline records the merges of revert t-rv for 0 of its 2 cards"; !isTerminal(err) || !strings.Contains(err.Error(), want) {
+		t.Fatalf("error = %v, want the terminal %q", err, want)
+	}
+	if p := g.store.pauses["sf/repo"]; p.RevertTask != "t-rv" || len(g.fj.issues) != 0 || len(g.store.approvals) != 0 {
+		t.Errorf("pause %+v, issues %q, approvals %+v; want the pause on t-rv and nothing filed or asked", p, g.fj.issues, g.store.approvals)
+	}
+}

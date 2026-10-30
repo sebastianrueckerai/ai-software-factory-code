@@ -810,3 +810,17 @@ func TestRevertPausePassFilesALostRevertCard(t *testing.T) {
 		t.Errorf("pause = %+v, want it as it stood", p)
 	}
 }
+
+// The group_revert step holds the merges' order a red plain revert's
+// hand-over needs, so a step that fails to write fails the revert before
+// anything files: the pause lifts, and no pull request or card is left.
+func TestRevertGroupFailsWhenItsStepFails(t *testing.T) {
+	g := newGroupRevertRig(t)
+	g.r.timeline.Objects = &stepFails{fakeObjectStore: g.r.timeline.Objects.(*fakeObjectStore), task: "p", step: "group_revert", fails: 1}
+	if _, err := g.revert(t); err == nil || !strings.Contains(err.Error(), "the object store is down") {
+		t.Fatalf("error = %v, want the step's", err)
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok || len(g.fj.pulls) != 0 || len(g.fj.issues) != 0 || len(g.calls) != 1 {
+		t.Errorf("pause %+v, pull requests %q, issues %q, reverts %q; want the pause lifted after one revert and nothing filed", p, g.fj.pulls, g.fj.issues, g.calls)
+	}
+}

@@ -214,8 +214,10 @@ func (r *Runner) revertPause(ctx context.Context, p Task, cards []Task) (string,
 // the card on main's head: a factory pull request card for the plain
 // revert, an agent card for one that conflicts. It records the
 // group_revert step on plan p right after git, so a retry may record it
-// again. It answers the card's issue, and the pull request it opened, 0
-// for none, also with an error.
+// again; a step that fails to write fails the call, as a red plain
+// revert's hand-over reads the merges' order from it. It answers the
+// card's issue, and the pull request it opened, 0 for none, also with an
+// error.
 func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards []Task, why, id string) (issue, opened int64, err error) {
 	project, ok, err := r.store.ProjectByRepository(ctx, p.Repository)
 	if err != nil {
@@ -243,7 +245,9 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	if err != nil {
 		return 0, 0, fmt.Errorf("revert plan #%d's merges: %w", p.IssueNumber, err)
 	}
-	r.record(ctx, p.ID, stepGroupRevert, map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict})
+	if err := r.timeline.Append(ctx, p.ID, stepGroupRevert, map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict}); err != nil {
+		return 0, 0, fmt.Errorf("record %s: %w", stepGroupRevert, err)
+	}
 	merges := make([]Task, len(shas))
 	for i, sha := range shas {
 		merges[i] = bySHA[sha]
@@ -493,7 +497,9 @@ func (r *Runner) handOverRevert(ctx context.Context, t Task) (bool, error) {
 
 // fileHandover files agent card id that takes over plain revert card t of
 // plan p, which reverted the merges of reverts, shas newest first: its
-// branch first continues t's, as the card's issue can start it.
+// branch first continues t's, as the card's issue can start it. Merges it
+// cannot name, or t's branch gone, are terminal: no retry changes them,
+// and t's failure lifts the pause.
 func (r *Runner) fileHandover(ctx context.Context, p, t Task, reverts, shas []string, id string) (Task, error) {
 	project, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
@@ -514,14 +520,16 @@ func (r *Runner) fileHandover(ctx context.Context, p, t Task, reverts, shas []st
 	for i, sha := range shas {
 		m, ok := bySHA[sha]
 		if !ok {
-			return Task{}, fmt.Errorf("plan #%d's revert %s reverted %s, a merge of none of its cards %q", p.IssueNumber, t.ID, sha, reverts)
+			return Task{}, terminalError("plan #%d's revert %s reverted %s, a merge of none of its cards %q", p.IssueNumber, t.ID, sha, reverts)
 		}
 		merges[i] = m
 	}
 	if len(merges) != len(reverts) {
-		return Task{}, fmt.Errorf("plan #%d's timeline records the merges of revert %s for %d of its %d cards", p.IssueNumber, t.ID, len(merges), len(reverts))
+		return Task{}, terminalError("plan #%d's timeline records the merges of revert %s for %d of its %d cards", p.IssueNumber, t.ID, len(merges), len(reverts))
 	}
-	if _, err := r.ContinueBranch(ctx, t, Task{ID: id}); err != nil {
+	if _, err := r.ContinueBranch(ctx, t, Task{ID: id}); errors.Is(err, ErrNoBranch) {
+		return Task{}, terminalError("continue the branch of %s: %v", t.ID, err)
+	} else if err != nil {
 		return Task{}, fmt.Errorf("continue the branch of %s: %w", t.ID, err)
 	}
 	card, _, err := r.fileRevertAgent(ctx, p, project, merges, "The plain revert is on this card's branch; its checks failed: make main build green.", id, t.SHA)
