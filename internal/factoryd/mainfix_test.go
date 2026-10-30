@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/http"
@@ -584,6 +585,35 @@ func TestRollerFailedLogsAreBounded(t *testing.T) {
 		if got := roller.failedLogs(context.Background(), jobs(c.ids...)); got != c.want {
 			t.Errorf("jobs %v: log tails %q, want %q", c.ids, got, c.want)
 		}
+	}
+}
+
+// A rollback to the image before this one runs on the same schema: that
+// image writes and reads queue_pauses.rerun_at, so the column stays,
+// NULL in a pause this image writes.
+func TestPGStoreQueuePauseReadsOnThePreviousImage(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE queue_pauses`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 30, 3, 30, 7, 0, time.UTC)
+	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: codeRepo, RunID: 3090, SHA: commitC2, Since: at, FixTask: "t-fix"}); err != nil || !wrote {
+		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
+	}
+	var rerun sql.NullTime
+	var fix string
+	if err := s.db.QueryRowContext(ctx, `SELECT rerun_at, fix_task FROM queue_pauses WHERE project = $1`, codeRepo).Scan(&rerun, &fix); err != nil || rerun.Valid || fix != "t-fix" {
+		t.Fatalf("the previous image's read: rerun_at %v, fix_task %q, %v; want NULL and t-fix", rerun, fix, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
+		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at`,
+		codeRepo, 3091, commitC2, at, "", at); err != nil {
+		t.Fatalf("the previous image's write: %v", err)
 	}
 }
 
