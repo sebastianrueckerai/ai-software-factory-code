@@ -536,6 +536,9 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
 	}
 	t.Status = to
+	if !Final(to) {
+		delete(s.settled, id)
+	}
 	if Final(to) || to == "merged" {
 		now := time.Now()
 		if s.chainNow != nil {
@@ -549,7 +552,6 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 	} else {
 		t.FinishedAt = nil
 		delete(s.finished, id)
-		delete(s.settled, id)
 	}
 	s.tasks[id] = t
 	return nil
@@ -2023,6 +2025,28 @@ func TestPGStoreReopenClearsTheFinish(t *testing.T) {
 	}
 	if f, st := finish(); !f || st {
 		t.Fatalf("the merged card: finished %t, settled %t; want finished, not settled", f, st)
+	}
+}
+
+// The fake store moves a card as the SQL does: a move to any status but
+// done, failed or closed clears the spend settlement, a merge too.
+func TestFakeStoreTransitionClearsTheSettlement(t *testing.T) {
+	ctx := context.Background()
+	s := newFakeStore()
+	s.tasks["t-p"] = Task{ID: "t-p", Status: "running"}
+	s.settled["t-p"] = true
+	if err := s.TransitionTask(ctx, "t-p", []string{"running"}, "merged"); err != nil {
+		t.Fatal(err)
+	}
+	if s.settled["t-p"] || s.tasks["t-p"].FinishedAt == nil {
+		t.Fatalf("the merged card: settled %t, finished %v; want finished, not settled", s.settled["t-p"], s.tasks["t-p"].FinishedAt)
+	}
+	s.settled["t-p"] = true
+	if err := s.TransitionTask(ctx, "t-p", []string{"merged"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if !s.settled["t-p"] {
+		t.Fatal("the done card lost its settlement")
 	}
 }
 
