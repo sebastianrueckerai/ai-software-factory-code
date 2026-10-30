@@ -277,6 +277,8 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 		switch {
 		case errors.Is(refused, ErrNoRerun):
 			why = "factoryd re-runs such a run once itself, but Forgejo offered no re-run: it has no rerun API (that came with Forgejo 17), or the project's Actions token lacks the right."
+		case unlisted != nil:
+			why = fmt.Sprintf("factoryd re-runs such a run once itself, but Forgejo did not list the run's jobs (%s).", oneLine(r.Scrub.String(unlisted.Error())))
 		case refused != nil:
 			why = fmt.Sprintf("factoryd re-runs such a run once itself, but its re-run failed (%v).", refused)
 		}

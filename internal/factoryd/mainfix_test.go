@@ -897,6 +897,28 @@ func TestRollerFilesTheCardWhenTheRunsJobsCannotBeListed(t *testing.T) {
 	}
 }
 
+// A run whose jobs Forgejo will not list, and whose failed job lost its
+// runner, gets the human re-run card; the card says the jobs went unlisted,
+// not that a re-run failed, since none was tried.
+func TestRollerReRunCardNamesUnlistedJobs(t *testing.T) {
+	f, roller, store, _ := lostMain(t)
+	f.jobsDown = true
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.FixTask == "" || len(f.reruns) != 0 || len(f.issues) != 1 {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want the re-run card at once, no re-run", pause, ok, f.reruns, f.issues)
+	}
+	want := "factoryd re-runs such a run once itself, but Forgejo did not list the run's jobs (forgejo GET /api/v1/repos/" + codeRepo + "/actions/runs/58/jobs: status 500: boom)."
+	if !strings.Contains(f.issues[0], want) || strings.Contains(f.issues[0], "its re-run failed") {
+		t.Fatalf("issue %q, want %q and no failed re-run", f.issues[0], want)
+	}
+	if fix := store.tasks[pause.FixTask]; fix.Source != SourceRerun {
+		t.Fatalf("card %+v, want the human re-run card", fix)
+	}
+}
+
 // The pause's own run, re-run by factoryd, ended cancelled: no run will
 // turn it green or red, so the card follows on the cancelled re-run's
 // jobs, and the pause has its way out.
