@@ -838,9 +838,9 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the
-// chain stall card and the failed roll card.
+// chain stall card, the failed roll card and the held-production ask.
 func choiceCard(t factoryd.Task) bool {
-	return t.Source == factoryd.SourceChainStall || t.Source == factoryd.SourceRollFailed
+	return t.Source == factoryd.SourceChainStall || t.Source == factoryd.SourceRollFailed || t.Source == factoryd.SourceProductionHeld
 }
 
 // doHumanAnswer answers human card t with the choice value or text names,
@@ -854,7 +854,10 @@ func choiceCard(t factoryd.Task) bool {
 // label as the member's comment, which the roller takes for the retry,
 // and keeps the card: the roller closes it and files the new roll. park
 // and keep waiting record the answer, nothing posted; go hands the card
-// to the factory; every other choice closes the card on its label. Words
+// to the factory; every other choice closes the card on its label. The
+// held-production ask's deploy anyway is a Deploy now, answered only once
+// it went through; its replans are phase 4's doReplan of the plan the
+// value names, and the card closes once factoryd accepted. Words
 // that name no choice are the member's comment on a card that is no
 // choice card, the card still waiting; on a choice card they are refused
 // with the choices, as is a value the question does not offer.
@@ -883,8 +886,31 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if !choiceCard(t) && slices.Contains([]string{factoryd.AnswerRerunAgain, factoryd.AnswerDismiss, factoryd.AnswerRetryRoll, factoryd.AnswerCheckAgain}, value) {
 		return c.doClose(ctx, a, t.ID, label)
 	}
+	if t.Source == factoryd.SourceProductionHeld {
+		if plan, takeOff, ok := factoryd.ReplanChoice(value); ok {
+			return c.answerHoldReplan(ctx, a, t, plan, takeOff, label)
+		}
+	}
 	var gone factoryd.ErrStallGone
 	switch value {
+	case factoryd.AnswerDeployAnyway:
+		if err := c.admit(ctx, accessTable["POST /projects/{name}/deploy-now"], a, t.Repository, ""); err != nil {
+			return "", err
+		}
+		p, ok, err := c.projectAt(ctx, t.Repository)
+		switch {
+		case err != nil:
+			log.Printf("console: the projects: %v", err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the projects")
+		case !ok:
+			return "", refuse(http.StatusNotFound, "There is no project of "+t.Repository+".")
+		}
+		note, err := c.doDeployNow(ctx, a, p.Name)
+		if err != nil {
+			return "", err
+		}
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventQuestionAnswered, map[string]any{"answer": label, "value": value})
+		return note, nil
 	case factoryd.AnswerRerunAgain:
 		switch err := c.cfg.RerunStall(ctx, t.Repository, t.SHA); {
 		case errors.As(err, &gone):
@@ -923,6 +949,31 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return c.doGo(ctx, a, t.ID)
 	}
 	return c.doClose(ctx, a, t.ID, label) // check again, close, any other choice
+}
+
+// answerHoldReplan replans plan on the held-production ask t's answer,
+// off main when takeOff, then closes the ask on label. A refusal closes
+// nothing. The note ends with factoryd's own answer, which says what
+// happens next.
+func (c *Console) answerHoldReplan(ctx context.Context, a actor, t factoryd.Task, plan string, takeOff bool, label string) (string, error) {
+	if err := c.admit(ctx, accessTable["replan"], a, t.Repository, "task "+plan); err != nil {
+		return "", err
+	}
+	pt, err := c.cardIn(ctx, a, plan)
+	if err != nil {
+		return "", err
+	}
+	said, err := c.doReplan(ctx, a, plan, fmt.Sprintf("Chosen on #%d, the ask about held production.", t.IssueNumber), takeOff)
+	if err != nil {
+		return "", err
+	}
+	if _, err := c.doClose(ctx, a, t.ID, label); err != nil {
+		return "", err
+	}
+	if takeOff {
+		return fmt.Sprintf("Taking plan #%d off main and replanning; #%d is closed. %s", pt.IssueNumber, t.IssueNumber, said), nil
+	}
+	return fmt.Sprintf("Replanning plan #%d on top; #%d is closed. %s", pt.IssueNumber, t.IssueNumber, said), nil
 }
 
 // answerInChatNote is doAnswerValue's note when the member's own words
