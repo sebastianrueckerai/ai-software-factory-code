@@ -349,7 +349,8 @@ func TestRevertGroupResumesItsOwnPause(t *testing.T) {
 
 // A plain revert whose card fails to file answers the error, closes the
 // pull request the call opened and lifts the pause. A pull request an
-// earlier call opened stays open.
+// earlier call opened stays open. The group_revert step, written right
+// after git, stays.
 func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	g := newGroupRevertRig(t)
 	g.fj.noIssue = true
@@ -363,8 +364,10 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	if len(g.fj.pulls) != 1 || !slices.Equal(g.fj.closed, []int64{71}) {
 		t.Errorf("pull requests %q, closed %v; want the one opened, closed", g.fj.pulls, g.fj.closed)
 	}
-	if steps := groupRevertSteps(t, g.r); len(steps) != 0 {
-		t.Errorf("steps = %v, want none", steps)
+	head, _, _ := strings.Cut(strings.Join(g.fj.pulls, ""), " ")
+	id := strings.TrimPrefix(head, "factory-agent:factory/")
+	if steps, want := groupRevertSteps(t, g.r), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
+		t.Errorf("steps = %v, want %v", steps, want)
 	}
 
 	g = newGroupRevertRig(t)
@@ -376,6 +379,9 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	}
 	if _, ok := g.store.pauses["sf/repo"]; ok || len(g.fj.pulls) != 0 || len(g.fj.closed) != 0 {
 		t.Errorf("paused %t, pull requests %q, closed %v; want the pause lifted and pull request #70 reused and left open", ok, g.fj.pulls, g.fj.closed)
+	}
+	if steps, want := groupRevertSteps(t, g.r), []map[string]any{{"step": "group_revert", "card": "t-rv", "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
+		t.Errorf("steps = %v, want %v", steps, want)
 	}
 }
 

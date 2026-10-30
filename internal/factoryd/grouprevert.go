@@ -190,8 +190,9 @@ func (r *Runner) revertPause(ctx context.Context, p Task, cards []Task) (string,
 // fileGroupRevert reverts cards' merges on the branch of card id and files
 // the card on main's head: a factory pull request card for the plain
 // revert, an agent card for one that conflicts. It records the
-// group_revert step on plan p and answers the card's issue, and the pull
-// request it opened, 0 for none, also with an error.
+// group_revert step on plan p right after git, so a retry may record it
+// again. It answers the card's issue, and the pull request it opened, 0
+// for none, also with an error.
 func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards []Task, why, id string) (issue, opened int64, err error) {
 	project, ok, err := r.store.ProjectByRepository(ctx, p.Repository)
 	if err != nil {
@@ -219,6 +220,7 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	if err != nil {
 		return 0, 0, fmt.Errorf("revert plan #%d's merges: %w", p.IssueNumber, err)
 	}
+	r.record(ctx, p.ID, "group_revert", map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict})
 	merges := make([]Task, len(shas))
 	for i, sha := range shas {
 		merges[i] = bySHA[sha]
@@ -257,7 +259,6 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	if err != nil {
 		return 0, opened, err
 	}
-	r.record(ctx, p.ID, "group_revert", map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict})
 	return ref.Number, opened, nil
 }
 
