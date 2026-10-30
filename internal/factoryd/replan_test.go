@@ -1991,6 +1991,28 @@ func TestReplanOffMain(t *testing.T) {
 	}
 }
 
+// An off-main press whose request ends while the revert's git runs (a
+// tab closed) still files the revert: the request's end does not reach
+// the revert.
+func TestReplanOffMainOutlivesItsRequest(t *testing.T) {
+	g := offMainRig(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	g.answer = func() (string, error) {
+		cancel()
+		return "", nil
+	}
+	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true})
+	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21. " +
+		"Once the revert lands or ends, plan #10 goes back to the planner; no card stops."
+	if err != nil || note != want {
+		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
+	}
+	if pause, ok := g.store.pauses["sf/repo"]; !ok || g.store.tasks[pause.RevertTask].IssueNumber != 21 {
+		t.Fatalf("pause %+v (%t), want it on the revert's card #21", pause, ok)
+	}
+}
+
 // An off-main Replan of a plan with no merged card on main, or under a
 // standing pause, refuses and records nothing.
 func TestReplanOffMainRefusals(t *testing.T) {

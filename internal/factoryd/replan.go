@@ -587,9 +587,10 @@ func onMain(cards []Task) []Task {
 // takeOffMain starts the revert of plan p's merged cards, which its
 // pending replan step waits for; the plan stays done, and the revert's end
 // completes the step (endGroupRevert). The note is the revert's, then
-// what follows its end. A revert another pause refuses ends the step.
+// what follows its end. A revert another pause refuses ends the step. The
+// revert runs past ctx's end: a press's request may end mid-clone.
 func (r *Runner) takeOffMain(ctx context.Context, p Task, step ReplanStep, cards []Task) (string, error) {
-	note, err := r.RevertGroup(ctx, p, cards, "asked by "+cmp.Or(step.By, "a person")+": "+step.Comment)
+	note, err := r.RevertGroup(context.WithoutCancel(ctx), p, cards, "asked by "+cmp.Or(step.By, "a person")+": "+step.Comment)
 	var no ErrNoReplan
 	if errors.As(err, &no) {
 		// a pause that took the project after the press read none: the
