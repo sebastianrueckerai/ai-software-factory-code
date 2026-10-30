@@ -1967,7 +1967,7 @@ func TestReplanOffMain(t *testing.T) {
 	}
 	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true})
 	want := "Plan #10's 1 merged card comes off main: the merge queue waits for the revert, card #21. " +
-		"Once the revert lands or ends, plan #10 goes back to the planner and 1 card stops; its work stays on its branch."
+		"Once the revert lands or ends, plan #10 goes back to the planner, and the plan's started cards stop. Their work stays on their branches."
 	if err != nil || note != want {
 		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
 	}
@@ -2004,7 +2004,7 @@ func TestReplanOffMainOutlivesItsRequest(t *testing.T) {
 	}
 	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "sebastian", Comment: "the api is wrong", OffMain: true})
 	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21. " +
-		"Once the revert lands or ends, plan #10 goes back to the planner; no card stops."
+		"Once the revert lands or ends, plan #10 goes back to the planner, and the plan's started cards stop. Their work stays on their branches."
 	if err != nil || note != want {
 		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
 	}
@@ -2091,7 +2091,7 @@ func TestReplanOffMainCompletesAnUnstartedRevert(t *testing.T) {
 	g := offMainRig(t)
 	offMainStep(t, g)
 	note, err := g.r.Replan(ctx, "p", ReplanAsk{By: "bo", Comment: "smaller"})
-	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21. Once the revert lands or ends, plan #10 goes back to the planner; no card stops."
+	want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21. Once the revert lands or ends, plan #10 goes back to the planner, and the plan's started cards stop. Their work stays on their branches."
 	if err != nil || note != want {
 		t.Fatalf("Replan = %q, %v; want %q", note, err, want)
 	}

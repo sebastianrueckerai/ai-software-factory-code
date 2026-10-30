@@ -602,20 +602,9 @@ func (r *Runner) takeOffMain(ctx context.Context, p Task, step ReplanStep, cards
 	if err != nil {
 		return "", err
 	}
-	return note + " " + offMainNote(p, len(step.Stops)), nil
-}
-
-// offMainNote tells the person that plan p goes back to its planner, and
-// n cards stop, once the revert of its merged cards lands or ends.
-func offMainNote(p Task, n int) string {
-	head := fmt.Sprintf("Once the revert lands or ends, plan #%d goes back to the planner", p.IssueNumber)
-	switch n {
-	case 0:
-		return head + "; no card stops."
-	case 1:
-		return head + " and 1 card stops; its work stays on its branch."
-	}
-	return fmt.Sprintf("%s and %d cards stop; their work stays on their branches.", head, n)
+	// no count: the end also stops the cards that start meanwhile
+	return fmt.Sprintf("%s Once the revert lands or ends, plan #%d goes back to the planner, and the plan's started cards stop. Their work stays on their branches.",
+		note, p.IssueNumber), nil
 }
 
 // revertCard is the refusal of a replan of plan p while its project's
