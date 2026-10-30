@@ -117,7 +117,7 @@ func TestReplanCard(t *testing.T) {
 	calls, before := len(asked), r.events.count()
 	rec = r.do(post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {" \n "}}), ck)
 	equal(t, "the button without a note", []any{rec.Code, rec.Body.String()}, []any{http.StatusBadRequest, empty + "\n"})
-	for _, n := range []string{"", strings.Repeat("a", 64<<10+1)} {
+	for _, n := range []string{"", strings.Repeat("a", 64<<10+1), "<!-- only hidden text -->"} {
 		status, msg := refused(t, r, "replan", toolInput{TaskID: "t-r", Note: n})
 		equal(t, fmt.Sprintf("replan with a note of %d bytes", len(n)), []any{status, msg}, []any{http.StatusBadRequest, empty})
 	}

@@ -1261,7 +1261,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // writer's ask. factoryd carries the words, so a failed post is logged.
 func (c *Console) doReplan(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
-	if note == "" || len(note) > 64<<10 {
+	if len(note) > 64<<10 || strings.TrimSpace(factoryd.ReplanComment(note)) == "" {
 		return "", refuse(http.StatusBadRequest, "A replan needs a comment saying why: the planner reads it.")
 	}
 	t, err := c.cardIn(ctx, a, id)
