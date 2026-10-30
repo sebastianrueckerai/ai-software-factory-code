@@ -78,7 +78,7 @@ func TestReplanCard(t *testing.T) {
 	if got := drawer("t-r"); !strings.Contains(got, form) {
 		t.Fatalf("the running direct card's drawer lacks the Replan form:\n%s", got)
 	}
-	const box = `<input type="checkbox" name="off_main" value="on"> Take its merged cards off main first`
+	const box = `<input type="checkbox" name="off_main" value="on"> Take the plan's merged cards off main first`
 	if strings.Contains(drawer("t-r"), box) {
 		t.Error("the direct card's drawer offers off main")
 	}
