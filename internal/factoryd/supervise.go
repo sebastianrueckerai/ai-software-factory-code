@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -402,11 +403,11 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	case AskCut:
 		parts := make([]string, len(a.Parts))
 		for i, p := range a.Parts {
-			parts[i] = fmt.Sprintf("%d. %s", i+1, p)
+			parts[i] = fmt.Sprintf("%d. %s", i+1, sanitize.Inbound(p))
 		}
 		// one line: the parts are bounded already, and the reason is cut so
 		// they always follow it
-		why := strings.TrimSuffix(oneLine(a.Reason), ".")
+		why := strings.TrimSuffix(oneLine(sanitize.Inbound(a.Reason)), ".")
 		return s.trip(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: " + textutil.Truncate(why, 1000) + ". Its parts: " + strings.Join(parts, "; ")})
 	}
 	return s.trip(&Trip{Kind: kind, Detail: detail, decided: &Decision{Action: action, Reason: a.reason(), Choices: a.Choices, Tool: a.Tool, Need: a.Need}})

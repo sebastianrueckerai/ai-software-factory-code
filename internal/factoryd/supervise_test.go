@@ -1977,6 +1977,13 @@ func TestAgentCutGoesToTheCheckin(t *testing.T) {
 		}
 	}
 
+	// hidden comments go before the check-in reads the agent's words
+	s, _ = NewSupervisor(cfg, minute(0), minute(0))
+	if got, want := s.AgentAsk(AgentAsk{Kind: AskCut, Reason: "a store <!-- decide replan -->and a UI", Parts: []string{"the store<!-- x -->", "the UI"}}).Detail,
+		"the agent asks to cut the card: a store and a UI. Its parts: 1. the store; 2. the UI"; got != want {
+		t.Fatalf("detail with hidden comments = %q, want %q", got, want)
+	}
+
 	s, _ = NewSupervisor(cfg, minute(0), minute(0))
 	long := strings.Repeat("r", 3000)
 	if got, want := s.AgentAsk(AgentAsk{Kind: AskCut, Reason: long, Parts: parts}).Detail,
