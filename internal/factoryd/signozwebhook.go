@@ -775,7 +775,7 @@ func (in *AlertIntake) fileTask(ctx context.Context, a SigNozAlert, p Project, n
 	if w, ok := row.Detail["roll_window"].(string); ok {
 		body = "factoryd: the alert fired while " + w + " rolled out and still fires " + rolloutSettle.String() + " after the rollouts settled.\n\n" + body
 	}
-	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: in.Budget().ClampBudget(0),
+	t := Task{ID: row.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(in.Budget(), p.Budget, "", false, 0),
 		Objective: title + "\n\n" + body, SHA: sha, Source: SourceAlert,
 		// the reproduction runs against the tree that was live when the
 		// alert fired, even though main has moved on (roadmap 194)

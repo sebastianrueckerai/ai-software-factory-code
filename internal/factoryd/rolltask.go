@@ -944,7 +944,7 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 	}
 	title, body, _ := strings.Cut(req.Summary, "\n\n")
 	t, ref, err := FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
-		ID: req.TaskID, RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0),
+		ID: req.TaskID, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0),
 		Objective: req.Summary, SHA: req.SHA, Source: SourceRoll,
 	})
 	if err != nil {

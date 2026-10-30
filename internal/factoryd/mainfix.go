@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The backstop of the cheap merge turn (roadmap 222, item 4): a red push
@@ -265,7 +267,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 			"ends the pause. A fix that does not land within %s has factoryd file the revert of %s.",
 			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short)
 		t, _, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
-			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: r.Budget().ClampBudget(0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
+			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
 		})
 	}
 	if err != nil {

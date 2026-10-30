@@ -25,6 +25,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+
 	"gopkg.in/yaml.v3"
 )
 
@@ -780,6 +782,33 @@ func TestRollerListsACarriedPullRequestWhoseTitleFailsToRead(t *testing.T) {
 	}
 	if len(store.rolls) != 1 || !slices.Equal(store.rolls[0].PRs, []int64{12, 13}) {
 		t.Fatalf("roll requests %+v, want one carrying #12 and #13", store.rolls)
+	}
+}
+
+// The roll task's budget is the default, at most the project's card maximum.
+func TestRollerFilesUnderTheProjectsCardMaximum(t *testing.T) {
+	f := &rollForgejo{
+		runs:     []map[string]any{pushRun(57, commitC1, "success"), pushRun(56, "c0c0c0c0", "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		statuses: imageGreen(commitC1),
+		registry: registryOf(map[string]string{
+			"sf/factory-gateway/manifests/c1c1c1c": gwNewIdx,
+			"sf/opencode-worker/manifests/c1c1c1c": workerRebuilt,
+			"sf/ci-runner/manifests/c1c1c1c":       runnerRebuilt,
+		}, gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	project := seedProject(codeRepo)
+	project.Budget = &policy.ProjectBudget{MonthEUR: 50, TaskMaxEUR: 1}
+	store.projects = []Project{project}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.rolls) != 1 {
+		t.Fatalf("roll requests %+v, want one", store.rolls)
+	}
+	if got := store.tasks[store.rolls[0].TaskID].BudgetEUR; got != 1 {
+		t.Fatalf("roll task budget %v, want the project's card maximum 1 under the default %v", got, testBudget().TaskDefaultEUR)
 	}
 }
 
