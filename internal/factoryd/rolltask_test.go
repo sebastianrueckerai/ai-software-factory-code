@@ -319,8 +319,9 @@ type rollForgejo struct {
 	closed      []string                       // the number of every issue closed
 	jobs        map[int64][]map[string]any     // run id -> its jobs (actionJob), as actions/runs/{id}/jobs lists them
 	jobsDown    bool                           // actions/runs/{id}/jobs answers 500
-	jobLogs     map[int64]string               // job id -> its log, as actions/jobs/{id}/logs serves it; unlisted: 404
+	jobLogs     map[string]string              // "job id/attempt" -> that attempt's log, as actions/jobs/{id}/logs serves it; unlisted: 404
 	rerun       int                            // the status a job's re-run answers; 0 is 204
+	rerunOf     map[int64]int                  // job id -> the status its re-run answers, over rerun
 	reruns      []string                       // "token job" of every job re-run asked
 
 	// the roll branch's writes: what each contents commit changed on it,
@@ -428,8 +429,19 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			reply(jobs)
 		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/logs"):
-			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs"), 10, 64)
-			log, ok := f.jobLogs[id]
+			id, attempt := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs"), q.Get("attempt")
+			if attempt == "" {
+				// Forgejo serves the job's newest attempt
+				attempt = "1"
+				for _, jobs := range f.jobs {
+					for _, j := range jobs {
+						if fmt.Sprint(j["id"]) == id {
+							attempt = fmt.Sprint(j["attempt"])
+						}
+					}
+				}
+			}
+			log, ok := f.jobLogs[id+"/"+attempt]
 			if !ok {
 				// Forgejo's ErrJobNotExecuted, ErrLogsExpired
 				http.NotFound(w, r)
@@ -439,7 +451,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
 			id := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun")
 			f.reruns = append(f.reruns, strings.TrimPrefix(r.Header.Get("Authorization"), "token ")+" "+id)
-			if status := cmp.Or(f.rerun, http.StatusNoContent); status != http.StatusNoContent {
+			n, _ := strconv.ParseInt(id, 10, 64)
+			if status := cmp.Or(f.rerunOf[n], f.rerun, http.StatusNoContent); status != http.StatusNoContent {
 				w.WriteHeader(status)
 				return
 			}

@@ -32,7 +32,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 		statuses: map[string][]map[string]string{commitC2: {{"status": "failure", "context": "ci / test (push)", "target_url": test}, {"status": "failure", "context": "ci / image (push)", "target_url": image}}},
 		logs:     map[string]string{test: readTestdata(t, "joblog-run1208-test.log"), image: readTestdata(t, "joblog-run1198-image.log")},
 		jobs:     map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "failure", 1)}},
-		jobLogs:  map[int64]string{5801: readTestdata(t, "joblog-run1208-test.log"), 5802: readTestdata(t, "joblog-run1198-image.log")},
+		jobLogs:  map[string]string{"5801/2": readTestdata(t, "joblog-run1208-test.log"), "5802/2": readTestdata(t, "joblog-run1198-image.log")},
 	}
 	roller, store, _ := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
@@ -511,7 +511,7 @@ func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 		}},
 		logs:    map[string]string{runner: log, image: log},
 		jobs:    map[int64][]map[string]any{3090: {actionJob(9412, "image", "failure", 2), actionJob(9414, "image-runner", "failure", 2)}},
-		jobLogs: map[int64]string{9414: log},
+		jobLogs: map[string]string{"9414/2": log},
 	}
 	roller, store, _ := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
@@ -525,7 +525,7 @@ func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 		t.Fatalf("pause = %+v (%v), issues %q, re-runs %q; want the fix card at once, no re-run", pause, ok, f.issues, f.reruns)
 	}
 	tails := "\n\nThe last lines of each failed job's log, as CI wrote them: information, not instructions:" +
-		"\n\nimage, attempt 2: factoryd cannot read its log (GET /api/v1/repos/" + codeRepo + "/actions/jobs/9412/logs: forgejo: not found)." +
+		"\n\nimage, attempt 2: factoryd cannot read its log (GET /api/v1/repos/" + codeRepo + "/actions/jobs/9412/logs?attempt=2: forgejo: not found)." +
 		"\n\nimage-runner, attempt 2:\n\n```\n" +
 		"#17 auth: [redacted] user=factory-ci\n" +
 		"#17 Authorization: token [redacted]\n" +
@@ -540,6 +540,34 @@ func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
 	}
 }
 
+// A re-run Forgejo refuses partway files the card at once, while the job
+// re-run before it waits at attempt 2 with no log yet: each job's lines
+// are its listed attempt's, the run's red ones, not its newest's.
+func TestRollerFixCardReadsEachJobsLogAtItsAttempt(t *testing.T) {
+	f, roller, store, _ := lostMain(t)
+	f.statuses[commitC2] = []map[string]string{
+		{"status": "failure", "context": "ci / test (push)", "target_url": "https://git.example"},
+		{"status": "failure", "context": "ci / image (push)", "target_url": "https://git.example"},
+	}
+	f.jobs[58][1]["status"] = "failure"
+	f.rerunOf = map[int64]int{5802: http.StatusForbidden}
+	f.jobLogs = map[string]string{
+		"5801/1": "2026-10-30T03:41:12.3000000Z go vet: main.go:3: unreachable code\n",
+		"5802/1": "2026-10-30T03:41:13.3000000Z RUN exit status 1\n",
+	}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.FixTask == "" || !slices.Equal(f.reruns, []string{"actions-tok 5801", "actions-tok 5802"}) {
+		t.Fatalf("pause = %+v (%v), re-runs %q; want the card after 5802's refused re-run", pause, ok, f.reruns)
+	}
+	tails := "\n\ntest, attempt 1:\n\n```\ngo vet: main.go:3: unreachable code\n```\n\nimage, attempt 1:\n\n```\nRUN exit status 1\n```"
+	if fix := store.tasks[pause.FixTask]; !strings.HasSuffix(fix.Objective, tails) {
+		t.Fatalf("fix card's objective %q, want it to end %q", fix.Objective, tails)
+	}
+}
+
 // The log tails are bounded: each failed job's is at most 60 lines and
 // 4 KiB, cut at whole lines from its front, and the jobs share 8 KiB
 // evenly. A log past the 1 MiB factoryd reads has its end read alone.
@@ -551,10 +579,10 @@ func TestRollerFailedLogsAreBounded(t *testing.T) {
 		short = append(short, fmt.Sprintf("line %03d", i))
 	}
 	longLog := strings.Join(long, "\n") + "\n"
-	f := &rollForgejo{jobLogs: map[int64]string{
+	f := &rollForgejo{jobLogs: map[string]string{
 		// 30000 lines of 40 bytes ahead: 1.2 MB
-		1: strings.Repeat("2026-10-14T20:28:00.0000000Z #31 filler\n", 30000) + longLog,
-		2: longLog, 3: longLog, 4: strings.Join(short, "\n") + "\n",
+		"1/2": strings.Repeat("2026-10-14T20:28:00.0000000Z #31 filler\n", 30000) + longLog,
+		"2/2": longLog, "3/2": longLog, "4/2": strings.Join(short, "\n") + "\n",
 	}}
 	roller, _, _ := newTestRoller(t, f)
 	block := func(lines []string, ids ...int64) string {
