@@ -29,7 +29,7 @@
 {{end}}
 {{with .Card.AgentSummary}}<details class="sec" data-sec="summary"><summary>The agent's summary</summary><div class="sec-body"><p class="agent-summary">{{.}}</p></div></details>
 {{else}}<div class="sec empty"><p class="summary" aria-disabled="true">The agent's summary<span class="hint">—</span></p></div>
-{{end}}{{if or .PlanRows .Card.Plan}}<details class="sec" data-sec="plan"><summary>The plan<span class="hint">{{if .PlanRows}}{{len .PlanRows}} cards{{else}}{{len .Card.Plan}} cards{{end}}</span></summary><div class="sec-body">{{with .PlanSummary}}<p>{{.}}</p>{{end}}
+{{end}}{{if or .PlanRows .Card.Plan}}<details class="sec" data-sec="plan"><summary>The plan<span class="hint">{{if .PlanRows}}{{len .PlanRows}} cards{{else}}{{len .Card.Plan}} cards{{end}}</span></summary><div class="sec-body">{{with .PlanSummary}}<p>{{.}}</p>{{end}}{{with .PlanRounds}}<ol aria-label="The plan's rounds">{{range .}}<li{{if .Current}} aria-current="step"{{end}}>{{.Text}}</li>{{end}}</ol>{{end}}
 {{if .PlanRows}}<table class="plan-cards"><caption>The plan's cards, in filing order</caption>
 <thead><tr><th scope="col">key</th><th scope="col">role</th><th scope="col">title</th><th scope="col">size</th><th scope="col">depends on</th></tr></thead>
 <tbody>{{range .PlanRows}}<tr><td>{{.Key}}</td><td>{{.Role}}</td><td>{{.Title}}</td><td>{{.Size}}</td><td>{{join .DependsOn ", "}}</td></tr>{{end}}</tbody>

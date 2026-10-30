@@ -148,6 +148,30 @@ func TestChatPlanReadTakesOffMain(t *testing.T) {
 		[]string{"revision 1, sha256 5e1f\nsummary: An API, then its web UI.\ntakes off main: old-api\n" + readsPlanRows})
 }
 
+// A plan in its second round lists its rounds after its summary: a round
+// without a card has no line, the current one is marked, then the parts
+// still to plan.
+func TestChatPlanReadNamesTheRound(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	var p factoryd.Plan
+	if err := json.Unmarshal(r.tasks.plans["t-p"][0].Plan, &p); err != nil {
+		t.Fatal(err)
+	}
+	p.Round, p.Outline = 2, []string{"the console"}
+	for i := range p.Cards {
+		p.Cards[i].Round = 2
+	}
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.tasks.plans["t-p"][0].Plan = raw
+	r.tasks.mu.Unlock()
+	equal(t, "the plan read", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
+		[]string{"revision 1, sha256 5e1f\nsummary: An API, then its web UI.\nrounds:\n- round 2: 2 cards, 0 done. This round.\n- still to plan: the console\n" + readsPlanRows})
+}
+
 // readsPlanRows are plan t-p's rows and its filed cards as the plan read
 // lists them.
 const readsPlanRows = `api foundation "API layer" small depends on none issue #21` + "\n" +

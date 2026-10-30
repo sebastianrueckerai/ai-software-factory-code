@@ -554,6 +554,10 @@ type card struct {
 	// each count bound to its word by a no-break space, so a narrow column
 	// wraps between the parts.
 	Children string
+	// Round is a done plan's round and what is still to plan
+	// (factoryd.RoundLine), shown in place of its rollup; "" for a plan
+	// of one round or filed before rounds.
+	Round string
 	// BetweenRounds is a done plan whose later rounds are still to plan
 	// (factoryd.BetweenRounds).
 	BetweenRounds bool
@@ -1891,21 +1895,26 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.PlanIssue = c.planIssue(ctx, v.byID, t.Parent)
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
-		if cards, err := c.cfg.Tasks.PlanCards(ctx, t.ID); err != nil {
-			log.Printf("console: the cards of plan %s: %v", t.ID, err)
+		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)
+		if cardsErr != nil {
+			log.Printf("console: the cards of plan %s: %v", t.ID, cardsErr)
 			v.problems = append(v.problems, "the cards of plan "+t.ID+" could not be read")
 		} else {
 			for _, child := range cards {
 				k.Plan = append(k.Plan, c.card(child))
 			}
-			k.Children = planRollup(k.Plan)
 		}
-		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
+		_, p, _, err := c.planTable(ctx, t.ID, 0)
+		if err == nil {
+			k.BetweenRounds, err = factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
+		}
 		if err != nil {
 			log.Printf("console: the plan of %s: %v", t.ID, err)
 			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
+		} else if cardsErr == nil {
+			k.Round = factoryd.RoundLine(p, cards)
 		}
-		k.BetweenRounds = between
+		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
@@ -3073,16 +3082,18 @@ var drawerTabs = []drawerTab{{"overview", "Overview"}, {"chat", "Session"}, {"ac
 
 // drawerData is the card drawer on one tab, under the card's face.
 // Overview: the objective as its headline, a planned card's provenance
-// line and its body, the plan's table, a pending merge's reviews and
-// audit, and the related cards. Activity: the timeline page's gates and
-// steps. Files: the pull request's changed files. Chat: the newest
-// session's messages, and the input that steers it while it runs.
+// line and its body, the plan's rounds and its table, a pending merge's
+// reviews and audit, and the related cards. Activity: the timeline
+// page's gates and steps. Files: the pull request's changed files. Chat:
+// the newest session's messages, and the input that steers it while it
+// runs.
 type drawerData struct {
 	Card                       card
 	Tab                        string
 	Tabs                       []drawerTab
 	Headline, Provenance, Body string
 	PlanSummary                string
+	PlanRounds                 []factoryd.RoundItem
 	PlanRows                   []factoryd.PlanRow
 	TakeOffMain                []string
 	Merge                      *approvalCard
@@ -3320,6 +3331,13 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 				problem("plan", err)
 			} else {
 				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
+				if p.Round > 1 || len(p.Outline) > 0 {
+					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
+						problem("plan's cards", err)
+					} else {
+						d.PlanRounds = factoryd.RoundItems(p, cards)
+					}
+				}
 			}
 		}
 		for _, a := range v.pending {

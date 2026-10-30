@@ -251,6 +251,12 @@ func (t *turn) planText(in toolInput) (string, error) {
 		issues[c.PlanKey] = c.IssueNumber
 	}
 	fmt.Fprintf(&b, "revision %d, sha256 %s\nsummary: %s", rev.Revision, rev.SHA256, p.Summary)
+	if items := factoryd.RoundItems(p, cards); len(items) > 0 {
+		b.WriteString("\nrounds:")
+		for _, item := range items {
+			b.WriteString("\n- " + item.Text)
+		}
+	}
 	if len(p.TakeOffMain) > 0 {
 		b.WriteString("\ntakes off main: " + strings.Join(p.TakeOffMain, ", "))
 	}

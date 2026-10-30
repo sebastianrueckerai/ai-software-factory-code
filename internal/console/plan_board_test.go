@@ -278,6 +278,51 @@ func TestDonePlanRollsUpItsChildren(t *testing.T) {
 	}
 }
 
+// A done plan in its second round shows that round and what is still to
+// plan in place of its rollup, and its drawer lists the rounds, the
+// current one marked, then the parts still to plan.
+func TestDonePlanShowsItsRound(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), factoryd.BoardTask{Task: factoryd.Task{ID: "t-c9", Kind: "agent", Status: "done", Track: "direct",
+		Process: "spec", Objective: "card 9", Repository: "linkshort/linkshort", IssueNumber: 9, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k9"}})
+	plan, _ := json.Marshal(factoryd.Plan{Round: 2, Outline: []string{"the console", "the scheduler"}, Cards: []factoryd.PlanCard{
+		{Key: "k9", Role: factoryd.RoleFoundation, Title: "card 9", Size: "small", Round: 1},
+		{Key: "k2", Role: factoryd.RoleFeature, Title: "card 2", Size: "small", Round: 2},
+		{Key: "k3", Role: factoryd.RoleFeature, Title: "card 3", Size: "small", Round: 2},
+		{Key: "k4", Role: factoryd.RoleFeature, Title: "card 4", Size: "small", Round: 2},
+		{Key: "k5", Role: factoryd.RoleFeature, Title: "card 5", Size: "small", Round: 2},
+	}})
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+	ck, _ := r.loggedIn(t)
+	done := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Done")
+	if want := `<span class="chip rollup">round 2: 4 cards, 1 done. Still to plan: the console, the scheduler.</span>`; !strings.Contains(done, want) {
+		t.Errorf("the plan in Done lacks %q:\n%s", want, done)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?project=linkshort", nil), ck).Body.String()
+	if want := `<ol aria-label="The plan's rounds"><li>round 1: 1 card, 1 done.</li><li aria-current="step">round 2: 4 cards, 1 done. This round.</li>` +
+		`<li>still to plan: the console</li><li>still to plan: the scheduler</li></ol>`; !strings.Contains(drawer, want) {
+		t.Errorf("the plan's drawer lacks %q:\n%s", want, drawer)
+	}
+}
+
+// A done plan whose revision cannot be read keeps its rollup, and the
+// board says so once.
+func TestDonePlanWithAnUnreadableRevisionKeepsItsRollup(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = planTasks()
+	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: json.RawMessage(`{"round": "two"}`)}}}
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if !strings.Contains(col(t, body, "Done"), "<span class=\"chip rollup\">1 done · 1 waiting · 2 queued</span>") {
+		t.Errorf("the plan in Done: want its rollup:\n%s", col(t, body, "Done"))
+	}
+	if n := strings.Count(body, `<p class="problem" role="alert">the plan of t-plan could not be read</p>`); n != 1 {
+		t.Errorf("the board says the plan could not be read %d times, want once:\n%s", n, body)
+	}
+}
+
 // failedCard is card #7 of plan t-plan, failed.
 func failedCard() factoryd.BoardTask {
 	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-c7", Kind: "agent", Status: "failed", Track: "direct", Process: "spec", Objective: "card 7",

@@ -104,9 +104,13 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   revision shows `the plan changed to revision <m>; reload` on the card.
   "Request changes" posts a comment as the member, which the planner
   revises the plan with. A done plan lists its cards by issue and state. A
-  plan's escalation shows on its card only when newer than the pending
-  request. The card's forms keep the project filter; a browser's form is
-  answered with a redirect to the board, htmx with the board itself.
+  done plan with rounds shows `round <k>: <n> cards, <d> done.` and what
+  is still to plan in place of its rollup, on its card; its drawer and
+  the chat's plan read list the rounds, one line each, the current one
+  marked, then the parts still to plan. A plan's escalation shows on its
+  card only when newer than the pending request. The card's forms keep
+  the project filter; a browser's form is answered with a redirect to
+  the board, htmx with the board itself.
 - `/tasks/{id}/timeline`: a gates table above the raw steps, one row per
   step that ended a gate (`factoryd.StepGates`, each carrying `started`)
   with its attempt, start, duration, outcome and a `<meter>` against the
