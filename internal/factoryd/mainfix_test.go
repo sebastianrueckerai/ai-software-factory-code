@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"reflect"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -29,6 +31,7 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 		statuses: map[string][]map[string]string{commitC2: {{"status": "failure", "context": "ci / test (push)", "target_url": test}, {"status": "failure", "context": "ci / image (push)", "target_url": image}}},
 		logs:     map[string]string{test: readTestdata(t, "joblog-run1208-test.log"), image: readTestdata(t, "joblog-run1198-image.log")},
 		jobs:     map[int64][]map[string]any{58: {actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "failure", 1)}},
+		jobLogs:  map[int64]string{5801: readTestdata(t, "joblog-run1208-test.log"), 5802: readTestdata(t, "joblog-run1198-image.log")},
 	}
 	roller, store, _ := newTestRoller(t, f)
 	roller.Forgejo.PublicURL = "https://git.example"
@@ -62,6 +65,12 @@ func TestRollerPausesTheQueueOnARedMain(t *testing.T) {
 	fix := store.tasks[pause.FixTask]
 	if fix.Source != SourceMainFix || fix.Track != "direct" || fix.Status != "queued" || fix.SHA != commitC2 || fix.Kind != "agent" {
 		t.Fatalf("fix card %+v, want a ready coder card on the red commit", fix)
+	}
+	if !strings.Contains(fix.Objective, "\n\nThe last lines of each failed job's log:\n\ntest, attempt 2:\n\n```\n") ||
+		!strings.Contains(fix.Objective, "\n\U0001F3C1  Job failed\n```\n\nimage, attempt 2:\n\n```\n") ||
+		!strings.Contains(fix.Objective, "\nerror: failed to solve: process \"/bin/sh -c find / -xdev -exec touch -h -d \\\"@$SOURCE_DATE_EPOCH\\\" {} +\" did not complete successfully: exit code: 1\n") ||
+		!strings.HasSuffix(fix.Objective, "\nJob 'image-build' failed\n```") {
+		t.Fatalf("fix card's objective %q, want both jobs' log tails", fix.Objective)
 	}
 	if len(f.reruns) != 2 {
 		t.Fatalf("re-runs %q, want the first two alone", f.reruns)
@@ -473,6 +482,108 @@ func TestRollerReRunsAFlakyMainOnce(t *testing.T) {
 	}
 	if len(f.reruns) != 1 || len(f.comments) != 0 || len(f.closed) != 0 || len(f.issues) != 0 {
 		t.Fatalf("re-runs %q, comments %q, closed issues %q, issues %q; want one re-run and no card", f.reruns, f.comments, f.closed, f.issues)
+	}
+}
+
+// The fix-forward card's objective carries what its agent cannot fetch
+// (card #1331's agent asked the issue's author to paste the log): each
+// failed job's last log lines from Forgejo's job log API, a secret
+// factoryd knows and a token-like string scrubbed out, and for a log
+// Forgejo cannot serve a line saying so; the card is filed all the same.
+// Jobs whose re-run is red already file it at once and re-run nothing.
+func TestRollerFixCardCarriesTheFailedJobsLogTails(t *testing.T) {
+	runner, image := "/"+codeRepo+"/actions/runs/3176/jobs/4", "/"+codeRepo+"/actions/runs/3176/jobs/2"
+	log := "2026-10-30T03:41:09.0000000Z #17 auth: token=ghp_1a2B3c4D5e6F7g8H9i0JkLmNoPqRsTuVwXyZ12 user=factory-ci\n" +
+		"2026-10-30T03:41:09.1000000Z #17 Authorization: token s3cret-actions-token\n" +
+		"2026-10-30T03:41:12.3000000Z #18 ERROR: failed to push build-cache.forgejo.svc.cluster.local:5000/sf/ci-runner:buildcache: dial tcp 10.43.12.7:5000: connect: connection refused\n" +
+		"2026-10-30T03:41:12.5000000Z ⚙️ [runner]: exitcode '1': failure\n" +
+		"2026-10-30T03:41:12.6000000Z \U0001F3C1  Job failed\n"
+	red := pushRun(3090, commitC2, "failure")
+	red["index_in_repo"] = 3176
+	f := &rollForgejo{
+		runs:     []map[string]any{red, pushRun(3089, commitC1, "success")},
+		files:    map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c1c1c1c": gwOldIdx, "sf/opencode-worker/manifests/c1c1c1c": workerOldIdx, "sf/ci-runner/manifests/c1c1c1c": runnerIdx}, gwOldIdx, workerOldIdx, runnerIdx),
+		statuses: map[string][]map[string]string{commitC2: {
+			{"status": "failure", "context": "ci / image-runner (push)", "target_url": runner},
+			{"status": "failure", "context": "ci / image (push)", "target_url": image},
+		}},
+		logs:    map[string]string{runner: log, image: log},
+		jobs:    map[int64][]map[string]any{3090: {actionJob(9412, "image", "failure", 2), actionJob(9414, "image-runner", "failure", 2)}},
+		jobLogs: map[int64]string{9414: log},
+	}
+	roller, store, _ := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	roller.Scrub = redact.New("s3cret-actions-token")
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.FixTask == "" || len(f.issues) != 1 || len(f.reruns) != 0 {
+		t.Fatalf("pause = %+v (%v), issues %q, re-runs %q; want the fix card at once, no re-run", pause, ok, f.issues, f.reruns)
+	}
+	tails := "\n\nThe last lines of each failed job's log:" +
+		"\n\nimage, attempt 2: factoryd cannot read its log (GET /api/v1/repos/" + codeRepo + "/actions/jobs/9412/logs: forgejo: not found)." +
+		"\n\nimage-runner, attempt 2:\n\n```\n" +
+		"#17 auth: [redacted] user=factory-ci\n" +
+		"#17 Authorization: token [redacted]\n" +
+		"#18 ERROR: failed to push build-cache.forgejo.svc.cluster.local:5000/sf/ci-runner:buildcache: dial tcp 10.43.12.7:5000: connect: connection refused\n" +
+		"⚙️ [runner]: exitcode '1': failure\n" +
+		"\U0001F3C1  Job failed\n```"
+	fix := store.tasks[pause.FixTask]
+	for what, text := range map[string]string{"objective": fix.Objective, "issue": f.issues[0]} {
+		if !strings.Contains(text, "Read the run's log, find the cause in main at c2c2c2c, ") || !strings.HasSuffix(text, ". A fix that does not land within 2h0m0s has factoryd file the revert of c2c2c2c."+tails) {
+			t.Errorf("the card's %s %q, want its sentences, then the log tails %q", what, text, tails)
+		}
+	}
+}
+
+// The log tails are bounded: each failed job's is at most 60 lines and
+// 4 KiB, cut at whole lines from its front, and the jobs share 8 KiB
+// evenly. A log past the 1 MiB factoryd reads has its end read alone.
+func TestRollerFailedLogsAreBounded(t *testing.T) {
+	var long, short []string
+	for i := 1; i <= 100; i++ {
+		// 100 bytes a line
+		long = append(long, fmt.Sprintf("line %03d %s", i, strings.Repeat("x", 91)))
+		short = append(short, fmt.Sprintf("line %03d", i))
+	}
+	longLog := strings.Join(long, "\n") + "\n"
+	f := &rollForgejo{jobLogs: map[int64]string{
+		// 30000 lines of 40 bytes ahead: 1.2 MB
+		1: strings.Repeat("2026-10-14T20:28:00.0000000Z #31 filler\n", 30000) + longLog,
+		2: longLog, 3: longLog, 4: strings.Join(short, "\n") + "\n",
+	}}
+	roller, _, _ := newTestRoller(t, f)
+	block := func(lines []string, ids ...int64) string {
+		want := "\n\nThe last lines of each failed job's log:"
+		for _, id := range ids {
+			want += fmt.Sprintf("\n\njob%d, attempt 2:\n\n```\n%s\n```", id, strings.Join(lines, "\n"))
+		}
+		return want
+	}
+	jobs := func(ids ...int64) []ActionJob {
+		var out []ActionJob
+		for _, id := range ids {
+			out = append(out, ActionJob{ID: id, Name: fmt.Sprintf("job%d", id), Status: "failure", Attempt: 2})
+		}
+		return out
+	}
+	for _, c := range []struct {
+		ids  []int64
+		want string
+	}{
+		// 4096 bytes each: of the last 60 lines (6059 bytes), the last 40 (4039)
+		{[]int64{1, 2}, block(long[60:], 1, 2)},
+		// 8192 / 3 = 2730 bytes each: the last 27 lines (2726)
+		{[]int64{1, 2, 3}, block(long[73:], 1, 2, 3)},
+		// 60 lines of 8 bytes
+		{[]int64{4}, block(short[40:], 4)},
+	} {
+		if got := roller.failedLogs(context.Background(), jobs(c.ids...)); got != c.want {
+			t.Errorf("jobs %v: log tails %q, want %q", c.ids, got, c.want)
+		}
 	}
 }
 

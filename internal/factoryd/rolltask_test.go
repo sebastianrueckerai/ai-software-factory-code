@@ -318,6 +318,7 @@ type rollForgejo struct {
 	unreadable  map[string]bool                // a job's target_url whose log Forgejo cannot open
 	closed      []string                       // the number of every issue closed
 	jobs        map[int64][]map[string]any     // run id -> its jobs (actionJob), as actions/runs/{id}/jobs lists them
+	jobLogs     map[int64]string               // job id -> its log, as actions/jobs/{id}/logs serves it; unlisted: 404
 	rerun       int                            // the status a job's re-run answers; 0 is 204
 	reruns      []string                       // "token job" of every job re-run asked
 
@@ -423,6 +424,15 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 				return
 			}
 			reply(jobs)
+		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/logs"):
+			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs"), 10, 64)
+			log, ok := f.jobLogs[id]
+			if !ok {
+				// Forgejo's ErrJobNotExecuted, ErrLogsExpired
+				http.NotFound(w, r)
+				return
+			}
+			http.ServeContent(w, r, "", time.Time{}, strings.NewReader(log))
 		case repo == codeRepo && r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
 			id := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun")
 			f.reruns = append(f.reruns, strings.TrimPrefix(r.Header.Get("Authorization"), "token ")+" "+id)

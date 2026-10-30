@@ -981,7 +981,7 @@ func TestLogTailLineCap(t *testing.T) {
 	for i := 11; i <= 50; i++ {
 		fmt.Fprintf(&want, "line %d\n", i)
 	}
-	if got, want := logTail([]byte(log.String())), strings.TrimRight(want.String(), "\n"); got != want {
+	if got, want := logTail([]byte(log.String()), jobLogMaxLines, jobLogMaxBytes), strings.TrimRight(want.String(), "\n"); got != want {
 		t.Fatalf("logTail = %q, want %q", got, want)
 	}
 }
@@ -1000,7 +1000,7 @@ func TestLogTailCapped(t *testing.T) {
 	if len(want) != 4095 {
 		t.Fatalf("test setup: want is %d bytes, want 4095", len(want))
 	}
-	if got := logTail([]byte(log)); got != want {
+	if got := logTail([]byte(log), jobLogMaxLines, jobLogMaxBytes); got != want {
 		t.Fatalf("logTail = %q (%d bytes), want %q (%d bytes)", got, len(got), want, len(want))
 	}
 }
@@ -1044,7 +1044,7 @@ func TestLogTailKeepsTheResultsSection(t *testing.T) {
 		"  Files  : 205",
 		"  Issues : 1",
 	}, "\n")
-	if got := logTail([]byte(log)); got != want {
+	if got := logTail([]byte(log), jobLogMaxLines, jobLogMaxBytes); got != want {
 		t.Fatalf("logTail = %q, want %q", got, want)
 	}
 }
@@ -1055,7 +1055,7 @@ func TestLogTailKeepsTheResultsSection(t *testing.T) {
 func TestLogTailStripsTimestamp(t *testing.T) {
 	log := "2026-09-30T22:50:22.9434409Z go test ./...\n2026-09-30T22:50:23.1234567Z ok\n"
 	want := "go test ./...\nok"
-	if got := logTail([]byte(log)); got != want {
+	if got := logTail([]byte(log), jobLogMaxLines, jobLogMaxBytes); got != want {
 		t.Fatalf("logTail = %q, want %q", got, want)
 	}
 }
@@ -1075,7 +1075,7 @@ func TestLogTailRuneSafeCut(t *testing.T) {
 	if len(want) != 4094 {
 		t.Fatalf("test setup: want is %d bytes, want 4094", len(want))
 	}
-	got := logTail([]byte(line))
+	got := logTail([]byte(line), jobLogMaxLines, jobLogMaxBytes)
 	if got != want {
 		t.Fatalf("logTail = %q (%d bytes), want %q (%d bytes)", got, len(got), want, len(want))
 	}

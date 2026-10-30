@@ -412,7 +412,7 @@ func main() {
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: 15 * time.Second,
 		LinkHosts: func() []string { return policyLoader.Current().Document.LinkHosts },
-		Registry:  registry, SigningKey: factoryKey}
+		Registry:  registry, SigningKey: factoryKey, Scrub: scrub}
 	go roller.Run(ctx)
 	chainPoller := newChainPoller(forgejo, store, policyLoader.Current, workflows, runner.Timeline(), own.Repo(), runner.EndCovered)
 	if err := chainPoller.RegisterPollAge(metrics.Meter); err != nil {

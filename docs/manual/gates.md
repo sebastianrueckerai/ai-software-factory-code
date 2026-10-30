@@ -254,8 +254,11 @@ finds none open) and it takes its turn again. A red main pauses the
 queue, and factoryd re-runs each failed job of the run once (Forgejo
 17's job rerun API; a job's `attempt` above 1 marks its re-run), so a
 flake ends the pause with no card. A re-run red too, or one Forgejo
-refuses, files the fix-forward card; with no fix landed two hours after
-the pause began, the revert of the red commit follows. The green run that
+refuses, files the fix-forward card. Its objective carries the last lines
+of each failed job's log, which the agent cannot fetch itself: at most 60
+lines and 4 KiB a job, 8 KiB in all, scrubbed of secrets, or a line saying
+the log could not be read. With no fix landed two hours after the pause
+began, the revert of the red commit follows. The green run that
 ends the pause also ends that card, with a comment naming the run, unless
 the card's own merge made main green. When every failed job of the red
 re-run lost its runner, or of a red whose re-run Forgejo refused, the

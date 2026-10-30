@@ -21,6 +21,7 @@ import (
 	"go.temporal.io/sdk/activity"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -378,6 +379,8 @@ type Roller struct {
 	// subjects and titles may point there or at the Forgejo host
 	LinkHosts func() []string
 	Poll      time.Duration
+	// Scrub cleans the job log lines a fix-forward card carries of secrets
+	Scrub *redact.Scrubber
 
 	held string // main's head the roll last waited on, said once
 	// conflicted is "<red sha> <main's head>" of the main-red revert that

@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The backstop of the cheap merge turn (roadmap 222, item 4): a red push
@@ -276,7 +279,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 			"The project's merge queue is paused until a push run of main is green. Read the run's log, find the cause in main at %s, "+
 			"fix it on this card's branch from main's head, and push: this card merges ahead of the queue, and main's next green run "+
 			"ends the pause. A fix that does not land within %s has factoryd file the revert of %s.",
-			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short)
+			run.Index, run.CommitSHA, failed, r.Forgejo.PublicURL, r.Repo, run.Index, short, mainRedBound, short) + r.failedLogs(ctx, redJobs)
 		t, _, err = FileAgentTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, p, title, body, nil, Task{
 			ID: NewTaskID(), RiskClass: "standard", BudgetEUR: policy.CardBudget(r.Budget(), p.Budget, "", false, 0), Objective: title + "\n\n" + body, SHA: run.CommitSHA, Source: SourceMainFix,
 		})
@@ -289,6 +292,47 @@ func (r *Roller) pause(ctx context.Context, run ActionRun) error {
 	}
 	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)
 	return nil
+}
+
+// The fix-forward card's log tails: per failed job at most mainLogLines
+// lines and mainLogBytes, mainLogTotal for all of them, out of the last
+// mainLogRead bytes of its log.
+const (
+	mainLogLines = 60
+	mainLogBytes = 4 << 10
+	mainLogTotal = 8 << 10
+	mainLogRead  = 64 << 10
+)
+
+// failedLogs is the fix-forward card's block of the last lines of each
+// red job's log, which its agent cannot read itself: the private
+// repository's run pages answer it 404 (card #1331). Each log is scrubbed
+// whole before the cut, so no cut splits a secret out of the scrubber's
+// sight; the jobs share mainLogTotal evenly. A log factoryd cannot read
+// leaves a line saying so.
+func (r *Roller) failedLogs(ctx context.Context, red []ActionJob) string {
+	if len(red) == 0 {
+		return ""
+	}
+	scrub := cmp.Or(r.Scrub, redact.New())
+	each := min(mainLogBytes, mainLogTotal/len(red))
+	var b strings.Builder
+	b.WriteString("\n\nThe last lines of each failed job's log:")
+	for _, j := range red {
+		job := fmt.Sprintf("%s, attempt %d", j.Name, j.Attempt)
+		body, err := r.Forgejo.ActionJobLog(ctx, r.Token, r.Repo.Owner, r.Repo.Name, j.ID, mainLogRead)
+		if err != nil {
+			log.Printf("roller: log of main's job %s: %v", job, err)
+			fmt.Fprintf(&b, "\n\n%s: factoryd cannot read its log (%s).", job, textutil.Truncate(oneLine(scrub.String(err.Error())), each))
+			continue
+		}
+		if tail := logTail([]byte(scrub.String(string(body))), mainLogLines, each); tail != "" {
+			fmt.Fprintf(&b, "\n\n%s:\n\n%s", job, fenced(tail))
+		} else {
+			fmt.Fprintf(&b, "\n\n%s: its log is empty.", job)
+		}
+	}
+	return b.String()
 }
 
 // endPauseCard ends the pause's card once run, main's green push run,

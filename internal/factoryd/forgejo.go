@@ -621,6 +621,17 @@ func (f *Forgejo) RerunActionJob(ctx context.Context, token, owner, repo string,
 	return err
 }
 
+// ActionJobLog reads the last tail bytes of the log of owner/repo's job
+// jobID, its latest attempt's, through Forgejo's job log API: a suffix
+// Range, which the API serves, so a long log's head never crosses. A log
+// cut there starts mid-line.
+func (f *Forgejo) ActionJobLog(ctx context.Context, token, owner, repo string, jobID int64, tail int) ([]byte, error) {
+	return f.do(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/actions/jobs/%d/logs", owner, repo, jobID), nil, anySuccess, func(r *http.Request) {
+		r.Header.Set("Authorization", "token "+token)
+		r.Header.Set("Range", fmt.Sprintf("bytes=-%d", tail))
+	})
+}
+
 // DispatchWorkflow runs workflow, a file of repo's .forgejo/workflows/, on
 // ref with inputs through token (workflow_dispatch).
 func (f *Forgejo) DispatchWorkflow(ctx context.Context, token string, repo Repo, workflow, ref string, inputs map[string]string) error {

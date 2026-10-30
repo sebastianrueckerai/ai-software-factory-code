@@ -2047,7 +2047,7 @@ func checksResult(cs CombinedStatus, baseURL string, logOf func(targetURL string
 			finding := fmt.Sprintf("check %q: %s — %s (%s)", s.Context, s.State, s.Description, display)
 			if logOf != nil && target != "" {
 				if log, err := logOf(target); err == nil {
-					if tail := logTail(log); tail != "" {
+					if tail := logTail(log, jobLogMaxLines, jobLogMaxBytes); tail != "" {
 						finding += "\n" + tail
 					}
 				}
@@ -2139,27 +2139,26 @@ const (
 	jobLogMaxBytes = 4096
 )
 
-// logTail is log's last jobLogMaxLines lines, each with its leading
-// Forgejo Actions timestamp stripped, cut down to at most jobLogMaxBytes by
-// dropping whole lines from the front: the kept text always starts at a
-// line, never mid-line. A single line past the byte cap on its own is cut
-// hard at the nearest UTF-8 rune boundary, since no line boundary can
-// satisfy it.
-func logTail(log []byte) string {
+// logTail is log's last maxLines lines, each with its leading Forgejo
+// Actions timestamp stripped, cut down to at most maxBytes by dropping
+// whole lines from the front: the kept text always starts at a line, never
+// mid-line. A single line past the byte cap on its own is cut hard at the
+// nearest UTF-8 rune boundary, since no line boundary can satisfy it.
+func logTail(log []byte, maxLines, maxBytes int) string {
 	lines := strings.Split(strings.TrimRight(string(log), "\n"), "\n")
 	if section := resultsSection(lines); len(section) > 0 {
 		lines = section
-	} else if len(lines) > jobLogMaxLines {
-		lines = lines[len(lines)-jobLogMaxLines:]
+	} else if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
 	}
 	for i, line := range lines {
 		lines[i] = stripLogTimestamp(line)
 	}
 	tail := strings.Join(lines, "\n")
-	for len(tail) > jobLogMaxBytes {
+	for len(tail) > maxBytes {
 		_, rest, ok := strings.Cut(tail, "\n")
 		if !ok {
-			cut := len(tail) - jobLogMaxBytes
+			cut := len(tail) - maxBytes
 			for cut < len(tail) && !utf8.RuneStart(tail[cut]) {
 				cut++
 			}
