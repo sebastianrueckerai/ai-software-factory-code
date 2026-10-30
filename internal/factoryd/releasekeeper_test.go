@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
 func keeperAt(h, m int) time.Time { return time.Date(2026, 10, 29, h, m, 0, 0, time.UTC) }
@@ -416,6 +417,65 @@ func TestReleaseKeeperKeepsTheAskTimeOfARefusedFiling(t *testing.T) {
 	keeperPass(t, k)
 	if len(f.issues) != 0 {
 		t.Errorf("issues %q at 16:01, want none before 22:00", f.issues)
+	}
+}
+
+// A Deploy now that lands between the ask's write and its filing closes the
+// ask just filed: the pass reads the row again, and its ask time is gone.
+func TestReleaseKeeperClosesAnAskADeployNowOvertook(t *testing.T) {
+	f := &chainForgejo{}
+	k, store, clock := newKeeper(t, f)
+	k.Store = &deployNowAfterAsk{store}
+	*clock = keeperAt(16, 0)
+	keeperPass(t, k)
+	note := demoRepo + "#31 factoryd: Deploy now sent main at 9d9d9d9 to production while this ask was filed. Closing this issue."
+	if len(f.issues) != 1 || !slices.Equal(f.closed, []string{demoRepo + "#31"}) || !slices.Equal(f.comments, []string{note}) {
+		t.Errorf("issues %d, closed %q, comments %q; want #31 filed and closed with %q", len(f.issues), f.closed, f.comments, note)
+	}
+	want := Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(16, 0), DeployNow: demoCommit}
+	if got := releaseRow(store, demoRepo); !reflect.DeepEqual(got, want) {
+		t.Errorf("row %+v, want the Deploy now's %+v", got, want)
+	}
+}
+
+// deployNowAfterAsk presses Deploy now on demoCommit right after an ask's
+// write lands, before the pass files the ask.
+type deployNowAfterAsk struct{ *fakeStore }
+
+func (s *deployNowAfterAsk) PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error) {
+	landed, err := s.fakeStore.PutReleaseHold(ctx, repository, since, asked, was, wasHeld)
+	if landed && !asked.IsZero() {
+		err = errors.Join(err, s.SetDeployNow(ctx, repository, demoCommit, asked))
+	}
+	return landed, err
+}
+
+// The pass compares the ask time it wrote with the row it reads back, so
+// its now keeps the microseconds Postgres keeps: a time at nanoseconds
+// reads back cut to them, one cut to them reads back equal.
+func TestPGReleaseTimesKeepMicroseconds(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_release_micro"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	at := time.Date(2026, 10, 29, 16, 0, 0, 123456789, time.UTC)
+	for _, c := range []struct {
+		repository string
+		write      time.Time
+		equal      bool
+	}{{"sf/nano", at, false}, {"sf/micro", at.Truncate(time.Microsecond), true}} {
+		if _, err := s.PutReleaseHold(ctx, c.repository, c.write, c.write, time.Time{}, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		r, err := s.Release(ctx, c.repository)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r.AskedAt.Equal(c.write) != c.equal || !r.AskedAt.Equal(at.Truncate(time.Microsecond)) {
+			t.Errorf("%s: wrote %s, read %s; want it equal %v, cut to microseconds", c.repository, c.write.Format(time.RFC3339Nano), r.AskedAt.Format(time.RFC3339Nano), c.equal)
+		}
 	}
 }
 

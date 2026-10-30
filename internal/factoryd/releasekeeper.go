@@ -119,7 +119,8 @@ func (k *ReleaseKeeper) Pass(ctx context.Context) error {
 // unwritten), so the newest run's promote job runs again. Own's roll is
 // the roller's.
 func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) error {
-	now, repository := k.Now(), row.Repository
+	// at Postgres's precision, so a time this pass writes reads back equal
+	now, repository := k.Now().Truncate(time.Microsecond), row.Repository
 	var err error
 	ended := false
 	switch {
@@ -148,7 +149,8 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 // this pass read, and the ask goes out only where that write landed, so a
 // Deploy now or another pass meanwhile wins. An ask that does not go out
 // puts its time back, unless Forgejo refused it for good: then the next
-// comes HoldAskAfter later, not each minute.
+// comes HoldAskAfter later, not each minute. A new ask whose time is gone
+// from the row once filed was overtaken by a Deploy now, and closes.
 func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, now time.Time) error {
 	repository, since := row.Repository, row.HeldSince
 	if since.IsZero() {
@@ -214,7 +216,18 @@ func (k *ReleaseKeeper) hold(ctx context.Context, row Release, groups []Group, n
 		}
 		return err
 	}
-	return nil
+	if standing {
+		return nil
+	}
+	fresh, err := k.Store.Release(ctx, repository)
+	if err != nil || fresh.AskedAt.Equal(now) {
+		return err
+	}
+	sent := "main"
+	if fresh.DeployNow != "" {
+		sent = "main at " + fresh.DeployNow[:min(7, len(fresh.DeployNow))]
+	}
+	return k.closeAsk(ctx, repository, "factoryd: Deploy now sent "+sent+" to production while this ask was filed. Closing this issue.")
 }
 
 // question is the hold's ask on project name: after its hours, or naming
