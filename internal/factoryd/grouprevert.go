@@ -38,6 +38,10 @@ const (
 // it within minutes of its pause, so a card still missing was lost.
 const revertRefileAfter = 10 * time.Minute
 
+// revertHookOwns is how long after a revert card's end RevertPausePass
+// leaves its pause to the end's own hook (revertEnded in finish).
+const revertHookOwns = time.Minute
+
 // salvageBranch is the fork's branch that keeps main as it stood before
 // plan's group revert, the plan's work on it.
 func salvageBranch(plan string) string { return "salvage/" + plan }
@@ -130,7 +134,7 @@ func (r *Runner) RevertGroup(ctx context.Context, p Task, cards []Task, why stri
 	if err != nil {
 		if unfiled(ctx, r.store, id) {
 			closeOpened(ctx, r.forgejo, repo, opened)
-			if cerr := r.store.ClearQueuePause(context.WithoutCancel(ctx), p.Repository); cerr != nil {
+			if cerr := r.store.ClearRevertPause(context.WithoutCancel(ctx), p.Repository, id); cerr != nil {
 				log.Printf("plan %s: lift the merge queue's pause of %s: %v", p.ID, p.Repository, cerr)
 			}
 		}
@@ -326,8 +330,8 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 // pause goes last, the queue's waiting heads woken. A step that fails
 // leaves the pause for RevertPausePass, which runs it all again: safe to
 // repeat, as MarkReverted sets only nulls, the plan comment goes once, the
-// reopen takes only a plan that waits, and the pause's clear is
-// idempotent. finish runs it twice for a merged card with a chain
+// reopen takes only a plan that waits, and the pause's clear, of t's
+// pause only, is idempotent. finish runs it twice for a merged card with a chain
 // (merged, then EndCovered): the first call clears the pause, so the
 // second finds no pause naming the card.
 func (r *Runner) revertEnded(ctx context.Context, t Task, final string, merged bool) {
@@ -378,7 +382,7 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 		}
 	}
 	r.record(ctx, p.ID, step, detail)
-	if err := r.store.ClearQueuePause(ctx, pause.Project); err != nil {
+	if err := r.store.ClearRevertPause(ctx, pause.Project, pause.RevertTask); err != nil {
 		return err
 	}
 	signalQueueHeads(ctx, r.store, r.cfg.Workflows)
@@ -386,11 +390,12 @@ func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, f
 }
 
 // RevertPausePass heals, each minute, every pause that names a plan. One
-// whose revert card ended (final, or merged) runs revertEnded with the
-// card's state: a lost hook (a store error, a factoryd that stopped
-// between the card's final write and the hook, a retried finish that
-// returns early on a final card) heals within a minute. One whose card has
-// no row revertRefileAfter after the pause began lost its filing:
+// whose revert card ended (final, or merged) revertHookOwns ago or more
+// runs revertEnded with the card's state: a lost hook (a store error, a
+// factoryd that stopped between the card's final write and the hook, a
+// retried finish that returns early on a final card) heals within two
+// minutes, and the hook runs alone in the minute it owns. One whose card
+// has no row revertRefileAfter after the pause began lost its filing:
 // RevertGroup, called again with the pause's plan and cards, resumes the
 // pause and files the card. It runs in the Runner, not in the Roller's
 // mainState: the Roller polls only the factory's own repository, and a
@@ -407,7 +412,9 @@ func (r *Runner) RevertPausePass(ctx context.Context) {
 		case err != nil:
 			log.Printf("revert pause pass: the revert card %s of %s: %v", pause.RevertTask, pause.Project, err)
 		case filed && (Final(card.Status) || card.Status == "merged"):
-			r.revertEnded(ctx, card, card.Status, card.Status == "merged")
+			if card.FinishedAt == nil || time.Since(*card.FinishedAt) >= revertHookOwns {
+				r.revertEnded(ctx, card, card.Status, card.Status == "merged")
+			}
 		case !filed && time.Since(pause.Since) >= revertRefileAfter:
 			if note, err := r.refileRevert(ctx, pause); err != nil {
 				log.Printf("revert pause pass: file plan %s's revert card %s again: %v", pause.Plan, pause.RevertTask, err)

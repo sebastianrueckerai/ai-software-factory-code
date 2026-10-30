@@ -704,17 +704,24 @@ func TestClosedRevertLeavesTheCardsOnMain(t *testing.T) {
 	}
 }
 
+// finishedAgo is a finish stamp d before now.
+func finishedAgo(d time.Duration) *time.Time {
+	at := time.Now().Add(-d)
+	return &at
+}
+
 // The minute pass heals a lost hook: a pause whose revert card merged
-// without its end's hook marks the cards, goes and wakes the heads; a
-// second pass changes nothing. A pause whose card still runs is left
-// alone; one whose card failed goes with the plan told. The end of a
+// two minutes ago without its end's hook marks the cards, goes and wakes
+// the heads; a second pass changes nothing. A pause whose card still runs
+// is left alone, and so is one whose card ended within the minute the
+// hook owns. One whose card failed goes with the plan told. The end of a
 // main-red pause's revert card leaves that pause to main's runs.
 func TestRevertPausePassHeals(t *testing.T) {
 	g := revertEndRig(t)
 	ctx := context.Background()
 	g.landed()
 	rv := g.store.tasks["t-rv"]
-	rv.Status, rv.FinishedAt = "merged", justNow()
+	rv.Status, rv.FinishedAt = "merged", finishedAgo(2*time.Minute)
 	g.store.tasks["t-rv"] = rv
 	running := QueuePause{Project: "sf/other", Since: time.Now().Add(-time.Hour), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"}
 	g.store.pauses["sf/other"] = running
@@ -747,7 +754,14 @@ func TestRevertPausePassHeals(t *testing.T) {
 
 	g = revertEndRig(t)
 	rv = g.store.tasks["t-rv"]
-	rv.Status = "failed"
+	rv.Status, rv.FinishedAt = "failed", finishedAgo(30*time.Second)
+	g.store.tasks["t-rv"] = rv
+	pause := g.store.pauses["sf/repo"]
+	g.r.RevertPausePass(ctx)
+	if p := g.store.pauses["sf/repo"]; !reflect.DeepEqual(p, pause) || len(g.fj.commentsOn(10)) != 0 || len(g.groupRevertEnds(t)) != 0 {
+		t.Errorf("pause %+v, plan comments %q, steps %v; want the card's last minute left to its hook", p, g.fj.commentsOn(10), g.groupRevertEnds(t))
+	}
+	rv.FinishedAt = finishedAgo(2 * time.Minute)
 	g.store.tasks["t-rv"] = rv
 	g.r.RevertPausePass(ctx)
 	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended failed): its cards stay on main."}
@@ -822,5 +836,31 @@ func TestRevertGroupFailsWhenItsStepFails(t *testing.T) {
 	}
 	if p, ok := g.store.pauses["sf/repo"]; ok || len(g.fj.pulls) != 0 || len(g.fj.issues) != 0 || len(g.calls) != 1 {
 		t.Errorf("pause %+v, pull requests %q, issues %q, reverts %q; want the pause lifted after one revert and nothing filed", p, g.fj.pulls, g.fj.issues, g.calls)
+	}
+}
+
+// staleRead is a store whose QueuePause answers the pause as it stood
+// before another took its place.
+type staleRead struct {
+	*fakeStore
+	stale QueuePause
+}
+
+func (s *staleRead) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+	return s.stale, true, nil
+}
+
+// The end of a revert clears only its own pause: a pause another revert
+// set in the gap after the read (the hook and the minute pass both ending
+// the card, one before the other) stays.
+func TestRevertEndKeepsAPauseThatTookItsPlace(t *testing.T) {
+	g := revertEndRig(t)
+	g.landed()
+	newer := QueuePause{Project: "sf/repo", Since: time.Now(), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"}
+	g.r.store = &staleRead{fakeStore: g.store, stale: g.store.pauses["sf/repo"]}
+	g.store.pauses["sf/repo"] = newer
+	g.r.revertEnded(context.Background(), g.store.tasks["t-rv"], "done", true)
+	if p := g.store.pauses["sf/repo"]; !reflect.DeepEqual(p, newer) {
+		t.Errorf("pause = %+v, want the newer one kept", p)
 	}
 }

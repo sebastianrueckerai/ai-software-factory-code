@@ -423,8 +423,11 @@ type Store interface {
 	ClearQueuePause(ctx context.Context, project string) error
 	// PauseQueueForRevert pauses the queue for a plan's group revert; false
 	// when a pause stands. PlanQueuePauses are the pauses that name a plan.
+	// ClearRevertPause ends the project's pause only while revertTask is
+	// its card: a pause set since the caller read it stays.
 	PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error)
 	PlanQueuePauses(ctx context.Context) ([]QueuePause, error)
+	ClearRevertPause(ctx context.Context, project, revertTask string) error
 	// MarkReverted sets task id's reverted_at to at unless it has one,
 	// and reports whether it set it.
 	MarkReverted(ctx context.Context, id string, at time.Time) (bool, error)

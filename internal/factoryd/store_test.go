@@ -1207,6 +1207,13 @@ func (s *fakeStore) SetQueuePauseRevert(ctx context.Context, project, taskID str
 	return nil
 }
 
+func (s *fakeStore) ClearRevertPause(ctx context.Context, project, revertTask string) error {
+	if p, ok := s.pauses[project]; ok && p.RevertTask == revertTask {
+		delete(s.pauses, project)
+	}
+	return nil
+}
+
 func (s *fakeStore) ClearQueuePause(ctx context.Context, project string) error {
 	delete(s.pauses, project)
 	return nil

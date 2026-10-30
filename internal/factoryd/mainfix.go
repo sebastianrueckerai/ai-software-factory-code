@@ -132,6 +132,11 @@ func (s *PGStore) ClearQueuePause(ctx context.Context, project string) error {
 	return err
 }
 
+func (s *PGStore) ClearRevertPause(ctx context.Context, project, revertTask string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM queue_pauses WHERE project = $1 AND revert_task = $2`, project, revertTask)
+	return err
+}
+
 // mainState reads main's newest push run: a red one pauses the queue and
 // files its card, a green one ends a pause, and a pause past the bound
 // with no revert yet files it. A red one on a pause with no card, a

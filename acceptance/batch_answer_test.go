@@ -1547,3 +1547,7 @@ func (s *accBatchStore) PlanQueuePauses(context.Context) ([]factoryd.QueuePause,
 func (s *accBatchStore) MarkReverted(context.Context, string, time.Time) (bool, error) {
 	return false, nil
 }
+
+func (s *accBatchStore) ClearRevertPause(context.Context, string, string) error {
+	return nil
+}

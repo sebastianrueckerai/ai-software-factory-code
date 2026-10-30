@@ -825,6 +825,35 @@ func TestPGStoreQueuePauseForRevert(t *testing.T) {
 	}
 }
 
+// ClearRevertPause ends a project's pause only while it names the revert
+// card: a pause on another card stays, and the right card clears it.
+func TestPGStoreClearRevertPause(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE queue_pauses`); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.PauseQueueForRevert(ctx, QueuePause{Project: "sf/r", Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q", Since: time.Now()}); err != nil || !ok {
+		t.Fatalf("PauseQueueForRevert = %v, %v", ok, err)
+	}
+	if err := s.ClearRevertPause(ctx, "sf/r", "t-rv"); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok, err := s.QueuePause(ctx, "sf/r"); err != nil || !ok || p.RevertTask != "t-q" {
+		t.Fatalf("pause = %+v, %v, %v; want t-q's kept", p, ok, err)
+	}
+	if err := s.ClearRevertPause(ctx, "sf/r", "t-q"); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok, err := s.QueuePause(ctx, "sf/r"); err != nil || ok {
+		t.Fatalf("pause = %+v, %v, %v; want it cleared", p, ok, err)
+	}
+}
+
 // A group pause belongs to the group revert: main's own runs neither end
 // it on green nor file a fix card on red.
 func TestMainStateLeavesAGroupPauseAlone(t *testing.T) {
