@@ -652,6 +652,58 @@ func TestRollerSuspendsFluxForAQueuedPlanCard(t *testing.T) {
 	poll(false)
 }
 
+// With no Deploy now a poll sets Flux's level before it reads the runs: a
+// poll that fails on main's state, or on the run read, still suspends Flux
+// for a plan card that entered the merge queue, and still ends with the
+// failure.
+func TestRollerSuspendsFluxThoughThePollFails(t *testing.T) {
+	for name, fail := range map[string]func(*Roller, *rollForgejo, *fakeStore){
+		"main's state": func(r *Roller, _ *rollForgejo, s *fakeStore) { r.Store = &pauseReadFails{s} },
+		"the run read": func(_ *Roller, f *rollForgejo, _ *fakeStore) { f.runsDown = true },
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &rollForgejo{runs: []map[string]any{pushRun(58, commitC2, "success")}}
+			roller, store, _ := newTestRoller(t, f)
+			flux := roller.Flux.(*fakeFluxSwitch)
+			store.tasks["t-plan"] = Task{ID: "t-plan", IssueNumber: 40, Repository: codeRepo, Track: "plan"}
+			store.tasks["t-c1"] = Task{ID: "t-c1", Source: SourcePlan, Parent: "t-plan", PlanKey: "a", Repository: codeRepo, Status: "in-review"}
+			store.queue = []queueEntry{{project: codeRepo, task: "t-c1", at: time.Now()}}
+			fail(roller, f, store)
+			if err := roller.poll(context.Background()); err == nil {
+				t.Fatal("poll: nil, want the failure")
+			}
+			if !flux.suspended {
+				t.Fatal("resumed: the failed poll left Flux at its last level")
+			}
+		})
+	}
+}
+
+// A resume Flux refuses still ends the poll, after main's state: a green
+// main ends its queue pause though Flux cannot be resumed.
+func TestRollerReadsMainsStateThoughTheResumeFails(t *testing.T) {
+	f := &rollForgejo{runs: []map[string]any{pushRun(58, commitC2, "success")}}
+	roller, store, _ := newTestRoller(t, f)
+	flux := roller.Flux.(*fakeFluxSwitch)
+	flux.suspended = true
+	flux.resumeErr = fmt.Errorf("%w: PATCH x: refused", ErrForbidden)
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 57, SHA: commitC1, Since: time.Now()}}
+	if err := roller.poll(context.Background()); !errors.Is(err, flux.resumeErr) {
+		t.Fatalf("poll: %v, want the resume's error", err)
+	}
+	if p, ok := store.pauses[codeRepo]; ok || !flux.suspended {
+		t.Fatalf("pause %+v (%v), suspended %v; want the pause ended by main's green run, Flux as it was", p, ok, flux.suspended)
+	}
+}
+
+// pauseReadFails is a store whose queue pause cannot be read, so main's
+// state fails.
+type pauseReadFails struct{ *fakeStore }
+
+func (s *pauseReadFails) QueuePause(context.Context, string) (QueuePause, bool, error) {
+	return QueuePause{}, false, errors.New("the database is gone")
+}
+
 // queuedPlanRoller is newHeldRoller's rig with plan #40 not yet on main:
 // its card t-c1 holds a merge queue entry, so no roll is held, c1's roll
 // is filed, and Flux is suspended for the queued card.

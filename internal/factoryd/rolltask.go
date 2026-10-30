@@ -472,23 +472,34 @@ func (r *Roller) poll(ctx context.Context) error {
 	if !held {
 		r.heldPosted = ""
 	}
+	// with no Deploy now the level needs no runs: set before they are read,
+	// so a poll that fails on them or on main's state holds a queued plan
+	// card's merge all the same; a refused resume ends the poll after
+	// main's state
+	var level error
+	if deploy == "" {
+		_, level = r.setFlux(ctx, nil, groups, queued, "")
+	}
 	if err := r.consumeRetry(ctx, held); err != nil {
-		return err
+		return errors.Join(level, err)
 	}
 	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
 	if err != nil {
-		return err
+		return errors.Join(level, err)
 	}
 	if err := r.mainState(ctx, runs); err != nil {
-		return err
+		return errors.Join(level, err)
 	}
 	if held {
 		if err := r.markHeld(ctx, runs, groups, deploy); err != nil {
-			return err
+			return errors.Join(level, err)
 		}
 	}
-	if deploy, err = r.setFlux(ctx, runs, groups, queued, deploy); err != nil {
-		return err
+	if deploy != "" {
+		deploy, level = r.setFlux(ctx, runs, groups, queued, deploy)
+	}
+	if level != nil {
+		return level
 	}
 	first, carried, err := r.Store.RollRuns(ctx, r.Repo.String())
 	if err != nil {
