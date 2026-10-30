@@ -2628,6 +2628,55 @@ func TestFilingAgainUnderANewReplanJudgesAgain(t *testing.T) {
 	}
 }
 
+// The revision before is the newest that filed: a from that a revision
+// refused at its filing held is judged again by the next revision. cli
+// turns into cli2 in revision 2, whose filing refuses for an ended card;
+// cli merges; revision 3 keeps cli2 and is refused for it.
+func TestReplanJudgesAgainstTheNewestFiledRevision(t *testing.T) {
+	ctx := context.Background()
+	cli := PlanCard{Key: "cli", Role: RoleFeature, Title: "A command line", Brief: "cmd/cli creates links.",
+		Directories: []string{"cmd/cli"}, Acceptance: []PlanItem{{Criterion: "links_crud", Text: "TestCLICreate in cmd/cli exits 0"}}, Size: "small"}
+	p := testPlan()
+	p.Cards = slices.Insert(p.Cards, 3, cli)
+	r, store, _, _, _ := fileRig(t, p)
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	if ref := requestPlan(t, r); len(ref.Filed) != 5 {
+		t.Fatalf("the children: %+v", ref)
+	}
+	runPlanTask(store)
+	for _, key := range []string{"cli", "redirects"} {
+		k := cardsByKey(t, store)[key]
+		k.Status, k.PlanRevision = "running", 1
+		store.tasks[k.ID] = k
+	}
+	if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "a smaller cli", "revision": 1}); err != nil {
+		t.Fatal(err)
+	}
+	cli.Key, cli.From = "cli2", "cli"
+	p.Cards[3] = cli
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	k := cardsByKey(t, store)["redirects"]
+	k.Status = "failed"
+	store.tasks[k.ID] = k
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
+	if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 0 || len(ref.Refused) == 0 {
+		t.Fatalf("the filing of revision 2: %+v, want it refused", ref)
+	}
+	k = cardsByKey(t, store)["cli"]
+	k.Status, k.MergeCommit = "done", "4f1c2a9"
+	store.tasks[k.ID] = k
+	p.Cards[2].Key, p.Cards[2].From = "redirects2", "redirects"
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
+	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out",
+		"card cli merged: keep its key; a later card changes its work"}
+	if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, want) {
+		t.Fatalf("revision 3: %+v, %v; want refused with %q", res, err, want)
+	}
+}
+
 // A filing judges its revision once, before its first card files: a run
 // again after the cards filed, one of them closed since, answers the same
 // cards, no refusal and no comment that it files none.
