@@ -21,11 +21,11 @@ import (
 // session a person decides, with the queue still paused.
 const groupRevertSessions = 2
 
-// The group revert's steps on its plan's timeline: group_revert records
-// card's git work, its merges' shas newest first; group_revert_handover
-// names the agent card that took over plain revert card from, whose checks
-// failed; group_reverted or group_revert_ended records the revert's end,
-// landed or not.
+// The group revert's steps. On its plan's timeline group_revert records
+// card's git work, its merges' shas newest first, and group_reverted or
+// group_revert_ended the revert's end, landed or not. On a plain revert
+// card's own timeline group_revert_handover names the agent card that took
+// it over, its checks red.
 const (
 	stepGroupRevert         = "group_revert"
 	stepGroupRevertHandover = "group_revert_handover"
@@ -447,58 +447,45 @@ func (r *Runner) refileRevert(ctx context.Context, pause QueuePause) (string, er
 // handOverRevert hands plain revert card t, whose checks are red, to an
 // agent card when its project's pause names a plan and t: the agent card
 // continues t's branch on t's base, the pause names it, and t ends closed
-// with no person asked. The agent card's id goes on the plan's timeline
-// before the card files, so a retry files that card and no other, and
-// the pause names t until the card exists. A retry that finds the pause on
-// the agent card only finishes t. Any other pause, or none, leaves t to a
-// person: false.
+// with no person asked. The agent card's id goes on t's timeline before
+// the card files, so a retry files that card and no other, and the pause
+// names t until the card exists. A retry that finds the card filed only
+// links the pause if it still names t, and finishes t whatever the pause
+// says: the agent card may have ended and its end cleared the pause. With
+// no card filed, any other pause, or none, leaves t to a person: false.
 func (r *Runner) handOverRevert(ctx context.Context, t Task) (bool, error) {
+	own, err := r.timeline.Objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
+	if err != nil {
+		return false, fmt.Errorf("the timeline of %s: %w", t.ID, err)
+	}
+	id, _ := lastStep(own, stepGroupRevertHandover)["card"].(string)
 	pause, paused, err := r.store.QueuePause(ctx, t.Repository)
-	if err != nil || !paused || pause.Plan == "" {
-		return false, err
-	}
-	p, _, err := r.task(ctx, pause.Plan)
 	if err != nil {
 		return false, err
 	}
-	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
-	if err != nil {
-		return false, fmt.Errorf("the timeline of %s: %w", p.ID, err)
-	}
-	var shas []string
-	id := ""
-	for line := range bytes.SplitSeq(tl, []byte("\n")) {
-		var s struct {
-			Step, Card, From string
-			Shas             []string
-		}
-		switch {
-		case json.Unmarshal(line, &s) != nil:
-		case s.Step == stepGroupRevert && s.Card == t.ID:
-			shas = s.Shas
-		case s.Step == stepGroupRevertHandover && s.From == t.ID:
-			id = s.Card
-		}
-	}
-	if pause.RevertTask != t.ID && (id == "" || pause.RevertTask != id) {
-		return false, nil
-	}
-	if id == "" {
-		id = NewTaskID()
-		if err := r.timeline.Append(ctx, p.ID, stepGroupRevertHandover, map[string]any{"from": t.ID, "card": id}); err != nil {
-			return false, fmt.Errorf("record %s: %w", stepGroupRevertHandover, err)
-		}
-	}
-	card, filed, err := r.store.Task(ctx, id)
-	if err != nil {
-		return false, err
-	}
-	if !filed {
-		if card, err = r.fileHandover(ctx, p, t, pause.Reverts, shas, id); err != nil {
+	held := paused && pause.Plan != "" && pause.RevertTask == t.ID
+	card, filed := Task{}, false
+	if id != "" {
+		if card, filed, err = r.store.Task(ctx, id); err != nil {
 			return false, err
 		}
 	}
-	if pause.RevertTask == t.ID {
+	switch {
+	case filed:
+	case !held:
+		return false, nil
+	default:
+		if id == "" {
+			id = NewTaskID()
+			if err := r.timeline.Append(ctx, t.ID, stepGroupRevertHandover, map[string]any{"card": id}); err != nil {
+				return false, fmt.Errorf("record %s: %w", stepGroupRevertHandover, err)
+			}
+		}
+		if card, err = r.fileHandover(ctx, t, pause, id); err != nil {
+			return false, err
+		}
+	}
+	if held {
 		if err := r.store.SetQueuePauseRevert(ctx, t.Repository, id); err != nil {
 			return false, err
 		}
@@ -506,12 +493,31 @@ func (r *Runner) handOverRevert(ctx context.Context, t Task) (bool, error) {
 	return true, r.Finish(ctx, t.ID, "closed", fmt.Sprintf("the plain revert's checks failed: card #%d takes it over", card.IssueNumber))
 }
 
-// fileHandover files agent card id that takes over plain revert card t of
-// plan p, which reverted the merges of reverts, shas newest first: its
+// fileHandover files agent card id that takes over plain revert card t,
+// whose pause names its plan and the cards it reverted: the merges come
+// newest first from the plan's group_revert step of t, and the card's
 // branch first continues t's, as the card's issue can start it. Merges it
 // cannot name, or t's branch gone, are terminal: no retry changes them,
 // and t's failure lifts the pause.
-func (r *Runner) fileHandover(ctx context.Context, p, t Task, reverts, shas []string, id string) (Task, error) {
+func (r *Runner) fileHandover(ctx context.Context, t Task, pause QueuePause, id string) (Task, error) {
+	p, _, err := r.task(ctx, pause.Plan)
+	if err != nil {
+		return Task{}, err
+	}
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+	if err != nil {
+		return Task{}, fmt.Errorf("the timeline of %s: %w", p.ID, err)
+	}
+	var shas []string
+	for line := range bytes.SplitSeq(tl, []byte("\n")) {
+		var s struct {
+			Step, Card string
+			Shas       []string
+		}
+		if json.Unmarshal(line, &s) == nil && s.Step == stepGroupRevert && s.Card == t.ID {
+			shas = s.Shas
+		}
+	}
 	project, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil {
 		return Task{}, err
@@ -519,6 +525,7 @@ func (r *Runner) fileHandover(ctx context.Context, p, t Task, reverts, shas []st
 	if !ok {
 		return Task{}, fmt.Errorf("no project has the repository %s", t.Repository)
 	}
+	reverts := pause.Reverts
 	bySHA := map[string]Task{}
 	for _, c := range reverts {
 		card, _, err := r.task(ctx, c)

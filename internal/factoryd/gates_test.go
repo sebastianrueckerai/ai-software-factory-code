@@ -2856,3 +2856,53 @@ func TestRedPlainRevertWithoutItsStepFailsAtOnce(t *testing.T) {
 		t.Errorf("pause %+v, issues %q, approvals %+v; want the pause on t-rv and nothing filed or asked", p, g.fj.issues, g.store.approvals)
 	}
 }
+
+// finishFails is a store whose DeleteLiveSession, finish's first write,
+// fails its first fails calls: a factoryd that stops inside the end.
+type finishFails struct {
+	*fakeStore
+	fails int
+}
+
+func (s *finishFails) DeleteLiveSession(ctx context.Context, taskID string) error {
+	if s.fails > 0 {
+		s.fails--
+		return errors.New("factoryd stopped")
+	}
+	return s.fakeStore.DeleteLiveSession(ctx, taskID)
+}
+
+// A hand-over that stopped after the pause moved to the agent card, and
+// before the plain card ended, is finished by the retry whatever the
+// pause says by then: here the agent card ended and its end cleared the
+// pause. The retry closes t-rv, files nothing and asks no one.
+func TestRedPlainRevertRetryAfterTheAgentCardEnded(t *testing.T) {
+	g := revertEndRig(t)
+	ctx := context.Background()
+	if err := g.r.timeline.Append(ctx, "p", "group_revert", map[string]any{"card": "t-rv", "shas": []string{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}); err != nil {
+		t.Fatal(err)
+	}
+	g.r.store = &finishFails{fakeStore: g.store, fails: 1}
+	red := ApprovalInput{PR: PullRequest{Number: 70}, Commit: "rv1", RedChecks: true, Factory: true}
+	if err := g.r.RequestApproval(ctx, "t-rv", red); err == nil || !strings.Contains(err.Error(), "factoryd stopped") {
+		t.Fatalf("error = %v, want the end's", err)
+	}
+	id := g.store.pauses["sf/repo"].RevertTask
+	if err := g.r.Finish(ctx, id, "failed", "the wall clock cap ran out"); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok || g.store.tasks["t-rv"].Status != "in-review" {
+		t.Fatalf("pause %+v (%t), t-rv %s; want the pause gone and t-rv not ended yet", p, ok, g.store.tasks["t-rv"].Status)
+	}
+	if err := g.r.RequestApproval(ctx, "t-rv", red); err != nil {
+		t.Fatal(err)
+	}
+	var final struct{ State, Reason string }
+	if steps := stepsNamed(t, g.r, "t-rv", "final"); len(steps) != 1 || json.Unmarshal(steps[0], &final) != nil ||
+		final.State != "closed" || final.Reason != "the plain revert's checks failed: card #21 takes it over" {
+		t.Errorf("t-rv's final steps %s, want one closed with the hand-over", steps)
+	}
+	if len(g.fj.issues) != 1 || len(g.store.approvals) != 0 {
+		t.Errorf("issues %q, approvals %+v; want the one agent card and no one asked", g.fj.issues, g.store.approvals)
+	}
+}
