@@ -880,8 +880,8 @@ func (r *Roller) consumeRetry(ctx context.Context, held bool) error {
 // judge decides one run of main whose image jobs are green: a skip, a roll
 // task, or a fold into the open one. done: it filed or folded, or waits
 // while the open roll has no pull request yet; the older runs wait for the
-// next poll. A skip says the commit is live through Flux, so while Flux is
-// suspended the commit waits unjudged.
+// next poll. A skip says the commit is live through Flux alone
+// (judgedLive).
 func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error) {
 	open, folding, err := r.Store.OpenRollTask(ctx, r.Repo.String())
 	if err != nil {
@@ -905,15 +905,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 	if only, err := r.onlyK8s(ctx, run.CommitSHA); err != nil {
 		return false, err
 	} else if only {
-		if r.fluxLevel == "suspended" {
-			return false, nil // live through Flux: judged once Flux runs
-		}
-		log.Printf("roller: %s (run %d) changes nothing outside k8s/; nothing to roll", run.CommitSHA, run.ID)
-		if err := r.Store.InsertRollRequest(ctx, req); err != nil {
-			return false, err
-		}
-		r.rollStatus(ctx, req.SHA, "success", "nothing to roll outside k8s/: already live")
-		return false, nil
+		return false, r.judgedLive(ctx, run, req, "changes nothing outside k8s/", "nothing to roll outside k8s/: already live")
 	}
 	at, ref := r.Repo, prBase
 	if folding {
@@ -924,15 +916,7 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 		return false, err
 	}
 	if len(changes) == 0 {
-		if r.fluxLevel == "suspended" {
-			return false, nil // live through Flux: judged once Flux runs
-		}
-		log.Printf("roller: %s (run %d) changed no image; nothing to roll", run.CommitSHA, run.ID)
-		if err := r.Store.InsertRollRequest(ctx, req); err != nil {
-			return false, err
-		}
-		r.rollStatus(ctx, req.SHA, "success", "no image changed: already live")
-		return false, nil
+		return false, r.judgedLive(ctx, run, req, "changed no image", "no image changed: already live")
 	}
 	req.Changes = changes
 	if len(unsigned) > 0 {
@@ -946,6 +930,23 @@ func (r *Roller) judge(ctx context.Context, run ActionRun) (done bool, err error
 		return true, r.fold(ctx, open, req)
 	}
 	return true, r.file(ctx, req)
+}
+
+// judgedLive judges run's commit live through Flux alone, its skip req
+// recorded with status, what saying why in the log. Flux resumes first,
+// as for a roll (file): a queued plan card may hold it suspended though
+// no roll is held, and blocks no other work. A refused resume ends the
+// poll, the commit unjudged.
+func (r *Roller) judgedLive(ctx context.Context, run ActionRun, req RollRequest, what, status string) error {
+	if err := r.setLevel(ctx, false, ""); err != nil {
+		return err
+	}
+	log.Printf("roller: %s (run %d) %s; nothing to roll", run.CommitSHA, run.ID, what)
+	if err := r.Store.InsertRollRequest(ctx, req); err != nil {
+		return err
+	}
+	r.rollStatus(ctx, req.SHA, "success", status)
+	return nil
 }
 
 // onlyK8s reports whether sha changes nothing outside k8s/ against the

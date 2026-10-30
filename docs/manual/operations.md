@@ -496,7 +496,12 @@ port 8090 only.
   and while a roll or a Deploy now goes out. Flux stays resumed while a
   roll task is open, so a plan card that merges while a roll is open goes
   live with it. Rolls themselves are held only while a plan is open on
-  `main`.
+  `main`. A plan card in the merge queue blocks no other work: a commit
+  that rolls resumes Flux as its roll task is filed, and a commit that
+  goes live through Flux alone (it changes nothing outside `k8s/`, or no
+  image) resumes Flux the same way and is then judged live (`factory/roll`
+  `success`, `already live`); the next poll suspends again while the card
+  is queued.
   Every roller poll sets the level, so
   while factoryd runs it undoes a hand suspend or resume within 15
   seconds: before suspending a Kustomization by hand (a shutdown's
