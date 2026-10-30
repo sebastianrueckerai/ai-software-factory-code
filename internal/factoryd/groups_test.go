@@ -54,7 +54,8 @@ func TestInPlan(t *testing.T) {
 // the merge events' earliest 09:00 although c3 finished at 09:05) and p5
 // (a merge commit and no event, so its child's finish) in sf/r, p4
 // (merged by a person: an event and no merge commit) in sf/q. p2 has no
-// merged child, p3 is closed, d1 is a direct card.
+// merged child, p3 is closed, d1 is a direct card, and p7's only merged
+// child c9 was taken off main again.
 func TestOpenGroups(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_groups"))
@@ -78,7 +79,10 @@ func TestOpenGroups(t *testing.T) {
 			('p5', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 5, '', '2026-09-30T00:00:00Z'),
 			('c7', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'p5', 'direct', 'one', 51, 'ghi', '2026-10-02T00:00:00Z'),
 			('p6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 6, '', '2026-09-29T00:00:00Z'),
-			('c8', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'pqr', '2026-09-30T18:05:00Z')`,
+			('c8', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'pqr', '2026-09-30T18:05:00Z'),
+			('p7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 7, '', '2026-09-30T00:00:00Z'),
+			('c9', 1, 0, 'done', 'sf/r', 'agent', 'plan', 'p7', 'direct', 'one', 71, 'stu', '2026-10-01T05:00:00Z')`,
+		`UPDATE tasks SET reverted_at = '2026-10-04T09:00:00Z' WHERE id = 'c9'`,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via) VALUES
 			('2026-10-01T10:00:00Z', 'sf/r', 'c1', 11, 'pull_request_merged', 'factory-merge', 'factoryd'),
 			('2026-10-01T09:00:00Z', 'sf/r', 'c3', 13, 'pull_request_merged', 'factory-merge', 'factoryd'),
@@ -86,7 +90,8 @@ func TestOpenGroups(t *testing.T) {
 			('2026-10-02T08:00:00Z', 'sf/r', 'p3', 3, 'plan_closed', 'factoryd', 'factoryd'),
 			('2026-10-03T12:00:00Z', 'sf/q', 'c6', 41, 'pull_request_merged', 'sebastian', 'webhook'),
 			('2026-10-01T06:00:00Z', 'sf/r', 'd1', 9, 'pull_request_merged', 'factory-merge', 'factoryd'),
-			('2026-09-30T18:00:00Z', 'sf/r', 'c8', 61, 'pull_request_merged', 'factory-merge', 'factoryd')`,
+			('2026-09-30T18:00:00Z', 'sf/r', 'c8', 61, 'pull_request_merged', 'factory-merge', 'factoryd'),
+			('2026-10-01T04:55:00Z', 'sf/r', 'c9', 71, 'pull_request_merged', 'factory-merge', 'factoryd')`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)

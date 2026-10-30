@@ -1178,3 +1178,7 @@ func (s *acceptanceStore) PauseQueueForRevert(context.Context, factoryd.QueuePau
 func (s *acceptanceStore) PlanQueuePauses(context.Context) ([]factoryd.QueuePause, error) {
 	return nil, nil
 }
+
+func (s *acceptanceStore) MarkReverted(context.Context, string, time.Time) (bool, error) {
+	return false, nil
+}

@@ -12,6 +12,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -2768,5 +2769,75 @@ func TestStaleRevisionMeansDropped(t *testing.T) {
 		if err != nil || newest != 3 || started != 2 || stale != tc.stale {
 			t.Fatalf("%s: staleRevision = %d, %d, %t, %v; want 3, 2, %t", tc.name, newest, started, stale, err, tc.stale)
 		}
+	}
+}
+
+// The plain revert's red checks hand its work to an agent card when the
+// pause is its plan's: the agent card continues factory/t-rv on its base,
+// the pause names it, and t-rv ends closed with no person asked. A retry
+// files nothing more. The agent card's own failure then lifts the pause
+// and files nothing either. Under a main-red pause the red revert asks a
+// person as before.
+func TestRedPlainRevertHandsOverToTheAgentCard(t *testing.T) {
+	g := revertEndRig(t)
+	ctx := context.Background()
+	if err := g.r.timeline.Append(ctx, "p", "group_revert", map[string]any{"card": "t-rv", "shas": []string{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}); err != nil {
+		t.Fatal(err)
+	}
+	red := ApprovalInput{PR: PullRequest{Number: 70}, Commit: "rv1", RedChecks: true, Factory: true}
+	for i := range 2 {
+		if err := g.r.RequestApproval(ctx, "t-rv", red); err != nil {
+			t.Fatalf("call %d: %v", i+1, err)
+		}
+	}
+	pause := g.store.pauses["sf/repo"]
+	id := pause.RevertTask
+	if want := (QueuePause{Project: "sf/repo", Since: pause.Since, Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: id}); id == "t-rv" || !reflect.DeepEqual(pause, want) {
+		t.Fatalf("pause = %+v, want it on the agent card", pause)
+	}
+	title := "Revert plan #10: 2 merges, newest first"
+	objective := "Take plan #10's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: m2 (#15), m1 (#14). " +
+		"The plain revert is on this card's branch; its checks failed: make main build green. Change nothing else."
+	card := g.store.tasks[id]
+	if card.Source != SourceGroupRevert || card.SHA != "h1" || card.IssueNumber != 21 || card.Kind != "agent" || card.Status != "queued" ||
+		card.BudgetEUR <= 0 || card.Objective != title+"\n\n"+objective {
+		t.Errorf("card = %+v, want the agent card on the plain revert's base", card)
+	}
+	if want := []string{title + "\n\n" + objective}; !slices.Equal(g.fj.issues, want) || !slices.Equal(g.wf.started, []string{id}) {
+		t.Errorf("issues %q, started %q; want one card, %q", g.fj.issues, g.wf.started, want)
+	}
+	if head := g.fj.branches["factory/"+id]; head != "rv1" {
+		t.Errorf("factory/%s at %q, want factory/t-rv's head rv1", id, head)
+	}
+	if rv := g.store.tasks["t-rv"]; rv.Status != "closed" || !slices.Contains(g.fj.closed, 70) {
+		t.Errorf("t-rv %s, pull requests closed %v; want it closed with its pull request", rv.Status, g.fj.closed)
+	}
+	var final struct{ State, Reason string }
+	if steps := stepsNamed(t, g.r, "t-rv", "final"); len(steps) != 1 || json.Unmarshal(steps[0], &final) != nil ||
+		final.State != "closed" || final.Reason != "the plain revert's checks failed: card #21 takes it over" {
+		t.Errorf("t-rv's final steps %s, want one closed with the hand-over", steps)
+	}
+	if len(g.store.approvals) != 0 {
+		t.Errorf("approvals = %+v, want none", g.store.approvals)
+	}
+
+	if err := g.r.Finish(ctx, id, "failed", "the wall clock cap ran out"); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok {
+		t.Errorf("pause = %+v, want it gone", p)
+	}
+	want := []string{"factoryd: the revert of plan #10 did not land (card #21 ended failed): its cards stay on main."}
+	if c := g.fj.commentsOn(10); !slices.Equal(c, want) || len(g.fj.issues) != 1 {
+		t.Errorf("plan comments %q, issues %q; want %q and the one card", c, g.fj.issues, want)
+	}
+
+	g = revertEndRig(t)
+	g.store.pauses = map[string]QueuePause{"sf/repo": {Project: "sf/repo", RunID: 58, SHA: "c1c1", Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "t-rv"}}
+	if err := g.r.RequestApproval(ctx, "t-rv", red); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.store.approvals) != 1 || g.store.approvals[0].TaskID != "t-rv" || len(g.fj.issues) != 0 || g.store.tasks["t-rv"].Status != "in-review" {
+		t.Errorf("approvals %+v, issues %q, t-rv %s; want a person asked and nothing filed", g.store.approvals, g.fj.issues, g.store.tasks["t-rv"].Status)
 	}
 }

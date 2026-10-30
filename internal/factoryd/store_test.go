@@ -338,7 +338,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			groups[c.Parent] = g
 		}
 		g.Children[c.Status]++
-		if c.MergeCommit == "" {
+		if c.MergeCommit == "" || c.RevertedAt != nil {
 			continue
 		}
 		merged[c.Parent] = true
@@ -1170,6 +1170,16 @@ func (s *fakeStore) PauseQueueForRevert(ctx context.Context, p QueuePause) (bool
 		s.pauses = map[string]QueuePause{}
 	}
 	s.pauses[p.Project] = p
+	return true, nil
+}
+
+func (s *fakeStore) MarkReverted(ctx context.Context, id string, at time.Time) (bool, error) {
+	t, ok := s.tasks[id]
+	if !ok || t.RevertedAt != nil {
+		return false, nil
+	}
+	t.RevertedAt = &at
+	s.tasks[id] = t
 	return true, nil
 }
 

@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"reflect"
@@ -147,7 +148,8 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 }
 
 // A main-red revert whose card fails to file closes the pull request it
-// opened: the next poll opens its own.
+// opened. The pause keeps the card's id, linked before the filing, and the
+// next poll files that card with a pull request of its own.
 func TestRollerRevertWhoseCardFailsClosesItsPullRequest(t *testing.T) {
 	f := &rollForgejo{
 		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
@@ -165,16 +167,80 @@ func TestRollerRevertWhoseCardFailsClosesItsPullRequest(t *testing.T) {
 	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
 		return "", nil
 	}
-	if err := roller.poll(context.Background()); err == nil || !strings.Contains(err.Error(), "insert failed") {
+	ctx := context.Background()
+	if err := roller.poll(ctx); err == nil || !strings.Contains(err.Error(), "insert failed") {
 		t.Fatalf("error = %v, want the filing's", err)
 	}
-	if len(f.pulls) != 1 || !slices.Equal(f.closedPRs, []int64{71}) || store.pauses[codeRepo].RevertTask != "" {
-		t.Fatalf("pull requests %q, closed %v, pause %+v; want the one opened, closed, and no revert card", f.pulls, f.closedPRs, store.pauses[codeRepo])
+	id := store.pauses[codeRepo].RevertTask
+	if _, filed := store.tasks[id]; len(f.pulls) != 1 || !strings.HasPrefix(f.pulls[0], "factory-agent:factory/"+id+" ") || !slices.Equal(f.closedPRs, []int64{71}) || filed {
+		t.Fatalf("pull requests %q, closed %v, pause %+v, card filed %t; want the one opened from the pause's card's branch, closed, and no card", f.pulls, f.closedPRs, store.pauses[codeRepo], filed)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rev := store.tasks[id]; rev.Source != SourceRevert || rev.PRNumber != 72 || store.pauses[codeRepo].RevertTask != id ||
+		len(f.pulls) != 2 || !strings.HasPrefix(f.pulls[1], "factory-agent:factory/"+id+" ") {
+		t.Fatalf("card %+v, pause %+v, pull requests %q; want the pause's card filed on a new pull request of its branch", rev, store.pauses[codeRepo], f.pulls)
+	}
+}
+
+// linkFailing is a store whose SetQueuePauseRevert fails its first fails
+// calls.
+type linkFailing struct {
+	*fakeStore
+	fails int
+}
+
+func (s *linkFailing) SetQueuePauseRevert(ctx context.Context, project, taskID string) error {
+	if s.fails > 0 {
+		s.fails--
+		return errors.New("the database is gone")
+	}
+	return s.fakeStore.SetQueuePauseRevert(ctx, project, taskID)
+}
+
+// A main-red revert links its card's id to the pause before any git work:
+// a link that fails reverts nothing and files nothing, and the next poll
+// links a card and files it.
+func TestRollerRevertLinksThePauseBeforeItsCard(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	roller.Store = &linkFailing{fakeStore: store, fails: 1}
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+	pause := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}
+	store.pauses = map[string]QueuePause{codeRepo: pause}
+	var reverted []string
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		reverted = append(reverted, branch)
+		return "", nil
+	}
+	ctx := context.Background()
+	if err := roller.poll(ctx); err == nil || !strings.Contains(err.Error(), "the database is gone") {
+		t.Fatalf("error = %v, want the link's", err)
+	}
+	if p := store.pauses[codeRepo]; !reflect.DeepEqual(p, pause) || len(reverted) != 0 || len(f.pulls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("pause %+v, reverts %q, pull requests %q, issues %q; want the pause as it stood and nothing done", p, reverted, f.pulls, f.issues)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	id := store.pauses[codeRepo].RevertTask
+	if rev := store.tasks[id]; rev.Source != SourceRevert || !slices.Equal(reverted, []string{"factory/" + id}) || len(f.pulls) != 1 || len(f.issues) != 1 {
+		t.Fatalf("card %+v, reverts %q, pull requests %q, issues %q; want the linked card filed once", rev, reverted, f.pulls, f.issues)
 	}
 }
 
 // A main-red revert that conflicts with main is an error and files no
-// card: the pause waits on, and the next poll tries again.
+// card: the pause waits on with the card's id, and the next poll tries
+// again.
 func TestRollerRevertThatConflictsFilesNothing(t *testing.T) {
 	f := &rollForgejo{
 		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
@@ -196,8 +262,11 @@ func TestRollerRevertThatConflictsFilesNothing(t *testing.T) {
 	if want := "revert " + commitC1 + ": it conflicts with main"; err == nil || err.Error() != want {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
-	if p := store.pauses[codeRepo]; !reflect.DeepEqual(p, pause) || len(f.pulls) != 0 || len(f.issues) != 0 {
-		t.Fatalf("pause %+v, pull requests %q, issues %q; want the pause as it stood and no card", p, f.pulls, f.issues)
+	p := store.pauses[codeRepo]
+	linked := pause
+	linked.RevertTask = p.RevertTask
+	if _, filed := store.tasks[p.RevertTask]; p.RevertTask == "" || filed || !reflect.DeepEqual(p, linked) || len(f.pulls) != 0 || len(f.issues) != 0 {
+		t.Fatalf("pause %+v, pull requests %q, issues %q; want the pause on a card's id and no card", p, f.pulls, f.issues)
 	}
 }
 

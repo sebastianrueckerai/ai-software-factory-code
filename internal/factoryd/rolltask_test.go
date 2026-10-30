@@ -510,6 +510,18 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			}
 			f.branches[branch] = sha
 			reply(map[string]any{"message": "rebased"})
+		case repo == codeRepo && r.Method == "GET" && p == "/pulls":
+			out := []map[string]any{}
+			for i, pr := range f.pulls {
+				n := int64(71 + i)
+				if q.Get("page") != "1" || slices.Contains(f.closedPRs, n) {
+					continue
+				}
+				head, _, _ := strings.Cut(pr, " ")
+				owner, ref, _ := strings.Cut(head, ":")
+				out = append(out, map[string]any{"number": n, "state": "open", "head": map[string]any{"ref": ref, "repo": map[string]any{"full_name": owner + "/ai-software-factory-code"}}})
+			}
+			reply(out)
 		case repo == codeRepo && r.Method == "GET" && strings.HasPrefix(p, "/pulls/"):
 			n, err := strconv.ParseInt(strings.TrimPrefix(p, "/pulls/"), 10, 64)
 			if err != nil {

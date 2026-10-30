@@ -1,8 +1,10 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -18,6 +20,23 @@ import (
 // groupRevertSessions caps a group revert's agent card: after its second
 // session a person decides, with the queue still paused.
 const groupRevertSessions = 2
+
+// The group revert's steps on its plan's timeline: group_revert records
+// card's git work, its merges' shas newest first; group_revert_handover
+// names the agent card that took over plain revert card from, whose checks
+// failed; group_reverted or group_revert_ended records the revert's end,
+// landed or not.
+const (
+	stepGroupRevert         = "group_revert"
+	stepGroupRevertHandover = "group_revert_handover"
+	stepGroupReverted       = "group_reverted"
+	stepGroupRevertEnded    = "group_revert_ended"
+)
+
+// revertRefileAfter is how long a plan's pause may name a revert card with
+// no row before RevertPausePass files the card again: RevertGroup files
+// it within minutes of its pause, so a card still missing was lost.
+const revertRefileAfter = 10 * time.Minute
 
 // salvageBranch is the fork's branch that keeps main as it stood before
 // plan's group revert, the plan's work on it.
@@ -224,13 +243,12 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 	if err != nil {
 		return 0, 0, fmt.Errorf("revert plan #%d's merges: %w", p.IssueNumber, err)
 	}
-	r.record(ctx, p.ID, "group_revert", map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict})
+	r.record(ctx, p.ID, stepGroupRevert, map[string]any{"card": id, "shas": shas, "salvage": salvage, "conflict": conflict})
 	merges := make([]Task, len(shas))
 	for i, sha := range shas {
 		merges[i] = bySHA[sha]
 	}
-	title := fmt.Sprintf("Revert plan #%d: %s, newest first", p.IssueNumber, plural(len(merges), "merge"))
-	budget := r.cfg.Policy().Document.Budget
+	title := groupRevertTitle(p, len(merges))
 	var ref IssueRef
 	if conflict == "" {
 		named := make([]string, len(merges))
@@ -251,19 +269,32 @@ func (r *Runner) fileGroupRevert(ctx context.Context, p Task, repo Repo, cards [
 			}
 			pr, opened = &created, created.Number
 		}
-		_, ref, err = FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, budget, project, title, body, nil, Task{
+		_, ref, err = FileFactoryPRTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, r.cfg.Policy().Document.Budget, project, title, body, nil, Task{
 			ID: id, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: main, Source: SourceRevert,
 		}, pr.Number)
 	} else {
-		body := groupRevertObjective(p, merges, fmt.Sprintf("The plain revert stopped at %s: resolve each conflict so the later changes on main stay and main builds green.", conflict))
-		_, ref, err = FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, project, title, body, nil, Task{
-			ID: id, RiskClass: "standard", BudgetEUR: policy.CardBudget(budget, project.Budget, "", false, 0), Objective: title + "\n\n" + body, SHA: main, Source: SourceGroupRevert,
-		})
+		_, ref, err = r.fileRevertAgent(ctx, p, project, merges,
+			fmt.Sprintf("The plain revert stopped at %s: resolve each conflict so the later changes on main stay and main builds green.", conflict), id, main)
 	}
 	if err != nil {
 		return 0, opened, err
 	}
 	return ref.Number, opened, nil
+}
+
+// fileRevertAgent files agent card id, based on base, that takes plan p's
+// merges off main, newest first; situation is what the card starts from.
+func (r *Runner) fileRevertAgent(ctx context.Context, p Task, project Project, merges []Task, situation, id, base string) (Task, IssueRef, error) {
+	title, body := groupRevertTitle(p, len(merges)), groupRevertObjective(p, merges, situation)
+	return FileAgentTask(ctx, r.store, r.forgejo, r.cfg.Workflows, r.timeline, project, title, body, nil, Task{
+		ID: id, RiskClass: "standard", BudgetEUR: policy.CardBudget(r.cfg.Policy().Document.Budget, project.Budget, "", false, 0),
+		Objective: title + "\n\n" + body, SHA: base, Source: SourceGroupRevert,
+	})
+}
+
+// groupRevertTitle is the title of the revert of plan p's n merges.
+func groupRevertTitle(p Task, n int) string {
+	return fmt.Sprintf("Revert plan #%d: %s, newest first", p.IssueNumber, plural(n, "merge"))
 }
 
 // groupRevertObjective is the body of the agent card that takes plan p's
@@ -275,4 +306,224 @@ func groupRevertObjective(p Task, merges []Task, situation string) string {
 	}
 	return fmt.Sprintf("Take plan #%d's cards off main: revert these merge commits, newest first, with git revert -m 1 for a merge commit: %s. %s Change nothing else.",
 		p.IssueNumber, strings.Join(named, ", "), situation)
+}
+
+// revertEnded ends the group revert whose card t, the plain revert's or
+// its agent card's, ended final; merged says its change landed on main, as
+// a merge commit on t does. It acts only while t's project's pause names a
+// plan and t: a main-red pause, or a pause that moved on to another card,
+// passes untouched. A revert that landed marks the plan's cards reverted.
+// Any other end (a person closed the card, the agent card ended, a hard
+// failure such as the wall clock or an error) tells the plan once that its
+// cards stay on main. At the session cap the agent card asks a person
+// first, as spec H wants; a hard failure lifts the pause with no person's
+// decision, since nothing else could lift it. Then a replan that waits
+// with off_main for the revert sends the plan to its planner, and the
+// pause goes last, the queue's waiting heads woken. A step that fails
+// leaves the pause for RevertPausePass, which runs it all again: safe to
+// repeat, as MarkReverted sets only nulls, the plan comment goes once, the
+// reopen takes only a plan that waits, and the pause's clear is
+// idempotent. finish runs it twice for a merged card with a chain
+// (merged, then EndCovered): the first call clears the pause, so the
+// second finds no pause naming the card.
+func (r *Runner) revertEnded(ctx context.Context, t Task, final string, merged bool) {
+	if t.Source != SourceRevert && t.Source != SourceGroupRevert {
+		return
+	}
+	pause, paused, err := r.store.QueuePause(ctx, t.Repository)
+	switch {
+	case err != nil:
+		log.Printf("task %s: the revert's end: the pause of %s: %v", t.ID, t.Repository, err)
+	case paused && pause.Plan != "" && pause.RevertTask == t.ID:
+		if err := r.endGroupRevert(ctx, t, pause, final, merged || t.MergeCommit != ""); err != nil {
+			log.Printf("task %s: the end of plan %s's revert: %v: the minute pass tries again", t.ID, pause.Plan, err)
+		}
+	}
+}
+
+// endGroupRevert is revertEnded's work on pause, which names t.
+func (r *Runner) endGroupRevert(ctx context.Context, t Task, pause QueuePause, final string, landed bool) error {
+	p, repo, err := r.task(ctx, pause.Plan)
+	if err != nil {
+		return err
+	}
+	step, detail := stepGroupReverted, map[string]any{"card": t.ID, "cards": pause.Reverts}
+	if landed {
+		now := time.Now()
+		for _, id := range pause.Reverts {
+			if _, err := r.store.MarkReverted(ctx, id, now); err != nil {
+				return err
+			}
+		}
+	} else {
+		step, detail = stepGroupRevertEnded, map[string]any{"card": t.ID, "state": final}
+		msg := fmt.Sprintf("factoryd: the revert of plan #%d did not land (card #%d ended %s): its cards stay on main.", p.IssueNumber, t.IssueNumber, final)
+		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, p.IssueNumber, msg); forgejoTerminal(err) {
+			log.Printf("plan %s: Forgejo refused the comment that its revert did not land: %v", p.ID, err)
+		} else if err != nil {
+			return err
+		}
+	}
+	replan, pending, err := r.pendingReplan(ctx, p)
+	if err != nil {
+		return err
+	}
+	if pending && replan.OffMain && slices.Contains(reopenFrom, p.Status) {
+		if err := r.reopenPlan(ctx, p); err != nil {
+			return err
+		}
+	}
+	r.record(ctx, p.ID, step, detail)
+	if err := r.store.ClearQueuePause(ctx, pause.Project); err != nil {
+		return err
+	}
+	signalQueueHeads(ctx, r.store, r.cfg.Workflows)
+	return nil
+}
+
+// RevertPausePass heals, each minute, every pause that names a plan. One
+// whose revert card ended (final, or merged) runs revertEnded with the
+// card's state: a lost hook (a store error, a factoryd that stopped
+// between the card's final write and the hook, a retried finish that
+// returns early on a final card) heals within a minute. One whose card has
+// no row revertRefileAfter after the pause began lost its filing:
+// RevertGroup, called again with the pause's plan and cards, resumes the
+// pause and files the card. It runs in the Runner, not in the Roller's
+// mainState: the Roller polls only the factory's own repository, and a
+// plan's pause can stand in any project.
+func (r *Runner) RevertPausePass(ctx context.Context) {
+	pauses, err := r.store.PlanQueuePauses(ctx)
+	if err != nil {
+		log.Printf("revert pause pass: %v", err)
+		return
+	}
+	for _, pause := range pauses {
+		card, filed, err := r.store.Task(ctx, pause.RevertTask)
+		switch {
+		case err != nil:
+			log.Printf("revert pause pass: the revert card %s of %s: %v", pause.RevertTask, pause.Project, err)
+		case filed && (Final(card.Status) || card.Status == "merged"):
+			r.revertEnded(ctx, card, card.Status, card.Status == "merged")
+		case !filed && time.Since(pause.Since) >= revertRefileAfter:
+			if note, err := r.refileRevert(ctx, pause); err != nil {
+				log.Printf("revert pause pass: file plan %s's revert card %s again: %v", pause.Plan, pause.RevertTask, err)
+			} else {
+				log.Printf("revert pause pass: %s", note)
+			}
+		}
+	}
+}
+
+// refileRevert calls RevertGroup again for pause, whose card never filed.
+func (r *Runner) refileRevert(ctx context.Context, pause QueuePause) (string, error) {
+	p, _, err := r.task(ctx, pause.Plan)
+	if err != nil {
+		return "", err
+	}
+	cards := make([]Task, len(pause.Reverts))
+	for i, id := range pause.Reverts {
+		if cards[i], _, err = r.task(ctx, id); err != nil {
+			return "", err
+		}
+	}
+	return r.RevertGroup(ctx, p, cards, "factoryd files the revert's card again: its first filing did not finish")
+}
+
+// handOverRevert hands plain revert card t, whose checks are red, to an
+// agent card when its project's pause names a plan and t: the agent card
+// continues t's branch on t's base, the pause names it, and t ends closed
+// with no person asked. The agent card's id goes on the plan's timeline
+// before the card files, so a retry files that card and no other, and
+// the pause names t until the card exists. A retry that finds the pause on
+// the agent card only finishes t. Any other pause, or none, leaves t to a
+// person: false.
+func (r *Runner) handOverRevert(ctx context.Context, t Task) (bool, error) {
+	pause, paused, err := r.store.QueuePause(ctx, t.Repository)
+	if err != nil || !paused || pause.Plan == "" {
+		return false, err
+	}
+	p, _, err := r.task(ctx, pause.Plan)
+	if err != nil {
+		return false, err
+	}
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+p.ID+"/timeline.jsonl")
+	if err != nil {
+		return false, fmt.Errorf("the timeline of %s: %w", p.ID, err)
+	}
+	var shas []string
+	id := ""
+	for line := range bytes.SplitSeq(tl, []byte("\n")) {
+		var s struct {
+			Step, Card, From string
+			Shas             []string
+		}
+		switch {
+		case json.Unmarshal(line, &s) != nil:
+		case s.Step == stepGroupRevert && s.Card == t.ID:
+			shas = s.Shas
+		case s.Step == stepGroupRevertHandover && s.From == t.ID:
+			id = s.Card
+		}
+	}
+	if pause.RevertTask != t.ID && (id == "" || pause.RevertTask != id) {
+		return false, nil
+	}
+	if id == "" {
+		id = NewTaskID()
+		if err := r.timeline.Append(ctx, p.ID, stepGroupRevertHandover, map[string]any{"from": t.ID, "card": id}); err != nil {
+			return false, fmt.Errorf("record %s: %w", stepGroupRevertHandover, err)
+		}
+	}
+	card, filed, err := r.store.Task(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	if !filed {
+		if card, err = r.fileHandover(ctx, p, t, pause.Reverts, shas, id); err != nil {
+			return false, err
+		}
+	}
+	if pause.RevertTask == t.ID {
+		if err := r.store.SetQueuePauseRevert(ctx, t.Repository, id); err != nil {
+			return false, err
+		}
+	}
+	return true, r.Finish(ctx, t.ID, "closed", fmt.Sprintf("the plain revert's checks failed: card #%d takes it over", card.IssueNumber))
+}
+
+// fileHandover files agent card id that takes over plain revert card t of
+// plan p, which reverted the merges of reverts, shas newest first: its
+// branch first continues t's, as the card's issue can start it.
+func (r *Runner) fileHandover(ctx context.Context, p, t Task, reverts, shas []string, id string) (Task, error) {
+	project, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
+	if err != nil {
+		return Task{}, err
+	}
+	if !ok {
+		return Task{}, fmt.Errorf("no project has the repository %s", t.Repository)
+	}
+	bySHA := map[string]Task{}
+	for _, c := range reverts {
+		card, _, err := r.task(ctx, c)
+		if err != nil {
+			return Task{}, err
+		}
+		bySHA[card.MergeCommit] = card
+	}
+	merges := make([]Task, len(shas))
+	for i, sha := range shas {
+		m, ok := bySHA[sha]
+		if !ok {
+			return Task{}, fmt.Errorf("plan #%d's revert %s reverted %s, a merge of none of its cards %q", p.IssueNumber, t.ID, sha, reverts)
+		}
+		merges[i] = m
+	}
+	if len(merges) != len(reverts) {
+		return Task{}, fmt.Errorf("plan #%d's timeline records the merges of revert %s for %d of its %d cards", p.IssueNumber, t.ID, len(merges), len(reverts))
+	}
+	if _, err := r.ContinueBranch(ctx, t, Task{ID: id}); err != nil {
+		return Task{}, fmt.Errorf("continue the branch of %s: %w", t.ID, err)
+	}
+	card, _, err := r.fileRevertAgent(ctx, p, project, merges, "The plain revert is on this card's branch; its checks failed: make main build green.", id, t.SHA)
+	return card, err
 }

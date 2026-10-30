@@ -2243,7 +2243,8 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // turns final, while one Forgejo refuses is logged and passed: no retry
 // fixes it, and failing here would have the heal pass restart the
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
-// issue label) and, for a failure, the reason as an issue comment.
+// issue label) and, for a failure, the reason as an issue comment. The
+// end of a plan's revert card ends its pause (revertEnded).
 // Finishing an already-finished task, or a merged one, is a no-op, so a
 // retried Finish never double-completes and never ends a merged card
 // without its chain. A done end of a card whose pull request merged
@@ -2357,6 +2358,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 		}
 	}
 	r.record(ctx, taskID, "final", map[string]any{"state": state, "reason": reason})
+	r.revertEnded(ctx, t, final, merged)
 	if state == "merged" {
 		return nil
 	}

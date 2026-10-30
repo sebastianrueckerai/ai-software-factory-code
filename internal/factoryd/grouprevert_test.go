@@ -118,15 +118,33 @@ func TestGroupRevertBranchRefusesACommitOffMain(t *testing.T) {
 
 // groupForgejo plays a group revert's calls on sf/repo and the bot's fork
 // factory-agent/repo: main's head h1, the fork's branches, the open pull
-// requests and the issues and pull requests it creates.
+// requests and the issues and pull requests it creates; and a card's end:
+// the comments, the issues closed and opened again, every pull request
+// unmerged.
 type groupForgejo struct {
-	mu       sync.Mutex
-	branches map[string]string // the fork's branches: name → head
-	open     []map[string]any
-	issues   []string // "title\n\nbody" of each issue created
-	pulls    []string // "head title\n\nbody" of each pull request created
-	noIssue  bool     // POST /issues answers 500
-	closed   []int64  // the pull requests closed
+	mu           sync.Mutex
+	branches     map[string]string // the fork's branches: name → head
+	open         []map[string]any
+	issues       []string // "title\n\nbody" of each issue created
+	pulls        []string // "head title\n\nbody" of each pull request created
+	noIssue      bool     // POST /issues answers 500
+	closed       []int64  // the pull requests closed
+	comments     []string // "#n body" of each comment
+	issuesClosed []int64
+	reopened     []int64
+}
+
+// commentsOn are the bodies of the comments on issue n.
+func (f *groupForgejo) commentsOn(n int64) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, c := range f.comments {
+		if body, ok := strings.CutPrefix(c, fmt.Sprintf("#%d ", n)); ok {
+			out = append(out, body)
+		}
+	}
+	return out
 }
 
 func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
@@ -134,7 +152,11 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		defer f.mu.Unlock()
-		var body struct{ Head, Title, Body string }
+		var body struct {
+			Head, Title, Body, State string
+			NewBranch                string `json:"new_branch_name"`
+			OldBranch                string `json:"old_branch_name"`
+		}
 		json.NewDecoder(r.Body).Decode(&body)
 		p := r.URL.Path
 		switch {
@@ -172,6 +194,61 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 			f.closed = append(f.closed, n)
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
+		case r.Method == "GET" && strings.HasPrefix(p, "/api/v1/repos/sf/repo/pulls/"):
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, "/api/v1/repos/sf/repo/pulls/"), "%d", &n)
+			state := "open"
+			if slices.Contains(f.closed, n) {
+				state = "closed"
+			}
+			fmt.Fprintf(w, `{"number":%d,"state":%q,"merged":false}`, n, state)
+		case r.Method == "GET" && p == "/api/v1/users/factory-agent/tokens",
+			r.Method == "GET" && strings.HasSuffix(p, "/labels"):
+			io.WriteString(w, `[]`)
+		case strings.HasPrefix(p, "/api/v1/repos/sf/repo/issues/") && strings.HasSuffix(p, "/comments"):
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, "/api/v1/repos/sf/repo/issues/"), "%d", &n)
+			if r.Method == "GET" {
+				list := []map[string]any{}
+				for _, c := range f.comments {
+					if b, ok := strings.CutPrefix(c, fmt.Sprintf("#%d ", n)); ok {
+						list = append(list, map[string]any{"body": b, "user": map[string]string{"login": "factory-agent"}})
+					}
+				}
+				json.NewEncoder(w).Encode(list)
+				return
+			}
+			f.comments = append(f.comments, fmt.Sprintf("#%d %s", n, body.Body))
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprintf(w, `{"id":%d}`, 800+len(f.comments))
+		case strings.HasPrefix(p, "/api/v1/repos/sf/repo/issues/"):
+			var n int64
+			fmt.Sscanf(strings.TrimPrefix(p, "/api/v1/repos/sf/repo/issues/"), "%d", &n)
+			if r.Method == "GET" {
+				state := "open"
+				if slices.Contains(f.issuesClosed, n) && !slices.Contains(f.reopened, n) {
+					state = "closed"
+				}
+				fmt.Fprintf(w, `{"state":%q}`, state)
+				return
+			}
+			if body.State == "open" {
+				f.reopened = append(f.reopened, n)
+			} else {
+				f.issuesClosed = append(f.issuesClosed, n)
+			}
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
+		case r.Method == "POST" && p == "/api/v1/repos/factory-agent/repo/branches":
+			if f.branches == nil {
+				f.branches = map[string]string{}
+			}
+			f.branches[body.NewBranch] = f.branches[body.OldBranch]
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
+		case r.Method == "DELETE" && strings.HasPrefix(p, "/api/v1/repos/factory-agent/repo/branches/"):
+			delete(f.branches, strings.TrimPrefix(p, "/api/v1/repos/factory-agent/repo/branches/"))
+			w.WriteHeader(http.StatusNoContent)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, p)
 			w.WriteHeader(http.StatusNotImplemented)
@@ -227,11 +304,11 @@ func (g *groupRevertRig) revert(t *testing.T) (string, error) {
 	return g.r.RevertGroup(context.Background(), g.plan, g.cards, "asked by sebastian: the api is wrong")
 }
 
-// groupRevertSteps are plan p's group_revert steps, without their time.
-func groupRevertSteps(t *testing.T, r *Runner) []map[string]any {
+// groupSteps are plan p's steps named step, without their time.
+func groupSteps(t *testing.T, r *Runner, step string) []map[string]any {
 	t.Helper()
 	var out []map[string]any
-	for _, line := range stepsNamed(t, r, "p", "group_revert") {
+	for _, line := range stepsNamed(t, r, "p", step) {
 		var m map[string]any
 		if err := json.Unmarshal(line, &m); err != nil {
 			t.Fatal(err)
@@ -278,7 +355,7 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 	if want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21."; note != want {
 		t.Errorf("note = %q, want %q", note, want)
 	}
-	if steps, want := groupRevertSteps(t, g.r), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
+	if steps, want := groupSteps(t, g.r, "group_revert"), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
 		t.Errorf("steps = %v, want %v", steps, want)
 	}
 
@@ -305,7 +382,7 @@ func TestRevertGroupFilesTheFactoryCard(t *testing.T) {
 	if want := "Plan #10's 2 merged cards come off main: the merge queue waits for the revert, card #21."; note != want {
 		t.Errorf("note = %q, want %q", note, want)
 	}
-	if steps, want := groupRevertSteps(t, g.r), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": "m1"}}; !reflect.DeepEqual(steps, want) {
+	if steps, want := groupSteps(t, g.r, "group_revert"), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": "m1"}}; !reflect.DeepEqual(steps, want) {
 		t.Errorf("steps = %v, want %v", steps, want)
 	}
 }
@@ -381,7 +458,7 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	}
 	head, _, _ := strings.Cut(strings.Join(g.fj.pulls, ""), " ")
 	id := strings.TrimPrefix(head, "factory-agent:factory/")
-	if steps, want := groupRevertSteps(t, g.r), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
+	if steps, want := groupSteps(t, g.r, "group_revert"), []map[string]any{{"step": "group_revert", "card": id, "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
 		t.Errorf("steps = %v, want %v", steps, want)
 	}
 
@@ -395,7 +472,7 @@ func TestRevertGroupFailedFilingLiftsThePause(t *testing.T) {
 	if _, ok := g.store.pauses["sf/repo"]; ok || len(g.fj.pulls) != 0 || len(g.fj.closed) != 0 {
 		t.Errorf("paused %t, pull requests %q, closed %v; want the pause lifted and pull request #70 reused and left open", ok, g.fj.pulls, g.fj.closed)
 	}
-	if steps, want := groupRevertSteps(t, g.r), []map[string]any{{"step": "group_revert", "card": "t-rv", "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
+	if steps, want := groupSteps(t, g.r, "group_revert"), []map[string]any{{"step": "group_revert", "card": "t-rv", "shas": []any{"m2", "m1"}, "salvage": "salvage/p", "conflict": ""}}; !reflect.DeepEqual(steps, want) {
 		t.Errorf("steps = %v, want %v", steps, want)
 	}
 }
@@ -506,5 +583,230 @@ func TestGroupRevertCardIsUnbound(t *testing.T) {
 	}
 	if MayReplan(c, true) {
 		t.Error("the group revert's card offers Replan")
+	}
+}
+
+// revertEndRig is newGroupRevertRig with plan p done, its replan waiting
+// with off_main, and its pause on the plain revert card t-rv (issue 20,
+// pull request 70 of factory/t-rv, head rv1, on main's head h1), which
+// takes c1 and c2 off main; w1 waits at the head of sf/repo's merge queue.
+// A card's end reaches fj, its completion's too.
+func revertEndRig(t *testing.T) *groupRevertRig {
+	t.Helper()
+	g := newGroupRevertRig(t)
+	g.r.completion.Forgejo = g.r.forgejo
+	ctx := context.Background()
+	p := g.store.tasks["p"]
+	p.Status = "done"
+	g.store.tasks["p"] = p
+	if err := g.r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanPerson, "by": "sebastian", "comment": "the api is wrong", "revision": 1, "off_main": true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []Task{
+		{ID: "t-rv", Source: SourceRevert, IssueNumber: 20, PRNumber: 70, SHA: "h1", Status: "in-review"},
+		{ID: "w1", Source: "webhook", IssueNumber: 30, PRNumber: 75, SHA: "h1", Status: "in-review"},
+	} {
+		c.Kind, c.Track, c.Repository = "agent", policy.TrackDirect, "sf/repo"
+		if err := g.store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w1 := g.store.tasks["w1"]
+	w1.Gate = GateMergeQueue
+	g.store.tasks["w1"] = w1
+	g.store.queue = append(g.store.queue, queueEntry{project: "sf/repo", task: "w1", at: time.Now()})
+	g.store.pauses = map[string]QueuePause{"sf/repo": {Project: "sf/repo", Since: time.Now().Add(-time.Hour), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-rv"}}
+	g.fj.branches = map[string]string{"factory/t-rv": "rv1"}
+	return g
+}
+
+// landed sets t-rv's merge commit, as the merge records it.
+func (g *groupRevertRig) landed() {
+	rv := g.store.tasks["t-rv"]
+	rv.MergeCommit = "rv-merge"
+	g.store.tasks["t-rv"] = rv
+}
+
+// The plan's revert card that merged took its cards off main: each is
+// marked reverted, the pause goes, the queue's waiting heads wake, and the
+// replan that waited for the revert sends the plan to its planner. The
+// plan gets no comment.
+func TestRevertMergedMarksTheCardsAndGoesOn(t *testing.T) {
+	g := revertEndRig(t)
+	g.landed()
+	before := time.Now()
+	if err := g.r.Finish(context.Background(), "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		if at := g.store.tasks[id].RevertedAt; at == nil || at.Before(before) || time.Since(*at) > time.Minute {
+			t.Errorf("%s reverted at %v, want now", id, at)
+		}
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok {
+		t.Errorf("pause = %+v, want it gone", p)
+	}
+	if !slices.Contains(g.wf.signals, "w1 queue_turn  #0: ") {
+		t.Errorf("signals = %q, want the waiting head woken", g.wf.signals)
+	}
+	if p := g.store.tasks["p"]; p.Status != "queued" || !reflect.DeepEqual(g.wf.reopens, []reopenCall{{taskID: "p"}}) {
+		t.Errorf("plan %s, reopens %+v; want it queued and its run reopened", p.Status, g.wf.reopens)
+	}
+	if steps, want := groupSteps(t, g.r, "group_reverted"), []map[string]any{{"step": "group_reverted", "card": "t-rv", "cards": []any{"c1", "c2"}}}; !reflect.DeepEqual(steps, want) {
+		t.Errorf("steps = %v, want %v", steps, want)
+	}
+	if c := g.fj.commentsOn(10); len(c) != 0 {
+		t.Errorf("plan comments %q, want none", c)
+	}
+}
+
+// The plan's revert card that ends without its merge leaves the cards on
+// main: none is marked, the pause goes, the plan is told once, and the
+// replan that waited for the revert sends the plan to its planner all the
+// same. The hook again, as a heal after a failed clear would run it, says
+// nothing more.
+func TestClosedRevertLeavesTheCardsOnMain(t *testing.T) {
+	g := revertEndRig(t)
+	ctx := context.Background()
+	pause := g.store.pauses["sf/repo"]
+	if err := g.r.Finish(ctx, "t-rv", "closed", "closed by sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"c1", "c2"} {
+		if at := g.store.tasks[id].RevertedAt; at != nil {
+			t.Errorf("%s reverted at %v, want it on main", id, at)
+		}
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok {
+		t.Errorf("pause = %+v, want it gone", p)
+	}
+	if !slices.Contains(g.wf.signals, "w1 queue_turn  #0: ") {
+		t.Errorf("signals = %q, want the waiting head woken", g.wf.signals)
+	}
+	if p := g.store.tasks["p"]; p.Status != "queued" || !reflect.DeepEqual(g.wf.reopens, []reopenCall{{taskID: "p"}}) {
+		t.Errorf("plan %s, reopens %+v; want it queued and its run reopened", p.Status, g.wf.reopens)
+	}
+	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended closed): its cards stay on main."}
+	if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
+		t.Errorf("plan comments %q, want %q", c, want)
+	}
+	if steps, want := groupSteps(t, g.r, "group_revert_ended"), []map[string]any{{"step": "group_revert_ended", "card": "t-rv", "state": "closed"}}; !reflect.DeepEqual(steps, want) {
+		t.Errorf("steps = %v, want %v", steps, want)
+	}
+
+	g.store.pauses["sf/repo"] = pause
+	g.r.revertEnded(ctx, g.store.tasks["t-rv"], "closed", false)
+	if c := g.fj.commentsOn(10); !slices.Equal(c, want) {
+		t.Errorf("plan comments after the hook again %q, want %q", c, want)
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok {
+		t.Errorf("pause = %+v, want it gone again", p)
+	}
+}
+
+// The minute pass heals a lost hook: a pause whose revert card merged
+// without its end's hook marks the cards, goes and wakes the heads; a
+// second pass changes nothing. A pause whose card still runs is left
+// alone; one whose card failed goes with the plan told. The end of a
+// main-red pause's revert card leaves that pause to main's runs.
+func TestRevertPausePassHeals(t *testing.T) {
+	g := revertEndRig(t)
+	ctx := context.Background()
+	g.landed()
+	rv := g.store.tasks["t-rv"]
+	rv.Status, rv.FinishedAt = "merged", justNow()
+	g.store.tasks["t-rv"] = rv
+	running := QueuePause{Project: "sf/other", Since: time.Now().Add(-time.Hour), Plan: "q", Reverts: []string{"d1"}, RevertTask: "t-q"}
+	g.store.pauses["sf/other"] = running
+	if err := g.store.CreateTask(ctx, Task{ID: "t-q", Kind: "agent", Track: policy.TrackDirect, Source: SourceGroupRevert, Repository: "sf/other", IssueNumber: 5, Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	g.r.RevertPausePass(ctx)
+	for _, id := range []string{"c1", "c2"} {
+		if g.store.tasks[id].RevertedAt == nil {
+			t.Errorf("%s not marked reverted", id)
+		}
+	}
+	if p, ok := g.store.pauses["sf/repo"]; ok {
+		t.Errorf("pause = %+v, want it gone", p)
+	}
+	if p := g.store.pauses["sf/other"]; !reflect.DeepEqual(p, running) {
+		t.Errorf("sf/other's pause = %+v, want it as it stood", p)
+	}
+	if !slices.Contains(g.wf.signals, "w1 queue_turn  #0: ") {
+		t.Errorf("signals = %q, want the waiting head woken", g.wf.signals)
+	}
+	if len(g.groupRevertEnds(t)) != 1 || len(g.wf.reopens) != 1 {
+		t.Fatalf("steps %v, reopens %+v; want one of each", g.groupRevertEnds(t), g.wf.reopens)
+	}
+	signals := len(g.wf.signals)
+	g.r.RevertPausePass(ctx)
+	if len(g.groupRevertEnds(t)) != 1 || len(g.wf.reopens) != 1 || len(g.wf.signals) != signals || len(g.store.pauses) != 1 {
+		t.Errorf("after a second pass: steps %v, reopens %+v, signals %q, pauses %+v; want nothing new", g.groupRevertEnds(t), g.wf.reopens, g.wf.signals, g.store.pauses)
+	}
+
+	g = revertEndRig(t)
+	rv = g.store.tasks["t-rv"]
+	rv.Status = "failed"
+	g.store.tasks["t-rv"] = rv
+	g.r.RevertPausePass(ctx)
+	want := []string{"factoryd: the revert of plan #10 did not land (card #20 ended failed): its cards stay on main."}
+	if _, ok := g.store.pauses["sf/repo"]; ok || !slices.Equal(g.fj.commentsOn(10), want) || g.store.tasks["c1"].RevertedAt != nil {
+		t.Errorf("paused %t, plan comments %q, c1 reverted at %v; want the pause gone, %q, no mark", ok, g.fj.commentsOn(10), g.store.tasks["c1"].RevertedAt, want)
+	}
+
+	g = revertEndRig(t)
+	g.landed()
+	mainRed := QueuePause{Project: "sf/repo", RunID: 58, SHA: "c1c1", Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "t-rv"}
+	g.store.pauses = map[string]QueuePause{"sf/repo": mainRed}
+	if err := g.r.Finish(ctx, "t-rv", "done", "pull request merged by factory-merge on the merge rule auto"); err != nil {
+		t.Fatal(err)
+	}
+	g.r.RevertPausePass(ctx)
+	if p := g.store.pauses["sf/repo"]; !reflect.DeepEqual(p, mainRed) || g.store.tasks["c1"].RevertedAt != nil || len(g.groupRevertEnds(t)) != 0 || len(g.wf.reopens) != 0 {
+		t.Errorf("pause %+v, c1 reverted at %v, steps %v, reopens %+v; want the main-red pause as it stood and nothing else", p, g.store.tasks["c1"].RevertedAt, g.groupRevertEnds(t), g.wf.reopens)
+	}
+}
+
+// groupRevertEnds are plan p's group_reverted and group_revert_ended
+// steps.
+func (g *groupRevertRig) groupRevertEnds(t *testing.T) []map[string]any {
+	t.Helper()
+	return append(groupSteps(t, g.r, "group_reverted"), groupSteps(t, g.r, "group_revert_ended")...)
+}
+
+// A pause whose revert card has no row 10 minutes after it began lost its
+// filing: the pass files the card again under the pause's own id, the
+// heal's reason its why, and the pause stays on it. Before that the pass
+// waits, as RevertGroup may still run.
+func TestRevertPausePassFilesALostRevertCard(t *testing.T) {
+	g := newGroupRevertRig(t)
+	ctx := context.Background()
+	lost := QueuePause{Project: "sf/repo", Since: time.Now().Add(-9 * time.Minute), Plan: "p", Reverts: []string{"c1", "c2"}, RevertTask: "t-lost"}
+	g.store.pauses = map[string]QueuePause{"sf/repo": lost}
+	g.r.RevertPausePass(ctx)
+	if len(g.calls) != 0 || len(g.fj.pulls) != 0 || len(g.fj.issues) != 0 {
+		t.Fatalf("reverts %q, pull requests %q, issues %q; want none within 10 minutes", g.calls, g.fj.pulls, g.fj.issues)
+	}
+
+	lost.Since = time.Now().Add(-11 * time.Minute)
+	g.store.pauses["sf/repo"] = lost
+	for range 2 {
+		g.r.RevertPausePass(ctx)
+	}
+	if want := []string{`sf/repo ["m1" "m2"] salvage/p false factory/t-lost, paused for t-lost: true`}; !slices.Equal(g.calls, want) {
+		t.Errorf("groupRevertBranch calls = %q, want %q", g.calls, want)
+	}
+	want := "factory-agent:factory/t-lost Revert plan #10: 2 merges, newest first\n\nTakes plan #10's merged cards off main, newest first: #15 m2, #14 m1.\n\n" +
+		"Why: factoryd files the revert's card again: its first filing did not finish\n\n" +
+		"The merge queue of sf/repo waits for this revert. Branch salvage/p of the bot's fork keeps main as it was before it."
+	if !slices.Equal(g.fj.pulls, []string{want}) {
+		t.Errorf("pull requests = %q, want %q", g.fj.pulls, want)
+	}
+	if card := g.store.tasks["t-lost"]; card.Source != SourceRevert || card.IssueNumber != 21 || card.PRNumber != 71 || len(g.fj.issues) != 1 {
+		t.Errorf("card t-lost = %+v, issues %q; want the plain revert's card, filed once", card, g.fj.issues)
+	}
+	if p := g.store.pauses["sf/repo"]; !reflect.DeepEqual(p, lost) {
+		t.Errorf("pause = %+v, want it as it stood", p)
 	}
 }

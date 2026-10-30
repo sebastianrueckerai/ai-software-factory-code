@@ -170,7 +170,7 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 			rerunAt = pause.RerunAt
 		}
 		return r.pause(ctx, *newest, rerunAt)
-	case paused && pause.RevertTask == "" && time.Since(pause.Since) >= mainRedBound:
+	case paused && time.Since(pause.Since) >= mainRedBound:
 		return r.revert(ctx, pause)
 	}
 	return nil
@@ -393,7 +393,9 @@ func runnerLost(log []byte, recorded time.Time) (line string, silent time.Durati
 
 // revert files the revert of the pause's red commit: a branch on the
 // bot's fork, its pull request, and a factory-PR card the gates and the
-// approval take like a roll's, exempt from the pause. A pause on a
+// approval take like a roll's, exempt from the pause. The pause names the
+// card's id before any of it, so a call that finds the id with no card
+// files that card, and one that finds the card does nothing. A pause on a
 // re-run or on a re-run card, its jobs having lost their runner, reverts
 // nothing.
 func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
@@ -401,6 +403,15 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		return err
 	} else if pause.FixTask == "" || ok && fix.Source == SourceRerun {
 		return nil
+	}
+	taskID := pause.RevertTask
+	if taskID == "" {
+		taskID = NewTaskID()
+		if err := r.Store.SetQueuePauseRevert(ctx, pause.Project, taskID); err != nil {
+			return err
+		}
+	} else if _, filed, err := r.Store.Task(ctx, taskID); err != nil || filed {
+		return err
 	}
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
@@ -412,7 +423,6 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	if err := r.Forgejo.EnsureFork(ctx, r.Repo); err != nil {
 		return err
 	}
-	taskID := NewTaskID()
 	branch := "factory/" + taskID
 	conflict, err := groupRevertBranch(ctx, r.Forgejo, r.Repo, []string{pause.SHA}, "", false, branch)
 	if err != nil {
@@ -426,20 +436,25 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	body := fmt.Sprintf("Main's push run %d at %s failed and the fix-forward card %s did not land within %s. This pull request reverts %s; "+
 		"an approval merges it and main's next green run ends the queue's pause.", pause.RunID, pause.SHA, pause.FixTask, mainRedBound, short)
 	fork := r.Forgejo.Fork(r.Repo)
-	pr, err := r.Forgejo.CreatePullRequest(ctx, r.Repo.Owner, r.Repo.Name, fork.Owner+":"+branch, prBase, title, body)
+	pr, err := r.Forgejo.FindOpenPullRequestForBranch(ctx, r.Repo.Owner, r.Repo.Name, fork, branch)
 	if err != nil {
 		return err
+	}
+	opened := int64(0)
+	if pr == nil {
+		created, err := r.Forgejo.CreatePullRequest(ctx, r.Repo.Owner, r.Repo.Name, fork.Owner+":"+branch, prBase, title, body)
+		if err != nil {
+			return err
+		}
+		pr, opened = &created, created.Number
 	}
 	t, ref, err := FileFactoryPRTask(ctx, r.Store, r.Forgejo, r.Workflows, r.Timeline, r.Budget(), p, title, body, nil, Task{
 		ID: taskID, RiskClass: "standard", Objective: title + "\n\n" + body, SHA: pause.SHA, Source: SourceRevert,
 	}, pr.Number)
 	if err != nil {
 		if unfiled(ctx, r.Store, taskID) {
-			closeOpened(ctx, r.Forgejo, r.Repo, pr.Number)
+			closeOpened(ctx, r.Forgejo, r.Repo, opened)
 		}
-		return err
-	}
-	if err := r.Store.SetQueuePauseRevert(ctx, p.Repository, t.ID); err != nil {
 		return err
 	}
 	log.Printf("roller: main red since %s with no fix landed: revert card %s, issue #%d, pull request #%d", pause.Since.Format(time.RFC3339), t.ID, ref.Number, pr.Number)

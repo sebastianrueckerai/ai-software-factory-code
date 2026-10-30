@@ -48,7 +48,7 @@ func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 				COALESCE(min(e.at), min(c.finished_at) FILTER (WHERE c.merge_commit <> '')) AS first_merge
 			FROM tasks c
 			LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
-			WHERE c.source = 'plan' AND c.plan_key IS NOT NULL AND (c.merge_commit <> '' OR e.id IS NOT NULL)
+			WHERE c.source = 'plan' AND c.plan_key IS NOT NULL AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
 			GROUP BY c.parent_task
 		)
 		SELECT p.id, p.issue_number, p.repository, m.first_merge

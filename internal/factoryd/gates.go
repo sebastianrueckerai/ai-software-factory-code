@@ -1458,6 +1458,13 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	} else if stale {
 		return terminalError("the plan's revision %d drops the card %s", newest, t.PlanKey)
 	}
+	// a factory pull request card's red checks come here, never to a
+	// failure: a plan's plain revert goes to its agent card instead
+	if t.Source == SourceRevert && in.RedChecks {
+		if handed, err := r.handOverRevert(ctx, t); err != nil || handed {
+			return err
+		}
+	}
 	g := in.Gates.Policy
 	if g.Factory {
 		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"

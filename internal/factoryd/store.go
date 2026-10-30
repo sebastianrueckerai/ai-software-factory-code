@@ -425,6 +425,9 @@ type Store interface {
 	// when a pause stands. PlanQueuePauses are the pauses that name a plan.
 	PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error)
 	PlanQueuePauses(ctx context.Context) ([]QueuePause, error)
+	// MarkReverted sets task id's reverted_at to at unless it has one,
+	// and reports whether it set it.
+	MarkReverted(ctx context.Context, id string, at time.Time) (bool, error)
 	// PutLiveSession records a running session's sandbox; a retried
 	// RunSession reattaches to it (LiveSession), SetLiveSessionLines
 	// keeps how much of the pod's log the loop consumed, and the session's

@@ -35,8 +35,10 @@ const (
 
 // ReplanStep is the replan step's detail. Card is the card whose work goes
 // back (the cut card, or a direct card replanned as itself), Stops the
-// cards the replan stops, Revision the plan's newest revision at the ask
-// (0: none), Time when the step was written.
+// cards the replan stops, OffMain that the plan's merged cards come off
+// main first (the revert's end sends the plan to its planner), Revision
+// the plan's newest revision at the ask (0: none), Time when the step was
+// written.
 type ReplanStep struct {
 	Origin   string    `json:"origin"`
 	By       string    `json:"by,omitempty"`
@@ -44,6 +46,7 @@ type ReplanStep struct {
 	Card     string    `json:"card,omitempty"`
 	Work     string    `json:"work,omitempty"`
 	Stops    []string  `json:"stops,omitempty"`
+	OffMain  bool      `json:"off_main,omitempty"`
 	Revision int       `json:"revision"`
 	Time     time.Time `json:"time"`
 }
