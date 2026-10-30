@@ -114,6 +114,8 @@ fieldset { border: 0; margin: 6px 0; padding: 0; color: var(--text-muted); font-
 fieldset legend { float: left; margin-right: 6px; color: var(--text-faint); }
 fieldset label { display: inline-flex; align-items: center; gap: 5px; margin: 0 14px 0 0; }
 input[type=radio] { accent-color: var(--st-failed); margin: 0; }
+label:has(> input[type=checkbox]) { display: flex; align-items: center; gap: 8px; }
+input[type=checkbox] { accent-color: var(--accent); margin: 0; }
 table { border-collapse: collapse; width: 100%; margin-top: 12px; font: 12px/1.5 var(--font-mono); font-variant-numeric: tabular-nums; }
 /* a table wider than the screen scrolls in its own box, never the page */
 .tscroll { overflow-x: auto; margin-top: 12px; }
