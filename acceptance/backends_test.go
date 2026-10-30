@@ -529,7 +529,9 @@ func (s *acceptanceStore) ClearRollHold(context.Context, string) error { return 
 
 func (s *acceptanceStore) SetTaskModelAlias(context.Context, string, string) error { return nil }
 
-func (s *acceptanceStore) PauseQueue(context.Context, factoryd.QueuePause) error { return nil }
+func (s *acceptanceStore) PauseQueue(context.Context, factoryd.QueuePause) (bool, error) {
+	return true, nil
+}
 
 func (s *acceptanceStore) QueuePause(context.Context, string) (factoryd.QueuePause, bool, error) {
 	return factoryd.QueuePause{}, false, nil

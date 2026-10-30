@@ -1153,17 +1153,17 @@ func (s *fakeStore) SetTaskModelAlias(ctx context.Context, id, alias string) err
 	return nil
 }
 
-func (s *fakeStore) PauseQueue(ctx context.Context, p QueuePause) error {
+func (s *fakeStore) PauseQueue(ctx context.Context, p QueuePause) (bool, error) {
 	if s.pauses == nil {
 		s.pauses = map[string]QueuePause{}
 	}
 	old := s.pauses[p.Project]
 	if old.Plan != "" {
-		return nil
+		return false, nil
 	}
 	p.RevertTask = old.RevertTask
 	s.pauses[p.Project] = p
-	return nil
+	return true, nil
 }
 
 func (s *fakeStore) PauseQueueForRevert(ctx context.Context, p QueuePause) (bool, error) {

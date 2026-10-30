@@ -51,13 +51,18 @@ type QueuePause struct {
 }
 
 // PauseQueue writes the project's pause; a pause that stands, a re-run's,
-// takes p's run and card. A plan's pause stands as it is.
-func (s *PGStore) PauseQueue(ctx context.Context, p QueuePause) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
+// takes p's run and card. A plan's pause stands as it is, and the answer
+// is false: nothing was written.
+func (s *PGStore) PauseQueue(ctx context.Context, p QueuePause) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO queue_pauses (project, run_id, sha, since, fix_task, rerun_at) VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (project) DO UPDATE SET run_id = EXCLUDED.run_id, sha = EXCLUDED.sha, since = EXCLUDED.since, fix_task = EXCLUDED.fix_task, rerun_at = EXCLUDED.rerun_at
 		WHERE queue_pauses.plan = ''`,
 		p.Project, p.RunID, p.SHA, p.Since, p.FixTask, nullTime(p.RerunAt))
-	return err
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
 }
 
 // PauseQueueForRevert pauses the project's queue for a plan's group revert.
@@ -197,8 +202,10 @@ func newestMain(runs []ActionRun) *ActionRun {
 // When every failed job lost its runner (lostRunners), it re-runs the run
 // and pauses with no card; once rerunAt holds that one re-run, the human
 // card to re-run the jobs follows, as it does when the re-run fails. The
-// card or the re-run first, so a crash between the two leaves no pause
-// without it.
+// pause goes first, with no card: a plan's revert that paused the queue
+// since mainState read it keeps the queue, and the red files nothing. A
+// filing that fails leaves the pause with no card, which the next poll
+// judges again.
 func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) error {
 	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
 	if err != nil {
@@ -206,6 +213,9 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 	}
 	if !ok {
 		return fmt.Errorf("no project has the repository %s", r.Repo)
+	}
+	if wrote, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: rerunAt}); err != nil || !wrote {
+		return err
 	}
 	failed, lost := "main CI", []string(nil)
 	if cs, err := r.Forgejo.CombinedStatus(ctx, r.Repo.Owner, r.Repo.Name, run.CommitSHA); err == nil {
@@ -222,12 +232,6 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 		}
 		lost = r.lostRunners(ctx, run, red)
 	}
-	// a plan's revert may have paused the queue since mainState read it
-	if pause, paused, err := r.Store.QueuePause(ctx, p.Repository); err != nil {
-		return err
-	} else if paused && pause.Plan != "" {
-		return nil
-	}
 	short := run.CommitSHA[:min(7, len(run.CommitSHA))]
 	var t Task
 	card := "fix-forward card"
@@ -237,7 +241,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 		if rerunAt.IsZero() {
 			err := r.Forgejo.RerunActionRun(ctx, r.Forgejo.Access(p).Actions, r.Repo.Owner, r.Repo.Name, run.ID)
 			if err == nil {
-				if err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: time.Now()}); err != nil {
+				if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: time.Now()}); err != nil {
 					return err
 				}
 				log.Printf("roller: main is red at %s (run %d), every failed job lost its runner: the merge queue of %s pauses while factoryd re-runs the run", run.CommitSHA, run.ID, p.Repository)
@@ -267,7 +271,7 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, rerunAt time.Time) er
 	if err != nil {
 		return err
 	}
-	if err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: rerunAt, FixTask: t.ID}); err != nil {
+	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: time.Now(), RerunAt: rerunAt, FixTask: t.ID}); err != nil {
 		return err
 	}
 	log.Printf("roller: main is red at %s (run %d): the merge queue of %s pauses; %s %s, issue #%d", run.CommitSHA, run.ID, p.Repository, card, t.ID, t.IssueNumber)

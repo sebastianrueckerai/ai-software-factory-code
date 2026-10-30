@@ -364,22 +364,22 @@ func TestPGStoreQueuePauseRerun(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)
 	rerun := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC2, Since: at, RerunAt: at}
-	if err := s.PauseQueue(ctx, rerun); err != nil {
-		t.Fatal(err)
+	if wrote, err := s.PauseQueue(ctx, rerun); err != nil || !wrote {
+		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
 	if p, ok, err := s.QueuePause(ctx, codeRepo); err != nil || !ok || p.RunID != 58 || p.SHA != commitC2 || !p.Since.Equal(at) || !p.RerunAt.Equal(at) || p.FixTask != "" {
 		t.Fatalf("re-run's pause = %+v (%v, %v), want run 58's re-run of %s with no card", p, ok, err, at)
 	}
 	card := rerun
 	card.Since, card.FixTask = at.Add(20*time.Minute), "t-card"
-	if err := s.PauseQueue(ctx, card); err != nil {
-		t.Fatal(err)
+	if wrote, err := s.PauseQueue(ctx, card); err != nil || !wrote {
+		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
 	if p, _, err := s.QueuePause(ctx, codeRepo); err != nil || !p.Since.Equal(card.Since) || !p.RerunAt.Equal(at) || p.FixTask != "t-card" {
 		t.Fatalf("pause = %+v (%v), want the card since %s, the re-run of %s kept", p, err, card.Since, at)
 	}
-	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/other", RunID: 7, SHA: commitC1, Since: at, FixTask: "t-fix"}); err != nil {
-		t.Fatal(err)
+	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: "sf/other", RunID: 7, SHA: commitC1, Since: at, FixTask: "t-fix"}); err != nil || !wrote {
+		t.Fatalf("PauseQueue = %t, %v; want it written", wrote, err)
 	}
 	if p, _, err := s.QueuePause(ctx, "sf/other"); err != nil || !p.RerunAt.IsZero() || p.FixTask != "t-fix" {
 		t.Fatalf("pause = %+v (%v), want no re-run", p, err)
@@ -838,7 +838,7 @@ func TestPGStoreQueuePauseForRevert(t *testing.T) {
 	if again.Plan != "p" || again.RevertTask != "t-rv" {
 		t.Fatalf("pause = %+v, want it unchanged", again)
 	}
-	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since}); err != nil {
+	if _, err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since}); err != nil {
 		t.Fatal(err)
 	}
 	kept, _, err := s.QueuePause(ctx, "sf/r")
@@ -848,7 +848,7 @@ func TestPGStoreQueuePauseForRevert(t *testing.T) {
 	if kept.Plan != "p" || !slices.Equal(kept.Reverts, []string{"c1", "c2"}) {
 		t.Fatalf("after PauseQueue pause = %+v, want plan p and reverts c1, c2 kept", kept)
 	}
-	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/red", RunID: 7, SHA: commitC1, Since: group.Since, FixTask: "t-fix"}); err != nil {
+	if _, err := s.PauseQueue(ctx, QueuePause{Project: "sf/red", RunID: 7, SHA: commitC1, Since: group.Since, FixTask: "t-fix"}); err != nil {
 		t.Fatal(err)
 	}
 	if ok, err := s.PauseQueueForRevert(ctx, QueuePause{Project: "sf/red", Plan: "p"}); err != nil || ok {
@@ -883,8 +883,8 @@ func TestPGStorePauseQueueLeavesAPlanPause(t *testing.T) {
 	if ok, err := s.PauseQueueForRevert(ctx, group); err != nil || !ok {
 		t.Fatalf("PauseQueueForRevert = %v, %v", ok, err)
 	}
-	if err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since.Add(time.Hour), FixTask: "t-fix", RerunAt: group.Since}); err != nil {
-		t.Fatal(err)
+	if wrote, err := s.PauseQueue(ctx, QueuePause{Project: "sf/r", RunID: 9, SHA: commitC1, Since: group.Since.Add(time.Hour), FixTask: "t-fix", RerunAt: group.Since}); err != nil || wrote {
+		t.Fatalf("PauseQueue = %t, %v; want nothing written", wrote, err)
 	}
 	got, ok, err := s.QueuePause(ctx, "sf/r")
 	if err != nil || !ok {
@@ -925,6 +925,55 @@ func TestMainStateRedYieldsToAPlanPauseThatCameMeanwhile(t *testing.T) {
 	}
 	if got := store.pauses[codeRepo]; !reflect.DeepEqual(got, group) || len(f.issues) != 0 {
 		t.Fatalf("pause %+v, issues %q; want the plan's pause as it stood and no card", got, f.issues)
+	}
+}
+
+// pauseUnseen is a store whose QueuePause finds no pause: a plan's pause
+// that came after every read of the red's poll.
+type pauseUnseen struct{ *fakeStore }
+
+func (s *pauseUnseen) QueuePause(ctx context.Context, project string) (QueuePause, bool, error) {
+	return QueuePause{}, false, nil
+}
+
+// A plan's revert that pauses the queue after every read of a red poll,
+// right before the red's own pause, keeps the queue: the red's pause
+// writes nothing, so it files no card.
+func TestRollerRedFilesNothingWhenAPlanPausedFirst(t *testing.T) {
+	f := &rollForgejo{}
+	roller, store, _ := newTestRoller(t, f)
+	group := QueuePause{Project: codeRepo, Plan: "p", Reverts: []string{"c1"}, RevertTask: "t-rv", Since: time.Now()}
+	store.pauses = map[string]QueuePause{codeRepo: group}
+	roller.Store = &pauseUnseen{fakeStore: store}
+	if err := roller.mainState(context.Background(), []ActionRun{{ID: 59, CommitSHA: commitC2, PrettyRef: "main", Status: "failure"}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.pauses[codeRepo]; !reflect.DeepEqual(got, group) || len(f.issues) != 0 || len(store.tasks) != 0 {
+		t.Fatalf("pause %+v, issues %q, tasks %d; want the plan's pause as it stood and no card", got, f.issues, len(store.tasks))
+	}
+}
+
+// A red main pauses the queue before it files its card: a filing that
+// fails leaves the pause with no card, and the next poll files the card
+// and links it.
+func TestRollerRedPausesBeforeItsCard(t *testing.T) {
+	f := &rollForgejo{}
+	roller, store, _ := newTestRoller(t, f)
+	store.createFails = 1
+	ctx := context.Background()
+	runs := []ActionRun{{ID: 59, CommitSHA: commitC2, PrettyRef: "main", Status: "failure"}}
+	if err := roller.mainState(ctx, runs); err == nil || !strings.Contains(err.Error(), "insert failed") {
+		t.Fatalf("error = %v, want the filing's", err)
+	}
+	if p, ok := store.pauses[codeRepo]; !ok || p.RunID != 59 || p.SHA != commitC2 || p.FixTask != "" {
+		t.Fatalf("pause = %+v (%t), want run 59's with no card", p, ok)
+	}
+	if err := roller.mainState(ctx, runs); err != nil {
+		t.Fatal(err)
+	}
+	p := store.pauses[codeRepo]
+	if fix := store.tasks[p.FixTask]; p.RunID != 59 || fix.Source != SourceMainFix || fix.SHA != commitC2 {
+		t.Fatalf("pause %+v, its card %+v; want run 59's fix-forward card linked", p, fix)
 	}
 }
 

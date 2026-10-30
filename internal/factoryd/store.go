@@ -415,9 +415,10 @@ type Store interface {
 	// climb, roadmap 222, item 5).
 	SetTaskModelAlias(ctx context.Context, id, alias string) error
 	// PauseQueue pauses a project's merge queue while main is red
-	// (mainfix.go); QueuePause reads it, SetQueuePauseRevert names the
-	// revert card, ClearQueuePause ends it.
-	PauseQueue(ctx context.Context, p QueuePause) error
+	// (mainfix.go), and answers false when a plan's pause stands and
+	// nothing was written; QueuePause reads it, SetQueuePauseRevert names
+	// the revert card, ClearQueuePause ends it.
+	PauseQueue(ctx context.Context, p QueuePause) (bool, error)
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error

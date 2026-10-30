@@ -344,7 +344,7 @@ type RollerStore interface {
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	SetTaskPR(ctx context.Context, id string, number int64) error
 	WaitingQueueHeads(ctx context.Context) ([]string, error)
-	PauseQueue(ctx context.Context, p QueuePause) error
+	PauseQueue(ctx context.Context, p QueuePause) (bool, error)
 	QueuePause(ctx context.Context, project string) (QueuePause, bool, error)
 	SetQueuePauseRevert(ctx context.Context, project, taskID string) error
 	ClearQueuePause(ctx context.Context, project string) error

@@ -608,7 +608,9 @@ func (s *accBatchStore) ClearRollHold(ctx context.Context, taskID string) error 
 func (s *accBatchStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {
 	panic("unused")
 }
-func (s *accBatchStore) PauseQueue(ctx context.Context, p factoryd.QueuePause) error { panic("unused") }
+func (s *accBatchStore) PauseQueue(ctx context.Context, p factoryd.QueuePause) (bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) QueuePause(ctx context.Context, project string) (factoryd.QueuePause, bool, error) {
 	return factoryd.QueuePause{}, false, nil
 }
