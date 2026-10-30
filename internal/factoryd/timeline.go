@@ -82,6 +82,17 @@ func (tl *Timeline) AppendOnce(ctx context.Context, taskID, step string, detail 
 	return tl.append(ctx, taskID, step, detail, func(prev []byte) bool { return lastStep(prev, step) != nil })
 }
 
+// AppendOnceFor appends the step unless the timeline's last one of its
+// name is of revision, the check and the write under one lock; it tells
+// whether it wrote.
+func (tl *Timeline) AppendOnceFor(ctx context.Context, taskID, step string, revision int, detail map[string]any) (bool, error) {
+	defer tl.lock(taskID)()
+	return tl.append(ctx, taskID, step, detail, func(prev []byte) bool {
+		n, ok := lastStep(prev, step)["revision"].(float64)
+		return ok && int(n) == revision
+	})
+}
+
 // AppendUnlessPending appends the step unless the timeline's last one of
 // its name has none of closers after it, the check and the write under
 // one lock; it tells whether it wrote.

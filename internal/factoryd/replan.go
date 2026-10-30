@@ -800,7 +800,7 @@ func sameEntry(a, b PlanCard) bool {
 // card's issue what it was cut into, at which session and spend, and
 // steps it. The plan's replanned step comes last, as it ends the pending
 // replan: a failure before it fails the filing, which runs again, and
-// writes the comments and the cut once.
+// writes the comments, the cut and each old card's step once.
 func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision int, next Plan, step ReplanStep, issues map[string]int64) error {
 	cards, err := r.oldCardsOf(ctx, p, step, true)
 	if err != nil {
@@ -884,7 +884,7 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		if f.into != 0 {
 			d["into"] = f.into
 		}
-		if err := r.timeline.Append(ctx, f.k.ID, "replanned", d); err != nil {
+		if _, err := r.timeline.AppendOnceFor(ctx, f.k.ID, "replanned", revision, d); err != nil {
 			return fmt.Errorf("record replanned on %s: %w", f.k.ID, err)
 		}
 	}

@@ -1495,6 +1495,9 @@ func TestRecordReplanCounts(t *testing.T) {
 		!slices.Equal(cutStep.Into, []int64{51, 52}) || cutStep.Session != 3 || cutStep.Spent != 4.2 {
 		t.Fatalf("the cut steps %s", lines)
 	}
+	if got, want := verdictOf(t, r, "t-cut"), []cardVerdict{{3, "changed", 51}}; !slices.Equal(got, want) {
+		t.Fatalf("t-cut's replanned steps %+v, want %+v once", got, want)
+	}
 
 	r, store, fj, _ = recordRig(t, at, map[string]any{"origin": ReplanCut, "card": "t-plan", "work": "the rest"})
 	if err := r.timeline.Append(ctx, "t-plan", stepToPlan, map[string]any{"reason": "cut: too big", "session": 2, "spent": 1.5}); err != nil {
