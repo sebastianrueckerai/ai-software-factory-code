@@ -52,11 +52,14 @@ type fakeStore struct {
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
 	failIntakeEvent error
 	events          []Event // newest last, as NewestTaskEvents reads them
-	deliveries      map[string]bool
-	pruned          []time.Duration
-	approvals       []ApprovalRequest
-	gates           []string // "task gate since", in order
-	projects        []Project
+	// recordFails fails that many Record calls by event kind, to test the
+	// fact writers that must not lose a row to a log line
+	recordFails map[string]int
+	deliveries  map[string]bool
+	pruned      []time.Duration
+	approvals   []ApprovalRequest
+	gates       []string // "task gate since", in order
+	projects    []Project
 	// projectReadFails fails that many ProjectByRepository calls
 	projectReadFails int
 	// projectSpend is each repository's month spend, as ProjectMonthSpend
@@ -906,6 +909,10 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 // doc_written rows are read back. A row whose identity another row
 // already holds drops, as Postgres's unique indexes drop it.
 func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
+	if n := s.recordFails[e.Kind]; n > 0 {
+		s.recordFails[e.Kind] = n - 1
+		return 0, fmt.Errorf("record %s: the store is down", e.Kind)
+	}
 	if e.IdentityKey != "" && slices.ContainsFunc(s.events, func(have Event) bool { return have.IdentityKey == e.IdentityKey }) {
 		return 0, nil
 	}
