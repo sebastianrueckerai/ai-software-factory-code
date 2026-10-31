@@ -104,11 +104,24 @@ type NamedCount struct {
 // ordinary least squares of actual euros on changed lines across the
 // window's merged cards of that size. Available false means the fit is
 // undefined — too few cards, or changed lines without variance — never
-// zero.
+// zero. Cards is the fit's sample size.
 type SizeIntercept struct {
 	Size      string  `json:"size"`
 	EUR       float64 `json:"eur"`
 	Available bool    `json:"available"`
+	Cards     int     `json:"cards"`
+}
+
+// EconomicsCoverage names how far the economics panels reach: the
+// window's first-merged cohort and its holes. Unknown is not zero spend
+// — a card the ledger holds no row for is missing cost, never a free
+// card — and a card without a reading or without a size sits the panels
+// out; every hole is counted, none guessed.
+type EconomicsCoverage struct {
+	Cards        int `json:"cards"`         // first-merged cards in the window
+	MissingCost  int `json:"missing_cost"`  // of them, cards the ledger holds no row for
+	MissingLines int `json:"missing_lines"` // of them, cards without a gate_head reading
+	MissingSize  int `json:"missing_size"`  // of them, readings that carry no size
 }
 
 // The divide-and-conquer fact contracts (roadmap 336): one payload per
@@ -334,17 +347,21 @@ type DivideConquer struct {
 	SessionEnds     []NamedCount `json:"session_ends"`
 	// EurPerMergedLine divides the window's actual euros by its merged
 	// changed lines; no merged line means undefined, not zero.
-	EurPerMergedLine   Figure          `json:"eur_per_merged_line"`
-	FixedEurPerCard    []SizeIntercept `json:"fixed_eur_per_card"`
-	Cuts               Figure          `json:"cuts"`
-	CutGroupsClosed    Figure          `json:"cut_groups_closed"`
-	GroupOpenHours     Figure          `json:"group_open_hours"`
-	HoldWaitHours      Figure          `json:"hold_wait_hours"`
-	ReviewsNotReviewed Figure          `json:"reviews_not_reviewed"`
-	PlansByRounds      []NamedCount    `json:"plans_by_rounds"`
-	CardsFirstRound    Figure          `json:"cards_first_round"`
-	CardsLaterRounds   Figure          `json:"cards_later_rounds"`
-	ReplansByOrigin    []NamedCount    `json:"replans_by_origin"`
+	EurPerMergedLine Figure          `json:"eur_per_merged_line"`
+	FixedEurPerCard  []SizeIntercept `json:"fixed_eur_per_card"`
+	// EconomicsCoverage counts the window's first-merged cards and the
+	// holes the two economics panels above read around; both stand on
+	// the measured rest.
+	EconomicsCoverage  EconomicsCoverage `json:"economics_coverage"`
+	Cuts               Figure            `json:"cuts"`
+	CutGroupsClosed    Figure            `json:"cut_groups_closed"`
+	GroupOpenHours     Figure            `json:"group_open_hours"`
+	HoldWaitHours      Figure            `json:"hold_wait_hours"`
+	ReviewsNotReviewed Figure            `json:"reviews_not_reviewed"`
+	PlansByRounds      []NamedCount      `json:"plans_by_rounds"`
+	CardsFirstRound    Figure            `json:"cards_first_round"`
+	CardsLaterRounds   Figure            `json:"cards_later_rounds"`
+	ReplansByOrigin    []NamedCount      `json:"replans_by_origin"`
 }
 
 // MetricsReport is every figure of one project over one window, the
@@ -882,6 +899,158 @@ func metricCIDuration(ctx context.Context, db *sql.DB, repo string, w metricWind
 		`SELECT `+metricBucket("pushed_at")+", "+agg+` FROM ci_runs WHERE repository = $1 AND pushed_at >= $2 AND pushed_at < $3 GROUP BY 1`)
 }
 
+// metricEconomics: the plan's panels 4 and 5 (roadmap 336), over the
+// same first-merge cohort — EUR per merged line, the cohort's whole-life
+// actual euros over its merged changed lines, and the fixed EUR per
+// card, each size's intercept of an ordinary least squares of a card's
+// actual euros on its changed lines. A card whose reading or whose cost
+// is unknown sits both panels out, named in the coverage: unknown is
+// never an invented zero, and an undefined fit is never zero either.
+// Intercepts keep their sign: a size whose euros fall as lines grow
+// reads negative.
+func metricEconomics(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, []SizeIntercept, EconomicsCoverage, error) {
+	lo := w.SparkFrom
+	if w.PrevFrom.Before(lo) {
+		lo = w.PrevFrom
+	}
+	cards, err := metricEconPull(ctx, db, repo, lo, w.To)
+	if err != nil {
+		return Figure{}, nil, EconomicsCoverage{}, err
+	}
+	var f Figure
+	var cov EconomicsCoverage
+	var cur, prev [2]float64          // window and previous: [euros, lines]
+	var weeks [7][2]float64           // each bucket: [euros, lines]
+	fits := map[string][][2]float64{} // size -> its cards' [lines, euros]
+	for _, c := range cards {
+		if withinWindow(c.merged, w.From, w.To) {
+			cov.Cards++
+			switch {
+			case !c.read:
+				cov.MissingLines++
+			case c.size == "":
+				cov.MissingSize++
+			}
+			if !c.cost {
+				cov.MissingCost++
+			}
+		}
+		if !c.read || !c.cost {
+			continue
+		}
+		switch {
+		case withinWindow(c.merged, w.From, w.To):
+			cur[0], cur[1] = cur[0]+c.eur, cur[1]+c.lines
+			if c.size != "" {
+				fits[c.size] = append(fits[c.size], [2]float64{c.lines, c.eur})
+			}
+		case withinWindow(c.merged, w.PrevFrom, w.PrevTo):
+			prev[0], prev[1] = prev[0]+c.eur, prev[1]+c.lines
+		}
+		if withinWindow(c.merged, w.SparkFrom, w.To) {
+			if b := weekBucket(c.merged, w.SparkFrom); b >= 0 && b < 7 {
+				weeks[b][0], weeks[b][1] = weeks[b][0]+c.eur, weeks[b][1]+c.lines
+			}
+		}
+	}
+	f.Value, f.Has = metricRatio(cur[0], cur[1])
+	f.Prev, f.PrevHas = metricRatio(prev[0], prev[1])
+	for b := range f.Weeks {
+		f.Weeks[b], _ = metricRatio(weeks[b][0], weeks[b][1])
+	}
+	sizes := make([]string, 0, len(fits))
+	for size := range fits {
+		sizes = append(sizes, size)
+	}
+	sort.Strings(sizes)
+	var out []SizeIntercept
+	for _, size := range sizes {
+		si := SizeIntercept{Size: size, Cards: len(fits[size])}
+		if y, ok := metricOLSIntercept(fits[size]); ok {
+			si.EUR, si.Available = y, true
+		}
+		out = append(out, si)
+	}
+	return f, out, cov, nil
+}
+
+// metricEconCard is one card of the economics cohort: its first merge,
+// its final gate_head reading (read false: none exists) and its
+// lifetime euros (cost false: the ledger holds no row — unknown spend,
+// never zero).
+type metricEconCard struct {
+	merged time.Time
+	size   string
+	lines  float64
+	eur    float64
+	read   bool
+	cost   bool
+}
+
+// metricEconPull reads the repository's first-merged cards whose first
+// merge falls in [lo, hi): DISTINCT ON keeps one row per card before
+// the joins, so duplicate merges and the reading and spend lookups
+// never fan a card out. The reading is the card's final gate_head fact
+// (whichever head the gates last judged); the spend is the card's whole
+// ledger life, every phase, not the span's slice.
+func metricEconPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Time) ([]metricEconCard, error) {
+	rows, err := db.QueryContext(ctx, `SELECT m.at, g.size, g.lines, s.eur
+		FROM (SELECT DISTINCT ON (e.task_id) e.task_id, e.at
+			FROM events e JOIN tasks t ON t.id = e.task_id
+			WHERE e.kind = '`+EventPullRequestMerged+`' AND t.repository = $1 AND t.kind <> 'chat'
+				AND t.source <> '`+SourceRoll+`' AND e.at < $3
+			ORDER BY e.task_id, e.at, e.id) m
+		LEFT JOIN LATERAL (SELECT gh.detail ->> 'size' AS size,
+				COALESCE((gh.detail ->> 'insertions')::float8, 0) + COALESCE((gh.detail ->> 'deletions')::float8, 0) AS lines
+			FROM events gh WHERE gh.kind = '`+EventGateHead+`' AND gh.task_id = m.task_id
+			ORDER BY gh.id DESC LIMIT 1) g ON true
+		LEFT JOIN LATERAL (SELECT sum(l.eur)::float8 AS eur FROM ledger l WHERE l.task_id = m.task_id) s ON true
+		WHERE m.at >= $2`, repo, lo, hi)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []metricEconCard
+	for rows.Next() {
+		var c metricEconCard
+		var size sql.NullString
+		var lines, eur sql.NullFloat64
+		if err := rows.Scan(&c.merged, &size, &lines, &eur); err != nil {
+			return nil, err
+		}
+		c.size, c.lines, c.eur, c.read, c.cost = size.String, lines.Float64, eur.Float64, lines.Valid, eur.Valid
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// metricOLSIntercept is the ordinary least squares of a size's cards'
+// euros on their changed lines: the intercept where the line of best
+// fit meets the euros axis, sign kept. Two distinct line values make a
+// fit; fewer leave it undefined — never zero.
+func metricOLSIntercept(pts [][2]float64) (float64, bool) {
+	distinct := map[float64]bool{}
+	var sx, sy float64
+	for _, p := range pts {
+		distinct[p[0]] = true
+		sx, sy = sx+p[0], sy+p[1]
+	}
+	if len(distinct) < 2 {
+		return 0, false
+	}
+	n := float64(len(pts))
+	xbar, ybar := sx/n, sy/n
+	var num, den float64
+	for _, p := range pts {
+		dx := p[0] - xbar
+		num, den = num+dx*(p[1]-ybar), den+dx*dx
+	}
+	if den == 0 {
+		return 0, false
+	}
+	return ybar - num/den*xbar, true
+}
+
 // The two figures the event sequence carries, read in Go from one pull
 // of the project's done cards and their status events. The pull spans
 // [min(SparkFrom, PrevFrom), To) — every window the figures read — and
@@ -1184,6 +1353,9 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 		return r, err
 	}
 	if r.CIDuration, err = metricCIDuration(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.DivideConquer.EurPerMergedLine, r.DivideConquer.FixedEurPerCard, r.DivideConquer.EconomicsCoverage, err = metricEconomics(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	return r, nil
