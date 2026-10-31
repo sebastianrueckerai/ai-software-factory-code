@@ -1213,7 +1213,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	if line := imagesFact(t.p); line != "" {
 		now += "\n" + line
 	}
-	system := t.prompt() + "\n\nThe project now:\n" + sanitize.Inbound(now)
+	system := t.prompt() + "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\n" + sanitize.Inbound(now)
 	if th.Summary != "" {
 		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
 	}
