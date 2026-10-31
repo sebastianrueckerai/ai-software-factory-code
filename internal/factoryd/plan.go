@@ -1261,7 +1261,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
 		return err
 	}
-	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+	return resolveAnswered(ctx, store, taskID, revision)
 }
 
 // confirmationAnswer tells whether any of idxs names revision's
@@ -1331,7 +1331,7 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
 		return err
 	}
-	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+	return resolveAnswered(ctx, store, taskID, revision)
 }
 
 // pendingPlan is the task's pending approval request of kind plan.
@@ -1796,11 +1796,27 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		healed = false
 		if wait {
-			final, why, next := t.awaitPlan(&ref, floor, day)
+			final, why, next, answered := t.awaitPlan(&ref, floor, day)
 			if final != "" {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
+			// an answer that confirmed the revision files its cards with
+			// no planner session; one with words a planner must weave in
+			// starts the session below
+			if answered && ref.Revision != 0 {
+				if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, ref.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
+					return t.finish("failed", "request plan: "+errMessage(err))
+				}
+				if final, why, next, stop := planRequested(&ref); stop {
+					if final != "" {
+						return t.finish(final, why)
+					}
+					findings = next
+				} else {
+					wait = true
+				}
+			}
 			// an answer at the session cap buys a session; one to a planner
 			// out of time, its automatic session used or the cap too short
 			// for one, buys agent time (versionPlannerRetry); an answer on
@@ -2014,6 +2030,39 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 		plannerOutOfTime, what, t.answerTime().Minutes())
 }
 
+// confirmedByAnswers tells whether every question of a revision is
+// answered and each was the confirmation answered with its offered
+// choice word: the answers fixed the spec and the criteria, and the
+// revision files with no planner session. Any other answer — a real
+// question's, a choice with words around it — goes back to a planner
+// session.
+func confirmedByAnswers(qs []PlanQuestion) bool {
+	if len(qs) == 0 {
+		return false
+	}
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation || !slices.Contains(q.Choices, strings.TrimSpace(q.Answer)) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveAnswered resolves the plan's waiting approval once every answer
+// is in: a confirmed revision files its cards, any other answer sends the
+// planner back.
+func resolveAnswered(ctx context.Context, store Store, taskID string, revision int) error {
+	reason := fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision)
+	qs, err := store.PlanQuestions(ctx, taskID, revision)
+	if err != nil {
+		return err
+	}
+	if confirmedByAnswers(qs) {
+		reason = fmt.Sprintf("superseded: revision %d is confirmed, its cards file", revision)
+	}
+	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, reason)
+}
+
 // planRequested reads what RequestPlan made of revision ref: filed cards
 // end the plan card done (final); a refusal or a revision answered whole
 // clears ref and goes back to the planner with findings; either way stop.
@@ -2092,14 +2141,14 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // question of the revision open (versionPlanAnswers), goes back to the
 // planner, as does the end of day, a wait on the day cap, on its own
 // (versionDayCap).
-func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why string, findings []string) {
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why string, findings []string, answered bool) {
 	day.start(t)
 	defer day.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment}
 	if t.planAnswers >= versionPlanAnswers {
 		wake = append(wake, SignalPlanAnswered)
 	}
-	answered := false
+	answered = false
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.planEnded(); stop {
 			return nil, true
@@ -2124,12 +2173,12 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why
 		heard, stop := pass()
 		if stop || len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
-				return final, why, nil
+				return final, why, nil, false
 			}
-			return "", "", findings
+			return "", "", findings, answered
 		}
 		if answered || len(findings) > 0 || day.over() {
-			return "", "", findings
+			return "", "", findings, answered
 		}
 	}
 }
@@ -2698,6 +2747,15 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 		ref.Filed, ref.Refused = res.Issues, res.Refused
 		return ref, err
 	case open == 0:
+		if confirmedByAnswers(asked) {
+			v, err := r.pinnedVersion(ctx, pin)
+			if err != nil {
+				return PlanRef{}, err
+			}
+			res, err := r.fileRevision(ctx, t, repo, v, rev)
+			ref.Filed, ref.Refused = res.Issues, res.Refused
+			return ref, err
+		}
 		ref.Answered = true
 		return ref, nil
 	}

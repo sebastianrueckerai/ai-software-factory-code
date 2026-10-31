@@ -3662,7 +3662,15 @@ func (s *fakeStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, er
 }
 
 func (s *fakeStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
+	k := fmt.Sprintf("%s %d", id, revision)
+	qs := slices.Clone(s.questions[k])
+	kinds := s.kinds[k]
+	for i := range qs {
+		if i < len(kinds) && kinds[i] == QuestionConfirmation {
+			qs[i].Kind = QuestionConfirmation
+		}
+	}
+	return qs, nil
 }
 
 func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
