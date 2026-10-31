@@ -803,7 +803,7 @@ const toolsLine = "Factory tools: the MCP server factory-tools, each as factory-
 
 // workGuide ends every brief on image m (nil: the factory's): reproduce
 // first, and how to end a session (rulings 149, 150). When to call
-// request_info or escalate_to_human is their descriptions' (ruling 263).
+// request_info or escalate is their descriptions' (ruling 263).
 func workGuide(tools []string, m *imagegen.Manifest) string {
 	g := "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
 		"holding the shell command that reproduced it: the factory runs it at the reproduction base — the commit that was live when the alert fired, pinned at the card's filing — " +
@@ -899,7 +899,7 @@ const mcpTimeoutMS = 150000
 // The headless settings, read in v1.18.32's source: every agent
 // that loops is capped at steps; question is denied at pattern "*", which
 // hides the tool from the model, so the only ask path is the gateway's
-// request_info and escalate_to_human; doom_loop is allowed, since a denied
+// request_info and escalate; doom_loop is allowed, since a denied
 // one fails the stream and ends the session unseen by the model; a rejected
 // tool call continues the loop as an error the model sees.
 // subagent, when set, is the model (provider/id) the general and explore

@@ -1013,7 +1013,7 @@ var PaidTools = []string{ToolWebScrape, ToolWebSearch, ToolReplicate, ToolFal}
 // classes.<c>.tools without caps ({}). The commissioning tools spend
 // through their own reservation and envelope, not a per-task tool cap.
 const (
-	ToolEscalate       = "escalate_to_human"
+	ToolEscalate       = "escalate"
 	ToolCloudPrices    = "cloud_prices"
 	ToolCommission     = "commission_server"
 	ToolListResources  = "list_resources"

@@ -27,7 +27,7 @@ const (
 	TripWallClock  TripKind = "wall_clock"
 	TripRepetition TripKind = "repetition"
 	TripShutdown   TripKind = "shutdown" // not a detector: factoryd is stopping
-	// TripAgentEscalation: the agent called escalate_to_human,
+	// TripAgentEscalation: the agent called escalate,
 	// TripAgentInfoRequest request_info and TripAgentToolRequest
 	// request_tool; decided already, no supervisor call
 	TripAgentEscalation  TripKind = "agent_escalation"
@@ -383,7 +383,7 @@ const (
 	agentAsksAuthor = "The agent asks the issue's author: "
 )
 
-// AgentAsk trips on the agent's own escalate_to_human, request_info or
+// AgentAsk trips on the agent's own escalate, request_info or
 // request_tool: an escalation with its question, the information request,
 // or the tool request with its tool and need; or on a person's replan with
 // its reason. The supervisor model is not asked. The agent's request_cut
@@ -392,7 +392,7 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	kind, detail, action := TripAgentEscalation, "the agent called escalate_to_human", ActionEscalate
+	kind, detail, action := TripAgentEscalation, "the agent called escalate", ActionEscalate
 	switch a.Kind {
 	case AskInfo:
 		kind, detail = TripAgentInfoRequest, "the agent called request_info"

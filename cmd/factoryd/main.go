@@ -463,7 +463,7 @@ func main() {
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	mux.Handle("POST /webhooks/signoz", alertIntake)
-	// the gateway's hand-over of an agent's escalate_to_human
+	// the gateway's hand-over of an agent's escalate
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
 	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
@@ -938,7 +938,7 @@ func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerF
 	}
 }
 
-// escalationRoute is the gateway's hand-over of escalate_to_human, behind
+// escalationRoute is the gateway's hand-over of escalate, behind
 // the gateway-factoryd bearer (secret factory/gateway-factoryd), which
 // factoryd and the gateway share: factoryd presents it for its model calls.
 func escalationRoute(gatewayToken string, store factoryd.EscalationStore, sessions factoryd.SessionEscalator) http.Handler {

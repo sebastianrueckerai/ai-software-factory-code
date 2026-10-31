@@ -391,7 +391,7 @@ func TestCloudToolsListed(t *testing.T) {
 		names = append(names, tl.Name)
 	}
 	// sf/app runs on its servers, no namespace of the cluster: no deployment_health
-	want := "analyze_image,cloud_prices,commission_server,delegate,escalate_to_human,fal_run,file_plan,file_verdict,list_resources,manual,release_resource,replicate_predict,request_cut,request_info,request_tool,resource_request_status,ssh_certificate,web_scrape,web_search"
+	want := "analyze_image,cloud_prices,commission_server,delegate,escalate,fal_run,file_plan,file_verdict,list_resources,manual,release_resource,replicate_predict,request_cut,request_info,request_tool,resource_request_status,ssh_certificate,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v", names)
 	}
@@ -682,15 +682,15 @@ func TestAccrualOverrunIsAudited(t *testing.T) {
 }
 
 // Ruling 132: the free tools follow the policy's class lists like the paid
-// ones, no class name in code: a class that lists escalate_to_human may
+// ones, no class name in code: a class that lists escalate may
 // escalate, a coder class that does not list commission_server may not
 // commission.
 func TestFreeToolsFollowThePolicysClassLists(t *testing.T) {
 	v := cloudPolicy()
-	v.Document.Classes["odd"] = policy.Class{Models: []string{"unpriced"}, Tools: map[string]policy.ToolCap{"escalate_to_human": {}}}
+	v.Document.Classes["odd"] = policy.Class{Models: []string{"unpriced"}, Tools: map[string]policy.ToolCap{"escalate": {}}}
 	delete(v.Document.Classes["coder"].Tools, "commission_server")
 	odd := newToolEnv(t, running("odd"), v)
-	if text, isErr := odd.call(t, "escalate_to_human", map[string]any{"question": "q", "reason": "r", "recommendation": "x"}); isErr {
+	if text, isErr := odd.call(t, "escalate", map[string]any{"question": "q", "reason": "r", "recommendation": "x"}); isErr {
 		t.Fatalf("escalate for a class that lists it = %s", text)
 	}
 	e := newCloudEnv(t, coderTask(), v)

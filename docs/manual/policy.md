@@ -274,7 +274,7 @@ tool call at this timeout), and the model sees the tools as
 `factory-tools_<tool>`. The provider keys live only in the gateway
 (secret `gateway-tool-keys`). A task may call a tool only when one of its
 classes lists it in the policy (`classes.<c>.tools`, ruling 132): the paid
-tools with their caps, the free ones (`escalate_to_human` and the
+tools with their caps, the free ones (`escalate` and the
 commissioning tools) as `{}`; any other call is `refused_capability`.
 
 - `web_scrape` (`url`, at most 2048 bytes): Firecrawl `/v2/scrape`,
@@ -306,7 +306,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   (a fal preset or `{width, height}`, default `landscape_4_3`, each side
   rounded up to a multiple of 64), rounded up per image, must fit
   `max_megapixels`, and both are sent explicitly.
-- `escalate_to_human` (`question`, `reason`, `recommendation`: what the
+- `escalate` (`question`, `reason`, `recommendation`: what the
   agent would do and why, at most 2000 bytes; all required): free. The
   issue comment and the console's escalation card show all three. The gateway posts it to factoryd's `POST /internal/escalations`
   (bearer from secret `gateway-factoryd`, key `token`); factoryd hands
@@ -509,7 +509,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   be cut, nor cards of the unbound sources (`roll`, `github-sync`,
   `schema-copy`, `template-update`, `revert`, `screening`, `sizing`).
   factoryd refuses any other session's ask ("this card cannot be cut:
-  finish it as it is, or ask a person with escalate_to_human").
+  finish it as it is, or ask a person with escalate").
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the

@@ -368,7 +368,7 @@ func TestSchemaRoundTrip(t *testing.T) {
 		"required key missing": {"projects/ai-software-factory-infra.yaml", "objects: seed\n", ""},
 		"wrong type":           {"policy.yaml", "sessions: 3", "sessions: three"},
 		"not a duration":       {"policy.yaml", "agent_time: 20m", "agent_time: 20"},
-		"unknown tool":         {"policy.yaml", "escalate_to_human: {}", "firecrawl: {}"},
+		"unknown tool":         {"policy.yaml", "escalate: {}", "firecrawl: {}"},
 		"unknown bound":        {"policy.yaml", "GateReproduction: 1800", "Lunch: 1800"},
 		"invalid outcome":      {"policy.yaml", "outcome: auto", "outcome: maybe"},
 		"invalid merge rule":   {"projects/demo-app.yaml", "merge_rule: auto", "merge_rule: sometimes"},

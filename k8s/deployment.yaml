@@ -45,7 +45,7 @@ spec:
           valueFrom: {secretKeyRef: {name: gateway-tool-keys, key: REPLICATE_KEY}}
         - name: FAL_AI_KEY
           valueFrom: {secretKeyRef: {name: gateway-tool-keys, key: FAL_AI_KEY}}
-        # escalate_to_human's hand-over to factoryd's internal endpoint
+        # escalate's hand-over to factoryd's internal endpoint
         - name: FACTORYD_URL
           value: http://factoryd.factory.svc.cluster.local:8080
         - name: FACTORYD_TOKEN
