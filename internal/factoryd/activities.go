@@ -863,6 +863,17 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
+	if res.Outcome != OutcomeNotStarted && !res.StartFailed {
+		// the end's fact row beside its timeline line (roadmap 336): no
+		// summary, which the line alone keeps; a session the worker never
+		// started or could not start is no session to end. A failed write
+		// is the session's error, not a log line: the retry runs a new
+		// session whose own end is the fact the identity keeps single.
+		end := SessionEndFact{Session: s.id, Attempt: in.Attempt, Outcome: string(res.Outcome), Started: startedAt}
+		if err := r.timeline.RecordFactRow(ctx, end.Event(t.ID, t.Repository, t.IssueNumber, time.Now())); err != nil {
+			return SessionResult{}, named("session end fact", err)
+		}
+	}
 	if res.Outcome == OutcomePushed {
 		r.record(ctx, t.ID, "pushed", map[string]any{"session": s.id, "branch": taskBranch(t), "commit": res.Commit})
 		// a session that ended without its last word keeps the one before
