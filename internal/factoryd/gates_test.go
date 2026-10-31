@@ -233,7 +233,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
-		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human"}
+		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human", Files: 3}
 	if fmt.Sprint(g) != fmt.Sprint(want) {
 		t.Fatalf("gate = %+v, want %+v", g, want)
 	}
@@ -424,7 +424,7 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 			g := getInto[PolicyGate](t, val, err)
 			want := PolicyGate{Class: "forbidden", Outcome: policy.OutcomeRequiresApproval, Paths: []string{".forgejo/workflows/ci.yml"},
-				Factory: true, Changed: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human"}
+				Factory: true, Changed: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human", Files: 2}
 			if fmt.Sprint(g) != fmt.Sprint(want) {
 				t.Fatalf("gate = %+v, want %+v", g, want)
 			}
@@ -1321,13 +1321,18 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 		if len(pending) != 1 || json.Unmarshal(pending[0].Spec, &spec) != nil || !spec.Factory || spec.RedChecks != c.red {
 			t.Fatalf("red %t: requests %+v, spec %+v: want a factory pull request's, red %t", c.red, pending, spec, c.red)
 		}
-		if len(rows.rows) != 1 {
-			t.Fatalf("red %t: rows %+v, want the approval_requested row", c.red, rows.rows)
+		if len(rows.rows) != 2 {
+			t.Fatalf("red %t: rows %+v, want the approval_requested row and the gate_head fact", c.red, rows.rows)
 		}
-		b, _ := json.Marshal(rows.rows[0].Detail)
-		e := Event{Kind: EventApprovalRequested, TaskID: "t1"}
-		if err := json.Unmarshal(b, &e.Detail); err != nil {
-			t.Fatal(err)
+		var e Event
+		for _, row := range rows.rows {
+			if row.Kind == EventApprovalRequested {
+				b, _ := json.Marshal(row.Detail)
+				e = Event{Kind: EventApprovalRequested, TaskID: "t1"}
+				if err := json.Unmarshal(b, &e.Detail); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 		if m, ok := pokeOf(e, task); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
 			t.Fatalf("red %t: the poke = %+v, want %q with %q", c.red, m, c.content, c.choices)
