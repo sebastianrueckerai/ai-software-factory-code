@@ -688,7 +688,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		log.Printf("plan %s: the delta card's record: %v", t.ID, err)
 		return
 	}
-	if _, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), merged, FactoryDecider, true, sha, old); err != nil {
+	if _, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), merged, FactoryDecider, true, sha, revision, old); err != nil {
 		log.Printf("plan %s: file the delta card: %v", t.ID, err)
 		return
 	}

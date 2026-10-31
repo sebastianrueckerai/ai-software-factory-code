@@ -136,6 +136,21 @@ func (tl *Timeline) RecordProjectRow(ctx context.Context, e Event) {
 	}
 }
 
+// RecordFactRow writes fact e as its events row and fails the step it
+// records: unlike RecordRow the row is the step's own record — a fact the
+// panel reads — so a failed write is an error the caller carries and the
+// filing that wrote it runs again. A nil Timeline records nothing; one
+// identity, one row, whichever retry writes it first.
+func (tl *Timeline) RecordFactRow(ctx context.Context, e Event) error {
+	if tl == nil || tl.Events == nil {
+		return nil
+	}
+	if _, err := tl.Events.Record(ctx, e); err != nil {
+		return fmt.Errorf("event %s: the row: %w", e.Kind, err)
+	}
+	return nil
+}
+
 // allDoneMu holds taskEnded's check and record of all_children_done
 // together: the last two cards ending side by side both find every card
 // done (one factoryd replica).

@@ -313,7 +313,7 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1", nil); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1", 1, nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
@@ -355,7 +355,7 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1", old)
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1", 2, old)
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("fileChildren = %+v, %v", cards, err)
 		}
@@ -429,7 +429,7 @@ func TestRestartChildrenKeepsTheStartLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, "m1", old); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, "m1", 1, old); err != nil {
 		t.Fatal(err)
 	}
 	next := Plan{Summary: "three", Cards: []PlanCard{

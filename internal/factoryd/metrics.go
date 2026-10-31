@@ -218,6 +218,62 @@ func (f PlanFilingFact) Event(repository string, issue int64, extra map[string]a
 		IdentityKey: identityKey(EventPlanReplanned, f.Plan, fmt.Sprintf("%d", f.Revision))}
 }
 
+// EventCut is one applied cut — the cut step's row on the cut card's own:
+// what its revision was cut into, at which session and spend, and the
+// group the cut left (GroupOf the cut card: its plan for a plan's child,
+// itself for a direct card's conversion). A pending cut step is the
+// request, not the cut: the row comes with the record of the replan that
+// applied it. Detail {"plan", "group", "revision", "into", "session",
+// "spent"}.
+const EventCut = "cut"
+
+// CutFact is that cut. Identity: the plan and the cut card; one card, cut
+// once by one replan, however often its filing runs again.
+type CutFact struct {
+	Plan     string // with Card: the identity
+	Card     string
+	Issue    int64
+	Group    string // GroupOf the cut card: the group it leaves
+	Revision int
+	Into     []int64
+	Session  int
+	Spent    float64
+}
+
+// Event is the cut's row of repository's issue.
+func (f CutFact) Event(repository string, issue int64) Event {
+	return Event{Repository: repository, TaskID: f.Card, IssueNumber: issue, Kind: EventCut,
+		Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail:      map[string]any{"plan": f.Plan, "group": f.Group, "revision": f.Revision, "into": f.Into, "session": f.Session, "spent": f.Spent},
+		IdentityKey: identityKey(EventCut, f.Plan, f.Card)}
+}
+
+// EventPlanCardFiled is one card's filing into a round of its plan, the
+// plan_card_filed row — distinct from card_filed, the row of who filed a
+// card's issue by hand: the round the filing stamped it with, the first
+// round it files staying — a later revision that re-files the card finds
+// its row by identity and leaves the first. Detail {"plan", "key",
+// "round", "revision"}.
+const EventPlanCardFiled = "plan_card_filed"
+
+// CardFilingFact is that filing. Identity: the card; one card, one row,
+// however often a replan re-files it.
+type CardFilingFact struct {
+	Card     string // the identity
+	Plan     string
+	Key      string
+	Round    int
+	Revision int
+}
+
+// Event is the filing's row of repository's issue.
+func (f CardFilingFact) Event(repository string, issue int64) Event {
+	return Event{Repository: repository, TaskID: f.Card, IssueNumber: issue, Kind: EventPlanCardFiled,
+		Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail:      map[string]any{"plan": f.Plan, "key": f.Key, "round": f.Round, "revision": f.Revision},
+		IdentityKey: identityKey(EventPlanCardFiled, f.Card)}
+}
+
 // HoldIntervalFact is one production hold's end, the production_released
 // row; the releases row holds the open interval. Identity: the
 // repository and the instant the hold began; one hold, one row.
@@ -302,7 +358,7 @@ func sameJSONValue(a, b any) bool {
 // fact, each recorded through the fact payload that names its identity:
 // SessionEndFact (session and attempt), ReviewAttemptFact (head and
 // round), GateHeadFact (card and head), PlanFilingFact (plan and
-// revision) and HoldIntervalFact (repository and held since). Beside
+// revision), CutFact (plan and cut card) and CardFilingFact (the card). Beside
 // them the store's own rows: session_started and session_pushed events
 // (identity task and session), plan_closed events (identity task and
 // revision), the releases row (an open hold) and the task_status row
