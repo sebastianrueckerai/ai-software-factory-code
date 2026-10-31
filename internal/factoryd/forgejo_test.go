@@ -1225,3 +1225,32 @@ func TestJobLogReadsTheTail(t *testing.T) {
 		t.Fatalf("JobLog with the Range ignored: %v, want ErrAnswerTooLong", err)
 	}
 }
+
+func TestForgejoMainAtLeast(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"fee3ff16"},{"sha":"82ab246"}]`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL}
+	infra := Repo{Owner: "sf", Name: "infra"}
+	if at, head, err := f.MainAtLeast(context.Background(), "tok", infra, "82ab246"); err != nil || !at || head != "fee3ff16" {
+		t.Fatalf("at/after pin = %v, %s, %v; want true, fee3ff16", at, head, err)
+	}
+	if at, head, err := f.MainAtLeast(context.Background(), "tok", infra, "fee3ff16"); err != nil || !at || head != "fee3ff16" {
+		t.Fatalf("pin at head = %v, %s, %v; want true, fee3ff16", at, head, err)
+	}
+	if at, head, err := f.MainAtLeast(context.Background(), "tok", infra, "11111111"); err != nil || at || head != "fee3ff16" {
+		t.Fatalf("behind pin = %v, %s, %v; want false with the head named", at, head, err)
+	}
+	_, _, err := f.MainAtLeast(context.Background(), "tok", Repo{Owner: "sf", Name: "locked"}, "82ab246")
+	if err == nil || !strings.Contains(err.Error(), "companion sf/locked") {
+		t.Fatalf("unreadable = %v, want an error naming the companion", err)
+	}
+}

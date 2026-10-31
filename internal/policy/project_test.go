@@ -410,3 +410,38 @@ func TestProjectImagePins(t *testing.T) {
 		}
 	}
 }
+
+// Companions are the repositories a project reads beside its own: declared
+// in its file, distinct, owner/name on this Forgejo (a URL or a foreign
+// host is refused), never the project's own repository; sandbox opts the
+// session clone in, absent no clone.
+func TestCompanionsDeclare(t *testing.T) {
+	with := func(block string) map[string][]byte {
+		files := fixtureTree(t)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], block...)
+		return files
+	}
+	for name, tc := range map[string]struct{ block, want string }{
+		"url":   {"companions: [{repository: https://git.example.com/sf/infra}]\n", `project demo-app: companion "https://git.example.com/sf/infra": owner/name in lower case`},
+		"empty": {"companions: [{sandbox: true}]\n", `companion "": owner/name in lower case`},
+		"twice": {"companions: [{repository: sf/one}, {repository: sf/one}]\n", `companion "sf/one": given twice`},
+		"own":   {"companions: [{repository: demo-app/demo-app}]\n", `companion "demo-app/demo-app": the project's own repository`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseTree(with(tc.block)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	tree, err := ParseTree(with("companions: [{repository: sf/ai-software-factory-infra, sandbox: true}, {repository: sf/other}]\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []Companion{{Repository: "sf/ai-software-factory-infra", Sandbox: true}, {Repository: "sf/other"}}
+	if got := tree.Projects["demo-app"].Companions; !reflect.DeepEqual(got, want) {
+		t.Fatalf("companions = %+v, want %+v", got, want)
+	}
+	if p := resolvedSchema(t, "project.schema.json").Schema().Properties["companions"]; p == nil {
+		t.Fatal("project schema has no companions property")
+	}
+}

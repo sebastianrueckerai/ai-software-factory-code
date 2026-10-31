@@ -569,6 +569,37 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 	return res.Entries, nil
 }
 
+// companionWindow bounds how far back a pin is looked for on the
+// companion's default branch: a pin older than the window is gone, unmet,
+// because the companion rewound past it, whether by 50 merges or one
+// force-push.
+const companionWindow = 50
+
+// MainAtLeast reports whether sha is among the newest commits of r's
+// default branch, with the branch's head: a pin is met while the companion
+// still holds the pinned commit in its window, so it stays met as main
+// moves ahead and unmet once main has moved past it. A token that cannot
+// read the repository is an error naming the companion, not a verdict.
+func (f *Forgejo) MainAtLeast(ctx context.Context, token string, r Repo, sha string) (bool, string, error) {
+	body, err := f.tokenCall(token)(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/repos/%s/%s/commits?limit=%d", r.Owner, r.Name, companionWindow), nil, http.StatusOK)
+	if err != nil {
+		return false, "", fmt.Errorf("companion %s: %w", r, err)
+	}
+	var commits []struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.Unmarshal(body, &commits); err != nil || len(commits) == 0 {
+		return false, "", fmt.Errorf("companion %s: no commits on the default branch (%v)", r, err)
+	}
+	for _, c := range commits {
+		if c.SHA == sha {
+			return true, commits[0].SHA, nil
+		}
+	}
+	return false, commits[0].SHA, nil
+}
+
 // ErrNoRerun is Forgejo's answer that it offers no re-run of an action
 // run or job: a 404 from a Forgejo before 17, which has no rerun route, or
 // a 403 to a token without the right, such as a read-only actions token.

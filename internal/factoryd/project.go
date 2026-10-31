@@ -56,6 +56,9 @@ type Project struct {
 	TemplateFiles map[string]string
 	// Images are the file's image pins by name.
 	Images map[string]policy.ImagePin
+	// Companions are the repositories the project reads beside its own, as
+	// its file declares them.
+	Companions []policy.Companion
 	// File is whether the configuration holds projects/<name>.yaml: a row
 	// without one is kept for its tokens and nothing acts on it.
 	File      bool
@@ -146,6 +149,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 			p.Tokens = *c.Tokens
 		}
 		p.Template, p.TemplateFiles, p.Images = c.Template, v.Templates[c.Template], c.Images
+		p.Companions = c.Companions
 		byName[name] = p
 	}
 	out := slices.Collect(maps.Values(byName))

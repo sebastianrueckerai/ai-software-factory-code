@@ -245,3 +245,23 @@ func TestProjectsOfImages(t *testing.T) {
 		t.Fatalf("Images = %+v", got[1].Images)
 	}
 }
+
+func TestProjectsOfCompanions(t *testing.T) {
+	files := testFiles(testPolicyYAML)
+	files["projects/demo-app.yaml"] = []byte(policy.Header("projects/demo-app.yaml") + "\n" + demoFile +
+		"companions:\n  - repository: sf/ai-software-factory-infra\n    sandbox: true\n  - repository: sf/other\n")
+	tree, err := policy.ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var demo Project
+	for _, p := range projectsOf(nil, policy.Version{ID: 1, Tree: tree}) {
+		if p.Name == "demo-app" {
+			demo = p
+		}
+	}
+	want := []policy.Companion{{Repository: "sf/ai-software-factory-infra", Sandbox: true}, {Repository: "sf/other"}}
+	if !reflect.DeepEqual(demo.Companions, want) {
+		t.Fatalf("companions = %+v, want %+v", demo.Companions, want)
+	}
+}
