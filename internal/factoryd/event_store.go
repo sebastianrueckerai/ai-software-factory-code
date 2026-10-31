@@ -141,7 +141,10 @@ const (
 // Event is one row of the events table: what happened, to which card or
 // project, who did it, and how it reached the factory. Repository is
 // owner/name, the project the event belongs to; TaskID and IssueNumber are
-// empty for a project-level event. Detail is free-form JSON.
+// empty for a project-level event. Detail is free-form JSON. IdentityKey
+// is the fact's identity, the metrics contracts' one-row-per-fact key;
+// empty leaves the row unkeyed, as every row before the contracts is.
+// The key is written, never read back: reads go by kind and detail.
 type Event struct {
 	ID          int64
 	At          time.Time
@@ -152,6 +155,7 @@ type Event struct {
 	Actor       string
 	Via         string
 	Detail      map[string]any
+	IdentityKey string
 }
 
 // Events is the event spine: one function records every event, whatever
@@ -210,14 +214,16 @@ func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted 
 		}
 		detail = b
 	}
-	// only a second row naming the same answer comment conflicts (the
-	// partial unique index of 20261011170500_events_grant_once.sql)
+	// a second row naming an identity another row already holds — the
+	// answer comment of 20261011170500_events_grant_once.sql, the
+	// IdentityKey of the metrics-identity migration — conflicts and
+	// drops; every unique index on events is such an identity
 	err := q.QueryRowContext(ctx,
-		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
-		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
-		 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind IN ('question_answered', 'session_granted') DO NOTHING
+		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail, identity_key)
+		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb, NULLIF($9, ''))
+		 ON CONFLICT DO NOTHING
 		 RETURNING id, at`,
-		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&e.ID, &e.At)
+		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail, e.IdentityKey).Scan(&e.ID, &e.At)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return e, false, nil
