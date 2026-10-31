@@ -250,14 +250,15 @@ func (f CutFact) Event(repository string, issue int64) Event {
 
 // EventPlanCardFiled is one card's filing into a round of its plan, the
 // plan_card_filed row — distinct from card_filed, the row of who filed a
-// card's issue by hand: the round the filing stamped it with, the first
-// round it files staying — a later revision that re-files the card finds
-// its row by identity and leaves the first. Detail {"plan", "key",
-// "round", "revision"}.
+// card's issue by hand. The row lands in the filing that gives the card
+// its issue, before the issue is stored, so a retry that runs the moment
+// again lands the one row; a card a later revision keeps — its issue
+// standing — is no new filing, and one filed before the rows were stays
+// unknown. Detail {"plan", "key", "round", "revision"}.
 const EventPlanCardFiled = "plan_card_filed"
 
 // CardFilingFact is that filing. Identity: the card; one card, one row,
-// however often a replan re-files it.
+// at the filing that gave it its issue.
 type CardFilingFact struct {
 	Card     string // the identity
 	Plan     string
