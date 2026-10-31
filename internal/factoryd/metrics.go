@@ -80,6 +80,89 @@ type ChatWork struct {
 	Weeks       [7]float64 `json:"weeks"`
 }
 
+// SizeFigure is one card size's figure of a divide-and-conquer panel:
+// the window value, the previous window's and the spark, keyed by the
+// policy's card size (small, medium, large).
+type SizeFigure struct {
+	Size   string `json:"size"`
+	Figure Figure `json:"figure"`
+}
+
+// NamedCount is one bucket of a typed distribution: how many of the
+// window's things carry this name. Session ends name session outcomes,
+// replans name replan origins (person, cut, round) and plans by rounds
+// name each round as its number.
+type NamedCount struct {
+	Name  string  `json:"name"`
+	Count float64 `json:"count"`
+}
+
+// SizeIntercept is one size's fixed euros per card: the intercept of an
+// ordinary least squares of actual euros on changed lines across the
+// window's merged cards of that size. Available false means the fit is
+// undefined — too few cards, or changed lines without variance — never
+// zero.
+type SizeIntercept struct {
+	Size      string  `json:"size"`
+	EUR       float64 `json:"eur"`
+	Available bool    `json:"available"`
+}
+
+// DivideConquer measures the divide-and-conquer plan (roadmap 336, doc
+// docs/plans/2026-10-29-divide-and-conquer.md): whether cards stay
+// within their size bound, what one costs in sessions and euros, and
+// how the plan's rounds and cuts behave. Durations are hours.
+//
+// Every panel reads hard rows the factory already stores, one row per
+// fact, and each fact carries an identity that survives restarts and
+// records idempotently — recording it twice leaves one row and one id:
+//
+//   - gate results: the row SetGate writes per decision, identity task
+//     and decision; the card's size and diff ride the task (size,
+//     files, insertions, deletions);
+//   - session facts: session_started and session_pushed events,
+//     identity task and session; a session's end is the session_end
+//     timeline step, identity task, session and attempt, recorded
+//     through Timeline's AppendUnlessPending;
+//   - review attempts: the model_review timeline step, identity task,
+//     head commit and round, also through AppendUnlessPending; a review
+//     whose verdict is empty is one the model never judged;
+//   - plan filings and cuts: plan_replanned events, identity task and
+//     revision, unique by partial index;
+//   - group closure: plan_closed events, identity task and revision;
+//   - production holds: the releases row holds the open interval, and
+//     one production_released event closes each interval, identity
+//     repository and held_since, unique by partial index.
+//
+// Three states never collapse into each other: unknown, undefined and
+// zero. CoveredFrom zero means coverage is not established — panels
+// read facts recorded from that moment on, so before it every panel is
+// unknown, not zero. A Figure with Has false is undefined (empty
+// cohort; the page renders a dash), as is a SizeIntercept with
+// Available false. A Figure with Has true and Value zero is a measured
+// zero — GateAboveBound and ReviewsNotReviewed are exactly that:
+// targets of none.
+type DivideConquer struct {
+	CoveredFrom time.Time `json:"covered_from"`
+
+	GateAboveBound  Figure       `json:"gate_above_bound"`
+	SessionsPerCard []SizeFigure `json:"sessions_per_card"`
+	SessionEnds     []NamedCount `json:"session_ends"`
+	// EurPerMergedLine divides the window's actual euros by its merged
+	// changed lines; no merged line means undefined, not zero.
+	EurPerMergedLine   Figure          `json:"eur_per_merged_line"`
+	FixedEurPerCard    []SizeIntercept `json:"fixed_eur_per_card"`
+	Cuts               Figure          `json:"cuts"`
+	CutGroupsClosed    Figure          `json:"cut_groups_closed"`
+	GroupOpenHours     Figure          `json:"group_open_hours"`
+	HoldWaitHours      Figure          `json:"hold_wait_hours"`
+	ReviewsNotReviewed Figure          `json:"reviews_not_reviewed"`
+	PlansByRounds      []NamedCount    `json:"plans_by_rounds"`
+	CardsFirstRound    Figure          `json:"cards_first_round"`
+	CardsLaterRounds   Figure          `json:"cards_later_rounds"`
+	ReplansByOrigin    []NamedCount    `json:"replans_by_origin"`
+}
+
 // MetricsReport is every figure of one project over one window, the
 // shape the endpoint serves and the page renders.
 type MetricsReport struct {
@@ -111,6 +194,7 @@ type MetricsReport struct {
 	DiffSize           DiffSize           `json:"diff_size"`
 	ChatWork           ChatWork           `json:"chat_tool_work"`
 	CIDuration         Figure             `json:"ci_duration"`
+	DivideConquer      DivideConquer      `json:"divide_conquer"`
 }
 
 // metricWindow is the spans every figure reads: the window, the

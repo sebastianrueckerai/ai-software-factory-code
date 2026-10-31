@@ -210,12 +210,15 @@ func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted 
 		}
 		detail = b
 	}
-	// only a second row naming the same answer comment conflicts (the
-	// partial unique index of 20261011170500_events_grant_once.sql)
+	// a second row naming an identity another row already holds — the
+	// answer comment of 20261011170500_events_grant_once.sql, the plan
+	// revision and the release's held-since of the metrics-identity
+	// migration — conflicts and drops; every unique index on events is
+	// such an identity
 	err := q.QueryRowContext(ctx,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
 		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb)
-		 ON CONFLICT (task_id, (detail->>'comment')) WHERE kind IN ('question_answered', 'session_granted') DO NOTHING
+		 ON CONFLICT DO NOTHING
 		 RETURNING id, at`,
 		nullTime(e.At), e.Repository, e.TaskID, e.IssueNumber, e.Kind, e.Actor, e.Via, detail).Scan(&e.ID, &e.At)
 	switch {

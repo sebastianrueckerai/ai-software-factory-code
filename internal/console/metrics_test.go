@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -47,6 +48,14 @@ func metricsFiguresReport() factoryd.MetricsReport {
 	}
 }
 
+// metricsBodyKeys are the fields the metrics JSON has carried since the
+// deck first shipped; the divide-and-conquer block adds to them, it
+// never renames or drops one.
+var metricsBodyKeys = []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
+	"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
+	"interventions", "escalations", "escalated_share", "escalations_handled", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
+	"chat_tool_work", "ci_duration"}
+
 func TestProjectMetricsJSON(t *testing.T) {
 	r := newRig(t)
 	r.figures.report = metricsFiguresReport()
@@ -62,10 +71,7 @@ func TestProjectMetricsJSON(t *testing.T) {
 	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	for _, key := range []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
-		"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
-		"interventions", "escalations", "escalated_share", "escalations_handled", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
-		"chat_tool_work", "ci_duration"} {
+	for _, key := range metricsBodyKeys {
 		if _, ok := body[key]; !ok {
 			t.Errorf("body lacks %s", key)
 		}
@@ -89,6 +95,120 @@ func TestProjectMetricsJSON(t *testing.T) {
 	wantAsk := "sf/code " + today.AddDate(0, 0, -27).Format(time.RFC3339) + " " + today.Format(time.RFC3339)
 	if len(r.figures.asked) != 1 || r.figures.asked[0] != wantAsk {
 		t.Fatalf("asked = %v, want %q", r.figures.asked, wantAsk)
+	}
+}
+
+// TestDivideConquerMetricsContract pins the additive divide-and-conquer
+// block: the asked window's dates reach the figures port, every field
+// the JSON has always carried survives, and the block keeps unknown,
+// undefined and zero apart.
+func TestDivideConquerMetricsContract(t *testing.T) {
+	r := newRig(t)
+	report := metricsFiguresReport()
+	report.DivideConquer = factoryd.DivideConquer{
+		CoveredFrom: time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC),
+		// a target panel's measured zero carries has=true
+		GateAboveBound:     factoryd.Figure{Value: 0, Has: true, PrevHas: true},
+		ReviewsNotReviewed: factoryd.Figure{Value: 1, Has: true},
+		SessionsPerCard: []factoryd.SizeFigure{
+			{Size: "small", Figure: factoryd.Figure{Value: 1.2, Has: true}},
+			{Size: "medium", Figure: factoryd.Figure{Value: 2.4, Has: true}},
+		},
+		SessionEnds: []factoryd.NamedCount{
+			{Name: "pushed", Count: 18},
+			{Name: "wall_clock", Count: 2},
+		},
+		// no merged line in the window: undefined, never zero
+		EurPerMergedLine: factoryd.Figure{},
+		FixedEurPerCard: []factoryd.SizeIntercept{
+			{Size: "small", EUR: 2.1, Available: true},
+			{Size: "large", Available: false}, // too few cards to fit
+		},
+		Cuts:             factoryd.Figure{Value: 3, Has: true},
+		CutGroupsClosed:  factoryd.Figure{Value: 2, Has: true},
+		GroupOpenHours:   factoryd.Figure{Value: 96.5, Has: true},
+		HoldWaitHours:    factoryd.Figure{Value: 7.25, Has: true},
+		PlansByRounds:    []factoryd.NamedCount{{Name: "1", Count: 6}, {Name: "2", Count: 2}},
+		CardsFirstRound:  factoryd.Figure{Value: 5.5, Has: true},
+		CardsLaterRounds: factoryd.Figure{Value: 2, Has: true},
+		ReplansByOrigin:  []factoryd.NamedCount{{Name: "person", Count: 1}, {Name: "round", Count: 3}},
+	}
+	r.figures.report = report
+	ck, _ := r.loggedIn(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics?format=json&from=2026-10-19&to=2026-10-20", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET metrics = %d: %s", rec.Code, rec.Body)
+	}
+	if last := r.figures.asked[len(r.figures.asked)-1]; last != "sf/code 2026-10-19T00:00:00Z 2026-10-20T00:00:00Z" {
+		t.Fatalf("asked = %q, want the window's dates", last)
+	}
+	body := rec.Body.Bytes()
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range metricsBodyKeys {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("body lacks %s", key)
+		}
+	}
+	dc, ok := raw["divide_conquer"].(map[string]any)
+	if !ok {
+		t.Fatalf("divide_conquer = %v", raw["divide_conquer"])
+	}
+	for _, key := range []string{"covered_from", "gate_above_bound", "sessions_per_card", "session_ends",
+		"eur_per_merged_line", "fixed_eur_per_card", "cuts", "cut_groups_closed", "group_open_hours",
+		"hold_wait_hours", "reviews_not_reviewed", "plans_by_rounds", "cards_first_round", "cards_later_rounds",
+		"replans_by_origin"} {
+		if _, ok := dc[key]; !ok {
+			t.Errorf("divide_conquer lacks %s", key)
+		}
+	}
+	// unknown reads as the zero time, a date no panel can mistake for
+	// coverage it has
+	if got := dc["covered_from"]; got != "2026-10-29T00:00:00Z" {
+		t.Errorf("covered_from = %v, want 2026-10-29T00:00:00Z", got)
+	}
+	// zero: a target's none is a measured zero, not a dash
+	gate := dc["gate_above_bound"].(map[string]any)
+	if gate["value"] != float64(0) || gate["has"] != true {
+		t.Errorf("gate_above_bound = %v, want a measured zero", gate)
+	}
+	// undefined: no merged line and an unfit intercept read absent,
+	// never zero
+	eur := dc["eur_per_merged_line"].(map[string]any)
+	if eur["has"] != false || eur["value"] != float64(0) {
+		t.Errorf("eur_per_merged_line = %v, want undefined", eur)
+	}
+	fixed := dc["fixed_eur_per_card"].([]any)
+	small, large := fixed[0].(map[string]any), fixed[1].(map[string]any)
+	if small["eur"] != float64(2.1) || small["available"] != true {
+		t.Errorf("fixed_eur_per_card small = %v", small)
+	}
+	if large["available"] != false || large["eur"] != float64(0) {
+		t.Errorf("fixed_eur_per_card large = %v, want unavailable", large)
+	}
+	// hours stay hours, fraction and all, and the typed distributions
+	// keep their names
+	if hours := dc["group_open_hours"].(map[string]any)["value"]; hours != float64(96.5) {
+		t.Errorf("group_open_hours = %v, want 96.5", hours)
+	}
+	if first := dc["session_ends"].([]any)[0].(map[string]any); first["name"] != "pushed" || first["count"] != float64(18) {
+		t.Errorf("session_ends[0] = %v", first)
+	}
+	if o := dc["replans_by_origin"].([]any)[1].(map[string]any); o["name"] != "round" || o["count"] != float64(3) {
+		t.Errorf("replans_by_origin[1] = %v", o)
+	}
+	// the block and the deck's fields survive the round trip whole
+	var back factoryd.MetricsReport
+	if err := json.Unmarshal(body, &back); err != nil {
+		t.Fatalf("round trip: %v", err)
+	}
+	if !reflect.DeepEqual(back.DivideConquer, report.DivideConquer) {
+		t.Fatalf("divide block lost shape: %+v", back.DivideConquer)
+	}
+	if back.Repository != report.Repository || back.Deploys != report.Deploys || back.LeadTime != report.LeadTime {
+		t.Errorf("existing fields changed: %+v", back)
 	}
 }
 
