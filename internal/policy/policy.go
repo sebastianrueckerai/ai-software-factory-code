@@ -247,6 +247,11 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 	return c
 }
 
+// validate is the chat block's own judgement, run from
+// Document.Validate: model and vision_model among the known aliases,
+// monthly_eur and parallel_turns not negative, confirm tools among
+// ChatTools, a window of at least 1000 tokens and doc_repo an
+// owner/name.
 func (c *ChatConfig) validate() error {
 	if c == nil {
 		return nil
@@ -390,9 +395,15 @@ const (
 
 // WarnShare, PlanWarnShare and NoPushShare are the percents as shares of 1.
 func (l Limits) WarnShare() float64 { return float64(cmp.Or(l.WarnAt, DefaultWarnAt)) / 100 }
+
+// PlanWarnShare is PlanWarnAt as a share of 1, DefaultPlanWarnAt where
+// unset.
 func (l Limits) PlanWarnShare() float64 {
 	return float64(cmp.Or(l.PlanWarnAt, DefaultPlanWarnAt)) / 100
 }
+
+// NoPushShare is NoPushSpend as a share of 1, DefaultNoPushSpend where
+// unset.
 func (l Limits) NoPushShare() float64 {
 	return float64(cmp.Or(l.NoPushSpend, DefaultNoPushSpend)) / 100
 }
@@ -414,13 +425,25 @@ const (
 // CheckinSessionCount are the keys, their defaults where unset;
 // CheckinShareOf is CheckinShare as a share of a card's budget.
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
+
+// CheckinShareOf is CheckinShare as a share of budget, its default
+// where unset.
 func (l Limits) CheckinShareOf(budget float64) float64 {
 	return float64(cmp.Or(l.CheckinShare, DefaultCheckinShare)) / 100 * budget
 }
+
+// CheckinTailBytes is CheckinTailKiB in bytes, DefaultCheckinTailKiB
+// where unset.
 func (l Limits) CheckinTailBytes() int { return cmp.Or(l.CheckinTailKiB, DefaultCheckinTailKiB) << 10 }
+
+// CheckinHandoverCap is CheckinHandoverChars, DefaultCheckinHandoverChars
+// where unset.
 func (l Limits) CheckinHandoverCap() int {
 	return cmp.Or(l.CheckinHandoverChars, DefaultCheckinHandoverChars)
 }
+
+// CheckinSessionCount is CheckinSessions, DefaultCheckinSessions where
+// unset.
 func (l Limits) CheckinSessionCount() int { return cmp.Or(l.CheckinSessions, DefaultCheckinSessions) }
 
 // The loop nudge of a policy without the keys, and of a version pinned
@@ -451,33 +474,59 @@ func (l Limits) StepCap() int {
 
 // limitsJSON is Limits with its durations as strings, as in the YAML.
 type limitsJSON struct {
-	Sessions             int    `json:"sessions"`
-	AgentTime            string `json:"agent_time"`
-	CheckIn              string `json:"check_in"`
-	SupervisorCalls      int    `json:"supervisor_calls"`
-	SupervisorTimeout    string `json:"supervisor_timeout"`
-	StrongerAfter        int    `json:"stronger_after"`
-	Steps                int    `json:"steps"`
-	NudgeAfter           int    `json:"nudge_after"`
-	Nudges               int    `json:"nudges"`
-	SameCall             int    `json:"same_call"`
-	ReviewDiffKiB        int    `json:"review_diff_kib,omitempty"`
-	CheckinCalls         int    `json:"checkin_calls,omitempty"`
-	CheckinShare         int    `json:"checkin_share,omitempty"`
-	CheckinTailKiB       int    `json:"checkin_tail_kib,omitempty"`
-	CheckinHandoverChars int    `json:"checkin_handover_chars,omitempty"`
-	CheckinSessions      int    `json:"checkin_sessions,omitempty"`
-	WarnAt               int    `json:"warn_at,omitempty"`
-	PlanWarnAt           int    `json:"plan_warn_at,omitempty"`
-	NoPushSpend          int    `json:"no_push_spend,omitempty"`
-	ContextTokens        int    `json:"context_tokens,omitempty"`
+	// Sessions is limits.sessions.
+	Sessions int `json:"sessions"`
+	// AgentTime is limits.agent_time, a duration string such as 20m.
+	AgentTime string `json:"agent_time"`
+	// CheckIn is limits.check_in, a duration string, "" when unset.
+	CheckIn string `json:"check_in"`
+	// SupervisorCalls is limits.supervisor_calls.
+	SupervisorCalls int `json:"supervisor_calls"`
+	// SupervisorTimeout is limits.supervisor_timeout, a duration string
+	// such as 6m.
+	SupervisorTimeout string `json:"supervisor_timeout"`
+	// StrongerAfter is limits.stronger_after.
+	StrongerAfter int `json:"stronger_after"`
+	// Steps is limits.steps, 0 when unset.
+	Steps int `json:"steps"`
+	// NudgeAfter is limits.nudge_after, 0 when unset.
+	NudgeAfter int `json:"nudge_after"`
+	// Nudges is limits.nudges, 0 when unset.
+	Nudges int `json:"nudges"`
+	// SameCall is limits.same_call, 0 when unset.
+	SameCall int `json:"same_call"`
+	// ReviewDiffKiB is limits.review_diff_kib, left out when 0.
+	ReviewDiffKiB int `json:"review_diff_kib,omitempty"`
+	// CheckinCalls is limits.checkin_calls, left out when 0.
+	CheckinCalls int `json:"checkin_calls,omitempty"`
+	// CheckinShare is limits.checkin_share, left out when 0.
+	CheckinShare int `json:"checkin_share,omitempty"`
+	// CheckinTailKiB is limits.checkin_tail_kib, left out when 0.
+	CheckinTailKiB int `json:"checkin_tail_kib,omitempty"`
+	// CheckinHandoverChars is limits.checkin_handover_chars, left out
+	// when 0.
+	CheckinHandoverChars int `json:"checkin_handover_chars,omitempty"`
+	// CheckinSessions is limits.checkin_sessions, left out when 0.
+	CheckinSessions int `json:"checkin_sessions,omitempty"`
+	// WarnAt is limits.warn_at, left out when 0.
+	WarnAt int `json:"warn_at,omitempty"`
+	// PlanWarnAt is limits.plan_warn_at, left out when 0.
+	PlanWarnAt int `json:"plan_warn_at,omitempty"`
+	// NoPushSpend is limits.no_push_spend, left out when 0.
+	NoPushSpend int `json:"no_push_spend,omitempty"`
+	// ContextTokens is limits.context_tokens, left out when 0.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
+// MarshalJSON is Limits as limitsJSON, its durations as strings, as in
+// the YAML.
 func (l Limits) MarshalJSON() ([]byte, error) {
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
 		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
 }
 
+// UnmarshalJSON reads limitsJSON back into Limits, its duration strings
+// parsed; a bad one fails the whole read.
 func (l *Limits) UnmarshalJSON(b []byte) error {
 	var j limitsJSON
 	if err := json.Unmarshal(b, &j); err != nil {
@@ -519,6 +568,9 @@ const MaxAgentTime = 72 * time.Hour
 // may set, besides 0 for no check-in.
 const MinCheckIn = 10 * time.Minute
 
+// validate is the limits' own judgement, run from Document.Validate:
+// every key policy.yaml may set holds, and nudge_after stays below
+// same_call, so a repetition gets its nudge before the trip.
 func (l Limits) validate() error {
 	switch {
 	case l.Sessions <= 0:
@@ -580,6 +632,10 @@ type Time struct {
 	CheckIn *time.Duration `yaml:"check_in,omitempty" json:"check_in,omitempty"`
 }
 
+// validate is a time block's own judgement, run from Document.Validate
+// for a class and from the process and project files' judgement:
+// agent_time within 1m and MaxAgentTime, check_in 0 or at least
+// MinCheckIn and never above this block's agent_time.
 func (t Time) validate() error {
 	if t.AgentTime != 0 && (t.AgentTime < time.Minute || t.AgentTime > MaxAgentTime) {
 		return fmt.Errorf("time: agent_time must lie between 1m and %s, is %s", MaxAgentTime, t.AgentTime)
@@ -599,10 +655,16 @@ func (t Time) validate() error {
 
 // timeJSON is Time with its durations as strings, as in the YAML.
 type timeJSON struct {
-	AgentTime string  `json:"agent_time,omitempty"`
-	CheckIn   *string `json:"check_in,omitempty"`
+	// AgentTime is time.agent_time, a duration string, left out when
+	// unset.
+	AgentTime string `json:"agent_time,omitempty"`
+	// CheckIn is time.check_in, a duration string, left out when unset;
+	// "0s" is a set no-check-in, distinct from leaving it unset.
+	CheckIn *string `json:"check_in,omitempty"`
 }
 
+// MarshalJSON is Time as timeJSON, its durations as strings, unset
+// fields left out.
 func (t Time) MarshalJSON() ([]byte, error) {
 	j := timeJSON{}
 	if t.AgentTime != 0 {
@@ -615,6 +677,8 @@ func (t Time) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j)
 }
 
+// UnmarshalJSON reads timeJSON back into Time, its duration strings
+// parsed; a bad one fails the whole read.
 func (t *Time) UnmarshalJSON(b []byte) error {
 	var j timeJSON
 	if err := json.Unmarshal(b, &j); err != nil {
@@ -763,6 +827,10 @@ type Envelope struct {
 // MinVolumeGB is the smallest volume Hetzner creates.
 const MinVolumeGB = 10
 
+// validate is an envelope's own judgement, run from Document.Validate
+// under key (envelope_default or a project file's envelope):
+// server_types named and none empty, monthly_eur positive, count and
+// lease at least one, a volume 0 or at least MinVolumeGB.
 func (e Envelope) validate(key string) error {
 	if len(e.ServerTypes) == 0 || slices.Contains(e.ServerTypes, "") {
 		return fmt.Errorf("%s.server_types must list at least one server type, none empty", key)
@@ -1088,6 +1156,15 @@ type FalPrices struct {
 	MaxMegapixels float64 `yaml:"max_megapixels" json:"max_megapixels"`
 }
 
+// Validate judges d as a whole: schema version 1, a sane budget, and
+// every block's own judgement — limits, chat, risk, envelope default
+// and project_default, plus the cross-block rules: approvers distinct,
+// hosts well formed, bounds and supervisor detectors known, the time
+// zone an IANA zone, the routines policy.yaml's, the capability classes
+// named and their tools capped. ParseTree runs it on a tree read from
+// the configuration repository, and factoryd's Boot and the gateway
+// re-run it on a stored version: one written under an older schema is
+// not a valid version for this binary.
 func (d Document) Validate() error {
 	if d.Version != 1 {
 		return fmt.Errorf("policy: version %d, want 1", d.Version)
@@ -1226,6 +1303,9 @@ func (d Document) Validate() error {
 	return nil
 }
 
+// validate is the prices of one paid tool, run from Document.Validate
+// for each tool a class lists: Firecrawl's credits, Replicate's models
+// and whole seconds, fal's megapixels.
 func (p ToolPrices) validate(tool string) error {
 	switch tool {
 	case ToolWebScrape, ToolWebSearch:
