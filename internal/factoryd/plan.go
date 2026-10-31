@@ -2439,10 +2439,14 @@ func revisionFindings(old, next Plan) []string {
 	}
 	var found []string
 	for _, c := range next.Criteria {
-		if o, ok := prev[c.ID]; ok && c != o {
+		o, held := prev[c.ID]
+		if held && c != o {
 			found = append(found, "criterion "+c.ID+": the previous revision holds this id with another definition; a changed criterion files under a new id")
 		}
-		if c.Replaces == "" {
+		// a criterion the previous revision holds with this definition
+		// carries its replaces marker as history, not as a replacement
+		// it is making now
+		if c.Replaces == "" || (held && c == o) {
 			continue
 		}
 		if _, ok := prev[c.Replaces]; !ok {

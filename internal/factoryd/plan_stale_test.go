@@ -114,6 +114,36 @@ func TestFilePlanRefileOfTheNewestIsANoop(t *testing.T) {
 	}
 }
 
+// A revision that holds a criterion with the exact definition the
+// previous one holds keeps its replaces marker: the marker is history,
+// not a fresh replacement. The whole-plan no-op catches the identical
+// re-file; a re-file that changes something else alongside (here the
+// summary) walks this path and files.
+func TestFilePlanUnchangedCriterionKeepsItsReplacesMarker(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+
+	amend := testPlan()
+	amend.Criteria[0].ID = "links_crud_v2"
+	amend.Criteria[0].Replaces = "links_crud"
+	amend.Cards[1].Acceptance[0].Criterion = "links_crud_v2"
+	amend.Cards[3].Acceptance[1].Criterion = "links_crud_v2"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("the amendment: %+v, %v, findings %q", res, err, res.Findings)
+	}
+
+	retold := amend
+	retold.Summary = amend.Summary + " A card's brief changed with it."
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, retold)); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
+		t.Fatalf("the re-file with the retold summary: %+v, %v, findings %q", res, err, res.Findings)
+	}
+	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 3 {
+		t.Fatalf("the re-file landed as revision %d", rev.Revision)
+	}
+}
+
 // Piece 10's recording rule and restart rules. The amendment replaces
 // links_crud under a new id, drops redirect_302 and its citing card,
 // rebriefs the foundation, and changes the started links-api by a new
