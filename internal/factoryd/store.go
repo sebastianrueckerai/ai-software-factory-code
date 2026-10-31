@@ -150,15 +150,20 @@ type Task struct {
 // is refused.
 var Accents = []string{"red", "orange", "amber", "green", "teal", "blue", "violet", "pink"}
 
-// IsAccent reports whether name is one of Accents.
+// IsAccent reports whether name is one of Accents. The console's
+// set-accent action is its sole caller and refuses a colour outside the
+// fixed list before it writes the row; the list never changes at runtime.
 func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 
 // Report tells a report task (ruling 185) by its source: a plan's cards
-// have a parent too and are no report.
+// have a parent too and are no report. The report flow, the analytics
+// and the runner's RunState ask it; it folds Source alone, no row read.
 func (t Task) Report() bool { return t.Source == SourceScreening || t.Source == SourceSizing }
 
-// Standing is the issue author's standing (ruling 152); "" for a task
-// from before authors were kept.
+// Standing is the issue author's standing (ruling 152): telemetry for an
+// alert card, writer for an author who could write the repository,
+// outside otherwise, "" from before authors were kept — a fold of the
+// row's Author, AuthorWriter and Source the session briefs read.
 func (t Task) Standing() string {
 	switch {
 	case t.Author == "":
@@ -177,7 +182,10 @@ const maxAgentSummary = 2000
 // maxHandoverMessage bounds the agent's last message handed to the next session.
 const maxHandoverMessage = 2000
 
-// Final reports whether status ends a task.
+// Final reports whether status ends a task: done, failed or closed —
+// merged does not end one, a merged card can still close. Every pass
+// that weighs a status (the runner, the gates, the sweeps, the console)
+// asks it; it is the FinalStatuses list and nothing else.
 func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 
 // TaskUsage is what a task has used of its caps and what a human granted
@@ -778,14 +786,16 @@ type PGStore struct {
 
 // SetSealKey sets the key the mirror tokens are sealed at rest with:
 // the console session key (CONSOLE_SESSION_KEY), which factoryd reads
-// beside the console (roadmap 273). It runs once, before any store call,
-// and is safe beside one.
+// beside the console (roadmap 273). factoryd's mains call it once at
+// boot, before any store call, and it is safe beside one.
 func (s *PGStore) SetSealKey(key []byte) {
 	k := slices.Clone(key)
 	s.sealKey.Store(&k)
 }
 
 // sealKeyBytes is the seal key SetSealKey set, nil while none was set.
+// The mirror token's seal and open are its callers; the atomic load
+// keeps their read safe beside a boot-time store of the key.
 func (s *PGStore) sealKeyBytes() []byte {
 	if k := s.sealKey.Load(); k != nil {
 		return *k
@@ -793,12 +803,15 @@ func (s *PGStore) sealKeyBytes() []byte {
 	return nil
 }
 
-// SetBus wires the event bus: Record publishes every row through it so the
-// console's stream can fan out without polling the table.
+// SetBus wires the event bus: Record publishes every row through it so
+// the console's stream can fan out without polling the table. factoryd's
+// main is its sole caller, once at boot before serving.
 func (s *PGStore) SetBus(b *EventBus) { s.bus = b }
 
-// OpenStore opens the task store and applies pending migrations on boot.
-// An empty databaseURL makes pgx assemble the connection from the PG* vars.
+// OpenStore opens the task store and applies pending migrations on boot:
+// factoryd's three mains (main, register, remove-project) call it. An
+// empty databaseURL makes pgx assemble the connection from the PG* vars;
+// a failed migrate closes the pool and answers the migrate error alone.
 func OpenStore(ctx context.Context, databaseURL string) (*PGStore, error) {
 	db, err := sql.Open("pgx", databaseURL)
 	if err != nil {
@@ -812,6 +825,10 @@ func OpenStore(ctx context.Context, databaseURL string) (*PGStore, error) {
 	return s, nil
 }
 
+// toJSON marshals v for a jsonb column, passing a []byte v through as it
+// lies. Only this file's writers call it — insertTask's and SwitchToPlan's
+// capabilities, the session findings and restart state; a marshal failure
+// fails the caller's write before any SQL runs.
 func toJSON(v any) ([]byte, error) {
 	if b, ok := v.([]byte); ok {
 		return b, nil
@@ -819,6 +836,9 @@ func toJSON(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// fromJSON reads a jsonb column as a string slice: empty (NULL or "")
+// answers none. The two scanners scanTask and scanSession are its
+// callers; a column that will not unmarshal fails their read.
 func fromJSON(b []byte) ([]string, error) {
 	if len(b) == 0 {
 		return nil, nil
@@ -830,12 +850,18 @@ func fromJSON(b []byte) ([]string, error) {
 	return out, nil
 }
 
+// CreateTask inserts t as a new row, with no conflict clause: a second
+// insert of the same id errors at the base. The intake's filings (an
+// issue webhook, the API's FileTask) and the month cap's fileHumanTask
+// are its callers; insertTask's one-card-per-issue guard runs first.
 func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
 	return s.insertTask(ctx, t, "")
 }
 
-// insertTask inserts t through db, onConflict the insert's conflict
-// clause, so a retry's transaction reuses it (Task 135).
+// insertTask, the package helper, inserts t through db, onConflict the
+// insert's conflict clause, so the pool's writers and a retry's
+// transaction (ReplaceFailedCard) reuse it. An issue a live card of the
+// same repository still holds is refused, naming the holder (roadmap 298).
 func insertTask(ctx context.Context, db interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
@@ -890,10 +916,17 @@ func insertTask(ctx context.Context, db interface {
 	return err
 }
 
+// insertTask, the PGStore method, runs the package's insertTask on the
+// pool: CreateTask, OpenReportTask, EnsureChatTask and CreatePlanCard
+// pass their conflict clauses through it.
 func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
 	return insertTask(ctx, s.db, t, onConflict)
 }
 
+// OpenReportTask inserts report task t unless its parent has one of its
+// source — the partial unique conflict clause — and answers the parent's
+// report task of that source. openReport, the screening and sizing
+// sessions' opener, is its sole caller; a re-read that finds none errors.
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
 	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing') DO NOTHING`); err != nil {
 		return Task{}, err
@@ -905,21 +938,32 @@ func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
 	return got, err
 }
 
+// ReportOf is parent's report task of source: OpenReportTask re-reads
+// its insert through it, and the store tests probe it. The partial
+// unique index holds one report task per parent and source, so the read
+// answers one row or none.
 func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
 	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, parent, source)
 }
 
+// PlanCards are the cards plan filed (source plan) that hold their key,
+// ordered by id, so a retried card's replacement sits in its place. The
+// plan's verdict, rounds and replan passes are its callers.
 func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
 // SetTaskPlanRevision records the plan revision a card first runs
-// against; the guard makes it once, the card's start (roadmap 291).
+// against; the WHERE plan_revision = 0 makes it once, the card's start
+// (roadmap 291). RunSession is its sole caller.
 func (s *PGStore) SetTaskPlanRevision(ctx context.Context, id string, revision int) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET plan_revision = $2 WHERE id = $1 AND plan_revision = 0`, id, revision)
 	return err
 }
 
+// SetTaskImage records the image digest task id's sandbox ran on and
+// the registries it reached, at each sandbox's start. setupNamespace is
+// its sole caller; oneRow answers ErrNotFound when the task has no row.
 func (s *PGStore) SetTaskImage(ctx context.Context, id, digest string, egress []string) error {
 	b, err := json.Marshal(append([]string{}, egress...))
 	if err != nil {
@@ -929,15 +973,18 @@ func (s *PGStore) SetTaskImage(ctx context.Context, id, digest string, egress []
 	return oneRow(res, err, "task "+id)
 }
 
-// UpdatePlanCardBrief replaces a not-yet-started card's stored brief,
-// image, rung and size with card's, its card's of the plan's newest
-// revision (roadmap 291).
+// UpdatePlanCardBrief replaces a not-yet-started card's stored brief
+// (Objective), image, rung and size with card's, its card's of the plan's
+// newest revision (roadmap 291); restartChildren is its sole caller. The
+// UPDATE guards nothing: it stamps whatever row id names.
 func (s *PGStore) UpdatePlanCardBrief(ctx context.Context, id string, card Task) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2, image = $3, rung = $4, size = $5 WHERE id = $1`,
 		id, card.Objective, card.Image, card.Rung, card.Size)
 	return err
 }
 
+// defaultKind answers kind, "agent" for "": the task row's kind is
+// never empty. insertTask is its sole caller, at the insert's kind value.
 func defaultKind(kind string) string {
 	if kind == "" {
 		return "agent"
@@ -953,6 +1000,10 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress`
 
+// scanTask scans one taskColumns row into a Task: oneTask and the task
+// lists scan through it here, the console's two reads in console_store.
+// The row must carry taskColumns' shape — COALESCE keeps the nullable
+// ends empty strings, and fromJSON's columns must unmarshal.
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps, ships, egress []byte
@@ -986,6 +1037,10 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	return t, nil
 }
 
+// oneTask reads the first task WHERE where — every key point read in
+// store.go (Task, TaskByIssue, …), the routine's, the roll's, a plan's
+// and the chain-poll's. No row answers ok false; a key the table does
+// not bind (a unique key) is what makes the one row the right one.
 func (s *PGStore) oneTask(ctx context.Context, where string, args ...any) (Task, bool, error) {
 	t, err := scanTask(s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE `+where, args...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -997,12 +1052,16 @@ func (s *PGStore) oneTask(ctx context.Context, where string, args ...any) (Task,
 	return t, true, nil
 }
 
+// Task reads task id's row; no row answers ok false. The console (its
+// board, chat, wake and actions), the gateway's tool surface, the merge
+// and poster queues, the sweep and the handout read cards through it.
 func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 	return s.oneTask(ctx, `id = $1`, id)
 }
 
 // TaskStatuses reads many cards' statuses at once, keyed by id: a card
-// with no row gets no entry.
+// with no row gets no entry. The console's chat facts, which paints a
+// board of cards in one round, is its sole caller.
 func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]string, error) {
 	out := map[string]string{}
 	if len(ids) == 0 {
@@ -1023,13 +1082,18 @@ func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]st
 	return out, rows.Err()
 }
 
+// TaskByIssue is repository's card on issue issueNumber; no row answers
+// ok false. The intake's webhooks, the month cap's count and the
+// console's chat byTaskID read it. (repository, issue_number) is unique
+// among live cards only — insertTask's guard holds one at a time.
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
 }
 
-// TaskByPR is the card whose row links pull request number on repository:
-// the template pass reads it to tell whether a pull request already has
-// its card (roadmap 187).
+// TaskByPR is the newest card whose row links pull request number on
+// repository, no row ok false. The registrar's fileSyncCard, telling
+// whether a sync pull request already has its card, is its sole caller;
+// it takes TasksByPR's first, for several cards can hold one pull request.
 func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
 	cards, err := s.TasksByPR(ctx, repository, pr)
 	if err != nil || len(cards) == 0 {
@@ -1038,17 +1102,26 @@ func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Ta
 	return cards[0], true, nil
 }
 
+// TasksByPR lists repository's cards on pull request number, newest
+// first — several can link one pull request: unlike TaskByIssue no
+// index binds (repository, pr_number) to one row. The template update's
+// cardByPR and cardDue, and the intake's taskOfHead, read them.
 func (s *PGStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND pr_number = $2 ORDER BY created_at DESC, id DESC`, repository, pr)
 }
 
 // TasksByRuling lists repository's cards that cite design ruling ruling
 // on their Ships line, oldest first, whatever their status: the review
-// gate unions their stated clauses over the ruling's screen after.
+// gate (design.go) unions their stated clauses over the ruling's screen
+// after; ships_ruling carries the ruling verbatim, empty for none.
 func (s *PGStore) TasksByRuling(ctx context.Context, repository, ruling string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND ships_ruling = $2 ORDER BY created_at, id`, repository, ruling)
 }
 
+// InsertIntakeEvent inserts e; a whole-column retry answers id 0, no
+// row, no error. The intake's delivery dedup (delivery_id, comment_id)
+// rides the ON CONFLICT DO NOTHING. The intake recorder's every event,
+// the question, escalation and hand-over paths call it.
 func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	choices := any(nil)
 	if len(e.Choices) > 0 {
@@ -1077,6 +1150,10 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 	return id, err
 }
 
+// ConfirmFactoryClose marks task's card-closed comment confirmed: the
+// comment's issue number rides comment_id, so one UPDATE can touch no
+// other row. The intake's healFactoryClose and the escalation's
+// factory-close answer call it; already-confirmed rows stay as they lie.
 func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE intake_events SET confirmed_at = now() WHERE task_id = $1 AND kind = $2 AND comment_id = $3 AND confirmed_at IS NULL`,
@@ -1084,6 +1161,10 @@ func (s *PGStore) ConfirmFactoryClose(ctx context.Context, taskID string, issue 
 	return err
 }
 
+// UnconfirmedFactoryCloses lists up to limit card-closed comments
+// unconfirmed for olderThan (oldest first, on the store's clock).
+// HealFactoryCloses, the temporal heal pass that answers them, is its
+// sole caller.
 func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.Duration, limit int) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
@@ -1093,12 +1174,17 @@ func (s *PGStore) UnconfirmedFactoryCloses(ctx context.Context, olderThan time.D
 }
 
 // ReleaseHandover deletes the card's hand-over claim, the failed filing's,
-// so a retry can claim it again.
+// so a retry can claim it again. ReplaceFailedCard (deps.go) is its sole
+// caller; a task with no claim deletes nothing and still succeeds.
 func (s *PGStore) ReleaseHandover(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM intake_events WHERE task_id = $1 AND kind = 'handover'`, taskID)
 	return err
 }
 
+// TouchedByPerson reports whether anyone but factoryd and the named bots
+// touched the card: an intake event of another author, or a question
+// factoryd answered. reproBase, the alert intake's human-report gate
+// (roadmap 194), is its sole caller.
 func (s *PGStore) TouchedByPerson(ctx context.Context, taskID string, bots ...string) (bool, error) {
 	var touched bool
 	err := s.db.QueryRowContext(ctx,
@@ -1112,6 +1198,10 @@ func (s *PGStore) TouchedByPerson(ctx context.Context, taskID string, bots ...st
 // order.
 const intakeColumns = `id, task_id, kind, author, body, created_at, delivery_id, comment_id, trusted, signalled, choices, withdraws, question`
 
+// IntakeEvents are task's intake rows in arrival order (id). The
+// runner's session guide and reconcile, the intake's own resolvers, the
+// roll, replan and chain-poll passes read them — the same stream that
+// fed a session re-reads whole on a retry.
 func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
@@ -1119,6 +1209,10 @@ func (s *PGStore) IntakeEvents(ctx context.Context, taskID string) ([]IntakeEven
 	return scanIntakeEvents(rows, err)
 }
 
+// UnaddressedChangeRequests are task's signalled change requests newer
+// than its newest session — what arrived while no session ran. The
+// runner's reconcile (RunState) is its sole caller; '-infinity' covers
+// a card no session has run on yet.
 func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) ([]IntakeEvent, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT `+intakeColumns+`
@@ -1128,6 +1222,10 @@ func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) 
 	return scanIntakeEvents(rows, err)
 }
 
+// scanIntakeEvents scans the rows of an intakeColumns read: the three
+// intake-event reads here scan through it. The row must carry
+// intakeColumns' shape; a choices or question column that will not
+// unmarshal fails the read.
 func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 	if err != nil {
 		return nil, err
@@ -1156,6 +1254,8 @@ func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 }
 
 // unmarshalChoices reads a choices column into choices; NULL leaves none.
+// scanIntakeEvents and the console's scanBoardTask are its callers; the
+// column holds a JSON array of strings or nothing at all.
 func unmarshalChoices(b []byte, choices *[]string) error {
 	if len(b) == 0 {
 		return nil
@@ -1163,6 +1263,10 @@ func unmarshalChoices(b []byte, choices *[]string) error {
 	return json.Unmarshal(b, choices)
 }
 
+// SetSignalled sets intake event id's signalled flag — true when the
+// runner files the card's signal, false when it releases it — under a
+// row lock, and answers whether the flag changed. signalEvent is its
+// sole caller; an unknown id is an error, not ok false.
 func (s *PGStore) SetSignalled(ctx context.Context, id int64, signalled bool) (bool, error) {
 	var changed bool
 	err := s.db.QueryRowContext(ctx,
@@ -1175,11 +1279,19 @@ func (s *PGStore) SetSignalled(ctx context.Context, id int64, signalled bool) (b
 	return changed, err
 }
 
+// SetTaskPR links pull request number to task id. OpenPullRequest, when
+// the poster opens the pull request, and RollCommit, when a hand-rolled
+// commit names its own, call it; oneRow answers ErrNotFound for an
+// unknown task.
 func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET pr_number = $2 WHERE id = $1`, id, number)
 	return oneRow(res, err, "task "+id)
 }
 
+// SetTaskUsage overwrites task id's usage counters with the snapshot u.
+// RunSession's RecordUsage writes them; BecomePlan and a replan's
+// reopen reset them to zero. oneRow answers ErrNotFound for an unknown
+// task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
 		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
@@ -1187,6 +1299,10 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 	return oneRow(res, err, "task "+id)
 }
 
+// SetTaskSizeBudget sets task id's size and, when the budget still lies
+// on the size's held cents, its budget: only the card's last size holds
+// its budget (roadmap 278). sized, at the size gate's exit, is its sole
+// caller; a known task already at size changes nothing and succeeds.
 func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET size = $2,
 		budget_eur = CASE WHEN round(budget_eur * 100) = $3::bigint THEN $4::numeric ELSE budget_eur END
@@ -1207,6 +1323,10 @@ func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCe
 	return nil
 }
 
+// SwitchToPlan moves a still-startable direct card (not of a plan,
+// unmerged) to the plan track — capabilities set, pr_number cleared —
+// and answers whether it moved. BecomePlan, at the to-plan gate, is its
+// sole caller; a card the guard refuses stays direct, false, no error.
 func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	caps, err := toJSON(capabilities)
 	if err != nil {
@@ -1221,11 +1341,19 @@ func (s *PGStore) SwitchToPlan(ctx context.Context, id string, capabilities []st
 	return n == 1, err
 }
 
+// SetTaskSHA records the working tree head the session builds on.
+// startRef, at a session's start, and RollCommit, when a hand-rolled
+// commit names its own, call it; oneRow answers ErrNotFound for an
+// unknown task.
 func (s *PGStore) SetTaskSHA(ctx context.Context, id, sha string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET sha = $2 WHERE id = $1`, id, sha)
 	return oneRow(res, err, "task "+id)
 }
 
+// CapRefusal is the card's newest cap refusal since since — a month,
+// project or day cap, the day cap first of equals — with whether an
+// allowed model call lies at or after it. RunSession's end and the
+// report session's end read it; none in window answers nil.
 func (s *PGStore) CapRefusal(ctx context.Context, taskID string, since time.Time) (*CapRefusal, error) {
 	var r CapRefusal
 	err := s.db.QueryRowContext(ctx,
@@ -1243,6 +1371,9 @@ func (s *PGStore) CapRefusal(ctx context.Context, taskID string, since time.Time
 	return &r, nil
 }
 
+// BudgetRefused reports whether the gateway refused a model call of the
+// card for budget since since. RunSession, weighing a budget refusal
+// against a session it may still reuse, is its sole caller.
 func (s *PGStore) BudgetRefused(ctx context.Context, taskID string, since time.Time) (bool, error) {
 	var refused bool
 	err := s.db.QueryRowContext(ctx,
@@ -1251,6 +1382,9 @@ func (s *PGStore) BudgetRefused(ctx context.Context, taskID string, since time.T
 	return refused, err
 }
 
+// ProviderRefusal is the first model call's upstream reason since since,
+// ok true, when no later call of the window was allowed: an outage, not
+// a refusal. providerRefusal, at a session's end, is its sole caller.
 func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	var reason string
 	err := s.db.QueryRowContext(ctx,
@@ -1264,6 +1398,9 @@ func (s *PGStore) ProviderRefusal(ctx context.Context, taskID string, since time
 	return reason, err == nil, err
 }
 
+// ModelAnswered reports whether a model call of the card was allowed
+// since since. SessionAnswered, telling a session that ran from a
+// session that never reached the model, is its sole caller.
 func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.Time) (bool, error) {
 	var answered bool
 	err := s.db.QueryRowContext(ctx,
@@ -1272,6 +1409,10 @@ func (s *PGStore) ModelAnswered(ctx context.Context, taskID string, since time.T
 	return answered, err
 }
 
+// CheckinSpent is the euros of check-in purpose the card's audit rows
+// carry, whatever their decision. checkinBudget, the check-in cost
+// gate, and questionFacts, a question's charge check, read it; a card
+// with no row spends zero.
 func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
 	var eur float64
 	err := s.db.QueryRowContext(ctx,
@@ -1280,11 +1421,10 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 	return eur, err
 }
 
-// MonthSpend is the variable spend over the ledger in the UTC calendar
-// month of at, standing lines left out, as the gateway's month headroom
-// counts it, and the reason of the month's first refused_month_cap of a
-// model call: only a model call finds the cap spent, a reservation or a
-// tool call's worst case may be refused while euros remain.
+// MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
+// lines left out, as the gateway's month headroom counts it. The reason is the month's first
+// refused_month_cap of a model call; MonthAlarm.Check is its sole caller, for only a model
+// call finds the cap spent — a reservation or a tool call may be refused while euros remain.
 func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
 	err := s.db.QueryRowContext(ctx,
@@ -1298,25 +1438,33 @@ func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, err
 	return m, err
 }
 
+// SetTaskModelAlias sets the model the gateway routes the card's model
+// calls to. climb, the rung ladder's step, is its sole caller — each
+// step writes the alias it moves to, and the fall back to the base.
 func (s *PGStore) SetTaskModelAlias(ctx context.Context, id, alias string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET model_alias = $2 WHERE id = $1`, id, alias)
 	return err
 }
 
+// SetAgentSummary sets the summary the session's end leaves on the
+// card. RunSession's end, the report session's end and the roller's
+// file write it; oneRow answers ErrNotFound for an unknown task.
 func (s *PGStore) SetAgentSummary(ctx context.Context, id, summary string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_summary = $2 WHERE id = $1`, id, summary)
 	return oneRow(res, err, "task "+id)
 }
 
 // SetHumanSummary sets task id's human summary; "" restores the generated
-// title by storing NULL.
+// title by storing NULL. The console's card edit is its sole caller;
+// oneRow answers ErrNotFound for an unknown task.
 func (s *PGStore) SetHumanSummary(ctx context.Context, id, summary string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET human_summary = NULLIF($2, '') WHERE id = $1`, id, summary)
 	return oneRow(res, err, "task "+id)
 }
 
 // SetObjective replaces task id's objective, which the next session's
-// brief reads.
+// brief reads. putOnToolCard (a tool-park card's objective) and the
+// console's card edit call it; oneRow answers ErrNotFound.
 func (s *PGStore) SetObjective(ctx context.Context, id, objective string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET objective = $2 WHERE id = $1`, id, objective)
 	return oneRow(res, err, "task "+id)
@@ -1337,7 +1485,9 @@ func (s *PGStore) RaiseTaskBudget(ctx context.Context, id string, eur float64) (
 	return from, to, err
 }
 
-// Cents is eur in whole cents, the unit money compares in.
+// Cents is eur in whole cents — math.Round, half away from zero — the
+// unit money compares in: the size gate's held budget, a replan's
+// carry, the question cost checks and the console's fund answers.
 func Cents(eur float64) int64 { return int64(math.Round(eur * 100)) }
 
 // FundBounds are the limits of a raise the agent decides: PoolEUR is the
@@ -1348,6 +1498,8 @@ type FundBounds struct{ PoolEUR, CardCapEUR float64 }
 // Funded is what the month's pool has funded already.
 type PoolSpentError struct{ Funded float64 }
 
+// Error is PoolSpentError's message, the month pool refusal of a raise;
+// the console's fund answer prints it whole.
 func (e *PoolSpentError) Error() string {
 	return fmt.Sprintf("the month's pool has funded %.2f EUR already", e.Funded)
 }
@@ -1356,18 +1508,16 @@ func (e *PoolSpentError) Error() string {
 // is what the card held when the raise met it.
 type CardCapError struct{ Budget float64 }
 
+// Error is CardCapError's message, the card cap refusal of a raise; the
+// console's fund answer prints it whole.
 func (e *CardCapError) Error() string {
 	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
 }
 
-// FundCard raises task id's budget by eur and writes e, the raise's
-// card_funded row with from_eur, to_eur and amount_eur added to its
-// detail, in one transaction. Non-nil bounds mark a raise the agent
-// decided: the row is stamped decider agent, which the pool counts, and
-// under a lock on e's repository the month's agent funding plus eur must
-// fit the pool (PoolSpentError) and the card's budget plus eur the cap
-// (CardCapError), so parallel turns overspend neither. ErrNotFound when
-// there is no such task.
+// FundCard raises task id's budget by eur and writes its card_funded row in one
+// transaction; console fund action and replan fundPlanner call it. With bounds the row
+// is stamped decider agent, e's repository locked: funding+eur fits the pool, budget+eur
+// the cap — parallel turns overspend neither (PoolSpentError, CardCapError); no task: ErrNotFound.
 func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1425,7 +1575,8 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 
 // agentFundedEUR is the EUR the agent funded cards with in repository: the
 // card_funded events via chat decided by the agent, in the UTC calendar
-// month of month. A member's raise, confirmed or clicked, is not the pool's.
+// month of month. FundCard, under its repository lock, is its sole
+// caller; a member's raise, confirmed or clicked, is not the pool's.
 func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month time.Time) (float64, error) {
 	var eur float64
 	err := q.QueryRowContext(ctx,
@@ -1437,42 +1588,61 @@ func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month 
 	return eur, err
 }
 
-// SetTaskAccent sets task id's accent colour; "" removes it (NULL).
+// SetTaskAccent sets task id's accent colour; "" removes it (NULL). The
+// console's set-accent action is its sole caller; the value is one of
+// Accents or nothing, checked before the write.
 func (s *PGStore) SetTaskAccent(ctx context.Context, id, accent string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET accent = NULLIF($2, '') WHERE id = $1`, id, accent)
 	return oneRow(res, err, "task "+id)
 }
 
+// ToHumanLane moves a queued agent card to the human lane — kind human,
+// waiting-human, its track, process and gate cleared — and answers
+// whether it moved. humanLaneWithoutAgents, the intake's lane choice
+// when no agent holds the issue, is its sole caller.
 func (s *PGStore) ToHumanLane(ctx context.Context, id string) (bool, error) {
 	return s.changeStatus(ctx, `kind = 'human', status = 'waiting-human', gate = '', gate_since = NULL, track = NULL, process = NULL`,
 		`id = $1 AND kind = 'agent' AND status = 'queued'`, id)
 }
 
+// DeliverySeen reports whether webhook delivery id was recorded. The
+// intake's webhook entry is its sole caller: a seen delivery is not
+// handled twice.
 func (s *PGStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
 	var seen bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM webhook_deliveries WHERE id = $1)`, id).Scan(&seen)
 	return seen, err
 }
 
+// RecordDelivery records webhook delivery id seen; ON CONFLICT DO
+// NOTHING makes the re-handle a no-op. The intake's webhook entry, after
+// a delivery passes, is its sole caller.
 func (s *PGStore) RecordDelivery(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO webhook_deliveries (id) VALUES ($1) ON CONFLICT DO NOTHING`, id)
 	return err
 }
 
+// PruneDeliveries drops delivery stamps older than age, keeping the
+// delivery table a dedup window, not a log. HealPass, the temporal
+// heal pass, is its sole caller.
 func (s *PGStore) PruneDeliveries(ctx context.Context, age time.Duration) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM webhook_deliveries WHERE received_at < now() - make_interval(secs => $1)`, age.Seconds())
 	return err
 }
 
-// CloudResources is the cloud resource registry on the same database.
+// CloudResources is the cloud resource registry on the same database:
+// factoryd's mains hand it to the cloud commissioners, the retention
+// pass and the resource tools.
 func (s *PGStore) CloudResources() cloudres.PG { return cloudres.PG{DB: s.db} }
 
-// Close releases the database connection pool.
+// Close releases the database connection pool. factoryd's mains defer
+// it at boot, after OpenStore and a failed migration too.
 func (s *PGStore) Close() error {
 	return s.db.Close()
 }
 
-// Ping checks database connectivity for readiness probing.
+// Ping checks database connectivity for readiness probing: factoryd's
+// health endpoint is its sole caller.
 func (s *PGStore) Ping(ctx context.Context) error {
 	return s.db.PingContext(ctx)
 }
@@ -1490,6 +1660,10 @@ const (
 	transitionWhere = `id = $1 AND status = ANY($3)`
 )
 
+// TransitionTask moves task id from one of from to to, and answers
+// ErrNotFound — wrapped with the from list — when the card is not in
+// from. The runner's SetState and every status change of the gates, the
+// queues, the intake's ends and the heal passes call it.
 func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, to string) error {
 	changed, err := s.changeStatus(ctx, transitionSet, transitionWhere, id, to, from)
 	if err == nil && !changed {
@@ -1501,12 +1675,20 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 	return nil
 }
 
+// SetGate sets a live card's gate (the review, the audit, …) and the
+// since it entered it; a final card keeps its last gate — the WHERE
+// refuses done, failed and closed. SetState, the merge queue, the gate
+// watchers and the gates' approval paths call it.
 func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
 	_, err := s.changeStatus(ctx, `gate = $2, gate_since = $3`,
 		`id = $1 AND status NOT IN ('done', 'failed', 'closed')`, id, gate, since)
 	return err
 }
 
+// MarkStarted moves a startable card — queued, held, in review,
+// waiting-human and the like — to running. SetState's running branch is
+// its sole caller; a card outside the startable set answers
+// ErrNotFound.
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	changed, err := s.changeStatus(ctx, `status = 'running'`,
 		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image')`, id)
@@ -1516,11 +1698,18 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	return err
 }
 
+// SetAdmitted stamps the card admitted at now, once — a card already
+// stamped keeps its first stamp. admit, the bound's admission pass, is
+// its sole caller.
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now() WHERE id = $1 AND admitted_at IS NULL`, id)
 	return err
 }
 
+// CountAdmitted counts repository's bound cards that hold the work
+// bound: running or held in it (waiting-deps, in-review, closing), or
+// queued with an admission stamp. admit, the bound's entry, is its sole
+// caller; unbound cards (a roll, a factory pull request) never count.
 func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
@@ -1531,18 +1720,20 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 	return n, err
 }
 
+// ListQueuedByRepository lists repository's bound queued cards in filing
+// order, the oldest first: created_at, then issue number (Forgejo stamps
+// whole seconds, the number keeps a same-second burst's order), then id.
+// pullQueued, the bound's admission pass, is its sole caller.
 func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+`
 		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued'
 		ORDER BY created_at, issue_number, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
-// changeStatus updates the one task $1 names, SET set WHERE where, and
-// records the task_status event of the change: the task's status and gate
-// after it, by factoryd, through Record like every other event, so the
-// console's stream carries it. It answers false when where matched no row;
-// such an update, and one that left status and gate as they were, records
-// nothing. A failed record is logged: it never fails the change.
+// changeStatus updates the one task $1 names, SET set WHERE where, and records the
+// task_status event — status and gate after it, by factoryd — so the console's stream
+// carries it; no row matched answers false. TransitionTask, MarkStarted, SetGate and
+// ToHumanLane call it; a no-change update records nothing, a failed record never fails it.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
 	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
 	if e != nil {
@@ -1551,9 +1742,10 @@ func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...a
 	return changed, err
 }
 
-// changeStatusOn is changeStatus's update on q, a transaction or the pool.
-// It answers the event to record, nil when the update changed neither
-// status nor gate, and whether where matched a row.
+// changeStatusOn is changeStatus's update on q, a transaction or the
+// pool; alerts.go's escalation close runs it in one. It answers the
+// event to record, nil when the update changed neither status nor gate,
+// and whether where matched a row.
 func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args ...any) (*Event, bool, error) {
 	e := Event{Kind: EventTaskStatus, Actor: FactoryDecider, Via: ViaFactoryd}
 	var status, gate, wasStatus, wasGate string
@@ -1574,17 +1766,27 @@ func changeStatusOn(ctx context.Context, q rowQuerier, set, where string, args .
 	return &e, true, nil
 }
 
+// recordStatus writes changeStatus's event through Record; changeStatus
+// is its sole caller. A failed write is logged, never returned: the
+// status change stands.
 func (s *PGStore) recordStatus(ctx context.Context, e Event) {
 	if _, err := s.Record(ctx, e); err != nil {
 		log.Printf("task %s: event %s: %v", e.TaskID, e.Kind, err)
 	}
 }
 
+// ListTasksByStatus lists every card in status, highest priority first,
+// then id: the heal pass's sweeps and stale scans, the schema sync's
+// close pass, the merge queue's review and the answer path's
+// waiting-human scan read it.
 func (s *PGStore) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE status = $1 ORDER BY priority DESC, id`, status)
 }
 
-// tasks runs query, which returns taskColumns, and scans its rows.
+// tasks runs query — which selects taskColumns — and scans its rows:
+// every task-list read here and in the other store files (revert,
+// release, project, mirror, chainpoll, toolpark) goes through it. No
+// rows answer nil, not an empty slice.
 func (s *PGStore) tasks(ctx context.Context, query string, args ...any) ([]Task, error) {
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -1602,6 +1804,10 @@ func (s *PGStore) tasks(ctx context.Context, query string, args ...any) ([]Task,
 	return tasks, rows.Err()
 }
 
+// RecentlyFinishedTasks lists tasks that finished within the last
+// within, on the store's clock, with no open model hold — a call still
+// streaming books its own cost — oldest finish first. Completion's
+// settle pass is its sole caller.
 func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duration) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM tasks WHERE status IN ('done', 'failed', 'closed') AND finished_at > now() - make_interval(secs => $1)
@@ -1625,10 +1831,10 @@ func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duratio
 // settleEpsilon is the smallest raise settlement books.
 const settleEpsilon = 1e-9
 
-// SettleSpend locks the task row, so the delta is taken from the model
-// spend the raise replaces even while the gateway books calls. LiteLLM
-// reports model spend only, so it is weighed against the task's model and
-// settlement rows, never against spent_eur, which carries tool rows too.
+// SettleSpend raises the task's booked model spend to at least reported: under a row
+// lock the raise over its model and settlement rows — never against spent_eur, which
+// carries tool rows — is booked as a litellm settlement row and spent_eur follows the
+// ledger. Completion's settle pass is its sole caller; below a nano-euro, nothing.
 func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1662,6 +1868,9 @@ func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) 
 	return true, tx.Commit()
 }
 
+// UnsettledTasks lists tasks that finished at least olderThan ago, on
+// the store's clock, still without a final settlement and no open model
+// hold, oldest finish first. Completion's settle pass is its sole caller.
 func (s *PGStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id FROM tasks WHERE status IN ('done', 'failed', 'closed') AND settled_at IS NULL
@@ -1683,6 +1892,10 @@ func (s *PGStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) (
 	return ids, rows.Err()
 }
 
+// SettleSpendFinal sets the task's booked model spend to reported, down
+// as well as up (ruling 196): under a row lock only an unsettled task
+// gets, the delta both ways is booked on the task's own finish day and
+// the task marked settled. Completion's settle pass is its sole caller.
 func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1721,15 +1934,18 @@ func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported floa
 	return changed, tx.Commit()
 }
 
-// spendFromLedger sets the task's spent_eur to the sum of its ledger rows.
-// Every booking writes both, so they agree, except on a task whose spend
-// predates the ledger: spent_eur holds that spend with no row, and a
+// spendFromLedger sets the task's spent_eur to the sum of its ledger
+// rows: the two settles write it beside every booking. On a task whose
+// spend predates the ledger, spent_eur holds spend with no row, and a
 // settlement delta added to it would count it twice.
 func spendFromLedger(ctx context.Context, tx *sql.Tx, id string) error {
 	_, err := tx.ExecContext(ctx, `UPDATE tasks SET spent_eur = (SELECT COALESCE(sum(eur), 0) FROM ledger WHERE task_id = $1) WHERE id = $1`, id)
 	return err
 }
 
+// oneRow turns an UPDATE's result into ErrNotFound when no row changed:
+// the single-row writers here and in the other store files call it.
+// A statement that matched no row is the only failure it adds.
 func oneRow(res sql.Result, err error, what string) error {
 	if err != nil {
 		return err
@@ -1744,6 +1960,10 @@ func oneRow(res sql.Result, err error, what string) error {
 	return nil
 }
 
+// InsertSession inserts session s and makes its model the task's
+// ModelAlias in one statement. NewSessionRecorder, at a session's start,
+// is its sole caller; a fresh session's restart state is "{}", never
+// NULL (the column refuses it).
 func (s *PGStore) InsertSession(ctx context.Context, sess Session) error {
 	findings, err := toJSON(sess.Findings)
 	if err != nil {
@@ -1772,6 +1992,9 @@ func (s *PGStore) InsertSession(ctx context.Context, sess Session) error {
 
 const sessionColumns = `id, task_id, parent_session_id, findings, restart_state, created_at`
 
+// scanSession scans one sessionColumns row into a Session: the Session
+// and RecentSessions reads call it. Empty findings answer none; the
+// restart state passes through as it lies, {} or a blob.
 func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	var sess Session
 	var findings, restart []byte
@@ -1786,6 +2009,9 @@ func scanSession(row interface{ Scan(...any) error }) (Session, error) {
 	return sess, nil
 }
 
+// Session reads session id of a task, ok false when there is none. The
+// gateway's cloud commissioning tool is its sole caller: it names the
+// session on the reservation row.
 func (s *PGStore) Session(ctx context.Context, id string) (Session, bool, error) {
 	sess, err := scanSession(s.db.QueryRowContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE id = $1`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1797,6 +2023,9 @@ func (s *PGStore) Session(ctx context.Context, id string) (Session, bool, error)
 	return sess, true, nil
 }
 
+// RecentSessions are task taskID's newest n sessions created strictly
+// before before, newest first. The runner's lastToolRefusal and a
+// replan's oldCardText read them.
 func (s *PGStore) RecentSessions(ctx context.Context, taskID string, before time.Time, n int) ([]Session, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+sessionColumns+` FROM sessions WHERE task_id = $1 AND created_at < $2 ORDER BY created_at DESC LIMIT $3`,
 		taskID, before, n)
@@ -1815,6 +2044,9 @@ func (s *PGStore) RecentSessions(ctx context.Context, taskID string, before time
 	return out, rows.Err()
 }
 
+// UpdateSession overwrites session id's findings and restart state with
+// the recorder's snapshot. SessionRecorder's Snapshot is its sole
+// caller; oneRow answers ErrNotFound when the session has no row.
 func (s *PGStore) UpdateSession(ctx context.Context, id string, findings []string, restartState []byte) error {
 	fb, err := toJSON(findings)
 	if err != nil {
@@ -1826,23 +2058,27 @@ func (s *PGStore) UpdateSession(ctx context.Context, id string, findings []strin
 	return oneRow(res, err, "session "+id)
 }
 
+// SetTaskRisk records the risk class GatePolicy gave the task's pull
+// request; GatePolicy itself is the sole caller. oneRow answers
+// ErrNotFound when the task has no row.
 func (s *PGStore) SetTaskRisk(ctx context.Context, id, class string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET risk_class = $2 WHERE id = $1`, id, class)
 	return oneRow(res, err, "task "+id)
 }
 
-// SetTaskAlertFingerprint records the SigNoz alert fingerprint that filed
-// an alert card's task (alert-precheck, roadmap 181 item 3.12).
+// SetTaskAlertFingerprint records the SigNoz alert fingerprint that
+// filed an alert card's task (alert-precheck, roadmap 181 item 3.12).
+// It has no caller today, cmd and tests included: an alert's
+// fingerprint rides the insert (signozwebhook.go), never a later write.
 func (s *PGStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET alert_fingerprint = $2 WHERE id = $1`, id, fingerprint)
 	return oneRow(res, err, "task "+id)
 }
 
-// SetTaskMergeCommit records the commit the merge made on the base; the
-// first write stands, so a later write on a set column changes nothing
-// and reports no error (the merge queue may pass a merged card twice).
-// Zero rows also cover an unknown id — a fact the queue dropped — which
-// earns a log line, not silence.
+// SetTaskMergeCommit records the commit the merge made on the base; the first write
+// stands (WHERE merge_commit is empty), so a repeat — the merge queue, the merge
+// webhook and cardMerged may pass a merged card twice — changes nothing and reports
+// no error. A zero-row update with no task earns a log line, not silence.
 func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET merge_commit = $2 WHERE id = $1 AND merge_commit = ''`, id, commit)
 	if err != nil {
@@ -1860,6 +2096,10 @@ func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) err
 	return nil
 }
 
+// OpenApproval records approval request a and answers its id, in one
+// transaction that first denies the task's pending request of a merge or
+// plan kind as superseded (a retry, a new head, a new revision).
+// RequestApproval, RequestPlan and the verdict's gap question call it.
 func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1887,6 +2127,10 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 	return id, tx.Commit()
 }
 
+// ResolveApprovals decides the task's pending requests of kind ("" =
+// every kind) — status, by whom, why. The gates' merges and refusals,
+// the plan's denials, a switch to plan and the verdict's criteria
+// grants call it; nothing pending is a no-op, no error.
 func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
 	_, err := s.db.ExecContext(ctx,
 		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
@@ -1894,12 +2138,19 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 	return err
 }
 
+// UndecideApproval puts request id back to pending, undecided. The
+// gates' decide-and-signal path is its sole caller, undoing its decision
+// when the signal fails; it decides no guard — any row goes back.
 func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = ''
 		WHERE id = $1`, id)
 	return err
 }
 
+// ReopenApproval puts the task's newest request of kind, pending or
+// approved, back to pending with note — why the approval has not taken
+// effect (a refused or failed merge); a denied one stays denied. The
+// gates' merge refusal note is its sole caller.
 func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = $3
 		WHERE id = (SELECT max(id) FROM approval_requests WHERE task_id = $1 AND kind = $2) AND status <> 'denied'`, taskID, kind, note)
@@ -1907,8 +2158,8 @@ func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string)
 }
 
 // DecideApproval decides one pending approval request of kind: a human's
-// approve or deny in the console. ErrNotFound when no such request is
-// pending.
+// approve or deny in the console, or the gates' decide-and-signal pass.
+// ErrNotFound when no such request is pending.
 func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
 	res, err := s.db.ExecContext(ctx,
 		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
@@ -1916,6 +2167,9 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 	return oneRow(res, err, fmt.Sprintf("pending %s approval request %d", kind, id))
 }
 
+// ApprovalRequests lists the requests in status, oldest first (by id):
+// the console's board, chat and answer pages and factoryd's senders,
+// gates and plan passes read them. Rows are read whole, spec included.
 func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
@@ -1939,12 +2193,18 @@ func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]Approv
 	return out, rows.Err()
 }
 
+// RollRecorded reports whether a roll of sha on image is recorded. The
+// roll watcher's judge, before it measures a deployment's changes, is
+// its sole caller; the EXISTS read answers false for an unseen pair.
 func (s *PGStore) RollRecorded(ctx context.Context, sha, image string) (bool, error) {
 	var found bool
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM rolls WHERE sha = $1 AND image = $2)`, sha, image).Scan(&found)
 	return found, err
 }
 
+// RecordRoll records r and answers whether it wrote a row: the (sha,
+// image) conflict clause makes a re-measured roll one row. The roll
+// watcher's measure is its sole caller.
 func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO rolls (sha, image, deployment, pushed_at, applied_at, live_at) VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (sha, image) DO NOTHING`, r.SHA, r.Image, r.Deployment, r.PushedAt, r.AppliedAt, r.LiveAt)
@@ -1957,7 +2217,8 @@ func (s *PGStore) RecordRoll(ctx context.Context, r Roll) (bool, error) {
 
 // DeployedCommit is the commit of deployment's newest recorded roll: the
 // tree its digest pins last rolled from, the one live when an alert on it
-// fires (roadmap 194). ok false when no roll of it is recorded.
+// fires (roadmap 194). reproBase, the alert intake, is its sole caller;
+// ok false when no roll of it is recorded.
 func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string, bool, error) {
 	var sha string
 	err := s.db.QueryRowContext(ctx,
@@ -1974,7 +2235,8 @@ func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string
 
 // CountQueue counts repository's cards that hold no admission stamp: the
 // queued cards not yet admitted, the complement of CountAdmitted's slots
-// (roadmap 239's queue cap).
+// (roadmap 239's queue cap). QueueRefusal, the ready check, is its sole
+// caller.
 func (s *PGStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
@@ -1984,6 +2246,10 @@ func (s *PGStore) CountQueue(ctx context.Context, repository string) (int, error
 	return n, err
 }
 
+// OverHoldCall is the task's newest model call since since that the
+// gateway booked beyond its hold (COST OVER HOLD), nil for none.
+// RunSession's end and the report session's end read it, for the share
+// the card's budget must carry.
 func (s *PGStore) OverHoldCall(ctx context.Context, taskID string, since time.Time) (*OverHoldCall, error) {
 	var c OverHoldCall
 	err := s.db.QueryRowContext(ctx,

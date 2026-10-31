@@ -3,6 +3,7 @@ package factoryd
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"log"
 	"math"
 	"strings"
@@ -713,5 +714,135 @@ func TestMetricsWeekBuckets(t *testing.T) {
 	}
 	if r.Deploys.Value != 1 || r.Deploys.Weeks != [7]float64{1, 0, 0, 0, 0, 0, 1} {
 		t.Fatalf("deploys = %+v", r.Deploys)
+	}
+}
+
+// TestMetricsFactEventIdentities pins the event payloads' contract: one
+// row and one id per identity, whichever retry records it first, an
+// unkeyed row never dropped, and a legacy row — the migration leaves
+// every historical event — recorded as the store always recorded it.
+func TestMetricsFactEventIdentities(t *testing.T) {
+	s := metricsStore(t)
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	recorded := func() int {
+		t.Helper()
+		events, err := s.ProjectEvents(ctx, "sf/code", 0, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(events)
+	}
+	hold := HoldIntervalFact{Repository: "sf/code", HeldSince: time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC),
+		How: "closed", Hours: 3.5}
+	id1, err := s.Record(ctx, hold.Event())
+	if err != nil || id1 == 0 {
+		t.Fatalf("Record hold: %d, %v", id1, err)
+	}
+	// the retry after the crash: the identity names the same hold
+	if id2, err := s.Record(ctx, hold.Event()); err != nil || id2 != 0 {
+		t.Fatalf("Record hold again = %d, %v; want 0, no error", id2, err)
+	}
+	later := hold
+	later.HeldSince = later.HeldSince.Add(time.Hour) // another hold
+	if id3, err := s.Record(ctx, later.Event()); err != nil || id3 == 0 {
+		t.Fatalf("Record the next hold: %d, %v", id3, err)
+	}
+	filing := PlanFilingFact{Plan: "t-plan", Revision: 2, Origin: ReplanCut}
+	id4, err := s.Record(ctx, filing.Event("sf/code", 41, map[string]any{"by": "sebastian", "comment": "too big"}))
+	if err != nil || id4 == 0 {
+		t.Fatalf("Record filing: %d, %v", id4, err)
+	}
+	again := filing
+	again.Origin = ReplanPerson // the identity is the plan and revision, not the origin
+	if id5, err := s.Record(ctx, again.Event("sf/code", 41, nil)); err != nil || id5 != 0 {
+		t.Fatalf("Record filing again = %d, %v; want 0, no error", id5, err)
+	}
+	head := GateHeadFact{Task: "t-card", Head: "a1b2c3", Gate: GateReview, Decision: "approve",
+		Size: "small", Files: 9, Insertions: 120, Deletions: 40}
+	id6, err := s.Record(ctx, head.Event("sf/code", 42))
+	if err != nil || id6 == 0 {
+		t.Fatalf("Record gate head: %d, %v", id6, err)
+	}
+	moved := head
+	moved.Decision = "concerns" // the same head keeps its first reading
+	if id7, err := s.Record(ctx, moved.Event("sf/code", 42)); err != nil || id7 != 0 {
+		t.Fatalf("Record gate head again = %d, %v; want 0, no error", id7, err)
+	}
+	// a row no payload keys — an event the contracts do not cover —
+	// records as the store always recorded it, twice over
+	for i := 0; i < 2; i++ {
+		if id, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-old", Kind: EventCardRetried,
+			Actor: "alice", Via: ViaButton}); err != nil || id == 0 {
+			t.Fatalf("Record unkeyed %d: %d, %v", i, id, err)
+		}
+	}
+	if got := recorded(); got != 6 {
+		t.Fatalf("%d events, want 6: the four identities, once each, and two unkeyed rows", got)
+	}
+	events, err := s.ProjectEvents(ctx, "sf/code", 0, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var release Event
+	for _, e := range events {
+		if e.Kind == EventProductionReleased {
+			release = e
+		}
+	}
+	if release.Detail["held_since"] != "2026-10-28T09:00:00Z" || release.Detail["how"] != "closed" {
+		t.Fatalf("the first hold's row = %+v, want the earliest kept", release.Detail)
+	}
+}
+
+// TestTimelineFactIdentities pins the step payloads' contract: one line
+// per identity per task, whichever retry writes it first.
+func TestTimelineFactIdentities(t *testing.T) {
+	ctx := context.Background()
+	objs := &fakeObjectStore{}
+	tl := &Timeline{Objects: objs}
+	end := SessionEndFact{Session: "s-1", Attempt: 2, Parent: "p", Model: "big",
+		Outcome: string(OutcomePushed), Summary: "done", Started: time.Date(2026, 10, 30, 9, 0, 0, 0, time.UTC)}
+	for _, c := range []struct {
+		name string
+		fact StepFact
+		step string
+		want bool
+	}{
+		{"the session's end", end, "session_end", true},
+		{"the retry after the crash", SessionEndFact{Session: "s-1", Attempt: 2, Outcome: string(OutcomeWallClock)}, "session_end", false},
+		{"the session's next attempt", SessionEndFact{Session: "s-1", Attempt: 3}, "session_end", true},
+		{"another session", SessionEndFact{Session: "s-2", Attempt: 1}, "session_end", true},
+		{"a review of the head", ReviewAttemptFact{PR: 7, Commit: "a1b2c3", Round: 1, Verdict: "concerns"}, "model_review", true},
+		{"the same round again", ReviewAttemptFact{PR: 7, Commit: "a1b2c3", Round: 1, Verdict: "approve"}, "model_review", false},
+		{"the next round", ReviewAttemptFact{PR: 7, Commit: "a1b2c3", Round: 2}, "model_review", true},
+	} {
+		if wrote, err := tl.AppendFactOnce(ctx, "t-1", c.step, c.fact); err != nil || wrote != c.want {
+			t.Errorf("%s: wrote %t, %v; want %t", c.name, wrote, err, c.want)
+		}
+	}
+	body, err := objs.Get(ctx, "sessions/t-1/timeline.jsonl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lines := bytes.Count(body, []byte("\n")); lines != 5 {
+		t.Fatalf("%d timeline lines, want 5:\n%s", lines, body)
+	}
+	var first map[string]any
+	if err := json.Unmarshal(bytes.Split(body, []byte("\n"))[0], &first); err != nil {
+		t.Fatal(err)
+	}
+	// the identity's line is the first write's: the retry changed nothing
+	if first["session"] != "s-1" || first["attempt"] != float64(2) || first["outcome"] != string(OutcomePushed) {
+		t.Fatalf("first line = %v", first)
+	}
+	if first["step"] != "session_end" {
+		t.Fatalf("first line step = %v", first["step"])
+	}
+	// another task's timeline is its own
+	if wrote, err := tl.AppendFactOnce(ctx, "t-2", "session_end", end); err != nil || !wrote {
+		t.Errorf("t-2 wrote %t, %v; want true", wrote, err)
 	}
 }

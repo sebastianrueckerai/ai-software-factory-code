@@ -1281,7 +1281,7 @@ func TestChatTextReply(t *testing.T) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
 		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
@@ -1303,6 +1303,20 @@ func TestChatTextReply(t *testing.T) {
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}],` +
 			`"open_question":"what is open?"}`})
+}
+
+// The project-now block names today: the date line the turn builds from
+// time.Now().UTC() stands between the block's head and the status text.
+func TestChatSystemNamesToday(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("ok")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is today?"}})
+	system, _ := messages(t, g.calls()[0])[0]["content"].(string)
+	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: "
+	if !strings.Contains(system, want) {
+		t.Errorf("the system message lacks the date line %q:\n%s", want, system)
+	}
 }
 
 // The chat carries a question a reply leaves unanswered (card #1345): a
