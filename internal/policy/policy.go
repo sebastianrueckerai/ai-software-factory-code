@@ -395,9 +395,15 @@ const (
 
 // WarnShare, PlanWarnShare and NoPushShare are the percents as shares of 1.
 func (l Limits) WarnShare() float64 { return float64(cmp.Or(l.WarnAt, DefaultWarnAt)) / 100 }
+
+// PlanWarnShare is PlanWarnAt as a share of 1, DefaultPlanWarnAt where
+// unset.
 func (l Limits) PlanWarnShare() float64 {
 	return float64(cmp.Or(l.PlanWarnAt, DefaultPlanWarnAt)) / 100
 }
+
+// NoPushShare is NoPushSpend as a share of 1, DefaultNoPushSpend where
+// unset.
 func (l Limits) NoPushShare() float64 {
 	return float64(cmp.Or(l.NoPushSpend, DefaultNoPushSpend)) / 100
 }
@@ -419,13 +425,25 @@ const (
 // CheckinSessionCount are the keys, their defaults where unset;
 // CheckinShareOf is CheckinShare as a share of a card's budget.
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
+
+// CheckinShareOf is CheckinShare as a share of budget, its default
+// where unset.
 func (l Limits) CheckinShareOf(budget float64) float64 {
 	return float64(cmp.Or(l.CheckinShare, DefaultCheckinShare)) / 100 * budget
 }
+
+// CheckinTailBytes is CheckinTailKiB in bytes, DefaultCheckinTailKiB
+// where unset.
 func (l Limits) CheckinTailBytes() int { return cmp.Or(l.CheckinTailKiB, DefaultCheckinTailKiB) << 10 }
+
+// CheckinHandoverCap is CheckinHandoverChars, DefaultCheckinHandoverChars
+// where unset.
 func (l Limits) CheckinHandoverCap() int {
 	return cmp.Or(l.CheckinHandoverChars, DefaultCheckinHandoverChars)
 }
+
+// CheckinSessionCount is CheckinSessions, DefaultCheckinSessions where
+// unset.
 func (l Limits) CheckinSessionCount() int { return cmp.Or(l.CheckinSessions, DefaultCheckinSessions) }
 
 // The loop nudge of a policy without the keys, and of a version pinned
@@ -456,26 +474,48 @@ func (l Limits) StepCap() int {
 
 // limitsJSON is Limits with its durations as strings, as in the YAML.
 type limitsJSON struct {
-	Sessions             int    `json:"sessions"`
-	AgentTime            string `json:"agent_time"`
-	CheckIn              string `json:"check_in"`
-	SupervisorCalls      int    `json:"supervisor_calls"`
-	SupervisorTimeout    string `json:"supervisor_timeout"`
-	StrongerAfter        int    `json:"stronger_after"`
-	Steps                int    `json:"steps"`
-	NudgeAfter           int    `json:"nudge_after"`
-	Nudges               int    `json:"nudges"`
-	SameCall             int    `json:"same_call"`
-	ReviewDiffKiB        int    `json:"review_diff_kib,omitempty"`
-	CheckinCalls         int    `json:"checkin_calls,omitempty"`
-	CheckinShare         int    `json:"checkin_share,omitempty"`
-	CheckinTailKiB       int    `json:"checkin_tail_kib,omitempty"`
-	CheckinHandoverChars int    `json:"checkin_handover_chars,omitempty"`
-	CheckinSessions      int    `json:"checkin_sessions,omitempty"`
-	WarnAt               int    `json:"warn_at,omitempty"`
-	PlanWarnAt           int    `json:"plan_warn_at,omitempty"`
-	NoPushSpend          int    `json:"no_push_spend,omitempty"`
-	ContextTokens        int    `json:"context_tokens,omitempty"`
+	// Sessions is limits.sessions.
+	Sessions int `json:"sessions"`
+	// AgentTime is limits.agent_time, a duration string such as 20m.
+	AgentTime string `json:"agent_time"`
+	// CheckIn is limits.check_in, a duration string, "" when unset.
+	CheckIn string `json:"check_in"`
+	// SupervisorCalls is limits.supervisor_calls.
+	SupervisorCalls int `json:"supervisor_calls"`
+	// SupervisorTimeout is limits.supervisor_timeout, a duration string
+	// such as 6m.
+	SupervisorTimeout string `json:"supervisor_timeout"`
+	// StrongerAfter is limits.stronger_after.
+	StrongerAfter int `json:"stronger_after"`
+	// Steps is limits.steps, 0 when unset.
+	Steps int `json:"steps"`
+	// NudgeAfter is limits.nudge_after, 0 when unset.
+	NudgeAfter int `json:"nudge_after"`
+	// Nudges is limits.nudges, 0 when unset.
+	Nudges int `json:"nudges"`
+	// SameCall is limits.same_call, 0 when unset.
+	SameCall int `json:"same_call"`
+	// ReviewDiffKiB is limits.review_diff_kib, left out when 0.
+	ReviewDiffKiB int `json:"review_diff_kib,omitempty"`
+	// CheckinCalls is limits.checkin_calls, left out when 0.
+	CheckinCalls int `json:"checkin_calls,omitempty"`
+	// CheckinShare is limits.checkin_share, left out when 0.
+	CheckinShare int `json:"checkin_share,omitempty"`
+	// CheckinTailKiB is limits.checkin_tail_kib, left out when 0.
+	CheckinTailKiB int `json:"checkin_tail_kib,omitempty"`
+	// CheckinHandoverChars is limits.checkin_handover_chars, left out
+	// when 0.
+	CheckinHandoverChars int `json:"checkin_handover_chars,omitempty"`
+	// CheckinSessions is limits.checkin_sessions, left out when 0.
+	CheckinSessions int `json:"checkin_sessions,omitempty"`
+	// WarnAt is limits.warn_at, left out when 0.
+	WarnAt int `json:"warn_at,omitempty"`
+	// PlanWarnAt is limits.plan_warn_at, left out when 0.
+	PlanWarnAt int `json:"plan_warn_at,omitempty"`
+	// NoPushSpend is limits.no_push_spend, left out when 0.
+	NoPushSpend int `json:"no_push_spend,omitempty"`
+	// ContextTokens is limits.context_tokens, left out when 0.
+	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // MarshalJSON is Limits as limitsJSON, its durations as strings, as in
@@ -615,8 +655,12 @@ func (t Time) validate() error {
 
 // timeJSON is Time with its durations as strings, as in the YAML.
 type timeJSON struct {
-	AgentTime string  `json:"agent_time,omitempty"`
-	CheckIn   *string `json:"check_in,omitempty"`
+	// AgentTime is time.agent_time, a duration string, left out when
+	// unset.
+	AgentTime string `json:"agent_time,omitempty"`
+	// CheckIn is time.check_in, a duration string, left out when unset;
+	// "0s" is a set no-check-in, distinct from leaving it unset.
+	CheckIn *string `json:"check_in,omitempty"`
 }
 
 // MarshalJSON is Time as timeJSON, its durations as strings, unset

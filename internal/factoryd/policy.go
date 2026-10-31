@@ -42,15 +42,22 @@ type PolicyStore interface {
 // OpenCard is an open agent card: the project its repository belongs to,
 // its track, the process it follows and its issue.
 type OpenCard struct {
+	// Project is the project whose file names the card's repository,
+	// Track the track the card sits on and Process the process the card
+	// follows, its own or its project's.
 	Project, Track, Process string
-	Issue                   int64
+	// Issue is the card's issue number.
+	Issue int64
 }
 
 // ConfigSource reads the configuration tree (ruling 183): the head commit
 // of its branch, and the tree's files at a commit keyed by their path
 // relative to the tree's directory, schema/ left out.
 type ConfigSource interface {
+	// Head is the head commit of the tree's branch.
 	Head(ctx context.Context) (string, error)
+	// Files is the tree's files at commit, keyed by their path relative
+	// to the tree's directory, schema/ left out.
 	Files(ctx context.Context, commit string) (map[string][]byte, error)
 }
 
@@ -85,8 +92,11 @@ type PolicyLoader struct {
 	failed  int            // failed reads in a row
 	// held is the valid head open cards refused, its tree and the lines it
 	// was refused with: judged again at each call without a second read
-	held      string
-	heldTree  policy.Tree
+	held string
+	// heldTree is the held head's tree, judged again without a second
+	// read.
+	heldTree policy.Tree
+	// heldLines is the lines the held head was refused with.
 	heldLines string
 }
 
@@ -380,11 +390,18 @@ func fitsLadder(t policy.Tree, ladder []string) error {
 // ForgejoConfig is the configuration tree in Forgejo: directory Dir of
 // Repo's Branch, read with Token, a read-only token that reaches Repo only.
 type ForgejoConfig struct {
+	// Forgejo is the Forgejo the tree's repository lives on.
 	Forgejo *Forgejo
-	Token   string
-	Repo    Repo
-	Branch  string
-	Dir     string
+	// Token reads the tree's repository: a read-only token that reaches
+	// Repo only.
+	Token string
+	// Repo holds the configuration tree in directory Dir.
+	Repo Repo
+	// Branch is the branch the loader watches, whose head it loads.
+	Branch string
+	// Dir is the tree's directory in Repo, the paths Files answers
+	// relative to.
+	Dir string
 }
 
 // call is one GET of Repo's API under path with Token, the read-only
@@ -477,10 +494,14 @@ func (c *ForgejoConfig) File(ctx context.Context, commit, name string) ([]byte, 
 // treeEntry is one entry of a Forgejo git tree answer: its path, its
 // type (blob or tree), its mode and its sha.
 type treeEntry struct {
+	// Path is the entry's path in the tree.
 	Path string `json:"path"`
+	// Type is blob or tree.
 	Type string `json:"type"`
+	// Mode is the entry's git mode, 100644 or 100755 of a regular file.
 	Mode string `json:"mode"`
-	SHA  string `json:"sha"`
+	// SHA is the entry's object id, a subtree's or a blob's.
+	SHA string `json:"sha"`
 }
 
 // tree is one page of up to 1000 entries of tree sha; a bigger tree is an
@@ -592,6 +613,8 @@ func writeJSON(w http.ResponseWriter, v any) {
 
 // the PGStore side of PolicyStore
 
+// RecordPolicy is PolicyStore.RecordPolicy (policy.Record): tree stored
+// under commit unless known, then activated.
 func (s *PGStore) RecordPolicy(ctx context.Context, commit string, tree policy.Tree) (policy.Version, bool, error) {
 	return policy.Record(ctx, s.db, commit, tree)
 }
