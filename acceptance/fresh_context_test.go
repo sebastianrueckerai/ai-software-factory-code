@@ -35,11 +35,13 @@ const (
 	// 3 EUR.
 	oldCardHead = `#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00`
 	newCardHead = `#5 t-m "Cache fix" queued (waits for a free work slot, in filing order), €0.00 of €3.00`
-	// statusEnd ends every turn's system message: the code project's
-	// status line, #11 running and #5 waiting in the Queued column before
-	// and after its move, the chat's task no card, and its sandbox images,
-	// none pinned.
-	statusEnd = "\n\nThe project now:\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	// statusHead and statusTail end every turn's system message around
+	// today's date, built at use time — a const holds no runtime value —:
+	// the code project's status line, #11 running and #5 waiting in the
+	// Queued column before and after its move, the chat's task no card,
+	// and its sandbox images, none pinned.
+	statusHead = "\n\nThe project now:\nToday is "
+	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
 		"Sandbox images: none; every card runs the factory image."
 )
 
@@ -83,6 +85,7 @@ func TestAcceptanceFreshContextPerTurn(t *testing.T) {
 	if len(calls) != 4 {
 		t.Fatalf("%d model calls, want 4", len(calls))
 	}
+	statusEnd := statusHead + time.Now().UTC().Format("2006-01-02") + statusTail
 	for i, call := range calls {
 		sys, _ := messagesOf(call)[0]["content"].(string)
 		if !strings.HasPrefix(sys, "You are the project agent of project ai-software-factory-code") || !strings.HasSuffix(sys, statusEnd) {
