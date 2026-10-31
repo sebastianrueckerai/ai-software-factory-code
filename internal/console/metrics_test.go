@@ -100,8 +100,11 @@ func TestProjectMetricsJSON(t *testing.T) {
 
 // TestDivideConquerMetricsContract pins the additive divide-and-conquer
 // block: the asked window's dates reach the figures port, every field
-// the JSON has always carried survives, and the block keeps unknown,
-// undefined and zero apart.
+// the JSON has always carried survives, the page keeps its shape with
+// the block in the report, and the block keeps unknown, undefined and
+// zero apart. The fixture's window sits inside its CoveredFrom: the
+// measured values are covered ones; the zero CoveredFrom of
+// pre-coverage reads as the zero time, unknown, its own check below.
 func TestDivideConquerMetricsContract(t *testing.T) {
 	r := newRig(t)
 	report := metricsFiguresReport()
@@ -135,12 +138,14 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 	}
 	r.figures.report = report
 	ck, _ := r.loggedIn(t)
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics?format=json&from=2026-10-19&to=2026-10-20", nil), ck)
+	// the window lies inside the block's coverage, so the values the
+	// fixture pins are measured ones
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics?format=json&from=2026-10-29&to=2026-10-30", nil), ck)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET metrics = %d: %s", rec.Code, rec.Body)
 	}
-	if last := r.figures.asked[len(r.figures.asked)-1]; last != "sf/code 2026-10-19T00:00:00Z 2026-10-20T00:00:00Z" {
-		t.Fatalf("asked = %q, want the window's dates", last)
+	if last := r.figures.asked[len(r.figures.asked)-1]; last != "sf/code 2026-10-29T00:00:00Z 2026-10-30T00:00:00Z" {
+		t.Fatalf("asked = %q, want the covered window's dates", last)
 	}
 	body := rec.Body.Bytes()
 	var raw map[string]any
@@ -164,8 +169,7 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 			t.Errorf("divide_conquer lacks %s", key)
 		}
 	}
-	// unknown reads as the zero time, a date no panel can mistake for
-	// coverage it has
+	// covered: the block names the moment its facts start
 	if got := dc["covered_from"]; got != "2026-10-29T00:00:00Z" {
 		t.Errorf("covered_from = %v, want 2026-10-29T00:00:00Z", got)
 	}
@@ -209,6 +213,32 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 	}
 	if back.Repository != report.Repository || back.Deploys != report.Deploys || back.LeadTime != report.LeadTime {
 		t.Errorf("existing fields changed: %+v", back)
+	}
+	// the page renders with the block in the report: the deck's sections
+	// and rows stand, the additive block disturbs none of them (the
+	// block's own panels are the console-metric-panels card's)
+	page := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck)
+	if page.Code != http.StatusOK {
+		t.Fatalf("GET metrics page = %d: %s", page.Code, page.Body)
+	}
+	for _, want := range []string{`class="page page-metrics"`, "Delivery", "Stability", "Cost", "Autonomy",
+		"deploys / week", "lead time, push to live", `class="mname" title="`} {
+		if !strings.Contains(page.Body.String(), want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	// unknown: before coverage the block names no moment — the zero time,
+	// a date no panel can mistake for coverage it has
+	r.figures.report.DivideConquer = factoryd.DivideConquer{}
+	rec = r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics?format=json", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET metrics pre-coverage = %d: %s", rec.Code, rec.Body)
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode pre-coverage: %v", err)
+	}
+	if dc2, ok := raw["divide_conquer"].(map[string]any); !ok || dc2["covered_from"] != "0001-01-01T00:00:00Z" {
+		t.Errorf("pre-coverage covered_from = %v, want the zero time", raw["divide_conquer"])
 	}
 }
 
