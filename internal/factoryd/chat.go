@@ -420,6 +420,9 @@ func (s *PGStore) DeleteConversation(ctx context.Context, repository, login stri
 		return 0, nil, err
 	}
 	_ = rows.Close() // #nosec G104 -- the read is exhausted and rows.Err checked; Close repeats it at most
+	if _, err := tx.ExecContext(ctx, `DELETE FROM chat_open_questions WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n); err != nil {
+		return 0, nil, err
+	}
 	res, err = tx.ExecContext(ctx, `DELETE FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n)
 	if err != nil {
 		return 0, nil, err
@@ -658,6 +661,48 @@ func ThreadTitle(content string) string {
 	return textutil.Truncate(strings.Join(strings.Fields(content), " "), 80)
 }
 
+// AskedQuestion is the question content asks, for a human message the
+// chat keeps an open question for (card #1345): the last of its lines
+// that holds a question mark, "" for none.
+func AskedQuestion(content string) string {
+	last := ""
+	for line := range strings.SplitSeq(content, "\n") {
+		if strings.Contains(line, "?") {
+			last = strings.TrimSpace(line)
+		}
+	}
+	return last
+}
+
+// ChatOpenQuestion is the thread's open question, the line its last human
+// message asked that no reply has answered, and whether a reply has
+// already passed it once (carried), which the next turn's prompt carries.
+func (s *PGStore) ChatOpenQuestion(ctx context.Context, repository, login string, conversation int64) (string, bool, error) {
+	var question string
+	var carried bool
+	err := s.db.QueryRowContext(ctx, `SELECT question, carried FROM chat_open_questions
+		WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, conversation).Scan(&question, &carried)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return question, carried, err
+}
+
+// PutChatQuestion stores the thread's open question and its carried
+// state; an empty question removes it.
+func (s *PGStore) PutChatQuestion(ctx context.Context, repository, login string, conversation int64, question string, carried bool) error {
+	if question == "" {
+		_, err := s.db.ExecContext(ctx, `DELETE FROM chat_open_questions
+			WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, conversation)
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_open_questions (repository, login, conversation, question, carried)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (repository, login, conversation) DO UPDATE SET question = excluded.question, carried = excluded.carried`,
+		repository, login, conversation, question, carried)
+	return err
+}
+
 // ChatWatch is a member's stored subscription on a card: the card's
 // moves wake the watching thread (the timers concept).
 type ChatWatch struct {
@@ -867,7 +912,23 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind)
 		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12) RETURNING id`,
 		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind).Scan(&id)
-	return id, err
+	if err != nil {
+		return 0, err
+	}
+	// a human message that asks a question opens the thread's open
+	// question, whatever stood there before (card #1345); the console's
+	// turn end carries it and clears it
+	if m.Role == "user" && m.Kind == "" {
+		if q := AskedQuestion(m.Content); q != "" {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO chat_open_questions (repository, login, conversation, question, carried)
+				VALUES ($1, $2, $3, $4, false)
+				ON CONFLICT (repository, login, conversation) DO UPDATE SET question = excluded.question, carried = false`,
+				repository, login, conv, q); err != nil {
+				return 0, err
+			}
+		}
+	}
+	return id, nil
 }
 
 // StartQueued lands queued row id in its place: the row takes the next

@@ -101,6 +101,7 @@ type QuestionFacts struct {
 	CheckinSpent float64 // EUR of the check-in share spent
 	CheckinShare float64 // EUR, the policy's check-in share of the budget
 	FloorEUR     float64 // the policy's session floor of the card's rung
+	PlanTrack    bool    // the card runs the plan track: its answers steer a planner session
 }
 
 // ShapedQuestion shapes the question the escalation reason asks: by
@@ -126,7 +127,7 @@ func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQues
 	case strings.HasPrefix(reason, "The card was quiet for "):
 		return quietQuestion(reason)
 	}
-	return plainQuestion(reason, choices)
+	return plainQuestion(reason, f, choices)
 }
 
 // plainQuestion is the question an ask no template covers gets, so no
@@ -136,12 +137,16 @@ func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQues
 // Recommendation: line the recommendation, sourced by the reason's
 // prefix. An agent's own choices lead the answers, as "say:" values so
 // none can pass for a factory control; park and close follow.
-func plainQuestion(reason string, choices []string) *HumanQuestion {
+func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	first := escalationQuestion(reason)
+	info := plainInfo
+	if f.PlanTrack {
+		info = planStopInfo
+	}
 	q := &HumanQuestion{
 		Ask:     "This card stopped and needs your decision: how should it go on?",
 		Why:     first,
-		Info:    plainInfo,
+		Info:    info,
 		Choices: continueChoices(),
 	}
 	agent := strings.HasPrefix(reason, AgentAsks)
@@ -188,6 +193,10 @@ func plainQuestion(reason string, choices []string) *HumanQuestion {
 
 // plainInfo is what an answer does at a stop no template covers.
 const plainInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. 'Leave it waiting' holds the card here; 'End the card' closes the task and its pull request."
+
+// planStopInfo is plainInfo for a plan card: its answers steer the plan,
+// not a pull request's gates.
+const planStopInfo = "An answer starts a planner session that revises the plan with your words as guidance. 'Leave it waiting' holds the card and its plan here; 'End the card' closes the card and its plan."
 
 // continueChoices are the answers a spend stop takes: yes goes on, park
 // and close end the wait.
@@ -641,13 +650,15 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // check-in spend the task has made, the policy's call cap and the card's
 // share. It reads nothing for a reason the spend templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
+	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
-		return QuestionFacts{FloorEUR: r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))}
+		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+		return track
 	}
 	if !strings.HasPrefix(reason, checkinSpendAsk) {
-		return QuestionFacts{}
+		return track
 	}
-	f := QuestionFacts{}
+	f := track
 	if e, err := r.store.CheckinSpent(ctx, t.ID); err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	} else {

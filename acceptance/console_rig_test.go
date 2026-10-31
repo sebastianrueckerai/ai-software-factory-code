@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +36,47 @@ const accProjectName = "ai-software-factory-" + "code"
 
 // AcceptanceRig is the harness: the console's handler plus the stores it
 // stands on, each recording what the actions did.
+// openQuestion is a thread's stored open question (card #1345): its
+// text and whether a reply has passed it once.
+type openQuestion struct {
+	text    string
+	carried bool
+}
+
+// askedBy is the question the stored human message opens, "" for none.
+func askedBy(m factoryd.ChatMessage) string {
+	if m.Role != "user" || m.Kind != "" {
+		return ""
+	}
+	return factoryd.AskedQuestion(m.Content)
+}
+
+// openQKey is a thread's open-question key in a fake's map.
+func openQKey(repository, login string, conversation int64) string {
+	return repository + " " + login + " " + strconv.FormatInt(conversation, 10)
+}
+
+// openQOf reads a thread's open question.
+func openQOf(qs map[string]openQuestion, repository, login string, conversation int64) (string, bool) {
+	q, ok := qs[openQKey(repository, login, conversation)]
+	return q.text, ok && q.carried
+}
+
+// putOpenQ stores a thread's open question, or removes it when text is
+// empty, and answers the map to keep.
+func putOpenQ(qs map[string]openQuestion, repository, login string, conversation int64, text string, carried bool) map[string]openQuestion {
+	k := openQKey(repository, login, conversation)
+	if text == "" {
+		delete(qs, k)
+		return qs
+	}
+	if qs == nil {
+		qs = map[string]openQuestion{}
+	}
+	qs[k] = openQuestion{text, carried}
+	return qs
+}
+
 type AcceptanceRig struct {
 	t *testing.T
 	c *console.Console
@@ -44,6 +86,7 @@ type AcceptanceRig struct {
 	approvals []factoryd.ApprovalRequest
 	events    []factoryd.Event
 	msgs      []accMessage
+	openQ     map[string]openQuestion
 	atts      []factoryd.ChatAttachment
 	proposals []*accProposal
 	sessions  map[string]factoryd.ConsoleSession
@@ -846,7 +889,24 @@ func (a *AcceptanceRig) AddChatMessage(_ context.Context, repository, login stri
 	m.At = time.Now()
 	m.Conversation = 1
 	a.msgs = append(a.msgs, accMessage{ChatMessage: m, Repository: repository, Login: login})
+	if q := askedBy(m); q != "" {
+		a.openQ = putOpenQ(a.openQ, repository, login, m.Conversation, q, false)
+	}
 	return m.ID, nil
+}
+
+func (a *AcceptanceRig) ChatOpenQuestion(_ context.Context, repository, login string, conversation int64) (string, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	q, passed := openQOf(a.openQ, repository, login, conversation)
+	return q, passed, nil
+}
+
+func (a *AcceptanceRig) PutChatQuestion(_ context.Context, repository, login string, conversation int64, question string, carried bool) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.openQ = putOpenQ(a.openQ, repository, login, conversation, question, carried)
+	return nil
 }
 
 // nextID is one past the highest message id; a.mu held.

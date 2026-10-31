@@ -122,6 +122,11 @@ type turn struct {
 	// ask is the ask row the tool's run left for the answer's own row,
 	// which the turn ends on; nil until an ask runs.
 	ask *factoryd.ChatMessage
+	// carriedQuestion is the thread's open question when this turn's
+	// prompt carries it — a reply passed it without answering — and
+	// carried marks that the prompt carries it (card #1345).
+	carriedQuestion string
+	carried         bool
 	// pageQuery is the view the member's page stands on (282): the board's
 	// data-query the chat's POST carries, whose controls the view tools
 	// merge their words onto. present are the argument keys the call itself
@@ -220,6 +225,10 @@ type chatGetAnswer struct {
 	Messages     []factoryd.ChatMessage    `json:"messages"`
 	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
 	Budget       *chatBudget               `json:"budget,omitempty"`
+	// OpenQuestion is the thread's question a reply passed without
+	// answering, which the next turn's prompt carries (card #1345);
+	// absent while none is open.
+	OpenQuestion string `json:"open_question,omitempty"`
 }
 
 // chatGet answers GET /projects/{name}/chat: the member's current
@@ -300,6 +309,11 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
 	}
 	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
+	if q, passed, err := c.cfg.Chat.ChatOpenQuestion(ctx, repo, owner, t.conv); err != nil {
+		log.Printf("console: the open question of %s on %s: %v", owner, repo, err)
+	} else if passed {
+		answer.OpenQuestion = q
+	}
 	if len(tokens) > 0 {
 		states, err := c.cfg.Chat.ProposalStates(ctx, repo, owner, tokens, time.Now())
 		if err != nil {
@@ -874,10 +888,37 @@ func (t *turn) run(id, notice string) {
 			continue
 		}
 		if ended {
+			t.questionTurn(row)
 			t.send("done", struct{}{})
 			return
 		}
 		msgs = append(append(msgs, answer), results...)
+	}
+}
+
+// questionTurn settles the thread's open question at the turn's end: the
+// reply after a carried question clears it — unless the turn ends on an
+// ask, which waits for the member rather than answers them — and any
+// other reply that leaves a question behind marks it carried, so the
+// next turn's prompt carries it (card #1345). A turn that fails or is
+// cut settles nothing: the question waits for the next reply.
+func (t *turn) questionTurn(row factoryd.ChatMessage) {
+	ctx := context.WithoutCancel(t.r.Context())
+	q, passed, err := t.c.cfg.Chat.ChatOpenQuestion(ctx, t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		log.Printf("console: the open question of %s on %s: %v", t.owner, t.p.Repository, err)
+		return
+	}
+	switch {
+	case q == "":
+	case t.carried && q == t.carriedQuestion && row.Kind != factoryd.MessageAsk:
+		if err := t.c.cfg.Chat.PutChatQuestion(ctx, t.p.Repository, t.owner, t.conv, "", false); err != nil {
+			log.Printf("console: clear the open question of %s on %s: %v", t.owner, t.p.Repository, err)
+		}
+	case !passed:
+		if err := t.c.cfg.Chat.PutChatQuestion(ctx, t.p.Repository, t.owner, t.conv, q, true); err != nil {
+			log.Printf("console: carry the open question of %s on %s: %v", t.owner, t.p.Repository, err)
+		}
 	}
 }
 
@@ -1150,8 +1191,9 @@ var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|
 // context is the turn's conversation for the model: the system prompt
 // with the project's status line read at this turn's start and the line
 // of its sandbox images, the thread's summary, then its rows after the
-// summary as the turn replays them; the board and the events are the
-// tools'. The turn stamps every tool result
+// summary as the turn replays them; the thread's open question rides
+// after the summary when a reply passed it without answering; the board
+// and the events are the tools'. The turn stamps every tool result
 // it stores with the time of this read.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	status, err := t.snapshot()
@@ -1174,6 +1216,13 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	system := t.prompt() + "\n\nThe project now:\n" + sanitize.Inbound(now)
 	if th.Summary != "" {
 		system += "\n\nThis thread before its recent turns, summarised:\n" + th.Summary
+	}
+	t.carriedQuestion, t.carried = "", false
+	if q, passed, err := t.c.cfg.Chat.ChatOpenQuestion(t.r.Context(), t.p.Repository, t.owner, t.conv); err != nil {
+		log.Printf("console: the open question of %s on %s: %v", t.owner, t.p.Repository, err)
+	} else if q != "" && passed {
+		t.carriedQuestion, t.carried = q, true
+		system += "\n\nThe member asked a question the reply before this one left unanswered:\n" + q + "\nAnswer it in this reply."
 	}
 	return append([]factoryd.OperatorMessage{{Role: "system", Content: system}}, t.replay(liveRows(th, history))...), nil
 }

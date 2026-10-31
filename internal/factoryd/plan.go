@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/http"
 	"path"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -1260,7 +1261,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
 		return err
 	}
-	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+	return resolveAnswered(ctx, store, taskID, revision)
 }
 
 // confirmationAnswer tells whether any of idxs names revision's
@@ -1330,7 +1331,7 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
 		return err
 	}
-	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision))
+	return resolveAnswered(ctx, store, taskID, revision)
 }
 
 // pendingPlan is the task's pending approval request of kind plan.
@@ -1795,11 +1796,27 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		healed = false
 		if wait {
-			final, why, next := t.awaitPlan(&ref, floor, day)
+			final, why, next, answered := t.awaitPlan(&ref, floor, day)
 			if final != "" {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
+			// an answer that confirmed the revision files its cards with
+			// no planner session; one with words a planner must weave in
+			// starts the session below
+			if answered && ref.Revision != 0 {
+				if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, ref.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
+					return t.finish("failed", "request plan: "+errMessage(err))
+				}
+				if final, why, next, stop := planRequested(&ref); stop {
+					if final != "" {
+						return t.finish(final, why)
+					}
+					findings = next
+				} else {
+					wait = true
+				}
+			}
 			// an answer at the session cap buys a session; one to a planner
 			// out of time, its automatic session used or the cap too short
 			// for one, buys agent time (versionPlannerRetry); an answer on
@@ -2013,6 +2030,39 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 		plannerOutOfTime, what, t.answerTime().Minutes())
 }
 
+// confirmedByAnswers tells whether every question of a revision is
+// answered and each was the confirmation answered with its offered
+// choice word: the answers fixed the spec and the criteria, and the
+// revision files with no planner session. Any other answer — a real
+// question's, a choice with words around it — goes back to a planner
+// session.
+func confirmedByAnswers(qs []PlanQuestion) bool {
+	if len(qs) == 0 {
+		return false
+	}
+	for _, q := range qs {
+		if q.Kind != QuestionConfirmation || !slices.Contains(q.Choices, strings.TrimSpace(q.Answer)) {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveAnswered resolves the plan's waiting approval once every answer
+// is in: a confirmed revision files its cards, any other answer sends the
+// planner back.
+func resolveAnswered(ctx context.Context, store Store, taskID string, revision int) error {
+	reason := fmt.Sprintf("superseded: the planner revises revision %d with the answers", revision)
+	qs, err := store.PlanQuestions(ctx, taskID, revision)
+	if err != nil {
+		return err
+	}
+	if confirmedByAnswers(qs) {
+		reason = fmt.Sprintf("superseded: revision %d is confirmed, its cards file", revision)
+	}
+	return store.ResolveApprovals(ctx, taskID, ApprovalPlan, "denied", FactoryDecider, reason)
+}
+
 // planRequested reads what RequestPlan made of revision ref: filed cards
 // end the plan card done (final); a refusal or a revision answered whole
 // clears ref and goes back to the planner with findings; either way stop.
@@ -2091,14 +2141,14 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // question of the revision open (versionPlanAnswers), goes back to the
 // planner, as does the end of day, a wait on the day cap, on its own
 // (versionDayCap).
-func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why string, findings []string) {
+func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why string, findings []string, answered bool) {
 	day.start(t)
 	defer day.stop()
 	wake := []string{SignalIssueClosed, SignalHumanComment}
 	if t.planAnswers >= versionPlanAnswers {
 		wake = append(wake, SignalPlanAnswered)
 	}
-	answered := false
+	answered = false
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.planEnded(); stop {
 			return nil, true
@@ -2123,12 +2173,12 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, day *dayWait) (final, why
 		heard, stop := pass()
 		if stop || len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
-				return final, why, nil
+				return final, why, nil, false
 			}
-			return "", "", findings
+			return "", "", findings, answered
 		}
 		if answered || len(findings) > 0 || day.over() {
-			return "", "", findings
+			return "", "", findings, answered
 		}
 	}
 }
@@ -2393,6 +2443,17 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository)); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
+	// a re-file of the newest revision by value: already stored. By
+	// value, not by hash: the stored row's hash can drift (a settled
+	// card gains its issue number) while the plan is the same.
+	if st.newest != nil && reflect.DeepEqual(*st.newest, p) {
+		rev, _, err := r.store.PlanRevision(ctx, taskID, st.revision)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256})
+		return PlanResult{Revision: st.revision, SHA256: rev.SHA256}, nil
+	}
 	if st.newest != nil {
 		found = revisionFindings(*st.newest, p)
 	}
@@ -2427,10 +2488,14 @@ func revisionFindings(old, next Plan) []string {
 	}
 	var found []string
 	for _, c := range next.Criteria {
-		if o, ok := prev[c.ID]; ok && c != o {
+		o, held := prev[c.ID]
+		if held && c != o {
 			found = append(found, "criterion "+c.ID+": the previous revision holds this id with another definition; a changed criterion files under a new id")
 		}
-		if c.Replaces == "" {
+		// a criterion the previous revision holds with this definition
+		// carries its replaces marker as history, not as a replacement
+		// it is making now
+		if c.Replaces == "" || (held && c == o) {
 			continue
 		}
 		if _, ok := prev[c.Replaces]; !ok {
@@ -2682,6 +2747,15 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 		ref.Filed, ref.Refused = res.Issues, res.Refused
 		return ref, err
 	case open == 0:
+		if confirmedByAnswers(asked) {
+			v, err := r.pinnedVersion(ctx, pin)
+			if err != nil {
+				return PlanRef{}, err
+			}
+			res, err := r.fileRevision(ctx, t, repo, v, rev)
+			ref.Filed, ref.Refused = res.Issues, res.Refused
+			return ref, err
+		}
 		ref.Answered = true
 		return ref, nil
 	}
