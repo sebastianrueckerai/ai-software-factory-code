@@ -1290,6 +1290,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		rv := Review{Note: "model review not run: " + why}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
+		if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model, Note: rv.Note}); err != nil {
+			return Review{}, err
+		}
 		return rv, nil
 	}
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
@@ -1430,9 +1433,24 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		detail["dropped"] = rv.Dropped
 	}
 	r.record(ctx, t.ID, "model_review", detail)
+	if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model,
+		Verdict: rv.Verdict, Note: rv.Note}); err != nil {
+		return Review{}, err
+	}
 	process, track := processTrack(ctx, r.store, t)
 	r.countReview(ctx, rv, round, process, track)
 	return rv, nil
+}
+
+// reviewFact writes the review attempt's fact row beside its timeline
+// line (roadmap 336): the answer's classification — a verdict the model
+// returned reviewed the head, an empty one never did, its note the
+// bounded reason — with no summary, which the timeline line alone
+// keeps. A failed write is the caller's, and the activity's retry
+// writes the row the identity keeps single. A roll card's note records
+// none: it makes no model call, so it is no round of a review.
+func (r *Runner) reviewFact(ctx context.Context, t Task, fact ReviewAttemptFact) error {
+	return r.timeline.RecordFactRow(ctx, fact.Event(t.ID, t.Repository, t.IssueNumber))
 }
 
 // reviewComment renders rv for the pull request; read says how much of

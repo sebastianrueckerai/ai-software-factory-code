@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The metrics page's figures (roadmap 147): every number is a query over
@@ -149,6 +150,24 @@ func (f SessionEndFact) identity() map[string]any {
 	return map[string]any{"session": f.Session, "attempt": f.Attempt}
 }
 
+// EventSessionEnd is one session's terminal end on a card (roadmap 336),
+// the row the divide-and-conquer panels read. Detail {"session",
+// "attempt", "outcome", "started", "ended"} — no summary, which the
+// timeline line alone keeps. Identity: the session and the attempt, so
+// a session a stopped factoryd detached from and its reattached end are
+// one fact.
+const EventSessionEnd = "session_end"
+
+// Event is the end's row of task's card in repository's issue, ended
+// when the session completed.
+func (f SessionEndFact) Event(task, repository string, issue int64, ended time.Time) Event {
+	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventSessionEnd,
+		Actor: FactoryDecider, Via: ViaFactoryd, At: ended,
+		Detail: map[string]any{"session": f.Session, "attempt": f.Attempt, "outcome": f.Outcome,
+			"started": rfc3339(f.Started), "ended": rfc3339(ended)},
+		IdentityKey: identityKey(EventSessionEnd, f.Session, fmt.Sprintf("%d", f.Attempt))}
+}
+
 // ReviewAttemptFact is one model review of one head, the model_review
 // step: an empty Verdict is one the model never judged.
 type ReviewAttemptFact struct {
@@ -168,6 +187,33 @@ func (f ReviewAttemptFact) detail() map[string]any {
 
 func (f ReviewAttemptFact) identity() map[string]any {
 	return map[string]any{"commit": f.Commit, "round": f.Round}
+}
+
+// EventModelReview is one review call's answer on a head (roadmap 336),
+// the row the divide-and-conquer panels read. Detail {"pr", "commit",
+// "round", "model", "verdict", "reviewed"} — reviewed false carries
+// "reason", the bounded note of the answer that never judged the head;
+// no summary, which the timeline line alone keeps. Identity: the commit
+// and the round, so two genuine reviews of one head stay two.
+const EventModelReview = "model_review"
+
+// maxFactReason bounds a fact row's reason; the notes it carries are
+// bounded again where they were written.
+const maxFactReason = 500
+
+// Event is the answer's row of task's card in repository's issue; an
+// empty verdict is one the model never judged.
+func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
+	detail := map[string]any{"pr": f.PR, "commit": f.Commit, "round": f.Round, "model": aliasOf(f.Model),
+		"verdict": f.Verdict, "reviewed": f.Verdict != ""}
+	if f.Verdict == "" {
+		detail["reason"] = textutil.Truncate(f.Note, maxFactReason)
+	}
+	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventModelReview,
+		Actor:       FactoryDecider,
+		Via:         ViaFactoryd,
+		Detail:      detail,
+		IdentityKey: identityKey(EventModelReview, f.Commit, fmt.Sprintf("%d", f.Round))}
 }
 
 // EventGateHead is one card's reading at one head — its gate decision,
@@ -258,6 +304,19 @@ func (tl *Timeline) AppendFactOnce(ctx context.Context, taskID, step string, fac
 	return tl.append(ctx, taskID, step, fact.detail(), func(prev []byte) bool {
 		return stepHoldsIdentity(prev, step, fact.identity())
 	})
+}
+
+// RecordFactRow writes e, a fact's events row its payload built with its
+// identity. Unlike recordEvent a failure is returned, not logged: the
+// activity that owns the fact fails on it, and its retry writes the row
+// the identity keeps single — a fact the store did not take must not be
+// lost to a log line. A Timeline without a recorder records none.
+func (tl *Timeline) RecordFactRow(ctx context.Context, e Event) error {
+	if tl == nil || tl.Events == nil {
+		return nil
+	}
+	_, err := tl.Events.Record(ctx, e)
+	return err
 }
 
 // stepHoldsIdentity tells whether the timeline holds a line of step
