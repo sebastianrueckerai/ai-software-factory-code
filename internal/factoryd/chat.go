@@ -62,6 +62,9 @@ type ChatMessage struct {
 	// are derived, never stored.
 	Settled bool   `json:"settled,omitempty"`
 	Reason  string `json:"reason,omitempty"`
+	// Proposal is an ask row's binding token: the ask-kind proposal whose
+	// bound choice's press runs its tool, "" for an ask without one.
+	Proposal string `json:"proposal,omitempty"`
 	// Thread is the conversation bound to the ask's card (the card door),
 	// the reader's own; derived, never stored.
 	Thread int64 `json:"thread,omitempty"`
@@ -909,9 +912,9 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 		return 0, err
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -946,7 +949,7 @@ func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
@@ -958,7 +961,7 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	for rows.Next() {
 		var m ChatMessage
 		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {
@@ -1267,10 +1270,11 @@ func (s *PGStore) TaskSpendSince(ctx context.Context, id string, since time.Time
 }
 
 // ChatProposal is a proposal of the project agent waiting for its
-// member's Do it (kind proposal), or an applied action's undo (kind undo):
-// tool with args, bound to the member and the project until it expires.
-// Description is a proposal's line for the member, or the name of the
-// tool whose action an undo undoes.
+// member's Do it (kind proposal), an applied action's undo (kind undo),
+// or an ask's bound action (kind ask): tool with args, bound to the
+// member and the project until it expires. Description is a proposal's
+// line for the member, or the name of the tool whose action an undo
+// undoes.
 type ChatProposal struct {
 	Token, Kind, Repository, Login, Tool string
 	Args                                 json.RawMessage
@@ -1279,6 +1283,9 @@ type ChatProposal struct {
 	// Conversation is the thread that raised it, where its Do it's or its
 	// undo's row lands (roadmap 239); 0: the member's current one.
 	Conversation int64
+	// Choice is the ask binding's choice: the one of the ask row's
+	// choices whose press runs Tool, as the ask tool bound it.
+	Choice string
 }
 
 // TakeProposal's refusals.
@@ -1289,9 +1296,9 @@ var (
 
 // PutProposal stores p.
 func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)`,
-		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation, choice)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)`,
+		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation, p.Choice)
 	return err
 }
 
@@ -1303,8 +1310,8 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 	var args []byte
 	err := s.db.QueryRowContext(ctx, `UPDATE chat_proposals SET used_at = $4
 		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4 AND kind = $5
-		RETURNING tool, args, description, expires_at, conversation`, token, repository, login, now, kind).
-		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation)
+		RETURNING tool, args, description, expires_at, conversation, choice`, token, repository, login, now, kind).
+		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation, &p.Choice)
 	switch {
 	case err == nil:
 		p.Args = args
@@ -1321,6 +1328,28 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 		return ChatProposal{}, ErrOthersProposal
 	}
 	return ChatProposal{}, ErrNoProposal
+}
+
+// LiveAskBinds are conversation's open ask bindings on repository at
+// now, in their order: the ask-kind proposals unused and unexpired, each
+// with its tool and the choice whose press runs it. The settle rule and
+// the tool park of a bound ask read here.
+func (s *PGStore) LiveAskBinds(ctx context.Context, repository string, conversation int64, now time.Time) ([]ChatProposal, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT token, login, tool, description, choice, expires_at, conversation FROM chat_proposals
+		WHERE repository = $1 AND conversation = $2 AND kind = 'ask' AND used_at IS NULL AND expires_at >= $3 ORDER BY expires_at`, repository, conversation, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ChatProposal
+	for rows.Next() {
+		var p ChatProposal
+		if err := rows.Scan(&p.Token, &p.Login, &p.Tool, &p.Description, &p.Choice, &p.ExpiresAt, &p.Conversation); err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
 }
 
 // PurgeProposals deletes the rows expired before before, but a used
