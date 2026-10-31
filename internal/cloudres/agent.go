@@ -29,7 +29,7 @@ const HoursPerMonth = 730
 // AgentInterval is the agent collector's pass interval. A lease ends at
 // the last pass before it runs out (LeaseCutoff before its end): the
 // collector deletes it then, and factoryd's egress drops its address at
-// the same cutoff (ruling 124).
+// the same cutoff.
 const (
 	AgentInterval = 2 * time.Minute
 	LeaseCutoff   = AgentInterval + LeaseMargin
@@ -414,7 +414,7 @@ type Accrual struct {
 
 // Overrun is an accrual booked in full beyond what the resource's own
 // share of its reservation still held: it lived longer than its lease paid
-// for (ruling 124).
+// for.
 type Overrun struct {
 	TaskID     string
 	ResourceID int64
@@ -505,7 +505,7 @@ func (a AgentStore) accrueRow(ctx context.Context, id int64) (float64, *Overrun,
 	// the row's own share, as far as the reservation still holds it
 	held = min(held, share)
 	// a standing resource is its project's monthly line: no task's spend
-	// and no day's headroom (ruling 147)
+	// and no day's headroom
 	ledgerTask, kind := owner, policy.KindResource
 	if standing {
 		ledgerTask, kind = StandingLedgerTask(repo), policy.KindStanding
@@ -556,9 +556,9 @@ func (a AgentStore) Group(ctx context.Context, holdID int64) ([]Resource, error)
 
 // LiveAddresses are the IPv4s of every live leased agent server by owning
 // task whose lease runs past the cutoff: what the task's sandbox egress
-// admits. A standing server is the project's: no agent reaches it
-// (ruling 147). The cutoff is the collector's, so the address
-// leaves when the collector deletes the server.
+// admits. A standing server is the project's: no agent reaches it.
+// The cutoff is the collector's, so the address leaves when the
+// collector deletes the server.
 func (a AgentStore) LiveAddresses(ctx context.Context) (map[string][]string, error) {
 	rows, err := a.DB.QueryContext(ctx, `SELECT owner_ref, address FROM cloud_resources
 		WHERE project = 'agent' AND kind = 'server' AND state = 'live' AND address <> ''
@@ -633,7 +633,7 @@ func (a AgentStore) Approval(ctx context.Context, id int64, taskID string) (Appr
 	return ap, true, json.Unmarshal(spec, &ap.Spec)
 }
 
-// Promote makes the open commission of row id standing (ruling 147):
+// Promote makes the open commission of row id standing:
 // project-owned, no lease, no end with its task, its reservation dropped,
 // out of the task's egress; its cost counts against the project's month
 // from then on. It must fit the envelope's standing block (its server

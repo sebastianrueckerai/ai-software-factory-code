@@ -22,7 +22,7 @@ import (
 
 // Commissioned servers: one location and image, root login by certificate
 // only, certificates at most maxCertTTL. A certificate's principal names
-// one server (principal), which alone lists it (ruling 125).
+// one server (principal), which alone lists it.
 const (
 	cloudLocation = "fsn1"
 	cloudImage    = "debian-12"
@@ -136,7 +136,7 @@ func (c *Cloud) Run(ctx context.Context) {
 
 // accrue books the resources' started hours; a booking past its
 // reservation is booked in full and flagged, loud in the log and as an
-// accrued audit row carrying the flag (rulings 117, 124).
+// accrued audit row carrying the flag.
 func (c *Cloud) accrue(ctx context.Context) error {
 	acc, err := c.Store.Accrue(ctx)
 	for _, o := range acc.Overruns {

@@ -14,7 +14,7 @@ import (
 // paths, or class large over LargeLines. Classes are listed most severe
 // first. Only auto, on class normal,
 // merges without a human, and only where the project's merge rule is auto
-// and the reproduction and the model review say so (ruling 149).
+// and the reproduction and the model review say so.
 type Risk struct {
 	// Classes are the risk classes, most severe first.
 	Classes []RiskClass `yaml:"classes" json:"classes"`

@@ -62,7 +62,7 @@ type RoutineView struct {
 	// open").
 	Open *Task
 	Held bool
-	// Column is the preview's column, always "queued" (ruling 2026-10-17):
+	// Column is the preview's column, always "queued":
 	// needs-you holds only what needs a human's action now, and a
 	// routine's work lands there only as its filed card waiting on the
 	// human, through the normal card flow.

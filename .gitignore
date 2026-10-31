@@ -5,3 +5,5 @@
 /cmd/*/factory-gateway
 /cmd/*/agent-worker
 /.worktrees/
+
+.superpowers/

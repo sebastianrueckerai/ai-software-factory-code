@@ -40,7 +40,7 @@ COPY --from=downloads /cosign /cosign
 
 FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
-# Task 41 (ruling 78/89/90): the untrusted PR runner. Host executor inside
+# Task 41: the untrusted PR runner. Host executor inside
 # an unprivileged, gVisor-isolated pod — no docker CLI, no socket, no
 # registry or repository credential baked in or mounted. Everything a
 # pull_request job needs (a Go + C toolchain — go test -race needs cgo, git,
@@ -106,13 +106,12 @@ RUN chmod 0644 /etc/apt/keyrings/pgdg.asc \
 ADD --checksum=sha256:fadaec897f5e6641c363f87ecaf75f866f99c81b7097ec6b433e4c48123fcad1 --chmod=0755 https://git.aisoftwarefactory.world/api/packages/upstream/generic/forgejo-runner/v${FORGEJO_RUNNER_VERSION}/forgejo-runner-${FORGEJO_RUNNER_VERSION}-linux-amd64 /usr/local/bin/forgejo-runner
 
 # buildctl only: the image-build job drives buildkitd on its throwaway VM
-# (ruling 110, internal/factoryd/buildvm.go); no docker CLI, no daemon here.
+# (internal/factoryd/buildvm.go); no docker CLI, no daemon here.
 RUN --mount=type=bind,from=downloads,source=/buildkit.tar.gz,target=/tmp/buildkit.tar.gz \
       tar -xzf /tmp/buildkit.tar.gz -C /usr/local bin/buildctl
 
 # crane: image-build copies each image's layer cache from the in-cluster
-# build cache into a local OCI layout that buildctl streams to the VM
-# (ruling 111).
+# build cache into a local OCI layout that buildctl streams to the VM.
 RUN --mount=type=bind,from=downloads,source=/crane.tar.gz,target=/tmp/crane.tar.gz \
       tar -xzf /tmp/crane.tar.gz -C /usr/local/bin crane
 

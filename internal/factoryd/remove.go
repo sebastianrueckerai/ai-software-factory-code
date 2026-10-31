@@ -68,8 +68,8 @@ type LiteLLMKeyDeleter interface {
 // Remover is `factoryd remove-project <name>` (roadmap 272): register's
 // inverse. What only the Forgejo site admin can undo (the packages, the
 // repository, the forks, the organisation, the CI user, the tokens)
-// happens with the admin's login, read from OpenBao for this run only
-// (ruling 212), as register does.
+// happens with the admin's login, read from OpenBao for this run only,
+// as register does.
 type Remover struct {
 	Forgejo *Forgejo
 	Kube    RemovalKube

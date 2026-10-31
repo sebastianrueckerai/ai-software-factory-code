@@ -1,17 +1,17 @@
 -- a project is a repository the factory works on, the namespaces it
--- deploys into and its settings (ruling 146). Managed rows get their
--- Forgejo and cluster objects from factoryd (ruling 156), the factory's
+-- deploys into and its settings. Managed rows get their
+-- Forgejo and cluster objects from factoryd, the factory's
 -- own repositories keep theirs in the infra repository
 CREATE TABLE IF NOT EXISTS projects (
     name text PRIMARY KEY CHECK (name ~ '^[a-z0-9]([a-z0-9-]{0,35}[a-z0-9])?$'),
-    -- a managed project is its own Forgejo organisation: <name>/<name>
-    -- (ruling 164). Forgejo folds case, so the row keeps the lower form
+    -- a managed project is its own Forgejo organisation: <name>/<name>.
+    -- Forgejo folds case, so the row keeps the lower form
     repository text NOT NULL UNIQUE CHECK (repository ~ '^[a-z0-9_.-]+/[a-z0-9_.-]+$'),
     merge_rule text NOT NULL DEFAULT 'human' CHECK (merge_rule IN ('auto', 'human')),
     -- empty: the policy's approvers
     notify text[] NOT NULL DEFAULT '{}',
     namespaces text[] NOT NULL DEFAULT '{}',
-    -- [{namespace, path, hostname}]: one Flux Kustomization each (ruling 157)
+    -- [{namespace, path, hostname}]: one Flux Kustomization each
     environments jsonb NOT NULL DEFAULT '[]',
     quota_cpu text NOT NULL DEFAULT '',
     quota_memory text NOT NULL DEFAULT '',
@@ -38,7 +38,7 @@ INSERT INTO projects (name, repository, namespaces, managed) VALUES
     ('ai-software-factory-infra', 'sf/ai-software-factory-infra', '{}', false)
 ON CONFLICT DO NOTHING;
 
--- two resource kinds (ruling 147): a lease ends with its task or its
+-- two resource kinds: a lease ends with its task or its
 -- lease, a standing resource lives until a human releases it
 ALTER TABLE cloud_resources ADD COLUMN IF NOT EXISTS lifetime text NOT NULL DEFAULT 'lease'
     CHECK (lifetime IN ('lease', 'standing'));

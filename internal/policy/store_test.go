@@ -271,7 +271,7 @@ func TestHolds(t *testing.T) {
 
 	// the day: 0.01 booked in the ledger; a day cap of 0.01 leaves task b
 	// nothing. A standing resource's hours are its project's monthly line
-	// and take nothing of the day (ruling 147).
+	// and take nothing of the day.
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('standing:sf/app', 'standing', 'resource/1', 5)`); err != nil {
 		t.Fatal(err)
 	}
@@ -931,7 +931,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 }
 
-// A card that waits on a person takes factoryd's brief call (ruling 116)
+// A card that waits on a person takes factoryd's brief call
 // and nothing else: not factoryd's other purposes, not a sandbox's call
 // under the same ref, and no other waiting or finished status.
 func TestHoldsForTheBriefOfAWaitingCard(t *testing.T) {

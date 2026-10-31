@@ -79,7 +79,7 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 	return r, ck
 }
 
-// Ruling 255 as C8 amends it: the four columns are a view over the task
+// As C8 amends it: the four columns are a view over the task
 // states. Every status lands in exactly one column, running, closing and
 // in review together in In progress, waiting on the author in Needs you
 // for every viewer, the author or not (roadmap 225: a person is the next
@@ -460,8 +460,8 @@ func TestCardFineChips(t *testing.T) {
 	}
 }
 
-// A card whose newest session the model provider refused waits on it
-// (ruling 267): its chip says so and the status line counts it as
+// A card whose newest session the model provider refused waits on it:
+// its chip says so and the status line counts it as
 // waiting, not working, so a project with no other card working idles;
 // the next session_start makes it working again.
 func TestCardWaitingOnTheProvider(t *testing.T) {

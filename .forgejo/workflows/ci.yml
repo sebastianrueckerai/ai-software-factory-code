@@ -4,7 +4,7 @@ on:
     branches: [main]
 env:
   # Each image's layer cache for the pull-request builds (infra
-  # k8s/platform/build-cache, ruling 111): main writes it, PR jobs only read
+  # k8s/platform/build-cache): main writes it, PR jobs only read
   # it; plain HTTP inside the cluster. A cache outage never fails main: the
   # import only warns, the export ignores errors.
   CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
@@ -59,11 +59,11 @@ jobs:
     # The warm Go caches of a main job live in docker named volumes on this
     # runner's own dind, which only ubuntu-latest jobs reach — untrusted PR
     # jobs run on the factory's gVisor pods and never touch this runner, so
-    # nothing an untrusted run wrote reaches a main job (ruling 226's line,
-    # kept without main running cold). The test environment is the CI runner
+    # nothing an untrusted run wrote reaches a main job, kept without
+    # main running cold. The test environment is the CI runner
     # image itself — the same image the PR jobs test in, Go and PG 17
     # preinstalled — built from this commit's Dockerfile.runner on the layer
-    # cache main's image job writes (ruling 111: main writes that cache).
+    # cache main's image job writes (main writes that cache).
     needs: upstream
     runs-on: ubuntu-latest
     steps:

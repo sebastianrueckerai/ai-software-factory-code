@@ -329,7 +329,7 @@ func TestSchemaCopierFilesCard(t *testing.T) {
 }
 
 // A schema pull request on a project without agents, the infra project,
-// gets a human card (ruling R62): no workflow runs there to carry it, so
+// gets a human card: no workflow runs there to carry it, so
 // the card asks a person to merge it in Forgejo. The card links the pull
 // request, labelled human, its question names the pull request with its
 // link, and its one question_asked row is the needs-you poke; the second
@@ -381,7 +381,7 @@ func TestSchemaCopierFilesAHumanCardWithoutAgents(t *testing.T) {
 }
 
 // The copier's own close of a schema pull request ends its human card
-// (ruling R63), whichever build filed it: no workflow sees the bot's close,
+// whichever build filed it: no workflow sees the bot's close,
 // so the copier ends the card through the intake. The ask is withdrawn by
 // factoryd, the card ends closed naming the close, and its issue closes
 // with a comment.

@@ -732,7 +732,7 @@ func TestStreamSendsAWriterNoBoardAfterEvents(t *testing.T) {
 	t.Fatal("no sentinel")
 }
 
-// Ruling 288: each heartbeat reads the board too, so what changes with
+// Each heartbeat reads the board too, so what changes with
 // time alone reaches the page without a request of its own: the counters
 // when they changed, and event board when a card's face did (its minute
 // age here); the agent's text reads nothing.

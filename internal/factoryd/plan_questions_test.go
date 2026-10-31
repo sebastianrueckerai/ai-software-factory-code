@@ -30,7 +30,7 @@ func questionPlan() Plan {
 // 5 distinct choices of 1 to 60, an origin of self_attack or none (an
 // attack on the planner's own draft, piece 5); a breach is a finding like
 // a card's. The guide gives the field's format and one sentence on it,
-// nothing about when to ask (ruling 263) but the one sentence that a plan
+// nothing about when to ask but the one sentence that a plan
 // may ask whether it should be two plans (roadmap 336, call 15).
 func TestPlanQuestionsFormat(t *testing.T) {
 	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits, nil)

@@ -429,7 +429,7 @@ func TestCommandsBufferedDuringTheCheckinDoNotCount(t *testing.T) {
 }
 
 // A stuck trip's handover climbs in place on the start rung: the judge
-// says the session is stuck, code picks the model (rulings 216, 224). The
+// says the session is stuck, code picks the model. The
 // worker gets the judge's note with the stronger model, and the session
 // goes on to push. TestRunSessionCheckinMessageArmsStuckRule is the stop
 // where no climb is possible.

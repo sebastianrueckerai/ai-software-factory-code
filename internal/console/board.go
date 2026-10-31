@@ -138,7 +138,7 @@ type verdictForm struct {
 	CSRF, Back string
 }
 
-// The project screen's four columns (ruling 255 as C8 amends it), a view
+// The project screen's four columns (as C8 amends it), a view
 // over the task states and never a state of their own: In progress holds
 // running, closing and in review, the stage word on the card; the fine
 // state is a chip on the card.
@@ -497,7 +497,7 @@ type card struct {
 	// answer box yields to the liveness warning.
 	AnswersPending int
 	// Fund is the approver's Fund action on an escalated card whose
-	// remaining budget cannot fund a call (ruling 322's floor), which
+	// remaining budget cannot fund a call, which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
 	// AcceptanceClose is the approver's Close on a waiting card whose
@@ -1214,7 +1214,7 @@ func (f boardFilter) query() string {
 	return "?" + q.Encode()
 }
 
-// statusLine is the shown project's state above the board (ruling 251),
+// statusLine is the shown project's state above the board,
 // which the project agent reads too: its word, its cards working, those
 // waiting on the model provider, what needs the viewer, its spend this
 // UTC month (the chat's part apart) against its month cap, and its GitHub
@@ -1311,7 +1311,7 @@ type boardData struct {
 	Escalations []need
 	Approvals   []approvalCard
 	Problems    []string
-	Approver    bool // may authorize the shown project's spend (rulings 128, 254)
+	Approver    bool // may authorize the shown project's spend
 	Factory     bool // writes the factory's own code: the layout links the factory-level pages
 	// Autonomy is the shown project's autonomy state, which the chat's
 	// level control shows and an approver changes (roadmap 239, C14), and
@@ -1850,7 +1850,7 @@ func (v *boardView) escalated(t factoryd.Task) bool {
 	return t.Status == "waiting-human" && !v.planned[t.ID]
 }
 
-// approves: the viewer approves repository's project (ruling 254).
+// approves: the viewer approves repository's project.
 func (v *boardView) approves(repository string) bool {
 	return slices.Contains(v.policy.ApproversOf(repository), v.user)
 }
@@ -2115,7 +2115,7 @@ func callsLine(t policy.CallTotals) string {
 // viewer writes and the shown one, and writable saying each project by
 // name. A project whose writers could not be checked is offered, its
 // buttons hidden, rather than an empty board; a member sees only a
-// project they write or read (ruling 254), the factory's writers every
+// project they write or read, the factory's writers every
 // board, read-only where they do not write; errNoProject is the refusal.
 // The whole board and a page of finished cards show the same one.
 func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardView, all []factoryd.Project, f boardFilter) (shown factoryd.Project, projects []string, writable map[string]bool, err error) {
@@ -2141,7 +2141,7 @@ func (c *Console) shownProject(ctx context.Context, r *http.Request, v *boardVie
 	if f.Project != "" && shown.Name == "" {
 		return shown, projects, writable, errNoProject
 	}
-	// a member sees only the projects they write or read (ruling 254); the
+	// a member sees only the projects they write or read; the
 	// factory's writers see every board, read-only where they do not write
 	if shown.Name != "" && !writable[shown.Name] && v.user != "" && !c.factoryWriter(r) {
 		if reads, rerr := c.reads(ctx, current(r), shown); rerr != nil || !reads {

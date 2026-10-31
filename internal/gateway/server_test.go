@@ -1811,7 +1811,7 @@ func TestFactorydReviewCall(t *testing.T) {
 			want: want{status: 200, decision: "allowed", upstream: 1,
 				ledger: []ledgerRow{{"42", "review/big", 0.125, policy.KindModel}}, spent: 2.125},
 		},
-		// the audit (ruling 188) learns the deployment that answered
+		// the audit learns the deployment that answered
 		"audit": {
 			task: Task{Classes: coder, ModelAlias: "small", ID: "42", BudgetEUR: 10, SpentEUR: 2, Status: "in-review"}, token: testFactorydToken,
 			purpose: "audit", model: "big",
@@ -2523,7 +2523,7 @@ func TestUnbilledOptionsAreNotForwarded(t *testing.T) {
 }
 
 // A premium call under its cap goes to premium; past it the gateway
-// serves it on big (ruling 329): the forwarded body, the ledger ref and
+// serves it on big: the forwarded body, the ledger ref and
 // the audit row's alias name big, and the row's reason says why. No cap:
 // premium is an alias like any other.
 func TestPremiumCapServesOnBig(t *testing.T) {

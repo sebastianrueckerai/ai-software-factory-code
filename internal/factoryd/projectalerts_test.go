@@ -202,7 +202,7 @@ func TestProjectAlertsAnswer(t *testing.T) {
 }
 
 // A noise row never holds a promotion, by its verdict: a roll window's own
-// restart (ruling 237) or an alert a human closed as noise, though either
+// restart or an alert a human closed as noise, though either
 // still fires; a firing row judged real does.
 func TestProjectAlertsNoiseHoldsNothing(t *testing.T) {
 	_, alerts, _, h, token := alertsRig(t)

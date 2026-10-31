@@ -793,7 +793,7 @@ func TestStagesHealedRunKeepsTheStageMemory(t *testing.T) {
 	}
 }
 
-// The screening report task runs on the stronger rung (ruling 191).
+// The screening report task runs on the stronger rung.
 func TestStagesScreeningReportRunsOnTheStrongerRung(t *testing.T) {
 	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
 	g.state.Report, g.state.Stronger = true, true
@@ -808,7 +808,7 @@ func TestStagesScreeningReportRunsOnTheStrongerRung(t *testing.T) {
 	}
 }
 
-// The review loop follows the one rule (ruling 190): with a session cap
+// The review loop follows the one rule: with a session cap
 // of three, concerns go back twice (the first on the same model, the
 // second on the stronger one) and the third opens the card with every
 // review; each review is given the last one before it and its round, so
@@ -1226,7 +1226,7 @@ func TestStagesScreeningReportEndsWithoutAComment(t *testing.T) {
 	}
 }
 
-// withAudit lists the audit stage (ruling 188) between review and
+// withAudit lists the audit stage between review and
 // approval.
 func withAudit(w *policy.Process) {
 	i := slices.IndexFunc(w.Stages, func(s policy.Stage) bool { return s.Name == policy.StageReview })

@@ -16,7 +16,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// members makes r the rig of ruling 254: the factory's own code project
+// members makes r the rig: the factory's own code project
 // (sf/code) written by alice and controller, project demo (demo/demo)
 // written by bob, the policy's approvers [alice] and demo's file's [bob];
 // demo-app's file names none, so it keeps the policy's.

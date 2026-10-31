@@ -1,5 +1,5 @@
 -- a project's settings are its file projects/<name>.yaml in the
--- configuration tree (ruling 179): the row keeps what registration minted
+-- configuration tree: the row keeps what registration minted
 -- and nothing a file says, and a project's envelope is its file's too
 ALTER TABLE projects DROP COLUMN IF EXISTS repository;
 ALTER TABLE projects DROP COLUMN IF EXISTS merge_rule;

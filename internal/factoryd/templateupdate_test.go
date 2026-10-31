@@ -483,7 +483,7 @@ func templateCards(t *testing.T, tasks *fakeStore) []string {
 
 // Finding 224's cards: a template update card that failed before any gate
 // judged its pull request, and whose failure closed it, is no person's
-// close (ruling 296). The next pass reopens that pull request as the bot
+// close. The next pass reopens that pull request as the bot
 // that closed it and files its card again; no second pull request opens,
 // and the failed card closes as factoryd's, naming its successor. Once per
 // pull request: a second card that fails the same way leaves the close
@@ -529,7 +529,7 @@ func TestTemplateUpdateRefilesACardItsFailureClosed(t *testing.T) {
 }
 
 // A card that reached its gates was judged there, by a gate or a person:
-// the close its failure made stands (ruling 296), and no pass reopens the
+// the close its failure made stands, and no pass reopens the
 // pull request or files its card again.
 func TestTemplateUpdateJudgedCloseStands(t *testing.T) {
 	fj, reg, _, tasks, _ := templateCardRig(t, stage15Main(), true)
@@ -955,7 +955,7 @@ func TestTemplateUpdateStartsAnew(t *testing.T) {
 	}
 }
 
-// Ruling 296: an approver's close stands while the branch holds the
+// An approver's close stands while the branch holds the
 // render; no pass deletes or reopens it. A change of the render deletes the
 // branch, and the next pass opens a new pull request.
 func TestTemplateUpdateRespectsAClose(t *testing.T) {

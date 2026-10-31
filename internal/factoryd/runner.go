@@ -79,7 +79,7 @@ type RunnerConfig struct {
 	// Timeline records the cards' events; nil builds the store's own.
 	Timeline *Timeline
 	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
-	// workers send their telemetry (ruling 158); "" = none.
+	// workers send their telemetry; "" = none.
 	OTLPEndpoint string
 	// EgressCanary (a public name and port, off the sandbox's DNS
 	// allowlist) and EgressDirectIP (a public IP and port) are what the
@@ -99,8 +99,8 @@ type RunnerConfig struct {
 	// request comes from: a re-run of its checks writes there with
 	// Forgejo's ProjectsToken.
 	ProjectsUser string
-	// Prices is the alias price book the attempt grant's floor reads
-	// (ruling 322): whether the task's remaining budget can fund a call at
+	// Prices is the alias price book the attempt grant's floor reads:
+	// whether the task's remaining budget can fund a call at
 	// all. nil = every attempt is funded; the per-call hold still guards
 	// the money.
 	Prices Pricer
@@ -512,7 +512,7 @@ type sessionSpec struct {
 	// reportSession's alike): supervisorConfig's WallClockCap and
 	// CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
-	// report is a report session's guide (ruling 185); "" for a coding
+	// report is a report session's guide; "" for a coding
 	// session
 	report string
 	// standing overrides the task's author standing: a report reads its
@@ -921,8 +921,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			d = *trip.decided
 			ck, ride = nil, false
 		}
-		// the judge says whether the session is stuck, code picks the model
-		// (rulings 216, 224): a stuck trip's handover is the stuck rule's climb
+		// the judge says whether the session is stuck, code picks the model:
+		// a stuck trip's handover is the stuck rule's climb
 		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
 			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover, Judged: true}, false
 		}
@@ -2315,8 +2315,8 @@ func requestEmptyDirs(pod map[string]any) map[string]any {
 // Q4): default-deny egress for workers, a hard deny to the cloud metadata
 // address, and exactly four allows: the model gateway's port, Forgejo's
 // HTTP port, the image's registries by name on 443 (the factory image's
-// are the Go module proxy, its checksum database and the npm registry,
-// ruling 99: the image carries the Go toolchain and Node, and a registry
+// are the Go module proxy, its checksum database and the npm registry:
+// the image carries the Go toolchain and Node, and a registry
 // joins by name with the toolchain that needs it; a project image's are
 // its egress), and kube-dns for exactly those
 // names. DNS is allowlisted by name because an open resolver is itself an

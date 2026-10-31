@@ -14,7 +14,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// Briefs (ruling 116): every needs-you card opens with a Brief, one to
+// Briefs: every needs-you card opens with a Brief, one to
 // three sentences of what to decide, why a human and what approve and
 // deny do, and a Detail, the same facts in plain language, written by one
 // supervisor model call through the model gateway, bounded by the policy's

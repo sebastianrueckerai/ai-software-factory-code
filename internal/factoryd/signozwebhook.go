@@ -37,13 +37,13 @@ const refileAfter = 30 * time.Minute
 const eventLabel = "event"
 
 // restartWindowAlert is the only rule a roll of the factory's own
-// Deployments holds (ruling 237): k8s/alerts/5xx-rate.json's "alert". The
+// Deployments holds: k8s/alerts/5xx-rate.json's "alert". The
 // restarts and roll-not-live rules are what a broken roll trips, so they
 // file at once.
 const restartWindowAlert = "5xx rate above 5 %"
 
 // rolloutSettle is how long after a rollout settled its alerts still count
-// as the rollout's own (ruling 237's ten minutes): a rule reads a window of
+// as the rollout's own (ten minutes): a rule reads a window of
 // samples (the 5xx rule five minutes, evaluated each minute), so a burst
 // that ends as the rollout settles fires for up to six minutes more, and
 // what a rollout restarts without Flux waiting on it (CNPG's switchover of
@@ -689,7 +689,7 @@ func (in *AlertIntake) fileUnlessHeld(ctx context.Context, a SigNozAlert, p Proj
 // namespace ns; false when none does. A platform rollout Flux applies
 // holds every alert, a project environment's the alerts of its namespace,
 // and a roll of the factory's own Deployments only the restart-window
-// rule in their namespace (ruling 237).
+// rule in their namespace.
 func (in *AlertIntake) rolloutAt(ctx context.Context, at time.Time, name, ns string) (Rollout, bool, error) {
 	var rollouts []Rollout
 	if name == restartWindowAlert && ns == in.Namespace {

@@ -844,7 +844,7 @@ func TestWorkflowNewApprovalReplacesThePendingRetry(t *testing.T) {
 	}
 }
 
-// Merge retries are bounded (ruling 129): the first failure and six
+// Merge retries are bounded: the first failure and six
 // retries, one hour, then one exhausted report and no timer; the task
 // waits for a signal. A new approval restarts the merge with a fresh count.
 func TestWorkflowMergeRetriesAreCapped(t *testing.T) {

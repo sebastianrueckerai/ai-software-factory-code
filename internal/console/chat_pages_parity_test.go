@@ -19,7 +19,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// routeParity is ruling 263 over routes: each GET route names a tool the
+// routeParity is the routes' parity rule: each GET route names a tool the
 // agent is offered or an exception's reason, never both or neither.
 func routeParity(c *Console, routes []getRoute) error {
 	var errs []error
@@ -41,7 +41,7 @@ func routeParity(c *Console, routes []getRoute) error {
 var handBuilt = regexp.MustCompile(`mux\.Handle(Func)?\("(GET |POST )?/`)
 
 // Every GET route comes from getRoutes and names a tool or an exception
-// (ruling 263). Each tool answers alice, who writes the factory's code,
+// Each tool answers alice, who writes the factory's code,
 // and bob, who writes only demo, as its page does: the page shows and
 // the tool reads, or the tool refuses in the page's words.
 func TestEveryConsolePageIsAChatTool(t *testing.T) {

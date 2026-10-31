@@ -201,7 +201,7 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 	}
 }
 
-// The premium month headroom (ruling 329) is the cap less this UTC
+// The premium month headroom is the cap less this UTC
 // month's ledger rows on premium, an agent's ref and factoryd's alike, and
 // the outstanding premium holds: 0.05 - 0.03 - 0.01 - 0.005 = 0.005 EUR.
 // Big's row and last month's premium row do not count. A call of 1000

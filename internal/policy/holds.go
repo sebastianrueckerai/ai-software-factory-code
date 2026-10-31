@@ -167,7 +167,7 @@ type Usage struct {
 // it asked none, to what the free task, day, month and project headroom
 // can pay for, or refuses it. An image's ImageTokens price at the input
 // rate beside the bytes. Calibrated by an earlier
-// call (ruling 274), the prompt is about Bytes times that call's tokens per
+// call, the prompt is about Bytes times that call's tokens per
 // byte. Of the part up to that call's prompt tokens, the share the
 // provider's measured floor vouches for (CacheFloor) is at the cache-read
 // price; the rest and a margin of a quarter are at the input price. No
@@ -719,7 +719,7 @@ func ReleaseHold(ctx context.Context, db *sql.DB, h Hold, cost *float64, u Usage
 }
 
 // OverHold flags a booking of eur beyond the held amount, every path's one
-// flag (ruling 117): it logs the COST OVER HOLD line and returns it, "" when
+// flag: it logs the COST OVER HOLD line and returns it, "" when
 // eur is within held.
 func OverHold(taskID, what string, eur, held float64) string {
 	if eur <= held+1e-12 {

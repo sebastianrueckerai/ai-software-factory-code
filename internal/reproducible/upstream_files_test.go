@@ -140,7 +140,7 @@ var (
 )
 
 // buildVMsTarball is the buildkit tarball the build VM's cloud-init
-// curls (ruling 110, internal/factoryd/buildvm.go), pinned by
+// curls (internal/factoryd/buildvm.go), pinned by
 // buildkitSHA256: its store path and sha256 as upstream-files.txt names
 // them.
 func buildVMsTarball(t *testing.T) (path, sha string) {

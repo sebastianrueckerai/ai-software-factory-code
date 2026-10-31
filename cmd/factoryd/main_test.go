@@ -487,7 +487,7 @@ func TestACancelReachesARunningActivityWithinTenSeconds(t *testing.T) {
 	}
 }
 
-// Ruling 179: POST /tasks on a project on agents none, or on a repository
+// POST /tasks on a project on agents none, or on a repository
 // no active project names, answers 422 with the reason and files nothing.
 func TestCreateTaskHandlerRefusesWhereNoAgentWorks(t *testing.T) {
 	var events []string
@@ -516,7 +516,7 @@ type projectRows []factoryd.Project
 
 func (p projectRows) Projects(context.Context) ([]factoryd.Project, error) { return p, nil }
 
-// The console's writer lists (ruling 254): every project agents work on,
+// The console's writer lists: every project agents work on,
 // and the factory's own code project, which lists factoryd's namespace. A
 // project whose writers cannot be read keeps its last list for 5 minutes,
 // then is left out, and one never read is left out at once; the own

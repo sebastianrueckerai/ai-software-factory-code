@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../schema/process.schema.json
-# Maintenance (ruling 208, roadmap 225): every card is a direct-track
+# Maintenance (roadmap 225): every card is a direct-track
 # card, which a coder builds once a work slot is free.
 tracks:
   direct: {class: coder}

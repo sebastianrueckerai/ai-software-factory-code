@@ -78,7 +78,7 @@ const trustTTL = time.Minute
 
 // trusted reports whether user may steer a task through comments and
 // reviews: code write on the repository of a project (Forgejo.Writers),
-// factory-gate never (ruling R61: its token exists to approve the merge
+// factory-gate never (its token exists to approve the merge
 // gate's merges). A comment by anyone else is recorded, never signalled,
 // unless it is the issue author's answer to an information request.
 func (in *Intake) trusted(ctx context.Context, repository, user string) (bool, error) {
@@ -1199,7 +1199,7 @@ func FileAgentTask(ctx context.Context, store interface {
 // default, at most p's card maximum and the task maximum (CardBudget).
 // On a project without agents no workflow runs: the card is a human card
 // through fileHumanTask, linked to the pull request, whose question asks
-// a person to merge it in Forgejo (ruling R62).
+// a person to merge it in Forgejo.
 func FileFactoryPRTask(ctx context.Context, store interface {
 	CreateTask(ctx context.Context, t Task) error
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
@@ -1325,7 +1325,7 @@ func (in *Intake) decide(ctx context.Context, taskID, kind, author string, numbe
 // merge or close too (endPRCard). settle, when set, is the events row that
 // settles the card's ask, written once, by the end that moved the card. A
 // card another end moved first is left as it is. A SigNoz alert's gets
-// its verdict from the close (ruling 180): noise when the issue carries
+// its verdict from the close: noise when the issue carries
 // LabelNoise, else real.
 func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, closer string, settle *Event) error {
 	if t.Status != "waiting-human" {
@@ -1362,7 +1362,7 @@ func (in *Intake) finishHumanTask(ctx context.Context, t Task, final, why, close
 	return nil
 }
 
-// prDecided ends human card t with its pull request pr (ruling R63), which
+// prDecided ends human card t with its pull request pr, which
 // by merged or closed without a merge, as it reached factoryd via via: by's
 // answer settles the card's ask, and the card ends done on a merge, closed
 // otherwise.
@@ -1485,7 +1485,7 @@ func (in *Intake) agentTask(ctx context.Context, id string) (Task, bool, error) 
 
 // taskOfHead is the task whose pull request has head ref in headRepo: a
 // factory/<id> branch on the bot's fork of repo, and an agent card is
-// resolved by that head alone (ruling 97: the same branch name on repo
+// resolved by that head alone (the same branch name on repo
 // itself or on anyone else's fork is not the task's). A pull request
 // factoryd opened outside any card's workflow has another head (a
 // template update, a GitHub sync) or a factory/schema-* one that is no
@@ -1632,7 +1632,7 @@ func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool,
 // human: the poster's on a task waiting for the poster, a writer's on a
 // task waiting for an answer or for the poster. Each of those records
 // question_answered via webhook, so one question leaves one event whatever
-// the input (ruling 252). The console's Answer button posts its answer as
+// the input. The console's Answer button posts its answer as
 // an issue comment itself and files its own row naming that comment; the
 // partial unique index on (task_id, detail->>'comment') keeps one row per
 // answer whatever the timing.

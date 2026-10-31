@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// Forgejo calls for a project's objects (rulings 156, 164): the projects
+// Forgejo calls for a project's objects: the projects
 // token (factory-projects, owner of every project organisation) for
 // everything in a project repository; the site admin's basic auth, at
 // registration only, for the organisation, the repository, the CI user

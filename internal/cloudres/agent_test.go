@@ -503,7 +503,7 @@ func TestPromoteAndEndLease(t *testing.T) {
 	}
 }
 
-// Ruling 183: the envelope is the project's file, a widening a commit: a
+// The envelope is the project's file, a widening a commit: a
 // request beyond it waits for a human; with the file widened, the retry
 // fits and counts against the project's use.
 func TestReserveFollowsTheProjectsEnvelope(t *testing.T) {
@@ -545,7 +545,7 @@ func TestReserveFollowsTheProjectsEnvelope(t *testing.T) {
 	}
 }
 
-// ruling 124: a resource that outlives what its reservation paid for is
+// A resource that outlives what its reservation paid for is
 // booked in full and reported as an overrun, never clamped.
 func TestAccrualPastTheReservationIsBookedAndReported(t *testing.T) {
 	db := agentDB(t)
@@ -616,7 +616,7 @@ func TestReleaseAfterPromoteIsNoOverrun(t *testing.T) {
 	}
 }
 
-// ruling 124: the egress drops a lease's address at the collector's cutoff.
+// The egress drops a lease's address at the collector's cutoff.
 func TestLiveAddressesEndAtTheCutoff(t *testing.T) {
 	db := agentDB(t)
 	ctx := context.Background()
@@ -748,7 +748,7 @@ func TestClaimCommissionedOncePerServer(t *testing.T) {
 	}
 }
 
-// ruling 147: a commission becomes standing only within the project's
+// A commission becomes standing only within the project's
 // standing block: its server type, one more standing server, its monthly
 // price on top of the standing ones.
 func TestPromoteWithinStandingBlock(t *testing.T) {
@@ -789,7 +789,7 @@ func TestPromoteWithinStandingBlock(t *testing.T) {
 	if u, err := a.Standing(ctx, "sf/app"); err != nil || u.Count != 1 || math.Abs(u.MonthlyEUR-monthly) > 1e-9 {
 		t.Fatalf("standing use = %+v, %v; want one standing server at %.4f EUR a month", u, err, monthly)
 	}
-	// a standing server leaves the task's egress: no agent SSH (ruling 147)
+	// a standing server leaves the task's egress: no agent SSH
 	db.ExecContext(ctx, `UPDATE cloud_resources SET state = 'live', address = '192.0.2.1' WHERE hold_id = $1 AND kind = 'server'`, first.Hold.ID)
 	if addrs, err := a.LiveAddresses(ctx); err != nil || len(addrs["t1"]) != 0 {
 		t.Fatalf("live addresses = %v, %v; want none for a standing server", addrs, err)

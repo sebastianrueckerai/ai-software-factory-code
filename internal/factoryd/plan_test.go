@@ -481,7 +481,7 @@ func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 }
 
 // stage12-design 5.2: a card is bounded by shape, not a session's time or
-// step budget (ruling 221: the guide gives no time estimate any more).
+// step budget (the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
 	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
@@ -3487,7 +3487,7 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	}
 }
 
-// The planner class's session_model (ruling 330) is the model its plan
+// The planner class's session_model is the model its plan
 // session runs on, whatever rung the plan loop passes.
 func TestRunPlanRunsOnTheClassSessionModel(t *testing.T) {
 	files, err := policy.ReadDir("../policy/testdata/tree")

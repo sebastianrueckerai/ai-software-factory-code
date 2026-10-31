@@ -151,7 +151,7 @@ RUN --mount=type=bind,from=downloads,source=/opencode.tar.gz,target=/tmp/opencod
       tar -xzf /tmp/opencode.tar.gz -C /tmp opencode \
       && install -m 0755 /tmp/opencode /usr/local/bin/opencode \
       && rm /tmp/opencode
-# Go toolchain (ruling 99), the same pin as Dockerfile.runner, so the agent
+# Go toolchain, the same pin as Dockerfile.runner, so the agent
 # can run the tests the PR checks will run: taken from the pinned golang base
 # image stage instead of go.dev/dl, which redirects to dl.google.com and that
 # host is unreachable here.

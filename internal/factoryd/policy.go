@@ -50,7 +50,7 @@ type OpenCard struct {
 	Issue int64
 }
 
-// ConfigSource reads the configuration tree (ruling 183): the head commit
+// ConfigSource reads the configuration tree: the head commit
 // of its branch, and the tree's files at a commit keyed by their path
 // relative to the tree's directory, schema/ left out.
 type ConfigSource interface {
@@ -728,7 +728,7 @@ func (s *PGStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) 
 // CallTotals sums the tasks' audit call rows — their tokens and modeled
 // pay-as-you-go cost to date, and the credits the GLM Coding Plan derives
 // from the tokens of each deployment that answered — in one query, with
-// no stored aggregate (ruling 198). Credits are computed here, at read
+// no stored aggregate. Credits are computed here, at read
 // time, never stored (roadmap 206); a deployment the plan holds no rate
 // for contributes its tokens and cost but no credits. A task without
 // call rows is absent from the answer.
@@ -767,7 +767,7 @@ func (l ModelLadder) Aliases() []string {
 }
 
 // sessionModel is the model a plan or report session of t runs on under
-// d: the session_model of t's class (ruling 330) under model's opencode
+// d: the session_model of t's class under model's opencode
 // provider, else model.
 func sessionModel(d policy.Document, t Task, model string) string {
 	m := d.SessionModel(t.RequiredCapabilities)

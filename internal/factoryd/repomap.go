@@ -35,7 +35,7 @@ var mapDir = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
 // fsys, the work tree a session starts from, its files with their first
 // doc line and its subdirectories with a slash, not recursive, one line
 // each cut at 120 bytes, the section at most 4 KiB with the lines past it
-// counted in its last; "" for no directories (ruling 273). .git is no part
+// counted in its last; "" for no directories. .git is no part
 // of the commit: neither a directory nor an entry.
 func RepoMap(fsys fs.FS, dirs []string) string {
 	var lines, seen []string

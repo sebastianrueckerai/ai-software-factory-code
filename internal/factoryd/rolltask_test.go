@@ -1475,7 +1475,7 @@ func TestModelReviewOfARollCallsNoModel(t *testing.T) {
 	if err != nil || out.Get(&rv) != nil {
 		t.Fatal(err)
 	}
-	if rv.Verdict != "" || rv.Note != "no model review: a roll task only bumps image digests main CI built, and makes no model call (ruling 178)" {
+	if rv.Verdict != "" || rv.Note != "no model review: a roll task only bumps image digests main CI built, and makes no model call" {
 		t.Fatalf("review %+v", rv)
 	}
 }

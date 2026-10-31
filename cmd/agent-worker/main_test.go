@@ -1284,7 +1284,7 @@ func TestCommitAndPushIgnoresAgentPlantedGitPrograms(t *testing.T) {
 
 // Forgejo's protected_file_patterns rejects every new factory/* branch
 // outright, so branch protection cannot keep an agent from editing a
-// workflow directory (rulings 90, 100): the worker itself must refuse the
+// workflow directory: the worker itself must refuse the
 // push, by comparing the tree entries of .forgejo, .gitea and .github,
 // never by parsing a diff's path listing.
 func TestCommitAndPushRefusesWorkflowDirChanges(t *testing.T) {
@@ -1847,7 +1847,7 @@ func TestLoadEnvParsesAnswers(t *testing.T) {
 	}
 }
 
-// A report session (ruling 185) gets no push URL or token and needs none;
+// A report session gets no push URL or token and needs none;
 // its guide arrives as REPORT_GUIDE. A coding session still needs both.
 func TestLoadEnvReportModeHasNoPushCredentials(t *testing.T) {
 	// loadEnv unsets the tokens it read: each call gets them anew
@@ -1917,7 +1917,7 @@ func changedSession(t *testing.T) (dir string, e workerEnv, base, mainHead, fork
 }
 
 // A factoryd that never answers the push request (one that died without
-// its shutdown, ruling 231) costs the session its push: the worker waits
+// its shutdown) costs the session its push: the worker waits
 // its bound, pushes nothing and says why.
 func TestNoPushTokenNoPush(t *testing.T) {
 	dir, e, base, mainHead, fork := changedSession(t)

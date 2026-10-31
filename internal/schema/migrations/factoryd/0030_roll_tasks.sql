@@ -1,4 +1,4 @@
--- a rolls row per image a commit changed (ruling 178), the rows before are
+-- a rolls row per image a commit changed, the rows before are
 -- factoryd's own roll, measured at its boot
 ALTER TABLE rolls ADD COLUMN IF NOT EXISTS image text NOT NULL DEFAULT 'factoryd';
 ALTER TABLE rolls ADD COLUMN IF NOT EXISTS deployment text NOT NULL DEFAULT 'factoryd';

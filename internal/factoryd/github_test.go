@@ -483,7 +483,7 @@ func TestGitHubSync(t *testing.T) {
 
 	workflow := g.commit("CI on GitHub", ".forgejo/workflows/ci.yml", "on: push")
 	g.git(g.work, "push", "-q", g.github, "main")
-	syncs("GitHub's default branch of acme/app at "+workflow[:7]+" changes .forgejo/, .gitea/ or .github/, which no pull request of the factory's may change (rulings 90, 100): bring it back by hand", true)
+	syncs("GitHub's default branch of acme/app at "+workflow[:7]+" changes .forgejo/, .gitea/ or .github/, which no pull request of the factory's may change: bring it back by hand", true)
 	g.git(g.work, "checkout", "-q", "--orphan", "other")
 	unrelated := g.commit("another history", "OTHER", "x")
 	g.git(g.work, "push", "-q", "-f", g.github, "other:main")

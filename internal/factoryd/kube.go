@@ -645,7 +645,7 @@ func cacheClaim(name string) map[string]any {
 // cacheEnv points Go's build cache, go install and npm's cache at the
 // cache volume at /cache, and Go's module cache at the pod's own modcache:
 // the module unpack relies on file locks, which gVisor keeps inside each
-// sandbox (ruling 223). PATH is the sandbox's and the CI runner's own with
+// sandbox. PATH is the sandbox's and the CI runner's own with
 // go install's target first.
 var cacheEnv = []map[string]any{
 	{"name": "GOPATH", "value": "/cache/go"},
@@ -674,7 +674,7 @@ const cacheUmaskSh = `umask 0000; exec "$0" "$@"`
 
 // cacheVolumes is a pod spec's volumes for the cache claim of that name
 // plus the pod's own modcache emptyDir, 8Gi: the module cache keeps its
-// file locks inside each sandbox (ruling 223). The worker pod spec and
+// file locks inside each sandbox. The worker pod spec and
 // the CI runner's mount them.
 func cacheVolumes(claim string) []any {
 	return []any{
@@ -932,7 +932,7 @@ func (k *InClusterKube) SuspendKustomization(ctx context.Context, namespace, nam
 // FluxRollouts are the newest rollouts of every HelmRelease and every
 // Kustomization but the factory's own, the one applying the roll targets'
 // Deployments in namespace, whose rolls those Deployments' own window
-// judges (ruling 237); the SigNoz intake's RolloutPass and rolloutAt read them.
+// judges; the SigNoz intake's RolloutPass and rolloutAt read them.
 func (k *InClusterKube) FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error) {
 	var ks struct {
 		Items []fluxKustomization `json:"items"`

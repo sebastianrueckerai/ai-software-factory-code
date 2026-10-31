@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Alert kinds (ruling 140): an activity past its policy bound, a session
+// Alert kinds: an activity past its policy bound, a session
 // supervisor trip, a human escalation, an agent asking the issue author.
 const (
 	AlertGateBound      = "gate_bound"
@@ -24,7 +24,7 @@ const (
 	// AlertConfigRejected is a commit of the configuration tree factoryd
 	// refused, filed as a human-lane issue on the tree's repository.
 	AlertConfigRejected = "config_rejected"
-	// AlertScreening is the screening stage's suspect verdict (ruling 182):
+	// AlertScreening is the screening stage's suspect verdict:
 	// real when a human closes the issue, noise when one lets it run.
 	AlertScreening = "screening"
 	// AlertMonthCap is the month's variable spend at 50, 80 and 100 percent

@@ -1,11 +1,11 @@
 # Configuration, policy and costs
 
 factoryd's configuration is the directory `factory/` of the infra
-repository's `main` (ruling 183): `policy.yaml` (classes with their
-`session: code|plan|report`), `processes/<name>.yaml` (ruling 206: the
+repository's `main`: `policy.yaml` (classes with their
+`session: code|plan|report`), `processes/<name>.yaml` (the
 blocks `tracks` (roadmap 225: `direct` and an optional `plan`, each with
 its class, the plan track with the plan's bounds), `dependencies`,
-`stages`, each with its `on_findings` rule, ruling 177, and `merge`; a
+`stages`, each with its `on_findings` rule, and `merge`; a
 file that still carries the removed `lanes` block is refused by name) and `projects/<name>.yaml` (one per
 project: repository, merge rule, `objects: factory|seed`,
 `agents: coder|none`, `process`, notify, namespaces, environments,
@@ -118,7 +118,8 @@ the aliases factoryd calls on its tasks' account, which the agent may
 not: `review_model` for the model review, `supervisor_model` for the
 gate supervisor, `checkin_model` for the check-in (else `review_model`), `audit_model` for the audit; a class without one gets no such call;
 a plan or report class may name `session_model`, one of its models, which its sessions run on instead of the stronger rung).
-The text classes are `small`, `big` and `premium` (rulings 328 to 330): `premium` is a pay-per-token model
+The text classes are `small`, `big` and `premium`: `premium` is a
+pay-per-token model
 whose spend is real money, so `premium_month_eur` caps it apart. A premium call that cap cannot fit with its
 whole output runs on `big`, its audit row saying so, and a premium call the provider fails LiteLLM's router sends to `big`; every key
 minted for a list holding `premium` also holds `big`. The console's status strip shows the premium spend this
@@ -208,7 +209,7 @@ which the API server signs into the token; factoryd's calls and every
 other row have none. A model call's row also keeps when its hold was
 taken (`held_at`, its start) and the output it asked for (`want_out`).
 Two floors read this math before an attempt, at the free task, day,
-month and project headroom (ruling 322, roadmap 243). The attempt's
+month and project headroom (roadmap 243). The attempt's
 (`AttemptFunded`: every attempt of a run from before the session ladder)
 needs a call of no prompt and 1024 output tokens. The session's
 (`SessionFunded`: every session's start, the console's answer and its Fund action) needs a session's opening:
@@ -240,7 +241,7 @@ the task's `model` and `settlement` rows (tool rows never offset it; a
 difference below 1e-9 EUR is float noise and books nothing): inside the
 settle window only a raise, dated the day the pass runs; once past the
 window the final row sets the task to LiteLLM's figure, down as well as
-up, dated the task's finished day (ruling 196), `tool` per tool call with
+up, dated the task's finished day, `tool` per tool call with
 the tool as ref, `resource` for the later leases), ref, EUR (never
 negative, except a final `settlement` row). Costs are LiteLLM's USD prices
 booked 1:1 as EUR, which errs high. The schema of `policy_versions`,
@@ -273,7 +274,7 @@ opencode's config names it the remote MCP server `factory-tools`
 tool call at this timeout), and the model sees the tools as
 `factory-tools_<tool>`. The provider keys live only in the gateway
 (secret `gateway-tool-keys`). A task may call a tool only when one of its
-classes lists it in the policy (`classes.<c>.tools`, ruling 132): the paid
+classes lists it in the policy (`classes.<c>.tools`): the paid
 tools with their caps, the free ones (`escalate` and the
 commissioning tools) as `{}`; any other call is `refused_capability`.
 
@@ -300,7 +301,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   priced per request or per megapixel run. A megapixel endpoint takes
   only the input keys `prompt`, `negative_prompt`, `seed`, `image_size`,
   `num_images`, `num_inference_steps`, `guidance_scale`,
-  `enable_safety_checker` and `output_format` (ruling 117); any other key
+  `enable_safety_checker` and `output_format`; any other key
   (a source image, a count alias, another size name) is refused before
   the hold. `num_images` (default 1) times the megapixels of `image_size`
   (a fal preset or `{width, height}`, default `landscape_4_3`, each side
@@ -322,7 +323,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
 - `request_info` (`question`, `tried`, `needs`; each required, at most
   4000 bytes): free, through the class's tool list like every tool
   (the policy lists it as `request_info: {}`). For a report the agent
-  could not reproduce and found no fault in (ruling 150). It goes the same
+  could not reproduce and found no fault in. It goes the same
   way as an escalation (an `agent_info_request` intake event, the session
   stops with outcome `needs_info`); from change id `needs-info` on the
   workflow's `RequestInfo` comments the request on the issue, mentioning
@@ -534,7 +535,7 @@ missing field) books the hold; a 4xx books 0. A reported cost above the
 hold (a provider billing past the bounded arguments) is booked in full
 and flagged `COST OVER HOLD` with both figures in the log and the audit
 row's `over_hold`; the caps then refuse the next call from
-the true headroom (ruling 117). A hold is only taken for a task that is
+the true headroom. A hold is only taken for a task that is
 `running` or `in-review` (the gates' model review), and for factoryd's
 `brief` call on a `waiting-human` task, the one text its card's person
 reads first: `TakeHold` refuses any other status with
@@ -579,7 +580,7 @@ tasks whose classes list it (the infra policy lists all of them for
   CA's public key as `TrustedUserCAKeys`, lists the one principal
   `resource-<row id>` in `AuthorizedPrincipalsFile` for root, and sets
   `AuthorizedKeysFile none` and no passwords: only a certificate for this
-  server logs in, as `root` (ruling 125). The answer
+  server logs in, as `root`. The answer
   carries the resource id, the IPv4 and the lease end, and a certificate
   when a key was given.
 - `ssh_certificate` (`resource_id`, `public_key`): for one of the task's
@@ -598,7 +599,7 @@ volume GB x GB-month price / 730. For a cx23 in fsn1 for 90 minutes with
 0.0031342 = 0.0223342 EUR. The monthly figure on approval cards is the
 catalogue's monthly prices (5.49 + 0.50 + 20 x 0.0572 = 7.134 EUR).
 
-**Envelope.** A project's envelope is its file's (ruling 183):
+**Envelope.** A project's envelope is its file's:
 `envelope` (`monthly_eur`, `server_types`, `max_count`,
 `max_lease_hours`, `volume_max_gb`) and `standing` in
 `projects/<name>.yaml`, each absent block the policy's
@@ -634,7 +635,7 @@ label or deleted as unknown.
 
 **Leases and the collector.** The gateway runs the collector on the
 agent project every 2 minutes: it deletes resources whose lease ends
-before its next pass (within the interval plus 90 s, ruling 124, so a
+before its next pass (within the interval plus 90 s, so a
 lease of N started hours never lives into hour N+1), unless standing and not released, or
 whose task is `done` or `failed`, each with its whole commission through
 the retrying release (server, volume, firewall: the volume waits, 3 s at a
@@ -644,20 +645,20 @@ billed deletes are issued within the pass; a pass that takes longer than
 the 90 s is logged. It deletes every
 server, firewall and volume the registry does not know as open and every
 primary IP no server holds, and closes rows whose resource is gone; the
-interlock of ruling 123 (see [the untrusted runner](operations.md#the-untrusted-pull-request-runner-ruling-78)) guards every
+collector's interlock (see [the untrusted runner](operations.md#the-untrusted-pull-request-runner)) guards every
 pass, with the cluster nodes from `AGENT_SSH_SOURCES`. Then it accrues: each resource's started hours not yet booked go to a
 `resource` ledger row (`ref` `resource/<id>`) and the task's spend, and
 come off the reservation, under the headroom lock. A booking beyond the
 resource's own share of the reservation (its reserved hours at its price,
 as far as the reservation still holds it: a resource that outlived its
 lease) is booked in full and flagged: `COST OVER HOLD` in the log and an
-`accrued` audit row carrying it in `over_hold` (rulings 117, 124). Once a commission's
+`accrued` audit row carrying it in `over_hold`. Once a commission's
 rows are closed and fully booked, the rest of the reservation returns.
 factoryd's hold sweep skips resource reservations: accrual books and
 drops them. A create whose answer was lost is booked too: a release that
 finds it by its label records its id first, and a collector that deletes
-it as unknown gives its closed row the id. Two kinds (ruling 147,
-`cloud_resources.lifetime`): a task's commission is `lease`; promotion in the
+it as unknown gives its closed row the id. Two kinds
+(`cloud_resources.lifetime`): a task's commission is `lease`; promotion in the
 console makes it `standing` (`promoted_by`): project-owned, reservation and
 lease dropped, out of the task's egress, and no `ssh_certificate` for it
 (agents get no SSH to standing servers). Promotion must fit the envelope's
@@ -679,8 +680,8 @@ repaired on the next pass. The sandbox image carries
 
 **The SSH CA.** OpenBao's `ssh-client-signer` engine with role
 `factory-agent` (user certificates, TTL at most 30 minutes, any
-principal: OpenBao 2.6.3's `allowed_users` has no glob). Ruling 125 as
-amended: the binding is the server's `AuthorizedPrincipalsFile` (its one
+principal: OpenBao 2.6.3's `allowed_users` has no glob). As amended,
+the binding is the server's `AuthorizedPrincipalsFile` (its one
 principal `resource-<row id>`) plus the gateway signing only for the
 task's own server. The gateway logs in
 through Kubernetes auth role `factory-gateway` with a projected token of
@@ -691,12 +692,12 @@ Cilium's WireGuard encrypts pod traffic between nodes. The infra README
 has the setup commands.
 
 The envelope covers servers with their primary IPv4 and volumes. Buckets
-are not offered (ruling 121): Hetzner's Cloud API has no Object Storage
+are not offered: Hetzner's Cloud API has no Object Storage
 endpoint (the agent token gets 404 on every candidate path), and its S3
 keys are made in the console and reach every bucket of a project.
 
 A server's firewall admits SSH only from the cluster nodes and lets it
-out only on 53, 80 and 443, as build VMs (ruling 122). Its egress is not
+out only on 53, 80 and 443, as build VMs. Its egress is not
 name-restricted: an agent can reach the internet on those ports through
 its server, beyond the sandbox's allowlist, for at most the lease.
 

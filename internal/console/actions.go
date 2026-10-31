@@ -129,7 +129,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 }
 
 // wrongState refuses t, which needs another state, with 409: its state and
-// the action that fits it, so a wrong call corrects itself (ruling 263).
+// the action that fits it, so a wrong call corrects itself.
 func wrongState(t factoryd.Task, f capFacts, needs string) error {
 	state := factoryd.StatusMeaning(t.Status)
 	if t.Status == "in-review" && f.merge {
@@ -288,7 +288,7 @@ func (c *Console) writes(ctx context.Context, a actor, repository, subject strin
 }
 
 // approves refuses an approver's action, what, on repository's project to
-// anyone but its approvers (rulings 128, 254).
+// anyone but its approvers.
 func (c *Console) approves(ctx context.Context, a actor, repository, what string) error {
 	if c.isApprover(ctx, a.s.user, repository) {
 		return nil
@@ -1852,8 +1852,8 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 }
 
 // doApprove approves approval request id: a resource request for its
-// task (one commission of that spec; the project's envelope is its file's,
-// ruling 183); a merge request gets the member's APPROVED review on the
+// task (one commission of that spec; the project's envelope is its
+// file's); a merge request gets the member's APPROVED review on the
 // pull request, and only once Forgejo has it is the workflow signalled,
 // which merges as factory-merge. An approval the agent decided is the
 // factory's own, decided as factoryd.ChatUser (a.approver), whoever is
@@ -2109,7 +2109,7 @@ func (c *Console) doRerun(ctx context.Context, a actor, id int64) (string, error
 // doInvite makes login a member of the chat's project, an approver's
 // action: a write collaborator of its repository, added with the token
 // registration keeps project repositories with, since the approver's own
-// may not administer it (ruling 254). A seed project's collaborators are
+// may not administer it. A seed project's collaborators are
 // Forgejo's to keep.
 func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, error) {
 	if !policy.ForgejoLogin(login) {

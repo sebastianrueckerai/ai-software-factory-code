@@ -19,7 +19,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// Ruling 149's decision table: every condition of the merge outcome auto,
+// The decision table: every condition of the merge outcome auto,
 // each one alone failing it.
 func TestAutoMerge(t *testing.T) {
 	yes, no := true, false
@@ -195,7 +195,7 @@ func TestWorkflowNeedsInfoResumesWithThePostersAnswer(t *testing.T) {
 	}
 }
 
-// Backlog 29 (ruling 203): the author's answers buy at most
+// Backlog 29: the author's answers buy at most
 // maxPosterAttempts extra attempts. The third answer still reaches the
 // next session, but buys none: the loop ends at the session cap's card
 // after 3+2 sessions, not 3+3.

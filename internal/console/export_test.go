@@ -216,7 +216,7 @@ func TestChatGithubExport(t *testing.T) {
 	g.replies = [][]string{{call(1, "github_export", args)}, {say("It is the factory's own.")}}
 	_, seed, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"export the factory"}})
 	equal(t, "the seed project's", seed, []string{
-		tool("Refused: ai-software-factory-code is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)"),
+		tool("Refused: ai-software-factory-code is the factory's own: infra's push-mirrors CronJob mirrors it"),
 		`text {"text":"It is the factory's own."}`, `done {}`})
 	equal(t, "Forgejo calls of the refused", r.mirrors.took(), []string(nil))
 	chatRows(t, r.events, before, "sebastian",

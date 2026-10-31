@@ -73,7 +73,7 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	if !slices.Equal(g.merges, []string{"9 r1 sebastian"}) || g.approvals[0].Gates.Policy.Class != "high" {
 		t.Fatalf("merges %v, approval %+v", g.merges, g.approvals[0])
 	}
-	// a roll makes no model call (ruling 178): its review's note is no
+	// a roll makes no model call: its review's note is no
 	// finding; the card names no session gap (roadmap 222, item 2)
 	for _, w := range g.approvals[0].WhyHuman {
 		if strings.Contains(w, noVerdict) || w == RollGapNote {
@@ -85,7 +85,7 @@ func TestWorkflowRollGoesStraightToChecks(t *testing.T) {
 	}
 }
 
-// A roll ends done when its rollout is confirmed (ruling 178): the
+// A roll ends done when its rollout is confirmed: the
 // approval's merge is not its end — the run waits for the images it
 // merged to run on their Deployments (AwaitRollout) and finishes done
 // naming what went live, never the wall-clock cap.
@@ -129,7 +129,7 @@ func TestWorkflowRollFoldsANewHeadBeforeItsMerge(t *testing.T) {
 	}
 }
 
-// A roll schedules no review beside its checks wait (ruling 178): its
+// A roll schedules no review beside its checks wait: its
 // review is the stage's own, after green checks.
 func TestWorkflowRollReviewsAfterChecks(t *testing.T) {
 	g, commits := newRollHarness(t, "r1")
