@@ -903,8 +903,12 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 }
 
 // Record is the Timeline's sink: rows land newest last, as the webhook's
-// doc_written rows are read back.
+// doc_written rows are read back. A row whose identity another row
+// already holds drops, as Postgres's unique indexes drop it.
 func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
+	if e.IdentityKey != "" && slices.ContainsFunc(s.events, func(have Event) bool { return have.IdentityKey == e.IdentityKey }) {
+		return 0, nil
+	}
 	s.events = append(s.events, e)
 	if _, ok := s.closed[e.TaskID]; e.Kind == EventPlanClosed && !ok {
 		s.closed[e.TaskID] = cmp.Or(e.At, time.Now())
