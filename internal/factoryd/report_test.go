@@ -461,6 +461,8 @@ func TestParseSizing(t *testing.T) {
 	}{
 		"fenced": {"I read it.\n```json\n{\"size\": \"medium\", \"reason\": \"touches the scheduler and the store\", \"files\": [\"internal/a.go\", \" \", \"internal/b.go\"]}\n```",
 			sizeVerdict{"medium", "touches the scheduler and the store", []string{"internal/a.go", "internal/b.go"}}, true},
+		"guide quoted before the answer": {"The audit is complete. The guide's answer `{\"size\": \"...\", \"reason\": \"...\", \"files\": [...]}` names small at most 300.\n\n```json\n{\"size\": \"small\", \"reason\": \"comments only\", \"files\": [\"a.go\", \"b.go\"]}\n```",
+			sizeVerdict{"small", "comments only", []string{"a.go", "b.go"}}, true},
 		"no reason":    {`{"size": "small"}`, sizeVerdict{Size: "small", Reason: "the sizing named no reason"}, true},
 		"unknown size": {`{"size": "huge", "reason": "x"}`, sizeVerdict{}, false},
 		"no object":    {"it is big", sizeVerdict{}, false},

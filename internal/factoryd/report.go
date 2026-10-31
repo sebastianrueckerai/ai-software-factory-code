@@ -399,30 +399,34 @@ const (
 )
 
 // parseSizing reads the sizing's answer, the JSON object in its last
-// message; ok only for a size a card may have.
+// message. A sizing that quotes the guide's answer form in its prose still
+// answers: objects are tried from the message's end, and the first that
+// parses with a size a card may have wins. ok only for such an object.
 func parseSizing(text string) (sizeVerdict, bool) {
-	i, j := strings.Index(text, "{"), strings.LastIndex(text, "}")
-	if i < 0 || j < i {
-		return sizeVerdict{}, false
-	}
-	var v struct {
-		Size   string   `json:"size"`
-		Reason string   `json:"reason"`
-		Files  []string `json:"files"`
-	}
-	if err := json.Unmarshal([]byte(text[i:j+1]), &v); err != nil || !slices.Contains(policy.CardSizes, v.Size) {
-		return sizeVerdict{}, false
-	}
-	res := sizeVerdict{Size: v.Size, Reason: textutil.Truncate(strings.TrimSpace(v.Reason), maxSizeReason)}
-	if res.Reason == "" {
-		res.Reason = "the sizing named no reason"
-	}
-	for _, f := range v.Files {
-		if f = strings.TrimSpace(f); f != "" && len(res.Files) < maxSizeFiles {
-			res.Files = append(res.Files, textutil.Truncate(f, maxSizeFile))
+	for j := strings.LastIndex(text, "}"); j >= 0; j = strings.LastIndex(text[:j], "}") {
+		i := strings.LastIndex(text[:j], "{")
+		if i < 0 {
+			return sizeVerdict{}, false
+		}
+		var v struct {
+			Size   string   `json:"size"`
+			Reason string   `json:"reason"`
+			Files  []string `json:"files"`
+		}
+		if err := json.Unmarshal([]byte(text[i:j+1]), &v); err == nil && slices.Contains(policy.CardSizes, v.Size) {
+			res := sizeVerdict{Size: v.Size, Reason: textutil.Truncate(strings.TrimSpace(v.Reason), maxSizeReason)}
+			if res.Reason == "" {
+				res.Reason = "the sizing named no reason"
+			}
+			for _, f := range v.Files {
+				if f = strings.TrimSpace(f); f != "" && len(res.Files) < maxSizeFiles {
+					res.Files = append(res.Files, textutil.Truncate(f, maxSizeFile))
+				}
+			}
+			return res, true
 		}
 	}
-	return res, true
+	return sizeVerdict{}, false
 }
 
 // sizingGuide is what a sizing session writes instead of code, with the
