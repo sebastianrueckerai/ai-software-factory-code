@@ -191,6 +191,7 @@ console.log(JSON.stringify({
     {role: "assistant", content: "All green.", at: "2026-10-11T09:30:04Z"}], "sebastian", []),
   queuedRow: chatView.userHTML("sebastian", "also this", "2026-10-11T09:30:05Z", true),
   readRow: chatView.readHTML,
+  openQ: [chatView.openQuestionHTML("Can you do that? <b>"), chatView.openQuestionHTML("")].join("|"),
   imgRow: chatView.userHTML("sebastian", "look at the run", "2026-10-11T09:30:01Z", false,
     [{id: 901, content_type: "image/png", name: "img1", url: "/projects/ai-software-factory-code/chat/attachments/901"}], []),
   zoom: chatView.zoomHTML("/projects/ai-software-factory-code/chat/attachments/901", "img1"),
@@ -310,6 +311,7 @@ console.log(JSON.stringify({
 		{"zoom", `<div id="img-zoom" class="overlay imgbox" role="dialog" aria-modal="true" aria-label="the image full size; click or Escape closes">` +
 			`<img src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></div>`},
 		{"readRow", `<p class="meta chat-read">✓ read by the agent</p>`},
+		{"openQ", `<p class="meta chat-open">question that may be open: Can you do that? &lt;b&gt;</p>|`},
 		{"share", `[384,384,720,500.25]`},
 		{"budgetRow", `<div class="msg agent poke" data-message="12"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-28 22:20Z</time></p>` +
 			`<div class="said"><p>The chat's budget for October is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.<br>free headroom 0.038793 EUR</p></div>` +

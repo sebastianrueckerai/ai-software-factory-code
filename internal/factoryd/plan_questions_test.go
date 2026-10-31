@@ -624,7 +624,7 @@ func TestPlanLoopAnswersSendThePlannerBack(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 3 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.plans) != 3 || h.plans[1] != nil || h.plans[2] != nil || !slices.Equal(h.requests, []int{1, 2, 3}) || !slices.Equal(h.asked, []int{1, 1, 2}) {
+	if len(h.plans) != 3 || h.plans[1] != nil || h.plans[2] != nil || !slices.Equal(h.requests, []int{1, 1, 2, 2, 3}) || !slices.Equal(h.asked, []int{1, 1, 2}) {
 		t.Fatalf("plans %q requests %v asked %v", h.plans, h.requests, h.asked)
 	}
 	var answered []string

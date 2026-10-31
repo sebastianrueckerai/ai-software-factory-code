@@ -255,6 +255,12 @@ var chatView = (function () {
   // their count in one line at the top; after a compaction its rows up to
   // the summary fold behind one line, the summary turn follows, then the
   // rows after it (C14); budget is the stopped chat's fund state
+  // openQuestionHTML is the thread's question a reply passed (card #1345),
+  // shown while the next turn's prompt carries it; no reply is checked for
+  // an answer, so the line asserts none
+  function openQuestionHTML(q) {
+    return q ? "<p class=\"meta chat-open\">question that may be open: " + esc(q) + "</p>" : "";
+  }
   function threadHTML(msgs, login, proposals, thread, budget) {
     var swept = thread && thread.cleared ? "<p class=\"meta chat-cleared\">cleared: " + thread.cleared + " older " +
       (thread.cleared === 1 ? "message" : "messages") + " out of view</p>" : "";
@@ -458,7 +464,8 @@ var chatView = (function () {
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
-    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, zoomHTML: zoomHTML};
+    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, zoomHTML: zoomHTML,
+    openQuestionHTML: openQuestionHTML};
 })();
 
 (function () {
@@ -1215,7 +1222,7 @@ var chatView = (function () {
       // panel's base lives; the optimistic ones carry their object URL
       data.messages.forEach(function (m) { (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; }); });
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
-      log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.threadHTML(data.messages, login, data.proposals, data.thread, data.budget) : intro;
+      log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.openQuestionHTML(data.open_question) + chatView.threadHTML(data.messages, login, data.proposals, data.thread, data.budget) : intro;
       if (form) {
         // an archived thread's composer is one line with restore (C14);
         // another member's archived thread has no restore to offer

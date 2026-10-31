@@ -1340,6 +1340,67 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 }
 
+// A revision whose every question is the confirmation, answered with its
+// offered choice word, is confirmed: the answers resolve the plan's
+// request as the confirmation it was, and RequestPlan files its cards
+// with no planner session. A choice with words around it, or a real
+// question answered, sends the planner back.
+func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
+	ctx := context.Background()
+	// the plan card running with its spec unconfirmed, so revision 1 asks
+	rig := func(p Plan) (*Runner, *fakeStore, *fakeWorkflows) {
+		r, store, _, _ := newPlanRunner(t, p)
+		plan := store.tasks["t-plan"]
+		plan.Status = "running"
+		store.tasks["t-plan"] = plan
+		wf := &fakeWorkflows{}
+		r.cfg.Workflows = wf
+		return r, store, wf
+	}
+
+	r, store, _ := rig(testPlan())
+	if ref := requestPlan(t, r); ref.Answered || ref.Filed != nil || ref.Comment == 0 {
+		t.Fatalf("the ask: %+v", ref)
+	}
+	if err := AnswerPlanQuestions(ctx, store, r.cfg.Workflows, "t-plan", 1, []PlanAnswer{{Idx: 1, Text: "okay"}}, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if a := store.approvals[0]; a.Status != "denied" || a.DecisionNote != "superseded: revision 1 is confirmed, its cards file" {
+		t.Fatalf("the approval after the confirmation %+v", a)
+	}
+	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
+	if ref := getInto[PlanRef](t, val, err); ref.Answered || !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) {
+		t.Fatalf("the confirmed revision: %+v", ref)
+	}
+	if cards := cardsByKey(t, store); len(cards) != 4 {
+		t.Fatalf("the filed cards: %v", cards)
+	}
+
+	r, store, _ = rig(testPlan())
+	requestPlan(t, r)
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "Okay — and keep the slate clean", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	val, err = execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
+	if ref := getInto[PlanRef](t, val, err); !ref.Answered || ref.Filed != nil {
+		t.Fatalf("the padded answer: %+v", ref)
+	}
+
+	asking := testPlan()
+	asking.Questions = []PlanQuestion{{Text: "Which store backs the links?", Choices: []string{"postgres", "sqlite"}}}
+	r, store, _ = rig(asking)
+	requestPlan(t, r)
+	for idx, answer := range map[int]string{1: "postgres", 2: "okay"} {
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, idx, answer, "alice"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	val, err = execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
+	if ref := getInto[PlanRef](t, val, err); !ref.Answered || ref.Filed != nil {
+		t.Fatalf("the answered question: %+v", ref)
+	}
+}
+
 // A revision that changes the spec's outcome, its glossary or a
 // criterion against the newest confirmed revision asks the confirmation
 // again, though that one was answered: a revision a comment replaced
@@ -1425,6 +1486,7 @@ type planHarness struct {
 	pins        []int64          // RequestPlan's pins, per call
 	file        map[int]bool     // the revisions RequestPlan files
 	refuse      map[int][]string // the revisions RequestPlan refuses, with why
+	answered    map[int]bool     // the revisions whose answers are all in: RequestPlan sends them back answered
 	open        []int            // OpenPlanQuestions' answers, in order
 	asked       []int            // the revisions OpenPlanQuestions was asked about
 	requestPlan func(taskID string, revision int) (PlanRef, error)
@@ -1453,6 +1515,8 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 				ref.Refused = h.refuse[revision]
 			case h.file[revision]:
 				ref.Filed = []int64{2, 3, 4}
+			case h.answered[revision]:
+				ref.Answered = true
 			default:
 				ref.Comment = int64(699 + revision)
 			}
@@ -1463,6 +1527,12 @@ func newPlanHarness(t *testing.T, results ...PlanResult) *planHarness {
 			h.asked = append(h.asked, revision)
 			n := h.open[0]
 			h.open = h.open[1:]
+			if n == 0 {
+				if h.answered == nil {
+					h.answered = map[int]bool{}
+				}
+				h.answered[revision] = true
+			}
 			return n, nil
 		})
 	return h
@@ -2091,18 +2161,103 @@ func TestPlanLoopHealedFilingWaitsForTheStops(t *testing.T) {
 }
 
 // A run healed while the plan waited for its answers asks nothing again
-// and runs no session: the newest revision waits on; its last answer sends
-// the planner back, whose revision files.
+// and runs no session: the newest revision waits on; its last answer, one
+// with words a planner must weave in, sends the planner back, whose
+// revision files.
 func TestPlanLoopHealedWaitsOnTheRevision(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
 	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
 	h.open, h.file = []int{0}, map[int]bool{2: true}
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		switch revision {
+		case 0:
+			return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
+		case 1:
+			return PlanRef{Revision: 1, SHA256: "sha-1", Answered: true}, nil
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+	}
 	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
 	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
 		t.Fatalf("finals %v", h.finals)
 	}
-	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.requests, []int{0, 2}) || len(h.escalated) != 0 || !slices.Equal(h.asked, []int{1}) {
+	if len(h.plans) != 1 || h.plans[0] != nil || !slices.Equal(h.requests, []int{0, 1, 2}) || len(h.escalated) != 0 || !slices.Equal(h.asked, []int{1}) {
 		t.Fatalf("plans %q requests %v escalated %q asked %v", h.plans, h.requests, h.escalated, h.asked)
+	}
+}
+
+// A revision waiting for its answers that the confirmation answers files
+// with no planner session: the answer asks RequestPlan again, the cards
+// file, the plan card ends done.
+func TestPlanLoopAnsweredConfirmationFilesWithoutASession(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.open = []int{0}
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-1", Filed: []int64{2, 3, 4}}, nil
+	}
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 1 filed 3 cards" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	if len(h.plans) != 0 || !slices.Equal(h.requests, []int{0, 1}) || len(h.escalated) != 0 {
+		t.Fatalf("plans %q requests %v escalated %q; want no planner session", h.plans, h.requests, h.escalated)
+	}
+}
+
+// An answer that confirms the revision and a writer's change request in
+// the same pass do not file the revision: the change goes to a planner
+// session, and only the revision that weaves it in files (card #1345).
+func TestPlanLoopAnswerWithAChangeRequestGoesBackToThePlanner(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.open = []int{0}
+	asks := 0
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		if revision != 1 {
+			return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+		}
+		asks++
+		if asks > 1 {
+			return PlanRef{Revision: 1, SHA256: "sha-1", Filed: []int64{2, 3, 4}}, nil
+		}
+		return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
+	}
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "bob", Body: "and split the API", Comment: 71})
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 2 filed", h.finals)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer bob asked for changes to the plan: and split the API"}) ||
+		!slices.Equal(h.requests, []int{1, 2}) {
+		t.Fatalf("RunPlan findings %q, requests %v; want the change request in the second session and revision 2 filed alone", h.plans, h.requests)
+	}
+}
+
+// A run from before the answered-routing change keeps the routing its
+// history was written under: an answer that confirmed the revision starts
+// the planner session, and no re-file of the confirmed revision runs
+// before it (card #1345).
+func TestPlanLoopAnsweredFromBeforeTheRoutingChangeKeepsTheSession(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.open = []int{0}
+	h.file = map[int]bool{1: true, 2: true}
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+	}
+	h.env.OnGetVersion("answered-routing", workflow.DefaultVersion, versionAnsweredRouting).Return(workflow.DefaultVersion)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v; want the session's revision 2 filed", h.finals)
+	}
+	if len(h.plans) != 1 || !slices.Equal(h.requests, []int{0, 2}) {
+		t.Fatalf("plans %q requests %v; want one planner session and no re-file of revision 1", h.plans, h.requests)
 	}
 }
 

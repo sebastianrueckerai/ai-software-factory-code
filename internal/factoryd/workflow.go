@@ -591,6 +591,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.directToPlan = workflow.GetVersion(ctx, "direct-to-plan", workflow.DefaultVersion, versionDirectToPlan)
 	run.sizing = workflow.GetVersion(ctx, "sizing", workflow.DefaultVersion, versionSizing)
 	run.replan = workflow.GetVersion(ctx, "replan", workflow.DefaultVersion, versionReplan)
+	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1093,6 +1094,12 @@ const (
 	// answer to any wait then buys agent time (grantTime). A run from
 	// before the change fails at the limit at once.
 	versionPlannerRetry workflow.Version = 1
+	// versionAnsweredRouting (change id "answered-routing"): an answer
+	// that confirmed the revision with no open question and no writer's
+	// change request files its cards with no planner session. A run from
+	// before the change starts the session instead, keeping the routing
+	// its history was written under.
+	versionAnsweredRouting workflow.Version = 1
 	// versionApprovalPending (change id "approval-pending"): a head whose
 	// checks are pending at the approval stage's read — not started, not
 	// settled — is not red (a request opened before they started would
@@ -1288,6 +1295,7 @@ type taskRun struct {
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
 	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
 	replan            workflow.Version // a plan's run waits for its replan's stops and knows its note (versionReplan)
+	answeredRouting   workflow.Version // a confirming answer files with no session (versionAnsweredRouting)
 	replanBy          string           // the pending replan's person (versionReplan)
 	replanNote        string           // the pending replan's note (versionReplan)
 	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)

@@ -338,7 +338,7 @@ func TestAsksFitTheTitle(t *testing.T) {
 }
 
 func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
-	q := plainQuestion(AgentAsks+"Ship A or B?\nWhy: both pass.\nRecommendation: A, it is smaller.", []string{"A", "B", "End the card"})
+	q := plainQuestion(AgentAsks+"Ship A or B?\nWhy: both pass.\nRecommendation: A, it is smaller.", QuestionFacts{}, []string{"A", "B", "End the card"})
 	if q.Ask != "Ship A or B?" || q.Why != "both pass." || q.Recommendation != "A, it is smaller." || q.Source != "the agent's" {
 		t.Errorf("parts = %+v", q)
 	}
@@ -348,10 +348,10 @@ func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
 	if q.Choices[0].Value != "say:A" || q.Choices[1].Value != "say:B" || q.Choices[2].Value != AnswerPark || q.Choices[3].Value != AnswerClose {
 		t.Errorf("values = %+v", q.Choices)
 	}
-	if q := plainQuestion(AgentAsks+"Which?", []string{"A", " ", ""}); !slices.Equal(q.Labels(), []string{"A", "Leave it waiting", "End the card"}) {
+	if q := plainQuestion(AgentAsks+"Which?", QuestionFacts{}, []string{"A", " ", ""}); !slices.Equal(q.Labels(), []string{"A", "Leave it waiting", "End the card"}) {
 		t.Errorf("empty choices offer buttons: %q", q.Labels())
 	}
-	if q := plainQuestion(AgentAsks+"Which?", []string{"park"}); q.Choices[0].Value != "say:park" {
+	if q := plainQuestion(AgentAsks+"Which?", QuestionFacts{}, []string{"park"}); q.Choices[0].Value != "say:park" {
 		t.Errorf("an agent's park label must not carry the park value: %+v", q.Choices)
 	}
 }
@@ -362,7 +362,7 @@ func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
 		{"check-in: the work is done.\nRecommendation: go on.", "the check-in's"},
 		{"supervisor escalated: stuck\nRecommendation: close it.", "the factory's"},
 	} {
-		q := plainQuestion(tt.reason, nil)
+		q := plainQuestion(tt.reason, QuestionFacts{}, nil)
 		if q.Recommendation == "" || q.Source != tt.source || !slices.Equal(q.Labels(), (&HumanQuestion{Choices: continueChoices()}).Labels()) {
 			t.Errorf("%q: %+v, want source %q", tt.reason, q, tt.source)
 		}

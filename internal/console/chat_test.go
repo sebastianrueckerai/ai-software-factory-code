@@ -33,6 +33,12 @@ import (
 
 // fakeChat is the chat's store: the chat tasks among the rig's tasks, the
 // conversations in memory.
+// storedQuestion is a thread's stored open question (card #1345).
+type storedQuestion struct {
+	question string
+	carried  bool
+}
+
 type fakeChat struct {
 	tasks *fakeTasks
 	mu    sync.Mutex
@@ -62,11 +68,14 @@ type fakeChat struct {
 	// thread; tokens the newest call's tokens by thread reference, which a
 	// test sets, and totals its calls' sums
 	summaries map[string]factoryd.ThreadSummary
-	compacts  map[string]int
-	tokens    map[string]int
-	totals    map[string][2]float64
-	next      int64
-	spend     []spendRow
+	// openQ are the threads' open questions (card #1345) by repository,
+	// login and thread
+	openQ    map[string]storedQuestion
+	compacts map[string]int
+	tokens   map[string]int
+	totals   map[string][2]float64
+	next     int64
+	spend    []spendRow
 	// atts are the stored image rows, any member's, in arrival order
 	atts []storedAttachment
 	// proposals are the proposals and undos, in the order stored
@@ -156,11 +165,41 @@ func (f *fakeChat) AddChatMessage(_ context.Context, repository, login string, m
 	defer f.mu.Unlock()
 	f.next++
 	m.ID, m.At, m.Conversation = f.next, f.stamp(), cmp.Or(m.Conversation, f.current(repository, login))
+	if m.Role == "user" && m.Kind == "" {
+		if q := factoryd.AskedQuestion(m.Content); q != "" {
+			if f.openQ == nil {
+				f.openQ = map[string]storedQuestion{}
+			}
+			f.openQ[repository+" "+login+" "+strconv.FormatInt(m.Conversation, 10)] = storedQuestion{q, false}
+		}
+	}
 	if f.msgs == nil {
 		f.msgs = map[string][]factoryd.ChatMessage{}
 	}
 	f.msgs[repository+" "+login] = append(f.msgs[repository+" "+login], m)
 	return m.ID, nil
+}
+
+func (f *fakeChat) ChatOpenQuestion(_ context.Context, repository, login string, conversation int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	q := f.openQ[repository+" "+login+" "+strconv.FormatInt(conversation, 10)]
+	return q.question, q.carried, nil
+}
+
+func (f *fakeChat) PutChatQuestion(_ context.Context, repository, login string, conversation int64, question string, carried bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login + " " + strconv.FormatInt(conversation, 10)
+	if question == "" {
+		delete(f.openQ, k)
+		return nil
+	}
+	if f.openQ == nil {
+		f.openQ = map[string]storedQuestion{}
+	}
+	f.openQ[k] = storedQuestion{question, carried}
+	return nil
 }
 
 func (f *fakeChat) CurrentConversation(_ context.Context, repository, login string) (int64, error) {
@@ -1262,7 +1301,49 @@ func TestChatTextReply(t *testing.T) {
 		`{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"what is open?","state":"active","current":true,"first_at":"2026-10-11T09:30:01Z",` +
 			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
-			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}]}`})
+			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}],` +
+			`"open_question":"what is open?"}`})
+}
+
+// The chat carries a question a reply leaves unanswered (card #1345): a
+// human message that asks one opens it on the thread, the reply that
+// passes it without answering marks it carried, the next turn's prompt
+// carries it with the instruction to answer it, and that reply clears it.
+func TestChatCarriesAnUnansweredQuestion(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("I will look into the concept.")}, {say("Yes, I can commit it as a text file.")}, {say("Noted.")}}
+	system := func(call int) string {
+		t.Helper()
+		calls := g.calls()
+		if len(calls) <= call {
+			t.Fatalf("%d model calls, want more than %d", len(calls), call)
+		}
+		msgs := messages(t, calls[call])
+		sys, _ := msgs[0]["content"].(string)
+		return sys
+	}
+	theAsk := "Make a concept for this. But only if you can commit it as a text file into the repo. Can you do that?"
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {theAsk}})
+	if sys := system(0); strings.Contains(sys, "may not have answered") {
+		t.Errorf("the first turn's prompt carries the question before any reply passed it:\n%s", sys)
+	}
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	if j := rec.Body.String(); !strings.Contains(j, "open_question") || !strings.Contains(j, "Can you do that?") {
+		t.Errorf("the thread the dodging reply leaves does not show its open question: %s", j)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go on"}})
+	if sys := system(1); !strings.Contains(sys, "may not have answered") || !strings.Contains(sys, theAsk) {
+		t.Errorf("the turn after the dodging reply carries no question:\n%s", sys)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"thanks"}})
+	if sys := system(2); strings.Contains(sys, "may not have answered") {
+		t.Errorf("the turn after the answering reply still carries the question:\n%s", sys)
+	}
+	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	if strings.Contains(rec.Body.String(), "open_question") {
+		t.Errorf("the answered question is still open on the thread: %s", rec.Body.String())
+	}
 }
 
 // param is one parameter of a schema: its name, its description and its

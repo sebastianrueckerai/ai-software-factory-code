@@ -1083,6 +1083,42 @@ const (
 // ended and what it repeated, a fact (ruling 263).
 func loopFinding(how string) string { return "the previous session ended in a loop after " + how }
 
+// lastToolRefusal is the refusal the task's newest session ended on: the
+// last tool call its record holds, when that call did not complete. The
+// record is scrubbed where it was written, so the refusal quotes as it
+// stands.
+func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refusal string, ok bool) {
+	sessions, err := r.store.RecentSessions(ctx, taskID, time.Now(), 1)
+	if err != nil {
+		log.Printf("task %s: read the sessions for the ask's refusal: %v", taskID, err)
+		return "", "", false
+	}
+	if len(sessions) == 0 {
+		return "", "", false
+	}
+	b, err := r.objects.Get(ctx, "sessions/"+taskID+"/"+sessions[0].ID+".jsonl")
+	if err != nil || len(b) == 0 {
+		return "", "", false
+	}
+	var last struct{ Tool, Status, Err string }
+	for line := range strings.SplitSeq(string(b), "\n") {
+		var ev struct {
+			Kind   string         `json:"kind"`
+			Detail map[string]any `json:"detail"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil || ev.Kind != string(harness.EventToolCall) {
+			continue
+		}
+		last.Tool, _ = ev.Detail["tool"].(string)
+		last.Status, _ = ev.Detail["status"].(string)
+		last.Err, _ = ev.Detail["error"].(string)
+	}
+	if last.Status == "completed" || last.Err == "" {
+		return "", "", false
+	}
+	return last.Tool, last.Err, true
+}
+
 // Escalate hands the task to a human (architecture 6.6): state
 // waiting-human, mirrored on the issue, a comment with the reason and a
 // question_asked row with its question; the agent's choices, if any, ride
@@ -1137,6 +1173,12 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		// from its reason, so no card asks with words alone
 		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		question = shaped.Ask
+		// the refusal the newest session ended on rides with the ask,
+		// verbatim: the blocker reaches the human with no agent-side
+		// reporting to lose it (card #1345)
+		if tool, refusal, ok := r.lastToolRefusal(ctx, taskID); ok {
+			shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
+		}
 	}
 	if reason == healedReason {
 		// the restart's sentence asks nothing: the row names the question it asks again
