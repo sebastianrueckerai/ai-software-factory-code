@@ -509,7 +509,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   be cut, nor cards of the unbound sources (`roll`, `github-sync`,
   `schema-copy`, `template-update`, `revert`, `screening`, `sizing`).
   factoryd refuses any other session's ask ("this card cannot be cut:
-  finish it as it is, or ask a person with escalate").
+  finish it as it is, or escalate").
 
 The fal and Replicate outputs are usually file URLs (`v3.fal.media`,
 `replicate.delivery`), which the sandbox's egress cannot fetch: the
