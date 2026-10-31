@@ -564,9 +564,11 @@ func TestReleaseKeeperEndsTheHoldAndRunsThePromoteAgain(t *testing.T) {
 	}
 	for _, want := range []Event{
 		{At: keeperAt(18, 0), Repository: demoRepo, Kind: EventProductionReleased, Actor: "factoryd", Via: ViaFactoryd,
-			Detail: map[string]any{"how": "closed", "held_since": "2026-10-29T10:00:00Z", "hours": 8}},
+			Detail:      map[string]any{"how": "closed", "held_since": "2026-10-29T10:00:00Z", "hours": 8.0},
+			IdentityKey: "production_released sf/demo-app 2026-10-29T10:00:00Z"},
 		{At: keeperAt(18, 0), Repository: codeRepo, Kind: EventProductionReleased, Actor: "factoryd", Via: ViaFactoryd,
-			Detail: map[string]any{"how": "closed", "held_since": "2026-10-29T09:40:00Z", "hours": 8}},
+			Detail:      map[string]any{"how": "closed", "held_since": "2026-10-29T09:40:00Z", "hours": keeperAt(18, 0).Sub(keeperAt(9, 40)).Hours()},
+			IdentityKey: "production_released sf/ai-software-factory-code 2026-10-29T09:40:00Z"},
 	} {
 		if i := slices.IndexFunc(rows, func(e Event) bool { return e.Repository == want.Repository }); i < 0 || !reflect.DeepEqual(rows[i], want) {
 			t.Errorf("rows %+v, want one %+v", rows, want)
@@ -598,7 +600,7 @@ func TestReleaseKeeperEndsTheHoldOnceItsAskClosed(t *testing.T) {
 	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0)}); !reflect.DeepEqual(got, want) {
 		t.Errorf("row %+v, want %+v", got, want)
 	}
-	if rows := releasedRows(store); len(rows) != 1 || rows[0].Detail["hours"] != 8 || !slices.Equal(f.closed, []string{demoRepo + "#77"}) ||
+	if rows := releasedRows(store); len(rows) != 1 || rows[0].Detail["hours"] != keeperAt(18, 1).Sub(keeperAt(10, 0)).Hours() || !slices.Equal(f.closed, []string{demoRepo + "#77"}) ||
 		!slices.Equal(f.jobReruns, []string{demoRepo + " 212"}) {
 		t.Errorf("rows %+v, closed %q, job re-runs %q; want the hold ended once", rows, f.closed, f.jobReruns)
 	}
@@ -738,7 +740,8 @@ func TestReleaseKeeperDeployNow(t *testing.T) {
 		t.Errorf("closed %q, comments %q; want #77 closed with %q", f.closed, f.comments, note)
 	}
 	want := []Event{{At: keeperAt(12, 0), Repository: demoRepo, Kind: EventProductionReleased, Actor: "sebastian", Via: ViaButton,
-		Detail: map[string]any{"how": "deploy_now", "held_since": "2026-10-29T10:00:00Z", "hours": 2, "commit": demoCommit, "decider": "member"}}}
+		Detail:      map[string]any{"how": "deploy_now", "held_since": "2026-10-29T10:00:00Z", "hours": 2.0, "commit": demoCommit, "decider": "member"},
+		IdentityKey: "production_released sf/demo-app 2026-10-29T10:00:00Z"}}
 	if got := releasedRows(store); !reflect.DeepEqual(got, want) {
 		t.Errorf("rows %+v, want %+v", got, want)
 	}
