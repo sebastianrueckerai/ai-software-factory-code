@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -455,7 +456,7 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 			log.Printf("task %s: timeline escalated: %v", t.ID, err)
 		}
 	}
-	shaped := ShapedQuestion(reason, QuestionFacts{}, nil)
+	shaped := ShapedQuestion(reason, QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}, nil)
 	// the intake row is the ask's durable anchor, written before the wait:
 	// a card in waiting-human without its row has no ask
 	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: comment,

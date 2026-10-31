@@ -2352,6 +2352,50 @@ func TestEscalateATaskWithoutAnIssue(t *testing.T) {
 	}
 }
 
+// A session that stops on a tool refusal puts the refusal in its ask's
+// info block, verbatim: the blocker reaches the human without
+// agent-side reporting (card #1345). A plan card's stop names what its
+// choices do on the plan track, and a session whose last tool call
+// completed quotes nothing.
+func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
+	const refusal = "Refused: criterion t-c1: gh is not an allowed tool; criterion t-c2: the tool holds no issue write"
+	refusalSession := strings.Join([]string{
+		`{"time":"2026-10-31T01:40:00Z","kind":"model_call","detail":{}}`,
+		`{"time":"2026-10-31T01:40:10Z","kind":"tool_call","detail":{"tool":"read","status":"completed"}}`,
+		`{"time":"2026-10-31T01:41:00Z","kind":"tool_call","detail":{"tool":"gh","status":"error","error":` + strconv.Quote(refusal) + `}}`,
+	}, "\n")
+	for _, c := range []struct{ name, transcript, wantIn, wantOut string }{
+		{"refused", refusalSession, refusal, ""},
+		{"completed last call", strings.Join([]string{
+			`{"time":"2026-10-31T01:41:00Z","kind":"tool_call","detail":{"tool":"gh","status":"completed"}}`,
+		}, "\n"), "", refusal},
+	} {
+		task := prTask
+		task.Track = "plan"
+		r, store, objects := newActivityRunner(t, task, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
+		ctx := context.Background()
+		if err := store.InsertSession(ctx, Session{ID: "s1", TaskID: "t1"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := objects.Put(ctx, "sessions/t1/s1.jsonl", []byte(c.transcript)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := execActivity(t, r, ActivityEscalate, "t1", "the planner session stopped: it was told to report the exact refusal, and cannot"); err != nil {
+			t.Fatal(err)
+		}
+		q := store.intakeEvents[0].Question
+		if !strings.Contains(q.Info, "planner session") || strings.Contains(q.Info, "pull request") {
+			t.Errorf("%s: info = %q, want the plan track's wording", c.name, q.Info)
+		}
+		if c.wantIn != "" && !strings.Contains(q.Info, c.wantIn) {
+			t.Errorf("%s: info = %q, want the refusal verbatim", c.name, q.Info)
+		}
+		if c.wantOut != "" && strings.Contains(q.Info, c.wantOut) {
+			t.Errorf("%s: info = %q, quotes a refusal the last call did not make", c.name, q.Info)
+		}
+	}
+}
+
 // A SigNoz alert's verdict comes with its task's end (Task 70): real on a
 // merge, noise when a human closed the issue without one, unjudged
 // otherwise; another task's alert and a judged one stay as they are.
