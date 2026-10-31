@@ -255,10 +255,11 @@ var chatView = (function () {
   // their count in one line at the top; after a compaction its rows up to
   // the summary fold behind one line, the summary turn follows, then the
   // rows after it (C14); budget is the stopped chat's fund state
-  // openQuestionHTML is the thread's question a reply passed without
-  // answering (card #1345), open while the next turn's prompt carries it
+  // openQuestionHTML is the thread's question a reply passed (card #1345),
+  // shown while the next turn's prompt carries it; no reply is checked for
+  // an answer, so the line asserts none
   function openQuestionHTML(q) {
-    return q ? "<p class=\"meta chat-open\">open question: " + esc(q) + "</p>" : "";
+    return q ? "<p class=\"meta chat-open\">question that may be open: " + esc(q) + "</p>" : "";
   }
   function threadHTML(msgs, login, proposals, thread, budget) {
     var swept = thread && thread.cleared ? "<p class=\"meta chat-cleared\">cleared: " + thread.cleared + " older " +

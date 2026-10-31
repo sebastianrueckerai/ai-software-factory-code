@@ -2208,6 +2208,34 @@ func TestPlanLoopAnsweredConfirmationFilesWithoutASession(t *testing.T) {
 	}
 }
 
+// An answer that confirms the revision and a writer's change request in
+// the same pass do not file the revision: the change goes to a planner
+// session, and only the revision that weaves it in files (card #1345).
+func TestPlanLoopAnswerWithAChangeRequestGoesBackToThePlanner(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.open = []int{0}
+	asks := 0
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		if revision != 1 {
+			return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+		}
+		asks++
+		if asks > 1 {
+			return PlanRef{Revision: 1, SHA256: "sha-1", Filed: []int64{2, 3, 4}}, nil
+		}
+		return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
+	}
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "bob", Body: "and split the API", Comment: 71})
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v; want revision 2 filed", h.finals)
+	}
+	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer bob asked for changes to the plan: and split the API"}) ||
+		!slices.Equal(h.requests, []int{1, 2}) {
+		t.Fatalf("RunPlan findings %q, requests %v; want the change request in the second session and revision 2 filed alone", h.plans, h.requests)
+	}
+}
+
 // A healed run whose newest revision asks no question files its cards and
 // ends done at once; one whose questions all carry their answers (the last
 // answer landed while no workflow ran) goes back to the planner, whose

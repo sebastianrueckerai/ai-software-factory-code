@@ -1325,7 +1325,7 @@ func TestChatCarriesAnUnansweredQuestion(t *testing.T) {
 	}
 	theAsk := "Make a concept for this. But only if you can commit it as a text file into the repo. Can you do that?"
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {theAsk}})
-	if sys := system(0); strings.Contains(sys, "left unanswered") {
+	if sys := system(0); strings.Contains(sys, "may not have answered") {
 		t.Errorf("the first turn's prompt carries the question before any reply passed it:\n%s", sys)
 	}
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
@@ -1333,11 +1333,11 @@ func TestChatCarriesAnUnansweredQuestion(t *testing.T) {
 		t.Errorf("the thread the dodging reply leaves does not show its open question: %s", j)
 	}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go on"}})
-	if sys := system(1); !strings.Contains(sys, "left unanswered") || !strings.Contains(sys, theAsk) {
+	if sys := system(1); !strings.Contains(sys, "may not have answered") || !strings.Contains(sys, theAsk) {
 		t.Errorf("the turn after the dodging reply carries no question:\n%s", sys)
 	}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"thanks"}})
-	if sys := system(2); strings.Contains(sys, "left unanswered") {
+	if sys := system(2); strings.Contains(sys, "may not have answered") {
 		t.Errorf("the turn after the answering reply still carries the question:\n%s", sys)
 	}
 	rec = r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
