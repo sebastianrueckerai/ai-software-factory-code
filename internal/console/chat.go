@@ -1192,9 +1192,9 @@ var isClaim = regexp.MustCompile(`(?i)\b(?:` + strings.Join(chatClaimMarkers, "|
 // with the project's status line read at this turn's start and the line
 // of its sandbox images, the thread's summary, then its rows after the
 // summary as the turn replays them; the thread's open question rides
-// after the summary when a reply passed it without answering; the board
-// and the events are the tools'. The turn stamps every tool result
-// it stores with the time of this read.
+// after the summary when a reply passed it; the board and the events are
+// the tools'. The turn stamps every tool result it stores with the time
+// of this read.
 func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 	status, err := t.snapshot()
 	if err != nil {
@@ -1222,7 +1222,7 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 		log.Printf("console: the open question of %s on %s: %v", t.owner, t.p.Repository, err)
 	} else if q != "" && passed {
 		t.carriedQuestion, t.carried = q, true
-		system += "\n\nThe member asked a question the reply before this one left unanswered:\n" + q + "\nAnswer it in this reply."
+		system += "\n\nA human asked a question the reply before this one may not have answered:\n" + q + "\nAnswer it in this reply if it still stands."
 	}
 	return append([]factoryd.OperatorMessage{{Role: "system", Content: system}}, t.replay(liveRows(th, history))...), nil
 }
