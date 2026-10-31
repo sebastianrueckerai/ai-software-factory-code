@@ -227,9 +227,9 @@ var ErrNoImageWait = errors.New("this session cannot wait for a new image: finis
 
 // ErrNoCut refuses the agent's cut of a session whose card cannot be cut
 // (cuttable).
-var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or ask a person with escalate_to_human")
+var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or escalate")
 
-// EscalateSession hands an agent's escalate_to_human to its task's running
+// EscalateSession hands an agent's escalate to its task's running
 // session, which stops the way a supervisor's escalate stops it, or its
 // request_cut, which the session's check-in judges. It returns nil only
 // once the session took the ask; a session that ends or stops first
@@ -800,7 +800,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// stop asks the worker to end (SIGTERM through the pod's deletion) and
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
-	// the agent's escalate_to_human reaches the session here until it stops
+	// the agent's escalate reaches the session here until it stops
 	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s)})
 	defer unregister()
 	stop := func(trip *Trip) {

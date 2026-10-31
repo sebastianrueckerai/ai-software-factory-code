@@ -29,7 +29,7 @@ type SessionEscalator interface {
 	EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error
 }
 
-// AgentAsk is an agent's escalate_to_human (Kind AskEscalation: the
+// AgentAsk is an agent's escalate (Kind AskEscalation: the
 // question, why, and what the agent would do, ruling 149, and the answers
 // it offers as Choices, ruling 256), request_info (AskInfo: the question
 // for the issue's author, what it tried, what it needs, ruling 150),
@@ -119,7 +119,7 @@ func (a AgentAsk) reason() string {
 	return AgentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
 }
 
-// IntakeAgentEscalation is the intake event of an agent's escalate_to_human,
+// IntakeAgentEscalation is the intake event of an agent's escalate,
 // IntakeAgentInfoRequest of its request_info, IntakeAgentToolRequest of its
 // request_tool, IntakeAgentCut of its request_cut: recorded, never
 // signalled (the session's supervision acts on them).
@@ -249,7 +249,7 @@ func offeredChoices(taskID string, choices []string) []string {
 }
 
 // EscalationHandler is POST /internal/escalations, the gateway's hand-over
-// of an agent's escalate_to_human, request_info, request_tool or
+// of an agent's escalate, request_info, request_tool or
 // request_cut (behind the gateway's bearer): the task must be running and
 // its session take the ask, which is then recorded as an intake event; the
 // session stops as on a supervisor's escalate: work in progress pushed,

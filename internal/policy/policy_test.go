@@ -108,7 +108,7 @@ func TestParseRejects(t *testing.T) {
 		"empty model":         {strings.Replace(valid, "[small, big]", `[small, ""]`, 1), "empty model"},
 		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
 		"unknown tool":        {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
-		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "tool escalate_to_human is free: list it as {}"},
+		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate: {max_requests: 5, max_eur: 1}}", 1), "tool escalate is free: list it as {}"},
 		"scrape unpriced":     {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
 		"image look without a vision model": {strings.Replace(valid, "tools: {}", "tools: {analyze_image: {}}", 1),
 			"class coder lists analyze_image but names no vision_model, which its looks call"},

@@ -934,7 +934,7 @@ func TestBriefNamesTheToolServerOnce(t *testing.T) {
 	}
 }
 
-// Ruling 263, roadmap 201: when to call request_info or escalate_to_human
+// Ruling 263, roadmap 201: when to call request_info or escalate
 // is the tool's description, never the guides' prose; the guides state
 // once that a message asks nobody, whatever tools are open.
 func TestGuidesLeaveTheAskToTheTools(t *testing.T) {
@@ -950,7 +950,7 @@ func TestGuidesLeaveTheAskToTheTools(t *testing.T) {
 		}
 	}
 	if workGuide(all, nil) != workGuide(nil, nil) {
-		t.Fatal("the work guide still varies with request_info and escalate_to_human")
+		t.Fatal("the work guide still varies with request_info and escalate")
 	}
 }
 

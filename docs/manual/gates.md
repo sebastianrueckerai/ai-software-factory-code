@@ -556,7 +556,7 @@ made while a session ran included) sends it back with the comment and the
 last plan; an answer to a revision that is no longer the newest is
 refused (`the plan changed to revision <m>; reload`); a closed issue ends
 the task `closed`. A planner that stops to ask a human (its
-`escalate_to_human`, the gate supervisor) puts the question on the card,
+`escalate`, the gate supervisor) puts the question on the card,
 and the answer goes to the next session; a session without a plan passes
 its last message on with the findings. Every session counts against
 `limits.sessions`; at the cap the card waits with the findings and a

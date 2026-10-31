@@ -300,13 +300,13 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,escalate_to_human,fal_run,file_plan,file_verdict,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,escalate,fal_run,file_plan,file_verdict,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
 }
 
-// escalate_to_human offers the agent choices: an optional list of strings
+// escalate offers the agent choices: an optional list of strings
 // with its one line, beside the three required fields.
 func TestEscalateSchemaOffersChoices(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
@@ -316,7 +316,7 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 	}
 	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolEscalate })
 	if i < 0 {
-		t.Fatal("no escalate_to_human")
+		t.Fatal("no escalate")
 	}
 	b, _ := json.Marshal(res.Tools[i].InputSchema)
 	var schema struct {
@@ -341,7 +341,7 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 }
 
 // Ruling 263, roadmap 201: when to call request_info and
-// escalate_to_human is their descriptions' alone; factoryd's guides no
+// escalate is their descriptions' alone; factoryd's guides no
 // longer say it.
 func TestAskToolsSayWhenToCallThem(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
@@ -351,12 +351,29 @@ func TestAskToolsSayWhenToCallThem(t *testing.T) {
 	}
 	for tool, want := range map[string]string{
 		policy.ToolRequestInfo: "Ask the issue's author for information, instead of guessing, when you could not reproduce the problem and found no fault",
-		policy.ToolEscalate:    "Ask a human when the task cannot be completed without a decision, access or information only a human has.",
+		policy.ToolEscalate:    "Escalate when the task cannot be completed without a decision, access or information you lack.",
 	} {
 		i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == tool })
 		if i < 0 || !strings.HasPrefix(res.Tools[i].Description, want) {
 			t.Errorf("%s: description does not open with %q", tool, want)
 		}
+	}
+}
+
+// The escalate description holds the reach-a-human sentence: whoever
+// answers first, an ask nothing settles always reaches a human.
+func TestEscalateDescriptionReachesAHuman(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolEscalate })
+	if i < 0 {
+		t.Fatal("escalate is not listed")
+	}
+	if !strings.Contains(res.Tools[i].Description, "an ask nothing settles always reaches a human") {
+		t.Errorf("escalate: description does not hold %q", "an ask nothing settles always reaches a human")
 	}
 }
 
@@ -936,9 +953,9 @@ func TestRequestCut(t *testing.T) {
 		t.Fatalf("asks = %d, want the two valid ones", len(e.escalator.asks))
 	}
 	// factoryd refuses a session that cannot be cut: the agent reads why
-	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this card cannot be cut: finish it as it is, or ask a person with escalate_to_human\n"}
+	e.escalator.err = &providerError{status: http.StatusUnprocessableEntity, body: "this card cannot be cut: finish it as it is, or escalate\n"}
 	text, isErr = e.call(t, policy.ToolRequestCut, map[string]any{"reason": "r", "parts": []string{"a", "b"}})
-	if want := "refused by the factory policy (refused_session): this card cannot be cut: finish it as it is, or ask a person with escalate_to_human. " +
+	if want := "refused by the factory policy (refused_session): this card cannot be cut: finish it as it is, or escalate. " +
 		"The tool did not run; do not retry this call."; !isErr || text != want {
 		t.Fatalf("a refused cut = %q, want %q", text, want)
 	}

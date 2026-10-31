@@ -2017,7 +2017,7 @@ func TestPlanLoopCommentInPartsAfterAnInvalidPlan(t *testing.T) {
 	}
 }
 
-// A planner that stops to ask a human (its own escalate_to_human, or the
+// A planner that stops to ask a human (its own escalate, or the
 // gate supervisor's escalation) puts the question on the card; the
 // answer goes to the next session. The issue's close while a session runs
 // ends the task before another one.
