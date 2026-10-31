@@ -1,9 +1,12 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -80,6 +83,262 @@ type ChatWork struct {
 	Weeks       [7]float64 `json:"weeks"`
 }
 
+// SizeFigure is one card size's figure of a divide-and-conquer panel:
+// the window value, the previous window's and the spark, keyed by the
+// policy's card size (small, medium, large).
+type SizeFigure struct {
+	Size   string `json:"size"`
+	Figure Figure `json:"figure"`
+}
+
+// NamedCount is one bucket of a typed distribution: how many of the
+// window's things carry this name. Session ends name session outcomes,
+// replans name replan origins (person, cut, round) and plans by rounds
+// name each round as its number.
+type NamedCount struct {
+	Name  string  `json:"name"`
+	Count float64 `json:"count"`
+}
+
+// SizeIntercept is one size's fixed euros per card: the intercept of an
+// ordinary least squares of actual euros on changed lines across the
+// window's merged cards of that size. Available false means the fit is
+// undefined — too few cards, or changed lines without variance — never
+// zero.
+type SizeIntercept struct {
+	Size      string  `json:"size"`
+	EUR       float64 `json:"eur"`
+	Available bool    `json:"available"`
+}
+
+// The divide-and-conquer fact contracts (roadmap 336): one payload per
+// fact family, its identity in explicit fields. The identity is the
+// persistence contract — one row or one timeline line per identity,
+// whichever retry records it first — so a restart after a crash leaves
+// one fact, not two, and loses none. The event payloads set
+// Event.IdentityKey, unique where not null (migration
+// 20261108120000_metrics_identities.sql); Record drops a repeat. The
+// step payloads record through AppendFactOnce, which skips a step a
+// line of its name with the same identity already holds.
+
+// StepFact is a timeline fact's payload: the step's detail line and the
+// identity that makes the fact one fact.
+type StepFact interface {
+	detail() map[string]any
+	identity() map[string]any
+}
+
+// SessionEndFact is one session's end on a card, the session_end step:
+// outcome is a SessionOutcome word, the panel's cause.
+type SessionEndFact struct {
+	Session string // with Attempt: the identity
+	Attempt int
+	Parent  string
+	Model   string
+	Outcome string
+	Summary string
+	Started time.Time
+}
+
+func (f SessionEndFact) detail() map[string]any {
+	return map[string]any{"session": f.Session, "parent": f.Parent, "model": f.Model, "attempt": f.Attempt,
+		"outcome": f.Outcome, "summary": f.Summary, "started": rfc3339(f.Started)}
+}
+
+func (f SessionEndFact) identity() map[string]any {
+	return map[string]any{"session": f.Session, "attempt": f.Attempt}
+}
+
+// ReviewAttemptFact is one model review of one head, the model_review
+// step: an empty Verdict is one the model never judged.
+type ReviewAttemptFact struct {
+	PR      int64
+	Commit  string // with Round: the identity
+	Round   int
+	Model   string
+	Verdict string
+	Summary string
+	Note    string
+}
+
+func (f ReviewAttemptFact) detail() map[string]any {
+	return map[string]any{"pr": f.PR, "commit": f.Commit, "round": f.Round, "model": f.Model,
+		"verdict": f.Verdict, "summary": f.Summary, "note": f.Note}
+}
+
+func (f ReviewAttemptFact) identity() map[string]any {
+	return map[string]any{"commit": f.Commit, "round": f.Round}
+}
+
+// EventGateHead is one card's reading at one head — its gate decision,
+// size and diff — recorded when a card reaches a gate: the merge gate's
+// cards-above-bound panel reads it. Detail {"gate", "head", "decision",
+// "size", "files", "insertions", "deletions"}.
+const EventGateHead = "gate_head"
+
+// GateHeadFact is that reading. Identity: the card and the head; one
+// head, one row.
+type GateHeadFact struct {
+	Task       string // with Head: the identity
+	Head       string
+	Gate       string
+	Decision   string
+	Size       string
+	Files      int
+	Insertions int
+	Deletions  int
+}
+
+// Event is the reading's row of repository's issue.
+func (f GateHeadFact) Event(repository string, issue int64) Event {
+	return Event{Repository: repository, TaskID: f.Task, IssueNumber: issue, Kind: EventGateHead,
+		Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"gate": f.Gate, "head": f.Head, "decision": f.Decision, "size": f.Size,
+			"files": f.Files, "insertions": f.Insertions, "deletions": f.Deletions},
+		IdentityKey: identityKey(EventGateHead, f.Task, f.Head)}
+}
+
+// PlanFilingFact is one revision's filing on a plan — a person's, a
+// cut's or a round's — the plan_replanned row. Identity: the plan and
+// the revision; one revision, one row.
+type PlanFilingFact struct {
+	Plan     string // with Revision: the identity
+	Revision int
+	Origin   string // ReplanPerson, ReplanCut or "round": the panel's origin
+}
+
+// Event is the filing's row of repository's issue; extra carries what
+// the filing names (the fates of the old cards and the new ones, or a
+// round's cards).
+func (f PlanFilingFact) Event(repository string, issue int64, extra map[string]any) Event {
+	detail := map[string]any{"revision": f.Revision, "origin": f.Origin}
+	maps.Copy(detail, extra)
+	return Event{Repository: repository, TaskID: f.Plan, IssueNumber: issue, Kind: EventPlanReplanned,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail,
+		IdentityKey: identityKey(EventPlanReplanned, f.Plan, fmt.Sprintf("%d", f.Revision))}
+}
+
+// HoldIntervalFact is one production hold's end, the production_released
+// row; the releases row holds the open interval. Identity: the
+// repository and the instant the hold began; one hold, one row.
+type HoldIntervalFact struct {
+	Repository string // with HeldSince: the identity
+	HeldSince  time.Time
+	How        string  // closed or deploy_now
+	Hours      float64 // the wait the hold cost
+}
+
+// Event is the hold's end row.
+func (f HoldIntervalFact) Event() Event {
+	return Event{Repository: f.Repository, Kind: EventProductionReleased, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail:      map[string]any{"how": f.How, "held_since": rfc3339(f.HeldSince), "hours": f.Hours},
+		IdentityKey: identityKey(EventProductionReleased, f.Repository, rfc3339(f.HeldSince))}
+}
+
+// identityKey is the events row's identity: the kind and the fields
+// that make its fact one fact.
+func identityKey(kind string, fields ...string) string {
+	return strings.Join(append([]string{kind}, fields...), " ")
+}
+
+// AppendFactOnce appends fact's step unless the task's timeline holds a
+// line of that name carrying the fact's identity, the check and the
+// write under one lock; it tells whether it wrote. One identity, one
+// line, whichever retry writes it first.
+func (tl *Timeline) AppendFactOnce(ctx context.Context, taskID, step string, fact StepFact) (bool, error) {
+	defer tl.lock(taskID)()
+	return tl.append(ctx, taskID, step, fact.detail(), func(prev []byte) bool {
+		return stepHoldsIdentity(prev, step, fact.identity())
+	})
+}
+
+// stepHoldsIdentity tells whether the timeline holds a line of step
+// carrying every identity key with its value.
+func stepHoldsIdentity(timeline []byte, step string, identity map[string]any) bool {
+	for line := range bytes.SplitSeq(timeline, []byte("\n")) {
+		var m map[string]any
+		if json.Unmarshal(line, &m) != nil || m["step"] != step {
+			continue
+		}
+		if holdsIdentity(m, identity) {
+			return true
+		}
+	}
+	return false
+}
+
+// holdsIdentity tells whether a detail line carries every identity key
+// with its value.
+func holdsIdentity(detail, identity map[string]any) bool {
+	for k, want := range identity {
+		got, ok := detail[k]
+		if !ok || !sameJSONValue(got, want) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameJSONValue tells whether two values encode the same JSON — a
+// number equal across the kinds it unmarshals back as.
+func sameJSONValue(a, b any) bool {
+	ja, err := json.Marshal(a)
+	if err != nil {
+		return false
+	}
+	jb, err := json.Marshal(b)
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(ja, jb)
+}
+
+// DivideConquer measures the divide-and-conquer plan (roadmap 336, doc
+// docs/plans/2026-10-29-divide-and-conquer.md): whether cards stay
+// within their size bound, what one costs in sessions and euros, and
+// how the plan's rounds and cuts behave. Durations are hours.
+//
+// Every panel reads hard rows the factory already stores, one row per
+// fact, each recorded through the fact payload that names its identity:
+// SessionEndFact (session and attempt), ReviewAttemptFact (head and
+// round), GateHeadFact (card and head), PlanFilingFact (plan and
+// revision) and HoldIntervalFact (repository and held since). Beside
+// them the store's own rows: session_started and session_pushed events
+// (identity task and session), plan_closed events (identity task and
+// revision), the releases row (an open hold) and the task_status row
+// changeStatus writes per change (identity task and status). A
+// recorded identity survives restarts and records idempotently — one
+// row, one id, whichever retry records it first.
+//
+// Three states never collapse into each other: unknown, undefined and
+// zero. CoveredFrom zero means coverage is not established — panels
+// read facts recorded from that moment on, so before it every panel is
+// unknown, not zero. A Figure with Has false is undefined (empty
+// cohort; the page renders a dash), as is a SizeIntercept with
+// Available false. A Figure with Has true and Value zero is a measured
+// zero — GateAboveBound and ReviewsNotReviewed are exactly that:
+// targets of none.
+type DivideConquer struct {
+	CoveredFrom time.Time `json:"covered_from"`
+
+	GateAboveBound  Figure       `json:"gate_above_bound"`
+	SessionsPerCard []SizeFigure `json:"sessions_per_card"`
+	SessionEnds     []NamedCount `json:"session_ends"`
+	// EurPerMergedLine divides the window's actual euros by its merged
+	// changed lines; no merged line means undefined, not zero.
+	EurPerMergedLine   Figure          `json:"eur_per_merged_line"`
+	FixedEurPerCard    []SizeIntercept `json:"fixed_eur_per_card"`
+	Cuts               Figure          `json:"cuts"`
+	CutGroupsClosed    Figure          `json:"cut_groups_closed"`
+	GroupOpenHours     Figure          `json:"group_open_hours"`
+	HoldWaitHours      Figure          `json:"hold_wait_hours"`
+	ReviewsNotReviewed Figure          `json:"reviews_not_reviewed"`
+	PlansByRounds      []NamedCount    `json:"plans_by_rounds"`
+	CardsFirstRound    Figure          `json:"cards_first_round"`
+	CardsLaterRounds   Figure          `json:"cards_later_rounds"`
+	ReplansByOrigin    []NamedCount    `json:"replans_by_origin"`
+}
+
 // MetricsReport is every figure of one project over one window, the
 // shape the endpoint serves and the page renders.
 type MetricsReport struct {
@@ -111,6 +370,7 @@ type MetricsReport struct {
 	DiffSize           DiffSize           `json:"diff_size"`
 	ChatWork           ChatWork           `json:"chat_tool_work"`
 	CIDuration         Figure             `json:"ci_duration"`
+	DivideConquer      DivideConquer      `json:"divide_conquer"`
 }
 
 // metricWindow is the spans every figure reads: the window, the
