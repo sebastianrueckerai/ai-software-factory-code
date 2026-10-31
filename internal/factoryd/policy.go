@@ -24,9 +24,14 @@ import (
 type PolicyStore interface {
 	// RecordPolicy stores tree under commit unless known and activates it.
 	RecordPolicy(ctx context.Context, commit string, tree policy.Tree) (policy.Version, bool, error)
+	// CurrentPolicy is the version in force, false when none was ever
+	// loaded.
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
 	// PolicyVersion is version id, the one a task pinned.
 	PolicyVersion(ctx context.Context, id int64) (policy.Version, bool, error)
+	// Costs is the ledger from day from to day to (UTC days, both
+	// included): per-day totals by kind and per-task totals with their
+	// lines.
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
 	// SweepHolds books the holds whose caller never released them.
 	SweepHolds(ctx context.Context) (int, error)
@@ -56,8 +61,11 @@ type ConfigSource interface {
 // every model of the ladder (LadderModels), else a task would be refused
 // mid-run.
 type PolicyLoader struct {
-	Source       ConfigSource
-	Store        PolicyStore
+	// Source reads the configuration tree the loader watches.
+	Source ConfigSource
+	// Store holds the loader's versions, holds and ledger.
+	Store PolicyStore
+	// LadderModels are the ladder's models every agent class must allow.
 	LadderModels []string
 	// Rejected raises a refused commit, once per commit: the loader asks
 	// again at the next poll while it fails. nil: logged only.
@@ -69,12 +77,12 @@ type PolicyLoader struct {
 	// streak. nil: logged only.
 	ReadFailing func(ctx context.Context, err error) error
 
-	mu      sync.Mutex
-	current policy.Version
-	loaded  bool
-	seen    string // the commit last handled, valid or not
-	settled string // the loaded commit Loaded last succeeded for
-	failed  int    // failed reads in a row
+	mu      sync.Mutex     // guards every field below
+	current policy.Version // the version in force
+	loaded  bool           // whether a valid version was ever loaded
+	seen    string         // the commit last handled, valid or not
+	settled string         // the loaded commit Loaded last succeeded for
+	failed  int            // failed reads in a row
 	// held is the valid head open cards refused, its tree and the lines it
 	// was refused with: judged again at each call without a second read
 	held      string
@@ -262,6 +270,7 @@ func (l *PolicyLoader) Current() policy.Version {
 	return l.current
 }
 
+// Budget is the current version's budget block.
 func (l *PolicyLoader) Budget() policy.Budget { return l.Current().Document.Budget }
 
 // CheckTree is the loader's whole judgement of a tree's files, which
@@ -378,6 +387,8 @@ type ForgejoConfig struct {
 	Dir     string
 }
 
+// call is one GET of Repo's API under path with Token, the read-only
+// token that reaches Repo only.
 func (c *ForgejoConfig) call(ctx context.Context, path string) ([]byte, error) {
 	return c.Forgejo.tokenCall(c.Token)(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/%s", c.Repo.Owner, c.Repo.Name, path), nil, http.StatusOK)
 }
@@ -396,6 +407,7 @@ func (c *ForgejoConfig) Holds(ctx context.Context, path string) (bool, error) {
 	return err == nil, err
 }
 
+// Head is ConfigSource.Head: Branch's head commit.
 func (c *ForgejoConfig) Head(ctx context.Context) (string, error) {
 	body, err := c.call(ctx, "branches/"+url.PathEscape(c.Branch))
 	if err != nil {
@@ -462,6 +474,8 @@ func (c *ForgejoConfig) File(ctx context.Context, commit, name string) ([]byte, 
 	return c.call(ctx, "raw/"+strings.Join(segs, "/")+"?ref="+url.QueryEscape(commit))
 }
 
+// treeEntry is one entry of a Forgejo git tree answer: its path, its
+// type (blob or tree), its mode and its sha.
 type treeEntry struct {
 	Path string `json:"path"`
 	Type string `json:"type"`
@@ -570,6 +584,7 @@ func CostsHandler(store PolicyStore) http.HandlerFunc {
 	}
 }
 
+// writeJSON answers one API request with v as JSON, best effort.
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(v) // #nosec G104 -- best-effort response write
@@ -619,46 +634,70 @@ func (s *PGStore) OpenCardsByTrack(ctx context.Context) ([]OpenCard, error) {
 	return cards, rows.Err()
 }
 
+// PolicyVersion is version id (policy.VersionByID), the one a task
+// pinned.
 func (s *PGStore) PolicyVersion(ctx context.Context, id int64) (policy.Version, bool, error) {
 	return policy.VersionByID(ctx, s.db, id)
 }
 
+// CurrentPolicy is the version in force (policy.Current), false when
+// none was ever loaded.
 func (s *PGStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {
 	return policy.Current(ctx, s.db)
 }
 
+// SweepHolds books the holds whose caller never released them, at their
+// full amount (policy.SweepHolds).
 func (s *PGStore) SweepHolds(ctx context.Context) (int, error) {
 	return policy.SweepHolds(ctx, s.db)
 }
 
+// Costs is the ledger's days from from to to, both included
+// (policy.LedgerCosts).
 func (s *PGStore) Costs(ctx context.Context, from, to time.Time) (policy.Costs, error) {
 	return policy.LedgerCosts(ctx, s.db, from, to)
 }
 
+// DaySpend is the ledger's total of one UTC day, the board's figure
+// against the day cap (policy.LedgerDaySpend).
 func (s *PGStore) DaySpend(ctx context.Context, day time.Time) (float64, error) {
 	return policy.LedgerDaySpend(ctx, s.db, day)
 }
 
+// PremiumMonthSpend is the ledger's spend on Premium in the UTC month
+// of at, the board's figure against budget.premium_month_eur
+// (policy.LedgerPremiumMonthSpend).
 func (s *PGStore) PremiumMonthSpend(ctx context.Context, at time.Time) (float64, error) {
 	return policy.LedgerPremiumMonthSpend(ctx, s.db, at)
 }
 
+// ModelCalls are task taskID's model calls, oldest first
+// (policy.ModelCalls).
 func (s *PGStore) ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error) {
 	return policy.ModelCalls(ctx, s.db, taskID)
 }
 
+// Free is the headroom the gateway fits a task's next call into
+// (policy.ReadFree): the task's own and its outstanding holds, and the
+// free task, day, month and project headroom under r's caps.
 func (s *PGStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	return policy.ReadFree(ctx, s.db, r)
 }
 
+// CalibrateEstimate is model call r calibrated for an estimate of calls
+// not yet made, and the ref's mean output (policy.CalibrateEstimate).
 func (s *PGStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest) (policy.HoldRequest, int, error) {
 	return policy.CalibrateEstimate(ctx, s.db, r)
 }
 
+// Opening is how the newest sessions opened on ref, read for the task
+// (policy.ReadOpening).
 func (s *PGStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {
 	return policy.ReadOpening(ctx, s.db, taskID, ref)
 }
 
+// DayFree is the UTC day's free headroom under dayEUR now, every
+// outstanding hold netted (policy.DayFree).
 func (s *PGStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
 	return policy.DayFree(ctx, s.db, dayEUR, time.Now())
 }
@@ -733,15 +772,30 @@ const SourceConfig = "config"
 // ConfigBook is what the configuration alarm keeps: the human task and
 // one alerts row per refused commit.
 type ConfigBook interface {
+	// CreateTask stores t, the human-lane task of a refused commit.
 	CreateTask(ctx context.Context, t Task) error
+	// ListTasksByStatus lists the tasks of one status, the open
+	// rejections among waiting-human.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	// TransitionTask moves task id to status to, from one of from.
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	// InsertAlert stores a, answered with its id.
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	// AlertByFingerprint is the alert of kind and fingerprint, false when
+	// none was raised yet.
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+	// SetAlertTask links alert id to task taskID, detail added to its
+	// detail.
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
+	// ResolveAlert judges alert id of kind with verdict by, detail added
+	// to its detail.
 	ResolveAlert(ctx context.Context, id int64, kind, verdict, by string, detail map[string]any) error
+	// InsertIntakeEvent records e, answered with its id.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// IntakeEvents are task taskID's intake events, oldest first.
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	// ConfirmFactoryClose confirms task taskID's factory-close intake
+	// event of comment issue.
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	projectLookup
 	taskReader
@@ -751,11 +805,14 @@ type ConfigBook interface {
 // 183): a human-lane issue on the tree's repository and an alerts row of
 // kind config_rejected, once per commit.
 type ConfigAlarm struct {
-	Store   ConfigBook
+	// Store keeps the alarm's tasks and alerts.
+	Store ConfigBook
+	// Forgejo files the issues a refused commit raises.
 	Forgejo *Forgejo
 	// Repo holds the tree in directory Dir.
 	Repo Repo
-	Dir  string
+	// Dir is the tree's directory in Repo, what the issues link to.
+	Dir string
 	// Metrics counts the outcome of the tasks Resolve ends; nil counts none.
 	Metrics *telemetry.Metrics
 	// Timeline records the card's card_created and its ask; nil records none.

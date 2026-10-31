@@ -247,6 +247,11 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 	return c
 }
 
+// validate is the chat block's own judgement, run from
+// Document.Validate: model and vision_model among the known aliases,
+// monthly_eur and parallel_turns not negative, confirm tools among
+// ChatTools, a window of at least 1000 tokens and doc_repo an
+// owner/name.
 func (c *ChatConfig) validate() error {
 	if c == nil {
 		return nil
@@ -473,11 +478,15 @@ type limitsJSON struct {
 	ContextTokens        int    `json:"context_tokens,omitempty"`
 }
 
+// MarshalJSON is Limits as limitsJSON, its durations as strings, as in
+// the YAML.
 func (l Limits) MarshalJSON() ([]byte, error) {
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
 		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
 }
 
+// UnmarshalJSON reads limitsJSON back into Limits, its duration strings
+// parsed; a bad one fails the whole read.
 func (l *Limits) UnmarshalJSON(b []byte) error {
 	var j limitsJSON
 	if err := json.Unmarshal(b, &j); err != nil {
@@ -519,6 +528,9 @@ const MaxAgentTime = 72 * time.Hour
 // may set, besides 0 for no check-in.
 const MinCheckIn = 10 * time.Minute
 
+// validate is the limits' own judgement, run from Document.Validate:
+// every key policy.yaml may set holds, and nudge_after stays below
+// same_call, so a repetition gets its nudge before the trip.
 func (l Limits) validate() error {
 	switch {
 	case l.Sessions <= 0:
@@ -580,6 +592,10 @@ type Time struct {
 	CheckIn *time.Duration `yaml:"check_in,omitempty" json:"check_in,omitempty"`
 }
 
+// validate is a time block's own judgement, run from Document.Validate
+// for a class and from the process and project files' judgement:
+// agent_time within 1m and MaxAgentTime, check_in 0 or at least
+// MinCheckIn and never above this block's agent_time.
 func (t Time) validate() error {
 	if t.AgentTime != 0 && (t.AgentTime < time.Minute || t.AgentTime > MaxAgentTime) {
 		return fmt.Errorf("time: agent_time must lie between 1m and %s, is %s", MaxAgentTime, t.AgentTime)
@@ -603,6 +619,8 @@ type timeJSON struct {
 	CheckIn   *string `json:"check_in,omitempty"`
 }
 
+// MarshalJSON is Time as timeJSON, its durations as strings, unset
+// fields left out.
 func (t Time) MarshalJSON() ([]byte, error) {
 	j := timeJSON{}
 	if t.AgentTime != 0 {
@@ -615,6 +633,8 @@ func (t Time) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j)
 }
 
+// UnmarshalJSON reads timeJSON back into Time, its duration strings
+// parsed; a bad one fails the whole read.
 func (t *Time) UnmarshalJSON(b []byte) error {
 	var j timeJSON
 	if err := json.Unmarshal(b, &j); err != nil {
@@ -763,6 +783,10 @@ type Envelope struct {
 // MinVolumeGB is the smallest volume Hetzner creates.
 const MinVolumeGB = 10
 
+// validate is an envelope's own judgement, run from Document.Validate
+// under key (envelope_default or a project file's envelope):
+// server_types named and none empty, monthly_eur positive, count and
+// lease at least one, a volume 0 or at least MinVolumeGB.
 func (e Envelope) validate(key string) error {
 	if len(e.ServerTypes) == 0 || slices.Contains(e.ServerTypes, "") {
 		return fmt.Errorf("%s.server_types must list at least one server type, none empty", key)
@@ -1088,6 +1112,15 @@ type FalPrices struct {
 	MaxMegapixels float64 `yaml:"max_megapixels" json:"max_megapixels"`
 }
 
+// Validate judges d as a whole: schema version 1, a sane budget, and
+// every block's own judgement — limits, chat, risk, envelope default
+// and project_default, plus the cross-block rules: approvers distinct,
+// hosts well formed, bounds and supervisor detectors known, the time
+// zone an IANA zone, the routines policy.yaml's, the capability classes
+// named and their tools capped. ParseTree runs it on a tree read from
+// the configuration repository, and factoryd's Boot and the gateway
+// re-run it on a stored version: one written under an older schema is
+// not a valid version for this binary.
 func (d Document) Validate() error {
 	if d.Version != 1 {
 		return fmt.Errorf("policy: version %d, want 1", d.Version)
@@ -1226,6 +1259,9 @@ func (d Document) Validate() error {
 	return nil
 }
 
+// validate is the prices of one paid tool, run from Document.Validate
+// for each tool a class lists: Firecrawl's credits, Replicate's models
+// and whole seconds, fal's megapixels.
 func (p ToolPrices) validate(tool string) error {
 	switch tool {
 	case ToolWebScrape, ToolWebSearch:
