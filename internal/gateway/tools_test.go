@@ -1393,7 +1393,7 @@ func TestManualTool(t *testing.T) {
 	v.Document.Classes["coder"].Tools["manual"] = policy.ToolCap{}
 	e := newToolEnv(t, running("coder"), v)
 	text, isErr := e.call(t, "manual", nil)
-	if isErr || !strings.Contains(text, "Signals and members file cards") ||
+	if isErr || !strings.Contains(text, "Signals and humans file cards") ||
 		!strings.Contains(text, "queued: waits for a free work slot, in filing order") ||
 		!strings.Contains(text, "approval: a human approves the merge") {
 		t.Fatalf("manual = %q", text)

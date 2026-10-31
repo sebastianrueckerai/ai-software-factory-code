@@ -1272,9 +1272,9 @@ func TestChatTextReply(t *testing.T) {
 	msgs := messages(t, calls[0])
 	system, _ := msgs[0]["content"].(string)
 	for _, want := range []string{
-		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
+		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a human of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
-		"The member decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
+		"The human decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
 		"A tool marked (needs OK) is called like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 	} {
 		if !strings.Contains(system, want) {
@@ -1714,9 +1714,9 @@ func (l cappedPolicies) CurrentPolicy(ctx context.Context) (policy.Version, bool
 // process, the budgets and the chat's bounds. It lists no tool and no OK:
 // the schemas carry both. A read, it records nothing.
 func TestSystemTool(t *testing.T) {
-	const first = "Signals and members file cards; a card runs agent sessions in a sandbox; " +
+	const first = "Signals and humans file cards; a card runs agent sessions in a sandbox; " +
 		"its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys; " +
-		"a member steers through the chat, and every tool here is one of the console's actions."
+		"a human steers through the chat, and every tool here is one of the console's actions."
 	read := func(r *rig, g *chatGateway) string {
 		t.Helper()
 		ck, s := r.loggedIn(t)
@@ -1942,7 +1942,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		fmt.Sprintf("assistant %q calls call_1 board {}", earlier("Let me look.")),
 		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
 		fmt.Sprintf(`assistant %q calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`, earlier("Setting it.")),
-		`tool call_2 "The summary of #5 is set. The member may undo it."`,
+		`tool call_2 "The summary of #5 is set. The human may undo it."`,
 		fmt.Sprintf("assistant %q", earlier("Done.")),
 		fmt.Sprintf("assistant %q", earlier(`Undo of set_summary: The summary of #5 is back to "".`)),
 		`user "and now?"`,
@@ -1968,7 +1968,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	stored[0].ReadAt, stored[0].At, stored[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
-		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The member may undo it."}})
+		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The human may undo it."}})
 }
 
 // A tool the policy refuses the member's role answers the refusal to the
@@ -2202,7 +2202,7 @@ func TestChatProposalIsTheMembersOnce(t *testing.T) {
 	ak, as := r.as(t, "anna")
 	before := r.events.count()
 	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+first[0], nil); code != http.StatusForbidden ||
-		body[0] != "It is another member's." {
+		body[0] != "It is another human's." {
 		t.Fatalf("anna's Do it of sebastian's proposal = %d %q, want 403", code, body)
 	}
 	chat.mu.Lock()
@@ -2271,7 +2271,7 @@ func TestChatProposalIsStored(t *testing.T) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
 	}
 	ak, as := r.as(t, "anna")
-	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusForbidden || body[0] != "It is another member's." {
+	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusForbidden || body[0] != "It is another human's." {
 		t.Fatalf("anna's Do it = %d %q, want 403", code, body)
 	}
 	if code, body, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
@@ -2395,7 +2395,7 @@ func TestChatAskOffersChoices(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("Filed.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the card when I say so"}})
 	equal(t, "the ask turn", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the member; this turn ends. A press or their next message answers it."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press or their next message answers it."}`,
 		`done {}`})
 	if n := len(g.calls()); n != 1 {
 		t.Fatalf("%d model calls, want the ask to end the turn", n)
@@ -3822,7 +3822,7 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 		"user what is on the board?",
 		"assistant ",
 		"tool [read at " + stamp + ", in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]",
-		"tool The accent of #5 is set. The member may undo it.",
+		"tool The accent of #5 is set. The human may undo it.",
 		"assistant [said at " + stamp + "] #5 waits for a work slot.",
 		"user how many cards are open?",
 	})

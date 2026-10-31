@@ -177,12 +177,12 @@ func TestInvite(t *testing.T) {
 	g.replies = [][]string{{call(1, "invite", `{"login":"dave"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"invite dave"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":{"login":"dave"},"description":"Invite a member, login dave","id":"TOKEN","tool":"invite"}`, `done {}`})
+		`proposal {"arguments":{"login":"dave"},"description":"Invite a human, login dave","id":"TOKEN","tool":"invite"}`, `done {}`})
 	if len(r.invited) != 0 {
 		t.Fatalf("a proposal invited %v", r.invited)
 	}
 	_, events, _ = chatPost(t, r, ck, s, "/projects/demo/chat/proposals/"+tokens[0], nil)
-	said := "dave is a member; the console admits them within a minute."
+	said := "dave has write access; the console admits them within a minute."
 	equal(t, "Do it", events, []string{
 		`tool {"arguments":{"login":"dave"},"duration_ms":0,"name":"invite","result":"` + said + `"}`,
 		`applied {"result":"` + said + `","tool":"invite"}`, `done {}`})
@@ -196,7 +196,7 @@ func TestInvite(t *testing.T) {
 	g.replies = [][]string{{call(1, "invite", `{"login":"erin"}`)}, {say("Only an approver may.")}}
 	_, events, _ = chatPost(t, r, ak, as, "/projects/demo/chat", url.Values{"message": {"invite erin"}})
 	equal(t, "alice's stream", events, []string{
-		`tool {"arguments":{"login":"erin"},"duration_ms":0,"name":"invite","result":"Refused: Only the approvers of project demo may invite a member."}`,
+		`tool {"arguments":{"login":"erin"},"duration_ms":0,"name":"invite","result":"Refused: Only the approvers of project demo may invite a human."}`,
 		`text {"text":"Only an approver may."}`, `done {}`})
 	equal(t, "invited", r.invited, []string{"demo/demo dave write"})
 

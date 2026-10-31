@@ -63,7 +63,7 @@ func TestClosedIntakeRefusesTheWakesFilings(t *testing.T) {
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_heartbeat", "The daily heartbeat: look for what to start."); err != nil {
 		t.Fatalf("StartWake: %v", err)
 	}
-	refused := "Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts."
+	refused := "Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the human what needs filing; their own ask still files and starts."
 	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
 	if err != nil {
 		t.Fatal(err)

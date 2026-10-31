@@ -475,7 +475,7 @@ func (c *Console) chatFiling(ctx context.Context, a actor, p factoryd.Project, c
 			return refuse(http.StatusServiceUnavailable, "cannot read the intake of "+p.Name+"; try again")
 		}
 		if closed {
-			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts.")
+			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: a wake files nothing. Tell the human what needs filing; their own ask still files and starts.")
 		}
 	}
 	if v, ok := c.inForce(ctx); ok && check != nil {
@@ -2131,7 +2131,7 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 	}
 	log.Printf("console: %s invited %s to %s via %s", a.s.user, login, p.Repository, a.via)
 	c.record(ctx, a, p.Repository, "", 0, factoryd.EventMemberInvited, map[string]any{"login": login})
-	return login + " is a member; the console admits them within a minute.", nil
+	return login + " has write access; the console admits them within a minute.", nil
 }
 
 // doDeployNow releases main of the project's held production, an

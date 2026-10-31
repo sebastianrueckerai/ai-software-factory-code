@@ -135,7 +135,7 @@ func startedBecause(all []sessionRef, s sessionRef, steps []map[string]any, even
 		reason := ""
 		switch e.Kind {
 		case factoryd.EventQuestionAnswered, factoryd.EventPlanQuestionAnswered:
-			reason = "the member's answer (" + e.Actor + ")"
+			reason = "the human's answer (" + e.Actor + ")"
 		case factoryd.EventSessionGranted:
 			reason = "a granted session (" + e.Actor + ")"
 		case factoryd.EventMergeDenied, factoryd.EventPlanChangesRequested:

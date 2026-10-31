@@ -1132,7 +1132,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		args, _ := json.Marshal(map[string]any{"question": question, "choices": choices})
 		return factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk, Content: question, Choices: choices, At: at,
 			ToolCalls: []factoryd.ChatToolCall{{ID: id, Name: "ask", Arguments: string(args), ReadAt: at,
-				Result: "Asked the member; this turn ends. A press or their next message answers it."}}}
+				Result: "Asked the human; this turn ends. A press or their next message answers it."}}}
 	}
 	msgs := []factoryd.ChatMessage{
 		{Role: "user", Content: "File roadmap 300 as a card", At: ago(18 * time.Minute)},

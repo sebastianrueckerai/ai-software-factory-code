@@ -207,8 +207,8 @@ func TestValidatePlan(t *testing.T) {
 		"eleven acceptance":  {change(func(p *Plan) { p.Cards[0].Acceptance = slices.Repeat([]PlanItem{{Text: "a"}}, 11) }), []string{"plan: card foundation: 11 acceptance tests; want 1 to 10"}},
 		// A spec plan (piece 5) drafts the spec the members confirm; the
 		// finding is the same for none and for a blank outcome.
-		"no spec":       {change(func(p *Plan) { p.Spec = nil }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}},
-		"blank outcome": {change(func(p *Plan) { p.Spec.Outcome = "  " }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}},
+		"no spec":       {change(func(p *Plan) { p.Spec = nil }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}},
+		"blank outcome": {change(func(p *Plan) { p.Spec.Outcome = "  " }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}},
 		// The criteria cases edit one field of the criteria block or one
 		// citation; a broken criterion stays properly cited and a broken
 		// citation changes no criterion, so each case yields only the
@@ -551,7 +551,7 @@ func TestPlanGuideSpec(t *testing.T) {
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order"`,
 		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
 			"when the repository carries a spec skeleton at docs/spec.md, draft into its shape and carry its standing criteria.",
-		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer.",
+		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer.",
 		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
 			"and turn each finding into a question with origin self_attack.",
 	} {
@@ -578,7 +578,7 @@ func TestPlanGuideRounds(t *testing.T) {
 	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,
-		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
+		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 			"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 			"A feature too big for one round of cards is planned in rounds: file the first round's cards, foundation first, and keep the rest in outline; " +
 			"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
@@ -1281,7 +1281,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 	body := fj.comments[0].body
 	for _, want := range []string{
-		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the members' answers on the factory console",
+		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the humans' answers on the factory console",
 		"Links first.  ＠sebastian",
 		"Spec: A link shortener: links with slugs that redirect and count clicks.\nGlossary:\n- slug: the short key a link gets\n- click: one redirect served",
 		"| # | key | role | title | size | depends on | issue |",

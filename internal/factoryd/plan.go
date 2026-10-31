@@ -539,7 +539,7 @@ func specFindings(p Plan, shape policy.PlanShape) []string {
 	if !shape.Integration || (p.Spec != nil && strings.TrimSpace(p.Spec.Outcome) != "") {
 		return nil
 	}
-	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}
+	return []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}
 }
 
 // criteriaFindings are a plan's criteria's findings (the spec-intake
@@ -899,7 +899,7 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 	edges := planEdges(p)
 	needed, owner := deployOwner(t.Objective, p)
 	var b strings.Builder
-	next := "Its open questions wait for the members' answers on the factory console, which send it back to the planner; " +
+	next := "Its open questions wait for the humans' answers on the factory console, which send it back to the planner; " +
 		"a comment here asks the planner for a new revision; closing the issue ends the plan."
 	if issues != nil {
 		next = "It asks no question, so its cards are filed: the table names their issues."
@@ -1096,7 +1096,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
-		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
+		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
 		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
@@ -1141,7 +1141,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"size: small, medium or large; anything bigger is two cards. " +
 		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
 		"and turn each finding into a question with origin self_attack. " +
-		"questions: open points the spec leaves to the member; their answers come back to you with your last plan, " +
+		"questions: open points the spec leaves to the human; their answers come back to you with your last plan, " +
 		"and a plan with open questions waits for their answers, while a plan with none files its cards at once. " +
 		"Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run. " +
 		"A writer reads your plan on the issue; a comment asking for changes comes back to you as a finding, with your last plan: " +

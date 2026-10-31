@@ -250,7 +250,7 @@ func TestChatRequestImageAdmission(t *testing.T) {
 		}
 	}
 	equal(t, "the wake's ask", results, []string{
-		"Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts."})
+		"Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the human what needs filing; their own ask still files and starts."})
 	chatRows(t, r.events, before, "sebastian")
 
 	// t-m, t-r and t-e, none admitted, fill a cap of 3

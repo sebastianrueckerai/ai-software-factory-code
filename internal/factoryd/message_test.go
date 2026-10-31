@@ -1026,7 +1026,7 @@ func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
 		t.Fatalf("worker got %d messages, want 2", len(texts))
 	}
 	if !strings.HasPrefix(texts[0], "POST /message You are the agent session of card t2") ||
-		!strings.Contains(texts[0], "Signals and members file cards") ||
+		!strings.Contains(texts[0], "Signals and humans file cards") ||
 		!strings.HasSuffix(texts[0], "A message from anna, a writer of this project: rebase on main first") {
 		t.Fatalf("first message = %q", texts[0])
 	}

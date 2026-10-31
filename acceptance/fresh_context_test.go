@@ -222,7 +222,7 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	want := map[string]string{
 		"call_1": "[read at " + readAt.UTC().Format("2006-01-02 15:04 UTC") +
 			", 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]",
-		"call_2": summaryNote + " The member may undo it.",
+		"call_2": summaryNote + " The human may undo it.",
 	}
 	if !reflect.DeepEqual(results, want) {
 		t.Errorf("the replayed results =\n%q\nwant\n%q", results, want)

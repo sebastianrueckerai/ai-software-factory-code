@@ -150,7 +150,7 @@ func (t *turn) askMember(question string, choices []string) (string, error) {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
 	}
 	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices}
-	return "Asked the member; this turn ends. A press or their next message answers it.", nil
+	return "Asked the human; this turn ends. A press or their next message answers it.", nil
 }
 
 // escalate is the escalate tool: the question and its five parts (the
@@ -190,5 +190,5 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 		log.Printf("console: the escalation of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed; see the factoryd log.")
 	}
-	return fmt.Sprintf("Filed the escalation as #%d in Needs you; the inbox carries it to the project's members with its choices.", n), nil
+	return fmt.Sprintf("Filed the escalation as #%d in Needs you; the inbox carries it to the project's humans with its choices.", n), nil
 }
