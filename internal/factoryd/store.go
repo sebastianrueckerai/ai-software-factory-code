@@ -1091,9 +1091,9 @@ func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumbe
 }
 
 // TaskByPR is the newest card whose row links pull request number on
-// repository, no row ok false. The registrar's fileSyncCard, matching a
-// merged pull request back to its card, is its sole caller; it folds
-// TasksByPR and takes the first — at most one card holds a pull request.
+// repository, no row ok false. The registrar's fileSyncCard, telling
+// whether a sync pull request already has its card, is its sole caller;
+// it takes TasksByPR's first, for several cards can hold one pull request.
 func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
 	cards, err := s.TasksByPR(ctx, repository, pr)
 	if err != nil || len(cards) == 0 {
@@ -1103,9 +1103,9 @@ func (s *PGStore) TaskByPR(ctx context.Context, repository string, pr int64) (Ta
 }
 
 // TasksByPR lists repository's cards on pull request number, newest
-// first. The template update's cardByPR and cardDue, and the intake's
-// taskOfHead (a push's head tells its card), read them; unlike
-// TaskByIssue no index binds (repository, pr_number) to one row.
+// first — several can link one pull request: unlike TaskByIssue no
+// index binds (repository, pr_number) to one row. The template update's
+// cardByPR and cardDue, and the intake's taskOfHead, read them.
 func (s *PGStore) TasksByPR(ctx context.Context, repository string, pr int64) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND pr_number = $2 ORDER BY created_at DESC, id DESC`, repository, pr)
 }
@@ -1222,7 +1222,7 @@ func (s *PGStore) UnaddressedChangeRequests(ctx context.Context, taskID string) 
 	return scanIntakeEvents(rows, err)
 }
 
-// scanIntakeEvents scans the rows of an intakeColumns read: the four
+// scanIntakeEvents scans the rows of an intakeColumns read: the three
 // intake-event reads here scan through it. The row must carry
 // intakeColumns' shape; a choices or question column that will not
 // unmarshal fails the read.
@@ -1254,7 +1254,7 @@ func scanIntakeEvents(rows *sql.Rows, err error) ([]IntakeEvent, error) {
 }
 
 // unmarshalChoices reads a choices column into choices; NULL leaves none.
-// scanIntakeEvents and the console's intake read are its callers; the
+// scanIntakeEvents and the console's scanBoardTask are its callers; the
 // column holds a JSON array of strings or nothing at all.
 func unmarshalChoices(b []byte, choices *[]string) error {
 	if len(b) == 0 {
@@ -1421,10 +1421,10 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 	return eur, err
 }
 
-// MonthSpend is the variable spend over the ledger in the UTC calendar
-// month of at, standing lines left out, with the reason of the month's
-// first refused_month_cap. MonthAlarm.Check is its sole caller; a
-// reservation or a tool call may be refused while euros remain.
+// MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
+// lines left out, as the gateway's month headroom counts it. The reason is the month's first
+// refused_month_cap of a model call; MonthAlarm.Check is its sole caller, for only a model
+// call finds the cap spent — a reservation or a tool call may be refused while euros remain.
 func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
 	err := s.db.QueryRowContext(ctx,
@@ -1514,10 +1514,10 @@ func (e *CardCapError) Error() string {
 	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
 }
 
-// FundCard raises task id's budget by eur and writes e's card_funded row
-// (from, to and amount in its detail) in one transaction: the console's
-// fund action and a replan's fundPlanner call it. Agent-decided bounds
-// lock the repository, refusing PoolSpentError, CardCapError or ErrNotFound.
+// FundCard raises task id's budget by eur and writes its card_funded row in one
+// transaction; console fund action and replan fundPlanner call it. With bounds the row
+// is stamped decider agent, e's repository locked: funding+eur fits the pool, budget+eur
+// the cap — parallel turns overspend neither (PoolSpentError, CardCapError); no task: ErrNotFound.
 func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1730,10 +1730,10 @@ func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string)
 		ORDER BY created_at, issue_number, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
-// changeStatus updates the one task $1 names, SET set WHERE where, and
-// records the task_status event so the console's stream carries it.
-// TransitionTask, MarkStarted, SetGate and ToHumanLane call it; a
-// no-change update records nothing, a failed record never fails it.
+// changeStatus updates the one task $1 names, SET set WHERE where, and records the
+// task_status event — status and gate after it, by factoryd — so the console's stream
+// carries it; no row matched answers false. TransitionTask, MarkStarted, SetGate and
+// ToHumanLane call it; a no-change update records nothing, a failed record never fails it.
 func (s *PGStore) changeStatus(ctx context.Context, set, where string, args ...any) (bool, error) {
 	e, changed, err := changeStatusOn(ctx, s.db, set, where, args...)
 	if e != nil {
@@ -1831,10 +1831,10 @@ func (s *PGStore) RecentlyFinishedTasks(ctx context.Context, within time.Duratio
 // settleEpsilon is the smallest raise settlement books.
 const settleEpsilon = 1e-9
 
-// SettleSpend raises the task's booked model spend to at least reported:
-// under a row lock the raise over its model and settlement rows is
-// booked as a litellm settlement row and spent_eur follows the ledger.
-// Completion's settle pass is its sole caller; below a nano-euro, nothing.
+// SettleSpend raises the task's booked model spend to at least reported: under a row
+// lock the raise over its model and settlement rows — never against spent_eur, which
+// carries tool rows — is booked as a litellm settlement row and spent_eur follows the
+// ledger. Completion's settle pass is its sole caller; below a nano-euro, nothing.
 func (s *PGStore) SettleSpend(ctx context.Context, id string, reported float64) (bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -2075,10 +2075,10 @@ func (s *PGStore) SetTaskAlertFingerprint(ctx context.Context, id, fingerprint s
 	return oneRow(res, err, "task "+id)
 }
 
-// SetTaskMergeCommit records the commit the merge made on the base: the
-// first write stands (WHERE merge_commit is empty), so the merge queue, the
-// merge webhook and cardMerged may pass a merged card twice. A zero-row
-// update with no task earns a log line, never an error.
+// SetTaskMergeCommit records the commit the merge made on the base; the first write
+// stands (WHERE merge_commit is empty), so a repeat — the merge queue, the merge
+// webhook and cardMerged may pass a merged card twice — changes nothing and reports
+// no error. A zero-row update with no task earns a log line, not silence.
 func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET merge_commit = $2 WHERE id = $1 AND merge_commit = ''`, id, commit)
 	if err != nil {
