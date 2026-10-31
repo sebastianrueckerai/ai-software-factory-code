@@ -2236,6 +2236,31 @@ func TestPlanLoopAnswerWithAChangeRequestGoesBackToThePlanner(t *testing.T) {
 	}
 }
 
+// A run from before the answered-routing change keeps the routing its
+// history was written under: an answer that confirmed the revision starts
+// the planner session, and no re-file of the confirmed revision runs
+// before it (card #1345).
+func TestPlanLoopAnsweredFromBeforeTheRoutingChangeKeepsTheSession(t *testing.T) {
+	h := newPlanHarness(t, PlanResult{Revision: 2, SHA256: "sha-2"})
+	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{Attempts: 1}}
+	h.open = []int{0}
+	h.file = map[int]bool{1: true, 2: true}
+	h.requestPlan = func(_ string, revision int) (PlanRef, error) {
+		if revision == 0 {
+			return PlanRef{Revision: 1, SHA256: "sha-1", Comment: 700}, nil
+		}
+		return PlanRef{Revision: revision, SHA256: "sha-" + strconv.Itoa(revision), Filed: []int64{2, 3, 4}}, nil
+	}
+	h.env.OnGetVersion("answered-routing", workflow.DefaultVersion, versionAnsweredRouting).Return(workflow.DefaultVersion)
+	h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "plan revision 2 filed 3 cards" {
+		t.Fatalf("finals %v; want the session's revision 2 filed", h.finals)
+	}
+	if len(h.plans) != 1 || !slices.Equal(h.requests, []int{0, 2}) {
+		t.Fatalf("plans %q requests %v; want one planner session and no re-file of revision 1", h.plans, h.requests)
+	}
+}
+
 // A healed run whose newest revision asks no question files its cards and
 // ends done at once; one whose questions all carry their answers (the last
 // answer landed while no workflow ran) goes back to the planner, whose
