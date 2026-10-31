@@ -1803,8 +1803,10 @@ func (t *taskRun) planLoop() (string, error) {
 			findings, wait, carried = append(carried, next...), false, nil
 			// an answer that confirmed the revision files its cards with
 			// no planner session; one with a writer's change request or
-			// words a planner must weave in starts the session below
-			if answered && ref.Revision != 0 && len(findings) == 0 {
+			// words a planner must weave in starts the session below. A
+			// run from before the change keeps the session routing its
+			// history was written under (versionAnsweredRouting)
+			if answered && ref.Revision != 0 && len(findings) == 0 && t.answeredRouting >= versionAnsweredRouting {
 				if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, requestPlanOptions()), ActivityRequestPlan, t.taskID, ref.Revision, t.cfg.PolicyVersion).Get(t.ctx, &ref); err != nil {
 					return t.finish("failed", "request plan: "+errMessage(err))
 				}
