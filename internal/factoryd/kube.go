@@ -137,7 +137,8 @@ type ContainerState struct {
 }
 
 // waiting says what the container waits with: the kubelet's reason and
-// message.
+// message. A pod still Pending names its hold through it (waitsOn) and
+// a start failure its waiting step (awaitPodStart).
 func (c ContainerState) waiting() string {
 	s := "container " + c.Name + " waits with " + c.Reason
 	if c.Message != "" {
@@ -153,10 +154,12 @@ type InClusterKube struct {
 	HTTP *http.Client
 }
 
-// NewInClusterKube loads the pod's CA bundle; the bearer token is re-read
-// on every request so rotation needs no restart. The API server is
-// addressed by the service address the kubelet injects, as client-go does:
-// no DNS lookup, which factoryd's egress policy does not admit.
+// NewInClusterKube builds the pod's client (main, register and
+// remove-project each build one). The CA bundle loads here, the bearer
+// token is re-read on every request so rotation needs no restart, and
+// the API server is addressed by the service address the kubelet
+// injects, as client-go does: no DNS lookup, which factoryd's egress
+// policy does not admit.
 func NewInClusterKube() (*InClusterKube, error) {
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	if host == "" || port == "" {
@@ -183,6 +186,9 @@ func NewInClusterKube() (*InClusterKube, error) {
 	}, nil
 }
 
+// CreateNamespace creates namespace name with its labels: the session
+// provision creates a task's and the CI spawner a job's with it;
+// ErrAlreadyExists when the name is taken.
 func (k *InClusterKube) CreateNamespace(ctx context.Context, name string, labels map[string]string) error {
 	body := map[string]any{
 		"apiVersion": "v1", "kind": "Namespace",
@@ -192,6 +198,10 @@ func (k *InClusterKube) CreateNamespace(ctx context.Context, name string, labels
 	return err
 }
 
+// DeleteNamespace deletes the namespace — asynchronous: the name goes
+// Terminating while its contents garbage-collect away, so a later list
+// still answers it. The provision's failed setup rolls its namespace
+// back with it, the session and CI teardowns take theirs down.
 func (k *InClusterKube) DeleteNamespace(ctx context.Context, name string) error {
 	_, err := k.call(ctx, http.MethodDelete, "/api/v1/namespaces/"+name, nil, nil)
 	return err
@@ -217,6 +227,10 @@ func (k *InClusterKube) Delete(ctx context.Context, path string) (bool, error) {
 	return true, nil
 }
 
+// NamespacesByLabel lists the names of the namespaces holding key=value
+// (value "": the key set to anything), a Terminating one still among
+// them. The boot sweep, the CI spawner, remove-project and buildvm's
+// owner check read their namespaces through it.
 func (k *InClusterKube) NamespacesByLabel(ctx context.Context, key, value string) ([]string, error) {
 	nsList, err := k.listNamespaces(ctx, key, value)
 	if err != nil {
@@ -239,10 +253,18 @@ type NamespaceInfo struct {
 	Labels      map[string]string
 }
 
+// ListNamespacesByLabel is NamespacesByLabel with each namespace's
+// labels and deletion state, reconcile's variant, which must not read a
+// namespace teardown already deleted (its RoleBinding is gone, so a pod
+// read answers Forbidden). AdmitLeases and the CI spawner call it.
 func (k *InClusterKube) ListNamespacesByLabel(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
 	return k.listNamespaces(ctx, key, value)
 }
 
+// listNamespaces is the one GET behind both listings: a bare key when
+// value is "" — a "key=" selector would match only empty values — each
+// match read into a NamespaceInfo, its deletion state from the API
+// server's deletionTimestamp.
 func (k *InClusterKube) listNamespaces(ctx context.Context, key, value string) ([]NamespaceInfo, error) {
 	sel := key
 	if value != "" {
@@ -268,7 +290,9 @@ func (k *InClusterKube) listNamespaces(ctx context.Context, key, value string) (
 	return out, nil
 }
 
-// NamespaceLabel is namespace name's label key, "" when it has none.
+// NamespaceLabel is namespace name's label key, "" when it has none (no
+// error). Register's seed reconcile reads a namespace's project and
+// objects labels by it; the SigNoz intake a namespace's project.
 func (k *InClusterKube) NamespaceLabel(ctx context.Context, name, key string) (string, error) {
 	var ns struct {
 		Metadata struct {
@@ -281,6 +305,10 @@ func (k *InClusterKube) NamespaceLabel(ctx context.Context, name, key string) (s
 	return ns.Metadata.Labels[key], nil
 }
 
+// CreateServiceAccount creates the service account in namespace: the
+// session provision creates the task's ("task-"+id), whose pods bear
+// factoryd's binding in it, and the CI spawner its runner's. A second
+// create is ErrAlreadyExists.
 func (k *InClusterKube) CreateServiceAccount(ctx context.Context, namespace, name string) error {
 	body := map[string]any{
 		"apiVersion": "v1", "kind": "ServiceAccount",
@@ -290,6 +318,10 @@ func (k *InClusterKube) CreateServiceAccount(ctx context.Context, namespace, nam
 	return err
 }
 
+// CreateSecret creates the secret of stringData, secretType "" meaning
+// Opaque: the task's git token, the pull-secret copy (dockerconfigjson),
+// the CI runner's registration and the build TLS. A name taken is
+// ErrAlreadyExists.
 func (k *InClusterKube) CreateSecret(ctx context.Context, namespace, name, secretType string, stringData map[string]string) error {
 	if secretType == "" {
 		secretType = "Opaque"
@@ -303,6 +335,10 @@ func (k *InClusterKube) CreateSecret(ctx context.Context, namespace, name, secre
 	return err
 }
 
+// GetSecretData reads one secret's data, base64-decoded; ErrNotFound
+// when it is gone. The pull-secret copy, the staging registration's
+// Flux accounts, the gate supervisor's token scrub and the CI runner's
+// token read through it.
 func (k *InClusterKube) GetSecretData(ctx context.Context, namespace, name string) (map[string]string, error) {
 	var sec struct {
 		Data map[string]string `json:"data"`
@@ -319,6 +355,10 @@ type KubeSecret struct {
 	Data       map[string]string
 }
 
+// SecretsByLabels lists namespace's secrets holding every label, key
+// sorted (key=value), with name, type and decoded data: the staging
+// registration discovers a project environment's Flux account secrets
+// by their labels. One undecodable value fails the whole list.
 func (k *InClusterKube) SecretsByLabels(ctx context.Context, namespace string, labels map[string]string) ([]KubeSecret, error) {
 	var sel []string
 	for _, key := range slices.Sorted(maps.Keys(labels)) {
@@ -348,6 +388,9 @@ func (k *InClusterKube) SecretsByLabels(ctx context.Context, namespace string, l
 	return out, nil
 }
 
+// decodeSecret base64-decodes a secret's data values, an error naming
+// namespace and secret: the shared tail of GetSecretData and
+// SecretsByLabels.
 func decodeSecret(namespace, name string, data map[string]string) (map[string]string, error) {
 	out := make(map[string]string, len(data))
 	for key, b64 := range data {
@@ -360,6 +403,10 @@ func decodeSecret(namespace, name string, data map[string]string) (map[string]st
 	return out, nil
 }
 
+// CreateCiliumNetworkPolicy creates the policy in namespace: the CI
+// spawner creates its job namespace's egress policy with it, once per
+// namespace. A name taken is ErrAlreadyExists;
+// ApplyCiliumNetworkPolicy is the create-or-replace.
 func (k *InClusterKube) CreateCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error {
 	body := map[string]any{
 		"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
@@ -370,6 +417,10 @@ func (k *InClusterKube) CreateCiliumNetworkPolicy(ctx context.Context, namespace
 	return err
 }
 
+// ApplyCiliumNetworkPolicy creates or replaces the policy by one
+// server-side apply, factoryd as the field manager, so an apply of the
+// spec in place changes nothing. The session provision, AdmitLeases and
+// the CI spawner's smoke keep their egress policies current with it.
 func (k *InClusterKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace, name string, spec map[string]any) error {
 	body := map[string]any{
 		"apiVersion": "cilium.io/v2", "kind": "CiliumNetworkPolicy",
@@ -381,6 +432,9 @@ func (k *InClusterKube) ApplyCiliumNetworkPolicy(ctx context.Context, namespace,
 	return err
 }
 
+// CiliumNetworkPolicySpec reads the policy's spec, ErrNotFound when none
+// exists. AdmitLeases compares the live worker egress spec with the one
+// it wants and applies only on a difference.
 func (k *InClusterKube) CiliumNetworkPolicySpec(ctx context.Context, namespace, name string) (map[string]any, error) {
 	var out struct {
 		Spec map[string]any `json:"spec"`
@@ -389,11 +443,19 @@ func (k *InClusterKube) CiliumNetworkPolicySpec(ctx context.Context, namespace, 
 	return out.Spec, err
 }
 
+// Create POSTs a complete object to a collection path such as
+// /api/v1/namespaces/<ns>/resourcequotas: the session provision and
+// AdmitLeases create rolebindings, quotas, limit ranges and cache
+// claims with it. A name taken is ErrAlreadyExists.
 func (k *InClusterKube) Create(ctx context.Context, path string, obj map[string]any) error {
 	_, err := k.call(ctx, http.MethodPost, path, obj, nil)
 	return err
 }
 
+// CreatePod creates the pod of the spec map, stamping name, namespace,
+// apiVersion and kind into it: a session starts its worker pod, a gate
+// reproduction its pod, the CI spawner its runner. A name taken is
+// ErrAlreadyExists.
 func (k *InClusterKube) CreatePod(ctx context.Context, namespace, name string, pod map[string]any) error {
 	meta, _ := pod["metadata"].(map[string]any)
 	if meta == nil {
@@ -408,11 +470,18 @@ func (k *InClusterKube) CreatePod(ctx context.Context, namespace, name string, p
 	return err
 }
 
+// DeletePod deletes the pod — asynchronous, a status read right after
+// still answers it. The session deletes its worker pod on every end
+// but a detach and on a stop, tolerating ErrNotFound.
 func (k *InClusterKube) DeletePod(ctx context.Context, namespace, name string) error {
 	_, err := k.call(ctx, http.MethodDelete, "/api/v1/namespaces/"+namespace+"/pods/"+name, nil, nil)
 	return err
 }
 
+// PodStatus reports the pod's phase and its first container's exit code,
+// -1 while it has not terminated. The log follower ends its stream on a
+// terminal phase, the session's reattach and the CI spawner's pod watch
+// read it.
 func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (phase string, exitCode int32, err error) {
 	var pod struct {
 		Status struct {
@@ -436,6 +505,9 @@ func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (
 	return pod.Status.Phase, exitCode, nil
 }
 
+// PodIP is the running pod's cluster address, ErrNotFound until it has
+// one. The session's post to its worker's endpoint, the message push and
+// a workspace file read all address the pod by it.
 func (k *InClusterKube) PodIP(ctx context.Context, namespace, name string) (string, error) {
 	var pod struct {
 		Status struct {
@@ -451,6 +523,10 @@ func (k *InClusterKube) PodIP(ctx context.Context, namespace, name string) (stri
 	return pod.Status.PodIP, nil
 }
 
+// PodInitFinished is when the pod's first init container exited 0 with
+// the termination message "ready", false with no error otherwise — also
+// while no init container has run. The CI spawner tells a provisioned
+// build VM by it and times its retries from it.
 func (k *InClusterKube) PodInitFinished(ctx context.Context, namespace, name string) (time.Time, bool, error) {
 	var pod struct {
 		Status struct {
@@ -478,6 +554,9 @@ func (k *InClusterKube) PodInitFinished(ctx context.Context, namespace, name str
 	return t.FinishedAt, true, nil
 }
 
+// PodLog streams the pod's stdout following (follow=true) until the pod
+// ends or the stream drops; the log follower is the one caller and
+// closes the stream. A one-shot tail is PodLogTail.
 func (k *InClusterKube) PodLog(ctx context.Context, namespace, name string) (io.ReadCloser, error) {
 	res, err := k.request(ctx, http.MethodGet,
 		"/api/v1/namespaces/"+namespace+"/pods/"+name+"/log?follow=true", nil)
@@ -487,6 +566,10 @@ func (k *InClusterKube) PodLog(ctx context.Context, namespace, name string) (io.
 	return res.Body, nil
 }
 
+// PodDiagnosis reads the pod's phase, its pod-level reason and message,
+// conditions and container states, init containers first, each running,
+// waiting or terminated with the kubelet's reason and exit code. The
+// gate supervisor's bundle and a session's start read it.
 func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string) (PodDiagnosis, error) {
 	type detail struct {
 		Reason   string `json:"reason"`
@@ -532,6 +615,9 @@ func (k *InClusterKube) PodDiagnosis(ctx context.Context, namespace, name string
 // podLogTailBytes bounds a log tail however long its lines are.
 const podLogTailBytes = 64 << 10
 
+// PodLogTail is the pod's last lines of stdout, not followed and bounded
+// by podLogTailBytes however long its lines are: the gate supervisor's
+// bundle carries its slice of a sandbox's log.
 func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, lines int) (string, error) {
 	b, err := k.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?tailLines=%d&limitBytes=%d", namespace, name, lines, podLogTailBytes), nil, nil)
 	return string(b), err
@@ -542,8 +628,10 @@ func (k *InClusterKube) PodLogTail(ctx context.Context, namespace, name string, 
 // reaches the same directory on a node, and Retain keeps it.
 const CacheClass = "factory-cache"
 
-// cacheClaim is the claim name of class CacheClass; local-path does not
-// enforce the request.
+// cacheClaim is the claim manifest of the cache of name, class
+// CacheClass, 20Gi ReadWriteOnce — local-path does not enforce the
+// request — so every namespace's claim of one name reaches one
+// directory on a node. The provision and the CI spawner Create it.
 func cacheClaim(name string) map[string]any {
 	return map[string]any{
 		"apiVersion": "v1", "kind": "PersistentVolumeClaim",
@@ -586,6 +674,10 @@ var cacheMounts = []any{
 // and agents write.
 const cacheUmaskSh = `umask 0000; exec "$0" "$@"`
 
+// cacheVolumes is a pod spec's volumes for the cache claim of that name
+// plus the pod's own modcache emptyDir, 8Gi: the module cache keeps its
+// file locks inside each sandbox (ruling 223). The worker pod spec and
+// the CI runner's mount them.
 func cacheVolumes(claim string) []any {
 	return []any{
 		map[string]any{"name": "cache", "persistentVolumeClaim": map[string]any{"claimName": claim}},
@@ -594,11 +686,12 @@ func cacheVolumes(claim string) []any {
 }
 
 // deleteReleasedCaches deletes the cache volumes whose claims went with
-// their namespaces; Retain keeps their directory for the next claim. A
-// namespace deletion is asynchronous, so the claim of the namespace just
-// deleted is not Released yet: each sweep takes the earlier ones', and
-// the last lingers until the next teardown (harmless: a Released volume
-// never binds again, and a new claim gets a new volume on the same path).
+// their namespaces; Retain keeps their directory for the next claim. The
+// session and CI teardowns sweep it. A namespace deletion is
+// asynchronous, so the claim of the namespace just deleted is not
+// Released yet: each sweep takes the earlier ones', and the last
+// lingers until the next teardown (harmless: a Released volume never
+// binds again, and a new claim gets a new volume on the same path).
 func deleteReleasedCaches(ctx context.Context, kube Kube) {
 	pvs, err := kube.PersistentVolumes(ctx)
 	if err != nil {
@@ -622,6 +715,9 @@ type PersistentVolume struct {
 	Phase        string
 }
 
+// PersistentVolumes lists every volume's name, storage class and phase;
+// deleteReleasedCaches, its only caller, skips the volumes not of
+// CacheClass or not Released.
 func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolume, error) {
 	var list struct {
 		Items []struct {
@@ -647,6 +743,9 @@ func (k *InClusterKube) PersistentVolumes(ctx context.Context) ([]PersistentVolu
 	return out, nil
 }
 
+// DeletePersistentVolume deletes the volume; deleteReleasedCaches
+// tolerates ErrNotFound — a concurrent sweep or the API server's own
+// reclamation was first.
 func (k *InClusterKube) DeletePersistentVolume(ctx context.Context, name string) error {
 	_, err := k.call(ctx, http.MethodDelete, "/api/v1/persistentvolumes/"+name, nil, nil)
 	return err
@@ -671,9 +770,14 @@ type CronJobState struct {
 }
 
 // RecordsSuccess is whether the job's resource records its last success:
-// a ScheduledBackup's does not.
+// a ScheduledBackup's does not, so the console's jobs listing says "not
+// reported" for one.
 func (j CronJobState) RecordsSuccess() bool { return j.Kind != KindScheduledBackup }
 
+// CronJobs lists namespace's batch/v1 CronJobs as CronJobState —
+// schedule and suspension from the spec, the last two times from the
+// status. ClusterJobs.CronJobs, for the console's jobs listing, is its
+// only caller.
 func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJobState, error) {
 	var list struct {
 		Items []struct {
@@ -703,6 +807,7 @@ func (k *InClusterKube) CronJobs(ctx context.Context, namespace string) ([]CronJ
 
 // ScheduledBackups lists namespace's CNPG ScheduledBackups. Their status
 // has lastScheduleTime, the last backup started, and no success time.
+// ClusterJobs.CronJobs appends them beside the CronJobs of a namespace.
 func (k *InClusterKube) ScheduledBackups(ctx context.Context, namespace string) ([]CronJobState, error) {
 	var list struct {
 		Items []struct {
@@ -737,6 +842,10 @@ type ClusterJobs struct {
 	Namespaces []string
 }
 
+// CronJobs lists every namespace's CronJobs and ScheduledBackups —
+// Namespaces, or platform, factory and forgejo when none are set — for
+// the console's jobs listing; one namespace's failure names it and
+// fails the whole.
 func (j ClusterJobs) CronJobs(ctx context.Context) ([]CronJobState, error) {
 	namespaces := j.Namespaces
 	if len(namespaces) == 0 {
@@ -757,7 +866,10 @@ func (j ClusterJobs) CronJobs(ctx context.Context) ([]CronJobState, error) {
 	return out, nil
 }
 
-// Deployment reads one Deployment (the factory namespace's roll record).
+// Deployment reads one apps/v1 Deployment as a roll record reads it —
+// managedFields, pod template and conditions — ErrNotFound when it is
+// gone. The roll watchers measure a roll by it, the SigNoz intake
+// builds a factory Deployment's window from it.
 func (k *InClusterKube) Deployment(ctx context.Context, namespace, name string) (Deployment, error) {
 	var d Deployment
 	err := k.getJSON(ctx, "/apis/apps/v1/namespaces/"+namespace+"/deployments/"+name, &d)
@@ -776,7 +888,10 @@ type FluxState struct {
 	Applied string
 }
 
-// KustomizationState reads the Flux Kustomization name in namespace.
+// KustomizationState reads the Kustomization's Ready condition — status
+// and message, "" while Flux has set none — and its last applied
+// revision, "" while it never has; ErrNotFound for a name Flux never
+// wrote. The roller's fluxApplied and the intake's flux alert read it.
 func (k *InClusterKube) KustomizationState(ctx context.Context, namespace, name string) (FluxState, error) {
 	var ks struct {
 		Status struct {
@@ -808,9 +923,10 @@ const (
 	factoryKustomization = "factory"
 )
 
-// SuspendKustomization sets spec.suspend of the Flux Kustomization name in
-// namespace by one server-side apply, with no read first: an apply of the
-// value it has changes nothing.
+// SuspendKustomization sets spec.suspend of the Flux Kustomization name
+// in namespace by one server-side apply, with no read first: an apply of
+// the value it has changes nothing. The roller's setLevel is its only
+// caller, suspend and resume both.
 func (k *InClusterKube) SuspendKustomization(ctx context.Context, namespace, name string, suspend bool) error {
 	_, err := k.call(ctx, http.MethodPatch, "/apis/kustomize.toolkit.fluxcd.io/v1/namespaces/"+namespace+"/kustomizations/"+name+"?fieldManager=factoryd&force=true",
 		map[string]any{"apiVersion": "kustomize.toolkit.fluxcd.io/v1", "kind": "Kustomization",
@@ -821,9 +937,9 @@ func (k *InClusterKube) SuspendKustomization(ctx context.Context, namespace, nam
 // FluxRollouts are the newest rollouts of every HelmRelease and every
 // Kustomization but the factory's own, the one applying the roll targets'
 // Deployments in namespace, whose rolls those Deployments' own window
-// judges (ruling 237). A project environment's Kustomization (ProjectLabel)
-// holds its own namespace's alerts, the platform's objects every
-// namespace's.
+// judges (ruling 237); the SigNoz intake's RolloutPass and rolloutAt
+// read them. A project environment's Kustomization (ProjectLabel) holds
+// its own namespace's alerts, the platform's objects every namespace's.
 func (k *InClusterKube) FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error) {
 	var ks struct {
 		Items []fluxKustomization `json:"items"`
@@ -874,12 +990,12 @@ type fluxKustomization struct {
 	} `json:"status"`
 }
 
-// rollout is the Kustomization's newest content's. Flux applies a
-// Kustomization in one reconcile, so its rollout starts and settles when
-// Flux first applied that content. An older content brought back (a
-// revert) keeps its old first reconcile: it was applied at the first
-// reconcile after the content before it last reconciled, so within one
-// interval of that.
+// rollout is the Kustomization's newest content's — FluxRollouts builds
+// each listed one. Flux applies a Kustomization in one reconcile, so its
+// rollout starts and settles when Flux first applied that content. An
+// older content brought back (a revert) keeps its old first reconcile:
+// it was applied at the first reconcile after the content before it
+// last reconciled, so within one interval of that.
 func (ks fluxKustomization) rollout() Rollout {
 	r, h := Rollout{Kind: "Kustomization", Namespace: ks.Metadata.Namespace, Name: ks.Metadata.Name}, ks.Status.History
 	if ks.Metadata.Labels[ProjectLabel] != "" {
@@ -896,8 +1012,10 @@ func (ks fluxKustomization) rollout() Rollout {
 	return r
 }
 
-// appliesRollTargets reports whether the Kustomization applies a roll
-// target's Deployment in namespace.
+// appliesRollTargets reports whether the Kustomization's applied
+// inventory holds a roll target's Deployment of namespace:
+// FluxRollouts excludes the factory's own Kustomization by it, whose
+// rolls its Deployments' own window judges.
 func (ks fluxKustomization) appliesRollTargets(namespace string) bool {
 	for _, e := range ks.Status.Inventory.Entries {
 		for _, t := range RollTargets {
@@ -931,11 +1049,12 @@ type fluxHelmRelease struct {
 	} `json:"status"`
 }
 
-// rollout is the HelmRelease's newest release's: from its deploy (an
-// install, upgrade or rollback, of a new generation or a new chart) until
-// Ready reads True or False for the object's generation, a release failed
-// for good settled as much as a ready one. Ready Unknown, or a generation
-// the controller has not observed yet, still runs.
+// rollout is the HelmRelease's newest release's — FluxRollouts builds
+// each listed one: from its deploy (an install, upgrade or rollback, of
+// a new generation or a new chart) until Ready reads True or False for
+// the object's generation, a release failed for good settled as much as
+// a ready one. Ready Unknown, or a generation the controller has not
+// observed yet, still runs.
 func (hr fluxHelmRelease) rollout() Rollout {
 	r := Rollout{Kind: "HelmRelease", Namespace: hr.Metadata.Namespace, Name: hr.Metadata.Name}
 	if len(hr.Status.History) == 0 {
@@ -956,12 +1075,17 @@ func (hr fluxHelmRelease) rollout() Rollout {
 	return r
 }
 
+// getJSON is the GET whose body decodes into out: the read behind every
+// listing and single object of this client.
 func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error {
 	_, err := k.call(ctx, http.MethodGet, path, nil, out)
 	return err
 }
 
-// call performs one request; a non-nil into receives the decoded body.
+// call performs one request and returns the raw body, a non-nil into
+// decoded from it, the body read bounded at 4 MiB. A 409 is
+// ErrAlreadyExists, a 404 ErrNotFound, a 403 ErrForbidden; any other
+// non-2xx is an error naming method, path, status and body.
 func (k *InClusterKube) call(ctx context.Context, method, path string, body any, into any) ([]byte, error) {
 	res, err := k.request(ctx, method, path, body)
 	if err != nil {
@@ -992,6 +1116,11 @@ func (k *InClusterKube) call(ctx context.Context, method, path string, body any,
 	return raw, nil
 }
 
+// request builds and performs the HTTP request: the service-account
+// token is read afresh each call — projected tokens rotate — a body is
+// JSON, a patch apply-patch+yaml (the only patch factoryd sends), and
+// the client defaults to a 30-second timeout. PodLog borrows its
+// stream; call owns every other response body.
 func (k *InClusterKube) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
@@ -1040,6 +1169,8 @@ const (
 // /api/v1/namespaces/x/resourcequotas/project) to obj by server-side
 // apply, factoryd as the field manager. An apply that changes nothing
 // keeps the resourceVersion, which tells the three outcomes apart.
+// Register's seed reconcile applies a project's namespace objects with
+// it, each timeline line recording the Change.
 func (k *InClusterKube) Apply(ctx context.Context, path string, obj map[string]any) (Change, error) {
 	var before, after struct {
 		Metadata struct {
@@ -1076,7 +1207,8 @@ type DeploymentState struct {
 
 // RolledOut is kubectl rollout status's test: the controller saw the
 // newest spec, every replica runs it, no old one is left, and every
-// updated one is available. Otherwise it says what lags.
+// updated one is available. Otherwise it says what lags; the project
+// alerts handler asks it of a namespace's Deployments.
 func (d DeploymentState) RolledOut() (bool, string) {
 	switch {
 	case d.ObservedGeneration < d.Generation:
@@ -1091,7 +1223,9 @@ func (d DeploymentState) RolledOut() (bool, string) {
 	return true, ""
 }
 
-// Deployments lists namespace's Deployments with their rollout state.
+// Deployments lists namespace's Deployments with their rollout state —
+// spec.replicas read as 1 when unset, the images in spec order. The
+// project alerts handler and the health page's name listing read them.
 func (k *InClusterKube) Deployments(ctx context.Context, namespace string) ([]DeploymentState, error) {
 	var list struct {
 		Items []struct {
