@@ -45,8 +45,8 @@ var (
 var saDir = "/var/run/secrets/kubernetes.io/serviceaccount"
 
 // SaDirForTest points the production client's service-account directory at
-// dir and returns its former path, for an acceptance test that runs
-// InClusterKube against a scripted apiserver outside the cluster.
+// dir and returns its former path, for the deployment-health and
+// lease-admission tests that run InClusterKube against a scripted apiserver.
 func SaDirForTest(dir string) string {
 	old := saDir
 	saDir = dir
@@ -154,12 +154,10 @@ type InClusterKube struct {
 	HTTP *http.Client
 }
 
-// NewInClusterKube builds the pod's client (main, register and
-// remove-project each build one). The CA bundle loads here, the bearer
-// token is re-read on every request so rotation needs no restart, and
-// the API server is addressed by the service address the kubelet
-// injects, as client-go does: no DNS lookup, which factoryd's egress
-// policy does not admit.
+// NewInClusterKube builds the pod's client: main, register and
+// remove-project each call it. The CA bundle loads here, the token is
+// re-read per request (rotation needs no restart), and the API server
+// is the kubelet's service address, no DNS — the egress policy admits none.
 func NewInClusterKube() (*InClusterKube, error) {
 	host, port := os.Getenv("KUBERNETES_SERVICE_HOST"), os.Getenv("KUBERNETES_SERVICE_PORT")
 	if host == "" || port == "" {
@@ -685,13 +683,10 @@ func cacheVolumes(claim string) []any {
 	}
 }
 
-// deleteReleasedCaches deletes the cache volumes whose claims went with
-// their namespaces; Retain keeps their directory for the next claim. The
-// session and CI teardowns sweep it. A namespace deletion is
-// asynchronous, so the claim of the namespace just deleted is not
-// Released yet: each sweep takes the earlier ones', and the last
-// lingers until the next teardown (harmless: a Released volume never
-// binds again, and a new claim gets a new volume on the same path).
+// deleteReleasedCaches deletes the Released volumes of CacheClass —
+// Retain keeps their directory for the next claim; the session and CI
+// teardowns sweep it. Deletion is async, so each sweep takes the earlier
+// claims' and the last lingers: harmless, a Released volume never binds.
 func deleteReleasedCaches(ctx context.Context, kube Kube) {
 	pvs, err := kube.PersistentVolumes(ctx)
 	if err != nil {
@@ -937,9 +932,7 @@ func (k *InClusterKube) SuspendKustomization(ctx context.Context, namespace, nam
 // FluxRollouts are the newest rollouts of every HelmRelease and every
 // Kustomization but the factory's own, the one applying the roll targets'
 // Deployments in namespace, whose rolls those Deployments' own window
-// judges (ruling 237); the SigNoz intake's RolloutPass and rolloutAt
-// read them. A project environment's Kustomization (ProjectLabel) holds
-// its own namespace's alerts, the platform's objects every namespace's.
+// judges (ruling 237); the SigNoz intake's RolloutPass and rolloutAt read them.
 func (k *InClusterKube) FluxRollouts(ctx context.Context, namespace string) ([]Rollout, error) {
 	var ks struct {
 		Items []fluxKustomization `json:"items"`
@@ -991,11 +984,9 @@ type fluxKustomization struct {
 }
 
 // rollout is the Kustomization's newest content's — FluxRollouts builds
-// each listed one. Flux applies a Kustomization in one reconcile, so its
-// rollout starts and settles when Flux first applied that content. An
-// older content brought back (a revert) keeps its old first reconcile:
-// it was applied at the first reconcile after the content before it
-// last reconciled, so within one interval of that.
+// each listed one. Flux applies one content per reconcile, so its
+// rollout starts and settles at that content's first reconcile; a
+// revert keeps its old first, within one interval of the prior's last.
 func (ks fluxKustomization) rollout() Rollout {
 	r, h := Rollout{Kind: "Kustomization", Namespace: ks.Metadata.Namespace, Name: ks.Metadata.Name}, ks.Status.History
 	if ks.Metadata.Labels[ProjectLabel] != "" {
@@ -1050,11 +1041,9 @@ type fluxHelmRelease struct {
 }
 
 // rollout is the HelmRelease's newest release's — FluxRollouts builds
-// each listed one: from its deploy (an install, upgrade or rollback, of
-// a new generation or a new chart) until Ready reads True or False for
-// the object's generation, a release failed for good settled as much as
-// a ready one. Ready Unknown, or a generation the controller has not
-// observed yet, still runs.
+// each listed one: from its deploy (an install, upgrade or rollback)
+// until Ready reads True or False for its generation, one failed for
+// good settled as much as a ready one; Unknown or unobserved still runs.
 func (hr fluxHelmRelease) rollout() Rollout {
 	r := Rollout{Kind: "HelmRelease", Namespace: hr.Metadata.Namespace, Name: hr.Metadata.Name}
 	if len(hr.Status.History) == 0 {
@@ -1082,10 +1071,10 @@ func (k *InClusterKube) getJSON(ctx context.Context, path string, out any) error
 	return err
 }
 
-// call performs one request and returns the raw body, a non-nil into
-// decoded from it, the body read bounded at 4 MiB. A 409 is
-// ErrAlreadyExists, a 404 ErrNotFound, a 403 ErrForbidden; any other
-// non-2xx is an error naming method, path, status and body.
+// call performs one request — every method of this client speaks through
+// it — and returns the raw body, a non-nil into decoded from it, the body
+// read bounded at 4 MiB. A 409 is ErrAlreadyExists, a 404 ErrNotFound, a
+// 403 ErrForbidden; any other non-2xx names method, path, status, body.
 func (k *InClusterKube) call(ctx context.Context, method, path string, body any, into any) ([]byte, error) {
 	res, err := k.request(ctx, method, path, body)
 	if err != nil {
@@ -1116,11 +1105,10 @@ func (k *InClusterKube) call(ctx context.Context, method, path string, body any,
 	return raw, nil
 }
 
-// request builds and performs the HTTP request: the service-account
-// token is read afresh each call — projected tokens rotate — a body is
-// JSON, a patch apply-patch+yaml (the only patch factoryd sends), and
-// the client defaults to a 30-second timeout. PodLog borrows its
-// stream; call owns every other response body.
+// request builds and performs the HTTP request for call and PodLog: the
+// service-account token is read afresh each call — projected tokens
+// rotate — a body is JSON, a patch apply-patch+yaml, and the client
+// defaults to 30 seconds. PodLog borrows its stream; call owns the rest.
 func (k *InClusterKube) request(ctx context.Context, method, path string, body any) (*http.Response, error) {
 	var reader io.Reader
 	if body != nil {
@@ -1165,12 +1153,10 @@ const (
 	Unchanged Change = "no change"
 )
 
-// Apply creates or brings the object at item path (e.g.
-// /api/v1/namespaces/x/resourcequotas/project) to obj by server-side
-// apply, factoryd as the field manager. An apply that changes nothing
-// keeps the resourceVersion, which tells the three outcomes apart.
-// Register's seed reconcile applies a project's namespace objects with
-// it, each timeline line recording the Change.
+// Apply creates or brings the object at path to obj by server-side
+// apply, factoryd as the field manager; an apply that changes nothing
+// keeps the resourceVersion, telling Created, Updated and Unchanged
+// apart. Register's seed reconcile applies a project's objects with it.
 func (k *InClusterKube) Apply(ctx context.Context, path string, obj map[string]any) (Change, error) {
 	var before, after struct {
 		Metadata struct {

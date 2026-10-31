@@ -197,11 +197,10 @@ func scanRoutineRun(scan func(dest ...any) error) (RoutineRun, error) {
 	return r, err
 }
 
-// BeginRoutineRun writes run Runs+1 of r's routine, began true; a run of
-// the same due returns that run with began false, so a retry and two
-// triggers racing begin one run. With skip a pending Skip once is
-// consumed: the new run's outcome is "skipped", its note "skipped once
-// by <SkipBy>". The run workflow passes skip false only for a Run now.
+// BeginRoutineRun writes run Runs+1 of r's routine, began true; a run
+// of the same due returns that run with began false, so a retry and two
+// racing triggers begin one. The run workflow calls it — skip false only
+// for a Run now — consuming a pending Skip once as outcome "skipped".
 func (s *PGStore) BeginRoutineRun(ctx context.Context, r RoutineRun, skip bool) (RoutineRun, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
