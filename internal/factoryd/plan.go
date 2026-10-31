@@ -15,6 +15,7 @@ import (
 	"math"
 	"net/http"
 	"path"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -2392,6 +2393,17 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	if p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository)); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
+	}
+	// a re-file of the newest revision by value: already stored. By
+	// value, not by hash: the stored row's hash can drift (a settled
+	// card gains its issue number) while the plan is the same.
+	if st.newest != nil && reflect.DeepEqual(*st.newest, p) {
+		rev, _, err := r.store.PlanRevision(ctx, taskID, st.revision)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256})
+		return PlanResult{Revision: st.revision, SHA256: rev.SHA256}, nil
 	}
 	if st.newest != nil {
 		found = revisionFindings(*st.newest, p)

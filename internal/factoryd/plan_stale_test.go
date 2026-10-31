@@ -66,6 +66,54 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 	}
 }
 
+// The night's loop: a planner re-files the newest revision itself, and
+// the amendment rules judge it as an amendment of itself — its replaces
+// markers name ids the newest no longer holds. A re-file of the newest
+// by value is a no-op: the revision it already is, no records, no
+// restarts. By value, not by hash: a stored row whose hash drifted still
+// lands the no-op.
+func TestFilePlanRefileOfTheNewestIsANoop(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, wf := fileRig(t, testPlan())
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+
+	amend := testPlan()
+	amend.Criteria[0].ID = "links_crud_v2"
+	amend.Criteria[0].Replaces = "links_crud"
+	amend.Cards[1].Acceptance[0].Criterion = "links_crud_v2"
+	amend.Cards[3].Acceptance[1].Criterion = "links_crud_v2"
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("the amendment: %+v, %v, findings %q", res, err, res.Findings)
+	}
+	starts := len(wf.started)
+	before, _ := store.PlanCatches(ctx, "t-plan")
+
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend))
+	if err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("the re-file: %+v, %v, findings %q", res, err, res.Findings)
+	}
+	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
+		t.Fatalf("the re-file landed as revision %d", rev.Revision)
+	}
+	if catches, _ := store.PlanCatches(ctx, "t-plan"); len(catches) != len(before) {
+		t.Fatalf("the re-file wrote records: %+v", catches)
+	}
+	if len(wf.started) != starts {
+		t.Fatalf("the re-file restarted children: %v", wf.started)
+	}
+
+	rev, _, _ := store.PlanRevision(ctx, "t-plan", 2)
+	rev.SHA256 = "drifted"
+	store.plans["t-plan"][1] = rev
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("the re-file after the hash drifted: %+v, %v, findings %q", res, err, res.Findings)
+	}
+	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
+		t.Fatalf("the drifted re-file landed as revision %d", rev.Revision)
+	}
+}
+
 // Piece 10's recording rule and restart rules. The amendment replaces
 // links_crud under a new id, drops redirect_302 and its citing card,
 // rebriefs the foundation, and changes the started links-api by a new
