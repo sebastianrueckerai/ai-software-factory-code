@@ -40,6 +40,13 @@ type PolicyGate struct {
 	LargeLines    int // the policy's risk.large_lines
 	PolicyVersion int64
 	MergeRule     string
+	// Files, Insertions and Deletions are the diff the gate read: the
+	// pull request's files and its added and deleted lines apart — the
+	// snapshot the merge decision's fact records. Lines is their sum;
+	// Changed counts paths, a rename's two names among them.
+	Files      int
+	Insertions int
+	Deletions  int
 	// Factory: the class is forbidden to agents, and factoryd opened the
 	// pull request (factoryPRSources), which is no agent's change: Outcome
 	// is requires_approval. A mechanical one merges on the merge rule at
@@ -340,7 +347,26 @@ func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, com
 	}
 	r.record(ctx, t.ID, "auto_merge", map[string]any{"pr": pr, "commit": commit, "class": g.Policy.Class, "merge_rule": g.Policy.MergeRule,
 		"reproduction": g.Reproduction.Command, "review": rv.Summary, "not_reproduced": g.Reproduction.NotReproduced})
+	r.recordGateHead(ctx, t, commit, policy.OutcomeAuto, g.Policy)
 	return nil
+}
+
+// recordGateHead snapshots the merge decision of one head (roadmap 336):
+// after the gates and the review established it — here, at the boundary
+// the automatic merge and the human approval share — the card's size, the
+// bound that size planned under the policy the gates read (the small and
+// medium bounds, never the policy's large_lines standing in for them),
+// the policy version and the lines the gates counted. One head, one row,
+// whichever path records it first: a retry, and a fall from the automatic
+// merge to a human's approval on the same head, leave the first reading.
+// A head no snapshot covers — a merge factoryd never decided, a human's
+// in Forgejo — stays unknown; nothing reconstructs its reading from the
+// policy in force now. A failed row is logged, never a failed decision.
+func (r *Runner) recordGateHead(ctx context.Context, t Task, head, decision string, g PolicyGate) {
+	bound, _ := cardLineBound(t.Size, g.LargeLines)
+	r.timeline.RecordFact(ctx, GateHeadFact{Task: t.ID, Head: head, Gate: GateMerge, Decision: decision,
+		Size: t.Size, Bound: bound, PolicyVersion: g.PolicyVersion,
+		Files: g.Files, Insertions: g.Insertions, Deletions: g.Deletions}.Event(t.Repository, t.IssueNumber))
 }
 
 // MergeUser is the dedicated Forgejo user the Merge activity merges as
@@ -434,13 +460,15 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	}
 	// a file moved out of a guarded directory still counts against it
 	var paths []string
-	lines := 0
+	lines, insertions, deletions := 0, 0, 0
 	for _, f := range files {
 		paths = append(paths, f.Filename)
 		if f.PreviousFilename != "" && f.PreviousFilename != f.Filename {
 			paths = append(paths, f.PreviousFilename)
 		}
 		lines += f.Additions + f.Deletions
+		insertions += f.Additions
+		deletions += f.Deletions
 	}
 	outside := slices.DeleteFunc(slices.Clone(paths), func(p string) bool { return strings.HasPrefix(p, "k8s/") })
 	v, err := r.pinnedVersion(ctx, pin)
@@ -449,7 +477,8 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	}
 	c := v.Document.Risk.Classify(paths, lines)
 	g := PolicyGate{Class: c.Class.Name, Outcome: c.Class.Outcome, Paths: c.Paths, Migrations: c.Migrations,
-		Changed: len(paths), Lines: lines, OutsideK8s: outside, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman}
+		Changed: len(paths), Lines: lines, OutsideK8s: outside, LargeLines: v.Document.Risk.LargeLines, PolicyVersion: v.ID, MergeRule: policy.MergeHuman,
+		Files: len(files), Insertions: insertions, Deletions: deletions}
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
@@ -1512,6 +1541,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class,
 		"factory": in.Factory, "red_checks": in.RedChecks}
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, detail)
+	r.recordGateHead(ctx, t, in.Commit, "approval", in.Gates.Policy)
 	return nil
 }
 

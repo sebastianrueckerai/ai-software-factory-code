@@ -219,20 +219,27 @@ func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 // EventGateHead is one card's reading at one head — its gate decision,
 // size and diff — recorded when a card reaches a gate: the merge gate's
 // cards-above-bound panel reads it. Detail {"gate", "head", "decision",
-// "size", "files", "insertions", "deletions"}.
+// "size", "bound", "policy_version", "files", "insertions", "deletions"}.
 const EventGateHead = "gate_head"
 
-// GateHeadFact is that reading. Identity: the card and the head; one
-// head, one row.
+// GateHeadFact is that reading: the merge decision's snapshot of the card
+// as the gates judged it — the card's size, the bound that size planned
+// under the policy the gates read (cardLineBound, never the policy's
+// large_lines standing in for a smaller size's bound), the policy version
+// and the lines the gates counted. Decision is "auto" (the gates let it
+// merge) or "approval" (a person decides). Identity: the card and the
+// head; one head, one row.
 type GateHeadFact struct {
-	Task       string // with Head: the identity
-	Head       string
-	Gate       string
-	Decision   string
-	Size       string
-	Files      int
-	Insertions int
-	Deletions  int
+	Task          string // with Head: the identity
+	Head          string
+	Gate          string
+	Decision      string
+	Size          string
+	Bound         int // the size's effective cardLineBound at the reading
+	PolicyVersion int64
+	Files         int
+	Insertions    int
+	Deletions     int
 }
 
 // Event is the reading's row of repository's issue.
@@ -240,6 +247,7 @@ func (f GateHeadFact) Event(repository string, issue int64) Event {
 	return Event{Repository: repository, TaskID: f.Task, IssueNumber: issue, Kind: EventGateHead,
 		Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail: map[string]any{"gate": f.Gate, "head": f.Head, "decision": f.Decision, "size": f.Size,
+			"bound": f.Bound, "policy_version": f.PolicyVersion,
 			"files": f.Files, "insertions": f.Insertions, "deletions": f.Deletions},
 		IdentityKey: identityKey(EventGateHead, f.Task, f.Head)}
 }

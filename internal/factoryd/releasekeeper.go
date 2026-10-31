@@ -481,14 +481,19 @@ func (k *ReleaseKeeper) closeAsk(ctx context.Context, repository, comment string
 }
 
 // released records the end of repository's hold, held since since: how,
-// by actor via via, and Deploy now's commit and who decided it.
+// by actor via via, and Deploy now's commit and who decided it. The
+// fact's identity is the repository and the instant the hold began, so
+// however often passes or retries write the same hold's end, one row
+// stands; hours is the precise wait, never a truncated whole.
 func (k *ReleaseKeeper) released(ctx context.Context, repository, how string, since, now time.Time, actor, via, commit, decider string) {
-	detail := map[string]any{"how": how, "held_since": since.UTC().Format(time.RFC3339), "hours": int(now.Sub(since) / time.Hour)}
+	fact := HoldIntervalFact{Repository: repository, HeldSince: since, How: how, Hours: now.Sub(since).Hours()}
+	event := fact.Event()
+	event.At, event.Actor, event.Via = now, actor, via
 	if commit != "" {
-		detail["commit"] = commit
+		event.Detail["commit"] = commit
 	}
 	if decider != "" {
-		detail["decider"] = decider
+		event.Detail["decider"] = decider
 	}
-	k.Timeline.RecordProjectRow(ctx, Event{At: now, Repository: repository, Kind: EventProductionReleased, Actor: actor, Via: via, Detail: detail})
+	k.Timeline.RecordProjectRow(ctx, event)
 }

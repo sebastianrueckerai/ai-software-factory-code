@@ -136,6 +136,19 @@ func (tl *Timeline) RecordProjectRow(ctx context.Context, e Event) {
 	}
 }
 
+// RecordFact writes a fact payload's row (the metrics contracts): its
+// IdentityKey makes it one row per fact, whichever retry records it
+// first. A failed write is logged — a fact never fails the decision it
+// records, and the decision is never retried for the fact's sake.
+func (tl *Timeline) RecordFact(ctx context.Context, e Event) {
+	if tl == nil || tl.Events == nil {
+		return
+	}
+	if _, err := tl.Events.Record(ctx, e); err != nil {
+		log.Printf("task %s: event %s: the fact row: %v", e.TaskID, e.Kind, err)
+	}
+}
+
 // allDoneMu holds taskEnded's check and record of all_children_done
 // together: the last two cards ending side by side both find every card
 // done (one factoryd replica).
