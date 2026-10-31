@@ -121,6 +121,13 @@ type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
+	// ChatOpenQuestion is the thread's open question, the line its last
+	// human message asked that no reply has answered, and whether a reply
+	// has already passed it once; PutChatQuestion stores both, an empty
+	// question removing the row (card #1345). AddChatMessage itself opens
+	// the question a human message asks.
+	ChatOpenQuestion(ctx context.Context, repository, login string, conversation int64) (string, bool, error)
+	PutChatQuestion(ctx context.Context, repository, login string, conversation int64, question string, carried bool) error
 	// AddChatAttachment stores an image row of a message (its MessageID
 	// and Conversation set) and answers it with its id; ChatAttachments
 	// are a conversation's image rows oldest first; ChatAttachmentByID is

@@ -599,6 +599,7 @@ type acceptChat struct {
 	next      int64
 	at        time.Time
 	proposals []acceptProposal
+	openQ     map[string]openQuestion
 	tasks     *acceptTasks
 }
 
@@ -644,7 +645,24 @@ func (f *acceptChat) AddChatMessage(_ context.Context, repository, login string,
 	if m.Conversation > f.convs[k] {
 		f.convs[k] = m.Conversation
 	}
+	if q := askedBy(m); q != "" {
+		f.openQ = putOpenQ(f.openQ, repository, login, m.Conversation, q, false)
+	}
 	return m.ID, nil
+}
+
+func (f *acceptChat) ChatOpenQuestion(_ context.Context, repository, login string, conversation int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	q, passed := openQOf(f.openQ, repository, login, conversation)
+	return q, passed, nil
+}
+
+func (f *acceptChat) PutChatQuestion(_ context.Context, repository, login string, conversation int64, question string, carried bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openQ = putOpenQ(f.openQ, repository, login, conversation, question, carried)
+	return nil
 }
 
 func (f *acceptChat) AddChatAttachment(_ context.Context, repository, login string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {

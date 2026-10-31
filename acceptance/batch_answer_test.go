@@ -900,6 +900,7 @@ type accBatchChat struct {
 	msgs      []factoryd.ChatMessage
 	atts      []factoryd.ChatAttachment
 	proposals []accBatchProposal
+	openQ     map[string]openQuestion
 	tasks     *accBatchTasks
 }
 
@@ -930,7 +931,24 @@ func (f *accBatchChat) AddChatMessage(_ context.Context, _, _ string, m factoryd
 	m.At = time.Now()
 	m.Conversation = 1
 	f.msgs = append(f.msgs, m)
+	if q := askedBy(m); q != "" {
+		f.openQ = putOpenQ(f.openQ, repository, login, m.Conversation, q, false)
+	}
 	return m.ID, nil
+}
+
+func (f *accBatchChat) ChatOpenQuestion(_ context.Context, repository, login string, conversation int64) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	q, passed := openQOf(f.openQ, repository, login, conversation)
+	return q, passed, nil
+}
+
+func (f *accBatchChat) PutChatQuestion(_ context.Context, repository, login string, conversation int64, question string, carried bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.openQ = putOpenQ(f.openQ, repository, login, conversation, question, carried)
+	return nil
 }
 
 // nextID is one past the highest message id; f.mu held.
