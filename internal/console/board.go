@@ -1286,6 +1286,14 @@ type statusLine struct {
 type holdLine struct {
 	For, Reason string
 	Groups      []string
+	// Released is the standing Deploy now whose commit is still main's
+	// head: the panel says it rolls and offers no form.
+	Released *releaseStanding
+}
+
+// releaseStanding is a Deploy now window whose commit is main's head.
+type releaseStanding struct {
+	Commit, Age string
 }
 
 // depRow is one dependency's state as the panel shows it: its latest
@@ -1735,50 +1743,21 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	return col, true
 }
 
-// showBoard answers a board action with the board of the form's project:
-// to htmx the fragment, and problems on the approval cards of the tasks
-// they name; a browser's form a redirect to the board after a success (a
-// reload resends nothing), else the page.
-func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, problems map[string]string) {
-	f := formFilter(r)
-	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
-		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
-		return
-	}
-	d, err := c.boardOf(r, f, button(r))
-	if errors.Is(err, errNoProject) {
-		f.Project = ""
-		d, err = c.boardOf(r, f, button(r))
-	}
+// pressNote answers a press: the note at once into the page's note
+// outlet, the board's own re-render behind the board-refresh trigger, so
+// the press never waits on the board's reads. A form post without htmx
+// keeps the redirect to the whole page.
+func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string, err error) {
 	if err != nil {
-		log.Printf("console: board: %v", err)
-		http.Error(w, "The board could not be read; reload it.", http.StatusInternalServerError)
+		c.fail(w, r, err)
 		return
 	}
-	// the approval cards: the wide view's human lane, else Needs you
-	cards := make([]*approvalCard, 0, len(d.Approvals))
-	for i := range d.Approvals {
-		cards = append(cards, &d.Approvals[i])
+	if r.Header.Get("HX-Request") == "" {
+		http.Redirect(w, r, "/"+formFilter(r).query(), http.StatusSeeOther)
+		return
 	}
-	for _, col := range d.Columns {
-		for _, n := range col.Needs {
-			if n.Approval != nil {
-				cards = append(cards, n.Approval)
-			}
-		}
-	}
-	for _, a := range cards {
-		if p, ok := problems[a.TaskID]; ok {
-			a.Problem = p
-		}
-	}
-	name := "page.html"
-	if r.Header.Get("HX-Request") != "" {
-		name = "board-fragment"
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	c.render(w, name, d)
+	w.Header().Set("HX-Trigger", "board-refresh")
+	c.render(w, "note-fragment", note)
 }
 
 // boardView is what the cards of one render share: the viewer, the
@@ -2547,6 +2526,15 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 				merged, total := g.Merged()
 				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("plan #%d · %d of %d merged", g.Issue, merged, total))
 			}
+			if h.DeployNow != "" && c.cfg.MainCommit != nil {
+				switch head, err := c.cfg.MainCommit(ctx, p.Repository); {
+				case err != nil:
+					log.Printf("console: the head of %s: %v", p.Repository, err)
+					d.Problems = append(d.Problems, "main's head could not be read")
+				case head == h.DeployNow:
+					s.Hold.Released = &releaseStanding{Commit: h.DeployNow[:min(7, len(h.DeployNow))], Age: coarse(time.Since(h.DeployAt))}
+				}
+			}
 		}
 	}
 	if c.cfg.Mirrors == nil {
@@ -3088,7 +3076,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, nil)
+	c.pressNote(w, r, note, nil)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -3098,11 +3086,8 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	if _, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil); err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, nil)
+	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
+	c.pressNote(w, r, note, err)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),

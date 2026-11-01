@@ -61,8 +61,8 @@ func (c *Console) routineNeedsMe(w http.ResponseWriter, r *http.Request) {
 	c.routineActed(w, r, note)
 }
 
-// routineActed answers an act: the routine's drawer on the tab its form
-// sat on with note (from=drawer, tab), else the board alone.
+// routineActed answers an act with note: the routine's drawer on the tab
+// its form sat on (from=drawer, tab), else the board.
 func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note string) {
 	if r.PostFormValue("from") == "drawer" {
 		tab := r.PostFormValue("tab")
@@ -72,7 +72,7 @@ func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note stri
 		c.showRoutineDrawer(w, r, tab, note)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, nil)
+	c.pressNote(w, r, note, nil)
 }
 
 // doRoutineSkip sets project's routine name to skip its next run for a,

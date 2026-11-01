@@ -25,6 +25,9 @@ import (
 	tlog "go.temporal.io/sdk/log"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
@@ -250,7 +253,15 @@ func main() {
 	temporal, err := client.Dial(client.Options{
 		HostPort:  env("TEMPORAL_ADDRESS", "temporal-frontend.platform.svc.cluster.local:7233"),
 		Namespace: env("TEMPORAL_NAMESPACE", "default"),
-		Logger:    tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))),
+		// a dead frontend fails a connect in 5s instead of hanging it, and
+		// an idle connection speaks keepalive so it cannot rot silently
+		ConnectionOptions: client.ConnectionOptions{
+			DialOptions: []grpc.DialOption{
+				grpc.WithConnectParams(grpc.ConnectParams{Backoff: backoff.DefaultConfig, MinConnectTimeout: 5 * time.Second}),
+				grpc.WithKeepaliveParams(keepalive.ClientParameters{Time: 30 * time.Second, Timeout: 10 * time.Second, PermitWithoutStream: true}),
+			},
+		},
+		Logger: tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))),
 	})
 	if err != nil {
 		log.Fatalf("temporal client: %v", err)
@@ -578,8 +589,9 @@ func main() {
 		Replan: func(ctx context.Context, taskID, by, comment string, offMain bool) (string, error) {
 			return runner.Replan(ctx, taskID, factoryd.ReplanAsk{By: by, Comment: comment, OffMain: offMain})
 		},
-		Hold:      releases.Hold,
-		DeployNow: releases.DeployNow,
+		Hold:       releases.Hold,
+		MainCommit: releases.MainCommit,
+		DeployNow:  releases.DeployNow,
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},

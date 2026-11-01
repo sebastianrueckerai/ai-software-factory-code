@@ -23,10 +23,13 @@ type Release struct {
 }
 
 // Hold is what holds a project's production now: the groups open on main,
-// since the clock's start.
+// since the clock's start. DeployNow is the commit an approver's Deploy
+// now released, DeployAt its press, zero when no window stands.
 type Hold struct {
-	Since  time.Time
-	Groups []Group
+	Since     time.Time
+	Groups    []Group
+	DeployNow string
+	DeployAt  time.Time
 }
 
 func (h Hold) Held() bool { return len(h.Groups) > 0 }

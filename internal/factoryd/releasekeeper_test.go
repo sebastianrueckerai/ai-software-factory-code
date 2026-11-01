@@ -876,6 +876,20 @@ func TestReleaseKeeperHold(t *testing.T) {
 	if h, err := k.Hold(ctx, codeRepo); err != nil || !h.Since.Equal(keeperAt(9, 40)) || !h.Held() {
 		t.Errorf("Hold(own) = %+v, %v; want held since 09:40", h, err)
 	}
+	// a standing Deploy now window rides the hold: its commit and its clock
+	if err := store.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(11, 30)); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := k.Hold(ctx, demoRepo); err != nil || h.DeployNow != demoCommit || !h.DeployAt.Equal(keeperAt(11, 30)) {
+		t.Errorf("Hold with a standing window = %+v, %v; want %s pressed at 11:30", h, err, demoCommit)
+	}
+	// a spent window leaves the hold with no release standing
+	if err := store.ClearDeployNow(ctx, demoRepo, demoCommit); err != nil {
+		t.Fatal(err)
+	}
+	if h, err := k.Hold(ctx, demoRepo); err != nil || h.DeployNow != "" || !h.DeployAt.IsZero() {
+		t.Errorf("Hold after the window spent = %+v, %v; want no release standing", h, err)
+	}
 }
 
 func TestReplanChoice(t *testing.T) {

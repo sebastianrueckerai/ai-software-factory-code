@@ -55,21 +55,46 @@ func (w TemporalWorkflows) Start(ctx context.Context, taskID string) error {
 	return err
 }
 
+// signalTimeout bounds one signal attempt. A press waits on its signal, so
+// an unreachable frontend must fail the press within the bound, never hang
+// it until the server's write timeout kills the response mid flight.
+const signalTimeout = 10 * time.Second
+
 // Signal delivers a signal to the task's workflow, starting it when no run
 // exists (after a failure or termination), so a signal is never lost; the
 // new run reconciles from Forgejo before it acts. A completed workflow has
-// nothing left to decide: no-op.
+// nothing left to decide: no-op. Each attempt runs under signalTimeout and
+// an unreachable or slow frontend is retried once, so a blip costs a press
+// ten seconds, not the press.
 func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
-	_, err := w.Client.SignalWithStartWorkflow(ctx, WorkflowID(taskID), name, sig, startOptions(taskID), "TaskWorkflow", taskID)
-	var started *serviceerror.WorkflowExecutionAlreadyStarted
-	if errors.As(err, &started) {
-		log.Printf("task %s: signal %s: workflow already completed", taskID, name)
-		return nil
-	}
-	if err == nil {
-		log.Printf("task %s: signal %s from %s delivered", taskID, name, sig.Author)
+	var err error
+	for attempt := 1; attempt <= 2; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, signalTimeout)
+		_, err = w.Client.SignalWithStartWorkflow(attemptCtx, WorkflowID(taskID), name, sig, startOptions(taskID), "TaskWorkflow", taskID)
+		cancel()
+		var started *serviceerror.WorkflowExecutionAlreadyStarted
+		if errors.As(err, &started) {
+			log.Printf("task %s: signal %s: workflow already completed", taskID, name)
+			return nil
+		}
+		if err == nil {
+			log.Printf("task %s: signal %s from %s delivered", taskID, name, sig.Author)
+			return nil
+		}
+		if ctx.Err() != nil || attempt == 2 || !retryableSignal(err) {
+			break
+		}
+		log.Printf("task %s: signal %s: %v, retrying once", taskID, name, err)
 	}
 	return err
+}
+
+// retryableSignal names the failures one retry can cure: a frontend that
+// was unreachable or answered too slowly.
+func retryableSignal(err error) bool {
+	var unavailable *serviceerror.Unavailable
+	var deadline *serviceerror.DeadlineExceeded
+	return errors.As(err, &unavailable) || errors.As(err, &deadline) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // Reopen starts a new run of the task's workflow, whatever ended the last

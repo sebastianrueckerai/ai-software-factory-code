@@ -355,3 +355,56 @@ func TestARollRequestSettlesOnAMergedRollTask(t *testing.T) {
 		t.Fatalf("rows %v, want %v", states, want)
 	}
 }
+
+// A roll that settles failed ends the Deploy now window of its commit in
+// the same statement that settles it: a poll that dies right after the
+// settle cannot leave the window standing, for no later poll sees the
+// settled request again. Another commit's window stands.
+func TestASettledFailedRollEndsItsReleaseWindow(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE roll_requests, tasks, releases CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "sf/ai-software-factory-code"
+	at := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	if err := s.CreateTask(ctx, Task{ID: "rt1", Status: "failed", Repository: repo, Kind: "agent", Source: SourceRoll, Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.InsertRollRequest(ctx, RollRequest{SHA: "f", Repository: repo, RunID: 10, State: RollOpened, TaskID: "rt1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkRollsCommitted(ctx, "rt1", []string{"f"}, "commit-f"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDeployNow(ctx, repo, "f", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetDeployNow(ctx, "sf/linkshort", "g", at); err != nil {
+		t.Fatal(err)
+	}
+	settled, err := s.SettleRollRequests(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settled) != 1 || settled[0].SHA != "f" || settled[0].State != RollFailed {
+		t.Fatalf("settled %+v, want the one failed roll of f", settled)
+	}
+	rel, err := s.Release(ctx, repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel.DeployNow != "" {
+		t.Fatalf("deploy_now after the failed settle = %q, want the window ended", rel.DeployNow)
+	}
+	if rel, err = s.Release(ctx, "sf/linkshort"); err != nil {
+		t.Fatal(err)
+	}
+	if rel.DeployNow != "g" {
+		t.Fatalf("linkshort deploy_now = %q, want g standing", rel.DeployNow)
+	}
+}

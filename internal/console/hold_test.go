@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -97,6 +98,51 @@ func TestBoardTextNamesTheHold(t *testing.T) {
 	}
 }
 
+// A standing release carries the panel: while main's head is the commit
+// an approver pressed, the panel says it rolls and offers no form; a head
+// past it, or a spent window, brings the form back for an approver.
+func TestPanelCarriesItsRelease(t *testing.T) {
+	r, _ := holdRig(t)
+	const commit = "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"
+	r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
+		if repository != "sf/code" {
+			return factoryd.Hold{}, nil
+		}
+		return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), DeployNow: commit, DeployAt: time.Now().Add(-25 * time.Minute), Groups: []factoryd.Group{
+			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+	}
+	head := commit
+	r.c.cfg.MainCommit = func(context.Context, string) (string, error) { return head, nil }
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := "<p class=\"sp-note\">Deploy now stands for 9d9d9d9, pressed 25 min ago: rolling. A merge after it waits for the open plans again.</p>"
+	if !strings.Contains(body, want) {
+		t.Errorf("the panel lacks %q", want)
+	}
+	if strings.Contains(body, "deploy-now") {
+		t.Error("the panel offers Deploy now while its release rolls")
+	}
+	head = "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, "deploy-now") {
+		t.Error("a head past the release does not bring the form back")
+	}
+	errHeadRead := errors.New("the head read failed")
+	r.c.cfg.MainCommit = func(context.Context, string) (string, error) { return "", errHeadRead }
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `<p class="problem" role="alert">main&#39;s head could not be read</p>`) || !strings.Contains(body, "deploy-now") {
+		t.Error("a head read that fails neither says the problem nor brings the form back")
+	}
+	r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
+		if repository != "sf/code" {
+			return factoryd.Hold{}, nil
+		}
+		return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), Groups: []factoryd.Group{
+			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+	}
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, "deploy-now") {
+		t.Error("a spent window does not bring the form back")
+	}
+}
+
 func TestDeployNowButton(t *testing.T) {
 	r, calls := holdRig(t)
 	ck, s := r.loggedIn(t)
@@ -105,8 +151,9 @@ func TestDeployNowButton(t *testing.T) {
 	req := post(path, url.Values{"csrf": {s.csrf}})
 	req.Header.Set("HX-Request", "true")
 	rec := r.do(req, ck)
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
-		t.Fatalf("Deploy now = %d:\n%s", rec.Code, rec.Body)
+	want := "Deploy now: main of " + holdProject + " at 9d9d9d9 goes to production. A merge after it waits for the open plans again."
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("Deploy now = %d, want 200 with %q: %s", rec.Code, want, rec.Body)
 	}
 	if len(*calls) != 1 || (*calls)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton, "member"}) {
 		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the button", *calls)
@@ -217,8 +264,9 @@ func TestHoldAskDeployAnyway(t *testing.T) {
 	r, ev, deploys, _ := holdAskRig(t)
 	ck, s := r.loggedIn(t)
 	rec := answerAsk(r, ck, s.csrf, factoryd.AnswerDeployAnyway, "")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
-		t.Fatalf("deploy anyway = %d:\n%s", rec.Code, rec.Body)
+	want := "Deploy now: main of " + holdProject + " at 9d9d9d9 goes to production. A merge after it waits for the open plans again."
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("deploy anyway = %d, want 200 with %q: %s", rec.Code, want, rec.Body)
 	}
 	if len(*deploys) != 1 || (*deploys)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton, "member"}) {
 		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the button", *deploys)
@@ -239,7 +287,7 @@ func TestHoldAskDeployAnyway(t *testing.T) {
 	r.c.cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
 	ck, s = r.loggedIn(t)
 	rec = answerAsk(r, ck, s.csrf, factoryd.AnswerDeployAnyway, "")
-	want := "Production of " + holdProject + " is not held: every merge goes to production on its own."
+	want = "Production of " + holdProject + " is not held: every merge goes to production on its own."
 	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
 		t.Fatalf("a free production = %d %q, want 409 %q", rec.Code, rec.Body, want)
 	}
@@ -252,17 +300,17 @@ func TestHoldAskReplan(t *testing.T) {
 	const ask, plan = "/api/v1/repos/sf/code/issues/77/comments", "/api/v1/repos/sf/code/issues/12/comments"
 	comment := "Chosen on #77, the ask about held production."
 	for _, c := range []struct {
-		value, label string
-		offMain      bool
+		value, label, note, said string
+		offMain                  bool
 	}{
-		{factoryd.AnswerReplanOnTop + ":t-pl", "Replan plan #12 on top", false},
-		{factoryd.AnswerTakeOffMain + ":t-pl", "Take plan #12 off main and replan", true},
+		{factoryd.AnswerReplanOnTop + ":t-pl", "Replan plan #12 on top", "Replanning plan #12 on top; #77 is closed. The planner replans on top of what is merged.", "", false},
+		{factoryd.AnswerTakeOffMain + ":t-pl", "Take plan #12 off main and replan", "Taking plan #12 off main and replanning; #77 is closed. Card #90 reverts the merged cards, then the planner replans.", "", true},
 	} {
 		r, ev, _, replans := holdAskRig(t)
 		ck, s := r.loggedIn(t)
 		rec := answerAsk(r, ck, s.csrf, c.value, "")
-		if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
-			t.Fatalf("%s = %d:\n%s", c.value, rec.Code, rec.Body)
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), c.note) {
+			t.Fatalf("%s = %d, want 200 with %q: %s", c.value, rec.Code, c.note, rec.Body)
 		}
 		if len(*replans) != 1 || (*replans)[0] != (replanCall{"t-pl", "sebastian", comment, c.offMain}) {
 			t.Fatalf("%s: Replan calls = %+v, want t-pl by sebastian off main %v", c.value, *replans, c.offMain)
@@ -305,8 +353,8 @@ func TestHoldAskWait(t *testing.T) {
 	r, ev, deploys, replans := holdAskRig(t)
 	ck, s := r.loggedIn(t)
 	rec := answerAsk(r, ck, s.csrf, factoryd.AnswerHoldWait, "")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
-		t.Fatalf("wait = %d:\n%s", rec.Code, rec.Body)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Closed #77") {
+		t.Fatalf("wait = %d, want 200 closing #77: %s", rec.Code, rec.Body)
 	}
 	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/77/comments"); len(got) != 1 || got[0] != "Wait" {
 		t.Errorf("comments on #77 = %q, want [Wait]", got)
@@ -329,8 +377,9 @@ func TestHoldAskReplanNamesAFailedClose(t *testing.T) {
 	r.fg.failEdit = true
 	ck, s := r.loggedIn(t)
 	rec := answerAsk(r, ck, s.csrf, factoryd.AnswerReplanOnTop+":t-pl", "")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
-		t.Fatalf("a failed close = %d:\n%s", rec.Code, rec.Body)
+	want := "Replanning plan #12 on top; #77 could not be closed, close it by hand. The planner replans on top of what is merged."
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+		t.Fatalf("a failed close = %d, want 200 with %q: %s", rec.Code, want, rec.Body)
 	}
 	if len(*replans) != 1 || len(askRows(ev, factoryd.EventCardClosed)) != 0 || askStatus(r) != "waiting-human" {
 		t.Errorf("%d replans, %d closes, status %s; want 1, 0, waiting-human", len(*replans), len(askRows(ev, factoryd.EventCardClosed)), askStatus(r))

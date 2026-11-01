@@ -532,7 +532,7 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	if want := []string{"Queued", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
 		t.Errorf("the wide view's columns are %v, want %v", titles, want)
 	}
-	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide">`,
+	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide" hx-get="/board?project=linkshort&amp;view=wide" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
 		`<section aria-labelledby="human-lane" id="needs-you">`, `id="status-line"`,
 		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`,
 		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Four columns</a>`} {
@@ -551,8 +551,9 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	form := url.Values{"csrf": {s.csrf}, "summary": {"the links"}, "project": {"linkshort"}, "view": {"wide"}}
 	req := post("/tasks/t-c2/summary", form)
 	req.Header.Set("HX-Request", "true")
-	if rec := r.do(req, ck); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-holds="queued waiting-deps"`) {
-		t.Errorf("a form of the wide view answers %d without its state columns", rec.Code)
+	if rec := r.do(req, ck); rec.Code != http.StatusOK || rec.Body.String() != `<p class="note" role="status">The card&#39;s summary is set.</p>` ||
+		rec.Header().Get("HX-Trigger") != "board-refresh" {
+		t.Errorf("a form of the wide view answers %d: %s", rec.Code, rec.Body)
 	}
 	if rec := r.do(post("/tasks/t-c2/summary", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
 		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
@@ -1041,7 +1042,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" hx-target="#board" hx-swap="outerHTML" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" hx-target="#note" hx-swap="innerHTML" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}

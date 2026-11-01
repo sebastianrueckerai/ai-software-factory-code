@@ -85,9 +85,10 @@ func TestFundRaisesACappedCardsBudget(t *testing.T) {
 	}
 	rec := r.do(htmxPost("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"eur": {"0.5"}, "reason": {"the card's work is worth it"}}), ck)
-	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) ||
-		strings.Contains(rec.Body.String(), `class="note"`) {
-		t.Fatalf("fund by htmx = %d: %s", rec.Code, rec.Body)
+	if rec.Code != http.StatusOK ||
+		rec.Body.String() != `<p class="note" role="status">Raised #13&#39;s budget by 0.50 EUR to 2.50 and posted your note as the answer; the card resumes.</p>` ||
+		rec.Header().Get("HX-Trigger") != "board-refresh" {
+		t.Fatalf("fund by htmx = %d (%q): %s", rec.Code, rec.Header().Get("HX-Trigger"), rec.Body)
 	}
 	task, _, _ := r.tasks.Task(t.Context(), "t-e")
 	if task.BudgetEUR != 2.5 {
@@ -323,7 +324,7 @@ func TestFundAnswersABriefTheBudgetRefused(t *testing.T) {
 	}
 	rec := r.do(htmxPost("/tasks/t-m/fund", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"eur": {"0.5"}, "reason": {"for the brief"}}), ck)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Raised #8&#39;s budget by 0.50 EUR to 2.50; the factory writes the card&#39;s brief within seconds.</p>`) {
 		t.Fatalf("fund by htmx = %d: %s", rec.Code, rec.Body)
 	}
 	if task, _, _ := r.tasks.Task(t.Context(), "t-m"); task.BudgetEUR != 2.5 || task.Status != "in-review" {

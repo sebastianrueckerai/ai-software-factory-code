@@ -64,7 +64,7 @@ func TestChatPanel(t *testing.T) {
 </div><script src="/static/chat.js" defer></script>
 </section>
 <div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>
-<div id="board" data-project="ai-software-factory-code"`,
+<div id="note" aria-live="polite"></div><div id="board" data-project="ai-software-factory-code"`,
 		`<dt><kbd>/</kbd></dt><dd>write to the project agent; <kbd>/</kbd> at the start of the box lists the commands</dd>
 <dt><kbd>Ctrl</kbd>+<kbd>k</kbd></dt><dd>the threads: open one, or the inbox</dd>
 <dt><kbd>Enter</kbd></dt><dd>send the message; <kbd>Shift</kbd>+<kbd>Enter</kbd> breaks the line</dd>

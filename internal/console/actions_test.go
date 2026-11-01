@@ -75,7 +75,7 @@ func TestStallCardAnswers(t *testing.T) {
 	for value, want := range map[string]string{factoryd.AnswerRerunAgain: `class="inline">`,
 		factoryd.AnswerCheckAgain: `class="inline" data-to="off">`, factoryd.AnswerDismiss: `class="inline" data-to="off">`} {
 		at := strings.Index(drawer, `name="value" value="`+value+`"`)
-		if form := drawer[strings.LastIndex(drawer[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-stall/answer" hx-post="/tasks/t-stall/answer" hx-target="#board" hx-swap="outerHTML" `+want) {
+		if form := drawer[strings.LastIndex(drawer[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-stall/answer" hx-post="/tasks/t-stall/answer" hx-target="#note" hx-swap="innerHTML" `+want) {
 			t.Errorf("the %s form does not end its tag with %s:\n%s", value, want, form)
 		}
 	}
@@ -252,7 +252,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 			if at < 0 {
 				t.Fatalf("the %s lacks the %s button:\n%s", name, value, page)
 			}
-			if form := page[strings.LastIndex(page[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-roll/answer" hx-post="/tasks/t-roll/answer" hx-target="#board" hx-swap="outerHTML" `+want) {
+			if form := page[strings.LastIndex(page[:at], "<form"):at]; !strings.Contains(form, `action="/tasks/t-roll/answer" hx-post="/tasks/t-roll/answer" hx-target="#note" hx-swap="innerHTML" `+want) {
 				t.Errorf("the %s's %s form does not end its tag with %s:\n%s", name, value, want, form)
 			}
 		}

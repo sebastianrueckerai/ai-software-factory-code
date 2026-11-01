@@ -57,14 +57,6 @@ function refused(e) {
 }
 document.addEventListener("htmx:responseError", refused);
 document.addEventListener("htmx:sendError", refused);
-// A refusal that answers the board (a plan revision gone stale) is
-// swapped in: its line stands on the card it concerns.
-document.addEventListener("htmx:beforeSwap", function (e) {
-  if (e.detail.xhr.status === 409 && e.detail.xhr.responseText.indexOf("<div id=\"board\"") === 0) {
-    e.detail.shouldSwap = true;
-    e.detail.isError = false;
-  }
-});
 // An answer for a board that has left the page since it was asked for (a
 // find answered first) is not swapped: htmx would still run hx-preserve on
 // it and move the live find into the content it then throws away. Only the

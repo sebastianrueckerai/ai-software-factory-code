@@ -170,9 +170,9 @@ func htmxPost(path string, form url.Values) *http.Request {
 	return req
 }
 
-// Skip once marks the routine's next run for the member; the undo clears
-// the mark. The board answers with no note: the drawer's answer carries
-// it. Each is one event with its via on the project's repository.
+// Skip once marks the routine's next run for the member and answers with
+// the run after it; the undo clears the mark. Each is one event with its
+// via on the project's repository.
 func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
@@ -180,14 +180,14 @@ func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
 	const path = "/routines/ai-software-factory-code/weekly-bump/skip"
 
 	rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Skipped once · next Mon 20 Oct 06:00</p>`) {
 		t.Fatalf("skip = %d:\n%s", rec.Code, rec.Body)
 	}
 	if by := r.routines.skips["ai-software-factory-code/weekly-bump"]; by != "sebastian" {
 		t.Fatalf("the skip reached the port as %q", by)
 	}
 	rec = r.do(htmxPost(path, url.Values{"csrf": {s.csrf}, "undo": {"1"}}), ck)
-	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Skip once undone</p>`) {
 		t.Fatalf("undo = %d:\n%s", rec.Code, rec.Body)
 	}
 	if by, ok := r.routines.skips["ai-software-factory-code/weekly-bump"]; !ok || by != "" {
@@ -244,7 +244,7 @@ func TestRoutineToggle(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{weeklyBump(), audit(), overridden, roll}
 	ck, s := r.loggedIn(t)
 	queued := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued")
-	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#board" hx-swap="outerHTML">` +
+	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#note" hx-swap="innerHTML">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `">%s<input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<button type="submit" class="xs" aria-label="%s">%s</button></form>`
 	bumpG := ghostIn(t, queued, "weekly-bump")
@@ -270,15 +270,15 @@ func TestRoutineToggle(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		routine, field, side string
+		routine, field, note, side string
 	}{
-		{"weekly-bump", "needs_me=0", "agent by sebastian"},
-		{"audit", "needs_me=1", "human by sebastian"},
-		{"nightly-hold", "undo=1", ""},
+		{"weekly-bump", "needs_me=0", "Weekly bump runs on its own.", "agent by sebastian"},
+		{"audit", "needs_me=1", "Audit needs you.", "human by sebastian"},
+		{"nightly-hold", "undo=1", "Nightly hold follows its config.", ""},
 	} {
 		name, value, _ := strings.Cut(tt.field, "=")
 		rec := r.do(htmxPost("/routines/ai-software-factory-code/"+tt.routine+"/needs-me", url.Values{"csrf": {s.csrf}, name: {value}}), ck)
-		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">`+tt.note+`</p>`) {
 			t.Fatalf("%s = %d:\n%s", tt.field, rec.Code, rec.Body)
 		}
 		if got := r.routines.needsMe["ai-software-factory-code/"+tt.routine]; got != tt.side {

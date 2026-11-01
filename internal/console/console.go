@@ -267,6 +267,10 @@ type Config struct {
 	// Hold is what holds repository's production now (factoryd's
 	// ReleaseKeeper.Hold); nil shows no hold line.
 	Hold func(ctx context.Context, repository string) (factoryd.Hold, error)
+	// MainCommit is main's newest push commit of repository, "" without a
+	// push run (factoryd's ReleaseKeeper.MainCommit): the panel compares a
+	// standing Deploy now with it.
+	MainCommit func(ctx context.Context, repository string) (string, error)
 	// DeployNow releases main of a held repository to production for by,
 	// decided by decider, and answers the commit (ReleaseKeeper.DeployNow);
 	// a free production answers factoryd.ErrNotHeld.

@@ -82,7 +82,8 @@ func (s *fakeStore) DeleteRollRequest(ctx context.Context, sha string) error {
 // SettleRollRequests settles the fake's open requests the way the store
 // does: a done task's committed request merged, its never-committed ones
 // forgotten, any other ended task's request failed, a request without its
-// task forgotten. It returns what it settled.
+// task forgotten, a failed settle ending its commit's Deploy now window.
+// It returns what it settled.
 func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
 	var settled []RollRequest
 	var gone []string
@@ -108,6 +109,11 @@ func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, erro
 	}
 	for _, sha := range gone {
 		s.DeleteRollRequest(ctx, sha)
+	}
+	for _, r := range settled {
+		if r.State == RollFailed {
+			s.ClearDeployNow(ctx, r.Repository, r.SHA)
+		}
 	}
 	return settled, nil
 }
@@ -878,6 +884,33 @@ func TestRollerFilesUnderTheProjectsCardMaximum(t *testing.T) {
 	}
 	if got := store.tasks[store.rolls[0].TaskID].BudgetEUR; got != 1 {
 		t.Fatalf("roll task budget %v, want the project's card maximum 1 under the default %v", got, testBudget().TaskDefaultEUR)
+	}
+}
+
+// A release whose roll fails does not read as rolling forever: the roller
+// clears its window, so the panel's Deploy now returns and the roll-failed
+// card keeps carrying the ask.
+func TestRollerClearsAReleaseWhoseRollFailed(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(57, commitC1, "success")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+	}
+	roller, store, _ := newTestRoller(t, f)
+	ctx := context.Background()
+	at := justNow()
+	store.tasks["t-pl"] = Task{ID: "t-pl", IssueNumber: 7, Repository: codeRepo, Track: policy.TrackPlan}
+	store.tasks["t-pl-1"] = Task{ID: "t-pl-1", Source: SourcePlan, Parent: "t-pl", PlanKey: "a", Repository: codeRepo, Status: "merged",
+		MergeCommit: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", FinishedAt: at}
+	store.tasks["t-roll"] = Task{ID: "t-roll", Status: "failed", FinishedAt: justNow(), Repository: codeRepo}
+	store.rolls = []RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll"}}
+	if err := store.SetDeployNow(ctx, codeRepo, commitC1, *at); err != nil {
+		t.Fatal(err)
+	}
+	if err := roller.poll(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := releaseRow(store, codeRepo).DeployNow; got != "" {
+		t.Fatalf("deploy_now = %q after the release's roll failed, want the window cleared", got)
 	}
 }
 
