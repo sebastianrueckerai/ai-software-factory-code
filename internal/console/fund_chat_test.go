@@ -405,12 +405,11 @@ func agentFundedRow(rows []factoryd.Event, eur float64) factoryd.Event {
 
 // TestPoolReadContract constructs the console via console.New, drives an
 // authenticated HTTP board read with configured EUR 10 and aggregate EUR 3,
-// and asserts HTML shows EUR 7 remaining through the same projection.
+// and asserts HTML and chat snapshot show EUR 7 remaining through the same projection.
 func TestPoolReadContract(t *testing.T) {
 	r := newRig(t)
 	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
 		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
-	nov := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
 	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	record := func(amount float64) {
 		t.Helper()
@@ -421,8 +420,15 @@ func TestPoolReadContract(t *testing.T) {
 	}
 	record(1.5)
 	record(1.5)
+	c, err := New(r.c.cfg)
+	if err != nil {
+		t.Fatalf("console.New: %v", err)
+	}
 	ck, _ := r.loggedIn(t)
-	rec := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck)
+	req := httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil)
+	req.AddCookie(ck)
+	rec := httptest.NewRecorder()
+	c.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("board = %d", rec.Code)
 	}
@@ -436,9 +442,14 @@ func TestPoolReadContract(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
 	}
-	pl, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
+	nov := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	pl, err := c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
 	if err != nil || pl.Configured != 10 || pl.Used != 3 || pl.Remaining != 7 || !pl.Ready {
 		t.Errorf("poolOf = %+v, %v; want configured 10, used 3, remaining 7, ready", pl, err)
+	}
+	snap := poolWords(pl)
+	if !strings.Contains(snap, "€7.00 left") {
+		t.Errorf("chat snapshot = %q; want €7.00 left", snap)
 	}
 }
 
