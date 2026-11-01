@@ -605,6 +605,17 @@ func TestChatSetPool(t *testing.T) {
 	equal(t, "the refusal", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)"}`,
 		`text {"text":"Refused."}`, `done {}`})
+
+	// a project file of no YAML — an empty one, or one of whitespace
+	// alone — refuses at the proposal too, not a panic
+	for _, empty := range []string{"", " \n\t "} {
+		infra.files["factory/projects/ai-software-factory-code.yaml"] = empty
+		g.replies = [][]string{{call(1, "set_pool", args)}, {say("Refused.")}}
+		_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set the pool"}})
+		equal(t, "the empty file's refusal", events, []string{
+			`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: projects/ai-software-factory-code.yaml holds no YAML the pool can read: a policy PR corrects it"}`,
+			`text {"text":"Refused."}`, `done {}`})
+	}
 	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
 		t.Fatalf("the refusals aside, %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
 	}
@@ -791,6 +802,7 @@ func TestPoolProposalAccess(t *testing.T) {
 		{`{"correction":{"eur":12.005}}`, "a pool change's amount is whole cents"},
 		{`{"correction":{"eur":-3}}`, "a set takes a non-negative amount in EUR"},
 		{`{"correction":{"eur":900000000001}}`, "a pool change's amount is too large"},
+		{strings.Repeat(" ", 8<<10) + `{"correction":{"eur":12}}`, "The correction's body is over 8192 bytes; press the proposal again."},
 	}
 	for _, w := range wrong {
 		if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], w.body); code != http.StatusBadRequest || body[0] != w.want {

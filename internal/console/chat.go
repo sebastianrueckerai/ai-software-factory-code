@@ -1331,15 +1331,25 @@ type poolCorrection struct{ eur float64 }
 // name it.
 const correctionForm = `one JSON object {"correction":{"eur":12}} and nothing else`
 
+// correctionBytes is the most a corrected press's body holds. One byte
+// past it and the body refuses whole, never reads as its first bytes
+// alone: a correction hidden past the bound must not read as none.
+const correctionBytes = 8 << 10
+
 // readPoolCorrection is the correction in the press's request: a body
-// holding none — the plain press of today — answers nil. A body holding
-// one must be exactly the correction object: null, a string, a bool, an
-// object or an array for eur, a second correction, a field beside eur, a
-// duplicate of either, or JSON after the object refuses with 400.
+// holding none — the plain press of today — answers nil. A body over
+// correctionBytes never reads as a shorter one: it refuses whole. A body
+// holding one must be exactly the correction object: null, a string, a
+// bool, an object or an array for eur, a second correction, a field
+// beside eur, a duplicate of either, or JSON after the object refuses
+// with 400.
 func readPoolCorrection(r *http.Request) (*poolCorrection, error) {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 8<<10))
+	body, err := io.ReadAll(io.LimitReader(r.Body, correctionBytes+1))
 	if err != nil {
 		return nil, refuse(http.StatusBadRequest, "The correction's body does not read; press the proposal again.")
+	}
+	if len(body) > correctionBytes {
+		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("The correction's body is over %d bytes; press the proposal again.", correctionBytes))
 	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		return nil, nil

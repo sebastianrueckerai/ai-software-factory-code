@@ -326,12 +326,17 @@ func poolEdit(path, action string, cents int64, amounts *poolAmounts) func(doc *
 // checked: a budget block with an explicit month_eur key and a
 // raise_max_eur above 0 — the bounds the pool needs, which only a policy
 // PR writes — and a discretionary_eur the pool can take exactly, absent
-// meaning zero. An absent month_eur is not an intentional month of zero:
-// the read refuses rather than read one, and a policy PR writes the cap.
-// A budget or a pool the file shares through a YAML alias is never read:
-// the edit would land everywhere the alias reads, so it refuses and a
+// meaning zero. A document that parses to no mapping root — an empty
+// file, one of whitespace, a scalar — holds no YAML the pool can read.
+// An absent month_eur is not an intentional month of zero: the read
+// refuses rather than read one, and a policy PR writes the cap. A budget
+// or a pool the file shares through a YAML alias is never read: the
+// edit would land everywhere the alias reads, so it refuses and a
 // policy PR unshares the value first.
 func poolBounds(doc *yaml.Node, path string) (int64, error) {
+	if len(doc.Content) == 0 || doc.Content[0].Kind != yaml.MappingNode {
+		return 0, fmt.Errorf("%s holds no YAML the pool can read: a policy PR corrects it", path)
+	}
 	m := doc.Content[0]
 	i := keyIndex(m, "budget")
 	if i < 0 {
