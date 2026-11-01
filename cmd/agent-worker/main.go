@@ -259,6 +259,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 		Image:          s.env.image,
 	}
 	s.brief.Docs, s.brief.DocsFailed = docsState(ws, s.env.docsDir)
+	s.brief.Companions = companionsState(ws, s.env.companionDirs)
 	resolveDocLinks(log, &s.brief, s.env.docsDir)
 	if s.brief.Map, err = cardMap(s.repoDir, s.env.directories); err != nil {
 		return s, startError{"repository map", err}
@@ -521,6 +522,9 @@ type workerEnv struct {
 	docsDir string
 	// docsURL (DOCS_URL) is the clone container's source for it
 	docsURL string
+	// companionDirs (COMPANION_DIRS) are where the clone put the project's
+	// sandbox companions, one directory each; nil without any
+	companionDirs []string
 	// egressCanary (EGRESS_CANARY, a name and a port) and egressDirectIP
 	// (EGRESS_DIRECT_IP, an IP and a port) are public targets the egress
 	// probe must not reach
@@ -549,6 +553,7 @@ func loadEnv() (workerEnv, error) {
 	e.author, e.authorStanding = str("AUTHOR"), str("AUTHOR_STANDING")
 	e.spec, e.cardRole = str("SPEC"), str("CARD_ROLE")
 	e.docsDir = str("DOCS_DIR")
+	e.companionDirs = strings.Fields(str("COMPANION_DIRS"))
 	e.facts = str("FACTS")
 	e.egressCanary, e.egressDirectIP = str("EGRESS_CANARY"), str("EGRESS_DIRECT_IP")
 	required := map[string]string{
@@ -640,9 +645,9 @@ func (e workerEnv) gitAuth(token, dir string, args ...string) error {
 }
 
 // runClone is the clone init container's mode, into ws: it alone holds
-// the read token, on the task's repository, the bot's fork and the
-// project's document repository (DOCS_URL), whose clone failing is recorded
-// for the brief and does not fail the session.
+// the read token, on the task's repository, the bot's fork, the project's
+// document repository (DOCS_URL) and its companions (COMPANIONS), whose
+// clone failing is recorded for the brief and does not fail the session.
 func runClone(log func(string, ...any), ws string) int {
 	v, err := required("REPO_URL", "REPO_TOKEN", "BRANCH")
 	var branches []string
@@ -658,6 +663,14 @@ func runClone(log func(string, ...any), ws string) int {
 		}
 		if err == nil && e.docsURL != "" {
 			recordDocs(log, ws, cloneDocs(e, filepath.Join(ws, "docs")))
+		}
+		for _, url := range strings.Fields(os.Getenv("COMPANIONS")) {
+			// a companion is code and config the agent reads, not
+			// documents: every file of it, no sparse filter
+			name := strings.TrimSuffix(filepath.Base(url), ".git")
+			if cerr := e.gitAuth(e.repoToken, "", "clone", "-q", "--depth", "1", url, filepath.Join(ws, "companions", name)); cerr != nil {
+				recordCompanion(log, ws, name, cerr)
+			}
 		}
 	}
 	return recordFetch(log, ws, err)
@@ -718,6 +731,35 @@ func recordDocs(log func(string, ...any), ws string, err error) {
 	if werr := os.WriteFile(docsFailed(ws), []byte(err.Error()), 0o600); werr != nil {
 		log("record the document clone failure %q: %v", err, werr)
 	}
+}
+
+// companionFailed is where the clone container leaves why companion name
+// could not be cloned, beside its directory.
+func companionFailed(ws, name string) string { return filepath.Join(ws, "companions", name+".failed") }
+
+func recordCompanion(log func(string, ...any), ws, name string, err error) {
+	if werr := os.WriteFile(companionFailed(ws, name), []byte(err.Error()), 0o600); werr != nil {
+		log("record the companion %s clone failure %q: %v", name, err, werr)
+	}
+}
+
+// companionsState is what the brief says of each companion: where its
+// clone is, or why it could not be read, one line each.
+func companionsState(ws string, dirs []string) []string {
+	var lines []string
+	for _, dir := range dirs {
+		name := filepath.Base(dir)
+		why, err := os.ReadFile(companionFailed(ws, name))
+		switch {
+		case err == nil:
+			lines = append(lines, name+" could not be read: "+textutil.Truncate(strings.TrimSpace(string(why)), 400))
+		case errors.Is(err, fs.ErrNotExist):
+			lines = append(lines, name+" at "+dir)
+		default:
+			lines = append(lines, name+" could not be read: "+err.Error())
+		}
+	}
+	return lines
 }
 
 // docsState is what the brief says of the document repository: cloned

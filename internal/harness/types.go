@@ -59,6 +59,9 @@ type TaskBrief struct {
 	// DocLinks say where each relative link of the objective is in the
 	// document repository's clone (doclinks.Lines); nil without a clone.
 	DocLinks []string `json:"doc_links,omitempty"`
+	// Companions say where each sandbox companion's clone is, or why one
+	// could not be read, one line each; nil without any.
+	Companions []string `json:"companions,omitempty"`
 	// Handover is the check-in agent's note on the findings this session
 	// starts from, pushed before the conversation began; "" when no
 	// check-in ran.

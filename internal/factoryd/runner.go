@@ -453,11 +453,18 @@ func (r *Runner) BootSweep(ctx context.Context) {
 }
 
 // readable is the repositories the session's read token covers: its task
-// repository, extra, and the document repository when there is one.
+// repository, extra, the document repository when there is one, and each
+// sandbox companion (a pin-only companion stays out: no clone, no read).
 func (s sessionSpec) readable(extra ...Repo) []Repo {
 	repos := append([]Repo{s.repo}, extra...)
 	if s.docs != (Repo{}) {
 		repos = append(repos, s.docs)
+	}
+	for _, c := range s.companions {
+		if c.Sandbox {
+			owner, name, _ := strings.Cut(c.Repository, "/")
+			repos = append(repos, Repo{Owner: owner, Name: name})
+		}
 	}
 	return repos
 }
@@ -488,6 +495,9 @@ type sessionSpec struct {
 	// docs is the project's document repository (chat.doc_repo), which the
 	// session reads at /workspace/docs; the zero Repo when it has none
 	docs Repo
+	// companions are the project's declared companions: a sandbox one the
+	// session also reads, cloned to /workspace/companions/<name>
+	companions []policy.Companion
 	// cache is the project's cache claim in the task namespace
 	cache string
 	// image is what the session's project image holds; nil for the
@@ -2089,6 +2099,21 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	if s.docs != (Repo{}) {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "DOCS_URL", "value": r.repoURL(s.docs)})
 		env = append(env, map[string]any{"name": "DOCS_DIR", "value": "/workspace/docs"})
+	}
+	// a sandbox companion is cloned read-only like the documents, every
+	// file of it (a companion is code and config, not documents); the URL
+	// list goes to the clone container alone, the worker reads the clones
+	var companionURLs, companionDirs []string
+	for _, c := range s.companions {
+		if !c.Sandbox {
+			continue
+		}
+		owner, name, _ := strings.Cut(c.Repository, "/")
+		companionURLs, companionDirs = append(companionURLs, r.repoURL(Repo{Owner: owner, Name: name})), append(companionDirs, "/workspace/companions/"+name)
+	}
+	if len(companionURLs) > 0 {
+		cloneEnv = append(cloneEnv, map[string]any{"name": "COMPANIONS", "value": strings.Join(companionURLs, " ")})
+		env = append(env, map[string]any{"name": "COMPANION_DIRS", "value": strings.Join(companionDirs, " ")})
 	}
 	if s.pull != 0 {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PULL", "value": strconv.FormatInt(s.pull, 10)})
