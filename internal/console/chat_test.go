@@ -2749,6 +2749,70 @@ func TestChatAskPressIsSingleUse(t *testing.T) {
 	equal(t, "another human's press", []any{code, body[0]}, []any{http.StatusForbidden, "It is another member's."})
 }
 
+// A binding parks its tool the moment the ask stores it: a model answer
+// that asks and calls the bound tool in one batch meets the refusal too,
+// for the park reads what this answer just bound, not only what the turn
+// started with.
+func TestChatParkCoversTheSameAnswer(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args, "close", `{"task_id":"t-m"}`)}}
+	before := r.events.count()
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	refused := `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`
+	if !slices.Contains(events, refused) {
+		t.Fatalf("the same answer's bound call ran: %v", events)
+	}
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" && !p.used.IsZero() {
+			t.Fatalf("the same answer's call settled the binding: %+v", p)
+		}
+	}
+	chat.mu.Unlock()
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The binding belongs to the thread's human, not the talker: a writer who
+// talks in another's thread leaves the ask for its owner, whose press
+// runs the bound call — the ask asks the thread's human.
+func TestChatAskBindsForTheThreadsOwner(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("ok")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"open the thread"}})
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	if code, body, _ := chatPost(t, r, ak, as, chatPath, url.Values{"message": {"ask to close #5"}, "conversation": {"1"}, "owner": {"sebastian"}}); code != 200 {
+		t.Fatalf("anna's turn in sebastian's thread = %d: %v", code, body)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := int64(0)
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			id = m.ID
+		}
+	}
+	if id == 0 {
+		t.Fatal("no ask row in the owner's thread")
+	}
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != 200 {
+		t.Fatalf("the owner's press = %d: %v", code, events)
+	}
+	equal(t, "the owner's press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+}
+
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 // A pasted image rides the composer's send like a file rides it: the

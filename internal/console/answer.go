@@ -23,7 +23,9 @@ import (
 // board's buttons do, with no model turn (roadmap 239, C14's answer row):
 // the member's row with the choice and the factory's row with what came
 // of it land in the thread behind a turn in flight there (roadmap 263),
-// then 204. A card that waits no more says so: the first answer wins.
+// then 204; a choice of a bound ask row runs its bound tool call in code
+// as the member's session or settles the ask, streamed (chatAskPress). A
+// card that waits no more says so: the first answer wins.
 func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -270,10 +272,15 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 			raw = string(b)
 		}
 	}
-	token := t.store(factoryd.ChatProposal{Token: randomToken(), Kind: "ask", Choice: choice, Repository: t.p.Repository, Login: t.a.s.user,
+	token := t.store(factoryd.ChatProposal{Token: randomToken(), Kind: "ask", Choice: choice, Repository: t.p.Repository, Login: t.owner,
 		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv})
 	if token == "" {
 		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored; nothing runs.")
+	}
+	// the park covers the tool at once: a later call of this same answer
+	// meets the refusal, not only the next turn's
+	if t.parked != nil {
+		t.parked[name] = true
 	}
 	return token, desc, nil
 }

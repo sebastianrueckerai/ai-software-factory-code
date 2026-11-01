@@ -56,7 +56,7 @@ const (
 // chatTTL under a fresh token, which it answers, and forgets the expired
 // ones but a used proposal; "" when the store fails.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
-	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
+	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
 		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv})
 }
 
