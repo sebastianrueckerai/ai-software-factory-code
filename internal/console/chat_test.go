@@ -2397,7 +2397,7 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	}
 }
 
-// The ask tool questions the conversation's member in place: one row of
+// The ask tool questions the conversation's human in place: one row of
 // the thread, kind ask with its choices, the turn ending on it. Their
 // answer, pressed or typed, is the member's next message, and any row
 // after it settles the ask.
@@ -2560,7 +2560,7 @@ func TestChatAskBindingAdmitsByRole(t *testing.T) {
 }
 
 // While a bound ask stands open, the agent's own call of the bound tool
-// refuses: the member's press runs it, not the model's reading of a
+// refuses: the human's press runs it, not the model's reading of a
 // typed reply. Nothing runs until the press.
 func TestChatParkRefusesTheBoundTool(t *testing.T) {
 	r, chat, g := newChatRig(t)
@@ -2583,7 +2583,7 @@ func TestChatParkRefusesTheBoundTool(t *testing.T) {
 	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}, {say("Their press runs it.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
 	equal(t, "the parked call", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the member's press runs it, their press or their message answers it."}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`,
 		`text {"text":"Their press runs it."}`, `done {}`})
 	if p, ok := chat.proposal(token); !ok || !p.used.IsZero() {
 		t.Fatalf("the refused call settled the binding: %+v", p)

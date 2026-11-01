@@ -1709,15 +1709,15 @@ var tools = []chatTool{
 // reads the table's own lookup (the binding validates the bound tool),
 // an initialization cycle Go refuses.
 func init() {
-	tools = append(tools, chatTool{name: "ask", title: "Ask the member",
+	tools = append(tools, chatTool{name: "ask", title: "Ask the human",
 		params: map[string]any{"ask": str("the question, with its state and its numbers"),
 			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "the answers the member may press"},
-			"tool":   str("the write tool the bound choice runs, none for a plain ask"),
+				"description": "the answers the human may press"},
+			"tool":   str("the write tool the bound press runs, none for a plain ask"),
 			"args":   map[string]any{"type": "object", "description": "the bound tool's arguments as it reads them"},
-			"choice": str("the choice whose press runs the bound tool")},
+			"choice": str("the choice whose press runs the bound tool call")},
 		required: []string{"ask", "choices"},
-		about:    "Ask this conversation's member a question, answered by a press or their next message.",
+		about:    "Ask the thread's human a question their press or message answers, one choice bound to a tool call.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.askMember(in)
 			return s, nil, err

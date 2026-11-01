@@ -970,7 +970,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	case !ok:
 		result = "There is no tool " + call.Name + "."
 	case t.parked[call.Name]:
-		result = "Refused: an open ask of this thread binds " + call.Name + "; the member's press runs it, their press or their message answers it."
+		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, their press or their message answers it."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	default:

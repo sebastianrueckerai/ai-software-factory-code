@@ -246,7 +246,22 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   neither `project_images` nor `request_image`. Proposals and
   undo tokens are the member's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
-  another member's). A wake, the turn the Waker starts on a member's
+  another member's). The `ask` tool questions the thread's human in
+  place: an ask row with its choices offered as presses, the turn
+  ending on it, and a press or their next message the answer the next
+  turn reads; any later row settles an unbound ask. The ask may bind
+  one choice to a write tool call (`tool`, `args`, `choice`, admitted
+  as the propose path admits a call): the binding is a proposal of
+  kind `ask`, kept out of the pending Do it list, so only the ask row
+  offers it. The bound choice's press runs the call in code as the
+  human's session through `POST /projects/{name}/chat/answer`,
+  streamed, its `do-<token>` row landing as a confirmed call's does;
+  any other choice's press lands as the human's row and feeds the
+  agent a turn, which reads it as their answer. While the binding
+  lives, a typed message settles nothing and the bound tool refuses in
+  the turn, naming the press as its answer; the binding lives the
+  proposal's 30 minutes, and its expiry leaves the question an
+  ordinary ask. A wake, the turn the Waker starts on a member's
   thread with no member behind it, makes every Forgejo call as
   `factory-chat` with the project's chat token (`Forgejo.Access`'s
   `Chat`): it needs no login of the member and reads none. A wake's turn
