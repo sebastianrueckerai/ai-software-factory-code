@@ -915,6 +915,10 @@ type chatGateway struct {
 	// no arrived, so the turns' script and counts stand
 	titleCalls []map[string]any
 	titleNames []string
+	// digests are the digest calls' requests and answers the answers
+	// they get in order, "digest n" when none is scripted
+	digests []map[string]any
+	answers []string
 	// window is the alias's served context window, windows the aliases
 	// the turns asked for one
 	window  int
@@ -969,6 +973,19 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(summary))
+		return
+	}
+	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeDigest {
+		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.Small || body["max_tokens"] != float64(2048) {
+			g.t.Errorf("digest call: task %q, body %v: want the cheap alias on %s", r.Header.Get(gateway.HeaderFactoryTask), body, task)
+		}
+		g.digests = append(g.digests, body)
+		answer := fmt.Sprintf("digest %d", len(g.digests))
+		if len(g.answers) > 0 {
+			answer, g.answers = g.answers[0], g.answers[1:]
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(answer))
 		return
 	}
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeVision {
@@ -3426,20 +3443,24 @@ func TestChatSummarizeAttachmentAnswersOverTheDocument(t *testing.T) {
 	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"here is doc1"}}, testFile{name: "spec.md", data: []byte(doc)}); code != 200 {
 		t.Fatalf("the send with the document = %d, want 200", code)
 	}
-	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1","ask":"what ships?"}`)}, {say("It ships 1.2.3.")}, {say("Shipped 1.2.3.")}}
+	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1","ask":"what ships?"}`)}, {say("Shipped 1.2.3.")}}
+	g.answers = []string{"It ships 1.2.3."}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what does doc1 ship?"}})
 	equal(t, "the turn", events, []string{`tool {"arguments":{"name":"doc1","ask":"what ships?"},"duration_ms":0,"name":"summarize_attachment","result":"doc1 (spec.md): It ships 1.2.3."}`,
 		`text {"text":"Shipped 1.2.3."}`, `done {}`})
-	if len(g.calls()) != 4 {
-		t.Fatalf("%d model calls, want four: the turn's two, the one-shot between", len(g.calls()))
+	if len(g.calls()) != 3 {
+		t.Fatalf("%d operator calls, want the filing turn's one and this turn's two: the digest runs on its own purpose", len(g.calls()))
 	}
-	one := g.calls()[2]["messages"].([]any)[0].(map[string]any)
-	if one["role"] != "user" || len(g.calls()[2]["messages"].([]any)) != 1 {
-		t.Fatalf("the one-shot's message = %v", one)
+	if len(g.digests) != 1 {
+		t.Fatalf("%d digest calls, want one", len(g.digests))
+	}
+	one := g.digests[0]["messages"].([]any)[0].(map[string]any)
+	if one["role"] != "user" || len(g.digests[0]["messages"].([]any)) != 1 {
+		t.Fatalf("the digest's message = %v", one)
 	}
 	content := one["content"].(string)
 	if !strings.Contains(content, "what ships?") || !strings.Contains(content, "- shipped 1.2.3") {
-		t.Fatalf("the one-shot's ask and text = %q", content)
+		t.Fatalf("the digest's ask and text = %q", content)
 	}
 }
 
@@ -3455,13 +3476,14 @@ func TestChatSummarizeNamesTheCut(t *testing.T) {
 	if code, _, _ := chatPostDocs(t, r, ck, s, chatPath, url.Values{"message": {"here is doc1"}}, testFile{name: "big.log", data: big}); code != 200 {
 		t.Fatalf("the send with the document = %d, want 200", code)
 	}
-	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1"}`)}, {say("It deploys.")}, {say("Deploys.")}}
+	g.replies = [][]string{{call(1, "summarize_attachment", `{"name":"doc1"}`)}, {say("Deploys.")}}
+	g.answers = []string{"It deploys."}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"summarize doc1"}})
 	equal(t, "the turn", events, []string{`tool {"arguments":{"name":"doc1"},"duration_ms":0,"name":"summarize_attachment","result":"doc1 (big.log, the first 48.0 KiB of 100.0 KiB): It deploys."}`,
 		`text {"text":"Deploys."}`, `done {}`})
-	content := g.calls()[2]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	content := g.digests[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
 	if want := len("Summarise this document.") + 2 + 49148; len(content) != want {
-		t.Fatalf("the one-shot's text = %d bytes, want %d: the ask, a break, the cut lines", len(content), want)
+		t.Fatalf("the digest's text = %d bytes, want %d: the ask, a break, the cut lines", len(content), want)
 	}
 }
 
@@ -3974,6 +3996,37 @@ func TestChatReplayKeepsPricedAnswersOverAttachments(t *testing.T) {
 		{"role": "tool", "content": "The run shipped 1.2.3 after one fix.", "tool_call_id": "call_2"},
 		{"role": "tool", "content": "A screenshot of the board.", "tool_call_id": "call_3"},
 		{"role": "user", "content": "what did the run say?"},
+	})
+}
+
+// A read whose recorded arguments carry an ask answered one digest: its
+// answer is the digest's, never the project's, and stays whole in
+// replay; the plain read beside it elides as today.
+func TestChatReplayKeepsAskedReadsWhole(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	read := time.Now().Add(-10 * time.Minute)
+	for _, m := range []factoryd.ChatMessage{
+		{Role: "assistant", Content: "Over the run's files.", ToolCalls: []factoryd.ChatToolCall{
+			{ID: "call_1", Name: "file", Arguments: `{"ref":"main","path":"README.md"}`, Result: "# Read me\n…", ReadAt: read},
+			{ID: "call_2", Name: "file", Arguments: `{"ref":"main","path":"README.md","ask":"what is this?"}`, Result: "README.md at main: a project readme.", ReadAt: read},
+		}},
+	} {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	g.replies = [][]string{{say("fine")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what did the readme say?"}})
+	equal(t, "the replay", messages(t, g.calls()[0])[1:], []map[string]any{
+		{"role": "assistant", "content": earlier("Over the run's files."), "tool_calls": []any{
+			map[string]any{"id": "call_1", "type": "function", "function": map[string]any{"name": "file", "arguments": `{"ref":"main","path":"README.md"}`}},
+			map[string]any{"id": "call_2", "type": "function", "function": map[string]any{"name": "file", "arguments": `{"ref":"main","path":"README.md","ask":"what is this?"}`}},
+		}},
+		{"role": "tool", "content": "[read at " + read.UTC().Format("2006-01-02 15:04 UTC") +
+			", 10 min ago, in an earlier turn: its result is left out, as the project may have changed since; call file again for the present]", "tool_call_id": "call_1"},
+		{"role": "tool", "content": "README.md at main: a project readme.", "tool_call_id": "call_2"},
+		{"role": "user", "content": "what did the readme say?"},
 	})
 }
 

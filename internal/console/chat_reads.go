@@ -487,6 +487,14 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	if bytes.IndexByte(raw[:min(len(raw), binarySniff)], 0) >= 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%s bytes).", p, in.Ref, answered(raw, len(raw))))
 	}
+	if in.Ask != "" {
+		label := fmt.Sprintf("%s at %s", p, in.Ref)
+		if cut := cutText(raw, fileLimit); len(cut) < len(raw) {
+			label = fmt.Sprintf("%s (the first %s of %s)", label, imageSize(int64(len(cut))), imageSize(int64(len(raw))))
+			raw = cut
+		}
+		return t.withDigest(label, in.Ask, string(raw))
+	}
 	if s, ok := lineWindow(fmt.Sprintf("%s at %s", p, in.Ref), raw, in.From, in.To, fileLimit); ok {
 		return s, nil
 	}
@@ -533,6 +541,30 @@ func lineWindow(name string, raw []byte, from, to, limit int) (string, bool) {
 		}
 	}
 	return head + "\n\n" + b.String(), true
+}
+
+// docText is the read_doc tool's answer: an asked read digests the
+// document's text under it on the small alias, else the read as today.
+func (t *turn) docText(in toolInput) (string, error) {
+	if in.Ask != "" {
+		repo, err := t.c.docRepoOf(t.cfg.DocRepo, in.Path)
+		if err != nil {
+			return "", err
+		}
+		content, _, present, err := t.c.docFile(t.r.Context(), repo, in.Path)
+		switch {
+		case err != nil:
+			return "", err
+		case present:
+			label := in.Path
+			if cut := cutText([]byte(content), docShown); len(cut) < len(content) {
+				label = fmt.Sprintf("%s (the first %s of %s)", label, imageSize(int64(len(cut))), imageSize(int64(len(content))))
+				content = string(cut)
+			}
+			return t.withDigest(label, in.Ask, content)
+		}
+	}
+	return t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
 }
 
 // answered is n, a count of bytes of raw, an answer api read: "at least

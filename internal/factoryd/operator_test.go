@@ -267,6 +267,31 @@ func TestOperatorTitles(t *testing.T) {
 	}
 }
 
+// A digest is one summary call of one big read: purpose digest on the
+// chat task's account, the cheap alias, the ask and the content as one
+// user message, the answer bounded like a compaction's.
+func TestOperatorDigests(t *testing.T) {
+	g := &operatorGateway{chunks: []string{
+		`{"choices":[{"delta":{"content":"It ships "}}]}`,
+		`{"choices":[{"delta":{"content":"1.2.3."}}]}`,
+		`[DONE]`,
+	}}
+	m := g.start(t)
+	answer, err := m.Digest(t.Context(), "t-chat-sf-code-2026-10", "sf/code:sebastian:1", "what ships?", "the run\n- shipped 1.2.3\n")
+	if err != nil || answer != "It ships 1.2.3." {
+		t.Fatalf("digest = %q, err = %v", answer, err)
+	}
+	if g.headers.Get("Authorization") != "Bearer gw-token" || g.headers.Get(gateway.HeaderFactoryTask) != "t-chat-sf-code-2026-10" ||
+		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeDigest || g.headers.Get(gateway.HeaderFactoryThread) != "sf/code:sebastian:1" {
+		t.Fatalf("headers = %v", g.headers)
+	}
+	b, _ := json.Marshal(g.request)
+	want := `{"max_tokens":2048,"messages":[{"content":"what ships?\n\nthe run\n- shipped 1.2.3\n","role":"user"}],"model":"small","stream":true}`
+	if string(b) != want {
+		t.Fatalf("request = %s\nwant      %s", b, want)
+	}
+}
+
 // The window ask reads the gateway's window route on the chat task's
 // account with the operator purpose, and the gateway's answer is the
 // alias's served window; a refusal comes back as the error, so the turn

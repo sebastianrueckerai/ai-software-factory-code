@@ -838,6 +838,8 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{ClassChat}, PurposeOperator, Big},
 		{[]string{"coder"}, PurposeCompact, ""},
 		{[]string{ClassChat}, PurposeCompact, Small},
+		{[]string{"coder"}, PurposeDigest, ""},
+		{[]string{ClassChat}, PurposeDigest, Small},
 		{[]string{"coder"}, PurposeTitle, ""},
 		{[]string{ClassChat}, PurposeTitle, Small},
 	} {

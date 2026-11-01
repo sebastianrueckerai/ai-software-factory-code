@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -320,6 +321,70 @@ var longFile = func() string {
 // its size and the line to read on from, from and to one line-numbered
 // window under the same cap, a range off its lines answered with the line
 // count, a binary file and a path out of the repository refused.
+// A read with an ask answers one digest on the small alias: the digest's
+// input holds the ask and the read's text cut to the read's own limit,
+// and only the labelled answer enters the thread.
+func TestChatFileAskDigests(t *testing.T) {
+	r, g := newReadsRig(t)
+	equal(t, "the asked file reads", reads(t, r, g,
+		"file", `{"ref":"main","path":"README.md","ask":"what is this?"}`,
+		"file", `{"ref":"main","path":"big.txt","ask":"what is big.txt?"}`,
+	), []string{
+		"README.md at main: digest 1",
+		"big.txt at main (the first 64.0 KiB of 70.0 KiB): digest 2",
+	})
+	if len(g.digests) != 2 {
+		t.Fatalf("%d digest calls, want two", len(g.digests))
+	}
+	one := g.digests[0]["messages"].([]any)[0].(map[string]any)
+	if one["role"] != "user" || len(g.digests[0]["messages"].([]any)) != 1 {
+		t.Fatalf("the digest's message = %v", one)
+	}
+	if content := one["content"].(string); !strings.Contains(content, "what is this?") || !strings.Contains(content, strings.Repeat("r", 1200)) {
+		t.Fatalf("the digest's ask and text = %q", content)
+	}
+	content := g.digests[1]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if want := len("what is big.txt?") + 2 + (64 << 10); len(content) != want {
+		t.Fatalf("the digest's text = %d bytes, want %d: the ask, a break, the 64 KiB cut", len(content), want)
+	}
+}
+
+// The ask rides diff, read_doc and session_step like file's: one digest
+// on the small alias, the labelled answer the tool's result.
+func TestChatAskDigestsTheOtherReads(t *testing.T) {
+	r, g := newReadsRig(t)
+	withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	r.objects["sessions/t-r/s-1.jsonl"] = []byte(`{"time":"2026-10-11T10:00:10Z","kind":"tool_call","detail":{"tool":"read","status":"completed","args":{"path":"a.go"},"duration_ms":120}}` + "\n")
+	equal(t, "the asked reads", reads(t, r, g,
+		"diff", `{"task_id":"t-r","ask":"what changed?"}`,
+		"session_step", `{"task_id":"t-r","ask":"what did the session do?"}`,
+	), []string{
+		"the diff of task t-r: digest 1",
+		"session 1 of task t-r: digest 2",
+	})
+	for i, want := range []string{"what changed?\n\ndiff --git", "what did the session do?"} {
+		if content := g.digests[i]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(content, want) {
+			t.Fatalf("digest %d lacks %q: %q", i, want, content)
+		}
+	}
+	_, s := r.loggedIn(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	tool, _ := r.c.chatTool("read_doc")
+	v, _ := r.c.inForce(req.Context())
+	cfg := v.Document.ChatOf(v.Projects["ai-software-factory-code"])
+	cfg.DocRepo = "sf/docs"
+	out, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, cfg: cfg,
+		task: factoryd.ChatTaskID("ai-software-factory-code", time.Now())}, toolInput{Path: "docs/plans/cache.md", Ask: "what is the store?"})
+	if err != nil || out != "docs/plans/cache.md: digest 3" {
+		t.Fatalf("the asked read_doc = %q, %v", out, err)
+	}
+	if content := g.digests[2]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(content, "what is the store?\n\n# The cache plan") {
+		t.Fatalf("the read_doc digest's ask and text = %q", content)
+	}
+}
+
 func TestChatFileRead(t *testing.T) {
 	r, g := newReadsRig(t)
 	equal(t, "the file reads", reads(t, r, g,

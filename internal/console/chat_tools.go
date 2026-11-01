@@ -1244,7 +1244,8 @@ var tools = []chatTool{
 			return "The project's " + s + ".", nil, err
 		}},
 	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam,
-		"from": stepParam("the first line to read"), "to": stepParam("the last line to read")}, required: []string{"task_id"},
+		"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
+		"ask": str("what a small digest answers (default the raw read)")}, required: []string{"task_id"},
 		about: "A card's pull request diff, its lines from and to, else its first 20 KB.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
@@ -1257,7 +1258,8 @@ var tools = []chatTool{
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
 	{name: "file", title: "Read a file",
 		params: map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path"),
-			"from": stepParam("the first line to read"), "to": stepParam("the last line to read")},
+			"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
+			"ask": str("what a small digest answers (default the raw read)")},
 		required: []string{"ref", "path"},
 		about:    "A file of the project's repository at a ref, its lines from and to, else its first 64 KiB.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
@@ -1272,7 +1274,8 @@ var tools = []chatTool{
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
 	{name: "session_step", title: "Read a session's steps",
 		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
-			"to": stepParam("the last step (default from, most from + 19)")},
+			"to":  stepParam("the last step (default from, most from + 19)"),
+			"ask": str("what a small digest answers (default the raw read)")},
 		required: []string{"task_id"},
 		about:    "A session's steps in full.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
@@ -1653,11 +1656,12 @@ var tools = []chatTool{
 		params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
 			"from":  stepParam("the first line to read"),
 			"to":    stepParam("the last line to read"),
-			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
+			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"},
+			"ask":   str("what a small digest answers (default the raw read)")},
 		required: []string{"path"},
 		about:    "Any file of the project's document repository with its base_sha256 and line count.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
+			s, err := t.docText(in)
 			return s, nil, err
 		}},
 	{name: "write_doc", title: "Write a document", write: true,
@@ -1967,6 +1971,14 @@ func (t *turn) diff(in toolInput) (string, error) {
 	if err := t.c.as(t.r.Context(), t.a.s, http.MethodGet, path, nil, http.StatusOK, &raw); err != nil {
 		return "", &forgejoRefusal{"read the pull request's diff", err}
 	}
+	if in.Ask != "" {
+		label := fmt.Sprintf("the diff of task %s", k.ID)
+		if len(raw) > diffLimit {
+			label = fmt.Sprintf("%s (the first %s of %s)", label, imageSize(int64(diffLimit)), imageSize(int64(len(raw))))
+			raw = raw[:diffLimit]
+		}
+		return t.withDigest(label, in.Ask, string(raw))
+	}
 	if s, ok := lineWindow(fmt.Sprintf("card #%d's diff", k.IssueNumber), raw, in.From, in.To, diffLimit); ok {
 		return s, nil
 	}
@@ -1995,6 +2007,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
+  file, diff, read_doc and session_step answer an ask with one small digest of the read; read the raw slice where its answer points.
 `
 
 func (t *turn) systemText() (string, error) {

@@ -1679,7 +1679,7 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
 			result := call.Result
-			if earlier && isRead(call.Name) && !isPriced(call.Name) {
+			if earlier && isRead(call.Name) && !isPriced(call.Name) && !asked(call.Arguments) {
 				if call.Name == "read_attachment" {
 					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]"
 				} else {
@@ -1691,6 +1691,15 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		}
 	}
 	return msgs
+}
+
+// asked is true for a read's recorded arguments that carry an ask: its
+// answer is a digest's, never the project's, and stays whole in replay.
+func asked(args string) bool {
+	var in struct {
+		Ask string `json:"ask"`
+	}
+	return json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) == nil && strings.TrimSpace(in.Ask) != ""
 }
 
 // imageSize is n bytes as the replay's names line shows it.
@@ -1876,22 +1885,42 @@ func (t *turn) summarizeAttachment(in toolInput) (string, error) {
 	}
 	label := fmt.Sprintf("%s (%s)", found.Name, found.FileName)
 	if len(b) > docSummarize {
-		cut := b[:docSummarize]
-		for !utf8.Valid(cut) {
-			cut = cut[:len(cut)-1]
-		}
-		if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
-			cut = cut[:i+1]
-		}
+		cut := cutText(b, docSummarize)
 		label = fmt.Sprintf("%s (%s, the first %s of %s)", found.Name, found.FileName, imageSize(int64(len(cut))), imageSize(int64(len(b))))
 		b = cut
 	}
-	answer, err := t.c.cfg.Operator.Stream(t.r.Context(), t.task, t.cfg.Model, t.threadRef(),
-		[]factoryd.OperatorMessage{{Role: "user", Content: cmp.Or(in.Ask, "Summarise this document.") + "\n\n" + string(b)}}, nil, func(string) {}, nil)
+	answer, err := t.c.cfg.Operator.Digest(t.r.Context(), t.task, t.threadRef(), cmp.Or(in.Ask, "Summarise this document."), string(b))
 	if err != nil {
 		return "", err
 	}
-	return label + ": " + answer.Content, nil
+	return label + ": " + answer, nil
+}
+
+// cutText is b's first size bytes, ended at a line boundary inside them
+// and valid UTF-8 to its end.
+func cutText(b []byte, size int) []byte {
+	if len(b) <= size {
+		return b
+	}
+	cut := b[:size]
+	for !utf8.Valid(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
+		cut = cut[:i+1]
+	}
+	return cut
+}
+
+// withDigest is one digest call over text under ask on the chat task's
+// account: the labelled answer the tool returns, whole in replay by the
+// asked rule.
+func (t *turn) withDigest(label, ask, text string) (string, error) {
+	answer, err := t.c.cfg.Operator.Digest(t.r.Context(), t.task, t.threadRef(), ask, text)
+	if err != nil {
+		return "", err
+	}
+	return label + ": " + answer, nil
 }
 
 // since is at as a replayed row shows it: its time and its age at the

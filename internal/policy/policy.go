@@ -915,6 +915,10 @@ const (
 	// PurposeCompact is a chat thread's compaction (roadmap 239): one
 	// cheap call that summarises the thread before its kept tail.
 	PurposeCompact = "compact"
+	// PurposeDigest is one summary of one big read or page (roadmap 300):
+	// the cheap alias answers the ask over the content, its answer the
+	// only thing that enters the thread.
+	PurposeDigest = "digest"
 	// PurposeCheckin is the check-in agent's conversation at a gate
 	// return (the escalation ladder's plan D).
 	PurposeCheckin = "checkin"
@@ -938,7 +942,7 @@ var LookTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 const MaxLookBytes = 8 << 20
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
 // and Small are LiteLLM aliases routed to their z.ai model, Premium the
@@ -1363,19 +1367,20 @@ const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// project agent's (operator) is the chat block's; the compaction's and
-// the thread naming's are Small, for a chat task only; a chat task's look
-// is the chat block's vision model, a session's its class's.
+// project agent's (operator) is the chat block's; the compaction's, the
+// digest's and the thread naming's are Small, for a chat task only; a
+// chat task's look is the chat block's vision model, a session's its
+// class's.
 func (d Document) FactoryModel(classes []string, purpose string) string {
 	chat := slices.Contains(classes, ClassChat)
 	if purpose == PurposeVision && chat {
 		return d.ChatOf(ProjectConfig{}).VisionModel
 	}
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeTitle {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeDigest || purpose == PurposeTitle {
 		switch {
 		case !chat:
 			return ""
-		case purpose == PurposeCompact, purpose == PurposeTitle:
+		case purpose == PurposeCompact, purpose == PurposeDigest, purpose == PurposeTitle:
 			return Small
 		}
 		return d.ChatOf(ProjectConfig{}).Model

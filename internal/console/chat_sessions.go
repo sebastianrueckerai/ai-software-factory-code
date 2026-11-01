@@ -557,10 +557,27 @@ func (t *turn) stepText(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if in.Ask != "" {
+		k, err := t.card(in)
+		if err != nil {
+			return "", err
+		}
+		from, to, err := stepRange(s.N, in, len(evs), len(evs), len(evs))
+		if err != nil {
+			return "", err
+		}
+		return t.withDigest(fmt.Sprintf("session %d of task %s", s.N, k.ID), in.Ask, stepsText(s, evs, from, to))
+	}
 	from, to, err := stepRange(s.N, in, len(evs), 1, stepsInFull)
 	if err != nil {
 		return "", err
 	}
+	return stepsText(s, evs, from, to), nil
+}
+
+// stepsText are the steps from..to in full, each step's answer cut at
+// stepCut, the whole at stepsCut.
+func stepsText(s sessionRef, evs []harness.Event, from, to int) string {
 	var blocks []string
 	for i := from; i <= to; i++ {
 		block := stepLine(i, evs[i-1], s.Started)
@@ -576,7 +593,7 @@ func (t *turn) stepText(in toolInput) (string, error) {
 	if len(answer) > stepsCut {
 		answer = textutil.Truncate(answer, stepsCut) + "\n(answer cut; ask for a narrower range)"
 	}
-	return answer, nil
+	return answer
 }
 
 // searched are the fields of ev a search reads, in order.
