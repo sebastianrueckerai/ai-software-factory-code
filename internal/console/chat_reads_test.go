@@ -511,6 +511,90 @@ func TestChatGrepRead(t *testing.T) {
 	})
 }
 
+// The web tools are the chat's paid web door: a search's findings go
+// into the thread as found, a fetched page never does, one digest call
+// answers the ask; each call rides the chat task's account, and each
+// refusal names itself.
+func TestChatWebTools(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.web.answers = []string{
+		`[{"url":"https://iana.org/help/example-domains","title":"Example Domains","description":"# Example Domains"}]`,
+		"[]",
+		"# Example Domain\n\nThis domain is for use in documentation examples.",
+	}
+	task := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
+	equal(t, "the web reads", reads(t, r, g,
+		"web_search", `{"query":"example domains"}`,
+		"web_search", `{"query":"nothing","limit":2}`,
+		"web_scrape", `{"url":"https://example.com/","ask":"what is this page?"}`,
+	), []string{
+		"1. Example Domains\nhttps://iana.org/help/example-domains\n# Example Domains",
+		"The web search found nothing.",
+		"https://example.com/: digest 1",
+	})
+	equal(t, "the door's calls", r.web.calls, []string{
+		"search " + task + " example domains 5", "search " + task + " nothing 2", "scrape " + task + " https://example.com/"})
+	if len(g.digests) != 1 {
+		t.Fatalf("%d digest calls, want the fetched page's one", len(g.digests))
+	}
+	page := g.digests[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(page, "what is this page?") || !strings.Contains(page, "# Example Domain") {
+		t.Fatalf("the digest call's page = %q, want the ask and the page", page)
+	}
+	// a page over the read limit reaches the digest cut, and named
+	r, g = newReadsRig(t)
+	r.web.answers = []string{"# Big\n\n" + strings.Repeat("word ", 16<<10)}
+	reads(t, r, g, "web_scrape", `{"url":"https://example.com/big"}`)
+	big := g.digests[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(big, "the page was cut at 64 KiB") {
+		t.Fatalf("the big page's digest = %q, want the cut named", big)
+	}
+}
+
+// The web tools' refusals: no query, a limit past the door's bound, no
+// url; a door the policy refused, and one it could not reach.
+func TestChatWebRefusals(t *testing.T) {
+	r, g := newReadsRig(t)
+	var statuses []int
+	var sentences []string
+	for _, call := range []struct {
+		tool string
+		in   toolInput
+	}{
+		{"web_search", toolInput{}},
+		{"web_search", toolInput{Query: "x", Limit: 11}},
+		{"web_scrape", toolInput{}},
+	} {
+		code, sentence := refused(t, r, call.tool, call.in)
+		statuses = append(statuses, code)
+		sentences = append(sentences, sentence)
+	}
+	equal(t, "the web refusal statuses", statuses, []int{400, 400, 400})
+	equal(t, "the web refusals", sentences, []string{
+		"The web search needs a query.",
+		"The web search's limit is 1 to 10.",
+		"The web page read needs a url.",
+	})
+	r.web.err = &policy.Refusal{Decision: "refused_tool_requests", Reason: "web_search's 500 requests are used"}
+	equal(t, "the refused door", reads(t, r, g, "web_search", `{"query":"x"}`),
+		[]string{"Refused: The web tool was refused: web_search's 500 requests are used."})
+	r, g = newReadsRig(t)
+	r.web.err = &factoryd.StatusError{Code: 502, Body: "upstream_error"}
+	equal(t, "the unreachable door", reads(t, r, g, "web_scrape", `{"url":"https://example.com/"}`),
+		[]string{"Refused: The web tool's call failed with status 502."})
+}
+
+// Without a web door wired the chat offers no web tool.
+func TestChatWebGated(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.c.cfg.Web = nil
+	for _, tool := range r.c.chatTools() {
+		if strings.HasPrefix(tool.name, "web_") {
+			t.Fatalf("%s is offered with no web door wired", tool.name)
+		}
+	}
+}
+
 // repeatLines is count match lines path:1..count of text.
 func repeatLines(path, text string, count int) string {
 	var b strings.Builder

@@ -235,6 +235,14 @@ type Notes interface {
 	PutNotes(ctx context.Context, repository, login, content, base string) (bool, error)
 }
 
+// Web is the chat's web door (factoryd.WebTools through the gateway): one
+// search's findings and one fetched page, each on the chat task's account
+// under the chat block's caps.
+type Web interface {
+	Search(ctx context.Context, taskID, query string, limit int) (string, error)
+	Scrape(ctx context.Context, taskID, pageURL string) (string, error)
+}
+
 // Sessions is the console's logins (factoryd.PGStore's console_sessions):
 // a row per session cookie, keyed by the SHA-256 hex of the cookie's id,
 // so a login survives a restart of factoryd (roadmap 164). The access and

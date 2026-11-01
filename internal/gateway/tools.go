@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -572,9 +573,30 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		return r
 	}
 	toolCap, _ := c.pv.Document.ToolCap(c.task.Classes, tool)
+	text, err := s.runPaid(ctx, c, tool, toolCap, p)
+	var refused *toolRefusal
+	switch {
+	case err == nil:
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+	case errors.As(err, &refused):
+		return s.refuseTool(c, tool, refused.decision, refused.reason)
+	default:
+		return toolError(err.Error())
+	}
+}
+
+// runPaid holds, runs and books one paid tool call for either door: the
+// call's worst case is held against the caps the caller read, the
+// provider runs under the hold, and the real cost (the hold when unknown)
+// is booked with the task's spend and audited under the policy version. A
+// refusal comes back as a *toolRefusal; a failure is already audited.
+func (s *Server) runPaid(ctx context.Context, c *toolCaller, tool string, toolCap policy.ToolCap, p paidCall) (string, error) {
+	if c.task.Status != "running" {
+		return "", &toolRefusal{"refused_task_status", "the task is " + c.task.Status}
+	}
 	worst, decision, reason := p.prepare(ctx)
 	if decision != "" {
-		return s.refuseTool(c, tool, decision, reason)
+		return "", &toolRefusal{decision, reason}
 	}
 	project, projectEUR := c.pv.ProjectCap(c.task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
@@ -585,11 +607,11 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {
-		return s.refuseTool(c, tool, refusal.Decision, refusal.Reason)
+		return "", &toolRefusal{refusal.Decision, refusal.Reason}
 	}
 	if err != nil {
 		s.auditTool(c, tool, "error_store", err.Error(), nil, nil)
-		return toolError("the factory could not reserve the call's cost: " + err.Error())
+		return "", fmt.Errorf("the factory could not reserve the call's cost: %w", err)
 	}
 	ctx, up := s.tel.startCall(ctx, c.task, "tool", tool, hold.EUR)
 	defer up.end()
@@ -607,17 +629,131 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	b, err := s.opts.Store.ReleaseHold(context.Background(), hold, cost, policy.Usage{})
 	if err != nil {
 		note += fmt.Sprintf("; hold %d not released: %v", hold.ID, err)
-		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
+		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified caller; tool is one of the policy constants
 		b.Spent = c.task.SpentEUR
 	}
 	up.booked(b.Booked, b.OverHold)
 	spend := b.Spent
 	if callErr != nil {
 		s.auditBooked(c, tool, "error_tool", callErr.Error()+note, &spend, &hold.EUR, b.OverHold)
-		return toolError(tool + " failed: " + callErr.Error())
+		return "", fmt.Errorf("%s failed: %w", tool, callErr)
 	}
 	s.auditBooked(c, tool, decision, strings.TrimPrefix(note, "; "), &spend, &hold.EUR, b.OverHold)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+	return text, nil
+}
+
+// toolRefusal is a paid tool call the policy refused before the provider
+// ran; the doors word it for their callers.
+type toolRefusal struct{ decision, reason string }
+
+func (e *toolRefusal) Error() string { return e.decision + ": " + e.reason }
+
+// maxDoorBody bounds a chat tool door request body: a query or a URL.
+const maxDoorBody = maxURL + 1024
+
+// handleChatTool is the chat's tool door: the factoryd shared token on
+// the factory-task header, as the completions door's identity check, runs
+// one of the chat block's web tools on the chat task's account under its
+// chat.tools caps. The agent door at /mcp admits sandbox JWTs only; no
+// sandbox opens this one.
+func (s *Server) handleChatTool(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pv, polErr := s.currentPolicy(ctx)
+	var pid *int64
+	if pv != nil {
+		pid = &pv.ID
+	}
+	if !s.factorydBearer(r) {
+		s.refuse(w, pid, r.Header.Get(HeaderFactoryTask), auditFactoryd, "refused_auth",
+			"the chat's tool door takes the factoryd shared token, not a sandbox token", "", http.StatusUnauthorized, "authentication_error")
+		return
+	}
+	taskID := r.Header.Get(HeaderFactoryTask)
+	if taskID == "" {
+		s.refuse(w, pid, "", auditFactoryd, "refused_auth",
+			"a factoryd call names its task in "+HeaderFactoryTask, "", http.StatusBadRequest, "invalid_request_error")
+		return
+	}
+	if polErr != nil {
+		s.refuse(w, pid, taskID, auditFactoryd, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
+		return
+	}
+	task, ok, err := s.opts.Store.Task(ctx, taskID)
+	switch {
+	case err != nil:
+		s.refuse(w, pid, taskID, auditFactoryd, "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
+		return
+	case !ok:
+		s.refuse(w, pid, taskID, auditFactoryd, "refused_task_unknown", "no task row for "+taskID, "", http.StatusNotFound, "invalid_request_error")
+		return
+	}
+	tool := r.PathValue("tool")
+	name, project, _ := pv.ProjectOf(task.Repository)
+	c := &toolCaller{pv: pv, task: task}
+	toolCap, listed := pv.Document.ChatOf(project).Tools[tool]
+	reason := ""
+	switch {
+	case !slices.Contains(task.Classes, policy.ClassChat):
+		reason = "the web tools serve the chat task, and " + task.ID + " is not one"
+	case !listed:
+		reason = tool + " is not in the chat block's tools (chat.tools)"
+	}
+	if reason != "" {
+		s.auditTool(c, tool, "refused_capability",
+			fmt.Sprintf("%s on %s: %s (chat.tools of %s under policy version %d)", tool, task.ID, reason, cmp.Or(name, "the policy"), pv.ID),
+			&task.SpentEUR, nil)
+		w.Header().Set(HeaderDecision, "refused_capability")
+		writeError(w, http.StatusForbidden, "permission_error", reason)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxDoorBody))
+	if err != nil {
+		s.refuse(w, pid, taskID, auditFactoryd, "refused_arguments", err.Error(), "", http.StatusBadRequest, "invalid_request_error")
+		return
+	}
+	refuseArgs := func(reason string) {
+		s.auditTool(c, tool, "refused_arguments", reason, &task.SpentEUR, nil)
+		w.Header().Set(HeaderDecision, "refused_arguments")
+		writeError(w, http.StatusBadRequest, "invalid_request_error", reason)
+	}
+	var p paidCall
+	switch tool {
+	case policy.ToolWebSearch:
+		var in SearchIn
+		if json.Unmarshal(body, &in) != nil {
+			refuseArgs(`the body is not a web_search call: {"query": string, "limit": 1 to 10}`)
+			return
+		}
+		p = s.search(c, in)
+	case policy.ToolWebScrape:
+		var in ScrapeIn
+		if json.Unmarshal(body, &in) != nil {
+			refuseArgs(`the body is not a web_scrape call: {"url": string}`)
+			return
+		}
+		p = s.scrape(c, in)
+	}
+	text, err := s.runPaid(ctx, c, tool, toolCap, p)
+	var refused *toolRefusal
+	switch {
+	case err == nil:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, text) // #nosec G104,G705 -- best-effort response write; served as text/plain, a browser renders the answer as text, not HTML
+	case errors.As(err, &refused):
+		s.auditTool(c, tool, refused.decision, refused.reason, &task.SpentEUR, nil)
+		w.Header().Set(HeaderDecision, refused.decision)
+		status, typ := http.StatusPaymentRequired, "budget_exceeded"
+		switch refused.decision {
+		case "refused_arguments":
+			status, typ = http.StatusBadRequest, "invalid_request_error"
+		case "refused_task_status":
+			status, typ = http.StatusConflict, "invalid_request_error"
+		}
+		writeError(w, status, typ, refused.reason)
+	default:
+		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+	}
 }
 
 func toolError(msg string) *mcp.CallToolResult {

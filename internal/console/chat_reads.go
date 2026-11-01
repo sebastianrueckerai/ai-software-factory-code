@@ -767,3 +767,82 @@ func answered(raw []byte, n int) string {
 	}
 	return strconv.Itoa(n)
 }
+
+// maxWebResults bounds one web search's pages; pageLimit bounds a fetched
+// page before its digest.
+const (
+	maxWebResults = 10
+	pageLimit     = 64 << 10
+)
+
+// webSearch is one paid web search on the chat task's account: the
+// findings' titles, urls and snippets go into the thread as found, no
+// digest between.
+func (t *turn) webSearch(in toolInput) (string, error) {
+	if strings.TrimSpace(in.Query) == "" {
+		return "", &refusal{http.StatusBadRequest, "The web search needs a query."}
+	}
+	if in.Limit < 0 || in.Limit > maxWebResults {
+		return "", &refusal{http.StatusBadRequest, "The web search's limit is 1 to 10."}
+	}
+	limit := cmp.Or(in.Limit, 5)
+	text, err := t.c.cfg.Web.Search(t.r.Context(), t.task, in.Query, limit)
+	if err != nil {
+		return "", t.webErr(err)
+	}
+	var pages []struct {
+		Title       string `json:"title"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+	}
+	if json.Unmarshal([]byte(text), &pages) == nil {
+		if len(pages) == 0 {
+			return "The web search found nothing.", nil
+		}
+		var b strings.Builder
+		for i, p := range pages {
+			fmt.Fprintf(&b, "%d. %s\n%s\n%s\n", i+1, cmp.Or(p.Title, "(no title)"), p.URL, strings.TrimSpace(p.Description))
+		}
+		return strings.TrimRight(b.String(), "\n"), nil
+	}
+	// the door's answer is not the findings' list: it goes in whole, cut
+	if strings.TrimSpace(text) == "" {
+		return "The web search found nothing.", nil
+	}
+	return string(cutText([]byte(text), pageLimit)), nil
+}
+
+// webScrape is one paid page fetch on the chat task's account: the page
+// never enters the thread, one digest call on the cheap alias answers the
+// ask under the page's url as its label.
+func (t *turn) webScrape(in toolInput) (string, error) {
+	if strings.TrimSpace(in.URL) == "" {
+		return "", &refusal{http.StatusBadRequest, "The web page read needs a url."}
+	}
+	page, err := t.c.cfg.Web.Scrape(t.r.Context(), t.task, in.URL)
+	if err != nil {
+		return "", t.webErr(err)
+	}
+	if strings.TrimSpace(page) == "" {
+		return "The web page at " + in.URL + " answered nothing.", nil
+	}
+	if len(page) > pageLimit {
+		page = string(cutText([]byte(page), pageLimit)) + "\n\n(the page was cut at 64 KiB)"
+	}
+	return t.withDigest(in.URL, cmp.Or(in.Ask, "Summarise this page."), page)
+}
+
+// webErr words a web door failure for the member: a refusal the policy
+// chose names itself, a status the door answered names its code, and any
+// other failure keeps its own shape for the dispatch's sentence.
+func (t *turn) webErr(err error) error {
+	var ref *policy.Refusal
+	var st *factoryd.StatusError
+	switch {
+	case errors.As(err, &ref):
+		return &refusal{http.StatusPaymentRequired, "The web tool was refused: " + ref.Reason + "."}
+	case errors.As(err, &st):
+		return &refusal{http.StatusBadGateway, "The web tool's call failed with status " + strconv.Itoa(st.Code) + "."}
+	}
+	return err
+}

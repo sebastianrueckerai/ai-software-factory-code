@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -116,6 +117,10 @@ type ChatConfig struct {
 	// past its window is the bound that always holds. Absent: the window
 	// the gateway serves for the alias.
 	Window int `yaml:"window,omitempty" json:"window,omitempty"`
+	// Tools are the paid gateway tools the chat may call, with the chat
+	// task's per-tool caps: the web door's two, a policy that lists one
+	// carrying its Firecrawl prices. Absent: the chat reaches no web.
+	Tools map[string]ToolCap `yaml:"tools,omitempty" json:"tools"`
 }
 
 // DefaultParallelTurns is the bound of a chat block without one.
@@ -124,7 +129,7 @@ const DefaultParallelTurns = 3
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
-	"plan", "pr", "file", "tree", "grep", "session", "session_steps", "session_step", "session_search", "ci",
+	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
@@ -240,6 +245,12 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 		if b.Confirm != nil {
 			c.Confirm = b.Confirm
 		}
+		if b.Tools != nil {
+			merged := make(map[string]ToolCap, len(c.Tools)+len(b.Tools))
+			maps.Copy(merged, c.Tools)
+			maps.Copy(merged, b.Tools)
+			c.Tools = merged
+		}
 	}
 	c.Confirm = ConfirmFor(p.Autonomy, p.MergeRule, c.Confirm)
 	return c
@@ -276,6 +287,14 @@ func (c *ChatConfig) validate() error {
 	}
 	if c.DocRepo != "" && !repositoryName.MatchString(c.DocRepo) {
 		return fmt.Errorf("chat.doc_repo %q: owner/name in lower case", c.DocRepo)
+	}
+	for tool, tc := range c.Tools {
+		if !slices.Contains(ChatPaidTools, tool) {
+			return fmt.Errorf("chat.tools: unknown tool %q (known: %v)", tool, ChatPaidTools)
+		}
+		if tc.MaxRequests <= 0 || tc.MaxEUR <= 0 {
+			return fmt.Errorf("chat.tools %q needs a positive max_requests and max_eur", tool)
+		}
 	}
 	return nil
 }
@@ -985,6 +1004,18 @@ const (
 // PaidTools are the tools a class lists with caps.
 var PaidTools = []string{ToolWebScrape, ToolWebSearch, ToolReplicate, ToolFal}
 
+// ChatPaidTools are the paid tools a chat block lists in tools: the web
+// door's two, booked per credit on the chat task's account.
+var ChatPaidTools = []string{ToolWebSearch, ToolWebScrape}
+
+// tools is a nil-safe read of the chat block's tools.
+func (c *ChatConfig) tools() map[string]ToolCap {
+	if c == nil {
+		return nil
+	}
+	return c.Tools
+}
+
 // The gateway's free tools: a class allows one by listing it in
 // classes.<c>.tools without caps ({}). The commissioning tools spend
 // through their own reservation and envelope, not a per-task tool cap.
@@ -1180,6 +1211,11 @@ func (d Document) Validate() error {
 	}
 	if err := d.Chat.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
+	}
+	for tool := range d.Chat.tools() {
+		if err := d.Prices.validate(tool); err != nil {
+			return fmt.Errorf("policy: chat lists %s: %w", tool, err)
+		}
 	}
 	if err := d.Risk.validate(); err != nil {
 		return err

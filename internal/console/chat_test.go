@@ -876,6 +876,42 @@ func (f *fakeChat) proposal(token string) (fakeProposal, bool) {
 	return fakeProposal{}, false
 }
 
+// fakeWeb is the chat's web door: it records each call as "search task
+// query limit" or "scrape task url", answers the calls in order from
+// answers (the next answer repeats), or fails every call with err.
+type fakeWeb struct {
+	mu      sync.Mutex
+	calls   []string
+	answers []string
+	err     error
+}
+
+func (f *fakeWeb) Search(_ context.Context, taskID, query string, limit int) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("search %s %s %d", taskID, query, limit))
+	return f.answer(), f.err
+}
+
+func (f *fakeWeb) Scrape(_ context.Context, taskID, pageURL string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, fmt.Sprintf("scrape %s %s", taskID, pageURL))
+	return f.answer(), f.err
+}
+
+func (f *fakeWeb) answer() string {
+	if len(f.answers) > 1 {
+		a := f.answers[0]
+		f.answers = f.answers[1:]
+		return a
+	}
+	if len(f.answers) == 1 {
+		return f.answers[0]
+	}
+	return ""
+}
+
 // chatGateway is the model's gateway: it answers each call with the next
 // scripted reply's data lines and [DONE], a nil reply with 502, and checks
 // that every call is the project agent's: purpose operator on the code
@@ -1172,6 +1208,8 @@ func newChatRig(t *testing.T) (*rig, *fakeChat, *chatGateway) {
 	srv := httptest.NewServer(g)
 	t.Cleanup(srv.Close)
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: srv.URL, Token: "gw-token"}
+	r.web = &fakeWeb{}
+	r.c.cfg.Web = r.web
 	r.tasks.set("the agent asks: use a replica?",
 		factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance", Repository: "sf/code",
 			IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -1608,14 +1646,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 	}{
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
-			"file", "tree", "grep", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
+			"file", "tree", "grep", "web_search", "web_scrape", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
-		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "tree", "grep", "session",
+		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",

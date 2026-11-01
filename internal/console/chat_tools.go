@@ -55,6 +55,8 @@ type toolInput struct {
 	From        int      `json:"from,omitempty"`
 	To          int      `json:"to,omitempty"`
 	Query       string   `json:"query,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Limit       int      `json:"limit,omitempty"`
 	Size        string   `json:"size,omitempty"`
 	Rung        string   `json:"rung,omitempty"`
 	RungReason  string   `json:"rung_reason,omitempty"`
@@ -241,7 +243,8 @@ func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
 		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "request_image" && c.cfg.RequestImage == nil ||
 			t.name == "github_export" && c.cfg.Mirrors == nil ||
-			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
+			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "web_") && c.cfg.Web == nil ||
+			strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
 	})
 }
 
@@ -1276,6 +1279,16 @@ var tools = []chatTool{
 		required: []string{"pattern", "ref"},
 		about:    "Files at a ref whose lines match a pattern, at most 50.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.grepText(in); return s, nil, err }},
+	{name: "web_search", title: "Search the web",
+		params:   map[string]any{"query": str("the search query"), "limit": fallback(5, stepParam("results to show, at most 10"))},
+		required: []string{"query"},
+		about:    "At most ten pages the web search found for a query, each a title, its url and a snippet.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webSearch(in); return s, nil, err }},
+	{name: "web_scrape", title: "Read a web page",
+		params:   map[string]any{"url": str("the page's http(s) address"), "ask": str("what the digest answers (default the page's gist)")},
+		required: []string{"url"},
+		about:    "The web page at one address, digested to the ask, never raw.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webScrape(in); return s, nil, err }},
 	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
 		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
@@ -2022,6 +2035,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
   file, diff, read_doc and session_step answer an ask with one small digest of the read; read the raw slice where its answer points.
   for a file you cannot name, tree first and grep for its words.
+  web_search and web_scrape spend the chat's own budget per call: search wide, read a page only when its snippet promises, and name the url you scraped.
 `
 
 func (t *turn) systemText() (string, error) {

@@ -1047,7 +1047,9 @@ type rig struct {
 	sessions  *fakeSessions
 	events    *fakeEvents
 	chat      *fakeChat
-	// gateway is the lab's scripted model, nil in the tests
+	// web is the chat's fake web door; the gateway is the lab's scripted
+	// model, nil in the tests
+	web     *fakeWeb
 	gateway *chatGateway
 	// infra is the lab's configuration tree, nil in the tests
 	infra    *infraFake

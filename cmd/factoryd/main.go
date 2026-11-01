@@ -666,6 +666,7 @@ func main() {
 		},
 		AttachAnalysis: store.AttachAnalysis,
 		Operator:       operator,
+		Web:            &factoryd.WebTools{GatewayURL: gatewayURL, Token: gatewayToken},
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo

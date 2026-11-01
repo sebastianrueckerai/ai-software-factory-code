@@ -754,6 +754,15 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 	}
 	if p.Chat != nil {
 		number("chat.monthly_eur", p.Chat.MonthlyEUR, d.ChatOf(ProjectConfig{}).MonthlyEUR, "chat.monthly_eur")
+		for tool, tc := range p.Chat.Tools {
+			bound, ok := d.ChatOf(ProjectConfig{}).Tools[tool]
+			if !ok {
+				errs = append(errs, fmt.Errorf("project %s: chat.tools lists %s, which policy.yaml's chat.tools does not", name, tool))
+				continue
+			}
+			number("chat.tools."+tool+".max_requests", float64(tc.MaxRequests), float64(bound.MaxRequests), "chat.tools."+tool+".max_requests")
+			number("chat.tools."+tool+".max_eur", tc.MaxEUR, bound.MaxEUR, "chat.tools."+tool+".max_eur")
+		}
 	}
 	return errors.Join(errs...)
 }

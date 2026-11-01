@@ -105,6 +105,12 @@ func TestChatBlockRefusals(t *testing.T) {
 		"unknown vision model": {"policy.yaml", "chat:\n  vision_model: gpt-5\n", `policy: chat.vision_model "gpt-5": want one of [vision]`},
 		"negative budget":      {"policy.yaml", "chat:\n  monthly_eur: -1\n", "policy: chat.monthly_eur must not be negative"},
 		"a class named chat":   {"policy.yaml", "", `policy: a capability class may not be named "chat"`},
+		"unknown chat tool": {"policy.yaml", "chat:\n  tools: {replicate_predict: {max_requests: 5, max_eur: 0.05}}\n",
+			`policy: chat.tools: unknown tool "replicate_predict" (known: [web_search web_scrape])`},
+		"chat tool without caps": {"policy.yaml", "chat:\n  tools: {web_search: {}}\n",
+			`policy: chat.tools "web_search" needs a positive max_requests and max_eur`},
+		"project chat tool the policy lacks": {"projects/linkshort.yaml", "chat:\n  tools: {web_scrape: {max_requests: 5, max_eur: 0.05}}\n",
+			"project linkshort: chat.tools lists web_scrape, which policy.yaml's chat.tools does not"},
 		"project budget above the policy's": {"projects/linkshort.yaml", "chat:\n  monthly_eur: 6\n",
 			"project linkshort: chat.monthly_eur 6 is looser than policy.yaml's chat.monthly_eur 5"},
 	} {
@@ -119,6 +125,52 @@ func TestChatBlockRefusals(t *testing.T) {
 				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// The chat block lists its web tools with caps like a class's, and a
+// project file's block replaces the policy's whole map, only tighter:
+// the project's numbers may not exceed the policy's.
+func TestChatWebTools(t *testing.T) {
+	files := fixtureTree(t)
+	files["policy.yaml"] = append(files["policy.yaml"],
+		"chat:\n  tools:\n    web_search: {max_requests: 40, max_eur: 0.40}\n    web_scrape: {max_requests: 60, max_eur: 0.30}\n"...)
+	files["projects/linkshort.yaml"] = append(files["projects/linkshort.yaml"],
+		"chat:\n  tools: {web_search: {max_requests: 10, max_eur: 0.10}}\n"...)
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string]map[string]ToolCap{
+		"linkshort": {ToolWebSearch: {10, 0.10}, ToolWebScrape: {60, 0.30}},
+		"demo-app":  {ToolWebSearch: {40, 0.40}, ToolWebScrape: {60, 0.30}},
+	} {
+		if got := tree.Document.ChatOf(tree.Projects[name]).Tools; !reflect.DeepEqual(got, want) {
+			t.Errorf("ChatOf(%s).Tools = %v, want %v", name, got, want)
+		}
+	}
+	if DefaultChat.Tools != nil {
+		t.Fatalf("DefaultChat.Tools = %v, want none: web is opt-in", DefaultChat.Tools)
+	}
+	files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"],
+		"chat:\n  tools: {web_search: {max_requests: 50, max_eur: 0.10}}\n"...)
+	_, err = ParseTree(files)
+	if err == nil || !strings.Contains(err.Error(),
+		"project demo-app: chat.tools.web_search.max_requests 50 is looser than policy.yaml's chat.tools.web_search.max_requests 40") {
+		t.Fatalf("ParseTree error = %v, want the looser project cap named", err)
+	}
+}
+
+// A policy that lists a chat web tool must carry its Firecrawl prices, as
+// a class's listing must.
+func TestChatWebToolPrices(t *testing.T) {
+	files := fixtureTree(t)
+	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]),
+		"prices:\n  firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}\n", "prices:\n", 1))
+	files["policy.yaml"] = append(files["policy.yaml"], "chat:\n  tools: {web_search: {max_requests: 5, max_eur: 0.05}}\n"...)
+	_, err := ParseTree(files)
+	if err == nil || !strings.Contains(err.Error(), "policy: chat lists web_search: prices.firecrawl needs a positive eur_per_credit") {
+		t.Fatalf("ParseTree error = %v, want the firecrawl prices to be named", err)
 	}
 }
 

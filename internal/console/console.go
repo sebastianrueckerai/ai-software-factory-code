@@ -334,6 +334,9 @@ type Config struct {
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat
 	Operator *factoryd.OperatorModel
+	// Web is the chat's web door (nil = the chat reaches no web): the
+	// web_search and web_scrape tools call it on the chat task's account.
+	Web Web
 	// Notes are the projects' scratchpads (factoryd.PGStore); nil: the
 	// chat's notes tools say there is none.
 	Notes Notes
