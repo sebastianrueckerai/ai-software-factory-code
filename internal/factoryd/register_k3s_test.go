@@ -141,7 +141,7 @@ func TestRegistrationClusterOnAnAPIServer(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// a seed project's namespace (ruling 180): the infra repository labels
+	// a seed project's namespace: the infra repository labels
 	// it factory/project and factory/objects=seed; factoryd acts in it as
 	// in any namespace not its own, not at all, even were it restricted
 	seedLabels := map[string]string{ProjectLabel: "ai-software-factory-infra", ObjectsLabel: "seed", "pod-security.kubernetes.io/enforce": "restricted"}

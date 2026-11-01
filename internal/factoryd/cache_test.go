@@ -11,7 +11,7 @@ import (
 
 // checkCache asserts the pod mounts claim as volume cache at /cache and
 // points Go's build cache, go install and npm's cache there, and Go's
-// module cache at the pod's own volume modcache (ruling 223: its unpack
+// module cache at the pod's own volume modcache (its unpack
 // relies on file locks gVisor keeps per sandbox).
 func checkCache(t *testing.T, pod map[string]any, claim string) {
 	t.Helper()
@@ -101,7 +101,7 @@ func TestWorkerPodMountsProjectCache(t *testing.T) {
 }
 
 // Both reproduction runs (base and head) read nothing an agent left in the
-// project's shared cache (ruling 291): Go's and npm's caches sit in the
+// project's shared cache: Go's and npm's caches sit in the
 // pod's own emptyDir, PATH names no cache directory, and the fetch init
 // container gets the same mounts and no cache either; the harness init
 // container mounts the harness alone.

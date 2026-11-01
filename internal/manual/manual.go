@@ -15,7 +15,7 @@ import (
 
 // Loop is what the factory does, in one sentence; callers add their own
 // tail after it.
-const Loop = "Signals and members file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys"
+const Loop = "Signals and humans file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys"
 
 // Images is the manual's section on sandbox images.
 var Images = "A sandbox image is the sandbox base with the tools a project's cards need. " +
@@ -40,6 +40,6 @@ func Text() string {
 		fmt.Fprintf(&b, "  %s: %s\n", g, GateMeaning(g))
 	}
 	b.WriteString("\nSandbox images:\n" + Images + "\n")
-	b.WriteString("\nA writer of your project can message you through the card's chat. Ask for a decision with escalate_to_human; ask the issue's author with request_info. A code session asks to cut a card that is too big with request_cut.\n")
+	b.WriteString("\nA writer of your project can message you through the card's chat. Ask for a decision with escalate; ask the issue's author with request_info. A code session asks to cut a card that is too big with request_cut.\n")
 	return b.String()
 }

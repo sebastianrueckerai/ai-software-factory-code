@@ -13,7 +13,7 @@ import (
 )
 
 // Roadmap 210: a card that outlives its budget has an operator path — an
-// approver's Fund action on the capped card (the same cards ruling 322's
+// approver's Fund action on the capped card (the same cards the
 // unfunded answer refuses), which raises budget_eur by the stated amount
 // and lands in the event spine as its own row. The answer box stays
 // beside it: Fund posts its note as the answer, so the card resumes at

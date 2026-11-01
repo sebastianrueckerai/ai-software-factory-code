@@ -103,20 +103,20 @@
   asks, one token only); the worker waits 30 s at most and pushes
   `factory/<id>` to the fork `factory-agent/<repo>`.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep,
-  the Go toolchain (ruling 99, the same pin as the runner
-  image) and PostgreSQL 17's server for `scripts/pg-test.sh`; its stage
+  the Go toolchain (the same pin as the runner image) and
+  PostgreSQL 17's server for `scripts/pg-test.sh`; its stage
   `base`, pushed as `sf/sandbox-base`, is the same without the harness,
   Go and Node, apt's dated sources kept for the images built on it; its
   egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
   and `storage.googleapis.com` (proxy.golang.org redirects zip downloads
   there) by name on 443, SigNoz's collector pods on 4318 when factoryd has
-  an `OTEL_EXPORTER_OTLP_ENDPOINT` (ruling 158: the worker's own spans and
-  metrics; the pod gets the same variable), and kube-dns for exactly
+  an `OTEL_EXPORTER_OTLP_ENDPOINT` (the worker's own spans and metrics;
+  the pod gets the same variable), and kube-dns for exactly
   those names; the cloud metadata address is denied outright. The module proxy is a covert
   channel: a `go get` of a made-up module path carries that path to
   proxy.golang.org, so an agent can leak a few hundred bytes per request
-  through it. Ruling 99 accepts this as the price of a usable Go
+  through it. The factory accepts this as the price of a usable Go
   toolchain in the sandbox. Before the agent starts, or a reproduction's
   command runs, the worker probes that egress (roadmap 42), every probe
   at once and each bounded at 2 s: the gateway's `/healthz` answers,

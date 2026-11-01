@@ -44,12 +44,12 @@ type Forgejo struct {
 	HTTP        *http.Client // nil = a mint-sized timeout
 
 	// CIOrgToken is factory-ci's second token, read:organization only and
-	// no repository (ruling 108: Forgejo refuses read:organization on a
+	// no repository (Forgejo refuses read:organization on a
 	// repository-limited token): the trust gate reads the org's teams,
 	// their repositories and members with it.
 	CIOrgToken string
 	// ProjectsToken is the dedicated user factory-projects' token,
-	// write:repository on no fixed repository list (ruling 164): the owner
+	// write:repository on no fixed repository list: the owner
 	// of every project organisation and no member of sf, so it reaches the
 	// project repositories and nothing of the factory's own. It keeps a
 	// project's webhook, collaborators, branch protection, deploy key,
@@ -57,19 +57,18 @@ type Forgejo struct {
 	// come from registration with the site admin's login from OpenBao.
 	ProjectsToken string
 	// Seeded are the tokens the seed makes, by their secret's name
-	// (policy.SeedSecrets), which a seed project's file names (ruling 179):
+	// (policy.SeedSecrets), which a seed project's file names:
 	// forgejo-ci-registrar, factory-ci's write:repository on the code
 	// repository (factory-ci sits in org sf's Owners team, which Forgejo's
-	// runner API demands; main's whitelists exclude it, rulings 78, 101,
-	// 101a); forgejo-merge, factory-merge's write:repository on the code
-	// repository (ruling 109: main's merge whitelist holds it, its push
+	// runner API demands; main's whitelists exclude it); forgejo-merge, factory-merge's write:repository on the code
+	// repository (main's merge whitelist holds it, its push
 	// whitelist does not); forgejo-gate, factory-gate's write:repository on
-	// the code repository (ruling R59: main's approvals whitelist holds it,
+	// the code repository (main's approvals whitelist holds it,
 	// its merge and push whitelists do not); forgejo-chat, factory-chat's
 	// write:repository and write:issue on the code and the infra
 	// repository (a writer on neither's whitelists: the project agent's
 	// turns no member started); forgejo-config, factory-config's
-	// read:repository on the infra repository (ruling 183).
+	// read:repository on the infra repository.
 	Seeded map[string]string
 	// token, when set, is the one call authenticates with instead of the
 	// bot's login (As).
@@ -103,7 +102,7 @@ type ProjectAccess struct {
 }
 
 // Access is the one mapping from a project to factoryd's tokens: a
-// factory project's are registration's (ruling 164: its own factory-merge
+// factory project's are registration's (its own factory-merge
 // token reads and merges, its factory-gate token approves, its
 // factory-chat token acts for the project agent, factory-projects owns its
 // Actions), a seed project's are the seeded secrets its file names, never
@@ -324,11 +323,11 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 // teams with write or more on the code unit of this repository, and direct
 // collaborators with write or more. Forgejo shows no collaborator's
 // permission to a scoped token (the per-user endpoint refuses every one
-// that is not a site admin's, rulings 101 and 101a), so a collaborator
+// that is not a site admin's), so a collaborator
 // counts by being on the assignee list (write or more, or a team's pull
 // request read) and in no team without code write, which could be what
 // put them there: such a collaborator fails closed. The org-read token
-// reads the teams, their repositories and members (ruling 108); token,
+// reads the teams, their repositories and members; token,
 // the project's read token, reads the collaborators and assignees. An
 // owner that is no organization has no team list, and the gate trusts no
 // one.
@@ -701,7 +700,7 @@ type CIRunnerRegistration struct {
 }
 
 // RegisterCIRunner registers one ephemeral, single-job runner (task 41,
-// ruling 78: "an ephemeral runner pod... that takes one job and exits").
+// "an ephemeral runner pod... that takes one job and exits").
 // The registration API has no labels field — forgejo-runner declares its
 // own labels when it connects with this token — so the caller configures
 // the runner process itself with the label it must serve. Forgejo's
@@ -939,8 +938,7 @@ func mirrorTaskState(ctx context.Context, forgejo *Forgejo, t Task, state string
 }
 
 // Fork is the bot's private fork of upstream: same name under the bot user.
-// Agent branches live there, so a pull request's job token is read-only
-// (ruling 97).
+// Agent branches live there, so a pull request's job token is read-only.
 func (f *Forgejo) Fork(upstream Repo) Repo {
 	return Repo{Owner: f.BotUser, Name: upstream.Name}
 }
@@ -1365,8 +1363,8 @@ func (f *Forgejo) JobLog(ctx context.Context, targetURL string) ([]byte, error) 
 // WorkflowTreeEntries maps each workflow directory among commit's
 // top-level tree entries, in any case, to the path and object id of every
 // entry naming it; an absent directory has no key. Two commits whose
-// value for a workflow directory differs changed something under it
-// (rulings 90, 100), renames, deletions and case variants included,
+// value for a workflow directory differs changed something under it,
+// renames, deletions and case variants included,
 // however large the diff. The listing is paged by total_count; Forgejo's
 // truncated flag only says the tree exceeds one page, whichever page it
 // is on.

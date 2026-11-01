@@ -98,7 +98,7 @@ func TestShippedTreePasses(t *testing.T) {
 	}
 }
 
-// The premium class (rulings 328-330): the chat and the planner on
+// The premium class: the chat and the planner on
 // premium under its month cap; every list a key is minted from holds big
 // beside premium, the alias a premium call falls back to.
 func TestPremiumClass(t *testing.T) {

@@ -865,8 +865,8 @@ func TestBriefCarriesTheRepositoryMap(t *testing.T) {
 	}
 }
 
-// Ruling 152: the brief names the issue author's standing before the
-// author's text; ruling 150: the author's answers come under their own
+// The brief names the issue author's standing before the
+// author's text; the author's answers come under their own
 // heading as information. Every text of the author stands between
 // markers (review I4).
 func TestBriefNamesTheAuthorsStandingAndPosterInformation(t *testing.T) {
@@ -934,7 +934,7 @@ func TestBriefNamesTheToolServerOnce(t *testing.T) {
 	}
 }
 
-// Ruling 263, roadmap 201: when to call request_info or escalate_to_human
+// Roadmap 201: when to call request_info or escalate
 // is the tool's description, never the guides' prose; the guides state
 // once that a message asks nobody, whatever tools are open.
 func TestGuidesLeaveTheAskToTheTools(t *testing.T) {
@@ -950,7 +950,7 @@ func TestGuidesLeaveTheAskToTheTools(t *testing.T) {
 		}
 	}
 	if workGuide(all, nil) != workGuide(nil, nil) {
-		t.Fatal("the work guide still varies with request_info and escalate_to_human")
+		t.Fatal("the work guide still varies with request_info and escalate")
 	}
 }
 
@@ -971,7 +971,7 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		// the worker's push guard refuseMisnamedMigrations, pinned by
 		// TestCommitAndPushRefusesMisnamedMigrations
 		"never by the next number",
-		// the push protocol (rulings 97/100): the agent holds no token, the
+		// the push protocol: the agent holds no token, the
 		// clone init container alone has the read token, the push token is
 		// minted on POST /push with every agent process dead
 		"do not commit, push or look for a token",
@@ -1213,8 +1213,8 @@ func TestGuideEndSandboxSentence(t *testing.T) {
 	}
 }
 
-// No guide asks for a build without -race any more (stage12-design 5.2,
-// ruling 221): the sandbox now has gcc.
+// No guide asks for a build without -race any more (stage12-design 5.2):
+// the sandbox now has gcc.
 func TestGuideEndNoLongerForbidsRace(t *testing.T) {
 	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(testShape, testLimits, nil)} {
 		if strings.Contains(g, "without -race") {
@@ -1227,7 +1227,7 @@ func TestGuideEndNoLongerForbidsRace(t *testing.T) {
 // coding guides end with: conditional on a check file at the repository's
 // root, which a work guide's repository may lack (fix cards on the
 // factory's own code and demo-app) and a feature card's always has (the
-// ts-go template, ruling 221). A CI failure later is the checks stage's
+// ts-go template). A CI failure later is the checks stage's
 // finding, not this prose (roadmap 186). The harness reads AGENTS.md into
 // the session itself, so no guide asks for it.
 func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {

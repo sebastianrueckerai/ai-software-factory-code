@@ -940,7 +940,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	}
 	for _, name := range []string{"matchName:proxy.golang.org", "matchName:sum.golang.org", "matchName:storage.googleapis.com", "matchName:registry.npmjs.org"} {
 		if dnsRule == nil || !strings.Contains(fmt.Sprint(dnsRule), name) {
-			t.Fatalf("DNS rule lacks %s (ruling 99: the sandbox carries the Go toolchain): %v", name, dnsRule)
+			t.Fatalf("DNS rule lacks %s (the sandbox carries the Go toolchain): %v", name, dnsRule)
 		}
 	}
 	if fqdn == nil || fmt.Sprint(fqdn["toFQDNs"]) != "[map[matchName:proxy.golang.org] map[matchName:sum.golang.org] map[matchName:storage.googleapis.com] map[matchName:registry.npmjs.org]]" || fmt.Sprint(fqdn["toPorts"]) != "[map[ports:[map[port:443 protocol:TCP]]]]" {

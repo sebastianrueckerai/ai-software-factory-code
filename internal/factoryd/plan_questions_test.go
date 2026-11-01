@@ -30,7 +30,7 @@ func questionPlan() Plan {
 // 5 distinct choices of 1 to 60, an origin of self_attack or none (an
 // attack on the planner's own draft, piece 5); a breach is a finding like
 // a card's. The guide gives the field's format and one sentence on it,
-// nothing about when to ask (ruling 263) but the one sentence that a plan
+// nothing about when to ask but the one sentence that a plan
 // may ask whether it should be two plans (roadmap 336, call 15).
 func TestPlanQuestionsFormat(t *testing.T) {
 	p, findings := readPlan(fencePlan(questionPlan()), testShape, testLimits, nil)
@@ -70,7 +70,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	// findings, pinned by the table above, not the prose (roadmap 186).
 	g := planGuide(testShape, testLimits, nil)
 	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
-		!strings.Contains(g, "questions: open points the spec leaves to the member; their answers come back to you with your last plan, "+
+		!strings.Contains(g, "questions: open points the spec leaves to the human; their answers come back to you with your last plan, "+
 			"and a plan with open questions waits for their answers, while a plan with none files its cards at once.") || strings.Count(g, "question") != 5 {
 		t.Fatalf("planGuide names questions %d times, want 5 (the format's key, the attack sentence's one, the sentence's two, the two plans' one):\n%s", strings.Count(g, "question"), g)
 	}

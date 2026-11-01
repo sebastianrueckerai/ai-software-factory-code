@@ -72,14 +72,14 @@ tools; a human's, since no agent sandbox reaches a registry or a
 release page. Each build imports and exports (`mode=max`)
 its image's layer cache in the in-cluster build cache,
 `build-cache.forgejo.svc.cluster.local:5000/cache/<image>:main` (infra
-`k8s/platform/build-cache`, ruling 111), which the pull-request builds
+`k8s/platform/build-cache`), which the pull-request builds
 read; a cache outage only warns.
 
 
-## The untrusted pull-request runner (ruling 78)
+## The untrusted pull-request runner
 
 Agent pull requests come from the bot's fork, never from a branch of
-the repository itself (ruling 97): Forgejo hands a same-repository PR
+the repository itself: Forgejo hands a same-repository PR
 job a per-run token that can push to the repository, and hands a fork
 PR job a read-only one and no secrets. factoryd creates the private
 fork `factory-agent/<repo>` at boot and before every session if it is
@@ -105,7 +105,8 @@ module proxy and checksum DB, `storage.googleapis.com` (proxy.golang.org
 redirects zip downloads there), `data.forgejo.org`, and for a build job
 `auth.docker.io` (BuildKit fetches the build VM's registry tokens through
 the `buildctl` session) and the build cache on tcp 5000; nothing else, `169.254.169.254/32` explicitly denied; the module proxy remains
-the covert channel named above, accepted by ruling 99). The namespace and the
+the covert channel named above, accepted as the price of a usable Go
+toolchain). The namespace and the
 ephemeral runner registration are torn down when the pod finishes or its
 45-minute deadline passes. Idempotency is the Forgejo job id on the
 namespace label, so a restart or a second poll tick never spawns twice.
@@ -117,8 +118,8 @@ no job reaches vuln.go.dev), PostgreSQL 17's server for
 `scripts/pg-test.sh`, `buildctl` and `crane`, and nothing that builds
 images: no rootless BuildKit comes up under gVisor, and a root build pod
 in the cluster was the one exception the admission policy had to make.
-Image builds run outside the cluster instead (ruling 110,
-`internal/factoryd/buildvm.go`):
+Image builds run outside the cluster instead
+(`internal/factoryd/buildvm.go`):
 
 - **The VM.** A job whose `runs_on` includes `pr-untrusted-build`
   (`pr.yml`'s `image-build`, labelled so only when the `changes` job
@@ -161,7 +162,7 @@ Image builds run outside the cluster instead (ruling 110,
   <image>` and builds cold.
 - **The network.** A Hetzner firewall per VM admits tcp 1234 only from the
   cluster nodes' public IPv4s (`CI_BUILD_VM_SOURCES`, from ConfigMap
-  `cluster-facts`, ruling 112) and lets the VM out on tcp 80/443 and
+  `cluster-facts`) and lets the VM out on tcp 80/443 and
   tcp/udp 53 only. The runner pod's egress policy gains exactly
   `<vm ip>/32` on tcp 1234. The VM's egress is not name-restricted (Hetzner
   firewalls match IPs): the build context is code the agent already had,
@@ -180,7 +181,7 @@ Image builds run outside the cluster instead (ruling 110,
   know and any primary IP no server holds, and marks rows whose resource
   vanished. Deletes are idempotent; primary-IP counts lag a few seconds
   after a delete, so nothing trusts one snapshot.
-- **The interlock (ruling 123).** The collector deletes whatever its
+- **The interlock.** The collector deletes whatever its
   project holds, so a wrong token would wipe another project. A pass
   that lists a server or a primary IP on one of the cluster nodes'
   IPv4s (the cluster's own addresses sit unassigned during a rebuild), or
@@ -286,7 +287,7 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
   `open` for no verdict yet.
 
-Task analytics (ruling 185), counted where they happen and exported as
+Task analytics, counted where they happen and exported as
 deltas (`Providers.Analytics`): SigNoz sums a delta series, so a series'
 first count and the counts before a restart are in a day's bar, which an
 increase over a cumulative series drops. A panel sums them over the
@@ -397,7 +398,7 @@ escalation's row carries the agent's question (its first 500 bytes) as
 the reason.
 
 Postgres is the authoritative audit record. The SigNoz copy is not proof:
-ruling 158 lets sandbox code send OTLP to the same collector, so an agent
+sandbox code may send OTLP to the same collector, so an agent
 can forge a record with `service.name=factory-gateway`, an `audit`
 body and any `task.id`.
 
@@ -480,7 +481,7 @@ port 8090 only.
 - PR job logs: this Forgejo has no job-log API; they are in the Forgejo
   storage bucket at
   `actions_log/<owner>/<repo>/<task id % 256, two hex digits>/<task id>.log.zst`.
-- Agents cannot change workflows (rulings 90, 100): the worker compares
+- Agents cannot change workflows: the worker compares
   the tree entries of `.forgejo`, `.gitea` and `.github` between the base
   and the commit it is about to push and refuses when any differs (a
   `push_failed` event in the session record; the commit never reaches
@@ -525,7 +526,7 @@ port 8090 only.
 CI pushes images by digest. A deploy is a commit that rolls the digests
 in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
 `WORKER_IMAGE`, `SANDBOX_BASE_IMAGE` and `CI_RUNNER_IMAGE`), and factoryd opens it as a task of
-source `roll` (ruling 178). Every minute it reads the code repository's
+source `roll`. Every minute it reads the code repository's
 push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
 only, and never one older than a run whose commit a roll carries, which

@@ -8,7 +8,7 @@ gateway's `https-console` listener (https://console.aisoftwarefactory.world);
 the webhook and intake API on `:8080` stay in-cluster. Server-rendered
 `html/template` with htmx 2.0.11 vendored in `internal/console/static`
 (sha256 pinned by a test), no build step. Every EUR amount shows four
-decimals (ruling 135): a task's model calls cost fractions of a cent.
+decimals: a task's model calls cost fractions of a cent.
 
 - Login: Forgejo OAuth2 authorization code with PKCE (S256), confidential
   client `factory-console` (secret `console-oauth`: `client_id`,
@@ -31,7 +31,7 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   token (form field `csrf` or header `X-CSRF-Token`). Responses carry
   HSTS; the listener has read, write and idle timeouts. Error pages say
   what failed in a fixed sentence, the details go to the log.
-- Spend is the policy's `approvers` (ruling 128; the policy file's
+- Spend is the policy's `approvers` (the policy file's
   `approvers: [...]`): only they approve a resource request or a merge,
   or promote. Other writers see the cards without those buttons (a POST
   gets 403) and may still deny (a writer of the request's project),
@@ -118,7 +118,7 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   current gate "open for N min" while no step ended it. The approval wait
   ends at the signal that ended it: an approval, a change request, a merge
   in Forgejo or a close.
-- `/alerts`: the newest 200 alerts (ruling 140): `gate_bound` (an activity
+- `/alerts`: the newest 200 alerts: `gate_bound` (an activity
   still running at its policy bound, written once per run by the
   `GateWatch` worker interceptor; the policy's `bounds` section, seconds
   per activity and `default`; without it RunSession 1260, WaitChecks 600,
@@ -298,11 +298,11 @@ decimals (ruling 135): a task's model calls cost fractions of a cent.
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and a refusal names the fitting action.
 
-## Projects (task 65, ruling 179)
+## Projects (task 65)
 
 A project is a repository the factory works on, the namespaces it deploys
-into, and its settings (ruling 146). The settings are its file
-`projects/<name>.yaml` in the configuration tree (ruling 183): `repository`,
+into, and its settings. The settings are its file
+`projects/<name>.yaml` in the configuration tree: `repository`,
 `merge_rule` auto|human, `objects` factory|seed, `agents` coder|none,
 `notify` (empty: the policy's approvers), `namespaces` (each one project's),
 `environments` (namespace, path, hostname), `quota`, `secrets`, `envelope`,
@@ -315,7 +315,7 @@ file its row, and a row whose file is gone keeps its tokens while nothing
 acts on it. The console shows the projects read-only with links to their
 files; a change is a commit.
 
-The factory's own repositories are projects like any other (ruling 179): no
+The factory's own repositories are projects like any other: no
 Go source names them (a test greps). Two settings replace the old special
 cases:
 
@@ -347,7 +347,7 @@ only `forgejo-gate`, and `.chat`, only `forgejo-chat`), which factoryd
 holds as `FORGEJO_CI_REGISTRAR_TOKEN`, `FORGEJO_MERGE_TOKEN`,
 `FORGEJO_CONFIG_TOKEN`, `FORGEJO_GATE_TOKEN` and `FORGEJO_CHAT_TOKEN`.
 `forgejo-projects` is no allowed value: a seed project never gets the
-projects token (ruling 164). A seed project without `tokens.gate` merges
+projects token. A seed project without `tokens.gate` merges
 nothing on the merge rule `auto`: the merge is refused, naming the
 missing gate token. The code repository names `forgejo-ci-registrar`
 (read, Actions), `forgejo-merge`, `forgejo-gate` and `forgejo-chat`; the
@@ -361,7 +361,7 @@ writers log into the console. factoryd does not boot without it: a configuration
 whose project files list no project in factoryd's namespace stops the boot
 with `no project file lists factoryd's namespace factory`.
 
-**A project is its own Forgejo organisation** (ruling 164): the organisation
+**A project is its own Forgejo organisation**: the organisation
 `<name>`, owned by `factory-projects`, with the one repository
 `<name>/<name>` (the row keeps that lower-case form; Forgejo folds case), its
 packages, and the team `ci` (package write, no repository) whose one member
@@ -381,7 +381,7 @@ package write and nothing else on no repository); any other `ci-<name>` or
 `ci` makes it stop with the reason.
 
 The reconcile of a factory project (its file says `objects: factory`) whose
-row lacks a token registers it first (ruling 212): with the Forgejo site
+row lacks a token registers it first: with the Forgejo site
 admin's login, read from OpenBao's kv-v2 `factory/forgejo-admin` (role
 `factoryd`, the projected token of audience `openbao`) into memory for that
 run and never logged or stored, it does what only the admin can: the organisation, the repository
@@ -432,7 +432,7 @@ ready"), which nothing clears; for a factory project:
   whitelist the same, approvals whitelist the approvers and `factory-gate`, apply to admins,
   stale approvals dismissed, rejected reviews block), `required_approvals` 0
   on `auto` (1 on `human`), no deploy key and no protected file pattern, so
-  humans change workflows on main like any file (ruling 166); the branch
+  humans change workflows on main like any file; the branch
   `deploy`, the project's rolled state and what Flux reads, made from `main`
   once main has a commit (the repository starts empty; until then the line
   says `waiting: main has no commit yet`; a push to main while `deploy` is
@@ -452,7 +452,7 @@ ready"), which nothing clears; for a factory project:
   unless configured otherwise), type and key as factoryd's own handshake with
   `forgejo-ssh.forgejo:22` finds it at every reconcile, its sha256 in
   `host_key_hash`, so a rebuild that makes new host keys updates every project
-  and no workflow pins one (ruling 165; factoryd's egress admits Forgejo's
+  and no workflow pins one (factoryd's egress admits Forgejo's
   2222); with a `deploy/staging` environment, after the cluster objects,
   `STAGING_URL` (`http://<name>.<namespace>.svc.cluster.local:8080`, the
   template's Service) and `STAGING_SECRETS`, one `KEY='value'` line per
@@ -488,7 +488,7 @@ ready"), which nothing clears; for a factory project:
   repository's `deploy`), and per environment a Kustomization `<name>` in the
   environment's namespace (`serviceAccountName: flux`, `targetNamespace` that
   namespace, `prune`): Flux takes the account from the Kustomization's own
-  namespace, and the deployer role cannot change it (ruling 157).
+  namespace, and the deployer role cannot change it.
 - The admission policy confines all of it: only labelled namespaces (a
   namespace without the label never gets it, one never moves to another
   project), these kinds, these bindings, the one network policy `project`, no
@@ -505,7 +505,7 @@ kubectl -n factory exec deploy/factoryd -- factoryd register-project --name demo
 once `projects/demo-app.yaml` is on the infra repository's main and loaded,
 reconciles the project (registering it when its row lacks a token, every
 token again with `--rotate`; a second run changes nothing) and prints the
-edge gateway listeners and Certificates for the infra commit (ruling 155).
+edge gateway listeners and Certificates for the infra commit.
 
 Its inverse is `factoryd remove-project <name>` (roadmap 272), run as a one-off
 Job with its own ServiceAccount (`k8s/remove-project.yaml`, not in
@@ -554,7 +554,7 @@ commit that errs left, stays, and the answer says so. The status panel
 2. the merge, with a Merge button that merges as the human and shows
    Forgejo's refusal, and the version in force holding the file;
 3. the repository: no click; the reconcile that loads the new version
-   registers the project (ruling 219), and the step shows the row's tokens
+   registers the project, and the step shows the row's tokens
    and `main`, or the last reconcile error (`Registrar.ReconcileError`, in
    memory, cleared by a clean reconcile);
 4. `ready_at`, with a link to the project's board, or that error once the
@@ -686,7 +686,7 @@ from (the infra repository's `k8s/platform/signoz/helmrelease.yaml`). An
 active project that
 lists the namespace, or the alert is logged and dropped. On a project on
 `agents: none` the issue is the human lane's (labels `bug`, `human`), and no
-task runs. The factory's own namespaces route the same way (ruling 180):
+task runs. The factory's own namespaces route the same way:
 `factory` names the code repository's project, `platform` and `forgejo` the
 infra repository's (agents none); the infra repository labels them, with
 `factory/objects=seed` besides, which keeps factoryd out of them in the

@@ -605,8 +605,8 @@ func (o *Opencode) finish(emit func(harness.Event), success bool, summary string
 // The issue author's text (Objective and PosterInfo) is sanitised when
 // AuthorStanding is not a writer's. An outside account's or telemetry's
 // report is untrusted input wherever a brief reaches a model (the agent's
-// own, the review's, a supervisor's) or the gate supervisor's bundle
-// (ruling 152, item 48). The handover and the prior state's body are
+// own, the review's, a supervisor's) or the gate supervisor's bundle.
+// The handover and the prior state's body are
 // agent-written and are sanitised for every author. The spec (a writer's
 // plan issue), the human's answers (writers answer escalations) and the
 // findings (factoryd's, the reviewer's, CI's lines) pass as written. The
@@ -635,7 +635,7 @@ func InboundBrief(b harness.TaskBrief) harness.TaskBrief {
 // (the issue and every answer to an information request), the handover,
 // the earlier session's working state and its last message stand between
 // markers with a random tag none of them can know, so none of it can pass
-// for the standing line or for the brief's own sections (ruling 152).
+// for the standing line or for the brief's own sections.
 func objectiveText(brief harness.TaskBrief) string {
 	brief = InboundBrief(brief)
 	texts := slices.Concat([]string{brief.Objective, brief.Spec, brief.Handover}, brief.PosterInfo, brief.Findings)
@@ -802,8 +802,8 @@ const answersHeading = "These are the answers to this task's escalations (newest
 const toolsLine = "Factory tools: the MCP server factory-tools, each as factory-tools_<tool>."
 
 // workGuide ends every brief on image m (nil: the factory's): reproduce
-// first, and how to end a session (rulings 149, 150). When to call
-// request_info or escalate_to_human is their descriptions' (ruling 263).
+// first, and how to end a session. When to call
+// request_info or escalate is their descriptions'.
 func workGuide(tools []string, m *imagegen.Manifest) string {
 	g := "How to work: reproduce the reported fault before you change code. When the issue was filed from a SigNoz alert, open your last message with a ```repro block " +
 		"holding the shell command that reproduced it: the factory runs it at the reproduction base — the commit that was live when the alert fired, pinned at the card's filing — " +
@@ -899,7 +899,7 @@ const mcpTimeoutMS = 150000
 // The headless settings, read in v1.18.32's source: every agent
 // that loops is capped at steps; question is denied at pattern "*", which
 // hides the tool from the model, so the only ask path is the gateway's
-// request_info and escalate_to_human; doom_loop is allowed, since a denied
+// request_info and escalate; doom_loop is allowed, since a denied
 // one fails the stream and ends the session unseen by the model; a rejected
 // tool call continues the loop as an error the model sees.
 // subagent, when set, is the model (provider/id) the general and explore

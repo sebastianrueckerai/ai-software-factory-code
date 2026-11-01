@@ -198,7 +198,7 @@ func main() {
 			return inner.LastFailure(ctx, workflowID, activityID)
 		},
 		Workflows: &workflows,
-		// the attempt grant's floor (ruling 322) reads the same price
+		// the attempt grant's floor reads the same price
 		// table the gateway's hold math prices a call with
 		Prices:       &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
 		ProjectsUser: projectsUser(),
@@ -263,7 +263,7 @@ func main() {
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
 	// the boot's remaining credentials, read here so every one of them is
 	// registered before the scrubber is built: it knows every secret value
-	// factoryd loads, not a subset (ruling 152, item 48)
+	// factoryd loads, not a subset
 	intakeToken := mustSecret("INTAKE_TOKEN")
 	webhookSecret := mustSecret("FORGEJO_WEBHOOK_SECRET")
 	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
@@ -412,7 +412,7 @@ func main() {
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Branch: "main",
 		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics, Poll: 15 * time.Second, Timeout: 30 * time.Minute}
 	go rolls.Run(ctx)
-	// the roll as a factory task (ruling 178): main CI's images of a green
+	// the roll as a factory task: main CI's images of a green
 	// commit, read with a read:package token, open the roll's pull request
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: 15 * time.Second,
@@ -463,7 +463,7 @@ func main() {
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
 	mux.Handle("POST /webhooks/forgejo", webhookIntake)
 	mux.Handle("POST /webhooks/signoz", alertIntake)
-	// the gateway's hand-over of an agent's escalate_to_human
+	// the gateway's hand-over of an agent's escalate
 	mux.Handle("POST /internal/escalations", escalationRoute(gatewayToken, store, runner))
 	// the gateway's hand-over of an agent's delegate (roadmap 222, item 6)
 	mux.Handle("POST /internal/delegations", requireBearer(gatewayToken, factoryd.DelegationHandler(factoryd.DelegationDeps{
@@ -668,8 +668,10 @@ func main() {
 	}
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
 	// the wake: an ask the project agent did not file wakes one turn of
-	// its own on the venue member's inbox
-	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler}).Loop(ctx, 5*time.Second)
+	// its own on the venue member's inbox; a queue under its refill mark
+	// pulls the roadmap
+	go (&factoryd.Waker{Store: store, Current: policyLoader.Current, Start: consoleHandler,
+		RoadmapHead: consoleHandler.RoadmapHead}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
 	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken)}).Loop(ctx, 5*time.Second)
@@ -938,7 +940,7 @@ func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerF
 	}
 }
 
-// escalationRoute is the gateway's hand-over of escalate_to_human, behind
+// escalationRoute is the gateway's hand-over of escalate, behind
 // the gateway-factoryd bearer (secret factory/gateway-factoryd), which
 // factoryd and the gateway share: factoryd presents it for its model calls.
 func escalationRoute(gatewayToken string, store factoryd.EscalationStore, sessions factoryd.SessionEscalator) http.Handler {
@@ -1004,7 +1006,7 @@ func mustEnv(name string) string {
 
 // bootSecrets is every credential mustSecret has loaded this boot: the
 // daemon's error scrubber is built from it, so a secret cannot be loaded
-// without being scrubbed (ruling 152, item 48).
+// without being scrubbed.
 var bootSecrets []string
 
 // mustSecret is mustEnv for a credential: the value is registered for

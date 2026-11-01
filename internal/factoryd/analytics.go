@@ -13,7 +13,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
-// The kinds of factory.human.intervention (ruling 185).
+// The kinds of factory.human.intervention.
 const (
 	InterventionApprove          = "approve"
 	InterventionRequestChanges   = "request_changes"

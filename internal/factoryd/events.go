@@ -19,7 +19,7 @@ const (
 	EventAutonomyChanged = "autonomy_changed"
 	// EventIntakeChanged records a project's intake switch (the chat
 	// header's): detail {"from", "to"} with the words open and closed —
-	// closed refuses the wake's own filings, the member's ask still files.
+	// closed stops exactly the roadmap pull, every other filing still files.
 	EventIntakeChanged     = "intake_changed"
 	EventCardCreated       = "card_created"
 	EventTaskEnded         = "task_ended"

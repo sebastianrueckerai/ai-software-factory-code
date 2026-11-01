@@ -955,8 +955,8 @@ func TestLoopEndsAtTheThirdNudgeWithoutNewContent(t *testing.T) {
 	}
 }
 
-// Only content the session has not written before resets the loop count
-// (ruling 280): a rewrite of the same content, or a shell diff back at an
+// Only content the session has not written before resets the loop count:
+// a rewrite of the same content, or a shell diff back at an
 // earlier state, is no progress. h0, nudge, h1, then nudge and h1 twice
 // more, and a nudge: the trip comes at the third nudge after the first h1.
 // Through the shell: p2 and p3 are new, p2 and p3 again are not, so the
@@ -1436,8 +1436,8 @@ func TestMessageStartsTheDetectorsAfresh(t *testing.T) {
 	s3.tripped = cmp.Or(s3.tripped, &Trip{Kind: TripCheckIn})
 	s3.Messaged(minute(2))
 	// the command detectors clear; the alternation memory (contents, churn)
-	// stays, so a circle of writes spanning messages trips (ruling 224,
-	// TestSupervisorFlipFlopSpansTheMessage)
+	// stays, so a circle of writes spanning messages trips
+	// (TestSupervisorFlipFlopSpansTheMessage)
 	if d := s3.traces; len(d.calls) != 0 || len(d.runs) != 0 || len(d.failed) != 0 || len(d.contents) == 0 || d.churn == 0 || d.streak != 0 ||
 		d.lastDiff == "" || d.maxDiff != 3 || d.nudged["kept"] != 1 {
 		t.Fatalf("trace counters after the message: %+v", d)
@@ -1535,7 +1535,7 @@ func TestNoProgressAfterMessageAsks(t *testing.T) {
 	}
 }
 
-// Ruling 224: flip_flop and churn after a delivered message are circles,
+// Flip_flop and churn after a delivered message are circles,
 // not progress, although they write: they are stuck too.
 func TestFlipFlopAfterMessageIsStuck(t *testing.T) {
 	const check = "go test ./..."
@@ -1664,7 +1664,7 @@ func TestNoCheckInInTheSessionsFirstTenMinutes(t *testing.T) {
 	}
 }
 
-// Ruling 224: a circle of writes is not progress. A message must not clear
+// A circle of writes is not progress. A message must not clear
 // the alternation memory, so an agent that flips a file back and forth
 // across messages and refails its check trips flip_flop, stuck (round 2's
 // drill 4: 38 minutes of message loops on one alternating file).

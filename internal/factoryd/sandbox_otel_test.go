@@ -7,7 +7,7 @@ import (
 
 const testCollector = "http://signoz-otel-collector.platform.svc.cluster.local:4318"
 
-// Ruling 158: with a collector configured, the sandbox gains exactly one
+// With a collector configured, the sandbox gains exactly one
 // allow, SigNoz's collector pods on 4318, and its name in the DNS allowlist.
 func TestWorkerEgressAdmitsTheCollectorOn4318Only(t *testing.T) {
 	cfg := testRunnerConfig()

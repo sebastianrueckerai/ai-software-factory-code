@@ -594,7 +594,7 @@ func TestModelReviewBesideTheChecksStartsAtItsSchedule(t *testing.T) {
 }
 
 // The review reads an outside account's objective sanitised the same way
-// the agent's own brief is (ruling 152, item 48): the model review is
+// the agent's own brief is: the model review is
 // another reader of untrusted issue text.
 func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
@@ -1376,7 +1376,7 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 
 // On the merge rule auto the merge gate approves the head it checked as
 // factory-gate, with the gate's own token and the conditions it found met
-// in the review's body, before factory-merge merges it (ruling R59):
+// in the review's body, before factory-merge merges it:
 // main's protection counts that approval, never factory-merge's own.
 func TestAutoMergeApprovesAsTheGateFirst(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
@@ -1420,7 +1420,7 @@ func TestTheGatesApprovalWithoutConditionsIsTheHeader(t *testing.T) {
 	}
 }
 
-// The gate's approval holds factoryd's own facts alone (ruling R61): the
+// The gate's approval holds factoryd's own facts alone: the
 // reproduction command, the agent's note and the review's summary are
 // written by an issue, an agent or a model, so none of their lines reaches
 // the approval, whatever newlines and Markdown they carry.
@@ -1463,7 +1463,7 @@ func TestTheGatesApprovalHoldsOnlyFactorydsFacts(t *testing.T) {
 // The gate's approval that cannot be posted refuses the merge before any
 // merge call, naming why, as a refusal does: no gate token for the
 // project, Forgejo refusing the review, or a project whose merge rule is
-// no longer auto at the merge (ruling R61), which gets no review.
+// no longer auto at the merge, which gets no review.
 func TestAutoMergeRefusedWithoutTheGatesApproval(t *testing.T) {
 	noGate := autoProject("sf/repo")
 	noGate.Tokens.Gate = ""
@@ -1560,8 +1560,8 @@ func TestAWakesApprovalIsRefusedWithoutTheGate(t *testing.T) {
 	}
 }
 
-// A factory project's merge goes out with its own factory-merge token
-// (ruling 164), a seed project's with the seeded token its file names; a
+// A factory project's merge goes out with its own factory-merge token,
+// a seed project's with the seeded token its file names; a
 // project without one, and a repository no file names, is refused before
 // any merge.
 func TestMergeTokenPerProject(t *testing.T) {
@@ -2282,8 +2282,8 @@ func TestReportMergeRetriesExhausted(t *testing.T) {
 	}
 }
 
-// An alert-filed issue carries no reproduction and takes the agent's own
-// (ruling 170): the repro block of its last message, run at the base and
+// An alert-filed issue carries no reproduction and takes the agent's own:
+// the repro block of its last message, run at the base and
 // the head the same way and marked as the agent's; the issue's command
 // wins over it.
 func TestGateReproductionTakesTheAgentsReproBlock(t *testing.T) {
@@ -2400,7 +2400,7 @@ func TestGateReproductionKeepsThePlainRefusalWithoutTheSignature(t *testing.T) {
 	}
 }
 
-// Only an alert's issue takes the agent's block (ruling 170): an outside
+// Only an alert's issue takes the agent's block: an outside
 // account's bug, a writer's issue and an API task without a command run no
 // reproduction, whatever the agent wrote.
 func TestGateReproductionIgnoresTheAgentsBlockOutsideAlerts(t *testing.T) {
@@ -2427,7 +2427,7 @@ func TestGateReproductionIgnoresTheAgentsBlockOutsideAlerts(t *testing.T) {
 	}
 }
 
-// The review is told whose the reproduction command is (ruling 170).
+// The review is told whose the reproduction command is.
 func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
 	for _, s := range []string{"where ByAgent is true, the agent's own because the issue carried none", "strict_improvement"} {
 		if !strings.Contains(reviewPromptFor(GateResults{Beside: true}), s) {
@@ -2708,9 +2708,9 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 }
 
 // A pull request the gate admits names every condition it found met, the
-// body of the gate's approval (ruling R59): who wrote it, and for an
+// body of the gate's approval: who wrote it, and for an
 // agent's change the class, the audit, the proof and the review, in
-// factoryd's words alone (ruling R61).
+// factoryd's words alone.
 func TestAutoMergeNamesWhatItFoundMet(t *testing.T) {
 	yes := true
 	approve := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}

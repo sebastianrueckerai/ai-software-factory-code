@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // columnItems are what column title holds, in order: "t-x" for a card's
@@ -79,7 +80,7 @@ func screenRig(t *testing.T) (*rig, *http.Cookie) {
 	return r, ck
 }
 
-// Ruling 255 as C8 amends it: the four columns are a view over the task
+// As C8 amends it: the four columns are a view over the task
 // states. Every status lands in exactly one column, running, closing and
 // in review together in In progress, waiting on the author in Needs you
 // for every viewer, the author or not (roadmap 225: a person is the next
@@ -202,17 +203,17 @@ func TestNeedsYouCardShowsTheQuestionNotTheHistory(t *testing.T) {
 }
 
 // The status line: the project, its state word, n working, n need you
-// (the Needs you column, whatever the accent) and the spend of its tasks
-// from the first UTC day of the month on against its month cap, the
-// project file's budget.month_eur, else the policy's; a spend row of the
-// month before and another project's do not count.
+// (the Needs you column, whatever the accent) and the month spend against
+// the month cap: the enforced month spend of the whole factory under the
+// policy's cap, the project's own spend under its file's
+// budget.month_eur, another project's rows left out there.
 func TestStatusLineFigures(t *testing.T) {
 	r, ck := screenRig(t)
 	withLinkshort(r)
 	now := time.Now().UTC()
 	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	r.chat.spend = []spendRow{{"sf/code", month.AddDate(0, 0, -1), 7, false}, {"sf/code", month, 5, false}, {"sf/code", now, 0.5, true},
-		{"demo-app/demo-app", month, 3, false}}
+	r.chat.spend = []spendRow{{"demo-app/demo-app", month, 3, false}}
+	r.ledger.enforced = policy.Enforced{Month: 5.5}
 	r.ledger.monthCaps = map[string]float64{"demo-app": 12}
 	line := func(query string) string {
 		t.Helper()
@@ -224,7 +225,7 @@ func TestStatusLineFigures(t *testing.T) {
 		return body[start : start+strings.Index(body[start:], `</summary>
 <div class="sp"`)]
 	}
-	const title = `title="spend this UTC month against the project's month cap"`
+	const title = `title="spend this UTC month against the month cap: the project file's when it sets one, else the factory's, holds included"`
 	gauge := func(pct int) string {
 		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span>`, pct, pct)
 	}
@@ -255,7 +256,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell state" data-state="idle"><i class="dot" aria-hidden="true"></i>idle</span>
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
-<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€0.00</b> <span class="of">/ €50.00</span></span>`+gauge(0)+`</a><span class="pct">0%</span></span>
+<span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>`+gauge(11)+`</a><span class="pct">11%</span></span>
 `; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
 	}
@@ -460,8 +461,8 @@ func TestCardFineChips(t *testing.T) {
 	}
 }
 
-// A card whose newest session the model provider refused waits on it
-// (ruling 267): its chip says so and the status line counts it as
+// A card whose newest session the model provider refused waits on it:
+// its chip says so and the status line counts it as
 // waiting, not working, so a project with no other card working idles;
 // the next session_start makes it working again.
 func TestCardWaitingOnTheProvider(t *testing.T) {

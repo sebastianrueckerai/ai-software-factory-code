@@ -40,7 +40,7 @@ type Collector struct {
 	Provider Provider
 	// NodeIPs are the cluster nodes' public IPv4s as CIDRs (IPv4Sources of
 	// cluster-facts): a listed server on one of them means the token opens
-	// the cluster's own project, and the pass refuses (ruling 123).
+	// the cluster's own project, and the pass refuses.
 	NodeIPs []string
 	// OwnerDone reports whether a resource's owner (ci: the Forgejo job) is
 	// finished; nil means owners never finish early and only leases end.
@@ -245,7 +245,7 @@ func (c *Collector) adopt(ctx context.Context, p providerResource) error {
 	return err
 }
 
-// interlock is ruling 123: the collector deletes whatever its project
+// interlock: the collector deletes whatever its project
 // holds, so a token that opens another project (the cluster's, another
 // factory project's) must stop it before anything is deleted: a server or
 // primary IP on a node address, or anything with another project's label.

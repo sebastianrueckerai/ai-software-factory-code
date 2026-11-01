@@ -23,7 +23,7 @@ classes:
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
-      escalate_to_human: {}
+      escalate: {}
       # the factory manual: what the factory is, the card states, the gates. Free.
       manual: {}
       delegate: {}
@@ -33,7 +33,7 @@ classes:
     supervisor_model: supervisor
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
-      escalate_to_human: {}
+      escalate: {}
       manual: {}
   planner:
     session: plan
@@ -42,7 +42,7 @@ classes:
     tools:
       web_scrape: {max_requests: 30, max_eur: 0.20}
       web_search: {max_requests: 30, max_eur: 0.20}
-      escalate_to_human: {}
+      escalate: {}
       manual: {}
       file_plan: {}
 prices:

@@ -372,8 +372,8 @@ var falImageSizes = map[string][2]float64{
 	"landscape_4_3": {1024, 768}, "landscape_16_9": {1024, 576},
 }
 
-// falMegapixelKeys are the only input keys a megapixel endpoint takes
-// (ruling 117): every other key may set the output's size or count (a
+// falMegapixelKeys are the only input keys a megapixel endpoint takes:
+// every other key may set the output's size or count (a
 // source image, a count alias, another size name), which the hold could
 // not bound.
 var falMegapixelKeys = []string{"prompt", "negative_prompt", "seed", "image_size", "num_images",

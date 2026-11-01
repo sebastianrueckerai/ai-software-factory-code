@@ -755,7 +755,7 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 		return false, err
 	}
 	if !visible {
-		log.Printf("chain poller: %s is invisible to the projects token: the chain cannot record — restore the token's access (ruling 164)", repo)
+		log.Printf("chain poller: %s is invisible to the projects token: the chain cannot record — restore the token's access", repo)
 		p.raiseChainAlert(ctx, repo.String(), AlertChainStalled, map[string]any{"reason": "the projects token cannot see the repository"})
 		return false, nil
 	}

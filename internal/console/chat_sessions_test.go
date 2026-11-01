@@ -438,7 +438,7 @@ func TestChatSessionStartedBecause(t *testing.T) {
 		"started because: the provider answered again",
 		"started because: the previous session ended without a push",
 		"started because: the previous session's push went back to the agent",
-		"started because: the member's answer (sebastian)",
+		"started because: the human's answer (sebastian)",
 		"started because: a merge conflict with main",
 		"started because: the checks' findings",
 		"started because: a change request",
@@ -475,7 +475,7 @@ func TestChatSessionStartedBecause(t *testing.T) {
 	}
 	equal(t, "a planner's sessions", second, []string{
 		"started because: factoryd's findings on the plan",
-		"started because: the member's answer (sebastian)",
+		"started because: the human's answer (sebastian)",
 		"started because: a change request",
 	})
 }

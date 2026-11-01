@@ -23,13 +23,13 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The verification plane after green checks (architecture 7, ruling 109):
+// The verification plane after green checks (architecture 7):
 // the policy gate over the changed paths, the migration flag, the task's
 // reproduction command, the model review (evidence, never authority), then
 // a human's approval and the merge as factory-merge.
 
 // PolicyGate is GatePolicy's verdict on a pull request, with the merge
-// rule of the repository's project at the time (ruling 149).
+// rule of the repository's project at the time.
 type PolicyGate struct {
 	Class         string
 	Outcome       string // policy.OutcomeForbidden, OutcomeRequiresApproval or OutcomeAuto
@@ -79,7 +79,7 @@ func (g PolicyGate) large() bool {
 // the command is a guard-class fix's (roadmap 194): it constructs the
 // pre-fix state within the test itself, and the gate ran it at the head
 // with the base the head. NotReproduced is the agent's note that it fixed
-// a fault it did not reproduce exactly, and why (ruling 149). Escalate is
+// a fault it did not reproduce exactly, and why. Escalate is
 // the start escalation of a reproduction whose sandbox could not start:
 // no command ran, and the human's answer runs the gate again.
 type ReproResult struct {
@@ -97,7 +97,7 @@ type ReproResult struct {
 func (r ReproResult) Passed() bool { return !r.Ran || r.Exit == 0 }
 
 // Reproduced: the command failed at the base and passes at the head, the
-// fix proven against the report (ruling 167). A command the base passes
+// fix proven against the report. A command the base passes
 // too proves nothing (not reproduced at base); exit -1 at the base is no
 // failure of the command but of its run. An in-test reproduction is a
 // guard-class fix's (roadmap 194): main already holds the fixed
@@ -121,7 +121,7 @@ type GateResults struct {
 	// opens no gate on the task's row, which the wait holds until the
 	// gate's stage awaits it.
 	Beside bool `json:",omitempty"`
-	// Audit is the audit stage's verdict (ruling 188); nil: not run.
+	// Audit is the audit stage's verdict; nil: not run.
 	Audit *AuditResult `json:",omitempty"`
 }
 
@@ -138,7 +138,7 @@ type Adjudication struct {
 // Review is the model review's verdict; Note says why there is none (no
 // headroom, a failed call, an invalid answer). StrictImprovement answers,
 // for a fault fixed without exact reproduction, whether the change is a
-// strict improvement with no drawback (ruling 149). Adjudicated holds, by
+// strict improvement with no drawback. Adjudicated holds, by
 // the finding's text, the overrules an approval recorded on the review's
 // findings (roadmap 192); the review model neither sees nor answers it.
 // Claims name, by finding index, the absent names a finding asserts;
@@ -176,11 +176,11 @@ type Review struct {
 // approving review that finds the change a strict improvement with no
 // drawback, and proof: the reproduction failed at the base and passes at
 // the head, or the agent recorded the fault it fixed, or the review's
-// criteria are all met or waived (rulings 149, 167, 169). unmet names every
+// criteria are all met or waived. unmet names every
 // condition that sends the pull request to a human's card; met every one
-// that holds, which the gate's approval names (ruling R59) in factoryd's
+// that holds, which the gate's approval names in factoryd's
 // words alone: no command, note or summary an issue, an agent or a model
-// wrote (ruling R61).
+// wrote.
 func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []string) {
 	if g.Policy.MergeRule == policy.MergeAuto {
 		met = append(met, "the project's merge rule is auto")
@@ -239,7 +239,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	default:
 		unmet = append(unmet, "no reproduction command and no fault the agent recorded"+unmetCriteria(rv.Criteria))
 	}
-	// ruling 169: on both routes the review must find no drawback
+	// On both routes the review must find no drawback
 	strict := rv.StrictImprovement != nil && *rv.StrictImprovement
 	if rv.Verdict != "" && !strict {
 		unmet = append(unmet, "the model review did not find the change a strict improvement with no drawback: "+rv.Summary)
@@ -272,8 +272,8 @@ func criteriaProve(cs []CriterionVerdict) bool {
 }
 
 // MergeSpec is a merge approval request's spec: what the human reads on
-// the card (ruling 116): with the review's verdict, the agent's
-// recommendation (its last message) and why no auto merge (ruling 149).
+// the card: with the review's verdict, the agent's
+// recommendation (its last message) and why no auto merge.
 type MergeSpec struct {
 	RiskClass      string      `json:"risk_class"`
 	Migration      bool        `json:"migration"`
@@ -287,10 +287,9 @@ type MergeSpec struct {
 	Recommendation string      `json:"recommendation,omitempty"`
 	WhyHuman       []string    `json:"why_human,omitempty"`
 	// EarlierReviews are the model reviews of the task's earlier heads,
-	// oldest first (ruling 177).
+	// oldest first.
 	EarlierReviews []Review `json:"earlier_reviews,omitempty"`
-	// Audit is the security audit's verdict, its own section (ruling
-	// 188).
+	// Audit is the security audit's verdict, its own section.
 	Audit *AuditResult `json:"audit,omitempty"`
 	// Factory marks a pull request factoryd opened, which no agent works
 	// on, in a run that hears its actions (roadmap 264): its approval
@@ -337,7 +336,7 @@ type MergeResult struct {
 }
 
 // AutoMergeNote records on the timeline that factory-merge merges the
-// pull request without an approval card (ruling 149); the pull request
+// pull request without an approval card; the pull request
 // learns it from the gate's approval, which Merge posts with the
 // conditions that hold.
 func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, commit string, g GateResults, rv Review) error {
@@ -369,14 +368,13 @@ func (r *Runner) recordGateHead(ctx context.Context, t Task, head, decision stri
 		Files: g.Files, Insertions: g.Insertions, Deletions: g.Deletions}.Event(t.Repository, t.IssueNumber))
 }
 
-// MergeUser is the dedicated Forgejo user the Merge activity merges as
-// (ruling 109).
+// MergeUser is the dedicated Forgejo user the Merge activity merges as.
 const MergeUser = "factory-merge"
 
 // GateUser is the dedicated Forgejo user the merge gate approves as before
-// a merge on the merge rule auto (ruling R59): on main's approvals
+// a merge on the merge rule auto: on main's approvals
 // whitelist, never on its merge or push whitelist, and never trusted to
-// steer a task (ruling R61).
+// steer a task.
 const GateUser = "factory-gate"
 
 // ChatUser is the project agent's own Forgejo user in every turn no member
@@ -392,7 +390,7 @@ const GateUser = "factory-gate"
 const ChatUser = "factory-chat"
 
 // AutoApprover stands for the approver of a merge the project's merge rule
-// auto decided (ruling 149): no human approved it.
+// auto decided: no human approved it.
 const AutoApprover = "merge rule auto"
 
 // maxListed bounds the paths one gate comment lists.
@@ -608,7 +606,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	}
 	// an alert-filed issue carries no reproduction: it takes the agent's
 	// own, which proves the fault the same way, failing at the base
-	// (ruling 170) or, for a guard-class fix, constructing the pre-fix
+	// or, for a guard-class fix, constructing the pre-fix
 	// state within the test itself (roadmap 194); no other issue does
 	byAgent, inTest := false, false
 	if t.ReproCommand == "" && t.Source == SourceAlert {
@@ -643,7 +641,7 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 		return cannotStart(err)
 	}
 	defer done()
-	// the base first (ruling 167: the fault must show before the fix),
+	// the base first (the fault must show before the fix),
 	// then the head. The base a signal card reproduces at is pinned at
 	// its filing (roadmap 194): the commit that was live when its alert
 	// fired, even though main — and the branch, whose base SHA holds —
@@ -904,7 +902,7 @@ func fenced(s string) string {
 // runs the factory's image and leaves the head in the workspace; the container that runs the
 // agent-written command holds no token at all. Neither run mounts the
 // project's shared cache, where an agent may have planted a binary or a
-// build result (ruling 291): Go and npm build cold in the pod's own
+// build result: Go and npm build cold in the pod's own
 // emptyDir, with PATH naming no cache directory.
 func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[string]any {
 	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", []map[string]any{
@@ -1259,7 +1257,7 @@ func combineReviews(parts []Review) Review {
 // refused_budget, a failed call, an invalid answer) is a note, which the
 // review stage puts on the card as a finding
 // (versionReviewVerdict); concerns are findings under the review stage's
-// on_findings (ruling 177).
+// on_findings.
 func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, earlier []Review, round int) (Review, error) {
 	if round == 0 {
 		round = len(earlier) + 1
@@ -1277,7 +1275,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		return besideEnd(ctx, t, GateReview, gates.Beside, detail)
 	}
 	if t.Source == SourceRoll {
-		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"}
+		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call"}
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
 		return rv, nil
 	}
@@ -1290,6 +1288,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		rv := Review{Note: "model review not run: " + why}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
+		if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model, Note: rv.Note}); err != nil {
+			return Review{}, err
+		}
 		return rv, nil
 	}
 	if err := r.headIs(ctx, repo, pr.Number, commit); err != nil {
@@ -1430,9 +1431,24 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		detail["dropped"] = rv.Dropped
 	}
 	r.record(ctx, t.ID, "model_review", detail)
+	if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model,
+		Verdict: rv.Verdict, Note: rv.Note}); err != nil {
+		return Review{}, err
+	}
 	process, track := processTrack(ctx, r.store, t)
 	r.countReview(ctx, rv, round, process, track)
 	return rv, nil
+}
+
+// reviewFact writes the review attempt's fact row beside its timeline
+// line (roadmap 336): the answer's classification — a verdict the model
+// returned reviewed the head, an empty one never did, its note the
+// bounded reason — with no summary, which the timeline line alone
+// keeps. A failed write is the caller's, and the activity's retry
+// writes the row the identity keeps single. A roll card's note records
+// none: it makes no model call, so it is no round of a review.
+func (r *Runner) reviewFact(ctx context.Context, t Task, fact ReviewAttemptFact) error {
+	return r.timeline.RecordFactRow(ctx, fact.Event(t.ID, t.Repository, t.IssueNumber))
 }
 
 // reviewComment renders rv for the pull request; read says how much of
@@ -1531,7 +1547,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 // gates passed, into main only. Forgejo refuses it unless a user on main's
 // approvals whitelist approved that head: a human, or on the merge rule
 // auto the merge gate, which approves it as factory-gate first, naming
-// met, the conditions it found (ruling R59); a refusal, the gate's
+// met, the conditions it found; a refusal, the gate's
 // approval's included, is commented and returned, not an error: the
 // workflow keeps waiting. A pull request found
 // merged (a retry after a merge whose answer was lost, or a human's merge)

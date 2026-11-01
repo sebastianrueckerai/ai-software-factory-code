@@ -391,7 +391,7 @@ func TestCloudToolsListed(t *testing.T) {
 		names = append(names, tl.Name)
 	}
 	// sf/app runs on its servers, no namespace of the cluster: no deployment_health
-	want := "analyze_image,cloud_prices,commission_server,delegate,escalate_to_human,fal_run,file_plan,file_verdict,list_resources,manual,release_resource,replicate_predict,request_cut,request_info,request_tool,resource_request_status,ssh_certificate,web_scrape,web_search"
+	want := "analyze_image,cloud_prices,commission_server,delegate,escalate,fal_run,file_plan,file_verdict,list_resources,manual,release_resource,replicate_predict,request_cut,request_info,request_tool,resource_request_status,ssh_certificate,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v", names)
 	}
@@ -509,7 +509,7 @@ func TestCommissionRefusals(t *testing.T) {
 		"volume":  {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "volume_gb": 5},
 		"key":     {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "ssh_public_key": "ssh-ed25519 AAAA\nrm -rf /"},
 		"price":   {"server_type": "cx99", "purpose": "p", "lease_minutes": 60},
-		// ruling 147: standing resources come from registration or a human
+		// standing resources come from registration or a human
 		"standing": {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "lifetime": "standing"},
 		"lifetime": {"server_type": "cx23", "purpose": "p", "lease_minutes": 60, "lifetime": "forever"},
 	} {
@@ -617,7 +617,7 @@ func TestCloudPrices(t *testing.T) {
 	if n := strings.Count(strings.Join(e.hz.calls, ","), "pricing"); n != 1 {
 		t.Fatalf("pricing fetched %d times", n)
 	}
-	// ruling 183: the envelope of the project's file
+	// the envelope of the project's file
 	v := cloudPolicy()
 	v.Projects = map[string]policy.ProjectConfig{"app": {Repository: "sf/app", MergeRule: "human", Objects: "factory", Agents: "coder",
 		Envelope: &policy.Envelope{MonthlyEUR: 3, ServerTypes: []string{"cx23"}, MaxCount: 1, MaxLeaseHours: 1}, Budget: &policy.ProjectBudget{MonthEUR: 7}}}
@@ -652,7 +652,7 @@ func TestCommissionUserDataRefusesAMultiLineKey(t *testing.T) {
 	}
 }
 
-// ruling 125: a certificate is only ever signed for the task's own server,
+// A certificate is only ever signed for the task's own server,
 // with that server's principal.
 func TestCertificateForAnotherTasksServerIsRefused(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
@@ -666,7 +666,7 @@ func TestCertificateForAnotherTasksServerIsRefused(t *testing.T) {
 	}
 }
 
-// ruling 124: an accrual past its reservation is booked in full and
+// An accrual past its reservation is booked in full and
 // flagged by the store, and audited here.
 func TestAccrualOverrunIsAudited(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
@@ -681,16 +681,16 @@ func TestAccrualOverrunIsAudited(t *testing.T) {
 	}
 }
 
-// Ruling 132: the free tools follow the policy's class lists like the paid
-// ones, no class name in code: a class that lists escalate_to_human may
+// The free tools follow the policy's class lists like the paid
+// ones, no class name in code: a class that lists escalate may
 // escalate, a coder class that does not list commission_server may not
 // commission.
 func TestFreeToolsFollowThePolicysClassLists(t *testing.T) {
 	v := cloudPolicy()
-	v.Document.Classes["odd"] = policy.Class{Models: []string{"unpriced"}, Tools: map[string]policy.ToolCap{"escalate_to_human": {}}}
+	v.Document.Classes["odd"] = policy.Class{Models: []string{"unpriced"}, Tools: map[string]policy.ToolCap{"escalate": {}}}
 	delete(v.Document.Classes["coder"].Tools, "commission_server")
 	odd := newToolEnv(t, running("odd"), v)
-	if text, isErr := odd.call(t, "escalate_to_human", map[string]any{"question": "q", "reason": "r", "recommendation": "x"}); isErr {
+	if text, isErr := odd.call(t, "escalate", map[string]any{"question": "q", "reason": "r", "recommendation": "x"}); isErr {
 		t.Fatalf("escalate for a class that lists it = %s", text)
 	}
 	e := newCloudEnv(t, coderTask(), v)
@@ -700,7 +700,7 @@ func TestFreeToolsFollowThePolicysClassLists(t *testing.T) {
 	}
 }
 
-// ruling 147: agents get no SSH to a standing server, even their task's own.
+// Agents get no SSH to a standing server, even their task's own.
 func TestCertificateForStandingServerIsRefused(t *testing.T) {
 	e := newCloudEnv(t, coderTask())
 	own, _ := e.reg.Insert(context.Background(), cloudres.Resource{Project: cloudres.AgentProject, Kind: cloudres.KindServer,
@@ -713,7 +713,7 @@ func TestCertificateForStandingServerIsRefused(t *testing.T) {
 	}
 }
 
-// ruling 147: a standing server lives until a human releases it; the task
+// A standing server lives until a human releases it; the task
 // that commissioned it cannot.
 func TestReleaseOfStandingServerIsRefused(t *testing.T) {
 	e := newCloudEnv(t, coderTask())

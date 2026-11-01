@@ -8,7 +8,7 @@ resources:
 - deployment.yaml
 - factoryd.yaml
 - service.yaml
-# The factory's own SigNoz alert rules (rulings 159, 180), one rule per key:
+# The factory's own SigNoz alert rules, one rule per key:
 # the platform's signoz-objects job applies them bound to namespace factory
 # and routes them to factoryd's intake, where a firing one files a bug issue
 # on this repository.

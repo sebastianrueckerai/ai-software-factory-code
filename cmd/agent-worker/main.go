@@ -470,7 +470,7 @@ const (
 // workerEnv is the session's contract with factoryd. repoURL/repoToken read
 // the task's repository and the bot's fork, in the clone init container
 // only; pushURL/pushToken write the task branch to the fork, the only place
-// a worker can write (ruling 97), with the token factoryd posts at the push.
+// a worker can write, with the token factoryd posts at the push.
 type workerEnv struct {
 	taskID, sessionID, objective, repository, repoSHA, branch string
 	repoURL, repoToken, pushURL, pushToken                    string
@@ -486,7 +486,7 @@ type workerEnv struct {
 	// messageHash is sha256 of the session's message bearer, which only
 	// factoryd holds
 	messageHash [32]byte
-	// report is a report session's guide (MODE report, ruling 185): no
+	// report is a report session's guide (MODE report): no
 	// push URL or token, nothing pushed, the last message the result
 	report string
 	// spec and cardRole are a plan's card's (SPEC, CARD_ROLE)

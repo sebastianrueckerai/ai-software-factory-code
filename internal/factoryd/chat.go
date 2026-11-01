@@ -1284,7 +1284,7 @@ type ChatProposal struct {
 // TakeProposal's refusals.
 var (
 	ErrNoProposal     = errors.New("no such proposal or undo")
-	ErrOthersProposal = errors.New("the proposal or undo is another member's")
+	ErrOthersProposal = errors.New("the proposal or undo is another human's")
 )
 
 // PutProposal stores p.

@@ -1,7 +1,7 @@
 SELECT pg_advisory_xact_lock(hashtext('factory-policy-schema'));
 
 -- one row per commit of the infra repository's main whose factory/ tree
--- loaded: the whole tree as one document (ruling 183)
+-- loaded: the whole tree as one document
 CREATE TABLE IF NOT EXISTS policy_versions (
     id bigserial PRIMARY KEY,
     commit_sha text NOT NULL UNIQUE,
@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS ledger (
     day date NOT NULL DEFAULT (now() AT TIME ZONE 'UTC')::date,
     kind text NOT NULL CONSTRAINT ledger_kind_check CHECK (kind IN ('model', 'tool', 'resource', 'settlement', 'standing')),
     ref text NOT NULL DEFAULT '',
-    -- a final settlement (ruling 196) may lower the spend of a task
+    -- a final settlement may lower the spend of a task
     eur numeric NOT NULL CONSTRAINT ledger_eur_check CHECK (eur >= 0 OR kind = 'settlement'),
     created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -52,7 +52,7 @@ DO $$ BEGIN
 END $$;
 
 -- a standing resource's cost is its project's monthly line, no task's
--- spend and no day's headroom (ruling 147)
+-- spend and no day's headroom
 DO $$ BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ledger_kind_check'
                    AND pg_get_constraintdef(oid) LIKE '%standing%') THEN

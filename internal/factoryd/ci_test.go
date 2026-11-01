@@ -690,7 +690,7 @@ func podContainer(t *testing.T, kube *fakeKube, ns string) (spec, container map[
 	return spec, spec["containers"].([]any)[0].(map[string]any)
 }
 
-// A pr-untrusted-build job (ruling 110) gets a throwaway VM: the runner
+// A pr-untrusted-build job gets a throwaway VM: the runner
 // pod, in a restricted namespace like every CI job, carries the VM's
 // address and a mounted client pair, and its egress admits exactly that
 // VM on the buildkitd port.
@@ -1244,7 +1244,7 @@ func TestCISpawnerOrdinaryRunnerHasNoInitContainer(t *testing.T) {
 	}
 }
 
-// Task 65, ruling 179: the spawner serves every project agents work on,
+// Task 65: the spawner serves every project agents work on,
 // each with its Actions token (the seed project's seeded registrar token,
 // the factory project's factory-projects token); a runner registers in,
 // and is deleted from, the repository whose job it serves. A project on
@@ -1630,7 +1630,7 @@ func TestCISpawnerTeardownOfAnOldNamespace(t *testing.T) {
 	}
 }
 
-// Ruling 226 keeps main's jobs off the shared cache, so their GOCACHE, GOPATH
+// Main's jobs stay off the shared cache, so their GOCACHE, GOPATH
 // and npm cache fill the pod's own tmp emptyDir: a real app's cold checks
 // pass 1 GiB and the kubelet killed the pod mid-download (round 2's exit
 // test, linkshort3 runs 1 to 22). The limit holds a cold checks run.

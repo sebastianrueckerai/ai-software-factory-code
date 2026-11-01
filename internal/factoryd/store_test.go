@@ -52,11 +52,14 @@ type fakeStore struct {
 	// failIntakeEvent is InsertIntakeEvent's error, set to test the writers
 	failIntakeEvent error
 	events          []Event // newest last, as NewestTaskEvents reads them
-	deliveries      map[string]bool
-	pruned          []time.Duration
-	approvals       []ApprovalRequest
-	gates           []string // "task gate since", in order
-	projects        []Project
+	// recordFails fails that many Record calls by event kind, to test the
+	// fact writers that must not lose a row to a log line
+	recordFails map[string]int
+	deliveries  map[string]bool
+	pruned      []time.Duration
+	approvals   []ApprovalRequest
+	gates       []string // "task gate since", in order
+	projects    []Project
 	// projectReadFails fails that many ProjectByRepository calls
 	projectReadFails int
 	// projectSpend is each repository's month spend, as ProjectMonthSpend
@@ -906,6 +909,10 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 // doc_written rows are read back. A row whose identity another row
 // already holds drops, as Postgres's unique indexes drop it.
 func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
+	if n := s.recordFails[e.Kind]; n > 0 {
+		s.recordFails[e.Kind] = n - 1
+		return 0, fmt.Errorf("record %s: the store is down", e.Kind)
+	}
 	if e.IdentityKey != "" && slices.ContainsFunc(s.events, func(have Event) bool { return have.IdentityKey == e.IdentityKey }) {
 		return 0, nil
 	}
@@ -2059,7 +2066,7 @@ func TestPGStore(t *testing.T) {
 	if _, err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
 	}
-	// the final settlement (ruling 196): a task past the window, two
+	// the final settlement: a task past the window, two
 	// reviews the gate cut booked at their hold of 0.1447 each on top of
 	// 0.1873 of answered calls (0.4767), while LiteLLM charged 0.2751: set
 	// to 0.2751, the difference a negative settlement row on the task's
@@ -2657,6 +2664,34 @@ func TestPGStoreChatIntake(t *testing.T) {
 	}
 	if closed, err := s.ChatIntakeClosed(ctx, "sf/code"); err != nil || closed {
 		t.Fatalf("the reopened row reads %v, %v; want open", closed, err)
+	}
+}
+
+// The intake switch's row whole: who set it and when, for the board's
+// switch line; no row answers open with no setter.
+func TestPGStoreChatIntakeRow(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE chat_intake`); err != nil {
+		t.Fatal(err)
+	}
+	if row, ok, err := s.ChatIntake(ctx, "sf/code"); err != nil || ok || row.Closed {
+		t.Fatalf("no row reads %+v, %v, %v; want open with no setter", row, ok, err)
+	}
+	at := time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
+	if err := s.SetChatIntake(ctx, "sf/code", true, "sebastian", at); err != nil {
+		t.Fatal(err)
+	}
+	row, ok, err := s.ChatIntake(ctx, "sf/code")
+	if err != nil || !ok {
+		t.Fatalf("the row reads %v, %v", ok, err)
+	}
+	if !row.Closed || row.By != "sebastian" || !row.At.Equal(at) {
+		t.Fatalf("the row = %+v, want closed by sebastian at %s", row, at)
 	}
 }
 
@@ -3981,6 +4016,88 @@ func TestPGStoreOneCardPerIssue(t *testing.T) {
 	}
 	if err := file("t-second", 1109, repo); err != nil {
 		t.Fatalf("a done card frees its issue: %v", err)
+	}
+}
+
+// One card per roadmap item (the roadmap pull of 2026-11-01): any card
+// that cites the item holds it — open or done, the issue check frees only
+// final cards — and a second filing of the item is refused naming the
+// holder. Another repository's same item is another pull; an item without
+// a card returns to the pull.
+func TestPGStoreOneCardPerRoadmapItem(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	const repo = "sf/ai-software-factory-code"
+	file := func(id string, item int, repo string) error {
+		return s.CreateTask(ctx, Task{ID: id, Status: "queued", Repository: repo, Kind: "agent", Source: "webhook", Track: "direct", RoadmapItem: item})
+	}
+	if err := file("t-holder", 276, repo); err != nil {
+		t.Fatal(err)
+	}
+	err = file("t-second", 276, repo)
+	if err == nil || !strings.Contains(err.Error(), "t-holder already builds roadmap item 276") {
+		t.Fatalf("a second card on item 276: %v", err)
+	}
+	if err := file("t-other-item", 312, repo); err != nil {
+		t.Fatalf("another item of the same repository: %v", err)
+	}
+	if err := file("t-other-repo", 276, "sf/another-repo"); err != nil {
+		t.Fatalf("another repository's item 276: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't-holder'`); err != nil {
+		t.Fatal(err)
+	}
+	err = file("t-second", 276, repo)
+	if err == nil || !strings.Contains(err.Error(), "t-holder already builds roadmap item 276") {
+		t.Fatalf("a done card still holds its item: %v", err)
+	}
+	// RoadmapHolder names the same holder the insert refuses.
+	if holder, ok, err := s.RoadmapHolder(ctx, repo, 276); err != nil || !ok || holder != "t-holder" {
+		t.Fatalf("RoadmapHolder = %q, %v, %v; want t-holder", holder, ok, err)
+	}
+	if _, ok, err := s.RoadmapHolder(ctx, repo, 999); err != nil || ok {
+		t.Fatalf("an item no card cites = %v, %v; want none", ok, err)
+	}
+}
+
+// The roadmap pull stamp (the roadmap pull of 2026-11-01): a repository's
+// last pulled head of docs/roadmap.md and when the pull read it; no row
+// before the first pull, and a later head moves it.
+func TestPGStoreRoadmapPullStamp(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE roadmap_pull`); err != nil {
+		t.Fatal(err)
+	}
+	if head, ok, err := s.RoadmapPullStamp(ctx, "sf/code"); err != nil || ok || head != "" {
+		t.Fatalf("no stamp reads %q, %v, %v", head, ok, err)
+	}
+	at := time.Date(2026, 11, 1, 10, 0, 0, 0, time.UTC)
+	if err := s.SetRoadmapPullStamp(ctx, "sf/code", "head-1", at); err != nil {
+		t.Fatal(err)
+	}
+	if head, ok, err := s.RoadmapPullStamp(ctx, "sf/code"); err != nil || !ok || head != "head-1" {
+		t.Fatalf("the stamp reads %q, %v, %v; want head-1", head, ok, err)
+	}
+	if err := s.SetRoadmapPullStamp(ctx, "sf/code", "head-2", at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if head, ok, err := s.RoadmapPullStamp(ctx, "sf/code"); err != nil || !ok || head != "head-2" {
+		t.Fatalf("the moved stamp reads %q, %v, %v; want head-2", head, ok, err)
+	}
+	if head, ok, err := s.RoadmapPullStamp(ctx, "sf/other"); err != nil || ok || head != "" {
+		t.Fatalf("another repository's stamp = %q, %v, %v", head, ok, err)
 	}
 }
 

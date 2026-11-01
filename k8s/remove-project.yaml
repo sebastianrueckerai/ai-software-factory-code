@@ -110,7 +110,7 @@ spec:
   - name: kind
     expression: request.kind.kind
   # a project's namespace, labelled factory/project and not a seed
-  # project's (factory/objects, ruling 180: those are the infra
+  # project's (factory/objects: those are the infra
   # repository's, and a removal never touches them)
   - name: projectNamespace
     expression: >-

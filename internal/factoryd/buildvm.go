@@ -30,7 +30,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
-// Build VMs (ruling 110): one throwaway Hetzner server per
+// Build VMs: one throwaway Hetzner server per
 // pr-untrusted-build job, in the CI project, running buildkitd behind mTLS.
 const (
 	buildVMPort = 1234

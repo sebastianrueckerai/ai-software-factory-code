@@ -87,10 +87,10 @@ func TestChatCompactsOnTheContextRefusal(t *testing.T) {
 	}
 	first, _ := messages(t, g.compacts[0])[1]["content"].(string)
 	second, _ := messages(t, g.compacts[1])[1]["content"].(string)
-	if !strings.HasPrefix(first, "The summary so far:\n(none yet)\n\nThe turns after it:\nthe member: a1\nthe agent: a2\nthe member: b1\nthe agent: b2\n") {
+	if !strings.HasPrefix(first, "The summary so far:\n(none yet)\n\nThe turns after it:\nthe human: a1\nthe agent: a2\nthe human: b1\nthe agent: b2\n") {
 		t.Errorf("the first compaction read %q", first)
 	}
-	if !strings.HasPrefix(second, "The summary so far:\nsummary 1\n\nThe turns after it:\nthe member: c1\nthe agent: c2\n") {
+	if !strings.HasPrefix(second, "The summary so far:\nsummary 1\n\nThe turns after it:\nthe human: c1\nthe agent: c2\n") {
 		t.Errorf("the second compaction read %q", second)
 	}
 	th, _, _ := chat.Conversation(t.Context(), "sf/code", "sebastian", 1)
@@ -175,7 +175,7 @@ func TestChatCompactionLeavesReadsOut(t *testing.T) {
 		t.Fatalf("%d compaction calls, want 1", len(g.compacts))
 	}
 	equal(t, "the summariser's turns", messages(t, g.compacts[0])[1]["content"], "The summary so far:\n(none yet)\n\nThe turns after it:\n"+
-		"the member: a1\nthe agent read board {}\n"+`the agent called set_accent {"task_id":"t-m","accent":"red"}: The accent of #5 is set.`+"\nthe agent: a2\n")
+		"the human: a1\nthe agent read board {}\n"+`the agent called set_accent {"task_id":"t-m","accent":"red"}: The accent of #5 is set.`+"\nthe agent: a2\n")
 }
 
 // A forced compaction weighs the rows it keeps as the context carries

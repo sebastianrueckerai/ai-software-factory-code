@@ -27,7 +27,7 @@ type CIConfig struct {
 	Repos func(ctx context.Context) ([]CIRepo, error)
 	Label string // "pr-untrusted"; the runner also declares ":host"
 	// BuildLabel jobs get the same runner pod plus a throwaway build VM in
-	// the Hetzner CI project (ruling 110, buildvm.go).
+	// the Hetzner CI project (buildvm.go).
 	BuildLabel string // "pr-untrusted-build"
 	// TrustedLabel is main CI's runner label: its jobs are only timed in
 	// Queue, never served. "" = ubuntu-latest.
@@ -81,7 +81,7 @@ func (c *CIConfig) setDefaults() {
 // CIRepo is a repository the spawner serves and the token that lists its
 // jobs and registers its runners, which Forgejo keeps to the repository's
 // owner (Forgejo.Access's Actions token). Project names a factory
-// project, whose main workflow runs here too (ruling 164) and reaches
+// project, whose main workflow runs here too and reaches
 // factoryd and Forgejo's SSH.
 type CIRepo struct {
 	Repo    Repo
@@ -434,7 +434,7 @@ func (s *CISpawner) served(ctx context.Context, jobID int64) (bool, error) {
 
 func jobLabel(jobID int64) string { return "ci-" + strconv.FormatInt(jobID, 10) }
 
-// namespaceFor names the namespace after the Forgejo job id (ruling 89 #1),
+// namespaceFor names the namespace after the Forgejo job id,
 // not the runner registration id: the job id is known up front from the
 // waiting-jobs poll, and it is what a second poll or a restart must
 // recognize to avoid spawning twice.
@@ -775,7 +775,7 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 	volumes := []any{
 		map[string]any{"name": "workspace", "emptyDir": map[string]any{"sizeLimit": "8Gi"}},
 		map[string]any{"name": "home", "emptyDir": map[string]any{"sizeLimit": "2Gi"}},
-		// main jobs run cold by ruling 226: GOCACHE, GOPATH and npm's
+		// main jobs run cold: GOCACHE, GOPATH and npm's
 		// cache live here, and a real app's cold checks pass 1 GiB (the
 		// kubelet then kills the pod mid-download; round 2's exit test,
 		// linkshort3 runs 1 to 22)
@@ -882,7 +882,7 @@ const (
 )
 
 // buildCacheHost is the in-cluster registry pr.yml's image-build reads
-// layer caches from (infra k8s/platform/build-cache, ruling 111).
+// layer caches from (infra k8s/platform/build-cache).
 const buildCacheHost = "build-cache.forgejo.svc.cluster.local"
 
 // A project run's further callees: Forgejo's SSH (its Service's port 22
@@ -902,8 +902,8 @@ const (
 	CIHandleLabel = "factory.ai/ci-handle"
 )
 
-// ciEgressSpec allows exactly what a host-mode Actions job needs (ruling 89
-// #5): the in-cluster Forgejo service (checkout, job protocol — same
+// ciEgressSpec allows exactly what a host-mode Actions job needs:
+// the in-cluster Forgejo service (checkout, job protocol — same
 // toEndpoints reasoning as workerEgressSpec, not toFQDNs), the Go module
 // proxy and checksum database, the npm registry, and the host
 // actions/checkout resolves against. No Kubernetes API, no other

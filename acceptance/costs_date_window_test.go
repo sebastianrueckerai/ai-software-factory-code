@@ -66,28 +66,23 @@ type acceptLedger struct {
 	chat *policy.ChatConfig
 }
 
+// Enforced is the fixture's enforced spend: the day's total of its days,
+// the month's and the premium's none.
+func (l *acceptLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced, error) {
+	var e policy.Enforced
+	for _, d := range fixtureDays {
+		if d.Day == at.Format(policy.DateLayout) {
+			e.Day += d.Total
+		}
+	}
+	return e, nil
+}
+
 // Costs answers the fixture's rows for the window it is asked, as the
 // ledger store does: only the days whose day falls in the window, each
 // card's lines with a day in the window summed into its EUR and kept as
 // its lines, and the window's own From and To on the head. The fixture's
 // lines carry their day in Ref behind a space: "small 2026-10-10".
-// PremiumMonthSpend is the fixture's premium spend: none.
-func (l *acceptLedger) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
-	return 0, nil
-}
-
-// DaySpend is the fixture's total of one day, the board's figure; it is
-// no window read.
-func (l *acceptLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
-	var eur float64
-	for _, d := range fixtureDays {
-		if d.Day == day.Format(policy.DateLayout) {
-			eur += d.Total
-		}
-	}
-	return eur, nil
-}
-
 func (l *acceptLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -380,6 +375,9 @@ type acceptEvents struct {
 }
 
 func (*acceptTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
+func (*acceptTasks) RoadmapHolder(context.Context, string, int) (string, bool, error) {
+	return "", false, nil
+}
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
 	if e.Repository == "" || e.Kind == "" {
@@ -764,6 +762,10 @@ func (f *acceptChat) SetChatIntake(context.Context, string, bool, string, time.T
 
 func (f *acceptChat) ChatIntakeClosed(context.Context, string) (bool, error) {
 	return false, nil
+}
+
+func (f *acceptChat) ChatIntake(context.Context, string) (factoryd.IntakeRow, bool, error) {
+	return factoryd.IntakeRow{}, false, nil
 }
 
 func (f *acceptChat) AbandonChatMessage(context.Context, string, string, int64, int64) ([]int64, error) {

@@ -130,7 +130,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	case !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt):
 		d = attemptEnded
 	case t.Source == SourceRoll:
-		d = GateDecision{Action: ActionEscalate, Diagnosis: "a roll task makes no model call (ruling 178): its gate trip goes to a human",
+		d = GateDecision{Action: ActionEscalate, Diagnosis: "a roll task makes no model call: its gate trip goes to a human",
 			Recommendation: fmt.Sprintf("look at %s of roll task %s yourself", in.Trip.Activity, t.ID)}
 	default:
 		pinned, err := r.pinned(ctx, in.PolicyVersion)
@@ -148,7 +148,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 		} else {
 			d = parseGateDecision(content, bundle.Allowed)
 		}
-		// the gate may have ended during the call (ruling 171): the answer
+		// the gate may have ended during the call: the answer
 		// is recorded and acts on nothing
 		switch {
 		case !r.cfg.Gates.Running(workflowID, in.Trip.ActivityID, in.Trip.Attempt):

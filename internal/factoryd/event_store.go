@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// The ways an event reached the factory (ruling 252: one event whatever
+// The ways an event reached the factory (one event whatever
 // the input): a human's button in the console, the project agent's chat,
 // factoryd itself, or a webhook delivery.
 const (

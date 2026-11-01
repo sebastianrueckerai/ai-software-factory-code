@@ -109,7 +109,7 @@ type VerdictFiled struct {
 	Findings []string `json:"findings"`
 }
 
-// Escalation is what an agent asks: a human (escalate_to_human: the
+// Escalation is what an agent asks: a human (escalate: the
 // question, why, what the agent would do and the answers it offers), the
 // issue's author (request_info: the question, what it tried, what it
 // needs), the factory for a tool (request_tool: the tool, what for) or
@@ -469,8 +469,9 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FalIn) (*mcp.CallToolResult, any, error) {
 			return s.paid(ctx, c, policy.ToolFal, s.fal(c, in)), nil, nil
 		})
-	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolEscalate, Description: "Ask a human when the task cannot be completed without a decision, access or information only a human has. " +
-		"This session ends; the task resumes with the human's answer. Free.", InputSchema: escalateSchema},
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolEscalate, Description: "Escalate when the task cannot be completed without a decision, access or information you lack. " +
+		"Who answers first is policy, the project agent or a human; an ask nothing settles always reaches a human. " +
+		"This session ends; the task resumes with the answer. Free.", InputSchema: escalateSchema},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in EscalateIn) (*mcp.CallToolResult, any, error) {
 			return s.escalate(ctx, c, in), nil, nil
 		})
@@ -863,11 +864,11 @@ func (s *Server) escalate(ctx context.Context, c *toolCaller, in EscalateIn) *mc
 	}
 	if len(choices) > maxChoices || size > maxChoicesBytes {
 		// factoryd's body cap would refuse the question with them
-		log.Printf("task %s: escalate_to_human's choices are dropped: more than %d, or over %d bytes in all", c.task.ID, maxChoices, maxChoicesBytes) // #nosec G706 -- the task id is the stored row's, found by the verified JWT
+		log.Printf("task %s: escalate's choices are dropped: more than %d, or over %d bytes in all", c.task.ID, maxChoices, maxChoicesBytes) // #nosec G706 -- the task id is the stored row's, found by the verified JWT
 		choices = nil
 	}
 	return s.handOver(ctx, c, tool, Escalation{Kind: KindEscalation, Question: q, Reason: why, Recommendation: rec, Choices: choices}, "escalated",
-		"escalated; this session will end. A human answers on the issue and the task resumes with the answer. Stop working now.")
+		"escalated; this session will end. Policy decides who answers; an ask nothing settles always reaches a human, and the task resumes with the answer. Stop working now.")
 }
 
 // requestInfo hands the agent's information request to factoryd, which

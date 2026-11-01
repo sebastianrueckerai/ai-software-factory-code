@@ -17,8 +17,8 @@ import (
 // The template pass (roadmap 165) brings a template's later changes to the
 // projects seeded from it as one pull request, TemplateUpdateTitle, from
 // TemplateUpdateBranch on factory-projects' fork of the repository: from a
-// fork, its jobs hold a read-only token like every other pull request's
-// (ruling 97). Since roadmap 187 the pull request is a card: openTemplateUpdate
+// fork, its jobs hold a read-only token like every other pull request's.
+// Since roadmap 187 the pull request is a card: openTemplateUpdate
 // files it with FileFactoryPRTask, so the chat, the board and the merge rule
 // cover it; the card's merge merges the pull request, its close closes it.
 const (
@@ -250,7 +250,7 @@ func (r *Registrar) fileDueCard(ctx context.Context, p Project, number int64, fa
 }
 
 // leftBranch keeps the branch a closed pull request left when a person
-// closed it unmerged and it still holds want (ruling 296): the close stands
+// closed it unmerged and it still holds want: the close stands
 // until the render changes. A close by its card's failure of factoryd's
 // own doing (cardDue) is no person's: the pass reopens the pull request, as
 // the bot that closed it, and files its card again. Otherwise it

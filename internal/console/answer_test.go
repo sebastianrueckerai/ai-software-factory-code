@@ -142,7 +142,7 @@ func TestChatEscalate(t *testing.T) {
 		return 42, nil
 	}
 	got, err := trn.escalate(" Which store? ", " Postgres runs out of connections at the measured peak. ", " The counts and the plan section both say so. ", " Postgres, plan section 3 ", []string{" Postgres ", "SQLite"})
-	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's members with its choices.", error(nil)})
+	equal(t, "the tool's answer", []any{got, err}, []any{"Filed the escalation as #42 in Needs you; the inbox carries it to the project's humans with its choices.", error(nil)})
 	equal(t, "what it filed", []any{repo, filed}, []any{"sf/code", []factoryd.HumanQuestion{{
 		Ask:            "Which store?",
 		Why:            "Postgres runs out of connections at the measured peak.",

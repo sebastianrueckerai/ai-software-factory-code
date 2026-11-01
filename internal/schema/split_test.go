@@ -10,7 +10,7 @@ import (
 )
 
 func TestSplitStatementsDropsCommentHoldingSemicolon(t *testing.T) {
-	text := "-- events (ruling 252): one row per action; the feed reads it by repository.\n" +
+	text := "-- events: one row per action; the feed reads it by repository.\n" +
 		"CREATE TABLE events (id bigserial PRIMARY KEY);\n" +
 		"CREATE INDEX events_id_idx ON events (id);\n"
 	got := splitStatements(text)

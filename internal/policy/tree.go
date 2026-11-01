@@ -17,7 +17,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Tree is the factory's configuration (ruling 183): the directory factory/
+// Tree is the factory's configuration: the directory factory/
 // of the infra repository at one commit of main. policy_versions stores it
 // as one JSON document per commit.
 type Tree struct {

@@ -329,7 +329,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	var refusal *policy.Refusal
 	var note string
 	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedPremiumCap {
-		// ruling 329: at the premium cap the call is served on big
+		// at the premium cap the call is served on big
 		note = refusal.Reason + "; served on " + policy.Big
 		chatReq.Model, chatReq.fields["model"] = policy.Big, json.RawMessage(strconv.Quote(policy.Big))
 		if req.Price, err = s.price(ctx, pv, task, policy.Big); err != nil {

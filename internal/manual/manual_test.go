@@ -30,7 +30,7 @@ func TestTextCarriesTheFactory(t *testing.T) {
 	if strings.Contains(text, "backlog") || strings.Contains(text, "lane") {
 		t.Fatalf("Text names a backlog or a lane, which no card is in:\n%s", text)
 	}
-	if !strings.Contains(text, "escalate_to_human") || !strings.Contains(text, "request_info") {
+	if !strings.Contains(text, "escalate") || !strings.Contains(text, "request_info") {
 		t.Fatalf("Text lacks the ask-for-a-human tools:\n%s", text)
 	}
 	if !strings.Contains(text, "message you through the card's chat") {
