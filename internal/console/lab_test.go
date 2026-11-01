@@ -924,15 +924,17 @@ func checksStep(start, end time.Time, failed string) map[string]any {
 }
 
 // pushedTimeline is a card's timeline: one session on alias from start
-// that pushed, and checks with failed ("" for none).
+// that pushed, and checks with failed ("" for none) judging that push.
 func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
+	checks := checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed)
+	checks["commit"] = "4be1c07"
 	return []map[string]any{
 		{"step": "intake", "time": stamp(start.Add(30 * time.Second)), "started": stamp(start), "source": "webhook"},
 		{"step": "session_start", "time": stamp(start.Add(time.Minute)), "session": "s-1", "model": alias, "attempt": 1},
 		{"step": "session_end", "time": stamp(start.Add(19 * time.Minute)), "session": "s-1", "started": stamp(start.Add(time.Minute)),
 			"attempt": 1, "outcome": "pushed"},
 		{"step": "pushed", "time": stamp(start.Add(19*time.Minute + 5*time.Second)), "session": "s-1", "commit": "4be1c07"},
-		checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed),
+		checks,
 	}
 }
 
