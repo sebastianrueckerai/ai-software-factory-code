@@ -588,6 +588,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
 
 	run.headHolds = workflow.GetVersion(ctx, "head-holds", workflow.DefaultVersion, versionHeadHolds)
 	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
@@ -1137,6 +1138,12 @@ const (
 	// buys the attempt alone and its next check-in moment stops the card
 	// again.
 	versionCheckinGrant workflow.Version = 1
+	// versionCheckinRepeat (change id "checkin-repeat"): a check-in stop
+	// whose answer changed nothing — neither the head nor the limits — is
+	// not asked again: the repeat names the unchanged commit when its
+	// answer bought a restart, else states that no reply can change it and
+	// names the exits. A run from before the change repeats its ask.
+	versionCheckinRepeat workflow.Version = 1
 	// versionChainDone (change id "chain-done"): a run that recorded it
 	// waited at its merge for the chain; none waits now.
 	versionChainDone workflow.Version = 1
@@ -1253,6 +1260,17 @@ const (
 	answerMax   = 3 * time.Minute
 )
 
+// checkinStopMark is a check-in stop's state: what a repeated stop
+// compares itself against (versionCheckinRepeat). Share is the count of
+// share raises its answers added, ExtraLines the line-bound raises;
+// Granted says the stop's answer bought a restart that pushed nothing.
+type checkinStopMark struct {
+	Kind, Head string
+	Share      int
+	ExtraLines int
+	Granted    bool
+}
+
 type taskRun struct {
 	ctx, short        workflow.Context
 	cfg               WorkflowConfig
@@ -1315,6 +1333,11 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
+	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
+	// lastCheckinStop is the last check-in stop's mark, what a repeat
+	// compares against (versionCheckinRepeat); zero keeps a run from before
+	// the change silent
+	lastCheckinStop checkinStopMark
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
@@ -2100,12 +2123,28 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the work state rides the ask when no judgment ran, so the
 			// card's question holds the findings and the review verdict
 			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+			if t.checkinRepeat >= versionCheckinRepeat {
+				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Share: u.ExtraCheckinShare, ExtraLines: u.ExtraLines}
+				if prev := t.lastCheckinStop; prev.Kind == mark.Kind && prev.Head != "" && prev.Head == mark.Head {
+					sha := mark.Head
+					if len(sha) > 7 {
+						sha = sha[:7]
+					}
+					if prev.Granted {
+						reason = checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
+					} else if prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines {
+						reason = checkinSpendAsk + fmt.Sprintf("No reply can change this: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", sha)
+					}
+				}
+				t.lastCheckinStop = mark
+			}
 			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
 			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
 				// the call cap's stop falls through to buy(), never the
 				// verify break: the answer buys the session
+				t.lastCheckinStop.Granted = true
 			} else if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
 				// a spent check-in with the pull request open verifies the
 				// head it judged below, like a dropped check-in: a bought
@@ -2119,6 +2158,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// it buys (versionCheckinGrant), so the next check-in
 				// moment runs where this one stopped the card
 				t.grantCheckin(&u, true)
+				t.lastCheckinStop.Granted = true
 			}
 			buy()
 			continue
