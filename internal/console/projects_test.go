@@ -1081,7 +1081,7 @@ func TestMergeRetriesAfter405(t *testing.T) {
 }
 
 // No render of the new project's panel asks for a password or offers a
-// registration: the reconcile registers (ruling 219); the old route is gone.
+// registration: the reconcile registers; the old route is gone.
 func TestNewProjectPanelHasNoPassword(t *testing.T) {
 	minted := factoryd.Project{Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"}
 	for _, setup := range []func(s *statusRig){

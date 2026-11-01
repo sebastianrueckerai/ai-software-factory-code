@@ -57,6 +57,7 @@ type toolInput struct {
 	Rung        string   `json:"rung,omitempty"`
 	RungReason  string   `json:"rung_reason,omitempty"`
 	CarryPR     int64    `json:"carry_pr,omitempty"`
+	RoadmapItem int      `json:"roadmap_item,omitempty"`
 	Acceptance  []string `json:"acceptance,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
 	By          string   `json:"by,omitempty"`
@@ -1282,6 +1283,7 @@ var tools = []chatTool{
 			"rung_reason":  str("why that rung, one line"),
 			"image":        str("a pinned sandbox image to run on, none for the default"),
 			"carry_pr":     map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
+			"roadmap_item": map[string]any{"type": "integer", "minimum": 1, "description": "the roadmap item the card builds: one card per item"},
 			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 				"description": "the thread's images to attach (img1, as their rows show)"}},
 		required: []string{"title", "track", "track_reason"},
@@ -1299,7 +1301,7 @@ var tools = []chatTool{
 			if err := t.refuseCard(in, body); err != nil {
 				return "", nil, err
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem)
 			if err != nil {
 				return "", nil, err
 			}
@@ -1436,7 +1438,7 @@ var tools = []chatTool{
 			was, err := t.c.doSetAccent(t.r.Context(), t.a, in.TaskID, in.Accent)
 			return in.setNote("accent", was.IssueNumber, in.Accent), &inverse{"set_accent", toolInput{TaskID: in.TaskID, Accent: was.Accent}}, err
 		}},
-	{name: "invite", title: "Invite a member", write: true,
+	{name: "invite", title: "Invite a human", write: true,
 		params: map[string]any{"login": str("the Forgejo user name")}, required: []string{"login"},
 		about: "Make a Forgejo user a writer of the project's repository.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
@@ -1488,7 +1490,7 @@ var tools = []chatTool{
 	{name: "fund", title: "Fund a card", write: true,
 		params:   map[string]any{"task_id": taskParam, "eur": map[string]any{"type": "number", "description": "the raise in EUR", "exclusiveMinimum": 0}, "text": textParam},
 		required: []string{"task_id", "eur", "text"},
-		about:    "Raise a card's budget for its question or its refused brief: the pool's money, or the member's.",
+		about:    "Raise a card's budget for its question or its refused brief: the pool's money, or the human's.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.fund(in)
 			return note, nil, err
@@ -1605,25 +1607,25 @@ var tools = []chatTool{
 			s, err := t.writeNotes(in.Text, in.Old, in.New)
 			return s, nil, err
 		}},
-	{name: "escalate", title: "Escalate to the members", write: true,
+	{name: "escalate", title: "Escalate to the humans", write: true,
 		params: map[string]any{"ask": str("the title: one sentence, 200 bytes at most, with numbers"),
 			"why":            str("why the card cannot go on without a person's answer"),
 			"info":           str("the facts a reader needs, with what would change your mind"),
 			"recommendation": str("the answer you would pick and where you read it"),
 			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "answers the members may press, each once"}},
+				"description": "answers the humans may press, each once"}},
 		required: []string{"ask", "why", "info", "recommendation", "choices"},
-		about:    "Ask the members for a decision, its why and its info with it.",
+		about:    "Ask the humans for a decision, its why and its info with it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
 			return s, nil, err
 		}},
-	{name: "ask", title: "Ask the member",
+	{name: "ask", title: "Ask the human",
 		params: map[string]any{"ask": str("the question, with its state and its numbers"),
 			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "the answers the member may press"}},
+				"description": "the answers the human may press"}},
 		required: []string{"ask", "choices"},
-		about:    "Ask this conversation's member a question, answered by a press or their next message.",
+		about:    "Ask this conversation's human a question, answered by a press or their next message.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.askMember(in.Ask, in.Choices)
 			return s, nil, err
@@ -1639,7 +1641,7 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "active_threads", title: "Read the project's threads",
-		about: "The project's active threads, every member's with its owner named, then the scratchpad's tail.",
+		about: "The project's active threads, every human's with its owner named, then the scratchpad's tail.",
 		run: func(t *turn, _ toolInput) (string, *inverse, error) {
 			s, err := t.activeThreads()
 			return s, nil, err
@@ -1648,7 +1650,7 @@ var tools = []chatTool{
 		params: map[string]any{"query": str("the text to find, any case"),
 			"thread": map[string]any{"type": "integer", "description": "one of your own thread's numbers to search only it", "minimum": 1}},
 		required: []string{"query"},
-		about:    "Search every thread of the project, every member's, for a text, at most 20 hits.",
+		about:    "Search every thread of the project, every human's, for a text, at most 20 hits.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
 	{name: "board_view", title: "Board view",
 		about:  "Works the board's view controls as a click does: menus, find, routines, card, theme.",
@@ -1686,7 +1688,7 @@ var tools = []chatTool{
 			"ask": map[string]any{"type": "string", "maxLength": 2000, "description": "what to look for (default what the image shows)"}},
 		required: []string{"name"},
 		priced:   true,
-		about:    "One look at an image a member sent: the vision model's answer to a question about it.",
+		about:    "One look at an image a human sent: the vision model's answer to a question about it.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.lookImage(in); return s, nil, err }},
 	{name: "read_attachment", title: "Read a sent document",
 		params: map[string]any{"name": str("the document's name, doc1 as its row shows"), "find": str("the lines holding this text, case-insensitive"),
@@ -1694,7 +1696,7 @@ var tools = []chatTool{
 			"to":    stepParam("the last line to read"),
 			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
 		required: []string{"name"},
-		about:    "A document a member sent, with its base_sha256 and line count.",
+		about:    "A document a human sent, with its base_sha256 and line count.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.readAttachment(in)
 			return s, nil, err
@@ -1703,7 +1705,7 @@ var tools = []chatTool{
 		params:   map[string]any{"name": str("the document's name, doc1 as its row shows"), "ask": str("what the summary answers (default what the document says)")},
 		required: []string{"name"},
 		priced:   true,
-		about:    "One model call over a document a member sent: its answer to a question about it.",
+		about:    "One model call over a document a human sent: its answer to a question about it.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.summarizeAttachment(in)
 			return s, nil, err
@@ -1770,7 +1772,7 @@ func (t *turn) imagesText() (string, error) {
 func (t *turn) requestImage(in toolInput) (string, error) {
 	ctx, tool := t.r.Context(), strings.TrimSpace(in.Tool)
 	admit := func(title string) error {
-		return t.c.chatFiling(ctx, t.a, t.p, func(tree policy.Tree) string {
+		return t.c.chatFiling(ctx, t.a, t.p, 0, func(tree policy.Tree) string {
 			return factoryd.QueueRefusal(ctx, t.c.cfg.Tasks, tree, t.p.Repository, title)
 		})
 	}
@@ -1828,17 +1830,17 @@ func (t *turn) diff(in toolInput) (string, error) {
 var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
-  new_card's tracks: direct builds a small change at once: before its first session, the factory sizes a direct card where the process has a plan track, and one that is not small turns plan-track; plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text.
+  new_card's tracks: direct builds a small change at once: before its first session, the factory sizes a direct card where the process has a plan track, and one that is not small turns plan-track; plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text. roadmap_item names the docs/roadmap.md item the card builds: the pull's own filings carry it, one card per item whatever its state, and a closed intake refuses it.
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
-  ask questions this conversation's member, answered by a press or their next message, and ends the turn.
-  escalate asks the members who are not in this conversation; a choice or a reply in their inbox answers it.
-  attach_analysis records what you found inside a card's open ask; the members read it with the question.
-  fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the member's raise, and a project without a pool takes it too.
-  analyze_image looks at an image a member sent, once per question; cite what you saw, and look again rather than guess. A member's image is spend they approved; the chat's monthly budget still bounds the looks.
+  ask questions this conversation's human, answered by a press or their next message, and ends the turn.
+  escalate asks the humans who are not in this conversation; a choice or a reply in their inbox answers it.
+  attach_analysis records what you found inside a card's open ask; the humans read it with the question.
+  fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the human's raise, and a project without a pool takes it too.
+  analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
 `
@@ -1849,7 +1851,7 @@ func (t *turn) systemText() (string, error) {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")
 	}
 	var b strings.Builder
-	b.WriteString(manual.Loop + "; a member steers through the chat, and every tool here is one of the console's actions.\n\n")
+	b.WriteString(manual.Loop + "; a human steers through the chat, and every tool here is one of the console's actions.\n\n")
 	b.WriteString("Card states:\n")
 	for _, s := range factoryd.Statuses {
 		fmt.Fprintf(&b, "  %s: %s\n", s, factoryd.StatusMeaning(s))
@@ -1948,11 +1950,11 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 	}
 	switch {
 	case factoryd.Cents(b.DiscretionaryEUR) <= 0:
-		return "", refuse(http.StatusConflict, "This project sets no pool: discretionary_eur is absent or 0. Record your analysis with attach_analysis; the ask then reaches the member.")
+		return "", refuse(http.StatusConflict, "This project sets no pool: discretionary_eur is absent or 0. Record your analysis with attach_analysis; the ask then reaches the human.")
 	case factoryd.Cents(in.EUR) > factoryd.Cents(b.RaiseMaxEUR):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("A raise of €%.2f passes this project's raise_max_eur of €%.2f: raise by at most that, or record your analysis with attach_analysis so the member can fund more.", in.EUR, b.RaiseMaxEUR))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("A raise of €%.2f passes this project's raise_max_eur of €%.2f: raise by at most that, or record your analysis with attach_analysis so the human can fund more.", in.EUR, b.RaiseMaxEUR))
 	case factoryd.Cents(card.BudgetEUR)+factoryd.Cents(in.EUR) > factoryd.Cents(ceiling):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the member can make a sizing exception.",
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the human can make a sizing exception.",
 			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
 	}
 	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, &factoryd.FundBounds{PoolEUR: b.DiscretionaryEUR, CardCapEUR: ceiling})
@@ -1961,13 +1963,13 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 // capSpent is the refusal of a raise another turn's raise left past the
 // card's cap.
 func capSpent(issue int64, held, eur, ceiling float64) string {
-	return fmt.Sprintf("Card #%d holds €%.2f now; €%.2f more passes its cap of €%.2f. Record your analysis with attach_analysis so the member can make a sizing exception.",
+	return fmt.Sprintf("Card #%d holds €%.2f now; €%.2f more passes its cap of €%.2f. Record your analysis with attach_analysis so the human can make a sizing exception.",
 		issue, held, eur, ceiling)
 }
 
 // poolSpent is the refusal of a raise past the month's pool.
 func poolSpent(pool, funded, eur float64) string {
-	return fmt.Sprintf("The month's pool is €%.2f (discretionary_eur) and €%.2f is funded: €%.2f left, short of €%.2f. Record your analysis with attach_analysis; the ask then reaches the member.",
+	return fmt.Sprintf("The month's pool is €%.2f (discretionary_eur) and €%.2f is funded: €%.2f left, short of €%.2f. Record your analysis with attach_analysis; the ask then reaches the human.",
 		pool, funded, max(pool-funded, 0), eur)
 }
 

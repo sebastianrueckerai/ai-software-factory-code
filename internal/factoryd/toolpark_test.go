@@ -317,7 +317,7 @@ func TestParkForToolRefusesANewImageAtTheCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	note := "The tool sox did not arrive: " + fact + ". This session runs on the image the card ran on before. " +
-		"A human must free a name: ask one with escalate_to_human, or go on without the tool."
+		"A human must free a name: ask one with escalate, or go on without the tool."
 	if p.Park.Refused != fact || p.Note != note || p.Ask != "" || p.Park.ToolTask != "" || len(rf.issues) != 0 {
 		t.Fatalf("park = %+v, issues %d; want the cap's refusal, no card", p, len(rf.issues))
 	}
@@ -590,7 +590,7 @@ func TestParkForToolRefusesTheConfigurationRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := "The tool ffmpeg did not arrive: this card's repository is the factory's configuration repository, which declares no sandbox images. " +
-		"This session runs on the image the card ran on before. Go on without the tool, or ask a human with escalate_to_human."
+		"This session runs on the image the card ran on before. Go on without the tool, or ask a human with escalate."
 	if p.Note != want || p.Park.ToolTask != "" || len(rf.issues) != 0 || store.tasks["t-asker"].Status != "running" {
 		t.Fatalf("park %+v, issues %d; want the note %q", p, len(rf.issues), want)
 	}

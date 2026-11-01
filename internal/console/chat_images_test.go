@@ -22,7 +22,7 @@ import (
 // request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
-	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"
+	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger"
 	for _, tc := range []struct {
 		agents string
 		pins   map[string]policy.ImagePin
@@ -35,12 +35,12 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 			"\nSandbox images: default (jq, go), video (ffmpeg); a card without an image runs image default."},
 		{policy.AgentsNone, map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}}, ""},
 	} {
-		r, chat, g := newChatRig(t)
+		r, _, g := newChatRig(t)
 		want := status
 		if tc.agents == policy.AgentsNone {
-			chat.spend = []spendRow{{"sf/code", time.Now(), 3.25, false}, {"sf/code", time.Now(), 0.5, true}}
+			r.ledger.enforced = policy.Enforced{Month: 3.75}
 			want = "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: agents none, every issue goes to the human lane; " +
-				"spend this month €3.75 of €50.00: the cards €3.25, the chat €0.50"
+				"spend this month €3.75 of €50.00, the factory's whole ledger"
 		}
 		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)
@@ -72,7 +72,7 @@ func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
 	g.replies = [][]string{{say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
 	system, _ := messages(t, g.calls()[0])[0]["content"].(string)
-	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."
 	if !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
@@ -220,18 +220,18 @@ func TestChatRequestImageAtAssisted(t *testing.T) {
 }
 
 // request_image's filing meets the chat's admission, as new_card's does:
-// a wake files no tool card on a closed intake, and no ask files one past
-// the project's queue cap. The refusal names the state and what to do.
+// a closed intake stops only the roadmap pull, so a wake's need still
+// files its tool card, and no ask files one past the project's queue
+// cap. The refusal names the state and what to do.
 func TestChatRequestImageAdmission(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
-	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Track: policy.TrackDirect}, Target: "ffmpeg", Filed: true}
+	r.imageAsk = factoryd.ImageAsk{Card: factoryd.Task{ID: "t-tool", IssueNumber: 50, Track: policy.TrackDirect, Objective: "Add ffmpeg to image ffmpeg\n\nRequested."}, Target: "ffmpeg", Filed: true}
 	ck, s := r.loggedIn(t)
 	if rec := r.do(post("/projects/ai-software-factory-code/intake", url.Values{"csrf": {s.csrf}, "intake": {"closed"}}), ck); rec.Code != http.StatusNoContent {
 		t.Fatalf("the intake switch's POST = %d: %s", rec.Code, rec.Body.String())
 	}
-	before := r.events.count()
-	g.replies = [][]string{{call(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("The intake is closed.")}}
+	g.replies = [][]string{{call(1, "request_image", `{"need":"cut the demo video","tool":"ffmpeg"}`)}, {say("Filed.")}}
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
@@ -250,8 +250,8 @@ func TestChatRequestImageAdmission(t *testing.T) {
 		}
 	}
 	equal(t, "the wake's ask", results, []string{
-		"Refused: The intake of ai-software-factory-code is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts."})
-	chatRows(t, r.events, before, "sebastian")
+		`Filed tool card #50 t-tool "Add ffmpeg to image ffmpeg". After it merges, the factory builds, signs and pins the image; cards can then name it in image. It cannot be undone.`})
+	before := r.events.count()
 
 	// t-m, t-r and t-e, none admitted, fill a cap of 3
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: policy.MergeHuman, QueueCap: 3}}

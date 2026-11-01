@@ -1108,9 +1108,8 @@ func (a *AcceptanceRig) Costs(context.Context, time.Time, time.Time) (policy.Cos
 	return policy.Costs{}, nil
 }
 
-func (a *AcceptanceRig) DaySpend(context.Context, time.Time) (float64, error) { return 0, nil }
-func (a *AcceptanceRig) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
-	return 0, nil
+func (a *AcceptanceRig) Enforced(context.Context, time.Time) (policy.Enforced, error) {
+	return policy.Enforced{}, nil
 }
 
 func (a *AcceptanceRig) ModelCalls(context.Context, string) ([]policy.ModelCall, error) {
@@ -1153,6 +1152,11 @@ func (a *AcceptanceRig) CountQueue(_ context.Context, repository string) (int, e
 		n++
 	}
 	return n, nil
+}
+
+// RoadmapHolder answers none: the acceptance rig holds no roadmap pull.
+func (a *AcceptanceRig) RoadmapHolder(context.Context, string, int) (string, bool, error) {
+	return "", false, nil
 }
 
 func (a *AcceptanceRig) Conversation(_ context.Context, _, _ string, n int64) (factoryd.ChatConversation, bool, error) {
@@ -1217,6 +1221,13 @@ func (a *AcceptanceRig) ChatIntakeClosed(_ context.Context, repository string) (
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.intake[repository], nil
+}
+
+func (a *AcceptanceRig) ChatIntake(_ context.Context, repository string) (factoryd.IntakeRow, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	closed, ok := a.intake[repository]
+	return factoryd.IntakeRow{Closed: closed}, ok, nil
 }
 
 func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int64) (int64, []int64, error) {

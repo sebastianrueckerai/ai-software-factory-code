@@ -178,7 +178,7 @@ var accessTable = map[string]accessRule{
 	"rerun_checks":     rCard,
 	"set_summary":      rCard,
 	"set_accent":       rCard,
-	"invite":           {need: approver, scope: scChat, what: "invite a member"},
+	"invite":           {need: approver, scope: scChat, what: "invite a human"},
 	"github_export":    {need: writer | approver, scope: scChat, what: "export it to GitHub"},
 	"github_sync":      {need: writer | approver, scope: scChat, what: "sync it from GitHub"},
 	"close":            rCard,

@@ -79,7 +79,7 @@ type RunnerConfig struct {
 	// Timeline records the cards' events; nil builds the store's own.
 	Timeline *Timeline
 	// OTLPEndpoint is SigNoz's collector (OTLP HTTP, port 4318), where the
-	// workers send their telemetry (ruling 158); "" = none.
+	// workers send their telemetry; "" = none.
 	OTLPEndpoint string
 	// EgressCanary (a public name and port, off the sandbox's DNS
 	// allowlist) and EgressDirectIP (a public IP and port) are what the
@@ -99,8 +99,8 @@ type RunnerConfig struct {
 	// request comes from: a re-run of its checks writes there with
 	// Forgejo's ProjectsToken.
 	ProjectsUser string
-	// Prices is the alias price book the attempt grant's floor reads
-	// (ruling 322): whether the task's remaining budget can fund a call at
+	// Prices is the alias price book the attempt grant's floor reads:
+	// whether the task's remaining budget can fund a call at
 	// all. nil = every attempt is funded; the per-call hold still guards
 	// the money.
 	Prices Pricer
@@ -227,9 +227,9 @@ var ErrNoImageWait = errors.New("this session cannot wait for a new image: finis
 
 // ErrNoCut refuses the agent's cut of a session whose card cannot be cut
 // (cuttable).
-var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or ask a person with escalate_to_human")
+var ErrNoCut = errors.New("this card cannot be cut: finish it as it is, or escalate")
 
-// EscalateSession hands an agent's escalate_to_human to its task's running
+// EscalateSession hands an agent's escalate to its task's running
 // session, which stops the way a supervisor's escalate stops it, or its
 // request_cut, which the session's check-in judges. It returns nil only
 // once the session took the ask; a session that ends or stops first
@@ -453,11 +453,18 @@ func (r *Runner) BootSweep(ctx context.Context) {
 }
 
 // readable is the repositories the session's read token covers: its task
-// repository, extra, and the document repository when there is one.
+// repository, extra, the document repository when there is one, and each
+// sandbox companion (a pin-only companion stays out: no clone, no read).
 func (s sessionSpec) readable(extra ...Repo) []Repo {
 	repos := append([]Repo{s.repo}, extra...)
 	if s.docs != (Repo{}) {
 		repos = append(repos, s.docs)
+	}
+	for _, c := range s.companions {
+		if c.Sandbox {
+			owner, name, _ := strings.Cut(c.Repository, "/")
+			repos = append(repos, Repo{Owner: owner, Name: name})
+		}
 	}
 	return repos
 }
@@ -488,6 +495,9 @@ type sessionSpec struct {
 	// docs is the project's document repository (chat.doc_repo), which the
 	// session reads at /workspace/docs; the zero Repo when it has none
 	docs Repo
+	// companions are the project's declared companions: a sandbox one the
+	// session also reads, cloned to /workspace/companions/<name>
+	companions []policy.Companion
 	// cache is the project's cache claim in the task namespace
 	cache string
 	// image is what the session's project image holds; nil for the
@@ -512,7 +522,7 @@ type sessionSpec struct {
 	// reportSession's alike): supervisorConfig's WallClockCap and
 	// CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
-	// report is a report session's guide (ruling 185); "" for a coding
+	// report is a report session's guide; "" for a coding
 	// session
 	report string
 	// standing overrides the task's author standing: a report reads its
@@ -800,7 +810,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// stop asks the worker to end (SIGTERM through the pod's deletion) and
 	// reads on until it has pushed its work in progress and reported, or
 	// its grace period is over.
-	// the agent's escalate_to_human reaches the session here until it stops
+	// the agent's escalate reaches the session here until it stops
 	escalations, unregister := r.liveSession(t.ID, sessionWorker{session: s.id, ns: ns, pod: podName, token: s.messageToken, report: s.report != "", cuttable: cuttable(t, s)})
 	defer unregister()
 	stop := func(trip *Trip) {
@@ -921,8 +931,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			d = *trip.decided
 			ck, ride = nil, false
 		}
-		// the judge says whether the session is stuck, code picks the model
-		// (rulings 216, 224): a stuck trip's handover is the stuck rule's climb
+		// the judge says whether the session is stuck, code picks the model:
+		// a stuck trip's handover is the stuck rule's climb
 		if trip.Stuck != "" && ride && ck != nil && ck.Decision == CheckHandover {
 			d, ride = Decision{Action: ActionRetryStronger, Reason: cmp.Or(ck.Handover, trip.Stuck), Guidance: ck.Handover, Judged: true}, false
 		}
@@ -2090,6 +2100,21 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "DOCS_URL", "value": r.repoURL(s.docs)})
 		env = append(env, map[string]any{"name": "DOCS_DIR", "value": "/workspace/docs"})
 	}
+	// a sandbox companion is cloned read-only like the documents, every
+	// file of it (a companion is code and config, not documents); the URL
+	// list goes to the clone container alone, the worker reads the clones
+	var companionURLs, companionDirs []string
+	for _, c := range s.companions {
+		if !c.Sandbox {
+			continue
+		}
+		owner, name, _ := strings.Cut(c.Repository, "/")
+		companionURLs, companionDirs = append(companionURLs, r.repoURL(Repo{Owner: owner, Name: name})), append(companionDirs, "/workspace/companions/"+name)
+	}
+	if len(companionURLs) > 0 {
+		cloneEnv = append(cloneEnv, map[string]any{"name": "COMPANIONS", "value": strings.Join(companionURLs, " ")})
+		env = append(env, map[string]any{"name": "COMPANION_DIRS", "value": strings.Join(companionDirs, " ")})
+	}
 	if s.pull != 0 {
 		cloneEnv = append(cloneEnv, map[string]any{"name": "PULL", "value": strconv.FormatInt(s.pull, 10)})
 	}
@@ -2315,8 +2340,8 @@ func requestEmptyDirs(pod map[string]any) map[string]any {
 // Q4): default-deny egress for workers, a hard deny to the cloud metadata
 // address, and exactly four allows: the model gateway's port, Forgejo's
 // HTTP port, the image's registries by name on 443 (the factory image's
-// are the Go module proxy, its checksum database and the npm registry,
-// ruling 99: the image carries the Go toolchain and Node, and a registry
+// are the Go module proxy, its checksum database and the npm registry:
+// the image carries the Go toolchain and Node, and a registry
 // joins by name with the toolchain that needs it; a project image's are
 // its egress), and kube-dns for exactly those
 // names. DNS is allowlisted by name because an open resolver is itself an

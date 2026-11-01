@@ -21,7 +21,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The agent's escalate_to_human ends the session like an escalation,
+// The agent's escalate ends the session like an escalation,
 // without a check-in conversation: the worker is stopped, the outcome
 // carries the question for the workflow's Escalate.
 func TestRunSessionAgentEscalation(t *testing.T) {
@@ -81,7 +81,7 @@ func TestRunSessionAgentEscalation(t *testing.T) {
 	}
 }
 
-// An escalate_to_human that arrives while a check-in conversation is in
+// An escalate that arrives while a check-in conversation is in
 // flight wins: the agent was told "escalated", so the check-in's message
 // never takes effect, and the conversation is cut.
 func TestRunSessionAgentEscalationBeatsCheckin(t *testing.T) {
@@ -147,7 +147,7 @@ func (f *fakeSessions) EscalateSession(_ context.Context, taskID string, a Agent
 	return f.err
 }
 
-// licenseAsk is an agent's escalate_to_human with its choices.
+// licenseAsk is an agent's escalate with its choices.
 var licenseAsk = AgentAsk{Kind: AskEscalation, Question: "Which license applies?", Reason: "the issue names none", Recommendation: "MIT, as the other repositories",
 	Choices: []string{"MIT", "Apache-2.0", "GPL-3.0"}}
 
@@ -371,7 +371,7 @@ func TestEscalationHandlerCut(t *testing.T) {
 
 // A session that cannot be cut (a direct card without a plan track, a
 // report) refuses the agent's cut with a line it reads: the session runs
-// on and nothing is recorded, while its escalate_to_human still reaches it.
+// on and nothing is recorded, while its escalate still reaches it.
 func TestEscalationHandlerRefusesACutOfASessionThatCannotBeCut(t *testing.T) {
 	runner := &Runner{}
 	esc, unregister := runner.liveSession("t-run", sessionWorker{cuttable: false})
@@ -384,7 +384,7 @@ func TestEscalationHandlerRefusesACutOfASessionThatCannotBeCut(t *testing.T) {
 	EscalationHandler(store, runner).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/internal/escalations", strings.NewReader(
 		`{"task_id":"t-run","kind":"cut","reason":"a store and a UI","parts":["the store","the UI"]}`)))
 	if body := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusUnprocessableEntity ||
-		body != "this card cannot be cut: finish it as it is, or ask a person with escalate_to_human" || len(store.intakeEvents) != 0 {
+		body != "this card cannot be cut: finish it as it is, or escalate" || len(store.intakeEvents) != 0 {
 		t.Fatalf("cut = %d %q, intake events %+v; want the refusal and nothing recorded", rec.Code, body, store.intakeEvents)
 	}
 	if err := runner.EscalateSession(t.Context(), "t-run", licenseAsk); err != nil {
@@ -397,7 +397,7 @@ func TestEscalationHandlerRefusesACutOfASessionThatCannotBeCut(t *testing.T) {
 
 // A report session's card restarts on no image: its request_tool is
 // refused with a line the agent reads, the session left running and
-// nothing recorded, while its escalate_to_human still reaches it.
+// nothing recorded, while its escalate still reaches it.
 func TestReportSessionRefusesARequestTool(t *testing.T) {
 	runner := &Runner{}
 	esc, unregister := runner.liveSession("t-run", sessionWorker{report: true})
@@ -593,7 +593,7 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 
 // A session whose first model call the provider refused, with no call
 // allowed after, ends provider_refused with the provider's status and the
-// worker's message (ruling 267); a refusal after work, a refusal the
+// worker's message; a refusal after work, a refusal the
 // provider's status names no outage of, and a session the audit holds no
 // call of end no_push as before.
 func TestRunSessionNamesAProviderRefusal(t *testing.T) {

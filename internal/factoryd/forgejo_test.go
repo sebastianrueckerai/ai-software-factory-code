@@ -360,8 +360,8 @@ func TestForgejoMintReadScope(t *testing.T) {
 	}
 }
 
-// The bot's fork of a repository carries the same name under the bot user
-// (ruling 97); EnsureFork creates it once and is a no-op once it exists.
+// The bot's fork of a repository carries the same name under the bot user;
+// EnsureFork creates it once and is a no-op once it exists.
 func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
 	if got := (&Forgejo{BotUser: "factory-agent"}).Fork(Repo{Owner: "sf", Name: "r"}); got != (Repo{Owner: "factory-agent", Name: "r"}) {
 		t.Fatalf("Fork = %+v", got)
@@ -886,7 +886,7 @@ func TestForgejoClosePullRequest(t *testing.T) {
 // more on some unit), unless a team without code write could be what put
 // them there (Forgejo lists a read-only team's members as assignees
 // through its pull request read): then they fail closed. Team reads carry
-// the org-read token (ruling 108: a repository-limited token cannot hold
+// the org-read token (a repository-limited token cannot hold
 // read:organization), repository reads the project's read token.
 func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1144,9 +1144,9 @@ func TestPullRequestFileDiffsPastEightMiBIsDiffTooLong(t *testing.T) {
 	}
 }
 
-// Ruling 179's one mapping from a project to factoryd's tokens: a factory
+// The one mapping from a project to factoryd's tokens: a factory
 // project's registration tokens, a seed project's seeded secrets as its
-// file names them; ruling 164's bound: no seed project ever gets
+// file names them; the bound: no seed project ever gets
 // factory-projects' token, whatever its file says.
 func TestAccess(t *testing.T) {
 	f := &Forgejo{ProjectsToken: "projects-tok", Seeded: testSeeded}
@@ -1223,5 +1223,85 @@ func TestJobLogReadsTheTail(t *testing.T) {
 	honour = false
 	if _, err := f.JobLog(context.Background(), "/sf/code/actions/runs/7/jobs/0"); !errors.Is(err, ErrAnswerTooLong) {
 		t.Fatalf("JobLog with the Range ignored: %v, want ErrAnswerTooLong", err)
+	}
+}
+
+func TestForgejoMainAtLeast(t *testing.T) {
+	pin := "82ab246" + strings.Repeat("0", 33)
+	head := "fee3ff16" + strings.Repeat("1", 32)
+	for name, tc := range map[string]struct {
+		pin    string
+		status string
+		met    bool
+	}{
+		"far past the pin": {pin, "ahead", true},
+		"the pin at head":  {head, "identical", true},
+		"lost the pin":     {pin, "behind", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/api/v1/repos/sf/infra/commits":
+					commits := make([]map[string]string, companionWindow)
+					for i := range commits {
+						commits[i] = map[string]string{"sha": fmt.Sprintf("%040d", i+1)}
+					}
+					commits[0] = map[string]string{"sha": head}
+					json.NewEncoder(w).Encode(commits)
+				case r.URL.Path == "/api/v1/repos/sf/infra/compare/"+tc.pin+"..."+head:
+					io.WriteString(w, `{"status":`+strconv.Quote(tc.status)+`}`)
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+			f := &Forgejo{BaseURL: srv.URL}
+			met, at, err := f.MainAtLeast(context.Background(), "tok", Repo{Owner: "sf", Name: "infra"}, tc.pin)
+			if err != nil || met != tc.met || at != head {
+				t.Fatalf("met = %t, head = %s, %v; want %t and %s", met, at, err, tc.met, head)
+			}
+		})
+	}
+	t.Run("compare without a status", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.URL.Path == "/api/v1/repos/sf/infra/commits":
+				io.WriteString(w, `[{"sha":"`+head+`"}]`)
+			case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/infra/compare/"):
+				io.WriteString(w, `{}`)
+			default:
+				w.WriteHeader(http.StatusNotFound)
+			}
+		}))
+		defer srv.Close()
+		f := &Forgejo{BaseURL: srv.URL}
+		if _, _, err := f.MainAtLeast(context.Background(), "tok", Repo{Owner: "sf", Name: "infra"}, pin); err == nil || !strings.Contains(err.Error(), "companion sf/infra") {
+			t.Fatalf("compare without a status = %v, want an error naming the companion", err)
+		}
+	})
+}
+
+// DefaultHead is the companion's default-branch head, the pin a plan filing
+// stamps on its cards; a repository the token cannot read is an error naming
+// the companion.
+func TestForgejoDefaultHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"fee3ff16"},{"sha":"82ab246"}]`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL}
+	head, err := f.DefaultHead(context.Background(), "tok", Repo{Owner: "sf", Name: "infra"})
+	if err != nil || head != "fee3ff16" {
+		t.Fatalf("head = %s, %v; want fee3ff16", head, err)
+	}
+	if _, err := f.DefaultHead(context.Background(), "tok", Repo{Owner: "sf", Name: "locked"}); err == nil || !strings.Contains(err.Error(), "companion sf/locked") {
+		t.Fatalf("unreadable = %v, want an error naming the companion", err)
 	}
 }

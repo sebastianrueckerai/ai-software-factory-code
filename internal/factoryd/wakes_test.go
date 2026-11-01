@@ -61,7 +61,7 @@ func newWakeRig(t *testing.T, projects map[string]policy.ProjectConfig) (*Waker,
 	}
 	t.Cleanup(func() { s.db.Close() })
 	for _, table := range []string{"events", "tasks", "chat_messages", "chat_conversations", "chat_watches", "chat_timers",
-		"chat_wake_cursor", "chat_wake_state"} {
+		"chat_wake_cursor", "chat_wake_state", "chat_intake", "roadmap_pull"} {
 		if _, err := s.db.ExecContext(t.Context(), `TRUNCATE `+table+` CASCADE`); err != nil {
 			t.Fatalf("truncate %s: %v", table, err)
 		}
@@ -578,5 +578,198 @@ func TestWakeAskTextNamesFundOnlyForAnApprover(t *testing.T) {
 		if len(calls) != 1 || strings.Contains(calls[0].text, "takes fund from your pool.") != tc.want {
 			t.Errorf("approvers %v at %s: wake %+v, want fund named %v", tc.approvers, tc.autonomy, calls, tc.want)
 		}
+	}
+}
+
+// fakeRoadmapHead is the doc repository read the pull checks: the head
+// of docs/roadmap.md, movable by a test, and how often it was read.
+type fakeRoadmapHead struct {
+	mu    sync.Mutex
+	head  string
+	reads int
+}
+
+func (f *fakeRoadmapHead) read(_ context.Context, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reads++
+	return f.head, nil
+}
+
+func (f *fakeRoadmapHead) set(head string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.head = head
+}
+
+func (f *fakeRoadmapHead) readCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reads
+}
+
+// refillRig is one Waker over an autonomous project with the pull
+// threshold `below`, an empty queue and the roadmap head head-1: every
+// condition of the pull holds, so a case breaks exactly one.
+func refillRig(t *testing.T, below int) (*Waker, *PGStore, *fakeWakeStarter, *time.Time, *fakeRoadmapHead) {
+	t.Helper()
+	projects := map[string]policy.ProjectConfig{
+		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}, RefillBelow: below},
+	}
+	w, s, starter, clock := newWakeRig(t, projects)
+	roadmap := &fakeRoadmapHead{head: "head-1"}
+	w.RoadmapHead = roadmap.read
+	w.Current = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: projects,
+			Document: policy.Document{Chat: &policy.ChatConfig{DocRepo: "sf/docs"}}}}
+	}
+	return w, s, starter, clock, roadmap
+}
+
+// refillWaiting puts one waiting card on sf/wake.
+func refillWaiting(t *testing.T, s *PGStore) {
+	t.Helper()
+	if err := s.insertTask(t.Context(), Task{ID: "t-wait", Repository: "sf/wake", Kind: "agent", Track: "direct",
+		Source: "webhook", Status: "queued", Objective: "b"}, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The roadmap pull: an open intake, a queue below the threshold and a
+// roadmap head the project never pulled wake one turn on the member's
+// inbox, birth queue_refill, and the wake stamps the head it read, so a
+// turn that files nothing never refires on the same roadmap and a changed
+// roadmap pulls once more.
+func TestWakerWakesOnTheRoadmapPull(t *testing.T) {
+	w, s, starter, clock, roadmap := refillRig(t, 2)
+	refillWaiting(t, s)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+	conv, err := s.EnsureInbox(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "The queue of wake-proj is below 2: read docs/roadmap.md of the project's doc repository, " +
+		"file every item whose Priority is filled and whose number no card cites, then end."
+	c := calls[0]
+	if c.project != "wake-proj" || c.login != "sebastian" || c.conversation != conv || c.birth != "queue_refill" || c.text != want {
+		t.Fatalf("the wake = %+v, want wake-proj sebastian on %d, birth queue_refill, text\n%s", c, conv, want)
+	}
+	if head, ok, err := s.RoadmapPullStamp(t.Context(), "sf/wake"); err != nil || !ok || head != "head-1" {
+		t.Fatalf("the stamp = %q, %v, %v; want head-1: the wake stamps the head it read", head, ok, err)
+	}
+	// the fake starter runs no turn, so nothing was filed: the stamped head
+	// holds the pull past every gap and cooldown
+	*clock = clock.Add(2 * time.Minute)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("the second Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 {
+		t.Fatalf("%d wakes after the first, want the stamp to hold the pull: %+v", len(calls), calls)
+	}
+	// a changed roadmap is a new pull, once the cooldown allows it
+	roadmap.set("head-2")
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("the third Pass: %v", err)
+	}
+	calls = starter.recorded()
+	if len(calls) != 2 || calls[1].birth != "queue_refill" {
+		t.Fatalf("%d wakes after the head change, want a second queue_refill: %+v", len(calls), calls)
+	}
+	if head, ok, err := s.RoadmapPullStamp(t.Context(), "sf/wake"); err != nil || !ok || head != "head-2" {
+		t.Fatalf("the stamp = %q, %v, %v; want head-2", head, ok, err)
+	}
+}
+
+// The pull's refusals, one pin each: a closed intake stops the pull
+// alone, the queue at the threshold holds it, the stamped head holds it,
+// and a project with no threshold — or no document repository — never
+// reads the roadmap at all.
+func TestWakerRefillRefusals(t *testing.T) {
+	cases := []struct {
+		name      string
+		prepare   func(t *testing.T) (*Waker, *PGStore, *fakeWakeStarter, *fakeRoadmapHead)
+		wantStamp string // the head a refused pull leaves, "" for no stamp
+	}{
+		{"a closed intake stops the pull alone", func(t *testing.T) (*Waker, *PGStore, *fakeWakeStarter, *fakeRoadmapHead) {
+			w, s, starter, _, roadmap := refillRig(t, 1)
+			if err := s.SetChatIntake(t.Context(), "sf/wake", true, "sebastian", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			return w, s, starter, roadmap
+		}, ""},
+		{"the queue at the threshold holds the pull", func(t *testing.T) (*Waker, *PGStore, *fakeWakeStarter, *fakeRoadmapHead) {
+			w, s, starter, _, roadmap := refillRig(t, 1)
+			refillWaiting(t, s)
+			return w, s, starter, roadmap
+		}, ""},
+		{"the stamped head holds the pull", func(t *testing.T) (*Waker, *PGStore, *fakeWakeStarter, *fakeRoadmapHead) {
+			w, s, starter, _, roadmap := refillRig(t, 1)
+			if err := s.SetRoadmapPullStamp(t.Context(), "sf/wake", "head-1", time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			return w, s, starter, roadmap
+		}, "head-1"},
+		{"no threshold never reads the roadmap", func(t *testing.T) (*Waker, *PGStore, *fakeWakeStarter, *fakeRoadmapHead) {
+			w, s, starter, _, roadmap := refillRig(t, 0)
+			return w, s, starter, roadmap
+		}, ""},
+		{"no document repository never reads the roadmap", func(t *testing.T) (*Waker, *PGStore, *fakeWakeStarter, *fakeRoadmapHead) {
+			w, s, starter, _, roadmap := refillRig(t, 1)
+			w.Current = func() policy.Version {
+				return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+					"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}, RefillBelow: 1}}}}
+			}
+			return w, s, starter, roadmap
+		}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, s, starter, roadmap := tc.prepare(t)
+			if err := w.Pass(t.Context()); err != nil {
+				t.Fatalf("Pass: %v", err)
+			}
+			if calls := starter.recorded(); len(calls) != 0 {
+				t.Fatalf("%d wakes, want none: %+v", len(calls), calls)
+			}
+			if head, ok, err := s.RoadmapPullStamp(t.Context(), "sf/wake"); err != nil || ok != (tc.wantStamp != "") || head != tc.wantStamp {
+				t.Fatalf("the stamp = %q, %v, %v; want %q: a refused pull moves no stamp", head, ok, err, tc.wantStamp)
+			}
+			if strings.Contains(tc.name, "never reads") && roadmap.readCount() != 0 {
+				t.Fatalf("the roadmap was read %d times, want none", roadmap.readCount())
+			}
+		})
+	}
+}
+
+// A pull wake that fails to start moves no stamp: a lost turn loses
+// nothing, and the next pass takes the pull again.
+func TestWakerRefillAFailedStartMovesNoStamp(t *testing.T) {
+	w, s, starter, clock, _ := refillRig(t, 1)
+	starter.err = errors.New("the chat is unfunded")
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 {
+		t.Fatalf("%d wake starts, want the failed one: %+v", len(calls), calls)
+	}
+	if _, ok, err := s.RoadmapPullStamp(t.Context(), "sf/wake"); err != nil || ok {
+		t.Fatalf("the stamp = %v, %v; a failed start moves no stamp", ok, err)
+	}
+	starter.err = nil
+	*clock = clock.Add(61 * time.Second)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("the retry Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 2 {
+		t.Fatalf("%d wake starts, want the retry: %+v", len(calls), calls)
+	}
+	if head, ok, err := s.RoadmapPullStamp(t.Context(), "sf/wake"); err != nil || !ok || head != "head-1" {
+		t.Fatalf("the stamp = %q, %v, %v; want head-1 after the retry", head, ok, err)
 	}
 }

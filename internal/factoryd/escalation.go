@@ -29,10 +29,10 @@ type SessionEscalator interface {
 	EscalateSession(ctx context.Context, taskID string, ask AgentAsk) error
 }
 
-// AgentAsk is an agent's escalate_to_human (Kind AskEscalation: the
-// question, why, and what the agent would do, ruling 149, and the answers
-// it offers as Choices, ruling 256), request_info (AskInfo: the question
-// for the issue's author, what it tried, what it needs, ruling 150),
+// AgentAsk is an agent's escalate (Kind AskEscalation: the
+// question, why, and what the agent would do, and the answers
+// it offers as Choices), request_info (AskInfo: the question
+// for the issue's author, what it tried, what it needs),
 // request_tool (AskTool: the tool the sandbox lacks and what for) or
 // request_cut (AskCut: why the card is too big, and the Parts it
 // proposes).
@@ -119,7 +119,7 @@ func (a AgentAsk) reason() string {
 	return AgentAsks + a.Question + "\nWhy: " + a.Reason + "\nRecommendation: " + a.Recommendation
 }
 
-// IntakeAgentEscalation is the intake event of an agent's escalate_to_human,
+// IntakeAgentEscalation is the intake event of an agent's escalate,
 // IntakeAgentInfoRequest of its request_info, IntakeAgentToolRequest of its
 // request_tool, IntakeAgentCut of its request_cut: recorded, never
 // signalled (the session's supervision acts on them).
@@ -133,7 +133,7 @@ const (
 // IntakeEscalation records an escalation's issue comment (its CommentID)
 // and reason: human answers are the trusted issue comments newer than it.
 // IntakeInfoRequest records an information request's comment: the issue
-// author's comments newer than it answer it (ruling 150).
+// author's comments newer than it answer it.
 const (
 	IntakeEscalation  = "escalation"
 	IntakeInfoRequest = "info_request"
@@ -147,7 +147,7 @@ const IntakeEscalationWithdrawn = "escalation_withdrawn"
 
 // IntakePosterComment is a comment on the issue by its author when they
 // cannot write the repository: signalled as information for an
-// information request, never an escalation's answer (ruling 150).
+// information request, never an escalation's answer.
 const IntakePosterComment = "poster_comment"
 
 // IntakeFactoryClosed records, before factoryd closes a task's issue as the
@@ -249,7 +249,7 @@ func offeredChoices(taskID string, choices []string) []string {
 }
 
 // EscalationHandler is POST /internal/escalations, the gateway's hand-over
-// of an agent's escalate_to_human, request_info, request_tool or
+// of an agent's escalate, request_info, request_tool or
 // request_cut (behind the gateway's bearer): the task must be running and
 // its session take the ask, which is then recorded as an intake event; the
 // session stops as on a supervisor's escalate: work in progress pushed,

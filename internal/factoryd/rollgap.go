@@ -13,7 +13,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// RollHold is a roll task's hold on new agent sessions (ruling 269): set
+// RollHold is a roll task's hold on new agent sessions: set
 // while its merge waits for a session gap, in force until Until.
 type RollHold struct {
 	TaskID       string
@@ -95,7 +95,7 @@ func gapBound(v policy.Version) time.Duration {
 	return longest + rollGapSlack
 }
 
-// AwaitSessionGap is a roll's wait before its merge (ruling 269): its hold
+// AwaitSessionGap is a roll's wait before its merge: its hold
 // keeps new sessions from starting until the bound, and it returns once no
 // session runs here, the roll's own aside, or at the bound, when the merge
 // goes ahead and stops the sessions still running.

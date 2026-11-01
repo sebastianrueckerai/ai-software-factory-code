@@ -108,7 +108,7 @@ func TestParseRejects(t *testing.T) {
 		"empty model":         {strings.Replace(valid, "[small, big]", `[small, ""]`, 1), "empty model"},
 		"tool without caps":   {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5}}", 1), "positive max_requests and max_eur"},
 		"unknown tool":        {strings.Replace(valid, "tools: {}", "tools: {firecrawl: {max_requests: 5, max_eur: 1}}", 1), `unknown tool "firecrawl"`},
-		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate_to_human: {max_requests: 5, max_eur: 1}}", 1), "tool escalate_to_human is free: list it as {}"},
+		"free tool with caps": {strings.Replace(valid, "tools: {}", "tools: {escalate: {max_requests: 5, max_eur: 1}}", 1), "tool escalate is free: list it as {}"},
 		"scrape unpriced":     {strings.Replace(valid, "tools: {}", "tools: {web_scrape: {max_requests: 5, max_eur: 1}}", 1), "prices.firecrawl needs"},
 		"image look without a vision model": {strings.Replace(valid, "tools: {}", "tools: {analyze_image: {}}", 1),
 			"class coder lists analyze_image but names no vision_model, which its looks call"},
@@ -300,8 +300,8 @@ func TestFitTool(t *testing.T) {
 	}
 }
 
-// A premium call under its cap fits the premium month headroom too
-// (ruling 329), with its whole output or not at all: a call the premium
+// A premium call under its cap fits the premium month headroom too,
+// with its whole output or not at all: a call the premium
 // headroom would clamp is refused refused_premium_cap, which the gateway
 // turns into a call on big. At 1e-6 in and 4e-6 out, a request of 1000
 // bytes holds 0.001 EUR of input; 0.005 EUR fits (0.005 - 0.001) / 4e-6 =

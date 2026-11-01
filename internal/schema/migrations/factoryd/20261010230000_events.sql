@@ -1,4 +1,4 @@
--- events (ruling 252): one row per action, whatever the input: a button in
+-- events: one row per action, whatever the input: a button in
 -- the console, one of factoryd's own task events, an answer that arrived as
 -- an issue comment, and later the project agent's chat. The project event
 -- feed reads the table by repository. A card's activity line reads its

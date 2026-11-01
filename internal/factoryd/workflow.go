@@ -39,7 +39,7 @@ const (
 	SignalApproved = "approved"
 	// SignalPosterComment is the issue author's comment when they cannot
 	// write the repository: it answers an information request newer than
-	// it (ruling 150), never an escalation.
+	// it, never an escalation.
 	SignalPosterComment = "poster_comment"
 	// SignalAnswerWhole is the console's notice that issue comment Comment,
 	// which its answer box posted, is a whole answer: the wait it answers
@@ -47,7 +47,7 @@ const (
 	// (versionAnswerBurst).
 	SignalAnswerWhole = "answer_whole"
 	// SignalRollFolded is the roller's notice that newer images were
-	// folded into a roll task (ruling 178): it wakes the approval wait and
+	// folded into a roll task: it wakes the approval wait and
 	// is never a finding.
 	SignalRollFolded = "roll_folded"
 	// SignalRerunChecks is the console's re-run of a factory pull request
@@ -66,6 +66,10 @@ const (
 	// payload a PlanSwitch: the lifecycle takes it before its next session
 	// (versionDirectToPlan).
 	SignalToPlan = "to_plan"
+	// SignalCompanionLanded is the chain poller's wake of a card held at
+	// its approval on a companion pin (versionCompanions): the companion
+	// reached its pin, so the gates read again and the merge can go.
+	SignalCompanionLanded = "companion_landed"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -124,6 +128,7 @@ const (
 	ActivityRollCommit                  = "RollCommit"
 	ActivityRerunChecks                 = "RerunChecks"
 	ActivityGateAudit                   = "GateAudit"
+	ActivityGateCompanion               = "GateCompanion"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
@@ -161,7 +166,7 @@ func headMovedError(format string, args ...any) error {
 	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errHeadMoved, nil)
 }
 
-// ModelLadder is the one place the model aliases live (ruling 86): every
+// ModelLadder is the one place the model aliases live: every
 // task starts on Start; a stronger retry (red checks, a repetition trip)
 // climbs to Stronger.
 type ModelLadder struct {
@@ -237,8 +242,8 @@ type TaskConfig struct {
 
 // SessionOutcome is how one RunSession attempt ended; the workflow switches
 // on it. redirect, retry_stronger and escalate are the supervisor's
-// verdicts (architecture 6.6, ruling 87); needs_info is the agent's
-// request_info (ruling 150), missing_tool its request_tool.
+// verdicts (architecture 6.6); needs_info is the agent's
+// request_info, missing_tool its request_tool.
 type SessionOutcome string
 
 const (
@@ -251,7 +256,7 @@ const (
 	OutcomeNeedsInfo     SessionOutcome = "needs_info"
 	OutcomeMissingTool   SessionOutcome = "missing_tool"
 	// OutcomeProviderRefused: the model provider refused the session's
-	// first call and every one after (ruling 267); the session never
+	// first call and every one after; the session never
 	// worked, so it is no attempt.
 	OutcomeProviderRefused SessionOutcome = "provider_refused"
 	// OutcomeDayCap: the gateway refused a model call of the session at
@@ -411,7 +416,7 @@ type RunState struct {
 	Findings []string
 	Usage    TaskUsage // what earlier runs used of the caps and were granted
 	// Answers are the human's answers to the task's escalations rebuilt
-	// from the intake events, newest first (ruling 120), and Question the
+	// from the intake events, newest first, and Question the
 	// question of its last escalation, which a healed run asks again with
 	// its Choices.
 	Answers  []string
@@ -419,7 +424,7 @@ type RunState struct {
 	Choices  []string
 	// InfoRequest is the comment of the task's last information request
 	// and InfoRequestedAt its time, PosterInfo the answers to them, oldest
-	// first (ruling 150): a healed run waiting on the issue's author
+	// first: a healed run waiting on the issue's author
 	// waits on, for what is left of the 14 days.
 	InfoRequest     int64
 	InfoRequestedAt time.Time
@@ -427,7 +432,7 @@ type RunState struct {
 	// InfoAnswered: an answer to the last information request is among
 	// PosterInfo already; the healed run resumes without waiting.
 	InfoAnswered bool
-	// Report: the task is a report session's (ruling 185), no stage.
+	// Report: the task is a report session's, no stage.
 	Report bool
 	// Standing is the issue author's (Task.Standing), for a stage's when.
 	Standing string
@@ -438,7 +443,7 @@ type RunState struct {
 	// or a person let its suspect screening run (its alert judged noise).
 	ScreeningPassed bool
 	// Stronger: a report task that runs on the stronger rung (the
-	// screening, ruling 191).
+	// screening).
 	Stronger bool
 	// The stage memory the timeline kept (versionStages): each stage's
 	// returns to the agent, every finding sent there (or to the card at a
@@ -451,7 +456,7 @@ type RunState struct {
 	// CheckinVerdicts: every check-in's verdicts in timeline order (plan
 	// D), the priors its guards read, rebuilt as the reviews' are.
 	CheckinVerdicts []map[string]CheckVerdict
-	// Roll: a roll task (ruling 178), whose commit RollCommit writes.
+	// Roll: a roll task, whose commit RollCommit writes.
 	Roll bool
 	// FactoryPR: the task's card of a pull request factoryd opened outside
 	// any card's workflow (roadmap 187): its run verifies that pull request,
@@ -592,6 +597,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sizing = workflow.GetVersion(ctx, "sizing", workflow.DefaultVersion, versionSizing)
 	run.replan = workflow.GetVersion(ctx, "replan", workflow.DefaultVersion, versionReplan)
 	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
+	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -641,7 +647,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan} {
+		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -695,7 +701,7 @@ const (
 	// class fails the task, a failed reproduction goes back to the agent
 	// like red checks.
 	versionGates workflow.Version = 1
-	// versionAnswers (change id "answers", ruling 118): a human's answer to
+	// versionAnswers (change id "answers"): a human's answer to
 	// an escalation is kept on the run, newest first, and every later
 	// session gets all of them as SessionInput.Answers instead of the
 	// newest as a finding.
@@ -712,18 +718,18 @@ const (
 	// timeline) and tried again after mergeRetryAfter with the same
 	// approval; a newer approval cancels a pending retry timer.
 	versionMergeFailureReported workflow.Version = 1
-	// versionMergeRetryCap (change id "merge-retry-cap", ruling 129): the
+	// versionMergeRetryCap (change id "merge-retry-cap"): the
 	// retries of one approval's merge stop after maxMergeRetries (an hour):
 	// one exhausted report, no timer; a new approval restarts the count.
 	versionMergeRetryCap workflow.Version = 1
-	// versionGateStarted (change id "gate-started", ruling 140): the
+	// versionGateStarted (change id "gate-started"): the
 	// signal that ends the approval wait (an approval, a close, a merge, a
 	// change request) carries in its timeline step when the wait
 	// began: the approval request, or the last refused merge or the
 	// exhausted retries that ask for a new approval.
 	versionGateStarted workflow.Version = 1
-	// versionGateSupervisor (change id "gate-supervisor", rulings 141,
-	// 162): a long gate's activity (the session, the checks, the
+	// versionGateSupervisor (change id "gate-supervisor"): a long gate's
+	// activity (the session, the checks, the
 	// reproduction, the model review and the merge) takes GateWatch's
 	// gate_bound signal while it runs and asks SuperviseGate once per trip:
 	// wait and retry act in the activity's worker, at most once each per
@@ -738,7 +744,7 @@ const (
 	// ends first wins and the late answer is dropped (SuperviseGate notes
 	// it on the alert).
 	versionGateSupervisorRace workflow.Version = 1
-	// versionAutoMerge (change id "auto-merge", ruling 149): after the
+	// versionAutoMerge (change id "auto-merge"): after the
 	// model review, a pull request AutoMerge admits (the project's rule
 	// auto, class outcome auto, the reproduction ran and passed, the
 	// review approves, a strict improvement where not reproduced) is
@@ -746,7 +752,7 @@ const (
 	// every other one, and an auto merge Forgejo refuses or that fails,
 	// gets the card with why no auto merge.
 	versionAutoMerge workflow.Version = 1
-	// versionNeedsInfo (change id "needs-info", ruling 150): a session
+	// versionNeedsInfo (change id "needs-info"): a session
 	// ending needs_info asks the issue's author (RequestInfo: the comment
 	// with the mentions, waiting-poster, the info_request alert) and
 	// waits for the author's or a writer's comment, which the next
@@ -755,7 +761,7 @@ const (
 	// task ends closed. A healed run waiting on the author waits on for
 	// the rest of infoWait.
 	versionNeedsInfo workflow.Version = 1
-	// versionStages (change id "stages", rulings 177, 182, 185): the gates
+	// versionStages (change id "stages"): the gates
 	// are the pinned workflow's stages in order, each with its
 	// on_findings (agent: back to the agent, the second return from one
 	// stage on the stronger rung, the card at the session cap; human: the
@@ -766,14 +772,14 @@ const (
 	// task runs RunReport and ends done; a promoted improvement's first
 	// session gets the analyzer's write-up.
 	versionStages workflow.Version = 1
-	// versionRoll (change id "roll", ruling 178): a roll task runs no
+	// versionRoll (change id "roll"): a roll task runs no
 	// session; RollCommit writes its branch and the head goes through the
 	// pull request, the checks and the gates. A fold of newer images
 	// (roll_folded, which wakes the approval wait and is no finding) has
 	// RollCommit write again; findings on a head RollCommit leaves as it
 	// is fail the task.
 	versionRoll workflow.Version = 1
-	// versionSessionCap (change id "session-cap", ruling 177): a session
+	// versionSessionCap (change id "session-cap"): a session
 	// loop out of attempts, however its last round ended and a run that
 	// starts at the cap too, opens the card with every finding so far, and
 	// a human answer buys one more session; a redirect or no push
@@ -782,16 +788,16 @@ const (
 	// repeat past StrongerAfter takes the stronger rung; a new run starts
 	// on the rung the last one left.
 	versionSessionCap workflow.Version = 1
-	// versionAudit (change id "audit", ruling 188): the audit stage runs
+	// versionAudit (change id "audit"): the audit stage runs
 	// GateAudit on the reviewed head; its findings, or its failure, go to
 	// the card beside the review, never to the agent; a roll task skips
-	// it (ruling 178).
+	// it.
 	versionAudit workflow.Version = 1
 	// versionReviewVerdict (change id "review-verdict", backlog 68): a
 	// review stage that ran and gave no verdict (a failed call, an invalid
 	// answer, a head that moved) puts "the review gave no verdict: <why>"
 	// on the card, whatever its on_findings; a roll's review (no model
-	// call, ruling 178) is no finding.
+	// call) is no finding.
 	versionReviewVerdict workflow.Version = 1
 	// versionChecksRerun (change id "checks-rerun"): red checks on the
 	// head a session left as it was (the agent could not act on them)
@@ -802,11 +808,11 @@ const (
 	// merge refused because the pull request no longer merges into main
 	// goes back to the agent, which merges main into the branch.
 	versionMergeConflict workflow.Version = 1
-	// versionPosterCap (change id "poster-cap", ruling 203): the answers
+	// versionPosterCap (change id "poster-cap"): the answers
 	// to information requests buy at most maxPosterAttempts attempts per
 	// task; a later answer still reaches the sessions but buys none.
 	versionPosterCap workflow.Version = 1
-	// versionProcesses (change id "processes", ruling 206): the first
+	// versionProcesses (change id "processes"): the first
 	// activity, TaskConfig, reads the task's process in the pinned version;
 	// its stages replace the ones WorkflowConfig recorded, and its class's
 	// session mode chooses the program.
@@ -840,13 +846,13 @@ const (
 	// screening stage's verdict does. A healed run screens the answers it
 	// rebuilt again.
 	versionScreenAnswers workflow.Version = 1
-	// versionAnswerSlice (change id "answer-slice", ruling 237, item 136):
+	// versionAnswerSlice (change id "answer-slice"):
 	// a human answer's slice is a quarter of the task's resolved agent
 	// time, never under min(minSession, WallClockCap): WorkflowConfig's
 	// own AnswerSlice no longer bounds it. A run from before the change
 	// keeps that field's value instead (grant).
 	versionAnswerSlice workflow.Version = 1
-	// versionRollGap (change id "roll-gap", ruling 269): a roll's merge
+	// versionRollGap (change id "roll-gap"): a roll's merge
 	// waits for a gap between sessions (AwaitSessionGap, whose hold keeps
 	// new sessions from starting, raced by the terminal signals) and
 	// ClearRollHold follows every merge, which a merged one keeps a while
@@ -866,7 +872,7 @@ const (
 	// a roll that waits, and it merges without a sync (only rolls touch
 	// k8s/*.yaml, one roll task is open per repository).
 	versionRollNoQueue workflow.Version = 1
-	// versionRollout (change id "roll-rollout", ruling 178): a roll's
+	// versionRollout (change id "roll-rollout"): a roll's
 	// merge is not its end. The run waits for the rollout the merge
 	// brings — every image the merge changed live on its Deployment
 	// (AwaitRollout) — and finishes done naming what went live; a rollout
@@ -879,14 +885,14 @@ const (
 	// at once and Merge reads the checks' green on the head they ran on
 	// (checkedHead, its fifth argument).
 	versionCheapTurn workflow.Version = 1
-	// versionProviderWait (change id "provider-wait", ruling 267): a
+	// versionProviderWait (change id "provider-wait"): a
 	// provider_refused session is no attempt and takes no agent time: the
 	// task waits on the provider (ProviderWait, then a timer raced by the
 	// terminal signals) and runs the session again with the same input;
 	// the providerRefusals-th refusal in a row goes to a human instead. A
 	// run from before the change takes a refusal as no push.
 	versionProviderWait workflow.Version = 1
-	// versionPlanAnswers (change id "plan-answers", ruling 264): the plan's
+	// versionPlanAnswers (change id "plan-answers"): the plan's
 	// wait takes the members' answers to its questions (SignalPlanAnswered)
 	// and sends the planner back once none is open.
 	versionPlanAnswers workflow.Version = 1
@@ -908,8 +914,8 @@ const (
 	// its alert still fires; one that stopped firing was a transient burst
 	// and the card closes itself as failed with no session.
 	versionAlertPreCheck workflow.Version = 1
-	// versionAttemptFunded (change id "attempt-funded", ruling 322,
-	// finding 215): an attempt whose task's remaining budget cannot fund
+	// versionAttemptFunded (change id "attempt-funded", finding 215): an
+	// attempt whose task's remaining budget cannot fund
 	// a call is refused before it starts — no session, no key, no failure
 	// round — at the session loop's gate, wherever the answer that bought
 	// it came from (the console, a comment, a healed run). The card says
@@ -1183,10 +1189,17 @@ const (
 	// note, takes to_plan only before a session, and asks a person about a
 	// replan stop.
 	versionReplan workflow.Version = 1
+	// versionCompanions (change id "companions"): a plan card carries the
+	// companion pins its filing stamped, the gates read them live
+	// (GateCompanion at the policy stage) and AutoMerge holds the merge on
+	// a pin not met, and the chain poller's companion_landed wakes the
+	// held approval, which re-runs the gates from the first stage. A run
+	// from before reads no pins and takes no wake.
+	versionCompanions workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
-// fund a call (ruling 322): an answer would start an attempt whose first
+// fund a call: an answer would start an attempt whose first
 // call the gateway must refuse, so none is granted.
 const budgetRefused = "the remaining budget cannot fund a call"
 
@@ -1238,7 +1251,7 @@ type taskRun struct {
 	v16, v17, v18     workflow.Version
 	v19, v20, v21     workflow.Version
 	v22, v23          workflow.Version
-	attemptFunded     workflow.Version // the attempt grant's floor (ruling 322)
+	attemptFunded     workflow.Version // the attempt grant's floor
 	processes         workflow.Version
 	depWait           workflow.Version
 	mergeQueue        workflow.Version
@@ -1296,6 +1309,7 @@ type taskRun struct {
 	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
 	replan            workflow.Version // a plan's run waits for its replan's stops and knows its note (versionReplan)
 	answeredRouting   workflow.Version // a confirming answer files with no session (versionAnsweredRouting)
+	companions        workflow.Version // the gates read the plan card's companion pins and a landed pin wakes the approval (versionCompanions)
 	replanBy          string           // the pending replan's person (versionReplan)
 	replanNote        string           // the pending replan's note (versionReplan)
 	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)
@@ -1361,6 +1375,10 @@ type verdict struct {
 	// reask: a refused switch to the plan track voided the approval
 	// request, which is asked again (versionReplan)
 	reask bool
+	// recheck: a companion reached its pin while the approval waited, so
+	// the gates read again from the first stage before any merge
+	// (versionCompanions)
+	recheck bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1408,7 +1426,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer
-	// (versionKeepWork, ruling 225): it buys the session, answered.
+	// (versionKeepWork): it buys the session, answered.
 	apply := func(v verdict) (answered bool) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
@@ -2403,6 +2421,14 @@ func (t *taskRun) drainReruns() bool {
 	return rerun
 }
 
+// drainCompanions takes a pending companion_landed (versionCompanions):
+// the poller sent it because every pin the card carries reads met, so the
+// gates read again from the first stage.
+func (t *taskRun) drainCompanions() bool {
+	var sig TaskSignal
+	return workflow.GetSignalChannel(t.ctx, SignalCompanionLanded).ReceiveAsync(&sig)
+}
+
 // drainFolds takes the pending roll_folded signals; RollCommit writes what
 // they announce.
 func (t *taskRun) drainFolds() bool {
@@ -2740,6 +2766,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		if t.replans() {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalToPlan), func(workflow.ReceiveChannel, bool) {})
 		}
+		if t.companions >= versionCompanions {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalCompanionLanded), func(workflow.ReceiveChannel, bool) {})
+		}
 		if retry != nil {
 			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
@@ -2755,6 +2784,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		if t.factoryActions() && t.drainReruns() {
 			return verdict{rerun: true, reason: "the checks run again"}
+		}
+		if t.companions >= versionCompanions && t.drainCompanions() {
+			return verdict{recheck: true, reason: "a companion reached its pin"}
 		}
 		if t.replans() {
 			if sw, step, ok := t.takeToPlan(); ok {
@@ -2911,7 +2943,7 @@ func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
 }
 
 // maxMergeRetries bounds the retries of one approval's merge: with
-// mergeRetryAfter, an hour (ruling 129).
+// mergeRetryAfter, an hour.
 const maxMergeRetries = 6
 
 // mergeRetryAfter is how long a merge that failed (Forgejo unreachable,
@@ -3278,7 +3310,7 @@ func (t *taskRun) watchRun(terminal, supervised bool, run *gateRun, out any) (ve
 // beside gate's wait and retry act on it at once and its cancel ends the
 // task, as run's do; its escalation asks the human at once while run goes
 // on (askBeside). A beside gate's answer that comes after its call ended
-// changes nothing, as run's (ruling 171).
+// changes nothing, as run's.
 func (t *taskRun) watchRuns(terminal bool, run *gateRun, out any) (verdict, bool, error) {
 	trips := workflow.GetSignalChannel(t.ctx, SignalGateBound)
 	for {
@@ -4055,7 +4087,7 @@ func (t *taskRun) finish(final, reason string) (string, error) {
 	return final, nil
 }
 
-// awaitRollout is a roll's last wait (ruling 178): after its merge the
+// awaitRollout is a roll's last wait: after its merge the
 // run waits until the rollout is confirmed — every image the merge
 // changed runs on its Deployment and is available — and finishes done
 // naming what went live. A rollout the task's wall-clock cap passes

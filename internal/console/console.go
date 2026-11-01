@@ -1,6 +1,6 @@
 // Package console is the human's view of the factory at
 // console.aisoftwarefactory.world (task 54): Forgejo OAuth2 login for the
-// projects' writers (ruling 254), the board, new tasks filed as the human, the
+// projects' writers, the board, new tasks filed as the human, the
 // human's answers to escalations, approvals, and the agent resources. It is served by factoryd on its own port;
 // every Forgejo write goes out with the logged-in human's token.
 package console
@@ -132,6 +132,10 @@ type Tasks interface {
 	// its unstarted filings, the ready check's room (roadmap 239).
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	CountQueue(ctx context.Context, repository string) (int, error)
+	// RoadmapHolder is the card that builds repository's docs/roadmap.md
+	// item, whatever its state (the roadmap pull, 2026-11-01); false
+	// when no card cites it.
+	RoadmapHolder(ctx context.Context, repository string, item int) (string, bool, error)
 	// ProjectImageParks are the parks of project's cards that wait for an
 	// image, the oldest first, each with its tool card's issue.
 	ProjectImageParks(ctx context.Context, project string) ([]factoryd.ImagePark, error)
@@ -155,7 +159,7 @@ type Config struct {
 	// Writers are each project's writers by repository, and own is the
 	// factory's own code project's repository (the one deploying into
 	// factoryd's namespace): a writer of any project may log in, a writer
-	// of own also reaches the factory-level pages (ruling 254).
+	// of own also reaches the factory-level pages.
 	Writers func(ctx context.Context) (own string, writers map[string][]string, err error)
 	// Writes reports whether user writes repository's code on Forgejo
 	// (factoryd.Intake.Writes), for a project of any agents: what a write
@@ -168,8 +172,7 @@ type Config struct {
 	// status line's red dot and the panel's list (roadmap 299).
 	Dependencies Dependencies
 	// ConfigRepo is the infra repository's web URL and ConfigDir the
-	// configuration tree's directory in it, where every change is made
-	// (ruling 183).
+	// configuration tree's directory in it, where every change is made.
 	ConfigRepo   string
 	ConfigDir    string
 	Approvals    Approvals
@@ -410,7 +413,7 @@ type session struct {
 
 // getRoute is a GET route of the console with its handler, and the chat
 // tool that reads what its page shows or the named exception's reason
-// (roadmap 158, ruling 263). New registers every GET route from
+// (roadmap 158). New registers every GET route from
 // getRoutes, which the parity test reads.
 type getRoute struct {
 	pattern string
@@ -821,7 +824,7 @@ func (c *Console) writesRepo(ctx context.Context, user, repository string) (bool
 }
 
 // factoryAccess refuses a factory-level page, read or action to anyone but
-// the writers of the factory's own code project (ruling 254).
+// the writers of the factory's own code project.
 func (c *Console) factoryAccess(ctx context.Context, a actor) error {
 	switch _, ok, err := c.writer(ctx, a.s.user); {
 	case err != nil:
@@ -855,7 +858,7 @@ func (c *Console) writersOwn() string {
 }
 
 // isApprover reports whether user approves repository's project: a name on
-// its file's approvers, else the policy's (ruling 254). Unreadable
+// its file's approvers, else the policy's. Unreadable
 // policy: no.
 func (c *Console) isApprover(ctx context.Context, user, repository string) bool {
 	v, _ := c.inForce(ctx)

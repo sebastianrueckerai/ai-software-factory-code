@@ -19,10 +19,10 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
 
-// Report tasks (ruling 185) are sessions of a report class in report mode
+// Report tasks are sessions of a report class in report mode
 // on their parent's issue: the read token only, no push, the last message
 // kept on the task. SourceScreening reads an issue before the coder
-// starts (ruling 182); SourceSizing sizes a card before its first coding
+// starts; SourceSizing sizes a card before its first coding
 // session.
 const (
 	SourceScreening = "screening"
@@ -237,7 +237,7 @@ func (r *Runner) reportOf(ctx context.Context, t Task, source string) (Task, err
 	return child, nil
 }
 
-// Screen is the screening stage (ruling 182): it opens the task's
+// Screen is the screening stage: it opens the task's
 // screening report task, waits for it and reads its verdict. A suspect
 // verdict, or a screening that did not end done, is an alert of kind
 // screening, judged when a human decides.

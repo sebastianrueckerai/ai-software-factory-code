@@ -27,7 +27,7 @@ const (
 	TripWallClock  TripKind = "wall_clock"
 	TripRepetition TripKind = "repetition"
 	TripShutdown   TripKind = "shutdown" // not a detector: factoryd is stopping
-	// TripAgentEscalation: the agent called escalate_to_human,
+	// TripAgentEscalation: the agent called escalate,
 	// TripAgentInfoRequest request_info and TripAgentToolRequest
 	// request_tool; decided already, no supervisor call
 	TripAgentEscalation  TripKind = "agent_escalation"
@@ -71,7 +71,7 @@ type SupervisorConfig struct {
 	SameFailure      int           // 0 = DefaultSameFailure
 	SameCall         int           // limits.same_call; 0 = policy.DefaultSameCall
 	Churn            int           // 0 = DefaultChurn
-	// NoWriteAfter: the progress detector (rulings 141, 161); 0 =
+	// NoWriteAfter: the progress detector; 0 =
 	// policy.DefaultDetectors
 	NoWriteAfter time.Duration
 	// ReadOnly: a report session, which writes no file; repetition and
@@ -293,7 +293,7 @@ func (s *Supervisor) sizeTrip() *Trip {
 func (s *Supervisor) CardLines() int { return s.cardLines }
 
 // newContent: the write ev records content the session has not written
-// before (ruling 280): a file change by its sha256, a moved shell diff by
+// before: a file change by its sha256, a moved shell diff by
 // its numbers and patch. One without a hash (a file over maxHashedFile, a
 // deleted file) counts as new.
 func (s *Supervisor) newContent(ev harness.Event) bool {
@@ -383,7 +383,7 @@ const (
 	agentAsksAuthor = "The agent asks the issue's author: "
 )
 
-// AgentAsk trips on the agent's own escalate_to_human, request_info or
+// AgentAsk trips on the agent's own escalate, request_info or
 // request_tool: an escalation with its question, the information request,
 // or the tool request with its tool and need; or on a person's replan with
 // its reason. The supervisor model is not asked. The agent's request_cut
@@ -392,7 +392,7 @@ func (s *Supervisor) AgentAsk(a AgentAsk) *Trip {
 	if s.tripped != nil {
 		return s.tripped
 	}
-	kind, detail, action := TripAgentEscalation, "the agent called escalate_to_human", ActionEscalate
+	kind, detail, action := TripAgentEscalation, "the agent called escalate", ActionEscalate
 	switch a.Kind {
 	case AskInfo:
 		kind, detail = TripAgentInfoRequest, "the agent called request_info"
@@ -476,7 +476,7 @@ func (s *Supervisor) Resume(now time.Time) {
 // and arms the stuck rule until the next write. The command detectors
 // start afresh at the message; the alternation memory (contents, churn)
 // does not, so a circle of writes that spans messages still trips
-// flip_flop or churn, stuck (ruling 224: circles of writes are not
+// flip_flop or churn, stuck (circles of writes are not
 // progress; round 2's drill 4 looped for 38 minutes on the cleared
 // memory).
 func (s *Supervisor) Messaged(now time.Time) {
@@ -492,7 +492,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 }
 
 // stuck is the stuck rule: after a delivered message, a detector trip with
-// no write since, or a circle of writes (flip_flop, churn; ruling 224).
+// no write since, or a circle of writes (flip_flop, churn).
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
@@ -572,7 +572,7 @@ const (
 	TripChurn       TripKind = "churn"
 	// TripCheckIn: no detector, the scheduled check-in (SupervisorConfig.CheckIn)
 	TripCheckIn TripKind = "check_in"
-	// progress detectors (ruling 141), their waits in the policy
+	// progress detectors, their waits in the policy
 	TripNoWrite TripKind = "no_write"
 	// TripCheapCap: the start rung's first attempt ran its cap without a
 	// push (roadmap 222, item 5)

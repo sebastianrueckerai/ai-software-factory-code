@@ -147,7 +147,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 	case t.Source == SourceToolRequest:
 		return r.refuse(ctx, t, p, toolCardRefusal, " Declare the tool and finish: the factory's build and the check of "+imagesPath+" on this pull request test the file.")
 	case r.Imager != nil && t.Repository == r.Imager.Config.Repo.String():
-		return r.refuse(ctx, t, p, configRepoRefusal, " Go on without the tool, or ask a human with escalate_to_human.")
+		return r.refuse(ctx, t, p, configRepoRefusal, " Go on without the tool, or ask a human with escalate.")
 	}
 	raw, declared, err := r.imagesOnMain(ctx, repo)
 	if err != nil {
@@ -157,7 +157,7 @@ func (r *Runner) ParkForTool(ctx context.Context, taskID, tool, need string) (To
 		return r.onToolCard(ctx, t, repo, prev, c.Images, declared, raw)
 	}
 	if refusal := capRefusal(project, p.Target, c.Images, declared); refusal != "" {
-		return r.refuse(ctx, t, p, refusal, " A human must free a name: ask one with escalate_to_human, or go on without the tool.")
+		return r.refuse(ctx, t, p, refusal, " A human must free a name: ask one with escalate, or go on without the tool.")
 	}
 	if p.ToolTask, _, err = r.toolCardOf(ctx, t.Repository, p.Target, t.ID); err != nil {
 		return ToolPark{}, err

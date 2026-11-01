@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -207,8 +208,8 @@ func TestValidatePlan(t *testing.T) {
 		"eleven acceptance":  {change(func(p *Plan) { p.Cards[0].Acceptance = slices.Repeat([]PlanItem{{Text: "a"}}, 11) }), []string{"plan: card foundation: 11 acceptance tests; want 1 to 10"}},
 		// A spec plan (piece 5) drafts the spec the members confirm; the
 		// finding is the same for none and for a blank outcome.
-		"no spec":       {change(func(p *Plan) { p.Spec = nil }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}},
-		"blank outcome": {change(func(p *Plan) { p.Spec.Outcome = "  " }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the members confirm it before the criteria are fixed`}},
+		"no spec":       {change(func(p *Plan) { p.Spec = nil }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}},
+		"blank outcome": {change(func(p *Plan) { p.Spec.Outcome = "  " }), []string{`plan: no spec: draft the spec first, {"spec": {"outcome": "the outcome in a few sentences", "glossary": ["term: what it is"]}}; the humans confirm it before the criteria are fixed`}},
 		// The criteria cases edit one field of the criteria block or one
 		// citation; a broken criterion stays properly cited and a broken
 		// citation changes no criterion, so each case yields only the
@@ -481,7 +482,7 @@ func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 }
 
 // stage12-design 5.2: a card is bounded by shape, not a session's time or
-// step budget (ruling 221: the guide gives no time estimate any more).
+// step budget (the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
 	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
@@ -551,7 +552,7 @@ func TestPlanGuideSpec(t *testing.T) {
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order"`,
 		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
 			"when the repository carries a spec skeleton at docs/spec.md, draft into its shape and carry its standing criteria.",
-		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer.",
+		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer.",
 		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
 			"and turn each finding into a question with origin self_attack.",
 	} {
@@ -578,7 +579,7 @@ func TestPlanGuideRounds(t *testing.T) {
 	got := planGuide(testShape, testLimits, nil)
 	for _, want := range []string{
 		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,
-		"spec: the outcome in a few sentences and the glossary that names each component once; the members confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
+		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 			"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 			"A feature too big for one round of cards is planned in rounds: file the first round's cards, foundation first, and keep the rest in outline; " +
 			"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
@@ -1281,7 +1282,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 	body := fj.comments[0].body
 	for _, want := range []string{
-		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the members' answers on the factory console",
+		"factoryd: plan revision 1 of task t-plan, written by the planner. Its open questions wait for the humans' answers on the factory console",
 		"Links first.  ＠sebastian",
 		"Spec: A link shortener: links with slugs that redirect and count clicks.\nGlossary:\n- slug: the short key a link gets\n- click: one redirect served",
 		"| # | key | role | title | size | depends on | issue |",
@@ -2017,7 +2018,7 @@ func TestPlanLoopCommentInPartsAfterAnInvalidPlan(t *testing.T) {
 	}
 }
 
-// A planner that stops to ask a human (its own escalate_to_human, or the
+// A planner that stops to ask a human (its own escalate, or the
 // gate supervisor's escalation) puts the question on the card; the
 // answer goes to the next session. The issue's close while a session runs
 // ends the task before another one.
@@ -2913,6 +2914,112 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	}
 }
 
+// A filing stamps the declared companions' heads on every card, overwriting
+// whatever the planner wrote, reading each head through the factory-config
+// token.
+func TestPlanFilingStampsCompanions(t *testing.T) {
+	pin, other := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
+		case "/api/v1/repos/sf/other/commits":
+			io.WriteString(w, `[{"sha":"`+other+`"}]`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, BudgetEUR: 2, Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	runner.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
+	v := browserInForce(t)
+	if name, c, ok := v.ProjectOf("linkshort/linkshort"); ok {
+		c.Companions = []policy.Companion{{Repository: "sf/infra"}, {Repository: "sf/other"}}
+		v.Projects[name] = c
+	}
+	runner.cfg.Policy = func() policy.Version { return v }
+
+	p := testPlan()
+	p.Cards[0].Companions = []CardCompanion{{Repository: "sf/infra", At: "deadbeef" + strings.Repeat("9", 33)}} // the planner's own block, overwritten
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	res, err := runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Revision != 1 || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, want revision 1 with no findings", res)
+	}
+	rev, ok, err := store.PlanRevision(ctx, "t-plan", 0)
+	if err != nil || !ok {
+		t.Fatalf("stored = %v, %v", ok, err)
+	}
+	var stored Plan
+	if err := json.Unmarshal(rev.Plan, &stored); err != nil {
+		t.Fatal(err)
+	}
+	want := []CardCompanion{{Repository: "sf/infra", At: pin}, {Repository: "sf/other", At: other}}
+	for _, c := range stored.Cards {
+		if !slices.Equal(c.Companions, want) {
+			t.Fatalf("card %s companions = %v, want the stamped pins %v", c.Key, c.Companions, want)
+		}
+	}
+	if !slices.Equal(auth, []string{"token config-tok", "token config-tok"}) {
+		t.Fatalf("reads = %q, want both companions through the factory-config token", auth)
+	}
+}
+
+// A declared companion the factory-config token cannot read refuses the
+// filing: the pin is the system's own fact, so a filing that cannot stamp
+// it stores nothing.
+func TestFilePlanRefusesAnUnreadableCompanion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"82ab246"}]`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, BudgetEUR: 2, Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	runner.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
+	v := browserInForce(t)
+	if name, c, ok := v.ProjectOf("linkshort/linkshort"); ok {
+		c.Companions = []policy.Companion{{Repository: "sf/infra"}, {Repository: "sf/locked"}}
+		v.Projects[name] = c
+	}
+	runner.cfg.Policy = func() policy.Version { return v }
+
+	b, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	res, err := runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plan: " + companionUnread("sf/locked")}
+	if !slices.Equal(res.Findings, want) || res.Revision != 0 {
+		t.Fatalf("refused = %+v, want findings %q", res, want)
+	}
+	if rev, ok, _ := store.PlanRevision(ctx, "t-plan", 0); ok {
+		t.Fatalf("a refused plan stored as revision %d", rev.Revision)
+	}
+}
+
 // A replan's revision is checked at filing: one that keeps the key of a
 // card that ended closed is refused with the finding, and nothing is
 // stored.
@@ -3487,7 +3594,7 @@ func TestRunPlanTakesItsTimeFromThePlannerClassNotTheLimits(t *testing.T) {
 	}
 }
 
-// The planner class's session_model (ruling 330) is the model its plan
+// The planner class's session_model is the model its plan
 // session runs on, whatever rung the plan loop passes.
 func TestRunPlanRunsOnTheClassSessionModel(t *testing.T) {
 	files, err := policy.ReadDir("../policy/testdata/tree")

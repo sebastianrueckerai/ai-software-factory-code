@@ -1,4 +1,4 @@
-# Gates, review, approval and merge (task 55, ruling 109)
+# Gates, review, approval and merge (task 55)
 
 Green checks are not a merge. A workflow started after this change
 (change id `gates`) takes a head with green checks through these
@@ -26,7 +26,7 @@ activities, each with a timeline step and a comment on the pull request:
    (`repro_command`: the issue body's first fenced block labelled `repro`,
    or `repro_command` on `POST /tasks`; for an issue filed from a SigNoz
    alert, which carries none, the repro block that opens the agent's last
-   message (ruling 170; no other issue takes the agent's),
+   message (no other issue takes the agent's),
    marked `ByAgent` for the review, which judges whether it tests the
    reported fault): a fresh sandbox namespace, a read
    token on the task's repository only, and one pod of the worker image
@@ -101,7 +101,7 @@ activities, each with a timeline step and a comment on the pull request:
    failed call, an invalid answer or a class without a review model is a
    note on the pull request and the approval card; nothing it says skips
    a gate. The comment counts the calls of an integration card's review.
-   From change id `audit` on (ruling 188), the workflow's `audit` stage
+   From change id `audit` on, the workflow's `audit` stage
    (between review and approval, `on_findings: human` only) runs
    `GateAudit` for a project whose file sets `audit: true`, else records
    it skipped: `redact.ScanDiff` checks the added lines for secret shapes
@@ -130,22 +130,22 @@ activities, each with a timeline step and a comment on the pull request:
    `auto` never merges past it; a roll's review (no model call) is no
    finding, and the review stage takes no `when`: `enabled: false` is its
    only skip.
-5. From change id `auto-merge` on (ruling 149), `AutoMerge` decides:
+5. From change id `auto-merge` on, `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
    class's outcome is `auto` (allowed on class `normal` only; the policy
    decoder refuses it on any other), the gates read the diff (8 MiB at
    most), the review's verdict is `approve`
-   with `strict_improvement: true` (ruling 169: the review answers it on
+   with `strict_improvement: true` (the review answers it on
    every pull request; false or missing sends it to the card), and the
-   fix is proven one of two ways (ruling 167): the reproduction failed at
+   fix is proven one of two ways: the reproduction failed at
    the base and passes at the head, or the agent recorded the fault it
    fixed (`not_reproduced`), with or without a reproduction command.
    Then `AutoMergeNote` records the auto merge on the timeline, and
    `Merge` first approves the head as the merge gate's user `factory-gate`
-   (ruling R59: an APPROVED review whose body lists every condition
+   (an APPROVED review whose body lists every condition
    `AutoMerge` found met, in factoryd's words alone, never a command, note
-   or summary an issue, an agent or a model wrote (ruling R61), with the
+   or summary an issue, an agent or a model wrote, with the
    project's gate token), then merges as factory-merge with no card. A
    project whose merge rule is no longer `auto` when Merge runs, a missing
    gate token or a refused approval is a refusal like Forgejo's, and the
@@ -187,7 +187,7 @@ which may approve but neither merge nor push (405; a moved head or a
 conflict is 409). The intake ignores factory-gate's reviews as it does
 the bot's: they are factoryd's own, no member's decision. The trust gate
 never trusts factory-gate, a writer on the repository, so its comments
-steer no task (ruling R61). A refusal is commented with what fits and the
+steer no task. A refusal is commented with what fits and the
 wait goes on: a refused auto merge goes to a human, whom the next merge
 request asks (approve it in the console, or merge it in Forgejo); any
 other approval decided its request, so what fits is a merge by hand in
@@ -202,7 +202,7 @@ merge is tried again after 10 minutes. From change id
 `merge-failure-reported` on, a Merge that ends in an error (a 404, its
 last attempt timing out) is reported the same way (`ReportMergeFailure`)
 and retried too; a newer approval replaces a pending retry. From change
-id `merge-retry-cap` on (ruling 129), one approval's merge is retried at
+id `merge-retry-cap` on, one approval's merge is retried at
 most six times (an hour); then a single comment and a
 `merge_retries_exhausted` step say so, no timer runs, and the task waits
 for a signal: a new approval restarts the merge with a fresh count. A human merging in Forgejo stays
@@ -319,7 +319,7 @@ hide a failure), same call (the same tool with the same arguments
 nudges first), flip-flop (a file returns
 to an earlier content hash), churn (`SUPERVISE_CHURN` file changes since
 the diff against the base last grew, with no command newly passing, 15),
-and no write (rulings 141, 161): an agent event, a tool call, command or
+and no write: an agent event, a tool call, command or
 model call, arriving `no_write` seconds after the last write (a write,
 edit or patch tool call, or a checkpoint whose diff changed: a file
 written through the shell) or the session's start (the policy's
@@ -336,7 +336,7 @@ its time? Nothing it answers cuts the card. The session's brief states the
 bound in its facts line: "This card is planned at most N changed lines
 (size S)", or, for a card with no size, "This card has no size, so it is
 planned at most N changed lines, the policy's large_lines."
-The check-in (ruling 216) trips at every `check_in` of the task's agent
+The check-in trips at every `check_in` of the task's agent
 time (`policy.Time`), counted from the task's start, so it continues
 across sessions. Its detail is "scheduled check-in, no detector
 tripped", and none comes in a session's first 10 minutes. The wall
@@ -351,8 +351,8 @@ next brief) or `human`. An unreadable answer, a note-less handover too,
 gets one repair round, then a human. A message the worker cannot take
 (501, network) stops the session with the guidance as a finding
 (`redirect`). A delivered message starts every progress detector afresh
-(the diff's baseline and the nudges stay). The stuck rule (rulings 224,
-327): after a delivered message, the next detector trip with no file
+(the diff's baseline and the nudges stay). The stuck rule: after a
+delivered message, the next detector trip with no file
 written since, or a flip_flop or churn trip, is stuck, with the finding
 `stuck after the supervisor's message: <kind>: <detail>` and a line in
 the statement. A handover on it is `retry_stronger` with the note: the
@@ -381,7 +381,7 @@ grace period, and the next session starts from it. Escalation moves the task to
 `waiting-human`, comments the reason and the digest summary on the
 issue, and waits: a newer non-bot issue comment starts one more attempt,
 closing the issue fails the task. The workflow keeps every answer of the
-task (change id `answers`, ruling 118), and every later session gets all
+task (change id `answers`), and every later session gets all
 of them, newest first (the comments answering one escalation in the
 order they were written), as `SessionInput.Answers` (worker env
 `ANSWERS`), each as `<author>, to "<the escalation's first line>":
@@ -396,7 +396,7 @@ factoryd's own words ahead of its sections, outside every quoted block.
 Escalate records its
 comment as an `escalation` intake event, and `Reconcile` rebuilds the
 answers from the intake events (every trusted issue comment newer than an
-escalation's comment, tagged with its question; ruling 120), so a run the
+escalation's comment, tagged with its question), so a run the
 heal pass starts keeps them too. The opencode prompt puts the answers
 ahead of the objective as settled
 answers the agent must not escalate again; the `session_start` timeline
@@ -405,13 +405,13 @@ human is the one party allowed to raise a limit: the answer buys the
 extra attempt, and if less than a quarter of the task's resolved agent
 time (never under the 5 minutes a session needs to start) is left under
 the cap, the answer also grants the difference, so every answer gets at
-least that slice of working time (change id `answer-slice`, ruling 237).
+least that slice of working time (change id `answer-slice`).
 Both grants are recorded on the task row. Every
 decision is a `supervisor` event in the session record, a timeline step
 and an issue comment.
 
-A long gate past its bound goes to the gate supervisor (rulings 141,
-162, change id `gate-supervisor`). `GateWatch` writes the `gate_bound`
+A long gate past its bound goes to the gate supervisor (change id
+`gate-supervisor`). `GateWatch` writes the `gate_bound`
 alert and, for RunSession, WaitChecks, GateReproduction, ModelReview and
 Merge, signals `gate_bound` to the task's workflow with the activity, its
 run's id, the attempt, the alert and the bound. The short gates (policy,
@@ -451,7 +451,7 @@ change request sent meanwhile goes back to the agent. One `wait` and one
 call escalates. The action, the diagnosis and the recommendation go on
 the alert (`detail`, verdict `noise` for `wait`, `real` otherwise,
 `resolved_by` `supervisor`) and on the timeline (`gate_supervisor`). The
-call runs beside the gate (ruling 171, change id `gate-supervisor-race`):
+call runs beside the gate (change id `gate-supervisor-race`):
 a gate that ends first wins, the workflow goes on with its result, and
 the late answer is recorded on the alert with the note "gate ended
 before the answer" and acts on nothing. A workflow started before the
@@ -556,7 +556,7 @@ made while a session ran included) sends it back with the comment and the
 last plan; an answer to a revision that is no longer the newest is
 refused (`the plan changed to revision <m>; reload`); a closed issue ends
 the task `closed`. A planner that stops to ask a human (its
-`escalate_to_human`, the gate supervisor) puts the question on the card,
+`escalate`, the gate supervisor) puts the question on the card,
 and the answer goes to the next session; a session without a plan passes
 its last message on with the findings. Every session counts against
 `limits.sessions`; at the cap the card waits with the findings and a

@@ -37,7 +37,7 @@ type Document struct {
 	// sets none, and the most any project file's envelope may set.
 	EnvelopeDefault Envelope `yaml:"envelope_default" json:"envelope_default"`
 	// Approvers are the Forgejo users who may authorize spend in the
-	// console (ruling 128): approve a resource request or a merge, promote
+	// console: approve a resource request or a merge, promote
 	// a resource; a project file's approvers replace them for its project.
 	// Empty: nobody.
 	Approvers []string `yaml:"approvers,omitempty" json:"approvers"`
@@ -51,7 +51,7 @@ type Document struct {
 	Bounds map[string]int `yaml:"bounds,omitempty" json:"bounds"`
 	// Supervisor holds the session supervisor's progress detectors: how
 	// many seconds without the progress each names before it trips;
-	// absent keys take DefaultDetectors (ruling 161: no_write only).
+	// absent keys take DefaultDetectors (no_write only).
 	Supervisor map[string]int `yaml:"supervisor,omitempty" json:"supervisor"`
 	// ProjectDefault is what a project file leaves out takes, and the most
 	// its quota and standing may set; absent: DefaultProject.
@@ -727,7 +727,7 @@ func (d Document) TimeOf(class string, proc Process, p ProjectConfig) (agentTime
 	return agentTime, checkIn
 }
 
-// DetectorNoWrite is the progress detector (rulings 141, 161): agent
+// DetectorNoWrite is the progress detector: agent
 // events keep coming but no file write or edit tool call.
 const DetectorNoWrite = "no_write"
 
@@ -746,9 +746,8 @@ func (d Document) Detector(name string) time.Duration {
 // BoundDefault is the bounds key for every activity without its own.
 const BoundDefault = "default"
 
-// DefaultBounds are the bounds a policy without them gets (rulings 140,
-// 154): a merge attempt is one API call under a 2-minute timeout, its
-// retries on workflow timers (ruling 163). RunSession, RunReport, Screen,
+// DefaultBounds are the bounds a policy without them gets: a merge attempt is one API call under a 2-minute timeout, its
+// retries on workflow timers. RunSession, RunReport, Screen,
 // SuperviseGate, ModelReview and GateAudit follow the limits (Bound).
 var DefaultBounds = map[string]int{
 	"WaitChecks": 600, "GateReproduction": 900, "GateCriteria": 900, "Merge": 90, BoundDefault: 120,
@@ -760,7 +759,7 @@ var BoundActivities = []string{
 	"EnsureIssue", "SetState", "RunSession", "OpenPullRequest", "WaitChecks", "PullRequestMerged", "RecordStep",
 	"Finish", "Reconcile", "Escalate", "RecordUsage", "GatePolicy", "GateMigration", "GateReproduction", "GateCriteria",
 	"ModelReview", "RequestApproval", "Merge", "ReportMergeFailure", "ReportMergeRetriesExhausted", "SuperviseGate",
-	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "RerunChecks", "GateAudit", "TaskConfig",
+	"AutoMergeNote", "RequestInfo", "CloseNotReproduced", "Screen", "JudgeScreening", "RunReport", "RollCommit", "RerunChecks", "GateAudit", "GateCompanion", "TaskConfig",
 }
 
 // Bound is how long one run of activity may take before it alerts: the
@@ -872,7 +871,7 @@ type Budget struct {
 	SessionFloorFrontierEUR float64 `yaml:"session_floor_frontier_eur,omitempty" json:"session_floor_frontier_eur,omitempty"`
 	// PremiumMonthEUR caps the calls on Premium together per UTC calendar
 	// month, inside the caps above; the gateway serves a call it cannot fit
-	// on Big (ruling 329). Absent or 0: Premium has no cap of its own.
+	// on Big. Absent or 0: Premium has no cap of its own.
 	PremiumMonthEUR float64 `yaml:"premium_month_eur,omitempty" json:"premium_month_eur,omitempty"`
 }
 
@@ -896,7 +895,7 @@ type Class struct {
 	// Models are the aliases the agent may call through the gateway.
 	Models []string `yaml:"models" json:"models"`
 	// SessionModel is the alias a session of a plan or report class runs
-	// on (ruling 330), one of Models; absent: factoryd's stronger rung.
+	// on, one of Models; absent: factoryd's stronger rung.
 	SessionModel string `yaml:"session_model,omitempty" json:"session_model,omitempty"`
 	// Tools are the gateway tools the class may call: a paid tool with its
 	// per-task caps, a free tool as {}.
@@ -908,7 +907,7 @@ type Class struct {
 	// on the task's account.
 	SupervisorModel string `yaml:"supervisor_model,omitempty" json:"supervisor_model,omitempty"`
 	// AuditModel is the alias factoryd's security audit calls on the
-	// task's account (ruling 188).
+	// task's account.
 	AuditModel string `yaml:"audit_model,omitempty" json:"audit_model,omitempty"`
 	// CheckinModel is the alias the check-in agent calls on the task's
 	// account; absent reads ReviewModel (the escalation ladder's plan D).
@@ -941,7 +940,7 @@ const (
 	// PurposeTitle is a chat thread's naming call (roadmap 304): one
 	// cheap call that writes the thread's title from its first message.
 	PurposeTitle = "title"
-	// PurposeBrief is a needs-you card's brief (ruling 116), on the
+	// PurposeBrief is a needs-you card's brief, on the
 	// class's supervisor model: the one call a card that waits on a person
 	// may make.
 	PurposeBrief = "brief"
@@ -958,9 +957,9 @@ var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor,
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
 // and Small are LiteLLM aliases routed to their z.ai model, the Alibaba
-// model behind it as fallback. Premium (ruling 328) is a pay-per-token
+// model behind it as fallback. Premium is a pay-per-token
 // model with its own month cap (Budget.PremiumMonthEUR) that falls back to
-// Big (ruling 329). A call's purpose sits on its audit row and in its
+// Big. A call's purpose sits on its audit row and in its
 // ledger ref, not in its alias.
 const (
 	Big     = "big"
@@ -993,7 +992,7 @@ type ToolCap struct {
 // ClassCoder is the class intake gives agent tasks.
 const ClassCoder = "coder"
 
-// ClassAnalyzer is the class of a report session (ruling 185): it reads
+// ClassAnalyzer is the class of a report session: it reads
 // and writes a comment, it changes no code and commissions nothing.
 const ClassAnalyzer = "analyzer"
 
@@ -1013,7 +1012,7 @@ var PaidTools = []string{ToolWebScrape, ToolWebSearch, ToolReplicate, ToolFal}
 // classes.<c>.tools without caps ({}). The commissioning tools spend
 // through their own reservation and envelope, not a per-task tool cap.
 const (
-	ToolEscalate       = "escalate_to_human"
+	ToolEscalate       = "escalate"
 	ToolCloudPrices    = "cloud_prices"
 	ToolCommission     = "commission_server"
 	ToolListResources  = "list_resources"
@@ -1453,7 +1452,7 @@ func (d Document) Models(classes []string) []string {
 }
 
 // SessionModel is the alias a plan or report session of a task of classes
-// runs on: the first of classes that names one (ruling 330); "" when none
+// runs on: the first of classes that names one; "" when none
 // does.
 func (d Document) SessionModel(classes []string) string {
 	for _, c := range classes {

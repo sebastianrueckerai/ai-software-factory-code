@@ -144,7 +144,7 @@ subjects:
   namespace: factory
 ---
 # What a project's Flux Kustomization applies with, as the namespace's flux
-# account (ruling 157): the workload kinds a project deploys, nothing
+# account: the workload kinds a project deploys, nothing
 # cluster-scoped, no RBAC, no Flux kind and no network policy (the
 # namespace's default deny is factoryd's; policies add up, so one of the
 # project's would widen it). admin and edit would not do: both aggregate
@@ -324,7 +324,7 @@ spec:
   # restricted pod security level, or updated keeping the label it had; a
   # namespace without the label (the cluster's) never gets it. A namespace
   # the infra repository labels for a seed project (factory, platform,
-  # forgejo: ruling 180) carries factory/objects=seed and is never
+  # forgejo) carries factory/objects=seed and is never
   # factoryd's: it cannot update it, add the mark or take it off.
   - name: projectNamespace
     expression: >-
@@ -432,7 +432,7 @@ spec:
          object.subjects.all(s, s.kind == 'ServiceAccount' && s.name == 'flux' && has(s.namespace) && s.namespace == request.namespace))))
     message: factoryd may only bind factoryd-task or factoryd-project to itself and factory-project-deployer to a project namespace's flux account
   # a project's Kustomization applies its own repository into its own
-  # namespace as that namespace's flux account (ruling 157)
+  # namespace as that namespace's flux account
   - expression: >-
       variables.kind != 'Kustomization' || request.operation == 'DELETE' || variables.factorySuspend ||
       (has(object.spec.serviceAccountName) && object.spec.serviceAccountName == 'flux' &&
@@ -584,7 +584,7 @@ spec:
         - name: GOMEMLIMIT
           value: 460MiB
         # tool calls without a file change before the repetition trip: the
-        # code's default 24 trips normal reading on a large card (ruling 298)
+        # code's default 24 trips normal reading on a large card
         - name: SUPERVISE_READING_WITHOUT_WRITING
           value: "60"
         - name: PGUSER
@@ -611,8 +611,8 @@ spec:
           valueFrom: {secretKeyRef: {name: forgejo-ci-registrar, key: token}}
         - name: FORGEJO_CI_ORG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-ci-org-read, key: token}}
-        # the Hetzner CI project's token (build VMs, ruling 110) and the
-        # nodes' public IPv4s, the only sources a build VM admits (ruling 112)
+        # the Hetzner CI project's token (build VMs) and the
+        # nodes' public IPv4s, the only sources a build VM admits
         - name: HETZNER_CI_KEY
           valueFrom: {secretKeyRef: {name: hetzner-ci, key: token}}
         - name: CI_BUILD_VM_SOURCES
@@ -621,21 +621,21 @@ spec:
         - name: FORGEJO_MERGE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-merge, key: token}}
         # factory-gate: approvals whitelist of main only; the merge gate's
-        # approval before a merge on the merge rule auto (ruling R59)
+        # approval before a merge on the merge rule auto
         - name: FORGEJO_GATE_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-gate, key: token}}
         # factory-chat: write collaborator on no whitelist; the project
         # agent's own identity in every turn no member started (the wake)
         - name: FORGEJO_CHAT_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-chat, key: token}}
-        # factory-projects: owns every project organisation (ruling 164)
+        # factory-projects: owns every project organisation
         # and keeps its repository's hooks, collaborators, protection,
         # deploy key, Actions secrets and runners; write:repository only
         - name: FORGEJO_PROJECTS_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-projects, key: token}}
         # factory-config: read collaborator on the infra repository only,
         # read:repository limited to it; factoryd reads the configuration
-        # tree factory/ of its main with it every 30 s (ruling 183)
+        # tree factory/ of its main with it every 30 s
         - name: FORGEJO_CONFIG_TOKEN
           valueFrom: {secretKeyRef: {name: forgejo-config, key: token}}
         # factory-docs: write collaborator on the document repository
@@ -720,7 +720,7 @@ spec:
         - name: CONSOLE_PUBLIC_URL
           value: https://console.aisoftwarefactory.world
         # metrics, traces and logs to SigNoz's collector, OTLP over HTTP;
-        # the agent sandboxes get the same endpoint (ruling 158)
+        # the agent sandboxes get the same endpoint
         - name: OTEL_EXPORTER_OTLP_ENDPOINT
           value: http://signoz-otel-collector.platform.svc.cluster.local:4318
         # every second: the console has no backend between the old pod and
@@ -889,7 +889,7 @@ spec:
         app.kubernetes.io/name: forgejo
     toPorts:
     # 2222: Forgejo's SSH (Service port 22), whose host key registration
-    # scans for the projects' FORGEJO_SSH_HOST_KEY (ruling 165)
+    # scans for the projects' FORGEJO_SSH_HOST_KEY
     - ports: [{port: "3000", protocol: TCP}, {port: "2222", protocol: TCP}]
   - toEndpoints:
     - matchLabels:

@@ -81,7 +81,7 @@ type Resource struct {
 	Purpose    string
 	Address    string
 	// Lifetime is lease (ends with its lease or its owner) or standing
-	// (project-owned, lives until a human releases it; ruling 147).
+	// (project-owned, lives until a human releases it).
 	Lifetime     string
 	HoldID       int64
 	ApprovalID   int64

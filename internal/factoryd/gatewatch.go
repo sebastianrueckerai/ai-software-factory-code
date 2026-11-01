@@ -60,6 +60,7 @@ var activityGates = map[string]string{
 	ActivityRunSession:        GateSession,
 	ActivityWaitChecks:        GateChecks,
 	ActivityGatePolicy:        GatePolicy,
+	ActivityGateCompanion:     GatePolicy,
 	ActivityGateMigration:     GateMigration,
 	ActivityGateReproduction:  GateReproduction,
 	ActivityGateCriteria:      GateCriteria,
@@ -98,10 +99,10 @@ type GateStore interface {
 }
 
 // SignalGateBound hands a long gate's bound trip to its task's workflow,
-// which asks the gate supervisor (rulings 141, 162).
+// which asks the gate supervisor.
 const SignalGateBound = "gate_bound"
 
-// supervisedGates are the long gates (ruling 162): a short gate's attempt
+// supervisedGates are the long gates: a short gate's attempt
 // times out before any supervisor answer could arrive, so its gate_bound
 // alert is its record.
 var supervisedGates = []string{ActivityRunSession, ActivityWaitChecks, ActivityGateReproduction, ActivityGateCriteria, ActivityModelReview, ActivityGateAudit, ActivityMerge}

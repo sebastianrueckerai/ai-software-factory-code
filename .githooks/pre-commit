@@ -1,0 +1,32 @@
+#!/bin/sh
+# Refuses a staged citation of a ledger ruling, a ledger path in content, or
+# any sdd ledger file itself: rulings are per-plan bookkeeping in the
+# gitignored sdd workspaces, invisible to every clone, so a number or a path
+# in a tracked file points at a book no reader can open (on 2026-10-31 a
+# plan cited a taken number, two more cited rulings that existed nowhere).
+# State the decision instead. Active through
+# `git config core.hooksPath .githooks`.
+status=0
+git diff --cached --name-only --diff-filter=ACMR |
+while read -r f; do
+	case "$f" in
+	.superpowers/*)
+		echo "pre-commit: $f: the sdd ledgers stay untracked bookkeeping" >&2
+		exit 1
+		;;
+	esac
+	case "$f" in
+	.gitignore|CLAUDE.md|.githooks/pre-commit) ;;
+	*)
+		if git show ":$f" 2>/dev/null | grep -q '\.superpowers'; then
+			echo "pre-commit: $f names a ledger path; ledgers are untracked bookkeeping" >&2
+			exit 1
+		fi
+		;;
+	esac
+	if git show ":$f" 2>/dev/null | grep -Eq '[Rr]ulings? ?R?[0-9]'; then
+		echo "pre-commit: $f cites a ruling number; state the decision instead" >&2
+		exit 1
+	fi
+done || status=1
+exit $status

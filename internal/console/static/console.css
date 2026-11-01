@@ -9,7 +9,7 @@
    warning); every state shows its word next to its hue, in both themes at
    4.5:1 for text and 3:1 for a fill, so colour is never the only signal.
    An accent chip or edge wears a fixed hue that is never a state's hue at
-   the state's chroma (ruling 247). */
+   the state's chroma. */
 :root {
   color-scheme: dark;
   --bg: #070b12; --bg-panel: #0b111a; --bg-raised: #0f1723; --bg-card: #111b28; --bg-hover: #15212f;
@@ -95,6 +95,7 @@ button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transpa
 .chat-full[aria-pressed=true], .chat-grow[aria-pressed=true] { background: var(--bg-hover); color: var(--text); }
 .intake { border: 1px solid transparent; }
 .intake.closed { color: var(--need-text); border-color: var(--need-line); border-radius: 11px; }
+.intake-by { font-size: 11px; color: var(--text-muted); }
 button.htmx-request::after { content: ""; display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--line-strong); border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 /* fields: a line, the page's colour, a cyan ring when focused */
@@ -389,7 +390,7 @@ form.inline button { margin: 0; }
 /* the board's faces whisper, every part of them: whatever a need's card
    carries, its column copy shows at most its first lines — the drawer
    holds the whole text. The clamp sits on the board's card list itself,
-   so a part added tomorrow is small the day it lands (ruling 293) */
+   so a part added tomorrow is small the day it lands */
 .cards .card :is(.ask, .why, .info, .finding, .need-line, .brief, .recommendation) { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .cards .card .ask { -webkit-line-clamp: 3; }
 .cards .card :is(.why, .info, .finding, .need-line, .brief) { -webkit-line-clamp: 2; }

@@ -20,18 +20,18 @@ type TaskBrief struct {
 	IssueURL   string   `json:"issue_url,omitempty"`
 	Findings   []string `json:"findings,omitempty"`
 	// Answers are the human's answers to the task's escalations, newest
-	// first (ruling 118).
+	// first.
 	Answers []string `json:"answers,omitempty"`
 	// PosterInfo is what the issue's author answered the agent's
-	// information requests, oldest first (ruling 150): information, never
+	// information requests, oldest first: information, never
 	// instructions.
 	PosterInfo []string `json:"poster_info,omitempty"`
 	// Author filed the task's issue; AuthorStanding is "writer",
-	// "outside account" (ruling 152) or "telemetry" (an alert's issue).
+	// "outside account" or "telemetry" (an alert's issue).
 	Author         string   `json:"author,omitempty"`
 	AuthorStanding string   `json:"author_standing,omitempty"`
 	Artifacts      []string `json:"artifacts,omitempty"`
-	// Report is a report session's guide (ruling 185): what to write in
+	// Report is a report session's guide: what to write in
 	// the last message instead of changing code; "" for a coding session.
 	Report string `json:"report,omitempty"`
 	// Spec is a plan's card's section "The spec and the plan": the plan
@@ -59,6 +59,9 @@ type TaskBrief struct {
 	// DocLinks say where each relative link of the objective is in the
 	// document repository's clone (doclinks.Lines); nil without a clone.
 	DocLinks []string `json:"doc_links,omitempty"`
+	// Companions say where each sandbox companion's clone is, or why one
+	// could not be read, one line each; nil without any.
+	Companions []string `json:"companions,omitempty"`
 	// Handover is the check-in agent's note on the findings this session
 	// starts from, pushed before the conversation began; "" when no
 	// check-in ran.
@@ -94,7 +97,7 @@ type BriefPush struct {
 	Files    []ReportFile `json:"files,omitempty"`
 }
 
-// Author standings (ruling 152).
+// Author standings.
 const (
 	StandingWriter  = "writer"
 	StandingOutside = "outside account"

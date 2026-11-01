@@ -271,7 +271,7 @@ func TestHolds(t *testing.T) {
 
 	// the day: 0.01 booked in the ledger; a day cap of 0.01 leaves task b
 	// nothing. A standing resource's hours are its project's monthly line
-	// and take nothing of the day (ruling 147).
+	// and take nothing of the day.
 	if _, err := db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, ref, eur) VALUES ('standing:sf/app', 'standing', 'resource/1', 5)`); err != nil {
 		t.Fatal(err)
 	}
@@ -721,6 +721,33 @@ func TestMonthHeadroom(t *testing.T) {
 	}
 }
 
+// LedgerEnforced reads what the caps count: the day's and the month's
+// ledger spend with every outstanding hold, standing lines left out, the
+// premium figure on Premium rows alone. Hand-derived: 30 EUR on the
+// previous month's last day and a 10 EUR standing line count nowhere,
+// today's 0.01 counts once, and the holds 0.005 and a Premium 0.02 raise
+// the day and the month to 0.035, the premium to 0.02 alone — the figures
+// a cap stops at. Earlier days of the month count too (TestMonthHeadroom).
+func TestLedgerEnforcedCountsTheHolds(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO tasks (id, budget_eur, spent_eur, status) VALUES ('m', 5, 0, 'running'), ('o', 5, 0, 'running');
+		INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES
+			('old', date_trunc('month', now() AT TIME ZONE 'UTC')::date - 1, 'model', 'x', 30),
+			('standing:sf/app', (now() AT TIME ZONE 'UTC')::date, 'standing', 'resource/1', 10),
+			('today', (now() AT TIME ZONE 'UTC')::date, 'model', 'x', 0.01);
+		INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES
+			('o', 'model', 'x', 0.005, now() + interval '1 hour'),
+			('o', 'model', 'factory/premium', 0.02, now() + interval '1 hour')`); err != nil {
+		t.Fatal(err)
+	}
+	e, err := LedgerEnforced(ctx, db, time.Now())
+	if err != nil || !near(e.Day, 0.035) || !near(e.Month, 0.035) || !near(e.Premium, 0.02) {
+		t.Fatalf("enforced = (%+v, %v), want day and month 0.035, premium 0.02", e, err)
+	}
+}
+
 // A project's month cap (budget.month_eur in its file) bounds its tasks
 // together: the cap less the month's ledger rows of the tasks of its
 // repository, earlier months left out, less their outstanding holds; a
@@ -931,7 +958,7 @@ func TestHoldsOnlyForWorkingTasks(t *testing.T) {
 	}
 }
 
-// A card that waits on a person takes factoryd's brief call (ruling 116)
+// A card that waits on a person takes factoryd's brief call
 // and nothing else: not factoryd's other purposes, not a sandbox's call
 // under the same ref, and no other waiting or finished status.
 func TestHoldsForTheBriefOfAWaitingCard(t *testing.T) {

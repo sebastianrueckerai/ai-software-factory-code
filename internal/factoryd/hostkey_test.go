@@ -77,7 +77,7 @@ func TestScanHostKey(t *testing.T) {
 	}
 }
 
-// Ruling 165: the Actions secret FACTORY_SSH_HOST_KEY follows Forgejo's
+// The Actions secret FACTORY_SSH_HOST_KEY follows Forgejo's
 // host key; a new key (a rebuild) rewrites it, the same key changes nothing.
 func TestHostKeySecretFollowsForgejo(t *testing.T) {
 	rig := newRegisterRig(t)

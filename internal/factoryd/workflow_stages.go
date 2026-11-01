@@ -15,7 +15,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The screening verdicts (ruling 182).
+// The screening verdicts.
 const (
 	ScreenClear   = "clear"
 	ScreenSuspect = "suspect"
@@ -508,7 +508,7 @@ func (t *taskRun) skipReason(s policy.Stage) string {
 	case s.When == policy.WhenOutsider && t.standing != harness.StandingOutside:
 		return "the issue's author is not an outside account"
 	case s.Name == policy.StageAudit && t.rolling:
-		return "a roll task only bumps image digests main CI built, and makes no model call (ruling 178)"
+		return "a roll task only bumps image digests main CI built, and makes no model call"
 	case s.Name == policy.StageAudit && t.cfg.Task.NoAudit && t.auditBeside >= versionAuditBeside:
 		return auditNotSwitchedOn
 	}
@@ -621,6 +621,16 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			v, stop = failed("policy gate", err)
 			return nil, v, stop
 		}
+		// the plan card's companion pins read live at each pass
+		// (versionCompanions), so a held card that wakes reads them again
+		if t.companions >= versionCompanions {
+			var cs []CompanionGate
+			if err := workflow.ExecuteActivity(t.short, ActivityGateCompanion, t.taskID).Get(t.ctx, &cs); err != nil {
+				v, stop = failed("companion gate", err)
+				return nil, v, stop
+			}
+			g.Companions = cs
+		}
 		if g.Policy.Outcome == policy.OutcomeForbidden {
 			return []string{fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
 				g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}, verdict{}, false
@@ -718,7 +728,7 @@ const (
 // process's own order decides — the gate comes after the checks and the
 // local gates before them, so the gate's inputs are all known — and a
 // stage that does not run for the task starts nothing, since it would
-// never take the call. A roll makes no model call (ruling 178); anything
+// never take the call. A roll makes no model call; anything
 // else (a run from before the change, a process with the old order)
 // keeps the sequential gate.
 func (t *taskRun) scheduleBeside(head string, g *GateResults) {
@@ -1107,8 +1117,14 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			break
 		}
 	}
-	if !v.rerun && !v.moved {
+	if !v.rerun && !v.moved && !v.recheck {
 		return v
+	}
+	if v.recheck {
+		// a companion reached its pin while the approval waited
+		// (versionCompanions): the gates read again from the first stage,
+		// so the merge follows the pins it sees now
+		return t.verify(commit)
 	}
 	if v.moved {
 		// the merge was refused on a head the agent moved past its gates
@@ -1221,7 +1237,7 @@ func suspectReasons(res ScreenResult, err error) []string {
 
 // awaitSuspect waits on the human who reads the screening's reasons; none
 // waits on no one. The stage's on_findings is human: the loader refuses
-// anything else (ruling 182).
+// anything else.
 func (t *taskRun) awaitSuspect(reasons []string) (final, why string, findings []string) {
 	if len(reasons) == 0 {
 		return "", "", nil
@@ -1286,7 +1302,7 @@ func screenOptions(agentTime time.Duration) workflow.ActivityOptions {
 	}
 }
 
-// report is a report task's run (ruling 185): one session in report mode
+// report is a report task's run: one session in report mode
 // whose last message becomes the issue comment, then done; a session the
 // provider refused runs again after the wait, refusals the ones in a row.
 func (t *taskRun) report(stronger bool, refusals int) (string, error) {

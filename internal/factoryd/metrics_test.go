@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"math"
 	"strings"
@@ -844,5 +845,306 @@ func TestTimelineFactIdentities(t *testing.T) {
 	// another task's timeline is its own
 	if wrote, err := tl.AppendFactOnce(ctx, "t-2", "session_end", end); err != nil || !wrote {
 		t.Errorf("t-2 wrote %t, %v; want true", wrote, err)
+	}
+}
+
+// econSpend is one lifetime ledger row of an economics fixture.
+type econSpend struct {
+	day string
+	eur float64
+}
+
+// seedEconStore opens the metrics store and empties every table the
+// economics fixtures write, the metrics seeding list plus the ledger
+// the panels read.
+func seedEconStore(t *testing.T) *PGStore {
+	t.Helper()
+	s := metricsStore(t)
+	ctx := context.Background()
+	for _, table := range []string{"events", "alerts", "ledger", "audit", "project_rolls", "ci_runs", "rolls", "chat_messages", "tasks"} {
+		if _, err := s.db.ExecContext(ctx, `TRUNCATE `+table+` CASCADE`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
+// seedEconCard writes one card of the economics cohort: a task of the
+// size and sha (head), one pull_request_merged event per merge instant
+// (the earliest its first merge), a final gate_head reading when head
+// is set (empty head: none) and the card's lifetime ledger rows (no
+// spend: none).
+func seedEconCard(t *testing.T, s *PGStore, repo, id, size, head string, ins, del int, merges []string, spend []econSpend) {
+	t.Helper()
+	ctx := context.Background()
+	must := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+	}
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, size, sha, track)
+		VALUES ($1, 1, 0, 'merged', $2, 'agent', 'webhook', $3, $3, $4, $5, 'direct')`, id, repo, merges[0], size, head)
+	for _, at := range merges {
+		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+			VALUES ($1, $2, $3, 'pull_request_merged', 'factoryd', 'factoryd', '{}')`, at, repo, id)
+	}
+	if head != "" {
+		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+			VALUES ($1, $2, $3, 'gate_head', 'factoryd', 'factoryd', $4)`, merges[len(merges)-1], repo, id,
+			fmt.Sprintf(`{"gate":"merge","head":%q,"decision":"auto","size":%q,"bound":300,"policy_version":7,"files":9,"insertions":%d,"deletions":%d}`,
+				head, size, ins, del))
+	}
+	for _, row := range spend {
+		must(`INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ($1, $2, 'model', 'big', $3)`, id, row.day, row.eur)
+	}
+}
+
+// TestDivideConquerEconomicsSQL seeds (small,100,3), (small,300,5),
+// (medium,200,5) and (medium,400,7) — size, changed lines, actual euros
+// — and pins both economics panels' table-to-report numbers: 20 EUR
+// over 1000 merged lines and the per-size fits intercepting at small
+// 2.00 and medium 3.00. The undefined states read unavailable, or are
+// named in the coverage — no variance, no card, no merged line, no
+// spend — never an invented zero, and a fit that falls with lines keeps
+// its negative intercept.
+func TestDivideConquerEconomicsSQL(t *testing.T) {
+	s := seedEconStore(t)
+	from, to := metricsTestWindow()
+	ctx := context.Background()
+	eq := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+	report := func(repo string) MetricsReport {
+		r, err := s.ProjectMetrics(ctx, repo, from, to)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	for _, c := range []struct {
+		id       string
+		size     string
+		ins, del int
+		eur      float64
+	}{
+		{"e1", "small", 80, 20, 3},
+		{"e2", "small", 240, 60, 5},
+		{"e3", "medium", 150, 50, 5},
+		{"e4", "medium", 300, 100, 7},
+	} {
+		seedEconCard(t, s, "sf/econ", c.id, c.size, c.id, c.ins, c.del,
+			[]string{"2026-10-05T10:00Z"}, []econSpend{{"2026-10-05", c.eur}})
+	}
+	r := report("sf/econ")
+	// 20 EUR over 1000 merged lines, all four merged into the last bucket
+	want := Figure{Value: 0.02, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 0.02}}
+	if r.DivideConquer.EurPerMergedLine != want {
+		t.Fatalf("eur per merged line = %+v, want %+v", r.DivideConquer.EurPerMergedLine, want)
+	}
+	// small fits (100,3) and (300,5) at 2.00, medium (200,5) and
+	// (400,7) at 3.00, sizes sorted
+	fits := r.DivideConquer.FixedEurPerCard
+	if len(fits) != 2 || fits[0].Size != "medium" || fits[1].Size != "small" {
+		t.Fatalf("fixed eur per card = %+v, want medium then small", fits)
+	}
+	for _, fit := range fits {
+		w := 3.0
+		if fit.Size == "small" {
+			w = 2.0
+		}
+		if !fit.Available || fit.Cards != 2 || !eq(fit.EUR, w) {
+			t.Fatalf("%s = %+v, want the intercept %.2f over 2 cards", fit.Size, fit, w)
+		}
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 4}) {
+		t.Fatalf("coverage = %+v, want the four cards and no hole", cov)
+	}
+
+	// no variance: two cards of one line value fit nothing
+	seedEconCard(t, s, "sf/novar", "v1", "large", "v1", 200, 0, []string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 5}})
+	seedEconCard(t, s, "sf/novar", "v2", "large", "v2", 200, 0, []string{"2026-10-06T11:00Z"}, []econSpend{{"2026-10-06", 9}})
+	r = report("sf/novar")
+	if f := r.DivideConquer.EurPerMergedLine; !f.Has || !eq(f.Value, 0.035) {
+		t.Fatalf("no-variance line = %+v, want 14 EUR over 400 lines", f)
+	}
+	if fits := r.DivideConquer.FixedEurPerCard; len(fits) != 1 || fits[0].Size != "large" || fits[0].Available ||
+		fits[0].EUR != 0 || fits[0].Cards != 2 {
+		t.Fatalf("no-variance fit = %+v, want large unavailable over its 2 cards", fits)
+	}
+
+	// zero merged lines: undefined, never an infinite or zero cost
+	seedEconCard(t, s, "sf/zero", "z1", "small", "z1", 0, 0, []string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 2}})
+	seedEconCard(t, s, "sf/zero", "z2", "medium", "z2", 0, 0, []string{"2026-10-06T11:00Z"}, []econSpend{{"2026-10-06", 4}})
+	r = report("sf/zero")
+	if f := r.DivideConquer.EurPerMergedLine; f.Has || f.Value != 0 || f.PrevHas {
+		t.Fatalf("zero-line line = %+v, want undefined", f)
+	}
+	if fits := r.DivideConquer.FixedEurPerCard; len(fits) != 2 || fits[0].Size != "medium" || fits[1].Size != "small" ||
+		fits[0].Available || fits[0].Cards != 1 || fits[1].Available || fits[1].Cards != 1 {
+		t.Fatalf("zero-line fits = %+v, want both sizes unavailable over 1 card", fits)
+	}
+
+	// missing spend: a card the ledger holds no row for is unknown
+	// cost, named in the coverage — never a free card
+	seedEconCard(t, s, "sf/holes", "n1", "small", "n1", 100, 0, []string{"2026-10-06T10:00Z"}, nil)
+	r = report("sf/holes")
+	if f := r.DivideConquer.EurPerMergedLine; f.Has || f.Value != 0 {
+		t.Fatalf("missing-cost line = %+v, want undefined, not a zero cost", f)
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 1, MissingCost: 1}) {
+		t.Fatalf("coverage = %+v, want the costless card named", cov)
+	}
+	if fits := r.DivideConquer.FixedEurPerCard; len(fits) != 0 {
+		t.Fatalf("missing-cost fits = %+v, want none", fits)
+	}
+	// a card without a reading, and a reading without a size: the
+	// measured card alone answers, every hole named
+	seedEconCard(t, s, "sf/holes", "n2", "small", "", 0, 0, []string{"2026-10-07T10:00Z"}, []econSpend{{"2026-10-07", 1}})
+	seedEconCard(t, s, "sf/holes", "n3", "", "n3", 30, 20, []string{"2026-10-07T11:00Z"}, []econSpend{{"2026-10-07", 1}})
+	r = report("sf/holes")
+	if f := r.DivideConquer.EurPerMergedLine; !f.Has || !eq(f.Value, 1.0/50.0) {
+		t.Fatalf("holes line = %+v, want the measured card alone (1/50)", f)
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 3, MissingCost: 1, MissingLines: 1, MissingSize: 1}) {
+		t.Fatalf("coverage = %+v, want every hole named", cov)
+	}
+	if fits := r.DivideConquer.FixedEurPerCard; len(fits) != 0 {
+		t.Fatalf("holes fits = %+v, want none: the measured card carries no size", fits)
+	}
+
+	// a negative fit keeps its sign: euros falling with lines
+	seedEconCard(t, s, "sf/neg", "g1", "small", "g1", 100, 0, []string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 1}})
+	seedEconCard(t, s, "sf/neg", "g2", "small", "g2", 300, 0, []string{"2026-10-06T11:00Z"}, []econSpend{{"2026-10-06", 5}})
+	r = report("sf/neg")
+	if fits := r.DivideConquer.FixedEurPerCard; len(fits) != 1 || !fits[0].Available || fits[0].Cards != 2 || !eq(fits[0].EUR, -1) {
+		t.Fatalf("falling fit = %+v, want small at -1.00 over 2 cards", fits)
+	}
+
+	// conflicting later gate_head: a gate for an abandoned head recorded
+	// after the first merge must not replace the merged head's reading
+	seedEconCard(t, s, "sf/conflict", "c1", "small", "c1-merged", 80, 20,
+		[]string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 4}})
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+		VALUES ('2026-10-07T10:00Z', 'sf/conflict', 'c1', 'gate_head', 'factoryd', 'factoryd', $1)`,
+		`{"gate":"merge","head":"c1-abandoned","decision":"auto","size":"large","bound":600,"policy_version":7,"files":20,"insertions":500,"deletions":200}`); err != nil {
+		t.Fatal(err)
+	}
+	r = report("sf/conflict")
+	if f := r.DivideConquer.EurPerMergedLine; !f.Has || !eq(f.Value, 4.0/100.0) {
+		t.Fatalf("conflicting later gate_head line = %+v, want 4 EUR over 100 lines (merged head), not 700", f)
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 1}) {
+		t.Fatalf("conflicting later gate_head coverage = %+v, want the merged card alone", cov)
+	}
+
+	// gate_head lacking diff statistics: insertions/deletions absent stays
+	// unavailable, never a measured zero
+	seedEconCard(t, s, "sf/nostat", "ns1", "small", "ns1", 0, 0,
+		[]string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 3}})
+	if _, err := s.db.ExecContext(ctx, `UPDATE events SET detail = $1
+		WHERE repository = 'sf/nostat' AND task_id = 'ns1' AND kind = 'gate_head'`,
+		`{"gate":"merge","head":"ns1","decision":"auto","size":"small","bound":300,"policy_version":7,"files":9}`); err != nil {
+		t.Fatal(err)
+	}
+	r = report("sf/nostat")
+	if f := r.DivideConquer.EurPerMergedLine; f.Has || f.Value != 0 {
+		t.Fatalf("lacking-statistics line = %+v, want undefined, not a zero-line reading", f)
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 1, MissingLines: 1}) {
+		t.Fatalf("lacking-statistics coverage = %+v, want the card named as missing lines", cov)
+	}
+
+	// nothing at all: no cohort, no fit, no hole
+	r = report("sf/econ-empty")
+	if f := r.DivideConquer.EurPerMergedLine; f != (Figure{}) || len(r.DivideConquer.FixedEurPerCard) != 0 ||
+		r.DivideConquer.EconomicsCoverage != (EconomicsCoverage{}) {
+		t.Fatalf("empty = line %+v fits %+v coverage %+v, want all empty", r.DivideConquer.EurPerMergedLine,
+			r.DivideConquer.FixedEurPerCard, r.DivideConquer.EconomicsCoverage)
+	}
+}
+
+// TestDivideConquerEconomicsWindowsSQL pins the panels' cohorts: a card
+// belongs to the span its first merge opens — window, previous window
+// or weekly bucket — and a duplicate merge re-merges it into none of
+// them. A card's euros are its whole ledger life, a row dated past the
+// window included, while the spend figure keeps reading the window's
+// rows alone; a card without a merge never enters, and the other
+// project's card answers only its own report.
+func TestDivideConquerEconomicsWindowsSQL(t *testing.T) {
+	s := seedEconStore(t)
+	from, to := metricsTestWindow()
+	ctx := context.Background()
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+		VALUES ('2026-10-05T09:00Z', 'sf/win', 'w-cur', 'gate_head', 'factoryd', 'factoryd', $1)`,
+		`{"gate":"merge","head":"w-cur-a","decision":"auto","size":"small","bound":300,"policy_version":7,"files":9,"insertions":150,"deletions":50}`); err != nil {
+		t.Fatal(err) // the abandoned head, read before the final one
+	}
+	// w-cur: first merge Oct 5 (window, last bucket), re-merged Oct 6;
+	// the final head reads 100 lines, the abandoned head's 200 sit out
+	seedEconCard(t, s, "sf/win", "w-cur", "small", "w-cur-b", 60, 40,
+		[]string{"2026-10-05T10:00Z", "2026-10-06T09:00Z"}, []econSpend{{"2026-10-06", 3}})
+	// w-prev: first merge Sep 20 (previous window), re-merged inside
+	// this one: still the previous window's card alone
+	seedEconCard(t, s, "sf/win", "w-prev", "small", "w-prev", 240, 60,
+		[]string{"2026-09-20T10:00Z", "2026-10-07T10:00Z"}, []econSpend{{"2026-09-21", 5}})
+	// w-week: first merge Sep 1, seven weeks back, spend split over its
+	// life — the Oct 20 row is past the window and counts anyway
+	seedEconCard(t, s, "sf/win", "w-week", "medium", "w-week", 350, 50,
+		[]string{"2026-09-01T10:00Z"}, []econSpend{{"2026-09-02", 4}, {"2026-10-20", 3}})
+	// w-unmerged: done, read and spent, but never merged: no cohort
+	// opens, whatever its facts hold
+	unmerged := []struct {
+		q    string
+		args []any
+	}{
+		{`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, size, track)
+			VALUES ('w-unmerged', 1, 0, 'done', 'sf/win', 'agent', 'webhook', '2026-10-06T09:00Z', '2026-10-08T10:00Z', 'medium', 'direct')`, nil},
+		{`INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+			VALUES ('2026-10-08T10:00Z', 'sf/win', 'w-unmerged', 'gate_head', 'factoryd', 'factoryd', $1)`,
+			[]any{`{"gate":"merge","head":"w-unmerged","decision":"auto","size":"medium","bound":300,"policy_version":7,"files":9,"insertions":150,"deletions":50}`}},
+		{`INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ('w-unmerged', '2026-10-08', 'model', 'big', 2)`, nil},
+	}
+	for _, q := range unmerged {
+		if _, err := s.db.ExecContext(ctx, q.q, q.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// the other project's card: sf/other's own panels alone
+	seedEconCard(t, s, "sf/other", "o-cur", "small", "o-cur", 30, 20,
+		[]string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 1}})
+
+	r, err := s.ProjectMetrics(ctx, "sf/win", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dc := r.DivideConquer
+	want := Figure{Value: 0.03, Prev: 5.0 / 300.0, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 7.0 / 400.0, 0, 5.0 / 300.0, 0, 0, 0.03}}
+	if dc.EurPerMergedLine != want {
+		t.Fatalf("eur per merged line = %+v, want %+v", dc.EurPerMergedLine, want)
+	}
+	// one window card fits nothing; its final head's 100 lines answer,
+	// the abandoned head's 200 never reach the panel
+	if fits := dc.FixedEurPerCard; len(fits) != 1 || fits[0].Size != "small" || fits[0].Available ||
+		fits[0].EUR != 0 || fits[0].Cards != 1 {
+		t.Fatalf("fixed eur per card = %+v, want small unavailable over its 1 card", fits)
+	}
+	if cov := dc.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 1}) {
+		t.Fatalf("coverage = %+v, want w-cur alone: duplicates, later cohorts and the unmerged card stay out", cov)
+	}
+	// the spend figure still reads the window's ledger rows alone: the
+	// Oct 20 row is lifetime spend, never this window's (the Sep 21
+	// spend sits a bucket after the Sep 20 merge it follows)
+	if r.Spend != (Figure{Value: 5, Prev: 0, Has: true, PrevHas: true, Weeks: [7]float64{0, 4, 0, 0, 5, 0, 5}}) {
+		t.Fatalf("spend = %+v", r.Spend)
+	}
+	ro, err := s.ProjectMetrics(ctx, "sf/other", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := ro.DivideConquer.EurPerMergedLine; !f.Has || f.Value != 1.0/50.0 || f.PrevHas || f.Prev != 0 {
+		t.Fatalf("sf/other line = %+v, want 1 EUR over 50 lines, no prev", f)
+	}
+	if ro.Spend != (Figure{Value: 1, Prev: 0, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}) {
+		t.Fatalf("sf/other spend = %+v", ro.Spend)
 	}
 }

@@ -553,7 +553,7 @@ func TestOpenPullRequestOpensOnceThenReuses(t *testing.T) {
 		!strings.Contains(body["body"].(string), "Closes #4") {
 		t.Fatalf("create body = %v", body)
 	}
-	// the ruling 90 check compares the base tree on sf with the pushed commit's tree on the fork
+	// the check compares the base tree on sf with the pushed commit's tree on the fork
 	if !slices.Contains(fj.calls, "GET /api/v1/repos/sf/repo/git/trees/base") || !slices.Contains(fj.calls, "GET /api/v1/repos/factory-agent/repo/git/trees/c1") {
 		t.Fatalf("calls = %v", fj.calls)
 	}
@@ -1605,7 +1605,7 @@ func TestFinishCompletesATaskWithABrokenRepository(t *testing.T) {
 	}
 }
 
-// forkHead is a pull request head on the bot's fork (ruling 97).
+// forkHead is a pull request head on the bot's fork.
 func forkHead(ref, sha string) map[string]any {
 	return map[string]any{"ref": ref, "sha": sha, "repo": map[string]any{"full_name": "factory-agent/repo"}}
 }
@@ -1866,7 +1866,7 @@ func TestReconcileCountsABotCloseOnlyWhenRecorded(t *testing.T) {
 	}
 }
 
-// Ruling 120: Reconcile rebuilds the human's answers from the intake
+// Reconcile rebuilds the human's answers from the intake
 // events, newest first: every trusted issue comment newer than an
 // escalation's comment, tagged with that escalation's question; a healed
 // re-ask keeps the question it re-asks and its choices. A comment before any escalation,
@@ -3186,7 +3186,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	}
 }
 
-// A plan class's session_model (ruling 330) is the model its session is
+// A plan class's session_model is the model its session is
 // funded on, above the start rung: the planner's premium session at 0.50
 // free asks the frontier floor 0.60 and names premium, though the plan
 // loop passes the stronger rung.

@@ -1,4 +1,4 @@
--- plan_questions (Stage 16 item 3.5, ruling 264): the open points a plan
+-- plan_questions (Stage 16 item 3.5): the open points a plan
 -- revision asks the member, numbered from 1, each with the planner's
 -- choices and the member's answer, NULL until given. A revision with an
 -- open question is not accepted.

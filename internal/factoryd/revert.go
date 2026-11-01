@@ -47,7 +47,7 @@ type RevertBook interface {
 }
 
 // RevertPass is the daily check behind tasks.reverted_at and
-// factory.task.reverted{project} (ruling 185). A merged agent pull
+// factory.task.reverted{project}. A merged agent pull
 // request is reverted by a pull request merged into the same base of the
 // same repository after its task finished and within RevertWindow of it
 // that undoes every file it changed (reverts); a fix is reverted too when

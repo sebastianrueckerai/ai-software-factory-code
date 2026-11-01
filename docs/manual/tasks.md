@@ -53,7 +53,7 @@ intake reads only `bug`, `improvement` and non-track labels: `agent`,
 `plan`, `human`, `priority/*` and `severity/*` count from writers only,
 and intake takes them off an outside account's new issue. The task
 keeps its author and whether they could write the repository then
-(`tasks.author`, `tasks.author_writer`; ruling 152); an API task is the
+(`tasks.author`, `tasks.author_writer`); an API task is the
 bot's, as a writer. The day cap bounds the spend; there is no per-author
 limit. The heal pass reads every open issue of every active project (a project
 file, and for `objects: factory` a registration that has run), the
@@ -239,7 +239,7 @@ instead of starting a fresh cap. A stopping factoryd stops a running
 session ends `stopped` and Temporal retries the attempt on the new pod,
 which continues from the pushed branch with the stop report as findings.
 A crashed factoryd answers no push request, so a running pod's
-unpushed work in progress is lost (ruling 231); the retry removes the
+unpushed work in progress is lost; the retry removes the
 dead session's namespace, pod and credentials and starts a new session
 with the dead one as parent and its findings.
 

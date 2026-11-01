@@ -526,7 +526,7 @@ func TestSuperviseGateScrubsTheWholeBundle(t *testing.T) {
 }
 
 // The gate supervisor's bundle carries an outside account's objective
-// sanitised the same way the agent's own brief is (ruling 152, item 48):
+// sanitised the same way the agent's own brief is:
 // the gate supervisor is another reader of untrusted issue text.
 func TestSuperviseGateSanitisesAnOutsidersObjective(t *testing.T) {
 	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"x"}`, map[string]string{
@@ -610,7 +610,7 @@ func TestSuperviseGateLateAnswerIsRecordedAndDropped(t *testing.T) {
 	}
 }
 
-// A roll task makes no model call (ruling 178): its gate trip goes to a
+// A roll task makes no model call: its gate trip goes to a
 // human without asking the supervisor.
 func TestSuperviseGateOfARollAsksNoModel(t *testing.T) {
 	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, nil)

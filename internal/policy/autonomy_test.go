@@ -133,6 +133,22 @@ func TestQueueCapOf(t *testing.T) {
 	}
 }
 
+// RefillBelowOf is the depth a repository's waiting cards fall below to
+// wake its roadmap pull: its project file's refill_below, 0 — no pull
+// wake — without one.
+func TestRefillBelowOf(t *testing.T) {
+	tr := Tree{Projects: map[string]ProjectConfig{"a": {Repository: "o/a", RefillBelow: 6}, "b": {Repository: "o/b"}}}
+	if got := tr.RefillBelowOf("o/a"); got != 6 {
+		t.Errorf("RefillBelowOf(o/a) = %d, want 6", got)
+	}
+	if got := tr.RefillBelowOf("o/b"); got != 0 {
+		t.Errorf("RefillBelowOf(o/b) = %d, want 0: no pull without a threshold", got)
+	}
+	if got := tr.RefillBelowOf("o/x"); got != 0 {
+		t.Errorf("RefillBelowOf(o/x) = %d, want 0", got)
+	}
+}
+
 // A project's chat block reaches the chat whole: its document repository
 // and its turn bound merge over the policy's like its other keys.
 func TestChatOfMergesDocRepoAndParallelTurns(t *testing.T) {

@@ -19,7 +19,7 @@ const (
 	EventAutonomyChanged = "autonomy_changed"
 	// EventIntakeChanged records a project's intake switch (the chat
 	// header's): detail {"from", "to"} with the words open and closed —
-	// closed refuses the wake's own filings, the member's ask still files.
+	// closed stops exactly the roadmap pull, every other filing still files.
 	EventIntakeChanged     = "intake_changed"
 	EventCardCreated       = "card_created"
 	EventTaskEnded         = "task_ended"
@@ -136,19 +136,17 @@ func (tl *Timeline) RecordProjectRow(ctx context.Context, e Event) {
 	}
 }
 
-// RecordFactRow writes fact e as its events row and fails the step it
-// records: unlike RecordRow the row is the step's own record — a fact the
-// panel reads — so a failed write is an error the caller carries and the
-// filing that wrote it runs again. A nil Timeline records nothing; one
-// identity, one row, whichever retry writes it first.
-func (tl *Timeline) RecordFactRow(ctx context.Context, e Event) error {
+// RecordFact writes a fact payload's row (the metrics contracts): its
+// IdentityKey makes it one row per fact, whichever retry records it
+// first. A failed write is logged — a fact never fails the decision it
+// records, and the decision is never retried for the fact's sake.
+func (tl *Timeline) RecordFact(ctx context.Context, e Event) {
 	if tl == nil || tl.Events == nil {
-		return nil
+		return
 	}
 	if _, err := tl.Events.Record(ctx, e); err != nil {
-		return fmt.Errorf("event %s: the row: %w", e.Kind, err)
+		log.Printf("task %s: event %s: the fact row: %v", e.TaskID, e.Kind, err)
 	}
-	return nil
 }
 
 // allDoneMu holds taskEnded's check and record of all_children_done

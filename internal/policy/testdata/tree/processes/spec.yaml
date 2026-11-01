@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=../schema/process.schema.json
-# Build from a spec (ruling 205, roadmap 225): a plan-track card's planner
+# Build from a spec (roadmap 225): a plan-track card's planner
 # answers a plan; one with no open question files one direct-track card per
 # planned card with their dependencies, each waits for its dependencies,
 # and one pull request merges at a time.

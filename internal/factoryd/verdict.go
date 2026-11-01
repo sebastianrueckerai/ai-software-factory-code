@@ -587,7 +587,7 @@ type deltaCriterion struct {
 // the hold-out round's shape) and files the card it answers: a feature
 // card, which joins the round of the plan's newest revision, is merged
 // into the plan and judged by the plan rules again (judgePlan), then filed
-// like any child (ruling 225). Dues are the catch rows the round answers;
+// like any child. Dues are the catch rows the round answers;
 // they are marked filed or refused when it ends, so the round runs once
 // per due. A failed call stays due: the next pass tries again.
 func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanCatch) {

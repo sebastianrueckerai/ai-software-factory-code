@@ -355,6 +355,8 @@ type ChainStore interface {
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ChainCarriedIssues(ctx context.Context, repository, sha string) ([]int64, error)
 	ChainHeldIssues(ctx context.Context, repository string) ([]int64, error)
+	HeldPlanCards(ctx context.Context, repository string) ([]Task, error)
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	ResolveChainAlerts(ctx context.Context, repository string) error
 	ResolveChainUncarried(ctx context.Context, repository string, standing []string) error
@@ -441,6 +443,7 @@ type ChainPoller struct {
 	failed   map[string]string            // repository -> the failure it last logged
 	episodes map[headKey]chainEpisode     // the head rows watched between polls
 	ends     map[string]map[string]string // repository -> covered card -> the end failure it last logged
+	woken    map[string]bool              // the held cards already woken on a landed companion pin
 
 	pollMu sync.Mutex
 	polled map[string]time.Time // repository -> its last successful tick, read by the poll age gauge
@@ -526,6 +529,7 @@ func (p *ChainPoller) once() {
 		p.polled = map[string]time.Time{}
 		p.pollMu.Unlock()
 		p.ends = map[string]map[string]string{}
+		p.woken = map[string]bool{}
 	}
 }
 
@@ -609,7 +613,56 @@ func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 		}
 	}
 	p.uncarried(ctx, proj.Repository, cmp.Or(chain.Stall, policy.DefaultChainStall), &cards)
+	p.companions(ctx, proj)
 	return err
+}
+
+// companions wakes the plan cards the project's repository holds at their
+// approval on a companion pin (versionCompanions): every pin the card
+// carries is read live through the factory-config token, and a card whose
+// pins all read met is signalled companion_landed once — the gates read
+// again and the card merges or holds on what they see. A companion read
+// that fails counts as unmet: the card's own gate names the unread
+// companion, which is where it shows. A plan card that cannot be read is
+// skipped, its pins unknown, and the next tick reads again; a wake whose
+// signal fails is tried again on the next tick, for the card is only
+// woken once Temporal takes the signal.
+func (p *ChainPoller) companions(ctx context.Context, proj Project) {
+	if len(proj.Companions) == 0 {
+		return
+	}
+	cards, err := p.Store.HeldPlanCards(ctx, proj.Repository)
+	if err != nil {
+		log.Printf("chain poller: %s: held plan cards: %v", proj.Repository, err)
+		return
+	}
+	token := p.Forgejo.Seeded[policy.SecretConfig]
+	for _, card := range cards {
+		if p.woken[card.ID] {
+			continue
+		}
+		pins, err := cardCompanions(ctx, p.Store, card)
+		if err != nil {
+			continue
+		}
+		met := true
+		for _, pin := range pins {
+			owner, name, _ := strings.Cut(pin.Repository, "/")
+			at, _, err := p.Forgejo.MainAtLeast(ctx, token, Repo{Owner: owner, Name: name}, pin.At)
+			if err != nil || !at {
+				met = false
+				break
+			}
+		}
+		if !met {
+			continue
+		}
+		if err := p.Workflows.Signal(ctx, card.ID, SignalCompanionLanded, TaskSignal{}); err != nil {
+			log.Printf("chain poller: %s: wake %s on a landed companion: %v", proj.Repository, card.ID, err)
+			continue
+		}
+		p.woken[card.ID] = true
+	}
 }
 
 // uncarriedCards is a tick's one read of a repository's merged cards
@@ -755,7 +808,7 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 		return false, err
 	}
 	if !visible {
-		log.Printf("chain poller: %s is invisible to the projects token: the chain cannot record — restore the token's access (ruling 164)", repo)
+		log.Printf("chain poller: %s is invisible to the projects token: the chain cannot record — restore the token's access", repo)
 		p.raiseChainAlert(ctx, repo.String(), AlertChainStalled, map[string]any{"reason": "the projects token cannot see the repository"})
 		return false, nil
 	}

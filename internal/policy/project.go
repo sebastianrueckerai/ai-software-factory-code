@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-// ProjectDefault is what a project file leaves out takes (ruling 146):
+// ProjectDefault is what a project file leaves out takes:
 // the in-cluster quota of each of its namespaces and its envelope's
-// standing block (ruling 147).
+// standing block.
 type ProjectDefault struct {
 	// Quota is each of the project's namespaces' ResourceQuota.
 	Quota Quota `yaml:"quota" json:"quota"`
@@ -45,8 +45,8 @@ type Standing struct {
 	MaxCount int `yaml:"max_count" json:"max_count"`
 }
 
-// Merge rules: auto merges a clean agent pull request without a human
-// (ruling 149), human waits for an approver.
+// Merge rules: auto merges a clean agent pull request without a human,
+// human waits for an approver.
 const (
 	MergeAuto  = "auto"
 	MergeHuman = "human"
@@ -195,7 +195,7 @@ func (p ProjectDefault) validate() error {
 }
 
 // ProjectConfig is projects/<name>.yaml: one project, the file name its
-// name (rulings 146, 179).
+// name.
 type ProjectConfig struct {
 	// Repository is the project's Forgejo repository, owner/name.
 	Repository string `yaml:"repository" json:"repository"`
@@ -216,7 +216,7 @@ type ProjectConfig struct {
 	// the empty repository's main with; a factory project's only.
 	Template string `yaml:"template,omitempty" json:"template,omitempty"`
 	// Audit runs the process's audit stage on the project's pull
-	// requests (ruling 188); absent: it does not.
+	// requests; absent: it does not.
 	Audit bool `yaml:"audit,omitempty" json:"audit,omitempty"`
 	// Messengers forbids delivery on Telegram and Discord (roadmap 145):
 	// a notification line leaves the factory for the venue's servers.
@@ -290,6 +290,11 @@ type ProjectConfig struct {
 	// stamp, the queued cards a slot has not taken yet; a filing at the
 	// cap refuses. Absent: 8.
 	QueueCap int `yaml:"queue_cap,omitempty" json:"queue_cap,omitempty"`
+	// RefillBelow is the queue depth the project's roadmap pull wakes at:
+	// when the waiting cards fall below it, one turn reads the doc
+	// repository's roadmap and files its ripe items. Absent or 0: no
+	// pull wake.
+	RefillBelow int `yaml:"refill_below,omitempty" json:"refill_below,omitempty"`
 	// Routines are the project's recurring work, each run filing a card on
 	// its schedule.
 	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
@@ -301,6 +306,22 @@ type ProjectConfig struct {
 	// block through an auto-merged pull request after each build, and cards
 	// run on the pinned digests.
 	Images map[string]ImagePin `yaml:"images,omitempty" json:"images,omitempty"`
+	// Companions are the repositories of this Forgejo the project reads
+	// beside its own: a card's plan filing pins each companion's main on
+	// the card and its gates hold the merge until the project's own merge
+	// chain has reached that pin. Absent: none.
+	Companions []Companion `yaml:"companions,omitempty" json:"companions,omitempty"`
+}
+
+// Companion is one repository of this Forgejo the project reads beside its
+// own.
+type Companion struct {
+	// Repository is the companion's Forgejo repository, owner/name of this
+	// instance.
+	Repository string `yaml:"repository" json:"repository"`
+	// Sandbox lets a session clone the companion read-only into
+	// /workspace/companions/<name>; absent: no clone, the gates still pin.
+	Sandbox bool `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 }
 
 // AutonomyState is the project's autonomy as the selector shows it: full
@@ -320,6 +341,15 @@ func (t Tree) QueueCapOf(repository string) int {
 		return p.QueueCap
 	}
 	return DefaultQueueCap
+}
+
+// RefillBelowOf is the queue depth repository's roadmap pull wakes at:
+// its project file's refill_below, 0 — no pull wake — without one.
+func (t Tree) RefillBelowOf(repository string) int {
+	if _, p, ok := t.ProjectOf(repository); ok {
+		return p.RefillBelow
+	}
+	return 0
 }
 
 // ChainConfig is a project file's chain block: how the CI chain of its
@@ -372,8 +402,8 @@ type ProjectBudget struct {
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
-// secrets does what on its repository (ruling 179). factory-projects' is
-// none of them: it holds nothing in sf (ruling 164).
+// secrets does what on its repository. factory-projects' is
+// none of them: it holds nothing in sf.
 type SeedTokens struct {
 	// Read reads the collaborators and assignees (the trust gate) and the
 	// webhooks where its user administers the repository.
@@ -406,7 +436,7 @@ const (
 var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig}
 
 // Environment is one Flux Kustomization: path of the repository applied
-// into namespace (ruling 157), and the public hostname, if any (ruling 155).
+// into namespace, and the public hostname, if any.
 type Environment struct {
 	// Namespace is one of the project's namespaces.
 	Namespace string `yaml:"namespace" json:"namespace"`
@@ -479,7 +509,7 @@ type ImagePin struct {
 }
 
 // Validate checks the file's shape; name is its file name without .yaml.
-// A factory project is its own organisation <name>/<name> (ruling 164)
+// A factory project is its own organisation <name>/<name>
 // whose objects registration creates; a seed project's objects are the
 // infra repository's and the seed's, so its file names the seeded tokens
 // factoryd reads it with and nothing registration would create.
@@ -493,6 +523,23 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if !repositoryName.MatchString(p.Repository) {
 		bad("repository %q: owner/name in lower case", p.Repository)
+	}
+	for i, c := range p.Companions {
+		if !repositoryName.MatchString(c.Repository) {
+			bad("companion %q: owner/name in lower case", c.Repository)
+		}
+		if slices.Contains(p.Companions[:i], c) {
+			bad("companion %q: given twice", c.Repository)
+		}
+		if c.Repository == p.Repository {
+			bad("companion %q: the project's own repository", c.Repository)
+		}
+		name := c.Repository[strings.LastIndex(c.Repository, "/")+1:]
+		for _, other := range p.Companions[:i] {
+			if other.Repository[strings.LastIndex(other.Repository, "/")+1:] == name {
+				bad("companion %q: the same repository name as %q, and the sandbox clone goes by the name", c.Repository, other.Repository)
+			}
+		}
 	}
 	if !slices.Contains(MergeRules, p.MergeRule) {
 		bad("merge_rule %q: want one of %v", p.MergeRule, MergeRules)
@@ -586,6 +633,9 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.QueueCap < 0 {
 		bad("queue_cap %d: a count of cards", p.QueueCap)
+	}
+	if p.RefillBelow < 0 {
+		bad("refill_below %d: a count of cards", p.RefillBelow)
 	}
 	if err := p.Chat.validate(); err != nil {
 		bad("%v", err)

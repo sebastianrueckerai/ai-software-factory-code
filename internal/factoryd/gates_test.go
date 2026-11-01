@@ -233,7 +233,7 @@ func TestGatePolicyClassifiesAndRecords(t *testing.T) {
 	val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 	g := getInto[PolicyGate](t, val, err)
 	want := PolicyGate{Class: "migration", Outcome: policy.OutcomeRequiresApproval, Paths: []string{"internal/factoryd/migrations/0016_x.sql"},
-		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human"}
+		Migrations: []string{"internal/factoryd/migrations/0016_x.sql"}, Changed: 3, OutsideK8s: []string{"internal/factoryd/store.go", "internal/factoryd/migrations/0016_x.sql"}, PolicyVersion: 7, MergeRule: "human", Files: 3}
 	if fmt.Sprint(g) != fmt.Sprint(want) {
 		t.Fatalf("gate = %+v, want %+v", g, want)
 	}
@@ -424,7 +424,7 @@ func TestGatePolicyForbiddenPathsOfAFactoryPRGoToAHuman(t *testing.T) {
 			val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
 			g := getInto[PolicyGate](t, val, err)
 			want := PolicyGate{Class: "forbidden", Outcome: policy.OutcomeRequiresApproval, Paths: []string{".forgejo/workflows/ci.yml"},
-				Factory: true, Changed: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human"}
+				Factory: true, Changed: 2, OutsideK8s: []string{".forgejo/workflows/ci.yml", "deploy/smoke.sh"}, PolicyVersion: 7, MergeRule: "human", Files: 2}
 			if fmt.Sprint(g) != fmt.Sprint(want) {
 				t.Fatalf("gate = %+v, want %+v", g, want)
 			}
@@ -594,7 +594,7 @@ func TestModelReviewBesideTheChecksStartsAtItsSchedule(t *testing.T) {
 }
 
 // The review reads an outside account's objective sanitised the same way
-// the agent's own brief is (ruling 152, item 48): the model review is
+// the agent's own brief is: the model review is
 // another reader of untrusted issue text.
 func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
@@ -665,6 +665,38 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 	}
 	if in.Gates.Policy.Class != "normal" || !slices.Equal(in.Gates.Policy.Paths, []string{"Makefile"}) {
 		t.Fatalf("review policy = %+v, want class normal over Makefile", in.Gates.Policy)
+	}
+}
+
+// The review reads the companion pins as facts: repository, the pin's
+// head, and the verdict's shas, so a change that leans on a companion
+// is judged with what the gates read.
+func TestReviewInputCompanions(t *testing.T) {
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	pin, head := "82ab24600000000000000000000000000000000", "fee3ff1000000000000000000000000000000000"
+	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval},
+		Companions: []CompanionGate{
+			{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head},
+			{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+		}}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
+		t.Fatal(err)
+	}
+	var in reviewInput
+	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
+		t.Fatal(err)
+	}
+	want := []CompanionGate{
+		{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head},
+		{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+	}
+	if !slices.Equal(in.Gates.Companions, want) {
+		t.Fatalf("review companions = %+v, want %+v", in.Gates.Companions, want)
+	}
+	if system := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(system, "companion repositories") {
+		t.Fatalf("the review prompt does not name the companions: %s", system)
 	}
 }
 
@@ -1321,13 +1353,18 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 		if len(pending) != 1 || json.Unmarshal(pending[0].Spec, &spec) != nil || !spec.Factory || spec.RedChecks != c.red {
 			t.Fatalf("red %t: requests %+v, spec %+v: want a factory pull request's, red %t", c.red, pending, spec, c.red)
 		}
-		if len(rows.rows) != 1 {
-			t.Fatalf("red %t: rows %+v, want the approval_requested row", c.red, rows.rows)
+		if len(rows.rows) != 2 {
+			t.Fatalf("red %t: rows %+v, want the approval_requested row and the gate_head fact", c.red, rows.rows)
 		}
-		b, _ := json.Marshal(rows.rows[0].Detail)
-		e := Event{Kind: EventApprovalRequested, TaskID: "t1"}
-		if err := json.Unmarshal(b, &e.Detail); err != nil {
-			t.Fatal(err)
+		var e Event
+		for _, row := range rows.rows {
+			if row.Kind == EventApprovalRequested {
+				b, _ := json.Marshal(row.Detail)
+				e = Event{Kind: EventApprovalRequested, TaskID: "t1"}
+				if err := json.Unmarshal(b, &e.Detail); err != nil {
+					t.Fatal(err)
+				}
+			}
 		}
 		if m, ok := pokeOf(e, task); !ok || m.Content != c.content || !slices.Equal(m.Choices, c.choices) {
 			t.Fatalf("red %t: the poke = %+v, want %q with %q", c.red, m, c.content, c.choices)
@@ -1371,7 +1408,7 @@ func TestMergeAsFactoryMerge(t *testing.T) {
 
 // On the merge rule auto the merge gate approves the head it checked as
 // factory-gate, with the gate's own token and the conditions it found met
-// in the review's body, before factory-merge merges it (ruling R59):
+// in the review's body, before factory-merge merges it:
 // main's protection counts that approval, never factory-merge's own.
 func TestAutoMergeApprovesAsTheGateFirst(t *testing.T) {
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
@@ -1389,6 +1426,127 @@ func TestAutoMergeApprovesAsTheGateFirst(t *testing.T) {
 		"- the project's merge rule is auto\n- the checks ran green\n- mechanical source roll: factoryd wrote the change, no agent"
 	if rv := fj.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "m1" || rv["body"] != want {
 		t.Fatalf("review = %v, want APPROVED on m1 with body %q", rv, want)
+	}
+}
+
+// A companion pin AutoMerge holds the card on, met or not, whatever the
+// source: the unmet line names the companion, its pin and the head, and an
+// unread companion holds on its own line.
+func TestAutoMergeCompanionLines(t *testing.T) {
+	yes := true
+	normal := PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}
+	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	rv := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}
+	green := func(cs ...CompanionGate) GateResults {
+		return GateResults{Policy: normal, ChecksPassed: true, Reproduction: ReproResult{NotReproduced: "the cache key"}, Companions: cs}
+	}
+	ok, met, unmet := AutoMerge(green(CompanionGate{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head, Met: true}), rv, "api")
+	if !ok || len(unmet) != 0 || !slices.Contains(met, "the companion sf/ai-software-factory-infra is at or after 82ab246") {
+		t.Fatalf("met pin = %v, met %q, unmet %q; want merged with the companion's line", ok, met, unmet)
+	}
+	ok, _, unmet = AutoMerge(green(CompanionGate{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head}), rv, "api")
+	if ok || len(unmet) != 1 || unmet[0] != "the companion sf/ai-software-factory-infra is still behind 82ab246, at fee3ff1" {
+		t.Fatalf("behind pin = %v %q; want held on the one line", ok, unmet)
+	}
+	ok, _, unmet = AutoMerge(green(CompanionGate{Repository: "sf/ai-software-factory-infra", Pin: pin, Unread: companionUnread("sf/ai-software-factory-infra")}), rv, "api")
+	if ok || len(unmet) != 1 || unmet[0] != companionUnread("sf/ai-software-factory-infra") {
+		t.Fatalf("unread companion = %v %q; want held on the unread line", ok, unmet)
+	}
+	ok, _, unmet = AutoMerge(GateResults{Policy: normal, ChecksPassed: true,
+		Companions: []CompanionGate{{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head}}}, Review{}, "roll")
+	if ok || len(unmet) != 1 {
+		t.Fatalf("a roll behind its pin = %v %q; want held on the companion alone", ok, unmet)
+	}
+}
+
+// GateCompanion reads the plan card's companion pins live through the
+// factory-config token: met, behind, or unread, a verdict that holds the
+// card. A task with no plan card carries no pins.
+func TestGateCompanion(t *testing.T) {
+	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"`+head+`"}]`)
+		case "/api/v1/repos/sf/infra/compare/" + pin + "..." + head:
+			io.WriteString(w, `{"status":"behind"}`)
+		case "/api/v1/repos/sf/other/commits":
+			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
+		case "/api/v1/repos/sf/other/compare/" + pin + "..." + pin:
+			io.WriteString(w, `{"status":"identical"}`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	r.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
+
+	p := testPlan()
+	p.Cards[0].Companions = []CardCompanion{{Repository: "sf/infra", At: pin}, {Repository: "sf/other", At: pin}, {Repository: "sf/locked", At: pin}}
+	raw, sha, err := planSHA(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	card := gateTask
+	card.ID, card.Parent, card.PlanKey, card.PlanRevision, card.Source = "t-card", "t-plan", "foundation", 1, SourcePlan
+	store.tasks["t-card"] = card
+	val, err := execActivity(t, r, ActivityGateCompanion, "t-card")
+	cs := getInto[[]CompanionGate](t, val, err)
+	want := []CompanionGate{
+		{Repository: "sf/infra", Pin: pin, Head: head},
+		{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+		{Repository: "sf/locked", Pin: pin, Unread: companionUnread("sf/locked")},
+	}
+	if !slices.Equal(cs, want) {
+		t.Fatalf("verdicts = %+v, want %+v", cs, want)
+	}
+	if !slices.Equal(auth, []string{"token config-tok", "token config-tok", "token config-tok", "token config-tok", "token config-tok"}) {
+		t.Fatalf("reads = %q, want every companion read, head and compare alike, through the factory-config token", auth)
+	}
+
+	direct := gateTask
+	direct.ID = "t-direct"
+	store.tasks["t-direct"] = direct
+	val, err = execActivity(t, r, ActivityGateCompanion, "t-direct")
+	cs = getInto[[]CompanionGate](t, val, err)
+	if len(cs) != 0 {
+		t.Fatalf("a direct card's companions = %+v, want none", cs)
+	}
+}
+
+// unreadPlanStore fails every plan revision read, playing a store blip on
+// the one query the companion gate reads the pins through.
+type unreadPlanStore struct {
+	*fakeStore
+}
+
+func (s *unreadPlanStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	return PlanRevision{}, false, errors.New("store down")
+}
+
+// A plan card the gate cannot read is not a card without pins: the read
+// failure holds the card on a line that names it, the way an unread
+// companion holds, instead of a silent pass with no companion gate.
+func TestGateCompanionHoldsAnUnreadPlanCard(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	card := gateTask
+	card.ID, card.Parent, card.PlanKey, card.PlanRevision, card.Source = "t-card", "t-plan", "foundation", 1, SourcePlan
+	store.tasks["t-card"] = card
+	r.store = &unreadPlanStore{store}
+	val, err := execActivity(t, r, ActivityGateCompanion, "t-card")
+	cs := getInto[[]CompanionGate](t, val, err)
+	want := []CompanionGate{{Unread: "the plan card cannot be read, so its companion pins are unknown"}}
+	if !slices.Equal(cs, want) {
+		t.Fatalf("verdicts = %+v, want the plan card's read failure to hold: %+v", cs, want)
 	}
 }
 
@@ -1415,7 +1573,7 @@ func TestTheGatesApprovalWithoutConditionsIsTheHeader(t *testing.T) {
 	}
 }
 
-// The gate's approval holds factoryd's own facts alone (ruling R61): the
+// The gate's approval holds factoryd's own facts alone: the
 // reproduction command, the agent's note and the review's summary are
 // written by an issue, an agent or a model, so none of their lines reaches
 // the approval, whatever newlines and Markdown they carry.
@@ -1458,7 +1616,7 @@ func TestTheGatesApprovalHoldsOnlyFactorydsFacts(t *testing.T) {
 // The gate's approval that cannot be posted refuses the merge before any
 // merge call, naming why, as a refusal does: no gate token for the
 // project, Forgejo refusing the review, or a project whose merge rule is
-// no longer auto at the merge (ruling R61), which gets no review.
+// no longer auto at the merge, which gets no review.
 func TestAutoMergeRefusedWithoutTheGatesApproval(t *testing.T) {
 	noGate := autoProject("sf/repo")
 	noGate.Tokens.Gate = ""
@@ -1555,8 +1713,8 @@ func TestAWakesApprovalIsRefusedWithoutTheGate(t *testing.T) {
 	}
 }
 
-// A factory project's merge goes out with its own factory-merge token
-// (ruling 164), a seed project's with the seeded token its file names; a
+// A factory project's merge goes out with its own factory-merge token,
+// a seed project's with the seeded token its file names; a
 // project without one, and a repository no file names, is refused before
 // any merge.
 func TestMergeTokenPerProject(t *testing.T) {
@@ -2277,8 +2435,8 @@ func TestReportMergeRetriesExhausted(t *testing.T) {
 	}
 }
 
-// An alert-filed issue carries no reproduction and takes the agent's own
-// (ruling 170): the repro block of its last message, run at the base and
+// An alert-filed issue carries no reproduction and takes the agent's own:
+// the repro block of its last message, run at the base and
 // the head the same way and marked as the agent's; the issue's command
 // wins over it.
 func TestGateReproductionTakesTheAgentsReproBlock(t *testing.T) {
@@ -2395,7 +2553,7 @@ func TestGateReproductionKeepsThePlainRefusalWithoutTheSignature(t *testing.T) {
 	}
 }
 
-// Only an alert's issue takes the agent's block (ruling 170): an outside
+// Only an alert's issue takes the agent's block: an outside
 // account's bug, a writer's issue and an API task without a command run no
 // reproduction, whatever the agent wrote.
 func TestGateReproductionIgnoresTheAgentsBlockOutsideAlerts(t *testing.T) {
@@ -2422,7 +2580,7 @@ func TestGateReproductionIgnoresTheAgentsBlockOutsideAlerts(t *testing.T) {
 	}
 }
 
-// The review is told whose the reproduction command is (ruling 170).
+// The review is told whose the reproduction command is.
 func TestReviewPromptNamesTheAgentsReproduction(t *testing.T) {
 	for _, s := range []string{"where ByAgent is true, the agent's own because the issue carried none", "strict_improvement"} {
 		if !strings.Contains(reviewPromptFor(GateResults{Beside: true}), s) {
@@ -2703,9 +2861,9 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 }
 
 // A pull request the gate admits names every condition it found met, the
-// body of the gate's approval (ruling R59): who wrote it, and for an
+// body of the gate's approval: who wrote it, and for an
 // agent's change the class, the audit, the proof and the review, in
-// factoryd's words alone (ruling R61).
+// factoryd's words alone.
 func TestAutoMergeNamesWhatItFoundMet(t *testing.T) {
 	yes := true
 	approve := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}

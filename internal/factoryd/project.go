@@ -19,10 +19,10 @@ import (
 
 // Project is a repository the factory works on, the namespaces it deploys
 // into and its settings: its file projects/<name>.yaml in the
-// configuration (rulings 146, 179) joined with its row, which keeps what
+// configuration joined with its row, which keeps what
 // registration minted. objects factory makes the project its own Forgejo
-// organisation <name>/<name> (ruling 164) whose Forgejo and cluster
-// objects factoryd keeps (ruling 156); objects seed leaves them to the
+// organisation <name>/<name> whose Forgejo and cluster
+// objects factoryd keeps; objects seed leaves them to the
 // infra repository and the seed, and factoryd only reads.
 type Project struct {
 	Name         string
@@ -56,6 +56,9 @@ type Project struct {
 	TemplateFiles map[string]string
 	// Images are the file's image pins by name.
 	Images map[string]policy.ImagePin
+	// Companions are the repositories the project reads beside its own, as
+	// its file declares them.
+	Companions []policy.Companion
 	// File is whether the configuration holds projects/<name>.yaml: a row
 	// without one is kept for its tokens and nothing acts on it.
 	File      bool
@@ -101,7 +104,7 @@ func (p Project) Active() bool {
 func (p Project) Coder() bool { return p.Active() && p.Agents == policy.AgentsCoder }
 
 // CIUser is the project's own CI user, member of its organisation only
-// with package write (ruling 164).
+// with package write.
 func (p Project) CIUser() string { return "ci-" + p.Name }
 
 // Environment is one Flux Kustomization of a project.
@@ -146,6 +149,7 @@ func projectsOf(rows []Project, v policy.Version) []Project {
 			p.Tokens = *c.Tokens
 		}
 		p.Template, p.TemplateFiles, p.Images = c.Template, v.Templates[c.Template], c.Images
+		p.Companions = c.Companions
 		byName[name] = p
 	}
 	out := slices.Collect(maps.Values(byName))
@@ -379,7 +383,7 @@ func nonNil[T any](s []T) []T {
 }
 
 // ListenerYAML is what the infra commit for the project's hostnames adds
-// to the edge gateway (ruling 155): one HTTPS listener per hostname
+// to the edge gateway: one HTTPS listener per hostname
 // admitting only its namespace, its Certificate, and the hostnames for
 // the HTTP to HTTPS redirect route.
 func ListenerYAML(p Project) string {
@@ -428,7 +432,7 @@ spec:
 }
 
 // OwnProject is the project whose namespaces hold ns, factoryd's own
-// namespace: the factory's own code, found by its file (ruling 179).
+// namespace: the factory's own code, found by its file.
 func OwnProject(ctx context.Context, store interface {
 	Projects(ctx context.Context) ([]Project, error)
 }, ns string) (Project, bool, error) {

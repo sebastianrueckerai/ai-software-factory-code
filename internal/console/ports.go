@@ -61,12 +61,10 @@ type Policies interface {
 // and a task's model calls.
 type Costs interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
-	// DaySpend is the ledger's total of one UTC day, the board's figure
-	// against the day cap.
-	DaySpend(ctx context.Context, day time.Time) (float64, error)
-	// PremiumMonthSpend is the ledger's spend on the premium class in the
-	// UTC month of at, the board's figure against budget.premium_month_eur.
-	PremiumMonthSpend(ctx context.Context, at time.Time) (float64, error)
+	// Enforced is the spend the caps count at at — the day, the month and
+	// the premium class's month, each with its outstanding holds — the
+	// board's figures against the caps.
+	Enforced(ctx context.Context, at time.Time) (policy.Enforced, error)
 	ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error)
 	// CallTotals sums the tasks' audit call rows: their tokens and the
 	// modeled cost and plan credits derived from them at read time
@@ -194,10 +192,13 @@ type Chat interface {
 	// could not be stored — the ids answered the same way.
 	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error)
 	AbandonChatMessage(ctx context.Context, repository, login string, conversation, id int64) ([]int64, error)
-	// the intake switch (the chat header's): a closed intake refuses the
-	// wake's own filings, the member's ask still files
+	// the intake switch (the chat header's): a closed intake stops
+	// exactly the roadmap pull, every other filing still files
 	SetChatIntake(ctx context.Context, repository string, closed bool, by string, at time.Time) error
 	ChatIntakeClosed(ctx context.Context, repository string) (bool, error)
+	// ChatIntake is the switch's full row: its state, who set it and
+	// when, the board's line beside the switch.
+	ChatIntake(ctx context.Context, repository string) (factoryd.IntakeRow, bool, error)
 	// compaction: the summary a thread keeps, its newest call's tokens
 	// since a time, and its calls' totals
 	SaveSummary(ctx context.Context, repository, login string, n int64, s factoryd.ThreadSummary) error

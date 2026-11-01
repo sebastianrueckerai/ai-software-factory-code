@@ -41,7 +41,7 @@ const (
 	// Queued column before and after its move, the chat's task no card,
 	// and its sandbox images, none pinned.
 	statusHead = "\n\nThe project now:\nToday is "
-	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."
 )
 
@@ -222,7 +222,7 @@ func TestAcceptanceEarlierReadLeftOut(t *testing.T) {
 	want := map[string]string{
 		"call_1": "[read at " + readAt.UTC().Format("2006-01-02 15:04 UTC") +
 			", 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call card again for the present]",
-		"call_2": summaryNote + " The member may undo it.",
+		"call_2": summaryNote + " The human may undo it.",
 	}
 	if !reflect.DeepEqual(results, want) {
 		t.Errorf("the replayed results =\n%q\nwant\n%q", results, want)

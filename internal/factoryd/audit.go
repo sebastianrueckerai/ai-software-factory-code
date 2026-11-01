@@ -15,7 +15,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The audit's verdicts (ruling 188).
+// The audit's verdicts.
 const (
 	AuditClear    = "clear"
 	AuditFindings = "findings"
@@ -119,7 +119,7 @@ func parseAudit(content string) ([]AuditFinding, string) {
 	return out, ""
 }
 
-// GateAudit is the audit stage (ruling 188) on the pull request's head,
+// GateAudit is the audit stage on the pull request's head,
 // for a project that switches it on under the task's pinned version: a
 // deterministic scan of the added lines for secret shapes, then the audit
 // model the policy names for the task's class, through the gateway on the
