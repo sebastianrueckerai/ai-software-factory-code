@@ -115,6 +115,9 @@ func sectionsOf(b agentdoc.Body) []section {
 			}
 			s.text = t.String()
 		}
+		// an assistant turn's tool calls are the wire's own bytes: they sit
+		// in the section as they crossed it
+		s.text += m.ToolCallText()
 		out = append(out, s)
 	}
 	return out
@@ -152,6 +155,11 @@ func (d *doc) writeRequest(md *strings.Builder, spans []agentdoc.Span) {
 		claimsOf := make([][]agentdoc.Claim, len(texts))
 		at, who := 0, 0
 		for _, c := range claims {
+			// the \x00 between messages is this renderer's own join, not
+			// a wire byte: it holds no provenance and claims none
+			if strings.Trim(joined[c.Start:c.End], "\x00") == "" {
+				continue
+			}
 			for who+1 < len(texts) && c.Start >= at+len(texts[who])+1 {
 				at += len(texts[who]) + 1
 				who++
@@ -228,8 +236,19 @@ func (d *doc) writeText(md *strings.Builder, indent, text string) {
 	fmt.Fprintf(md, "%s%stext\n%s\n%s\n\n", indent, f, text, f)
 }
 
-// provenance is the span's symbol as a permalink line, or a failure.
+// provenance is the span's origin line: a Go builder's symbol as a
+// permalink, or — the harness's own parts, a per-repo file, the capture
+// script's answers — what it is, with no permalink to fake.
 func (d *doc) provenance(sp agentdoc.Span) string {
+	switch sp.Kind {
+	case agentdoc.KindHarness:
+		return "`" + sp.Symbol + "` · the harness's own"
+	case agentdoc.KindFile:
+		return "`" + sp.Symbol + "` · the repository's file the harness read"
+	}
+	if sp.Symbol == "" {
+		return "`" + sp.Kind + "`"
+	}
 	rel, line, ok := d.syms.locate(d.agent.Pkg, sp.Symbol)
 	if !ok {
 		d.fail("%s: symbol %s of span %s resolves nowhere", d.agent.ID, sp.Symbol, sp.Name)

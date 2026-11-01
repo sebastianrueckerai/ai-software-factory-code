@@ -144,6 +144,20 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 		return ErrNoLiveSession
 	}
 	w := ls.worker
+	err := r.messageWorker(ctx, w.ns, w.pod, w.token, sessionMessage(taskID, user, text, basics))
+	detail := map[string]any{"session": w.session, "from": user}
+	if err != nil {
+		detail["error"] = err.Error()
+	}
+	r.record(ctx, taskID, "message", detail)
+	return err
+}
+
+// sessionMessage is the one composer of what a writer's message looks
+// like inside the session: the wrapper that names who speaks, and, on a
+// session's first message, the basics preamble that tells the session
+// what it is.
+func sessionMessage(taskID, user, text string, basics bool) string {
 	msg := "A message from " + user + ", a writer of this project: " + text
 	if basics {
 		msg = "You are the agent session of card " + taskID + " in the AI software factory. " + manual.Loop +
@@ -151,13 +165,7 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 			"A writer of this project talks to you through the card's chat; the gates judge what you push. " +
 			"The manual tool reads the rest.\n\n" + msg
 	}
-	err := r.messageWorker(ctx, w.ns, w.pod, w.token, msg)
-	detail := map[string]any{"session": w.session, "from": user}
-	if err != nil {
-		detail["error"] = err.Error()
-	}
-	r.record(ctx, taskID, "message", detail)
-	return err
+	return msg
 }
 
 // message sends the supervisor's guidance into the running session and

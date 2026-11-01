@@ -90,6 +90,71 @@ func TestPageFailsOnARottedSpan(t *testing.T) {
 	}
 }
 
+// A conversation's later request carries the turns before it: the brief,
+// the scripted tool call, its result, then the message. Each is spanned
+// where it sits — an assistant turn's tool call is the wire's own JSON —
+// and the renderer's separator between messages is its own artifact, not
+// a wire byte, and claims no provenance.
+func TestPageLocatesSpansAcrossMessages(t *testing.T) {
+	_, syms := writeFixtureModule(t)
+	tool := `{"type":"function","function":{"name":"hammer","description":"it hits","parameters":{"type":"object"}}}`
+	call := `{"index":0,"id":"call_1","type":"function","function":{"name":"bash","arguments":"{}"}}`
+	raw := `{"model":"big","stream":true,"max_tokens":16,"messages":[` +
+		`{"role":"system","content":"SYS-A"},{"role":"user","content":"USER-A"},` +
+		`{"role":"assistant","content":"","tool_calls":[` + call + `]},{"role":"tool","content":"TOOL-R"},` +
+		`{"role":"user","content":"USER-B"}],` +
+		`"tools":[` + tool + `]}`
+	rec := agentdoc.Recorded{Raw: []byte(raw), Task: "t-fixture", Purpose: "operator"}
+	spans := []agentdoc.Span{
+		{Name: "the rules", Symbol: "(*R).M", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: "SYS-A"},
+		{Name: "the brief", Symbol: "(*R).M", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: "USER-A"},
+		{Name: "the scripted tool call", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: call},
+		{Name: "the scripted tool result", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: "TOOL-R"},
+		{Name: "the message", Symbol: "(*R).offered", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: "USER-B"},
+		{Name: "tool hammer", Symbol: "(*R).offered", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceTools, Text: tool},
+	}
+	md, failures := page(pageAgent(), "deadbeef", "policyhash", syms, rec, spans)
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	for _, want := range []string{"USER-A", `"name":"bash"`, "TOOL-R", "USER-B"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
+// The loop's own parts name no Go symbol: the harness's preamble and
+// built-in tools, the repository's AGENTS.md, the script the capture
+// itself answers. Their provenance lines render what they are, not a
+// permalink that would resolve nowhere.
+func TestPageRendersNonGoProvenance(t *testing.T) {
+	_, syms := writeFixtureModule(t)
+	raw := `{"model":"big","stream":true,"max_tokens":16,"messages":[` +
+		`{"role":"system","content":"PREAMBLEAGENTS-BODYTAIL"}],` +
+		`"tools":[{"type":"function","function":{"name":"bash","description":"runs it","parameters":{"type":"object"}}}]}`
+	bash := `{"type":"function","function":{"name":"bash","description":"runs it","parameters":{"type":"object"}}}`
+	rec := agentdoc.Recorded{Raw: []byte(raw), Task: "t-fixture", Purpose: "operator"}
+	spans := []agentdoc.Span{
+		{Name: "harness preamble", Symbol: "opencode 1.18.32", Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: "PREAMBLE"},
+		{Name: "AGENTS.md", Symbol: "AGENTS.md", Kind: agentdoc.KindFile, Place: agentdoc.PlaceSystem, Text: "AGENTS-BODY"},
+		{Name: "harness tail", Symbol: "opencode 1.18.32", Kind: agentdoc.KindHarness, Place: agentdoc.PlaceSystem, Text: "TAIL"},
+		{Name: "tool bash", Symbol: "opencode 1.18.32", Kind: agentdoc.KindHarness, Place: agentdoc.PlaceTools, Text: bash},
+	}
+	md, failures := page(pageAgent(), "deadbeef", "policyhash", syms, rec, spans)
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	if strings.Contains(md, "resolves nowhere") || strings.Contains(md, "blob/deadbeef") {
+		t.Fatal("a non-Go part renders a permalink")
+	}
+	for _, want := range []string{"`opencode 1.18.32`", "`AGENTS.md`"} {
+		if !strings.Contains(md, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
 func TestPageFailsOnAnUnresolvableSymbol(t *testing.T) {
 	_, syms := writeFixtureModule(t)
 	rec, spans := pageFixture()

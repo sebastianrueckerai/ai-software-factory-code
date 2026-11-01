@@ -33,6 +33,9 @@ func (r *R) offered() {}
 const Bar = "bar"
 
 const askConst = "ask"
+
+// buildOpencodeConfig builds.
+func buildOpencodeConfig() {}
 `), 0o640); err != nil {
 		t.Fatal(err)
 	}

@@ -1,14 +1,16 @@
 package main
 
 // agentdoc regenerates the factory's agent context map: it captures each
-// documented agent's first model request through the real code against
-// an in-process fake gateway, labels every part by the builder that made
-// it, and writes one page per agent plus the literal wire bodies. It is
-// offline and deterministic; no LLM runs. Unlabelled bytes, a span that
-// no longer matches, a symbol that resolves nowhere — each is rot, is
-// printed, and makes the tool exit non-zero without shipping.
+// documented agent's first model request — the direct clients through the
+// real code against an in-process fake gateway, the opencode loop modes
+// through the pinned binary on a scripted model and the gateway's real
+// MCP tool list — labels every part by the builder that made it, and
+// writes one page per agent plus the literal wire bodies. It is offline
+// and deterministic; no LLM runs. Unlabelled bytes, a span that no longer
+// matches, a symbol that resolves nowhere — each is rot, is printed, and
+// makes the tool exit non-zero without shipping.
 //
-//	go run ./cmd/agentdoc -out <design repo>/docs/agents -policy <infra factory tree>
+//	go run ./cmd/agentdoc -out <design repo>/docs/agents -policy <infra factory tree> [-opencode <pinned binary>]
 
 import (
 	"context"
@@ -35,10 +37,17 @@ func main() {
 func run() int {
 	out := flag.String("out", "", "the docs/agents directory the pages regenerate into")
 	policyDir := flag.String("policy", "", "the factory configuration tree directory (the loader's input)")
+	opencode := flag.String("opencode", os.Getenv("OPENCODE_RECORD_BIN"), "the pinned opencode binary the loop modes' captures drive")
 	flag.Parse()
 	if *out == "" || *policyDir == "" {
 		fmt.Fprintln(os.Stderr, "usage: agentdoc -out <docs/agents> -policy <factory tree>")
 		return 2
+	}
+	for _, a := range registry {
+		if a.Loop && *opencode == "" {
+			fmt.Fprintln(os.Stderr, "agentdoc: the loop modes drive the pinned opencode binary; pass -opencode <path> or set OPENCODE_RECORD_BIN")
+			return 2
+		}
 	}
 	v, err := loadPolicy(*policyDir)
 	if err != nil {
@@ -63,21 +72,46 @@ func run() int {
 	ctx := context.Background()
 	var failed bool
 	for _, a := range registry {
-		g := agentdoc.NewGateway(a.Answer)
-		spans, err := a.Capture(ctx, a.ID, g.URL, v, nil)
-		recs := g.Bodies()
-		g.Close()
+		var md string
+		var raw []byte
+		var failures []string
 		switch {
-		case err != nil:
-			fmt.Fprintf(os.Stderr, "agentdoc: %s: capture: %v\n", a.ID, err)
-			failed = true
-			continue
-		case len(recs) != 1:
-			fmt.Fprintf(os.Stderr, "agentdoc: %s: %d calls crossed the wire, want one\n", a.ID, len(recs))
-			failed = true
-			continue
+		case a.Config:
+			frag, err := factoryd.AgentDocAgentConfig(v)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
+				failed = true
+				continue
+			}
+			md, failures = configPage(a, sha, v.Commit, syms, frag)
+			raw = frag
+		case a.Loop:
+			spans, rec, err := factoryd.AgentDocLoop(ctx, a.ID, *opencode, v)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "agentdoc: %s: capture: %v\n", a.ID, err)
+				failed = true
+				continue
+			}
+			md, failures = page(a, sha, v.Commit, syms, rec, spans)
+			raw = rec.Raw
+		default:
+			g := agentdoc.NewGateway(a.Answer)
+			spans, err := a.Capture(ctx, a.ID, g.URL, v, nil)
+			recs := g.Bodies()
+			g.Close()
+			switch {
+			case err != nil:
+				fmt.Fprintf(os.Stderr, "agentdoc: %s: capture: %v\n", a.ID, err)
+				failed = true
+				continue
+			case len(recs) != 1:
+				fmt.Fprintf(os.Stderr, "agentdoc: %s: %d calls crossed the wire, want one\n", a.ID, len(recs))
+				failed = true
+				continue
+			}
+			md, failures = page(a, sha, v.Commit, syms, recs[0], spans)
+			raw = recs[0].Raw
 		}
-		md, failures := page(a, sha, v.Commit, syms, recs[0], spans)
 		if len(failures) > 0 {
 			for _, f := range failures {
 				fmt.Fprintf(os.Stderr, "agentdoc: %s\n", f)
@@ -85,7 +119,7 @@ func run() int {
 			failed = true
 			continue
 		}
-		if err := writePage(*out, a.ID, md, recs[0].Raw); err != nil {
+		if err := writePage(*out, a.ID, md, raw); err != nil {
 			fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
 			failed = true
 		}
@@ -151,6 +185,7 @@ func writePage(out, id, md string, raw []byte) error {
 	if err := os.MkdirAll(filepath.Join(out, "raw"), 0o750); err != nil {
 		return err
 	}
+	// #nosec G703 -- -out is the operator's own target directory; the map writes only where the operator pointed it
 	if err := os.WriteFile(filepath.Join(out, id+".md"), []byte(md), 0o600); err != nil {
 		return err
 	}
