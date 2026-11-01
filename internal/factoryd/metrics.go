@@ -125,6 +125,26 @@ type EconomicsCoverage struct {
 	MissingSize  int `json:"missing_size"`  // of them, readings that carry no size
 }
 
+// GateBoundCoverage names how far the size-bound panel reaches: the
+// window's merge-gate readings and the holes among them. A reading
+// measures its card only complete — the fact's identity, a bound, both
+// line counts and the size whose bound it planned. Every hole is
+// counted, none guessed and none filled: a missing bound or missing
+// lines never borrow the policy in force now or the card's metadata,
+// a size the reading never carried and an explicitly unsized card
+// measure nothing, and an identity-less legacy row is no reading the
+// panel can stand on. Unknown is not measured passing: the figure
+// stands on the measured rest.
+type GateBoundCoverage struct {
+	Readings     int `json:"readings"`      // merge-gate readings in the window
+	Measured     int `json:"measured"`      // of them, readings complete enough to measure
+	MissingBound int `json:"missing_bound"` // of them, readings that carry no bound
+	MissingLines int `json:"missing_lines"` // of them, readings without insertions or deletions
+	UnknownSize  int `json:"unknown_size"`  // of them, readings that carry no size
+	UnsizedSize  int `json:"unsized_size"`  // of them, readings of an explicitly unsized card
+	Identityless int `json:"identityless"`  // of them, legacy rows without the fact identity
+}
+
 // The divide-and-conquer fact contracts (roadmap 336): one payload per
 // fact family, its identity in explicit fields. The identity is the
 // persistence contract — one row or one timeline line per identity,
@@ -498,8 +518,12 @@ type SessionsCoverage struct {
 type DivideConquer struct {
 	CoveredFrom time.Time `json:"covered_from"`
 
-	GateAboveBound  Figure       `json:"gate_above_bound"`
-	SessionsPerCard []SizeFigure `json:"sessions_per_card"`
+	GateAboveBound Figure `json:"gate_above_bound"`
+	// GateBoundCoverage counts the window's merge-gate readings and the
+	// holes the panel above reads around; the figure stands on the
+	// measured rest.
+	GateBoundCoverage GateBoundCoverage `json:"gate_bound_coverage"`
+	SessionsPerCard   []SizeFigure      `json:"sessions_per_card"`
 	// SessionsCoverage counts the window's first-merged cards and the
 	// holes panel 2's averages read around — unknown or unsized
 	// historical size, missing or partial start evidence — so an old
@@ -1566,10 +1590,10 @@ func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricW
 }
 
 // metricDivideConquer populates the divide-and-conquer block the store
-// answers today: CoveredFrom, GateAboveBound, SessionsPerCard with its
-// coverage, SessionEnds and ReviewsNotReviewed. The economics panels
-// (panels 4, 5, 7, 8, 10, 11, 12) land on another card; their fields
-// stay zero until then.
+// answers today: CoveredFrom, GateAboveBound with GateBoundCoverage,
+// SessionsPerCard with its coverage, SessionEnds and ReviewsNotReviewed.
+// The economics panels (panels 4, 5, 7, 8, 10, 11, 12) land on another
+// card; their fields stay zero until then.
 func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
 	var d DivideConquer
 	var covered sql.NullTime
@@ -1582,7 +1606,7 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 		d.CoveredFrom = covered.Time
 	}
 	var err error
-	if d.GateAboveBound, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
+	if d.GateAboveBound, d.GateBoundCoverage, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	if d.SessionsPerCard, d.SessionsCoverage, err = metricDivideSessions(ctx, db, repo, w); err != nil {
@@ -1600,15 +1624,39 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 // metricDivideGateBound — panel 1: distinct cards reaching the merge
 // gate above their size bound (target: none). A card counts once
 // however many heads and retries crossed; the bound and the lines are
-// the ones the reading captured, never today's policy. Without a
-// reading in the span the panel is unknown, not zero.
-func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+// the ones the reading captured, never today's policy or the card's
+// metadata now. Only a complete reading is evidence — the fact's
+// identity, a bound, both line counts and the size whose bound it
+// planned; a hole the coverage names measures nothing, so a span no
+// complete reading covers is unknown, not zero.
+func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, GateBoundCoverage, error) {
 	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
 		WHERE ` + dcCardReach + ` AND e.kind = 'gate_head' AND e.detail->>'gate' = 'merge' AND e.at >= %s AND e.at < $3`
+	// measured: the reading carries its whole comparison — the fact's
+	// identity, the bound, both line counts and a size that planned the
+	// bound; none of it is filled from the policy in force now
+	const measured = `e.identity_key IS NOT NULL AND (e.detail->>'bound') IS NOT NULL
+		AND (e.detail->>'insertions') IS NOT NULL AND (e.detail->>'deletions') IS NOT NULL
+		AND COALESCE(e.detail->>'size', '') <> ''`
 	const over = `(e.detail->>'insertions')::int + (e.detail->>'deletions')::int > (e.detail->>'bound')::int`
-	return metricEvidenceCount(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT count(DISTINCT e.task_id) FILTER (WHERE `+over+`), count(DISTINCT e.task_id)`+from, "$2"),
-		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+over+`)`+from+` GROUP BY 1`, "$2"))
+	f, err := metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(DISTINCT e.task_id) FILTER (WHERE `+measured+` AND `+over+`),
+			count(DISTINCT e.task_id) FILTER (WHERE `+measured+`)`+from, "$2"),
+		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+measured+` AND `+over+`)`+from+` GROUP BY 1`, "$2"))
+	var cov GateBoundCoverage
+	if err != nil {
+		return f, cov, err
+	}
+	err = db.QueryRowContext(ctx, `SELECT count(*)::int, count(*) FILTER (WHERE `+measured+`)::int,
+		count(*) FILTER (WHERE (e.detail->>'bound') IS NULL)::int,
+		count(*) FILTER (WHERE (e.detail->>'insertions') IS NULL OR (e.detail->>'deletions') IS NULL)::int,
+		count(*) FILTER (WHERE (e.detail->>'size') IS NULL)::int,
+		count(*) FILTER (WHERE e.detail->>'size' = '')::int,
+		count(*) FILTER (WHERE e.identity_key IS NULL)::int`+fmt.Sprintf(from, "$2"),
+		repo, w.From, w.To).
+		Scan(&cov.Readings, &cov.Measured, &cov.MissingBound, &cov.MissingLines,
+			&cov.UnknownSize, &cov.UnsizedSize, &cov.Identityless)
+	return f, cov, err
 }
 
 // metricDivideSessions — panel 2: mean lifetime distinct named starts
