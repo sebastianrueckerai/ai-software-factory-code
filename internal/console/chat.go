@@ -85,7 +85,7 @@ func (t *turn) take(kind, token string) (factoryd.ChatProposal, error) {
 	switch {
 	case errors.Is(err, factoryd.ErrOthersProposal):
 		return p, refuse(http.StatusForbidden, "It is another human's.")
-	case errors.Is(err, factoryd.ErrNoProposal):
+	case errors.Is(err, factoryd.ErrNoProposal), errors.Is(err, factoryd.ErrUsedProposal):
 		return p, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
 	}
 	return p, err
@@ -142,9 +142,10 @@ type turn struct {
 	viewEvent map[string]any
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
-	// sctx is the context of the turn's model calls, which a member's stop
-	// ends (the chat-stop plan); nil: the request's own. stopEntry is the
-	// turn's entry in the console's stopGate, nil when the turn cannot be
+	// sctx is the context of the turn's model calls and of its waits for
+	// the thread's turn and a model slot, which a member's stop ends (the
+	// chat-stop plan); nil: the request's own. stopEntry is the turn's
+	// entry in the console's stopGate, nil when the turn cannot be
 	// stopped.
 	sctx      context.Context
 	stopEntry *stopEntry
@@ -612,9 +613,16 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pos, wait := c.turns.enter(t.key())
-	joined := false
+	joined, inLine := false, pos > 0
 	defer func() {
-		if !joined {
+		switch {
+		case joined:
+			// join() took the sender's channel out of the line
+		case inLine:
+			// the turn never waited: its message could not store, or a
+			// member's stop ended its wait and its channel left the line
+			c.turns.unline(t.key(), wait)
+		default:
 			c.turns.leave(t.key())
 		}
 	}()
@@ -622,7 +630,8 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		t.detach()
 		t.open(w)
 		t.takeTurn(pos, wait)
-		release := c.turns.slot(t.p.Repository, t.parallelTurns())
+		inLine = false
+		release := c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
 		defer release()
 		t.compactByHand(task.ID)
 		return
@@ -675,7 +684,29 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	}
 	t.detach()
 	t.open(w)
-	t.takeTurn(pos, wait)
+	// the turn's stop (the chat-stop plan) opens with the turn's claim,
+	// not its first model call: its model calls run under a context a
+	// member's press ends, and a press while the turn still waits —
+	// behind the thread's turn in flight, for a model slot — ends it
+	// there and then
+	sctx, cancel := context.WithCancel(t.r.Context())
+	defer cancel()
+	t.sctx, t.stopEntry = sctx, c.stops.enter(t.key(), cancel)
+	defer c.stops.leave(t.key(), t.stopEntry)
+	if t.takeTurn(pos, wait) {
+		inLine = false
+	} else {
+		// the press ended the turn while it queued behind the thread's
+		// turn in flight: its message stays for the thread's next turn
+		t.stopEnd("")
+		return
+	}
+	if sctx.Err() != nil {
+		// the press landed in the moment the line handed the turn over:
+		// the turn owns the thread and ends it stopped
+		t.stopEnd("")
+		return
+	}
 	if pos > 0 {
 		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id); err != nil {
 			log.Printf("console: start the queued turn of %s on %s: %v", t.owner, t.p.Repository, err)
@@ -683,23 +714,25 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	release := c.turns.slot(t.p.Repository, t.parallelTurns())
+	release := c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
+	if release == nil {
+		// the press ended the turn while it waited for one of the
+		// project's model turns: its message stays for the next turn
+		t.stopEnd("")
+		return
+	}
 	defer release()
-	// the turn's stop (the chat-stop plan): its model calls run under a
-	// context a member's press ends, so the stop lands at the next call
-	sctx, cancel := context.WithCancel(t.r.Context())
-	defer cancel()
-	t.sctx, t.stopEntry = sctx, c.stops.enter(t.key(), cancel)
-	defer c.stops.leave(t.key())
 	t.run(task.ID, notice)
 }
 
 // chatStopPost answers POST /projects/{name}/chat/stop: the member stops
-// the thread's running turn, which ends at its next step boundary — its
-// model call at once, a tool call once the one in flight ran — keeping
-// the answer so far and a stop row. A press with no turn in flight, or a
-// second one, changes nothing: 204 either way. One chat_stopped event
-// names the member and the thread.
+// the thread's turn — the one in flight, which ends at its next step
+// boundary: its model call at once, a tool call once the one in flight
+// ran — or one still waiting to run, which ends at once with its message
+// left unanswered; either keeps the answer so far and a stop row. A
+// press with no turn in flight or waiting, or a second one on the same
+// turn, changes nothing: 204 either way. One chat_stopped event names
+// the member and the thread.
 func (c *Console) chatStopPost(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -942,6 +975,15 @@ func (t *turn) run(id, notice string) {
 			}
 			if errors.As(err, &refusal) {
 				t.fail("The gateway refused the call: " + refusal.Reason)
+				return
+			}
+			var status *factoryd.StatusError
+			// a 4xx answer refused the call (a rate limit or a timeout
+			// aside: those pass, the router already retried them)
+			if errors.As(err, &status) && status.Code >= 400 && status.Code < 500 &&
+				status.Code != http.StatusTooManyRequests && status.Code != http.StatusRequestTimeout {
+				t.fail("The model refused the call (" + strconv.Itoa(status.Code) + "): " + status.Body +
+					" Retrying will not change it; the refusal needs a fix.")
 				return
 			}
 			t.fail("The model could not be reached; try again.")
@@ -1245,7 +1287,7 @@ func (t *turn) apply(p factoryd.ChatProposal) {
 		t.send("done", struct{}{})
 		return
 	}
-	release := t.c.turns.slot(t.p.Repository, t.parallelTurns())
+	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
 	defer release()
 	task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
@@ -1729,15 +1771,21 @@ func (t *turn) snapshot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s, github := d.Status, ""
+	s, github, pl := d.Status, "", ""
 	if s.GitHub != "" {
 		github = "; GitHub: " + s.GitHub
+	}
+	switch {
+	case s.MonthPool.Ready:
+		pl = "; " + poolWords(s.MonthPool)
+	case s.MonthPool.Unavailable:
+		pl = "; pool unread this month"
 	}
 	pool := ""
 	if s.Pool.Present {
 		pool = "; pool: " + s.Pool.Words
 	}
-	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pool, github), nil
+	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pl, pool, github), nil
 }
 
 // noBoard is the status of project p, which has no board: with agents

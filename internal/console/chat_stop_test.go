@@ -187,3 +187,185 @@ func TestChatStopRowsLeaveTheContext(t *testing.T) {
 		t.Errorf("the next turn's prompt carries the stop row:\n%s", said)
 	}
 }
+
+// The stop reaches a turn that has not run yet
+
+// The stop reaches a turn that has not run yet (the chat-stop plan): the
+// browser counts a turn busy from its POST, so a press while the turn
+// still waits — here for one of the project's parallel slots, three turns
+// holding them in slow model calls — stops it: the press lands its event,
+// the waiting turn's stream answers stopped and ends without a model
+// call, its message stays unanswered, and the thread holds its row and
+// the stop row that names the member.
+func TestChatStopEndsATurnThatStillWaits(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.slow = 8 * time.Second
+	g.arrived = make(chan struct{}, 8)
+	g.replies = [][]string{{say("one")}, {say("two")}, {say("three")}, {say("late answer")}}
+	for _, message := range []string{"first", "second", "third"} {
+		if code, _, _ := chatPost(t, r, ck, s, chatPath+"/new", nil); code != http.StatusNoContent {
+			t.Fatalf("POST /chat/new before %q = %d", message, code)
+		}
+		chatStream(t, r, ck, s, chatPath, url.Values{"message": {message}})
+		select {
+		case <-g.arrived:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the turn of %q never reached its model call", message)
+		}
+	}
+	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/new", nil); code != http.StatusNoContent {
+		t.Fatalf("POST /chat/new = %d", code)
+	}
+	victim := chatStream(t, r, ck, s, chatPath, url.Values{"message": {"stop me"}, "conversation": {"5"}})
+	before := r.events.count()
+	pressed := false
+	for range 200 {
+		if code, _, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"5"}}); code != http.StatusNoContent {
+			t.Fatalf("the stop = %d", code)
+		}
+		for _, e := range r.events.all()[before:] {
+			if e.Kind == factoryd.EventChatStopped {
+				pressed = true
+			}
+		}
+		if pressed {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !pressed {
+		t.Fatal("the press while the turn waited for a slot stopped nothing")
+	}
+	if e := waitEvent(t, victim); !strings.HasPrefix(e, `stopped {"message":`) || !strings.Contains(e, `"content":"Stopped by sebastian."`) {
+		t.Fatalf("the waiting turn's stream = %q, want it stopped", e)
+	}
+	if e := waitEvent(t, victim); e != "done {}" {
+		t.Fatalf("the stream's last event = %q", e)
+	}
+	for range victim {
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 5, 10)
+	if len(rows) != 2 || rows[0].Content != "stop me" || rows[1].Kind != factoryd.MessageStop || rows[1].Content != "Stopped by sebastian." {
+		t.Fatalf("thread 5's rows = %+v, want the message and the stop row", rows)
+	}
+	if calls := g.calls(); len(calls) != 0 {
+		t.Fatalf("%d model calls finished, want none: the press ends the waiting turn before any answer runs", len(calls))
+	}
+	after := r.events.all()[before:]
+	if len(after) != 1 || after[0].Kind != factoryd.EventChatStopped || after[0].Via != factoryd.ViaButton || after[0].Detail["thread"] != int64(5) {
+		t.Fatalf("the stop's event rows = %+v", after)
+	}
+}
+
+// waitStored waits until the thread holds the row of content: a POST
+// owns the thread's turn only once its message row is in.
+func waitStored(t *testing.T, chat *fakeChat, thread int64, content string) {
+	t.Helper()
+	for range 2000 {
+		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", thread, 10)
+		for _, row := range rows {
+			if row.Content == content {
+				return
+			}
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("the message %q never stored", content)
+}
+
+// A second press stops the thread's next waiting turn (the chat-stop
+// plan): with the thread's own turn waiting for one of the project's
+// model slots — three turns holding them in slow calls — a successor
+// message queues behind it, and two presses end both at once, each with
+// its stop row, the successor's message left for the thread's next turn,
+// and no model call for either.
+func TestChatStopSecondPressStopsTheNextWaitingTurn(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.slow = 8 * time.Second
+	g.arrived = make(chan struct{}, 8)
+	g.replies = [][]string{{say("one")}, {say("two")}, {say("three")}, {say("never said")}}
+	for _, message := range []string{"first", "second", "third"} {
+		if code, _, _ := chatPost(t, r, ck, s, chatPath+"/new", nil); code != http.StatusNoContent {
+			t.Fatalf("POST /chat/new before %q = %d", message, code)
+		}
+		chatStream(t, r, ck, s, chatPath, url.Values{"message": {message}})
+		select {
+		case <-g.arrived:
+		case <-time.After(10 * time.Second):
+			t.Fatalf("the turn of %q never reached its model call", message)
+		}
+	}
+	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/new", nil); code != http.StatusNoContent {
+		t.Fatalf("POST /chat/new = %d", code)
+	}
+	first := chatStream(t, r, ck, s, chatPath, url.Values{"message": {"held back"}})
+	waitStored(t, chat, 5, "held back")
+	next := chatStream(t, r, ck, s, chatPath, url.Values{"message": {"behind it"}, "conversation": {"5"}})
+	waitStored(t, chat, 5, "behind it") // queued behind the thread's turn before either press
+	before := r.events.count()
+	pressed := 0
+	for range 200 {
+		if code, _, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"5"}}); code != http.StatusNoContent {
+			t.Fatalf("the stop = %d", code)
+		}
+		pressed = 0
+		for _, e := range r.events.all()[before:] {
+			if e.Kind == factoryd.EventChatStopped {
+				pressed++
+			}
+		}
+		if pressed >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if pressed < 2 {
+		t.Fatal("the two presses stopped fewer than the thread's two waiting turns")
+	}
+	if e := waitEvent(t, first); !strings.HasPrefix(e, `stopped {"message":`) || !strings.Contains(e, `"content":"Stopped by sebastian."`) {
+		t.Fatalf("the waiting turn's stream = %q, want it stopped", e)
+	}
+	if e := waitEvent(t, first); e != "done {}" {
+		t.Fatalf("the first stream's last event = %q, want the stream ended", e)
+	}
+	if e := waitEvent(t, next); e != `queued {"position":1}` {
+		t.Fatalf("the successor's first event = %q, want its place in line", e)
+	}
+	if e := waitEvent(t, next); !strings.HasPrefix(e, `stopped {"message":`) || !strings.Contains(e, `"content":"Stopped by sebastian."`) {
+		t.Fatalf("the successor's stream = %q, want it stopped too", e)
+	}
+	if e := waitEvent(t, next); e != "done {}" {
+		t.Fatalf("the successor's last event = %q, want the stream ended", e)
+	}
+	for range first {
+	}
+	for range next {
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 5, 10)
+	if len(rows) != 4 || rows[0].Content != "held back" {
+		t.Fatalf("thread 5's rows = %+v, want both messages and both stop rows", rows)
+	}
+	stops, said := 0, 0
+	for _, row := range rows[1:] {
+		switch {
+		case row.Kind == factoryd.MessageStop && row.Content == "Stopped by sebastian.":
+			stops++
+		case row.Role == "user" && row.Content == "behind it":
+			said++
+		}
+	}
+	if stops != 2 || said != 1 {
+		t.Fatalf("thread 5's rows = %+v, want the successor's message and both stop rows", rows)
+	}
+	if calls := g.calls(); len(calls) != 0 {
+		t.Fatalf("%d model calls finished, want none: both stopped turns ended before a model call", len(calls))
+	}
+	after := r.events.all()[before:]
+	if len(after) != 2 || after[0].Kind != factoryd.EventChatStopped || after[1].Kind != factoryd.EventChatStopped ||
+		after[0].Via != factoryd.ViaButton || after[1].Via != factoryd.ViaButton ||
+		after[0].Detail["thread"] != int64(5) || after[1].Detail["thread"] != int64(5) {
+		t.Fatalf("the presses' event rows = %+v", after)
+	}
+}

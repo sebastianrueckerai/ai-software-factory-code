@@ -1045,6 +1045,11 @@ type gateway struct {
 func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	// the window ask is no model call: the served window answers it
+	if strings.HasPrefix(r.URL.Path, "/v1/window/") {
+		fmt.Fprint(w, `{"window":128000}`)
+		return
+	}
 	// a naming call (roadmap 304) answers nothing and consumes no reply:
 	// today's head stands
 	if r.Header.Get(gwpack.HeaderFactoryPurpose) == policy.PurposeTitle {

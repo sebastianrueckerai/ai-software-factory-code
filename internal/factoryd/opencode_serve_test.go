@@ -100,6 +100,25 @@ func TestServeMapperFollowsSubagentAsksAndErrors(t *testing.T) {
 	}
 }
 
+// The pinned v1.18.32 compaction event — the bus carries the session id
+// alone, no token figures — becomes the session's one compacted line; a
+// subagent's compaction stays out, like its other parts.
+func TestServeMapperMapsTheCompactionEvent(t *testing.T) {
+	m := &serveMapper{session: "ses_a", sessions: map[string]bool{"ses_a": true}}
+	ev := func(s string) served { return m.event([]byte(s), time.UnixMilli(5)) }
+	ev(`{"type":"session.created","properties":{"info":{"id":"ses_b","parentID":"ses_a"}}}`)
+	if out := ev(`{"type":"session.compacted","properties":{"sessionID":"ses_b"}}`); out.line != nil {
+		t.Fatalf("a subagent's compaction became a line: %s", out.line)
+	}
+	out := ev(`{"type":"session.compacted","properties":{"sessionID":"ses_a"}}`)
+	p := &opencodeParser{}
+	var got []harness.Event
+	p.line(out.line, func(ev harness.Event) { got = append(got, ev) })
+	if len(got) != 1 || got[0].Kind != harness.EventCompacted || !got[0].Time.Equal(time.UnixMilli(5)) {
+		t.Fatalf("compaction = %+v, want one compacted at the event's time", got)
+	}
+}
+
 // The serve stream's line past the reader's 1 MiB cap: a text part whose
 // text alone is 2 MiB, its type and part id in its head. The fake server
 // streams its filler in chunks and the test names its size as a constant,

@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/agentdoc"
@@ -411,19 +410,19 @@ func agentDocHoldout(ctx context.Context, gwURL string, v policy.Version, hc *ht
 		Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)}), nil
 }
 
+// agentDocAnswerTag is the marker tag this capture scripts, so the page
+// regenerates byte for byte.
+const agentDocAnswerTag = "answerdoc1"
+
 // agentDocAnswer drives the answer screening's call, with the markers the
-// capture itself drew.
+// capture scripts.
 func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
 	m, alias, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
 	if err != nil {
 		return nil, err
 	}
 	text := sanitize.Inbound("The counter skips rows when the batch is empty; the log shows count=0 for batch 7.")
-	tag := randomTag()
-	for strings.Contains(text, tag) {
-		tag = randomTag()
-	}
-	open, closing := "===ANSWER-"+tag, "ANSWER-"+tag+"==="
+	open, closing := "===ANSWER-"+agentDocAnswerTag, "ANSWER-"+agentDocAnswerTag+"==="
 	system := fmt.Sprintf(answerPrompt, open, closing)
 	in := answerInput{Repository: "owner/name", Answer: open + "\n" + text + "\n" + closing}
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, system, in); err != nil {
@@ -459,7 +458,7 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	t := Task{ID: agentDocTask, Objective: "Fix the counter so it counts the skipped rows too.",
 		Repository: "owner/name", IssueNumber: 42, Author: "fixture-author"}
-	facts, acts, err := briefFacts(a, t)
+	facts, acts, err := briefFacts(a, t, nil)
 	if err != nil {
 		return nil, err
 	}

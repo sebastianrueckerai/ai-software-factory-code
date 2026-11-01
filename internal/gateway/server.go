@@ -212,6 +212,7 @@ func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
+	mux.Handle("GET /v1/window/{alias}", http.HandlerFunc(s.handleWindow))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
 	return telemetry.Handler(s.tel.tp, "factory-gateway", mux)
@@ -327,24 +328,8 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	hold, err := s.opts.Store.TakeHold(ctx, req)
 	var refusal *policy.Refusal
-	var note string
-	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedPremiumCap {
-		// at the premium cap the call is served on big
-		note = refusal.Reason + "; served on " + policy.Big
-		chatReq.Model, chatReq.fields["model"] = policy.Big, json.RawMessage(strconv.Quote(policy.Big))
-		if req.Price, err = s.price(ctx, pv, task, policy.Big); err != nil {
-			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
-			return
-		}
-		req.Ref, req.PremiumEUR = policy.LedgerRef(purpose, policy.Big), 0
-		hold, err = s.opts.Store.TakeHold(ctx, req)
-	}
 	if errors.As(err, &refusal) {
-		reason := refusal.Reason
-		if note != "" {
-			reason = note + ", which refused it: " + reason
-		}
-		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, reason)
+		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, refusal.Reason)
 		return
 	}
 	if err != nil {
@@ -352,7 +337,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
-		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
+		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
 		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {
@@ -385,6 +370,28 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	s.proxy(w, r, call, body, chatReq.Stream)
+}
+
+// handleWindow serves the alias's context window out of the price book's
+// /model/info poll: the figure the chat's and the worker's compaction
+// read. A caller the gateway cannot identify answers 401, an alias the
+// book cannot price 404 with its reason; the caller decides how it runs
+// without a window. No task row and no hold: it answers a question, no
+// call is made.
+func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
+	if _, _, err := s.identify(r); err != nil {
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	price, err := s.opts.Prices.Price(r.Context(), r.PathValue("alias"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
+		Window int `json:"window"`
+	}{price.Window})
 }
 
 // price is alias's LiteLLM price under the version's output limit; a

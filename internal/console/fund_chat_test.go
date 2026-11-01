@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -57,7 +58,7 @@ func fundRefusal(t *testing.T, r *rig, in toolInput) string {
 
 func TestFundWithinThePoolRaisesTheCard(t *testing.T) {
 	r := fundRig(t)
-	r.tasks.fundedEUR = 1.5
+	seedAgentFunded(t, r, 1.5)
 	note, err := runFund(t, r, toolInput{TaskID: "t-e", EUR: 1, Text: "the replica is worth it"})
 	if err != nil || note != "Raised #13's budget by 1.00 EUR to 3.00 and posted your note as the answer; the card resumes." {
 		t.Fatalf("fund = %q, %v", note, err)
@@ -65,7 +66,7 @@ func TestFundWithinThePoolRaisesTheCard(t *testing.T) {
 	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 3 {
 		t.Errorf("budget_eur = %v, want 3", task.BudgetEUR)
 	}
-	e := r.events.rows[0]
+	e := agentFundedRow(r.events.rows, 1.0)
 	if e.Kind != factoryd.EventCardFunded || e.Via != factoryd.ViaChat || e.Detail["amount_eur"] != 1.0 {
 		t.Errorf("the raise's row = %+v", e)
 	}
@@ -81,7 +82,7 @@ func TestFundAboveRaiseMaxRefuses(t *testing.T) {
 
 func TestFundPastThePoolRefuses(t *testing.T) {
 	r := fundRig(t)
-	r.tasks.fundedEUR = 2.5
+	seedAgentFunded(t, r, 2.5)
 	got := fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 1, Text: "more"})
 	if !strings.Contains(got, "discretionary_eur") || !strings.Contains(got, "0.50 left") || !strings.Contains(got, "attach_analysis") {
 		t.Errorf("the refusal = %q, want discretionary_eur, the 0.50 left and attach_analysis", got)
@@ -179,7 +180,7 @@ func TestFundFillsThePoolExactly(t *testing.T) {
 	r := fundRig(t)
 	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
 		Budget: &policy.ProjectBudget{DiscretionaryEUR: 0.3, RaiseMaxEUR: 1}}
-	r.tasks.fundedEUR = 0.1
+	seedAgentFunded(t, r, 0.1)
 	if _, err := runFund(t, r, toolInput{TaskID: "t-e", EUR: 0.2, Text: "fill it"}); err != nil {
 		t.Fatalf("fund of the pool's last 0.2: %v", err)
 	}
@@ -212,14 +213,14 @@ func answerFund(t *testing.T, r *rig, via, decider string) (string, error) {
 // pool, raise_max_eur and the card cap as the fund tool does.
 func TestChatAnswerFundPastThePoolRefusesAndChangesNothing(t *testing.T) {
 	r := needRig(t)
-	r.tasks.fundedEUR = 2.5
+	seedAgentFunded(t, r, 2.5)
 	_, err := answerFund(t, r, factoryd.ViaChat, "agent")
 	var no *refusal
 	if !errors.As(err, &no) || !strings.Contains(no.msg, "discretionary_eur") {
 		t.Fatalf("answer fund past the pool = %v, want a refusal naming discretionary_eur", err)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || len(r.events.rows) != 0 || len(r.fg.comments) != 0 {
-		t.Errorf("budget %v, %d rows, %d comments after the refusal, want 2, none, none", task.BudgetEUR, len(r.events.rows), len(r.fg.comments))
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || len(agentFundedRows(r.events.rows)) != 1 || len(r.fg.comments) != 0 {
+		t.Errorf("budget %v, %d rows, %d comments after the refusal, want 2, one seeded, none", task.BudgetEUR, len(agentFundedRows(r.events.rows)), len(r.fg.comments))
 	}
 }
 
@@ -248,7 +249,7 @@ func TestChatAnswerFundWithinTheBoundsRaisesAndRecordsOnce(t *testing.T) {
 // The board's answer keeps no pool: the member's own money.
 func TestBoardAnswerFundIgnoresThePool(t *testing.T) {
 	r := needRig(t)
-	r.tasks.fundedEUR = 2.95
+	seedAgentFunded(t, r, 2.95)
 	if _, err := answerFund(t, r, factoryd.ViaButton, ""); err != nil {
 		t.Fatalf("board answer fund: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestBoardAnswerFundIgnoresThePool(t *testing.T) {
 // count it.
 func TestMemberDecidedFundIgnoresTheAgentsLimits(t *testing.T) {
 	r := needRig(t)
-	r.tasks.fundedEUR = 3
+	seedAgentFunded(t, r, 3)
 	_, s := r.loggedIn(t)
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	tool, _ := r.c.chatTool("fund")
@@ -269,8 +270,9 @@ func TestMemberDecidedFundIgnoresTheAgentsLimits(t *testing.T) {
 	if err != nil || !strings.Contains(note, "Raised #13's budget by 4.00 EUR to 6.00") {
 		t.Fatalf("a confirmed fund past the pool, the raise max and the cap = %q, %v; want the raise", note, err)
 	}
-	if got := r.events.rows[0].Detail["decider"]; got == "agent" {
-		t.Errorf("the member's raise is stamped %v, which the pool would count", got)
+	row := agentFundedRow(r.events.rows, 4.0)
+	if row.Detail["decider"] == "agent" {
+		t.Errorf("the member's raise is stamped %v, which the pool would count", row.Detail["decider"])
 	}
 }
 
@@ -287,7 +289,7 @@ func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
 		}
 		return needRefusal, nil
 	}
-	r.tasks.fundedEUR = 3
+	seedAgentFunded(t, r, 3)
 	buttons := factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{}, nil)
 	r.tasks.tasks[0].Question = buttons
 	ck, s := r.loggedIn(t)
@@ -365,4 +367,38 @@ func TestFundProposalNamesTheAmount(t *testing.T) {
 	if len(proposed) == 0 || !strings.Contains(proposed[0], want) {
 		t.Fatalf("proposal %v, want it to hold %s", proposed, want)
 	}
+}
+
+// seedAgentFunded records an agent-decided card_funded row of eur in the
+// current UTC month so AgentFundedEUR sees it as the pool's used sum.
+func seedAgentFunded(t *testing.T, r *rig, eur float64) {
+	t.Helper()
+	now := time.Now().UTC()
+	e := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: now,
+		Detail: map[string]any{"decider": "agent", "amount_eur": eur}}
+	if _, err := r.events.Record(t.Context(), e); err != nil {
+		t.Fatalf("seed agent funded: %v", err)
+	}
+}
+
+// agentFundedRows returns the agent-decided card_funded rows via the chat.
+func agentFundedRows(rows []factoryd.Event) []factoryd.Event {
+	var out []factoryd.Event
+	for _, e := range rows {
+		if e.Kind == factoryd.EventCardFunded && e.Via == factoryd.ViaChat && e.Detail["decider"] == "agent" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// agentFundedRow returns the agent-decided card_funded row of amount eur,
+// or the zero value if none matches.
+func agentFundedRow(rows []factoryd.Event, eur float64) factoryd.Event {
+	for _, e := range agentFundedRows(rows) {
+		if e.Detail["amount_eur"] == eur {
+			return e
+		}
+	}
+	return factoryd.Event{}
 }

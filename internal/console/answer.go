@@ -86,27 +86,32 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 }
 
 // chatAskPress answers chatAnswer's ask branch: a choice of the
-// thread's bound ask row, the ask tool's question. The bound choice's
-// press runs the bound tool call in code as the human's session,
-// streamed, the do- row landing as a Do it's does; any other choice
-// settles the ask, lands the human's row with the choice and feeds the
-// agent a turn, which reads the row as their answer. Taking the binding
+// thread's bound ask row, the ask tool's question. Every press lands
+// the human's row with its choice; the bound choice's press then runs
+// the bound tool call in code as the human's session, streamed, the
+// do- row landing as a Do it's does, any other press feeds the agent a
+// turn, which reads the row as their answer. Taking the binding
 // settles the ask: a second press hears it is gone, another human's
-// that it is not theirs.
+// that it is not theirs; a binding expired leaves the question an
+// ordinary ask, every press of it settling.
 func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
-	p, err := t.take("ask", m.Proposal)
-	if err != nil {
-		// the press's own words, not fail's plain 404: the plan pins the
-		// expired binding's answer on the ask row's button
-		var no *refusal
-		if errors.As(err, &no) {
-			http.Error(w, no.msg, no.status)
+	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
+	gone := errors.Is(err, factoryd.ErrNoProposal)
+	switch {
+	case err == nil:
+		if err := t.inThread(p.Conversation); err != nil {
+			c.fail(w, r, err)
 			return
 		}
-		c.fail(w, r, err)
+	case errors.Is(err, factoryd.ErrOthersProposal):
+		http.Error(w, "It is another human's.", http.StatusForbidden)
 		return
-	}
-	if err := t.inThread(p.Conversation); err != nil {
+	case errors.Is(err, factoryd.ErrUsedProposal):
+		// the press's own words, not fail's plain 404: the plan pins the
+		// used binding's answer on the ask row's button
+		http.Error(w, "There is no such proposal or undo; it may have expired.", http.StatusNotFound)
+		return
+	case !gone:
 		c.fail(w, r, err)
 		return
 	}
@@ -115,22 +120,22 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	t.detach()
 	t.open(w)
 	t.takeTurn(pos, wait)
-	if choice != p.Choice {
-		if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
-			return
-		}
-		release := t.c.turns.slot(t.p.Repository, t.parallelTurns())
-		defer release()
-		task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
-		if err != nil {
-			log.Printf("console: the chat task of %s: %v", t.p.Name, err)
-			t.fail("The chat's task could not be read.")
-			return
-		}
-		t.run(task.ID, "")
+	if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
 		return
 	}
-	t.apply(p)
+	if err == nil && choice == p.Choice {
+		t.apply(p)
+		return
+	}
+	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
+	defer release()
+	task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
+	if err != nil {
+		log.Printf("console: the chat task of %s: %v", t.p.Name, err)
+		t.fail("The chat's task could not be read.")
+		return
+	}
+	t.run(task.ID, "")
 }
 
 // resolveChoice decides card id with choice as its state asks: a pending

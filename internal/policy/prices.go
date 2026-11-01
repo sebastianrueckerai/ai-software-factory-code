@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -25,6 +26,10 @@ type Price struct {
 	CacheRead float64
 	Out       float64
 	MaxOutput int
+	// Window is the alias's context window in tokens, 0 when no
+	// deployment reports one: the smallest across the alias's
+	// deployments, because the router may serve any of them.
+	Window int
 
 	inSet, cacheSet bool // parsing: an input, a cache-read rate was seen
 }
@@ -135,6 +140,12 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 		p.CacheRead = max(p.CacheRead, dp.CacheRead)
 		p.Out = max(p.Out, dp.Out)
 		p.MaxOutput = max(p.MaxOutput, dp.MaxOutput)
+		switch {
+		case dp.Window > 0 && p.Window > 0:
+			p.Window = min(p.Window, dp.Window)
+		case dp.Window > 0:
+			p.Window = dp.Window
+		}
 		prices[d.ModelName] = p
 	}
 	for alias := range unpriced {
@@ -156,6 +167,9 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, error) {
 	var p Price
 	openai := string(mi["litellm_provider"]) == `"openai"`
+	// the window's two fields, kept apart until the walk ends: the map's
+	// order is random, and the input cap wins over the legacy total
+	var input, total int
 	for k, raw := range mi {
 		if string(raw) == "null" || openai && openAIUnbilled(k, residency) {
 			continue
@@ -167,6 +181,16 @@ func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, erro
 				return Price{}, fmt.Errorf("%s: %w", k, err)
 			}
 			p.MaxOutput = int(n)
+		case k == "max_input_tokens", k == "max_tokens":
+			// a value that is no number leaves the window unset; it
+			// cannot unprice the deployment
+			if n, err := number(raw); err == nil {
+				if k == "max_input_tokens" {
+					input = int(n)
+				} else {
+					total = int(n)
+				}
+			}
 		case k == "tiered_pricing":
 			var tiers []map[string]json.RawMessage
 			if err := json.Unmarshal(raw, &tiers); err != nil {
@@ -209,6 +233,7 @@ func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, erro
 	if !p.cacheSet {
 		p.CacheRead = p.In
 	}
+	p.Window = cmp.Or(input, total)
 	p.inSet, p.cacheSet = false, false
 	return p, nil
 }

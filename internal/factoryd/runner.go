@@ -803,6 +803,8 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.commit, _ = env.Event.Detail["commit"].(string)
 		case harness.EventFinished:
 			out.agentText, _ = env.Event.Detail["summary"].(string)
+		case harness.EventCompacted:
+			r.timeline.recordEvent(ctx, t.ID, EventCompacted, map[string]any{"session": s.id})
 		}
 		events++
 		return env.Event, false
@@ -2074,7 +2076,6 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "ANSWER_TOKENS", "value": strconv.Itoa(r.cfg.AnswerTokens)},
 		{"name": "HEADROOM_TOKENS", "value": strconv.Itoa(r.cfg.HeadroomTokens)},
 		{"name": "STEPS", "value": strconv.Itoa(s.policy.Limits.StepCap())},
-		{"name": "CONTEXT_TOKENS", "value": strconv.Itoa(s.policy.Limits.ContextCap())},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(s.messageToken)},
 		{"name": "FINDINGS", "value": fit.list("FINDINGS", s.findings, maxCarriedFindings, true, "oldest", "findings")},
 		{"name": "ANSWERS", "value": fit.list("ANSWERS", s.answers, maxCarriedAnswers, false, "oldest", "answers to the escalations")},

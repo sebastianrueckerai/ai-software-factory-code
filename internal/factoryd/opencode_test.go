@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -240,7 +242,7 @@ func TestTokenBudgetNeedsHeadroom(t *testing.T) {
 }
 
 func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
-	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, 0, "")
+	cfgJSON, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +285,7 @@ func TestOpencodeConfigTargetsLocalProxy(t *testing.T) {
 // rejected call continues the loop (processor.ts:200-201, 647); steps caps
 // every agent that loops (session/prompt.ts:1178-1179).
 func TestOpencodeConfigGolden(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, 0, "")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, 40, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +301,7 @@ func TestOpencodeConfigGolden(t *testing.T) {
 		t.Fatalf("config =\n%s\nwant\n%s", indented.String(), want)
 	}
 	for _, steps := range []int{0, -1} {
-		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, 0, ""); err == nil {
+		if _, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "factory-main", 10000, steps, nil, ""); err == nil {
 			t.Errorf("steps %d accepted: a session must not run uncapped", steps)
 		}
 	}
@@ -364,6 +366,31 @@ func TestOpencodePrepareWritesBriefAndRunDrivesServe(t *testing.T) {
 	}
 	if reqs[3].Path != "/permission/per_0eee25394001C7STG5t65eIZKB/reply" || reqs[3].Body != `{"reply":"once"}` {
 		t.Errorf("permission reply = %+v, want once, as run --auto answers", reqs[3])
+	}
+}
+
+// Run asks the gateway for the session model's served window on the
+// sandbox identity and bounds the config by it: the advertised million
+// falls to the trust cap with limit.input at 75 percent, and a failed ask
+// would leave the trust cap with no input line at all.
+func TestRunDerivesTheLimitsFromTheServedWindows(t *testing.T) {
+	oc, dir := fakeServeOpencode(t, "")
+	var auth string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = r.Header.Get("Authorization")
+		fmt.Fprint(w, `{"window":1000000}`)
+	}))
+	defer gw.Close()
+	oc.GatewayURL = gw.URL
+	if res := oc.Run(context.Background(), harness.TaskBrief{Objective: "x"}, func(harness.Event) {}); !res.Success {
+		t.Fatalf("Run = %+v", res)
+	}
+	if auth != "Bearer jwt" {
+		t.Errorf("window ask auth = %q, want the sandbox token", auth)
+	}
+	config := servedRequests(t, dir)[0].Config
+	if !strings.Contains(config, `"context":200000`) || !strings.Contains(config, `"input":150000`) {
+		t.Errorf("config = %s, want the window-derived limits", config)
 	}
 }
 
@@ -1254,7 +1281,7 @@ func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
 // The stronger model is declared beside the session's, so a running
 // session can switch to it (roadmap 222, item 5); none twice.
 func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, 0, "", "big", "")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, nil, "", "big", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1281,7 +1308,7 @@ func TestOpencodeConfigDeclaresTheStrongerModel(t *testing.T) {
 // model, declared beside the session's (roadmap 222, item 6); the work
 // guide names the rule once a class lists delegate.
 func TestOpencodeConfigSubagentsOnTheCheapRung(t *testing.T) {
-	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "big", 10000, 40, 0, "factory/small", "small")
+	got, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "big", 10000, 40, nil, "factory/small", "small")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1318,11 +1345,14 @@ func TestBriefStatesTheSessionsFacts(t *testing.T) {
 	}
 }
 
-// opencode compacts when the last step's token total reaches
-// limit.input - compaction.reserved (overflow.ts, v1.18.32): with reserved 0,
-// the threshold is limit.input.
-func TestOpencodeConfigCompactsAtTheContextCap(t *testing.T) {
-	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, 100000, "")
+// The limits come from the declared models' served windows: limit.context
+// is the smaller of the window and the trust cap, limit.input 75 percent
+// of that (overflow.ts at v1.18.32 compacts at limit.input with reserved
+// 0), and the compaction block rides the session's own model having a
+// window.
+func TestOpencodeConfigDerivesLimitsFromTheServedWindows(t *testing.T) {
+	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "big", 10000, 40,
+		map[string]int{"big": 1000000, "premium": 128000}, "", "premium")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1337,18 +1367,23 @@ func TestOpencodeConfigCompactsAtTheContextCap(t *testing.T) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatal(err)
 	}
-	limit := cfg.Provider["factory"].Models["small"].Limit
-	if limit["input"] != 100000 || limit["context"] != 200000 || limit["output"] != 10000 {
-		t.Fatalf("limit = %v, want input 100000 inside context 200000", limit)
+	// the advertised million falls to the trust cap with the input line 75
+	// percent of it; a window under the cap rides as itself
+	if limit := cfg.Provider["factory"].Models["big"].Limit; limit["context"] != 200000 || limit["input"] != 150000 {
+		t.Fatalf("big's limit = %v, want context 200000 under the million, input 150000", limit)
+	}
+	if limit := cfg.Provider["factory"].Models["premium"].Limit; limit["context"] != 128000 || limit["input"] != 96000 {
+		t.Fatalf("premium's limit = %v, want context 128000, input 96000", limit)
 	}
 	if cfg.Compaction["auto"] != true || cfg.Compaction["reserved"] != float64(0) {
 		t.Fatalf("compaction = %v, want auto with reserved 0", cfg.Compaction)
 	}
 }
 
-// A version pinned before context_tokens leaves opencode's own threshold.
+// A model whose window the gateway cannot name keeps the trust cap and
+// opencode's own threshold: no input line turns the auto compaction on.
 func TestOpencodeConfigWithoutAContextCapLeavesOpencodesDefault(t *testing.T) {
-	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, 0, "")
+	raw, err := buildOpencodeConfig("http://127.0.0.1:45678", "factory", "small", 10000, 40, nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}

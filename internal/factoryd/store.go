@@ -1617,19 +1617,11 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 	return from, to, nil
 }
 
-// AgentFundedEUR is the EUR the agent funded cards with in repository in
-// the UTC calendar month of at: the same projection FundCard guards the
-// pool with, which the console's pool read-outs read — never a second
-// aggregate; a member's raise, confirmed or clicked, is not the pool's.
-func (s *PGStore) AgentFundedEUR(ctx context.Context, repository string, at time.Time) (float64, error) {
-	return agentFundedEUR(ctx, s.db, repository, at)
-}
-
 // agentFundedEUR is the EUR the agent funded cards with in repository: the
 // card_funded events via chat decided by the agent, in the UTC calendar
-// month of month. FundCard, under its repository lock, and the console's
-// pool read-out are its callers; a member's raise, confirmed or clicked,
-// is not the pool's.
+// month of month. FundCard, under its repository lock, and AgentFundedEUR,
+// the console's pool read, are its callers; a member's raise, confirmed or
+// clicked, is not the pool's.
 func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month time.Time) (float64, error) {
 	var eur float64
 	err := q.QueryRowContext(ctx,
@@ -1639,6 +1631,13 @@ func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month 
 		   AND at < (date_trunc('month', $4::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`,
 		repository, EventCardFunded, ViaChat, month).Scan(&eur)
 	return eur, err
+}
+
+// AgentFundedEUR answers what the month of month has funded of
+// repository's pool: the agent's own raises, the figure the console's
+// pool line carries.
+func (s *PGStore) AgentFundedEUR(ctx context.Context, repository string, month time.Time) (float64, error) {
+	return agentFundedEUR(ctx, s.db, repository, month)
 }
 
 // SetTaskAccent sets task id's accent colour; "" removes it (NULL). The

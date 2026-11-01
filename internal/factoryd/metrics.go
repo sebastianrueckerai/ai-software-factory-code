@@ -267,22 +267,41 @@ func (f GateHeadFact) Event(repository string, issue int64) Event {
 
 // PlanFilingFact is one revision's filing on a plan — a person's, a
 // cut's or a round's — the plan_replanned row. Identity: the plan and
-// the revision; one revision, one row.
+// the revision; one revision, one row. A card the filing filed carries
+// its own row: the card's issue and plan key canonical, the identity
+// the plan, revision and key.
 type PlanFilingFact struct {
 	Plan     string // with Revision: the identity
 	Revision int
-	Origin   string // ReplanPerson, ReplanCut or "round": the panel's origin
+	Origin   string // ReplanPerson, ReplanCut or "round"; "" is a plain filing
+	Card     int64  // the filed card's issue; 0 on the revision's own row
+	Key      string // the filed card's plan key; "" on the revision's own row
 }
 
 // Event is the filing's row of repository's issue; extra carries what
 // the filing names (the fates of the old cards and the new ones, or a
-// round's cards).
+// round's cards). The detail is a fresh copy of extra — the caller's
+// map stays its own — over which every canonical field comes from the
+// fact: revision and origin always, card and key on a card's own row.
+// A reserved extra can neither disagree with the row the identity
+// names nor forge a card's membership on a revision's row; the extras
+// no fact owns survive.
 func (f PlanFilingFact) Event(repository string, issue int64, extra map[string]any) Event {
-	detail := map[string]any{"revision": f.Revision, "origin": f.Origin}
+	detail := make(map[string]any, len(extra)+2)
 	maps.Copy(detail, extra)
+	delete(detail, "card")
+	delete(detail, "key")
+	detail["revision"], detail["origin"] = f.Revision, f.Origin
+	if f.Card != 0 {
+		detail["card"], detail["key"] = f.Card, f.Key
+	}
+	id := fmt.Sprintf("%d", f.Revision)
+	if f.Key != "" {
+		id += " " + f.Key
+	}
 	return Event{Repository: repository, TaskID: f.Plan, IssueNumber: issue, Kind: EventPlanReplanned,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail,
-		IdentityKey: identityKey(EventPlanReplanned, f.Plan, fmt.Sprintf("%d", f.Revision))}
+		IdentityKey: identityKey(EventPlanReplanned, f.Plan, id)}
 }
 
 // EventCut is one applied cut — the cut step's row on the cut card's own:
@@ -313,33 +332,6 @@ func (f CutFact) Event(repository string, issue int64) Event {
 		Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail:      map[string]any{"plan": f.Plan, "group": f.Group, "revision": f.Revision, "into": f.Into, "session": f.Session, "spent": f.Spent},
 		IdentityKey: identityKey(EventCut, f.Plan, f.Card)}
-}
-
-// EventPlanCardFiled is one card's filing into a round of its plan, the
-// plan_card_filed row — distinct from card_filed, the row of who filed a
-// card's issue by hand. The row lands in the filing that gives the card
-// its issue, before the issue is stored, so a retry that runs the moment
-// again lands the one row; a card a later revision keeps — its issue
-// standing — is no new filing, and one filed before the rows were stays
-// unknown. Detail {"plan", "key", "round", "revision"}.
-const EventPlanCardFiled = "plan_card_filed"
-
-// CardFilingFact is that filing. Identity: the card; one card, one row,
-// at the filing that gave it its issue.
-type CardFilingFact struct {
-	Card     string // the identity
-	Plan     string
-	Key      string
-	Round    int
-	Revision int
-}
-
-// Event is the filing's row of repository's issue.
-func (f CardFilingFact) Event(repository string, issue int64) Event {
-	return Event{Repository: repository, TaskID: f.Card, IssueNumber: issue, Kind: EventPlanCardFiled,
-		Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail:      map[string]any{"plan": f.Plan, "key": f.Key, "round": f.Round, "revision": f.Revision},
-		IdentityKey: identityKey(EventPlanCardFiled, f.Card)}
 }
 
 // HoldIntervalFact is one production hold's end, the production_released
@@ -439,7 +431,8 @@ func sameJSONValue(a, b any) bool {
 // fact, each recorded through the fact payload that names its identity:
 // SessionEndFact (session and attempt), ReviewAttemptFact (head and
 // round), GateHeadFact (card and head), PlanFilingFact (plan and
-// revision), CutFact (plan and cut card) and CardFilingFact (the card). Beside
+// revision, and on a card's own filing row its key), CutFact (plan and cut
+// card). Beside
 // them the store's own rows: session_started and session_pushed events
 // (identity task and session), plan_closed events (identity task and
 // revision), the releases row (an open hold) and the task_status row
@@ -1476,8 +1469,210 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 	if r.CIDuration, err = metricCIDuration(ctx, db, repository, w); err != nil {
 		return r, err
 	}
+	if r.DivideConquer, err = metricDivideConquer(ctx, db, repository, w); err != nil {
+		return r, err
+	}
 	if r.DivideConquer.EurPerMergedLine, r.DivideConquer.FixedEurPerCard, r.DivideConquer.EconomicsCoverage, err = metricEconomics(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	return r, nil
+}
+
+// The divide-and-conquer panels this store answers today (roadmap 336):
+// cards above their size bound at the merge gate, sessions per merged
+// card by historical size, session ends by cause and reviews that
+// answered not reviewed. Every panel reads hard rows the factory
+// already stores — one row per fact, each recorded through its payload
+// with an identity key — joined to tasks for the project's card reach
+// (no chat task, no roll card). A span no row covers is unknown, never
+// zero: a target-of-none panel needs evidence before it can name none.
+
+const dcCardReach = `t.repository = $1 AND t.kind <> 'chat' AND t.source <> '` + SourceRoll + `'`
+
+// metricEvidenceCount is the shape of a target-of-none panel: the count
+// of the window's offending rows over the span's evidence, unknown when
+// no row covers the span — a measured zero needs evidence, never a
+// missing one. The scalar returns (num, evidence) and the weeks query
+// returns (bucket, num).
+func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricWindow, scalar, weeks string) (Figure, error) {
+	var f Figure
+	read := func(from, to time.Time) (n, evidence float64, err error) {
+		err = db.QueryRowContext(ctx, scalar, repo, from, to).Scan(&n, &evidence)
+		return
+	}
+	n, ev, err := read(w.From, w.To)
+	if err != nil {
+		return f, err
+	}
+	f.Value, f.Has = n, ev > 0
+	if n, ev, err = read(w.PrevFrom, w.PrevTo); err != nil {
+		return f, err
+	}
+	f.Prev, f.PrevHas = n, ev > 0
+	f.Weeks, err = metricWeeks(ctx, db, weeks, repo, w.SparkFrom, w.To)
+	return f, err
+}
+
+// metricDivideConquer populates the divide-and-conquer block the store
+// answers today: CoveredFrom, GateAboveBound, SessionsPerCard,
+// SessionEnds and ReviewsNotReviewed. The economics panels (panels 4,
+// 5, 7, 8, 10, 11, 12) land on another card; their fields stay zero
+// until then.
+func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
+	var d DivideConquer
+	var covered sql.NullTime
+	if err := db.QueryRowContext(ctx,
+		`SELECT min(e.at) FROM events e JOIN tasks t ON t.id = e.task_id WHERE `+dcCardReach+` AND e.identity_key IS NOT NULL AND e.kind = ANY($2)`,
+		repo, []string{EventGateHead, EventSessionEnd, EventModelReview}).Scan(&covered); err != nil {
+		return d, err
+	}
+	if covered.Valid {
+		d.CoveredFrom = covered.Time
+	}
+	var err error
+	if d.GateAboveBound, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.SessionsPerCard, err = metricDivideSessions(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.SessionEnds, err = metricDivideSessionEnds(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.ReviewsNotReviewed, err = metricDivideReviews(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	return d, nil
+}
+
+// metricDivideGateBound — panel 1: distinct cards reaching the merge
+// gate above their size bound (target: none). A card counts once
+// however many heads and retries crossed; the bound and the lines are
+// the ones the reading captured, never today's policy. Without a
+// reading in the span the panel is unknown, not zero.
+func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE ` + dcCardReach + ` AND e.kind = 'gate_head' AND e.detail->>'gate' = 'merge' AND e.at >= %s AND e.at < $3`
+	const over = `(e.detail->>'insertions')::int + (e.detail->>'deletions')::int > (e.detail->>'bound')::int`
+	return metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(DISTINCT e.task_id) FILTER (WHERE `+over+`), count(DISTINCT e.task_id)`+from, "$2"),
+		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+over+`)`+from+` GROUP BY 1`, "$2"))
+}
+
+// metricDivideSessions — panel 2: mean lifetime distinct actually
+// started sessions per merged card, grouped by the card's filed size
+// including unsized. The cohort is cards whose first merge lands in
+// the span; the card's lifetime sessions are distinct session_started
+// rows across all time. A size absent from the cohort is absent from
+// the slice.
+func metricDivideSessions(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]SizeFigure, error) {
+	const cohort = ` FROM (
+			SELECT COALESCE(t.size, '') AS size, m.at,
+				(SELECT count(DISTINCT s.detail->>'session') FROM events s
+					WHERE s.task_id = t.id AND s.kind = 'session_started' AND s.detail->>'session' <> '') AS started
+			FROM tasks t JOIN LATERAL (SELECT min(e.at) AS at FROM events e
+				WHERE e.task_id = t.id AND e.kind = 'pull_request_merged') m ON m.at IS NOT NULL
+			WHERE ` + dcCardReach + ` AND m.at >= %s AND m.at < $3
+		) c`
+	figs := map[string]*SizeFigure{}
+	at := func(size string) *SizeFigure {
+		if f, ok := figs[size]; ok {
+			return f
+		}
+		f := &SizeFigure{Size: size}
+		figs[size] = f
+		return f
+	}
+	scalar := `SELECT c.size, sum(c.started)::float8, count(*)::float8`
+	for _, sp := range []struct {
+		from, to time.Time
+		prev     bool
+	}{{w.From, w.To, false}, {w.PrevFrom, w.PrevTo, true}} {
+		rows, err := db.QueryContext(ctx, scalar+fmt.Sprintf(cohort, "$2")+` GROUP BY 1`, repo, sp.from, sp.to)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var size string
+			var sum, cards float64
+			if err := rows.Scan(&size, &sum, &cards); err != nil {
+				_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
+				return nil, err
+			}
+			f := at(size)
+			if sp.prev {
+				f.Figure.Prev, f.Figure.PrevHas = metricRatio(sum, cards)
+			} else {
+				f.Figure.Value, f.Figure.Has = metricRatio(sum, cards)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
+			return nil, err
+		}
+		_ = rows.Close() // #nosec G104 -- the read is exhausted and rows.Err checked; Close repeats it at most
+	}
+	weekly := `SELECT ` + metricBucket("c.at") + `, c.size, sum(c.started)::float8, count(*)::float8`
+	rows, err := db.QueryContext(ctx, weekly+fmt.Sprintf(cohort, "$2")+` GROUP BY 1, 2`, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b int
+		var size string
+		var sum, cards float64
+		if err := rows.Scan(&b, &size, &sum, &cards); err != nil {
+			return nil, err
+		}
+		if b >= 0 && b < 7 {
+			f := at(size)
+			f.Figure.Weeks[b], _ = metricRatio(sum, cards)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SizeFigure, 0, len(figs))
+	for _, f := range figs {
+		out = append(out, *f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Size < out[j].Size })
+	return out, nil
+}
+
+// metricDivideSessionEnds — panel 3: the window's session ends by
+// cause, ordered by count descending then name. The causes are the
+// session outcomes the runner records.
+func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
+	rows, err := db.QueryContext(ctx, `SELECT e.detail->>'outcome', count(*)::float8
+		FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.at >= $2 AND e.at < $3
+		GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NamedCount
+	for rows.Next() {
+		var nc NamedCount
+		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, nc)
+	}
+	return out, rows.Err()
+}
+
+// metricDivideReviews — panel 9: reviews that answered not reviewed
+// (target: none). A review that returned no verdict carries reviewed
+// false and a bounded reason; without a model_review row in the span
+// the panel is unknown, not zero.
+func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE ` + dcCardReach + ` AND e.kind = 'model_review' AND e.at >= %s AND e.at < $3`
+	const notReviewed = `e.detail->>'reviewed' = 'false'`
+	return metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+notReviewed+`), count(*)`+from, "$2"),
+		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(*) FILTER (WHERE "+notReviewed+`)`+from+` GROUP BY 1`, "$2"))
 }

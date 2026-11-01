@@ -99,8 +99,8 @@ func TestShippedTreePasses(t *testing.T) {
 }
 
 // The premium class: the chat and the planner on
-// premium under its month cap; every list a key is minted from holds big
-// beside premium, the alias a premium call falls back to.
+// premium under its month cap; a key is minted from the aliases the
+// classes name, with no model beside premium to fall back to.
 func TestPremiumClass(t *testing.T) {
 	files := fixtureTree(t)
 	for _, r := range [][2]string{
@@ -122,7 +122,7 @@ func TestPremiumClass(t *testing.T) {
 	if d.Budget.PremiumMonthEUR != 50 {
 		t.Errorf("premium_month_eur = %v, want 50", d.Budget.PremiumMonthEUR)
 	}
-	if got, want := d.FactoryModels([]string{ClassChat}), []string{Big, Premium, Small, "vision"}; !slices.Equal(got, want) {
+	if got, want := d.FactoryModels([]string{ClassChat}), []string{Premium, Small, "vision"}; !slices.Equal(got, want) {
 		t.Errorf("the chat's factoryd models = %v, want %v", got, want)
 	}
 	if got, want := d.Models([]string{"planner"}), []string{Big, Premium, Small}; !slices.Equal(got, want) {

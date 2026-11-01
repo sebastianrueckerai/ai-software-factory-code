@@ -799,7 +799,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
 			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#board" hx-swap="outerHTML" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
-			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required></textarea>`
+			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required hx-preserve></textarea>`
 		if !strings.Contains(esc, want) {
 			t.Errorf("%s: the escalation of t-ch =\n%s\nwant it to hold\n%s", page, esc, want)
 		}

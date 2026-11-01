@@ -134,6 +134,29 @@ func TestChatCompactsBeforeAProjectedOverflow(t *testing.T) {
 // /compact by hand folds the thread before its last two turns and calls
 // no model for an answer; with nothing before them it says so. The thread's
 // read carries the summary.
+// Without the project's chat.window the 80 percent test reads the
+// serving alias's window from the gateway: past 80 percent of the served
+// window the thread folds before its turn, under it it does not, and the
+// turn asked the alias it serves.
+func TestChatCompactsByTheServingAliasWindow(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.window = 10000
+	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b", "c")
+	thread := "sf/code:sebastian:1"
+	// 7999 tokens and the message's one: 8000, 80 percent exactly
+	chat.tokens = map[string]int{thread: 7999}
+	g.replies = [][]string{{say("d2")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"d1"}})
+	equal(t, "the compactions at 80 percent of the served window", []any{compactedRows(t, events), len(g.compacts)}, []any{[]int(nil), 0})
+	equal(t, "the alias asked for its window", g.windows, []string{"big"})
+	// 8000 and one: past it
+	chat.tokens[thread] = 8000
+	g.replies = [][]string{{say("e2")}}
+	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"e1"}})
+	equal(t, "the compaction past it", compactedRows(t, events), []int{6})
+}
+
 func TestChatCompactByHand(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)

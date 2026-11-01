@@ -1209,9 +1209,20 @@ func TestRecordReplanOfARound(t *testing.T) {
 		if want := map[string]any{"revision": 3.0, "origin": "round", "round": 2.0, "cards": cards}; !reflect.DeepEqual(got, want) {
 			t.Fatalf("%s: the plan's replanned step %v, want %v", tc.name, got, want)
 		}
-		i := slices.IndexFunc(store.events, func(e Event) bool { return e.Kind == EventPlanReplanned })
-		if want := map[string]any{"revision": 3, "origin": ReplanRound, "round": 2, "cards": tc.cards}; i < 0 || store.events[i].TaskID != "p" || !reflect.DeepEqual(store.events[i].Detail, want) {
-			t.Fatalf("%s: events %+v, want plan_replanned on p with %v", tc.name, store.events, want)
+		rows := map[string]Event{}
+		for _, e := range store.events {
+			if e.Kind == EventPlanReplanned {
+				rows[e.IdentityKey] = e
+			}
+		}
+		if e, ok := rows[identityKey(EventPlanReplanned, "p", "3")]; !ok || e.TaskID != "p" ||
+			e.Detail["revision"] != 3 || e.Detail["origin"] != ReplanRound || e.Detail["round"] != 2 {
+			t.Fatalf("%s: the revision's row %+v, want plan_replanned on p with revision 3, round 2", tc.name, e)
+		} else if _, blob := e.Detail["cards"]; blob {
+			t.Fatalf("%s: the revision's row %+v carries the cards blob, want one row per card", tc.name, e.Detail)
+		}
+		if len(rows) != 1 {
+			t.Fatalf("%s: %d plan_replanned rows (%v), want the revision's alone: a card files its row at its filing", tc.name, len(rows), rows)
 		}
 		for _, id := range []string{"t-foundation", "t-links-api", "t-redirects"} {
 			if lines := stepsNamed(t, r, id, "replanned"); len(lines) != 0 {

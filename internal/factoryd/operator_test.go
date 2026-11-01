@@ -266,3 +266,31 @@ func TestOperatorTitles(t *testing.T) {
 		t.Fatalf("request = %s\nwant      %s", b, want)
 	}
 }
+
+// The window ask reads the gateway's window route on the chat task's
+// account with the operator purpose, and the gateway's answer is the
+// alias's served window; a refusal comes back as the error, so the turn
+// decides how it compacts without one.
+func TestOperatorWindow(t *testing.T) {
+	var gotPath, gotTask, gotPurpose string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotTask, gotPurpose = r.URL.Path, r.Header.Get(gateway.HeaderFactoryTask), r.Header.Get(gateway.HeaderFactoryPurpose)
+		if r.URL.Path == "/v1/window/premium" {
+			io.WriteString(w, `{"window":128000}`)
+			return
+		}
+		http.Error(w, `LiteLLM has no model "nope"`, http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+	m := &OperatorModel{GatewayURL: srv.URL, Token: "gw-token"}
+	w, err := m.Window(t.Context(), "t-chat-x-2026-10", "premium")
+	if err != nil || w != 128000 {
+		t.Fatalf("window = %d, err = %v", err, w)
+	}
+	if gotPath != "/v1/window/premium" || gotTask != "t-chat-x-2026-10" || gotPurpose != policy.PurposeOperator {
+		t.Fatalf("asked %s for %s as %s", gotPath, gotTask, gotPurpose)
+	}
+	if _, err := m.Window(t.Context(), "t-chat-x-2026-10", "nope"); err == nil || !strings.Contains(err.Error(), "no model") {
+		t.Fatalf("err = %v, want the gateway's no-model refusal", err)
+	}
+}

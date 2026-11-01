@@ -258,7 +258,7 @@ func (c *Console) chatFundAndGo(w http.ResponseWriter, r *http.Request) {
 		t.send("done", struct{}{})
 		return
 	}
-	release := c.turns.slot(t.p.Repository, t.parallelTurns())
+	release := c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
 	defer release()
 	task, err := c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
@@ -301,7 +301,7 @@ func (c *Console) resume(ctx context.Context, p factoryd.Project, login string, 
 	if !t.stopRow() {
 		return
 	}
-	release := c.turns.slot(p.Repository, t.parallelTurns())
+	release := c.turns.slot(ctx, p.Repository, t.parallelTurns())
 	defer release()
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {

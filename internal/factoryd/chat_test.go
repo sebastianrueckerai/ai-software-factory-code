@@ -361,8 +361,8 @@ func TestPGStoreTakeProposal(t *testing.T) {
 	if at := usedAt("tok-1"); at == nil || !at.Equal(now) {
 		t.Fatalf("used_at = %v, want %v", at, now)
 	}
-	if _, err := s.TakeProposal(ctx, "proposal", "tok-1", "sf/code", "anna", now); !errors.Is(err, ErrNoProposal) {
-		t.Fatalf("a second take = %v, want ErrNoProposal", err)
+	if _, err := s.TakeProposal(ctx, "proposal", "tok-1", "sf/code", "anna", now); !errors.Is(err, ErrUsedProposal) {
+		t.Fatalf("a second take = %v, want ErrUsedProposal", err)
 	}
 	undo := ChatProposal{Token: "tok-2", Kind: "undo", Repository: "sf/code", Login: "anna", Tool: "set_accent",
 		Args: json.RawMessage(`{"accent": "blue", "task_id": "t-m"}`), Description: "set_accent", ExpiresAt: now}
@@ -421,6 +421,12 @@ func TestPGStoreAskBinds(t *testing.T) {
 	}
 	if live, err := s.LiveAskBinds(ctx, "sf/code", "anna", 3, now); err != nil || len(live) != 1 || live[0].Token != "ask-2" {
 		t.Fatalf("LiveAskBinds after the take = %+v, %v", live, err)
+	}
+	if _, err := s.TakeProposal(ctx, "ask", "ask-1", "sf/code", "anna", now); !errors.Is(err, ErrUsedProposal) {
+		t.Fatalf("a second take of the used binding = %v, want ErrUsedProposal", err)
+	}
+	if _, err := s.TakeProposal(ctx, "ask", "ask-3", "sf/code", "anna", now); !errors.Is(err, ErrNoProposal) {
+		t.Fatalf("a take of the expired binding = %v, want ErrNoProposal", err)
 	}
 }
 

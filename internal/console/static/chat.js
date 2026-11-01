@@ -178,9 +178,9 @@ var chatView = (function () {
   // thinking-fold plan) — closed until reasoning arrives, for none is
   // stored to refill it from
   var thinkingHTML = "<span class=\"turn-tail\"><button type=\"button\" class=\"tthink\" data-think title=\"Show the thinking\" aria-expanded=\"false\" hidden></button>" +
-    "<button type=\"button\" class=\"thinking\" data-stop title=\"Stop\">thinking</button><div class=\"tfold\" hidden></div></span>";
-  // trimThink keeps a fold's newest 16 KiB, the front falling off at a
-  // line boundary
+    "<button type=\"button\" class=\"thinking\" data-stop aria-label=\"Stop\" title=\"Stop\">thinking</button><div class=\"tfold\" hidden></div></span>";
+  // trimThink keeps a fold's newest 16 K characters — the units a page's
+  // own strings count — the front falling off at a line boundary
   function trimThink(s) {
     if (s.length <= 16384) return s;
     var cut = s.slice(s.length - 16384), nl = cut.indexOf("\n");
@@ -907,13 +907,14 @@ var chatView = (function () {
   // button or Escape in the panel posts the stop. The stream answers
   // stopped and ends; with none open — a page reloaded mid-turn, which
   // drew the button from the thread's working flag — the thread reloads
-  // to show the rows the stop left
+  // to show the rows the stop left; a stop that cannot post says so in
+  // the thread
   function stopTurn() {
     var n = open, owner = openOwner, live = busy(openRef());
     fetch(base + "/stop", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}})
       .then(function () { if (!live && n === open && owner === openOwner) return load(n, owner, true); })
-      .catch(function () {});
+      .catch(function (err) { if (n === open && owner === openOwner) failed(err); });
   }
   function send() {
     var text = input.value.trim();
@@ -986,12 +987,15 @@ var chatView = (function () {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
   // pressAsk is a bound ask's press: it answers through /answer as a
-  // stream, the bound choice running the bound tool call in code and
-  // another settling the ask and running the agent's turn, drawn where
-  // the choices were; a binding gone since the read says so
+  // stream, the pressed choice drawn at once as the human's own row
+  // (the store keeps it, every press an answer), the bound choice
+  // running the bound tool call in code and another settling the ask
+  // and running the agent's turn, drawn where the choices were; a used
+  // binding's press says so
   function pressAsk(id, choice, after) {
     var out = document.createElement("div");
     after.after(out);
+    out.insertAdjacentHTML("beforebegin", chatView.userHTML(login, choice, new Date(), false));
     run(open, openOwner, base + "/answer", new URLSearchParams({
       conversation: open, owner: openOwner, message: id, choice: choice
     }).toString(), out, expired(out));

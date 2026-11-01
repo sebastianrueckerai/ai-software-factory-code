@@ -62,6 +62,10 @@ func TestSettleOf(t *testing.T) {
 			PokeSettle{Word: "rejected", By: "sebastian", At: at.Add(time.Minute), Event: ev(12, 1, EventPlanChangesRequested, "sebastian")}},
 		{"a superseding request", approval, []Event{ev(12, 1, EventApprovalRequested, FactoryDecider)}, false, true,
 			PokeSettle{Word: "superseded", By: FactoryDecider, At: at.Add(time.Minute), Event: ev(12, 1, EventApprovalRequested, FactoryDecider)}},
+		{"a question answered leaves an approval open", approval, []Event{ev(12, 1, EventQuestionAnswered, "sebastian")}, false, true, open},
+		{"a granted session leaves an approval open", approval, []Event{ev(12, 1, EventSessionGranted, FactoryDecider)}, false, true, open},
+		{"a card closed on another venue leaves an approval open", approval, []Event{ev(12, 1, EventCardClosed, "sebastian")}, false, true, open},
+		{"a withdrawn question leaves an approval open", approval, []Event{ev(12, 1, EventQuestionWithdrawn, FactoryDecider)}, false, true, open},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			got := SettleOf(tt.m, tt.events, tt.cardWaits, tt.apprWaits)

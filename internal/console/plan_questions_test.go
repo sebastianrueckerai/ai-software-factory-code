@@ -46,7 +46,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	for _, want := range []string{"<legend>1. How often does the checker probe a site?</legend>", "<legend>2. How long are the results kept?</legend>",
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="1">`,
 		`<button type="submit" name="answer" value="60 seconds">60 seconds</button>`,
-		`<input type="text" id="answer-20-2" name="answer" maxlength="1000" required>`, `<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
+		`<input type="text" id="answer-20-2" name="answer" maxlength="1000" required hx-preserve>`, `<p class="meta">2 questions open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)

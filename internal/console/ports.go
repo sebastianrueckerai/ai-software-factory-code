@@ -79,6 +79,15 @@ type Dependencies interface {
 	DependencyStates(ctx context.Context) ([]factoryd.DependencyState, error)
 }
 
+// Pools answers what a project's month pool has funded already
+// (factoryd.PGStore.AgentFundedEUR): the agent's own raises of the month,
+// the figure the status line's pool words carry. Nil shows no pool line.
+type Pools interface {
+	// AgentFundedEUR sums the card_funded rows the agent decided via the
+	// chat of repository in the UTC calendar month of month.
+	AgentFundedEUR(ctx context.Context, repository string, month time.Time) (float64, error)
+}
+
 // Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
 // the machine, human escalations judged by an approver.
 type Alerts interface {

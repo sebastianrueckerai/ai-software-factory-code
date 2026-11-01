@@ -68,7 +68,7 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 			return fmt.Errorf("start the queued turn: %w", err)
 		}
 	}
-	release := c.turns.slot(p.Repository, t.parallelTurns())
+	release := c.turns.slot(context.Background(), p.Repository, t.parallelTurns())
 	defer release()
 	t.run(task.ID, "")
 	return nil
@@ -124,7 +124,13 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 	id, err := c.cfg.Chat.AddChatMessage(ctx, p.Repository, a.s.user, factoryd.ChatMessage{Role: "user",
 		Content: fmt.Sprintf("About card #%d (%s): %s", t.IssueNumber, t.ID, text), Conversation: conv, Queued: pos > 0})
 	if err != nil {
-		c.turns.leave(tu.key())
+		// its channel leaves the line waking no one; a first message's
+		// turn owns the line and ends it
+		if pos > 0 {
+			c.turns.unline(tu.key(), wait)
+		} else {
+			c.turns.leave(tu.key())
+		}
 		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "cannot store the message")
 	}
@@ -139,7 +145,7 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 				return
 			}
 		}
-		release := c.turns.slot(p.Repository, tu.parallelTurns())
+		release := c.turns.slot(tu.r.Context(), p.Repository, tu.parallelTurns())
 		defer release()
 		tu.run(task.ID, notice)
 	}()

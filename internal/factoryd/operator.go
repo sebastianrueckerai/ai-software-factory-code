@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -37,6 +38,9 @@ type OperatorModel struct {
 const (
 	operatorTimeout = 2 * time.Minute
 	OperatorTokens  = 16384
+	// windowTimeout bounds the window ask alone: a metadata GET, not a
+	// model call, so it waits none of operatorTimeout's room.
+	windowTimeout = 10 * time.Second
 )
 
 // OperatorMessage is one message of the conversation, in the OpenAI chat
@@ -74,6 +78,19 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 		"function": map[string]any{"name": t.Name, "description": t.Description, "parameters": t.Parameters}})
 }
 
+// StatusError is the gateway's answer with a status outside 200: Code its
+// HTTP status, Body the answer's first bytes. A caller tells a model's
+// refusal, which a retry cannot change, from a gateway or provider it
+// could not reach.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.Code, e.Body)
+}
+
 // Stream is one call of alias on task taskID's account with messages and
 // tools, cut after operatorTimeout: each piece of the answer's text goes
 // to text as it arrives, each piece of its reasoning to think, and the
@@ -84,6 +101,42 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 // The call names the chat thread it serves, which its audit row keeps.
 func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text, think func(string)) (OperatorMessage, error) {
 	return m.stream(ctx, policy.PurposeOperator, OperatorTokens, taskID, alias, thread, messages, tools, text, think)
+}
+
+// Window is the alias's served context window from the gateway's
+// /model/info poll, asked on task taskID's account with the operator
+// purpose; an alias the gateway cannot price is an error, and the caller
+// decides how it runs without a window.
+func (m *OperatorModel) Window(ctx context.Context, taskID, alias string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, windowTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.GatewayURL+"/v1/window/"+url.PathEscape(alias), nil) // #nosec G704 -- the host is the configured GatewayURL and the alias a policy class
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+m.Token)
+	req.Header.Set(gateway.HeaderFactoryTask, taskID)
+	req.Header.Set(gateway.HeaderFactoryPurpose, policy.PurposeOperator)
+	client := m.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	res, err := client.Do(req) // #nosec G704 -- the request built above, to GatewayURL
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("window %s: status %d: %s", alias, res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(body)), 300))
+	}
+	var served struct {
+		Window int `json:"window"`
+	}
+	if err := json.Unmarshal(body, &served); err != nil {
+		return 0, err
+	}
+	return served.Window, nil
 }
 
 // compactTokens bounds a compaction's summary (roadmap 239).
@@ -178,7 +231,7 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
 			return OperatorMessage{}, fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
 		}
-		return OperatorMessage{}, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(body)), 300))
+		return OperatorMessage{}, &StatusError{Code: res.StatusCode, Body: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
 	}
 	answer := OperatorMessage{Role: "assistant"}
 	calls := map[int]*OperatorCall{}

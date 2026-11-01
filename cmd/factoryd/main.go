@@ -560,6 +560,7 @@ func main() {
 		Policies:         store,
 		Costs:            store,
 		Dependencies:     store,
+		Pools:            store,
 		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
@@ -599,6 +600,9 @@ func main() {
 		},
 		RecordHumanCriteria: func(ctx context.Context, taskID, approver string) (int, error) {
 			return factoryd.RecordHumanCriteria(ctx, store, taskID, approver)
+		},
+		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
+			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)
 		},
 		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryPlanCard(ctx, taskID, by)

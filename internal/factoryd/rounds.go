@@ -150,7 +150,7 @@ func (r *Runner) recordRound(ctx context.Context, p Task, repo Repo, revision in
 	// the row before the step that ends the round's replan, as recordReplan
 	// writes its own
 	filing := PlanFilingFact{Plan: p.ID, Revision: revision, Origin: ReplanRound}
-	if err := r.timeline.RecordFactRow(ctx, filing.Event(p.Repository, p.IssueNumber, detail)); err != nil {
+	if err := r.timeline.RecordFactRow(ctx, filing.Event(p.Repository, p.IssueNumber, map[string]any{"round": next.Round})); err != nil {
 		return fmt.Errorf("record the round's row: %w", err)
 	}
 	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {

@@ -322,7 +322,7 @@ console.log(JSON.stringify({
 		{"zoom", `<div id="img-zoom" class="overlay imgbox" role="dialog" aria-modal="true" aria-label="the image full size; click or Escape closes">` +
 			`<img src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></div>`},
 		{"mark", `<span class="turn-tail"><button type="button" class="tthink" data-think title="Show the thinking" aria-expanded="false" hidden></button>` +
-			`<button type="button" class="thinking" data-stop title="Stop">thinking</button><div class="tfold" hidden></div></span>`},
+			`<button type="button" class="thinking" data-stop aria-label="Stop" title="Stop">thinking</button><div class="tfold" hidden></div></span>`},
 		{"stoppedMark", `<span class="thinking stopped" aria-hidden="true">stopped</span>`},
 		{"stopRow", `<div class="msg agent poke" data-message="13"><span class="av" aria-hidden="true"></span>` +
 			`<p class="who"><span class="name">the factory</span> <time>10-11 09:20Z</time></p>` +
@@ -692,7 +692,7 @@ func TestChatPanelStopsATurn(t *testing.T) {
 		t.Skip("no node")
 	}
 	const driver = `var fs = require("fs"), vm = require("vm");
-var listeners = [], posts = [], gets = 0, byId = {};
+var listeners = [], posts = [], gets = 0, made = [], stopFails = false, byId = {};
 function el() {
   var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false, blurred: false,
     dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
@@ -706,7 +706,10 @@ function el() {
   return e;
 }
 var document = {title: "Factory console", hidden: false,
-  createElement: function (tag) { var t = el(); if (tag === "template") t.content = {firstElementChild: el()}; return t; },
+  createElement: function (tag) { var t = el();
+    if (tag === "template") { var html = ""; t.content = {firstElementChild: el()};
+      Object.defineProperty(t, "innerHTML", {get: function () { return html; }, set: function (v) { html = v; made.push(v); }}); }
+    return t; },
   getElementById: function (id) {
     if (id === "img-zoom" || id === "thread-dialog" || id === "screen" || id === "chat-divider") return null;
     return byId[id] || (byId[id] = el());
@@ -722,7 +725,7 @@ var sandbox = {document: document, console: {log: function () {}, error: functio
     if (opts && opts.method === "POST") {
       if (/\/chat\/stop$/.test(u)) {
         posts.push({url: u, body: String(opts.body), csrf: opts.headers["X-CSRF-Token"]});
-        return Promise.resolve({ok: true});
+        return stopFails ? Promise.reject(new Error("the stop did not reach the console")) : Promise.resolve({ok: true});
       }
       return new Promise(function () {}); // the turn that never ends
     }
@@ -769,6 +772,12 @@ Promise.resolve().then(function () {
   fire(byId["chat"], "keydown", {key: "Escape", stopPropagation: function () {}});
   out.stopByEscapeInPanel = posts.length === 4;
 }).then(function () {
+  stopFails = true;
+  fire(byId["chat-log"], "click", {target: stopButton()});
+  return tick().then(tick); // the failed stop's error row lands in the log
+}).then(function () {
+  out.failedStopShowsError = made.some(function (h) { return /chat-error/.test(h) && /stop did not reach/.test(h); });
+}).then(function () {
   console.log(JSON.stringify(out));
 });`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
@@ -778,7 +787,7 @@ Promise.resolve().then(function () {
 		t.Fatalf("node: %v", err)
 	}
 	var got struct {
-		IdleEscapeLeaves, StopWithoutStream, ReloadedAfterStop, StopByClick, StopByEscapeInInput, StopByEscapeInPanel bool
+		IdleEscapeLeaves, StopWithoutStream, ReloadedAfterStop, StopByClick, StopByEscapeInInput, StopByEscapeInPanel, FailedStopShowsError bool
 	}
 	if err := json.Unmarshal(out, &got); err != nil {
 		t.Fatalf("node said %s: %v", out, err)
@@ -800,6 +809,9 @@ Promise.resolve().then(function () {
 	}
 	if !got.StopByEscapeInPanel {
 		t.Error("Escape elsewhere in the chat panel during a turn posts no stop")
+	}
+	if !got.FailedStopShowsError {
+		t.Error("a stop POST that fails shows no error row in the open thread")
 	}
 }
 
