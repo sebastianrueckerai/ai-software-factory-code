@@ -79,8 +79,8 @@ func TestBoardPlacesGhostsAtTheFootOfTheirLane(t *testing.T) {
 		`<div class="line2 mono">every Monday 06:00</div>`,
 		`<div class="line2 mono soon">Mon 06:00 · in 20 min · human card</div>`,
 		`<div class="line2 mono">last #781 filed</div>`,
-		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/skip" hx-post="/routines/ai-software-factory-code/weekly-bump/skip" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button></form>`,
-		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/run" hx-post="/routines/ai-software-factory-code/weekly-bump/run" hx-target="#board" hx-swap="outerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Run Weekly bump now">Run now</button></form>`,
+		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/skip" hx-post="/routines/ai-software-factory-code/weekly-bump/skip" hx-target="#note" hx-swap="innerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button></form>`,
+		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/run" hx-post="/routines/ai-software-factory-code/weekly-bump/run" hx-target="#note" hx-swap="innerHTML"><input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Run Weekly bump now">Run now</button></form>`,
 	} {
 		if !strings.Contains(bumpG, want) {
 			t.Fatalf("the bump's ghost lacks %s:\n%s", want, bumpG)
@@ -235,10 +235,12 @@ func TestBoardRoutinesFilter(t *testing.T) {
 		t.Fatalf("the hidden line drops the board's state:\n%s", queued)
 	}
 
-	// an act's answer keeps the choice it carried
+	// an act answers the note alone; the board's own GET, pinned to the
+	// query it stands on, keeps the choice
 	rec := r.do(htmxPost("/routines/ai-software-factory-code/audit/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
 		"routines": {"within"}, "within": {"2"}, "unit": {"hours"}}), ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `data-query="?project=ai-software-factory-code&amp;routines=within&amp;unit=hours&amp;within=2"`) {
+	if rec.Code != http.StatusOK || rec.Body.String() != `<p class="note" role="status">Skipped once · next after 6 more merges</p>` ||
+		rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("skip = %d:\n%s", rec.Code, rec.Body)
 	}
 }
@@ -375,7 +377,7 @@ func TestGhostShowsAPendingSkip(t *testing.T) {
 	g := ghostIn(t, col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued"), "weekly-bump")
 	for _, want := range []string{
 		`<div class="line2 mono">skipped once · next Mon 20 Oct 06:00 · in `,
-		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/skip" hx-post="/routines/ai-software-factory-code/weekly-bump/skip" hx-target="#board" hx-swap="outerHTML">` +
+		`<form method="post" action="/routines/ai-software-factory-code/weekly-bump/skip" hx-post="/routines/ai-software-factory-code/weekly-bump/skip" hx-target="#note" hx-swap="innerHTML">` +
 			`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="undo" value="1"><input type="hidden" name="project" value="ai-software-factory-code">` +
 			`<button type="submit" class="xs" aria-label="Undo the skip of Weekly bump">Undo skip</button></form>`,
 	} {
@@ -387,8 +389,10 @@ func TestGhostShowsAPendingSkip(t *testing.T) {
 		t.Fatalf("a skipped ghost offers Skip once:\n%s", g)
 	}
 	rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/skip", url.Values{"csrf": {s.csrf}, "undo": {"1"}, "project": {"ai-software-factory-code"}}), ck)
-	g = ghostIn(t, col(t, rec.Body.String(), "Queued"), "weekly-bump")
-	if rec.Code != http.StatusOK || strings.Contains(g, "skipped once") || !strings.Contains(g, ">Skip once</button>") || r.routines.skips[bumpKey] != "" {
+	g = ghostIn(t, col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued"), "weekly-bump")
+	if rec.Code != http.StatusOK || rec.Body.String() != `<p class="note" role="status">Skip once undone</p>` ||
+		rec.Header().Get("HX-Trigger") != "board-refresh" || strings.Contains(g, "skipped once") ||
+		!strings.Contains(g, ">Skip once</button>") || r.routines.skips[bumpKey] != "" {
 		t.Fatalf("the undo = %d, skips %v:\n%s", rec.Code, r.routines.skips, g)
 	}
 }

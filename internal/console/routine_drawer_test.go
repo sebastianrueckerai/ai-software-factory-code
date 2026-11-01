@@ -357,7 +357,8 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	if d := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "from": {"drawer"}, "tab": {"nope"}}), ck).Body.String(); !strings.Contains(d, `data-routine-drawer="`+bumpKey+`:overview"`) {
 		t.Fatalf("an unknown tab:\n%s", d)
 	}
-	if b := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck).Body.String(); !strings.HasPrefix(b, `<div id="board"`) {
-		t.Fatalf("the ghost's skip answers no board:\n%s", b)
+	if note := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck); note.Code != http.StatusOK ||
+		!strings.HasPrefix(note.Body.String(), `<p class="note" role="status">Skipped once`) || note.Header().Get("HX-Trigger") != "board-refresh" {
+		t.Fatalf("the ghost's skip answers no note:\n%s", note.Body)
 	}
 }

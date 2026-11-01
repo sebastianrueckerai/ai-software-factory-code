@@ -350,11 +350,7 @@ func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision 
 		return
 	}
 	note, err := decision(r.Context(), button(r), id)
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, err)
 }
 
 // review submits a pull request review on q's pull request: as a's

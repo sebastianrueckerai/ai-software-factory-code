@@ -38,11 +38,7 @@ func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
 	note, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("answer"))
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, err)
 }
 
 // planHoldout posts a writer's okay or drop of one hold-out of the plan
@@ -51,11 +47,7 @@ func (c *Console) planHoldout(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
 	note, err := c.doDecideHoldout(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("verb"))
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, err)
 }
 
 // planChanges posts a writer's change request on the plan
@@ -70,19 +62,11 @@ func (c *Console) planChanges(w http.ResponseWriter, r *http.Request) {
 // the board with its note.
 func (c *Console) showNote(w http.ResponseWriter, r *http.Request, action func(ctx context.Context, a actor, id string) (string, error)) {
 	note, err := action(r.Context(), button(r), r.PathValue("id"))
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, err)
 }
 
 // deployNow is the panel's Deploy now (doDeployNow).
 func (c *Console) deployNow(w http.ResponseWriter, r *http.Request) {
 	note, err := c.doDeployNow(r.Context(), button(r), r.PathValue("name"))
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, err)
 }

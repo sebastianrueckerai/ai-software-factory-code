@@ -122,8 +122,8 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 	}
 	drop := r.do(htmxPost("/tasks/t-plan/plan/holdout", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"3"}, "verb": {"drop"},
 		"project": {"linkshort"}}), ck)
-	if drop.Code != http.StatusOK || !strings.HasPrefix(drop.Body.String(), `<div id="board"`) ||
-		!strings.Contains(drop.Body.String(), `<p class="note" role="status">Hold-out 3 of plan #1 dropped.</p>`) {
+	if drop.Code != http.StatusOK || drop.Body.String() != `<p class="note" role="status">Hold-out 3 of plan #1 dropped.</p>` ||
+		drop.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("drop by htmx: %d %s", drop.Code, drop.Body)
 	}
 	answer := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"1"}, "answer": {"It does"},

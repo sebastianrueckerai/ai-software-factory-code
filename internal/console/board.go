@@ -1736,6 +1736,23 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 // to htmx the fragment carrying note, and problems on the approval cards
 // of the tasks they name; a browser's form a redirect to the board after a
 // success (a reload resends nothing), else the page.
+// pressNote answers a press: the note at once into the page's note
+// outlet, the board's own re-render behind the board-refresh trigger, so
+// the press never waits on the board's reads. A form post without htmx
+// keeps the redirect to the whole page.
+func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string, err error) {
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if r.Header.Get("HX-Request") == "" {
+		c.showBoard(w, r, http.StatusOK, note, nil)
+		return
+	}
+	w.Header().Set("HX-Trigger", "board-refresh")
+	c.render(w, "note-fragment", note)
+}
+
 func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
 	f := formFilter(r)
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
@@ -3085,7 +3102,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, nil)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -3096,11 +3113,7 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, err)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),

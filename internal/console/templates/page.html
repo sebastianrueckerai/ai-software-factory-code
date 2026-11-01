@@ -4,7 +4,7 @@
 {{end}}<div id="screen" class="main{{if .Chat}} with-chat{{end}}{{if eq .View "wide"}} wide{{end}}">
 <button type="button" class="edge-tab" data-tip="The board back; Esc also works">board</button>
 {{template "chat" .}}{{if .Chat}}<div id="chat-divider" role="separator" aria-orientation="vertical" aria-label="Drag it, or press the arrow keys, to resize the chat and the board" tabindex="0" data-tip="Drag to resize; the arrow keys step it"><span class="grip" aria-hidden="true">⤥</span></div>
-{{end}}{{template "board" .}}
+{{end}}<div id="note" aria-live="polite"></div>{{template "board" .}}
 <aside id="drawer" class="drawer" aria-label="The card" hidden></aside>
 {{if .Docs}}<aside id="doc-view" class="doc-view" aria-label="The project's documents" tabindex="-1" hidden>
 <div class="doc-head"><div class="doc-row doc-row-nav">

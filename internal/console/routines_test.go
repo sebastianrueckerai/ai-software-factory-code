@@ -244,7 +244,7 @@ func TestRoutineToggle(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{weeklyBump(), audit(), overridden, roll}
 	ck, s := r.loggedIn(t)
 	queued := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued")
-	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#board" hx-swap="outerHTML">` +
+	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#note" hx-swap="innerHTML">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `">%s<input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<button type="submit" class="xs" aria-label="%s">%s</button></form>`
 	bumpG := ghostIn(t, queued, "weekly-bump")

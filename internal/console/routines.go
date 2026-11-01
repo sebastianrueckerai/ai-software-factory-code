@@ -72,7 +72,7 @@ func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note stri
 		c.showRoutineDrawer(w, r, tab, note)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.pressNote(w, r, note, nil)
 }
 
 // doRoutineSkip sets project's routine name to skip its next run for a,

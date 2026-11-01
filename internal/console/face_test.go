@@ -708,10 +708,10 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
 	htmx := func(action string) string {
-		return `action="` + action + `" hx-post="` + action + `" hx-target="#board" hx-swap="outerHTML"`
+		return `action="` + action + `" hx-post="` + action + `" hx-target="#note" hx-swap="innerHTML"`
 	}
 	for _, want := range []string{
-		`data-query="?project=linkshort">`,
+		`data-query="?project=linkshort" hx-get="/?project=linkshort" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
 		htmx("/tasks/t-spec2/plan/changes") + ` data-to="running">` + "\n" + filter,
 		`<form method="post" ` + htmx("/tasks/t-ask/answer") + ` data-to="running">` + "\n" + filter,
@@ -784,7 +784,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">`
 	choice := func(c string) string {
-		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#board" hx-swap="outerHTML" data-to="running">` + "\n" + filter + "\n" +
+		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#note" hx-swap="innerHTML" data-to="running">` + "\n" + filter + "\n" +
 			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
 	}
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
@@ -797,7 +797,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
 			choice("a replica") + choice("a shard") + choice("both") +
 			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#board" hx-swap="outerHTML" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
+			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#note" hx-swap="innerHTML" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
 			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required hx-preserve></textarea>`
 		if !strings.Contains(esc, want) {
@@ -808,7 +808,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		}
 		plain := escalationOf(t, body, "t-plain")
 		if strings.Contains(plain, `class="choices"`) || strings.Contains(plain, `name="answer" value=`) ||
-			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer" hx-post="/tasks/t-plain/answer" hx-target="#board" hx-swap="outerHTML" data-to="running">`) ||
+			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer" hx-post="/tasks/t-plain/answer" hx-target="#note" hx-swap="innerHTML" data-to="running">`) ||
 			!strings.Contains(plain, `<label for="answer-t-plain">Your answer, posted on the issue as you</label>`) {
 			t.Errorf("%s: the escalation of t-plain =\n%s\nwant the text box alone", page, plain)
 		}
@@ -948,7 +948,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 		if strings.Contains(page, "view=wide") {
 			filter += `<input type="hidden" name="view" value="wide">`
 		}
-		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="off">` + filter +
+		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" hx-target="#note" hx-swap="innerHTML" class="inline close" data-to="off">` + filter +
 			`<textarea name="note" rows="1" maxlength="4000" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close #41 with a note">Close with note</button></form>`
 		idle := faceOf(t, body, "t-idle")
 		if !strings.Contains(idle, idleClose) {
@@ -963,7 +963,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 			}
 		}
 		q := escalationOf(t, body, "t-q")
-		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" hx-target="#board" hx-swap="outerHTML" class="inline close" data-to="closed">` + "\n" + filter + "\n" +
+		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" hx-target="#note" hx-swap="innerHTML" class="inline close" data-to="closed">` + "\n" + filter + "\n" +
 			`<button type="submit" class="deny" aria-label="End the card">End the card</button></form>`
 		if !strings.Contains(q, oneClick) {
 			t.Errorf("%s: the question's End-the-card choice is not a one-click close:\n%s", page, q)
