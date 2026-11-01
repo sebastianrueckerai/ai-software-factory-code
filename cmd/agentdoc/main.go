@@ -43,10 +43,18 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "usage: agentdoc -out <docs/agents> -policy <factory tree>")
 		return 2
 	}
+	anyLoop := false
 	for _, a := range registry {
-		if a.Loop && *opencode == "" {
+		anyLoop = anyLoop || a.Loop
+	}
+	if anyLoop {
+		if *opencode == "" {
 			fmt.Fprintln(os.Stderr, "agentdoc: the loop modes drive the pinned opencode binary; pass -opencode <path> or set OPENCODE_RECORD_BIN")
 			return 2
+		}
+		if err := checkOpencodeVersion(*opencode, factoryd.AgentDocOpencodeVersion); err != nil {
+			fmt.Fprintf(os.Stderr, "agentdoc: %v\n", err)
+			return 1
 		}
 	}
 	v, err := loadPolicy(*policyDir)
@@ -64,6 +72,10 @@ func run() int {
 		fmt.Fprintf(os.Stderr, "agentdoc: %v\n", err)
 		return 1
 	}
+	if err := requireCleanTree(root); err != nil {
+		fmt.Fprintf(os.Stderr, "agentdoc: %v\n", err)
+		return 1
+	}
 	syms, err := loadSymbols(root)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agentdoc: %v\n", err)
@@ -72,6 +84,11 @@ func run() int {
 	ctx := context.Background()
 	var failed bool
 	var rows []indexRow
+	type pageFile struct {
+		id, md string
+		raw    []byte
+	}
+	var pages []pageFile
 	for _, a := range registry {
 		var md string
 		var raw []byte
@@ -134,11 +151,7 @@ func run() int {
 			failed = true
 			continue
 		}
-		if err := writePage(*out, a.ID, md, raw); err != nil {
-			fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
-			failed = true
-			continue
-		}
+		pages = append(pages, pageFile{a.ID, md, raw})
 		rows = append(rows, row)
 	}
 	if failed {
@@ -153,11 +166,26 @@ func run() int {
 		fmt.Fprintln(os.Stderr, "agentdoc: the map rotted; nothing shipped")
 		return 1
 	}
+	// nothing lands on disk until every page and the index rendered clean,
+	// so "nothing shipped" stays true
+	keep := map[string]bool{"index.md": true}
+	for _, p := range pages {
+		if err := writePage(*out, p.id, p.md, p.raw); err != nil {
+			fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", p.id, err)
+			return 1
+		}
+		keep[p.id+".md"] = true
+		keep[filepath.Join("raw", p.id+".json")] = true
+	}
 	if err := writeIndex(*out, imd); err != nil {
 		fmt.Fprintf(os.Stderr, "agentdoc: index: %v\n", err)
 		return 1
 	}
-	fmt.Printf("agentdoc: %d pages and the index into %s\n", len(registry), *out)
+	if err := sweep(*out, keep); err != nil {
+		fmt.Fprintf(os.Stderr, "agentdoc: sweep: %v\n", err)
+		return 1
+	}
+	fmt.Printf("agentdoc: %d pages and the index into %s\n", len(pages), *out)
 	return 0
 }
 
@@ -207,6 +235,55 @@ func gitSHA(root string) (string, error) {
 		return "", fmt.Errorf("read the repo's HEAD: %w", err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// requireCleanTree refuses a dirty tree: the pages would claim a SHA
+// that does not hold the code they were read from.
+func requireCleanTree(root string) error {
+	out, err := exec.Command("git", "-C", root, "status", "--porcelain").Output() // #nosec G204 -- the argv is fixed; only the -C path varies
+	if err != nil {
+		return fmt.Errorf("read the tree's status: %w", err)
+	}
+	if len(out) > 0 {
+		return fmt.Errorf("the tree is dirty; commit before regenerating:\n%s", out)
+	}
+	return nil
+}
+
+// checkOpencodeVersion verifies the binary the loop modes drive is the
+// pinned harness, so no page labels a drifted binary.
+func checkOpencodeVersion(bin, want string) error {
+	out, err := exec.Command(bin, "--version").Output() // #nosec G204,G702 -- the operator's own pinned harness binary; the flag names a binary the operator chose
+	if err != nil {
+		return fmt.Errorf("read the opencode binary's version: %w", err)
+	}
+	if !strings.Contains(string(out), want) {
+		return fmt.Errorf("the opencode binary reports %q, want the pinned %s", strings.TrimSpace(string(out)), want)
+	}
+	return nil
+}
+
+// sweep removes the map's own files the registry no longer names, so a
+// retired agent leaves no stale page behind. Only pages and raw twins
+// go; anything else in the directory stays.
+func sweep(out string, keep map[string]bool) error {
+	for _, dir := range []struct{ dir, prefix string }{{out, ""}, {filepath.Join(out, "raw"), "raw"}} {
+		entries, err := os.ReadDir(dir.dir)
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			rel := filepath.Join(dir.prefix, e.Name())
+			if e.IsDir() || keep[rel] || (!strings.HasSuffix(e.Name(), ".md") && !strings.HasSuffix(e.Name(), ".json")) {
+				continue
+			}
+			if err := os.Remove(filepath.Join(dir.dir, e.Name())); err != nil {
+				return err
+			}
+			fmt.Fprintf(os.Stderr, "agentdoc: swept %s\n", rel)
+		}
+	}
+	return nil
 }
 
 // writePage lands the page and its raw wire body.

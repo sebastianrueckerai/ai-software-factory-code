@@ -14,7 +14,7 @@ func TestAuthoredLayerCoversTheRegistry(t *testing.T) {
 		if b, ok := blurbOf(a.ID); !ok || strings.TrimSpace(b) == "" {
 			t.Errorf("%s: no blurb", a.ID)
 		}
-		if !strings.Contains(masterDiagram(), a.ID) {
+		if !hasNode(masterDiagram(), a.ID) {
 			t.Errorf("%s: no node in the master diagram", a.ID)
 		}
 	}
@@ -89,5 +89,25 @@ func TestIndexCarriesTheAuthoredLayer(t *testing.T) {
 	}
 	if strings.Contains(md, "The authored master diagram lands here") || strings.Contains(md, "family A") {
 		t.Error("the generated skeleton still stands in")
+	}
+}
+
+// An id that only appears inside another node's label is not a node:
+// coverage needs the bounded node, or the page's style line points at
+// nothing and every page's diagram breaks.
+func TestHasNodeBoundsIds(t *testing.T) {
+	d := masterDiagram()
+	for _, tc := range []struct {
+		id   string
+		want bool
+	}{
+		{"screening", true},
+		{"screen", false},
+		{"opencode-subagents", true},
+		{"answer", false},
+	} {
+		if got := hasNode(d, tc.id); got != tc.want {
+			t.Errorf("hasNode(%q) = %v, want %v", tc.id, got, tc.want)
+		}
 	}
 }

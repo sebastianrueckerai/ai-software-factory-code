@@ -22,19 +22,12 @@ const codeBase = "https://github.com/sebastianrueckerai/ai-software-factory-code
 // collapsed block at.
 const collapseOver = 1024
 
-// partKind names a structured content part's kind on the page.
-type partKind struct {
-	kind string // "text" or "image"
-	n    int    // the part's bytes in the section string
-}
-
 // section is one message of one place, as a locatable string: plain
 // content, or a part list joined in order.
 type section struct {
 	role  string
 	place string
 	text  string
-	parts []partKind // nil when the content was a plain string
 }
 
 type doc struct {
@@ -112,11 +105,9 @@ func sectionsOf(b agentdoc.Body) []section {
 			var t strings.Builder
 			for _, p := range m.Parts {
 				if p.Text != "" {
-					s.parts = append(s.parts, partKind{"text", len(p.Text)})
 					t.WriteString(p.Text)
 				}
 				if p.ImageURL != "" {
-					s.parts = append(s.parts, partKind{"image", len(p.ImageURL)})
 					t.WriteString(p.ImageURL)
 				}
 			}
@@ -150,6 +141,9 @@ func (d *doc) writeRequest(md *strings.Builder, spans []agentdoc.Span) {
 			}
 		}
 		if len(texts) == 0 {
+			if len(placeSpans) > 0 {
+				d.fail("%s: %s place: %d registered spans, but no such message crossed the wire", d.agent.ID, place, len(placeSpans))
+			}
 			continue
 		}
 		joined := strings.Join(texts, "\x00")
@@ -172,7 +166,11 @@ func (d *doc) writeRequest(md *strings.Builder, spans []agentdoc.Span) {
 				who++
 			}
 			if c.End > at+len(texts[who]) {
-				d.fail("%s %s place: span %s crosses a message boundary", d.agent.ID, place, c.Name)
+				name := c.Name
+				if name == "" {
+					name = "unlabelled bytes"
+				}
+				d.fail("%s %s place: span %s crosses a message boundary", d.agent.ID, place, name)
 				continue
 			}
 			claimsOf[who] = append(claimsOf[who], rebase(c, at))

@@ -105,8 +105,12 @@ func (d *doc) writeInventory(md *strings.Builder, rows []indexRow) {
 		if model == "" {
 			model = "—"
 		}
-		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %d |\n",
-			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, r.requestBytes)
+		requestBytes := fmt.Sprintf("%d", r.requestBytes)
+		if r.requestBytes == 0 {
+			requestBytes = "—"
+		}
+		fmt.Fprintf(md, "| [%s](%s.md) | %s | %s | `%s` | `%s` | %s | %d | %s |\n",
+			r.agent.ID, r.agent.ID, r.agent.Family, r.agent.Job, model, r.purpose, r.agent.Runs, r.tools, requestBytes)
 	}
 	md.WriteString("\n")
 }

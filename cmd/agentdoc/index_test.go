@@ -144,3 +144,19 @@ func TestIndexMatrixSkipsSingleCarrierBlocks(t *testing.T) {
 		t.Errorf("single-carrier blocks entered the matrix:\n%s", rest)
 	}
 }
+
+// The config row has no request: its bytes cell says so, like the model
+// cell, instead of reading as a request of zero bytes.
+func TestIndexMarksTheConfigRowAsNoRequest(t *testing.T) {
+	md, failures := index(indexFixture(), "deadbeef", "policyhash", "opencode 1.18.32")
+	if len(failures) != 0 {
+		t.Fatalf("failures: %v", failures)
+	}
+	for _, line := range strings.Split(md, "\n") {
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "[opencode-subagents](opencode-subagents.md) |") {
+			if !strings.HasSuffix(line, "| 0 | — |") {
+				t.Fatalf("config row reads %q, want the request-bytes cell to say —", line)
+			}
+		}
+	}
+}

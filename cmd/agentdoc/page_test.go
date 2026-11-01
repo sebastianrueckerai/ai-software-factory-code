@@ -164,3 +164,17 @@ func TestPageFailsOnAnUnresolvableSymbol(t *testing.T) {
 		t.Fatal("an unresolvable symbol produced no failure")
 	}
 }
+
+// A registered span whose place never crossed the wire is rot, not a
+// silent drop: the page must fail.
+func TestPageFailsWhenARegisteredPlaceNeverCrossedTheWire(t *testing.T) {
+	_, syms := writeFixtureModule(t)
+	rec, spans := pageFixture()
+	rec.Raw = []byte(`{"model":"big","stream":true,"max_tokens":16,"messages":[` +
+		`{"role":"user","content":"USER-B"}],` +
+		`"tools":[{"type":"function","function":{"name":"hammer","description":"it hits","parameters":{"type":"object"}}}]}`)
+	md, failures := page(pageAgent(), "deadbeef", "policyhash", syms, rec, spans)
+	if len(failures) == 0 {
+		t.Fatalf("a missing system message shipped %d bytes without a failure", len(md))
+	}
+}

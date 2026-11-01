@@ -42,6 +42,6 @@ func configPage(a Agent, sha, policyCommit string, syms *symbolTable, frag json.
 	fmt.Fprintf(&md, "#### the agent block — %s\n\n%s · %d bytes\n\n", sp.Kind, d.provenance(sp), len(frag))
 	f := fence(string(frag))
 	fmt.Fprintf(&md, "%sjson\n%s\n%s\n\n", f, frag, f)
-	md.WriteString(d.footer())
+	fmt.Fprintf(&md, "The agent block sits in [`raw/%s.json`](raw/%s.json), byte for byte.\n", a.ID, a.ID)
 	return md.String(), d.failures
 }

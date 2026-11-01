@@ -127,3 +127,32 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 		})
 	}
 }
+
+// The map regenerates byte for byte: every direct driver draws its
+// markers from a pinned constant, so two captures of the same agent
+// agree span for span.
+func TestAgentDocDirectIsDeterministic(t *testing.T) {
+	for _, id := range AgentDocDirectIDs() {
+		g := agentdoc.NewGateway(`{"decision":"continue"}`)
+		first, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil)
+		g.Close()
+		if err != nil {
+			t.Fatalf("%s: capture: %v", id, err)
+		}
+		g = agentdoc.NewGateway(`{"decision":"continue"}`)
+		second, err := AgentDocDirect(context.Background(), id, g.URL, agentDocPolicy(), nil)
+		g.Close()
+		if err != nil {
+			t.Fatalf("%s: second capture: %v", id, err)
+		}
+		if len(first) != len(second) {
+			t.Fatalf("%s: %d spans then %d", id, len(first), len(second))
+		}
+		for i := range first {
+			a, b := first[i], second[i]
+			if a.Name != b.Name || a.Symbol != b.Symbol || a.Place != b.Place || a.Text != b.Text || a.Kind != b.Kind {
+				t.Errorf("%s: span %s differs between captures:\n%+v\n%+v", id, a.Name, a, b)
+			}
+		}
+	}
+}

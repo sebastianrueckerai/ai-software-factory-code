@@ -36,7 +36,9 @@ func loadSymbols(root string) (*symbolTable, error) {
 		case err != nil:
 			return err
 		case d.IsDir():
-			if d.Name() == ".git" || d.Name() == "vendor" || d.Name() == "testdata" {
+			// a dot directory holds no source of this SHA: .git, and any
+			// sibling worktree checked out beside the repo
+			if strings.HasPrefix(d.Name(), ".") || d.Name() == "vendor" || d.Name() == "testdata" {
 				return filepath.SkipDir
 			}
 			return nil
@@ -121,7 +123,9 @@ func (t *symbolTable) locate(pkgDir, symbol string) (string, int, bool) {
 			return l.file, l.line, true
 		}
 	}
-	if len(locs) > 0 {
+	// a bare name declared in two files neither of which is the page's
+	// own package cannot be pinned to one of them honestly
+	if len(locs) == 1 {
 		return locs[0].file, locs[0].line, true
 	}
 	return "", 0, false

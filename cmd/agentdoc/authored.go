@@ -45,6 +45,17 @@ func masterDiagram() string {
 	return strings.TrimSpace(string(b))
 }
 
+// hasNode answers whether the diagram carries id as a node of its own,
+// not merely inside another node's label.
+func hasNode(diagram, id string) bool {
+	for _, open := range []string{"[", "(", "{"} {
+		if strings.Contains(diagram, id+open) {
+			return true
+		}
+	}
+	return false
+}
+
 // pageDiagram answers the master diagram with one agent's node
 // emphasised, so each page shows where its agent sits.
 func pageDiagram(id string) string {
