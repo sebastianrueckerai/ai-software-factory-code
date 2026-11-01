@@ -447,11 +447,13 @@ func (r *Roller) poll(ctx context.Context) error {
 		return err
 	}
 	stuck := false
+	var failed []string
 	for _, req := range settled {
 		if req.State == RollMerged {
 			r.rollStatus(ctx, req.SHA, "success", "roll merged: the change runs live")
 		} else {
 			r.rollStatus(ctx, req.SHA, "failure", "roll task failed: the change does not run live")
+			failed = append(failed, req.SHA)
 			stuck = true
 		}
 	}
@@ -473,6 +475,15 @@ func (r *Roller) poll(ctx context.Context) error {
 		return err
 	}
 	groups, deploy := all[r.Repo.String()], release.DeployNow
+	// a release whose roll failed does not read as rolling forever: its
+	// window clears, so the panel's Deploy now returns and the roll-failed
+	// card keeps carrying the ask
+	if deploy != "" && slices.Contains(failed, deploy) {
+		if err := r.Store.ClearDeployNow(ctx, r.Repo.String(), deploy); err != nil {
+			return err
+		}
+		deploy = ""
+	}
 	held := len(groups) > 0
 	if !held {
 		r.heldPosted = ""

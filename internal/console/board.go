@@ -1282,6 +1282,14 @@ type statusLine struct {
 type holdLine struct {
 	For, Reason string
 	Groups      []string
+	// Released is the standing Deploy now whose commit is still main's
+	// head: the panel says it rolls and offers no form.
+	Released *releaseStanding
+}
+
+// releaseStanding is a Deploy now window whose commit is main's head.
+type releaseStanding struct {
+	Commit, Age string
 }
 
 // depRow is one dependency's state as the panel shows it: its latest
@@ -2560,6 +2568,15 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			for _, g := range h.Groups {
 				merged, total := g.Merged()
 				s.Hold.Groups = append(s.Hold.Groups, fmt.Sprintf("plan #%d · %d of %d merged", g.Issue, merged, total))
+			}
+			if h.DeployNow != "" && c.cfg.MainCommit != nil {
+				switch head, err := c.cfg.MainCommit(ctx, p.Repository); {
+				case err != nil:
+					log.Printf("console: the head of %s: %v", p.Repository, err)
+					d.Problems = append(d.Problems, "main's head could not be read")
+				case head == h.DeployNow:
+					s.Hold.Released = &releaseStanding{Commit: h.DeployNow[:min(7, len(h.DeployNow))], Age: coarse(time.Since(h.DeployAt))}
+				}
 			}
 		}
 	}

@@ -97,6 +97,46 @@ func TestBoardTextNamesTheHold(t *testing.T) {
 	}
 }
 
+// A standing release carries the panel: while main's head is the commit
+// an approver pressed, the panel says it rolls and offers no form; a head
+// past it, or a spent window, brings the form back for an approver.
+func TestPanelCarriesItsRelease(t *testing.T) {
+	r, _ := holdRig(t)
+	const commit = "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d"
+	r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
+		if repository != "sf/code" {
+			return factoryd.Hold{}, nil
+		}
+		return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), DeployNow: commit, DeployAt: time.Now().Add(-25 * time.Minute), Groups: []factoryd.Group{
+			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+	}
+	head := commit
+	r.c.cfg.MainCommit = func(context.Context, string) (string, error) { return head, nil }
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := "<p class=\"sp-note\">Deploy now stands for 9d9d9d9, pressed 25 min ago: rolling. A merge after it waits for the open plans again.</p>"
+	if !strings.Contains(body, want) {
+		t.Errorf("the panel lacks %q", want)
+	}
+	if strings.Contains(body, "deploy-now") {
+		t.Error("the panel offers Deploy now while its release rolls")
+	}
+	head = "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, "deploy-now") {
+		t.Error("a head past the release does not bring the form back")
+	}
+	r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
+		if repository != "sf/code" {
+			return factoryd.Hold{}, nil
+		}
+		return factoryd.Hold{Since: time.Now().Add(-7 * time.Hour), Groups: []factoryd.Group{
+			{Plan: "t-pl", Issue: 12, Children: map[string]int{"merged": 2, "done": 1, "queued": 2}}}}, nil
+	}
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, "deploy-now") {
+		t.Error("a spent window does not bring the form back")
+	}
+}
+
 func TestDeployNowButton(t *testing.T) {
 	r, calls := holdRig(t)
 	ck, s := r.loggedIn(t)

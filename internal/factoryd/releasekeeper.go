@@ -399,7 +399,11 @@ func (k *ReleaseKeeper) Hold(ctx context.Context, repository string) (Hold, erro
 	if since.IsZero() {
 		since = groups[0].FirstMerge
 	}
-	return Hold{Since: since, Groups: groups}, nil
+	var pressed time.Time
+	if row.DeployNow != "" {
+		pressed = row.HeldSince
+	}
+	return Hold{Since: since, Groups: groups, DeployNow: row.DeployNow, DeployAt: pressed}, nil
 }
 
 // DeployNow releases main's newest push commit of held repository to
@@ -446,6 +450,19 @@ func (k *ReleaseKeeper) project(ctx context.Context, repository string) (Project
 		err = fmt.Errorf("no project has the repository %s", repository)
 	}
 	return p, err
+}
+
+// MainCommit is main's newest push commit of repository, "" without a
+// push run. The panel compares a standing Deploy now with it.
+func (k *ReleaseKeeper) MainCommit(ctx context.Context, repository string) (string, error) {
+	_, runs, err := k.pushRuns(ctx, repository)
+	if err != nil {
+		return "", err
+	}
+	if head := newestMain(runs); head != nil {
+		return head.CommitSHA, nil
+	}
+	return "", nil
 }
 
 // pushRuns are repository's project and its newest push runs, read with
