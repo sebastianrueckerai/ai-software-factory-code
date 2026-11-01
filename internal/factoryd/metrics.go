@@ -267,11 +267,15 @@ func (f GateHeadFact) Event(repository string, issue int64) Event {
 
 // PlanFilingFact is one revision's filing on a plan — a person's, a
 // cut's or a round's — the plan_replanned row. Identity: the plan and
-// the revision; one revision, one row.
+// the revision; one revision, one row. A card the filing filed carries
+// its own row: the card's issue and plan key canonical, the identity
+// the plan, revision and key.
 type PlanFilingFact struct {
 	Plan     string // with Revision: the identity
 	Revision int
 	Origin   string // ReplanPerson, ReplanCut or "round": the panel's origin
+	Card     int64  // the filed card's issue; 0 on the revision's own row
+	Key      string // the filed card's plan key; "" on the revision's own row
 }
 
 // Event is the filing's row of repository's issue; extra carries what
@@ -279,10 +283,17 @@ type PlanFilingFact struct {
 // round's cards).
 func (f PlanFilingFact) Event(repository string, issue int64, extra map[string]any) Event {
 	detail := map[string]any{"revision": f.Revision, "origin": f.Origin}
+	if f.Card != 0 {
+		detail["card"], detail["key"] = f.Card, f.Key
+	}
 	maps.Copy(detail, extra)
+	id := fmt.Sprintf("%d", f.Revision)
+	if f.Key != "" {
+		id += " " + f.Key
+	}
 	return Event{Repository: repository, TaskID: f.Plan, IssueNumber: issue, Kind: EventPlanReplanned,
 		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail,
-		IdentityKey: identityKey(EventPlanReplanned, f.Plan, fmt.Sprintf("%d", f.Revision))}
+		IdentityKey: identityKey(EventPlanReplanned, f.Plan, id)}
 }
 
 // EventCut is one applied cut — the cut step's row on the cut card's own:

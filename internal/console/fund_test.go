@@ -222,7 +222,7 @@ func TestFundIsTheAnswer(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	cappedCard(r, t)
 	// the note is bounded on the board as the answer box is
-	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="reason" maxlength="4000" required>`) {
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `name="reason" maxlength="4000" required hx-preserve>`) {
 		t.Errorf("the fund note is not bounded at the answer's 4000 bytes:\n%s", body)
 	}
 	rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.5"}, "reason": {"funded; the fix is in store.go"}}), ck)

@@ -39,6 +39,8 @@ type toolInput struct {
 	Note        string   `json:"note,omitempty"`
 	Minutes     int      `json:"minutes,omitempty"`
 	Action      string   `json:"action,omitempty"`
+	Criterion   string   `json:"criterion,omitempty"`
+	Reason      string   `json:"reason,omitempty"`
 	Revision    int      `json:"revision,omitempty"`
 	Summary     string   `json:"summary,omitempty"`
 	Accent      string   `json:"accent,omitempty"`
@@ -833,6 +835,49 @@ func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	return all[i], nil
 }
 
+// criteriaRequest is the pending criteria approval request of plan id in
+// the chat's project.
+func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
+	k, err := t.card(in)
+	if err != nil {
+		return factoryd.ApprovalRequest{}, err
+	}
+	all, err := t.c.cfg.Approvals.ApprovalRequests(t.r.Context(), "pending")
+	if err != nil {
+		log.Printf("console: approvals: %v", err)
+		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
+	}
+	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
+		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalCriteria && q.Project == t.p.Repository
+	})
+	if i < 0 {
+		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
+	}
+	return all[i], nil
+}
+
+// humanAnswerLine is the line this turn answers, when the human typed it
+// themselves — the row the turn started on, stored as theirs — the word an
+// answer to a criteria request is decided on. A line of theirs from an
+// earlier turn is not this turn's word, so a wake over a thread that
+// holds one, or a turn the agent runs alone, cannot answer one.
+func (t *turn) humanAnswerLine() (string, bool, error) {
+	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.owner, t.conv, 50)
+	if err != nil {
+		log.Printf("console: chat messages: %v", err)
+		return "", false, refuse(http.StatusInternalServerError, "cannot read the thread")
+	}
+	for _, m := range rows {
+		if m.ID < t.upto {
+			break
+		}
+		if m.ID == t.upto && m.Role == "user" && m.Kind == "" && m.BirthKind == "" {
+			return m.Content, true, nil
+		}
+	}
+	return "", false, nil
+}
+
 func eventLines(events []factoryd.Event) string {
 	if len(events) == 0 {
 		return "No events."
@@ -1427,6 +1472,39 @@ var tools = []chatTool{
 			}
 			note, err := t.c.doRerun(t.r.Context(), t.a, q.ID)
 			return note, nil, err
+		}},
+	{name: "answer_criteria", title: "Answer a criteria gap", write: true,
+		params: map[string]any{"task_id": taskParam,
+			"action":    enum("waive unmet, grant one more card, or confirm delivered", "waive", "grant", "confirm"),
+			"criterion": str("the criterion the waiver names, cN"),
+			"reason":    str("the waiver's one-line reason")},
+		required: []string{"task_id", "action"},
+		about:    "Decide a plan's criteria gap on the human's word: waive, grant, or confirm.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			line, ok, err := t.humanAnswerLine()
+			if err != nil {
+				return "", nil, err
+			}
+			if !ok {
+				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word.")
+			}
+			q, err := t.criteriaRequest(in)
+			if err != nil {
+				return "", nil, err
+			}
+			t.a.decider = "member"
+			switch in.Action {
+			case "waive":
+				note, err := t.c.doWaive(t.r.Context(), t.a, q.ID, in.Criterion, in.Reason)
+				return note, nil, err
+			case "grant":
+				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
+				return note, nil, err
+			case "confirm":
+				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
+				return note, nil, err
+			}
+			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant or confirm.")
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},

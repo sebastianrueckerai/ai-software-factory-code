@@ -13,8 +13,8 @@ import (
 // attach_analysis records what the wake turn found inside the card's open
 // ask: the tool resolves the card, hands its found and its recommendation
 // to the factory's AttachAnalysis and names the card. An ask already
-// settled refuses with its word and its actor; a card with no ask row
-// refuses with the way to file one.
+// settled refuses naming the ask — its kind, its state and its actor; a
+// card with no ask row refuses with the way to file one.
 func TestAttachAnalysisTool(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
@@ -49,15 +49,17 @@ func TestAttachAnalysisTool(t *testing.T) {
 		return tool.run(trn, in)
 	}()
 	equal(t, "the tool's answer", []any{note, err},
-		[]any{"Recorded the analysis inside the ask of #13; the humans read it with the question.", error(nil)})
+		[]any{"Recorded the analysis inside the ask of #13; the humans read it with the ask.", error(nil)})
 	equal(t, "what it filed", calls, []filed{{"sf/code", "t-e", "The replica adds 12 ms of lag.", "Keep one replica", "sebastian"}})
 	for _, tc := range []struct {
 		err    error
 		status int
 		want   string
 	}{
-		{&factoryd.AskSettledError{Word: "answered", By: "sebastian"}, http.StatusConflict,
-			"The ask of #13 is answered by sebastian. An ask already answered is done."},
+		{&factoryd.AskSettledError{Kind: "question", Word: "answered", By: "sebastian"}, http.StatusConflict,
+			"The question of #13 is answered by sebastian. A settled ask is done; escalate files a new one when you need a person."},
+		{&factoryd.AskSettledError{Kind: "criteria", Word: "superseded"}, http.StatusConflict,
+			"The criteria request of #13 is superseded. A settled ask is done; escalate files a new one when you need a person."},
 		{factoryd.ErrNoAsk, http.StatusNotFound,
 			"Card #13 asks nothing in the chat; escalate files an ask when you need a person."},
 		{errors.New("the store is down"), http.StatusBadGateway,

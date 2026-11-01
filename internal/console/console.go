@@ -220,6 +220,10 @@ type Config struct {
 	GrantCriteria       func(ctx context.Context, id, by string, approval int64) (int, error)
 	DecideCriterion     func(ctx context.Context, id, cid, verdict, by, reason string) error
 	RecordHumanCriteria func(ctx context.Context, taskID, approver string) (int, error)
+	// ConfirmDeliveredCriteria meets every open criterion of plan id on
+	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
+	// plan not done or merged is factoryd.ErrChildOpen.
+	ConfirmDeliveredCriteria func(ctx context.Context, id, by, line string) (int, error)
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.
@@ -506,6 +510,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
 		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},
+		{"POST /approvals/{id}/confirm", http.HandlerFunc(c.confirm), nil},
 		{"POST /approvals/{id}/rerun", http.HandlerFunc(c.rerun), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},

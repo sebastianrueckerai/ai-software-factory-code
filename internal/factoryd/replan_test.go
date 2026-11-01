@@ -1536,11 +1536,29 @@ func TestRecordReplanCounts(t *testing.T) {
 	if i < 0 || store.events[i].TaskID != "t-plan" || store.events[i].Detail["kept"] != 1 || store.events[i].Detail["by"] != "ana" {
 		t.Fatalf("events %+v, want plan_replanned on t-plan", store.events)
 	}
+	if store.events[i].IdentityKey != identityKey(EventPlanReplanned, "t-plan", "3") {
+		t.Fatalf("the replan's row %+v, want the plan and revision as its identity", store.events[i])
+	}
+	rows := map[string]Event{}
+	for _, e := range store.events {
+		if e.Kind == EventPlanReplanned {
+			rows[e.IdentityKey] = e
+		}
+	}
+	if len(rows) != 4 {
+		t.Fatalf("%d plan_replanned rows (%v), want one for the revision and one per card the filing filed", len(rows), rows)
+	}
+	for key, issue := range map[string]int64{"api": 21, "ui2": 24, "cli": 25} {
+		e, ok := rows[identityKey(EventPlanReplanned, "t-plan", "3", key)]
+		if !ok || e.IssueNumber != issue || e.Detail["card"] != issue || e.Detail["key"] != key {
+			t.Fatalf("%s's row %+v, want the card and its key canonical", key, e)
+		}
+	}
 	if _, pending, err := r.pendingReplan(ctx, store.tasks["t-plan"]); err != nil || pending {
 		t.Fatalf("the replan is pending after its record: %t, %v", pending, err)
 	}
 
-	r, _, fj, step = recordRig(t, at, map[string]any{"origin": ReplanCut, "card": "t-cut", "work": "the list endpoint", "stops": []string{"t-cut"}, "revision": 2},
+	r, cutStore, fj, step := recordRig(t, at, map[string]any{"origin": ReplanCut, "card": "t-cut", "work": "the list endpoint", "stops": []string{"t-cut"}, "revision": 2},
 		Task{ID: "t-cut", PlanKey: "api", IssueNumber: 50, Status: "closed", PlanRevision: 2, FinishedAt: after(time.Minute),
 			SpentEUR: 4.2, Usage: TaskUsage{Attempts: 3}},
 		Task{ID: "t-api2", PlanKey: "api2", IssueNumber: 51, Status: "queued", CreatedAt: at.Add(10 * time.Minute)},
@@ -1551,6 +1569,15 @@ func TestRecordReplanCounts(t *testing.T) {
 		if err := r.recordReplan(ctx, p, repo, 3, next, step, map[string]int64{"api2": 51, "docs2": 52}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	var cutRows int
+	for _, e := range cutStore.events {
+		if e.Kind == EventPlanReplanned {
+			cutRows++
+		}
+	}
+	if cutRows != 3 {
+		t.Fatalf("%d plan_replanned rows, want the retried filing's revision and two cards recorded once each", cutRows)
 	}
 	if got := commentsOn(fj, 50); !slices.Equal(got, []string{"factoryd: cut into #51, #52 at session 3, 4.20 EUR spent."}) {
 		t.Fatalf("the cut card's comments %q", got)

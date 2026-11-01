@@ -134,6 +134,10 @@ func (s *PGStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, erro
 // ErrNoCriterion refuses a decision on a criterion the plan does not hold.
 var ErrNoCriterion = errors.New("the plan holds no such criterion")
 
+// ErrCriterionMet is a criterion that stands met already, which a waiver
+// cannot replace: a stale board offers one, the store refuses it.
+var ErrCriterionMet = errors.New("the criterion is met already")
+
 // ErrNotHuman refuses an approver's met on a criterion whose verdict the
 // review owns.
 var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's to record")
@@ -153,9 +157,10 @@ func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, 
 }
 
 // DecideCriterion records an approver's decision on one criterion of plan
-// task id: waived, with their one-line reason, for any criterion; met, for
-// a human criterion, whose proof is this recording. The row lands on the
-// plan's integration card, where the review's rows stand.
+// task id: waived, with their one-line reason, for any criterion that does
+// not stand met already; met, for a human criterion, whose proof is this
+// recording. The row lands on the plan's integration card, where the
+// review's rows stand.
 func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, reason string) error {
 	if verdict != "waived" && verdict != "met" {
 		return fmt.Errorf("no such verdict %q", verdict)
@@ -187,6 +192,13 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	integration, err := integrationCard(ctx, store, id, p)
 	if err != nil {
 		return err
+	}
+	rows, err := store.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return fmt.Errorf("verdicts of %s: %w", integration.ID, err)
+	}
+	if verdict == "waived" && effectiveVerdict(rows, cid) == "met" {
+		return ErrCriterionMet
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, "approver", by,
 		[]CriterionVerdict{{Criterion: cid, Verdict: verdict, Evidence: reason, Kind: c.Kind}})
@@ -266,6 +278,59 @@ func RecordHumanCriteria(ctx context.Context, store Store, taskID, approver stri
 	return len(rows), store.PutCriteriaVerdicts(ctx, t.ID, "approver", approver, rows)
 }
 
+// ErrChildOpen is a plan's card that is not done or merged, which a
+// confirmation of the delivered cards cannot stand on.
+var ErrChildOpen = errors.New("a card of the plan is not done or merged")
+
+// ConfirmDeliveredCriteria records the human's confirmation that the
+// plan's delivered cards meet its criteria: every criterion still open
+// is met at once, their line the evidence, the rows on the integration
+// card where the review's stand. It refuses while a card of the plan is
+// not done or merged, records nothing when no criterion is open, and
+// decides no approval itself: the sweep that reads the rows ends the
+// request and closes the plan.
+func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line string) (int, error) {
+	t, ok, err := store.Task(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("plan %s: %w", id, err)
+	}
+	if !ok {
+		return 0, fmt.Errorf("plan %s: %w", id, ErrNotFound)
+	}
+	p, _, err := planOfStore(ctx, store, id, t.ID)
+	if err != nil {
+		return 0, err
+	}
+	integration, err := integrationCard(ctx, store, id, p)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := store.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return 0, err
+	}
+	open := openCriteria(p, rows)
+	if len(open) == 0 {
+		return 0, nil
+	}
+	cards, err := store.PlanCards(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	if i := slices.IndexFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "merged" }); i >= 0 {
+		return 0, fmt.Errorf("%s is %s: %w", cards[i].ID, cards[i].Status, ErrChildOpen)
+	}
+	out := make([]CriterionVerdict, len(open))
+	for i, c := range open {
+		out[i] = CriterionVerdict{Criterion: c.ID, Verdict: "met", Evidence: cmp.Or(line, "confirmed by "+by), Kind: c.Kind}
+	}
+	if err := store.PutCriteriaVerdicts(ctx, integration.ID, "approver", by, out); err != nil {
+		return 0, err
+	}
+	log.Printf("plan %s: %s confirmed the delivered cards meet %d criteria", id, by, len(out))
+	return len(out), nil
+}
+
 // roleOf is the plan's role of card key.
 func roleOf(p Plan, key string) string {
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == key }); i >= 0 {
@@ -287,22 +352,29 @@ func integrationCard(ctx context.Context, store Store, parent string, p Plan) (T
 	return cards[i], nil
 }
 
+// standingRow is a criterion's standing verdict row: the approver's over
+// the review's; false when no row holds one.
+func standingRow(rows []CriterionVerdict, criterion string) (CriterionVerdict, bool) {
+	for _, v := range rows {
+		if v.Source == "approver" && v.Criterion == criterion {
+			return v, true
+		}
+	}
+	for _, v := range rows {
+		if v.Criterion == criterion {
+			return v, true
+		}
+	}
+	return CriterionVerdict{}, false
+}
+
 // effectiveVerdict is a criterion's standing verdict: the approver's row
 // over the review's; "" when no row holds one.
 func effectiveVerdict(rows []CriterionVerdict, criterion string) string {
-	verdict := ""
-	for _, v := range rows {
-		if v.Criterion != criterion {
-			continue
-		}
-		if v.Source == "approver" {
-			return v.Verdict
-		}
-		if verdict == "" {
-			verdict = v.Verdict
-		}
+	if v, ok := standingRow(rows, criterion); ok {
+		return v.Verdict
 	}
-	return verdict
+	return ""
 }
 
 // openCriteria are the plan's criteria whose standing verdict is neither
