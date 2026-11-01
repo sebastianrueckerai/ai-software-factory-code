@@ -315,7 +315,7 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1", 1, nil); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1", 1, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
@@ -357,7 +357,7 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1", 2, old)
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1", 2, ReplanPerson, old)
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("fileChildren = %+v, %v", cards, err)
 		}
@@ -431,7 +431,7 @@ func TestRestartChildrenKeepsTheStartLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, "m1", 1, old); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, "m1", 1, "", old); err != nil {
 		t.Fatal(err)
 	}
 	next := Plan{Summary: "three", Cards: []PlanCard{
@@ -627,10 +627,21 @@ func rowsOfKind(store *fakeStore, kind string) []Event {
 	return out
 }
 
-// cardsFiledRound counts the card_filed rows of one round in store.
+// cardsFiledRows are the cards' filing rows in store, of every round.
+func cardsFiledRows(store *fakeStore) []Event {
+	var out []Event
+	for _, e := range rowsOfKind(store, EventPlanReplanned) {
+		if _, card := e.Detail["key"]; card {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// cardsFiledRound counts the cards' filing rows of one round in store.
 func cardsFiledRound(store *fakeStore, round int) int {
 	n := 0
-	for _, e := range rowsOfKind(store, EventPlanCardFiled) {
+	for _, e := range cardsFiledRows(store) {
 		if e.Detail["round"] == round {
 			n++
 		}
@@ -638,10 +649,22 @@ func cardsFiledRound(store *fakeStore, round int) int {
 	return n
 }
 
+// revisionRows are the plan_replanned rows of revisions — a legacy row
+// without provenance among them — the cards' filing rows aside.
+func revisionRows(store *fakeStore) []Event {
+	var out []Event
+	for _, e := range rowsOfKind(store, EventPlanReplanned) {
+		if _, card := e.Detail["key"]; !card {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // replanOrigins counts the plan_replanned rows of each origin in store.
 func replanOrigins(store *fakeStore) map[string]int {
 	out := map[string]int{}
-	for _, e := range rowsOfKind(store, EventPlanReplanned) {
+	for _, e := range revisionRows(store) {
 		if origin, ok := e.Detail["origin"].(string); ok {
 			out[origin]++
 		}
@@ -864,7 +887,7 @@ func TestDivideConquerPlanningFacts(t *testing.T) {
 		t.Fatalf("plan B's later-round filings %d, want 3", got)
 	}
 	retained := 0
-	for _, e := range rowsOfKind(storeA, EventPlanCardFiled) {
+	for _, e := range cardsFiledRows(storeA) {
 		if e.Detail["key"] == "foundation" {
 			retained++
 			if e.Detail["round"] != 1 || e.Detail["revision"] != 1 {
@@ -957,7 +980,7 @@ func TestDivideConquerPlanningRetries(t *testing.T) {
 	if rows := rowsOfKind(store, EventCut); len(rows) != 1 || rows[0].IdentityKey == "" {
 		t.Fatalf("cut rows after the retry: %+v", rows)
 	}
-	replans := rowsOfKind(store, EventPlanReplanned)
+	replans := revisionRows(store)
 	if len(replans) != 2 {
 		t.Fatalf("plan_replanned rows %+v, want the legacy one and the cut's", replans)
 	}
@@ -1004,7 +1027,7 @@ func TestDivideConquerPlanningRetries(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatalf("revision 2: %t, %v", ok, err)
 	}
-	sink = &failingEvents{fakeStore: store, kind: EventPlanCardFiled, fails: 1, err: errors.New("the sink is down")}
+	sink = &failingEvents{fakeStore: store, kind: EventPlanReplanned, fails: 1, err: errors.New("the sink is down")}
 	r.timeline.Events = sink
 	_, err = r.fileRevision(ctx, plan, repo, fixtureVersion(t), rev)
 	if err == nil || !strings.Contains(err.Error(), "record its filing row") || !strings.Contains(err.Error(), "the sink is down") {
@@ -1015,9 +1038,9 @@ func TestDivideConquerPlanningRetries(t *testing.T) {
 	if err != nil || len(res.Refused) != 0 || len(res.Issues) != 2 {
 		t.Fatalf("the retried filing: %+v, %v", res, err)
 	}
-	rows := rowsOfKind(store, EventPlanCardFiled)
+	rows := cardsFiledRows(store)
 	if len(rows) != 4 {
-		t.Fatalf("card_filed rows %d after the retry, want three of round 1 and one of round 2", len(rows))
+		t.Fatalf("the cards' filing rows %d after the retry, want three of round 1 and one of round 2", len(rows))
 	}
 	if rows[3].Detail["round"] != 2 || rows[3].Detail["key"] != "stats" || rows[3].Detail["revision"] != 2 {
 		t.Fatalf("the round-2 row %+v, want stats of round 2 at revision 2", rows[3])
@@ -1031,11 +1054,11 @@ func TestDivideConquerPlanningRetries(t *testing.T) {
 	if res, err := r.fileRevision(ctx, plan, repo, fixtureVersion(t), rev); err != nil || len(res.Refused) != 0 {
 		t.Fatalf("the replayed filing: %+v, %v", res, err)
 	}
-	if rows := rowsOfKind(store, EventPlanCardFiled); len(rows) != 4 {
-		t.Fatalf("card_filed rows %d after the replay, want 4", len(rows))
+	if rows := cardsFiledRows(store); len(rows) != 4 {
+		t.Fatalf("the cards' filing rows %d after the replay, want 4", len(rows))
 	}
-	if rows := rowsOfKind(store, EventPlanReplanned); len(rows) != 1 || rows[0].Detail["origin"] != ReplanRound {
-		t.Fatalf("plan_replanned rows %+v after the replay, want the round's alone", rows)
+	if rows := revisionRows(store); len(rows) != 1 || rows[0].Detail["origin"] != ReplanRound {
+		t.Fatalf("the revision's plan_replanned rows %+v after the replay, want the round's alone", rows)
 	}
 	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
 		t.Fatalf("the replay stored revision %d, want 2", rev.Revision)

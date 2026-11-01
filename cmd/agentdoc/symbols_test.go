@@ -33,6 +33,9 @@ func (r *R) offered() {}
 const Bar = "bar"
 
 const askConst = "ask"
+
+// buildOpencodeConfig builds.
+func buildOpencodeConfig() {}
 `), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -78,5 +81,50 @@ func TestLoadSymbolsResolvesMethodsAndQualifiedNames(t *testing.T) {
 		if got := rel + ":" + strconv.Itoa(line); got != tc.want {
 			t.Fatalf("%s resolved to %s, want %s", tc.symbol, got, tc.want)
 		}
+	}
+}
+
+// A sibling worktree inside the repo is not source: its copy of a file
+// must never win a permalink.
+func TestLoadSymbolsIgnoresSiblingWorktrees(t *testing.T) {
+	root, _ := writeFixtureModule(t)
+	wt := filepath.Join(root, ".worktrees", "closeout", "internal", "fixture")
+	if err := os.MkdirAll(wt, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, "a.go"), []byte("package fixture\n\n// Foo is a worktree copy.\nfunc Foo() {}\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	syms, err := loadSymbols(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel, _, ok := syms.locate("internal/gateway", "Foo")
+	if !ok || rel != "internal/fixture/a.go" {
+		t.Fatalf("Foo resolved to %q (ok=%v), want internal/fixture/a.go", rel, ok)
+	}
+}
+
+// A bare name declared in two packages the page does not live in cannot
+// be pinned to one file honestly; that is rot, not the alphabetically
+// first hit.
+func TestLocateRefusesAmbiguousCrossPackageNames(t *testing.T) {
+	root, _ := writeFixtureModule(t)
+	third := filepath.Join(root, "internal", "third")
+	if err := os.MkdirAll(third, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(third, "c.go"), []byte("package third\n\n// Guide is a second bare Guide.\nconst Guide = \"guide3\"\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	syms, err := loadSymbols(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, ok := syms.locate("internal/fixture", "Guide"); ok {
+		t.Fatal("a bare name declared in two other packages resolved; want rot")
+	}
+	if _, _, ok := syms.locate("internal/other", "Guide"); !ok {
+		t.Fatal("the in-package hit must still win")
 	}
 }

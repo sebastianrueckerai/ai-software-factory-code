@@ -91,6 +91,21 @@ func locate(b []byte, spans []Span) ([]Claim, error) {
 		}
 		hits = append(hits, hit{span: sp, start: first})
 	}
+	// two spans may nest, but never claim the same bytes or overlap in
+	// part: the one-span-one-origin model would render the overlap twice
+	for i, h := range hits {
+		for j := i + 1; j < len(hits); j++ {
+			o := hits[j]
+			if h.span.Text == o.span.Text {
+				return nil, fmt.Errorf("spans %s and %s (%s, %s) claim the same bytes", h.span.Name, o.span.Name, h.span.Symbol, o.span.Symbol)
+			}
+			hEnd, oEnd := h.start+len(h.span.Text), o.start+len(o.span.Text)
+			hInO, oInH := h.start >= o.start && hEnd <= oEnd, o.start >= h.start && oEnd <= hEnd
+			if (h.start < oEnd && o.start < hEnd) && !hInO && !oInH {
+				return nil, fmt.Errorf("spans %s and %s (%s, %s) overlap without containment", h.span.Name, o.span.Name, h.span.Symbol, o.span.Symbol)
+			}
+		}
+	}
 	// a hit inside another hit's range nests under it; the rest are top level
 	nested := map[int]bool{}
 	for i, h := range hits {

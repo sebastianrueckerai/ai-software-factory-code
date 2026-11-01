@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -216,15 +217,29 @@ func TestTurnGate(t *testing.T) {
 		t.Fatal("the thread works after the joined messages and every turn left")
 	}
 
-	r1, r2 := g.slot("o/r", 2), g.slot("o/r", 2)
+	r1, r2 := g.slot(context.Background(), "o/r", 2), g.slot(context.Background(), "o/r", 2)
 	got := make(chan func(), 1)
-	go func() { got <- g.slot("o/r", 2) }()
+	go func() { got <- g.slot(context.Background(), "o/r", 2) }()
 	select {
 	case <-got:
 		t.Fatal("a third model turn ran over the bound of 2")
 	case <-time.After(50 * time.Millisecond):
 	}
-	other := g.slot("o/other", 2)
+	// a stop ends a waiting turn's wait: it takes no turn, and the turn
+	// that waits on leaves the bound to the next in line
+	sctx, stop := context.WithCancel(context.Background())
+	stopped := make(chan func(), 1)
+	go func() { stopped <- g.slot(sctx, "o/r", 2) }()
+	stop()
+	select {
+	case r := <-stopped:
+		if r != nil {
+			t.Fatal("the stopped wait took a model turn")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stopped wait never left")
+	}
+	other := g.slot(context.Background(), "o/other", 2)
 	r1()
 	select {
 	case r3 := <-got:

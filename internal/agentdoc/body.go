@@ -3,6 +3,7 @@ package agentdoc
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // ContentPart is one part of a structured message content: a text part or an
@@ -20,6 +21,25 @@ type Message struct {
 	Role    string
 	Content string
 	Parts   []ContentPart
+	// ToolCalls holds an assistant message's tool calls, the wire's own
+	// bytes, when it made any.
+	ToolCalls []json.RawMessage
+}
+
+// ToolCallText is an assistant message's tool calls as the wire's own
+// bytes, in order, joined by newlines; "" when it made none.
+func (m Message) ToolCallText() string {
+	if len(m.ToolCalls) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, tc := range m.ToolCalls {
+		if i > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.Write(tc)
+	}
+	return sb.String()
 }
 
 // Tool is one tool schema of a captured request, with its raw json so
@@ -46,8 +66,9 @@ func ParseBody(raw []byte) (Body, error) {
 		Stream         bool            `json:"stream"`
 		ResponseFormat json.RawMessage `json:"response_format"`
 		Messages       []struct {
-			Role    string          `json:"role"`
-			Content json.RawMessage `json:"content"`
+			Role      string            `json:"role"`
+			Content   json.RawMessage   `json:"content"`
+			ToolCalls []json.RawMessage `json:"tool_calls"`
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
@@ -63,7 +84,7 @@ func ParseBody(raw []byte) (Body, error) {
 		b.ResponseFormat = rf.Type
 	}
 	for _, m := range wire.Messages {
-		msg := Message{Role: m.Role}
+		msg := Message{Role: m.Role, ToolCalls: m.ToolCalls}
 		if json.Unmarshal(m.Content, &msg.Content) != nil {
 			var parts []struct {
 				Type     string `json:"type"`

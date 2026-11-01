@@ -133,7 +133,8 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 }
 
 // An ask a settling event answered takes no analysis: AskSettledError with
-// the word and the actor, the row unchanged, no analysis row on the spine.
+// the ask's kind, the word and the actor, the row unchanged, no analysis
+// row on the spine.
 func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 	s := newAskStore(t)
 	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
@@ -143,8 +144,8 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 	}
 	err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "The replica adds 12 ms of lag.", "", "sebastian")
 	var se *AskSettledError
-	if !errors.As(err, &se) || se.Word != "answered" || se.By != "sebastian" {
-		t.Fatalf("the refusal = %v, want answered by sebastian", err)
+	if !errors.As(err, &se) || se.Kind != "question" || se.Word != "answered" || se.By != "sebastian" {
+		t.Fatalf("the refusal = %v, want the question answered by sebastian", err)
 	}
 	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?"; got != want {
 		t.Fatalf("the answered ask's row changed: %q, want %q", got, want)
@@ -235,5 +236,120 @@ func TestAttachAnalysisReturnsItsRowsCloseError(t *testing.T) {
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 0 {
 		t.Fatalf("%d analysis rows, want 0", len(rows))
+	}
+}
+
+// approvalAskRow is the criteria request's poke row, as the Poker writes
+// it for card #40, whose title is "Use a replica?".
+const approvalAskRow = `Plan #40 "Use a replica?" waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`
+
+// seedApprovalAsk seeds over seedAsk's card the criteria approval the gap
+// check opens: the question answered, then the request's event, its
+// pending row and its escalation row, as the Poker writes the row — the
+// fault's shape, the answered question no longer the ask that waits.
+func seedApprovalAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64) {
+	t.Helper()
+	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,
+		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "One replica"}}); err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.OpenApproval(t.Context(), ApprovalRequest{Kind: ApprovalCriteria, TaskID: taskID,
+		Project: repository, Spec: []byte(`{"task":"t-int"}`), Reason: "criteria not met with the plan's cards done: c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(t.Context(), Event{Repository: repository, TaskID: taskID, IssueNumber: issue,
+		Kind: EventApprovalRequested, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": []string{"c1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := s.EnsureInbox(t.Context(), repository, "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddChatMessage(t.Context(), repository, "sebastian", ChatMessage{Role: "assistant",
+		Conversation: conv, Kind: MessageEscalation, TaskID: taskID, BirthKind: EventApprovalRequested,
+		Content: approvalAskRow}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// rowContent reads the task's escalation row content of birth kind birth.
+func rowContent(t *testing.T, s *PGStore, repository, taskID, birth string) string {
+	t.Helper()
+	var content string
+	if err := s.db.QueryRowContext(t.Context(), `SELECT content FROM chat_messages
+		WHERE repository = $1 AND task_id = $2 AND kind = $3 AND birth_kind = $4`,
+		repository, taskID, MessageEscalation, birth).Scan(&content); err != nil {
+		t.Fatal(err)
+	}
+	return content
+}
+
+// The card's open approval ask takes the analysis a newer answered
+// question used to block: the ask is addressed across both families, the
+// request's row carries the findings with its own words, and the answered
+// question's row keeps its question.
+func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
+		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", "sebastian"); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	if got, want := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested),
+		approvalAskRow+"\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Waive c1"; got != want {
+		t.Fatalf("the request's row = %q, want %q", got, want)
+	}
+	if got, want := rowContent(t, s, "sf/wake", "t-1", EventQuestionAsked), "#40 - Use a replica? needs you: Use a replica?"; got != want {
+		t.Fatalf("the answered question's row = %q, want %q", got, want)
+	}
+	if rows := analyses(t, s, "t-1"); len(rows) != 1 || rows[0].Detail["found"] != "The replica adds 12 ms of lag; the board reads it fine." {
+		t.Fatalf("the analysis rows = %+v", rows)
+	}
+}
+
+// The card's open approval ask takes the analysis even behind a newer
+// answered question: an answer on another venue is no word on a request.
+func TestAttachAnalysisReachesTheApprovalAskBehindANewerAnswer(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
+		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "Use one replica"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
+		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", "sebastian"); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	if got, want := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested),
+		approvalAskRow+"\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Waive c1"; got != want {
+		t.Fatalf("the request's row = %q, want %q", got, want)
+	}
+}
+
+// With no ask of either family open, the refusal names the ask it
+// examined — the criteria request, its state and its actor — and nothing
+// is written.
+func TestAttachAnalysisRefusalNamesTheAsk(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
+		Kind: EventPlanChangesRequested, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"changes": "one more card"}}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "The replica adds 12 ms of lag.", "", "sebastian")
+	var se *AskSettledError
+	if !errors.As(err, &se) || se.Kind != ApprovalCriteria || se.Word != "rejected" || se.By != "sebastian" {
+		t.Fatalf("the refusal = %v, want the criteria request rejected by sebastian", err)
+	}
+	if got := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested); got != approvalAskRow {
+		t.Fatalf("the settled request's row changed: %q", got)
+	}
+	if rows := analyses(t, s, "t-1"); len(rows) != 0 {
+		t.Fatalf("%d analysis rows on a settled ask, want 0", len(rows))
 	}
 }

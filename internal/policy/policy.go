@@ -113,16 +113,13 @@ type ChatConfig struct {
 	// Window is the context window in tokens of the alias the project
 	// agent calls: a thread compacts before a turn projected past 80
 	// percent of it (roadmap 239). The provider's own refusal of a prompt
-	// past its window is the bound that always holds. Absent:
-	// DefaultChatWindow.
+	// past its window is the bound that always holds. Absent: the window
+	// the gateway serves for the alias.
 	Window int `yaml:"window,omitempty" json:"window,omitempty"`
 }
 
 // DefaultParallelTurns is the bound of a chat block without one.
 const DefaultParallelTurns = 3
-
-// DefaultChatWindow is the window of a chat block without one.
-const DefaultChatWindow = 128000
 
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
@@ -131,7 +128,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
-	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "set_summary", "set_accent", "invite", "github_export",
+	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
@@ -356,10 +353,6 @@ type Limits struct {
 	// pushed at which the session supervisor is called, 1 to 99. Absent:
 	// DefaultNoPushSpend.
 	NoPushSpend int `yaml:"no_push_spend,omitempty" json:"no_push_spend"`
-	// ContextTokens is the context size at which opencode compacts a
-	// session's conversation, MinContextTokens to ModelContext. Absent:
-	// DefaultContextTokens.
-	ContextTokens int `yaml:"context_tokens,omitempty" json:"context_tokens"`
 }
 
 // DefaultSameCall is the same_call detector's threshold of a policy
@@ -385,12 +378,10 @@ func (l Limits) ReviewDiffBytes() int { return cmp.Or(l.ReviewDiffKiB, DefaultRe
 // they existed. ModelContext is the context window the factory declares
 // for its models in opencode's config.
 const (
-	DefaultWarnAt        = 80
-	DefaultPlanWarnAt    = 67
-	DefaultNoPushSpend   = 60
-	DefaultContextTokens = 100000
-	MinContextTokens     = 40000
-	ModelContext         = 200000
+	DefaultWarnAt      = 80
+	DefaultPlanWarnAt  = 67
+	DefaultNoPushSpend = 60
+	ModelContext       = 200000
 )
 
 // WarnShare, PlanWarnShare and NoPushShare are the percents as shares of 1.
@@ -407,9 +398,6 @@ func (l Limits) PlanWarnShare() float64 {
 func (l Limits) NoPushShare() float64 {
 	return float64(cmp.Or(l.NoPushSpend, DefaultNoPushSpend)) / 100
 }
-
-// ContextCap is ContextTokens, or DefaultContextTokens when unset.
-func (l Limits) ContextCap() int { return cmp.Or(l.ContextTokens, DefaultContextTokens) }
 
 // The check-in agent's limits of a policy without the keys, and of a
 // version pinned before they existed (the escalation ladder's plan D).
@@ -514,15 +502,13 @@ type limitsJSON struct {
 	PlanWarnAt int `json:"plan_warn_at,omitempty"`
 	// NoPushSpend is limits.no_push_spend, left out when 0.
 	NoPushSpend int `json:"no_push_spend,omitempty"`
-	// ContextTokens is limits.context_tokens, left out when 0.
-	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // MarshalJSON is Limits as limitsJSON, its durations as strings, as in
 // the YAML.
 func (l Limits) MarshalJSON() ([]byte, error) {
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
-		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
+		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend})
 }
 
 // UnmarshalJSON reads limitsJSON back into Limits, its duration strings
@@ -535,7 +521,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
 		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB,
 		CheckinCalls: j.CheckinCalls, CheckinShare: j.CheckinShare, CheckinTailKiB: j.CheckinTailKiB, CheckinHandoverChars: j.CheckinHandoverChars, CheckinSessions: j.CheckinSessions,
-		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend, ContextTokens: j.ContextTokens}
+		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -599,8 +585,6 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.plan_warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.PlanWarnAt)
 	case l.NoPushSpend < 0 || l.NoPushSpend > 99:
 		return fmt.Errorf("policy: limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.NoPushSpend)
-	case l.ContextTokens != 0 && (l.ContextTokens < MinContextTokens || l.ContextTokens > ModelContext):
-		return fmt.Errorf("policy: limits.context_tokens must lie between %d and %d when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", MinContextTokens, ModelContext, l.ContextTokens)
 	case l.ReviewDiffKiB != 0 && (l.ReviewDiffKiB < DefaultReviewDiffKiB || l.ReviewDiffKiB > MaxReviewDiffKiB):
 		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
 	case l.CheckinCalls != 0 && (l.CheckinCalls < 1 || l.CheckinCalls > 48):
@@ -956,10 +940,9 @@ const MaxLookBytes = 8 << 20
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
-// and Small are LiteLLM aliases routed to their z.ai model, the Alibaba
-// model behind it as fallback. Premium is a pay-per-token
-// model with its own month cap (Budget.PremiumMonthEUR) that falls back to
-// Big. A call's purpose sits on its audit row and in its
+// and Small are LiteLLM aliases routed to their z.ai model, Premium the
+// pay-per-token model with its own month cap (Budget.PremiumMonthEUR).
+// A call's purpose sits on its audit row and in its
 // ledger ref, not in its alias.
 const (
 	Big     = "big"
@@ -969,17 +952,6 @@ const (
 
 // TextClasses are the model classes, as the metrics page sorts spend.
 var TextClasses = []string{Big, Small, Premium}
-
-// withFallback is aliases with Big beside Premium: the alias the gateway
-// serves a premium call on at the premium cap, and LiteLLM's on a provider
-// failure.
-func withFallback(aliases []string) []string {
-	if slices.Contains(aliases, Premium) {
-		aliases = append(aliases, Big)
-	}
-	slices.Sort(aliases)
-	return slices.Compact(aliases)
-}
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -1430,7 +1402,7 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 }
 
 // FactoryModels are the aliases factoryd may call on a task of classes,
-// Big beside Premium, sorted, once each.
+// sorted, once each.
 func (d Document) FactoryModels(classes []string) []string {
 	var out []string
 	for _, p := range Purposes {
@@ -1438,17 +1410,18 @@ func (d Document) FactoryModels(classes []string) []string {
 			out = append(out, m)
 		}
 	}
-	return withFallback(out)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
-// Models are the aliases any of classes may call, Big beside Premium,
-// sorted, once each.
+// Models are the aliases any of classes may call, sorted, once each.
 func (d Document) Models(classes []string) []string {
 	var out []string
 	for _, c := range classes {
 		out = append(out, d.Classes[c].Models...)
 	}
-	return withFallback(out)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // SessionModel is the alias a plan or report session of a task of classes

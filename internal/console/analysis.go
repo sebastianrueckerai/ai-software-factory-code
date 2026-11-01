@@ -12,8 +12,8 @@ import (
 
 // attachAnalysis is the attach_analysis tool: what the agent found about
 // a card's ask, recorded inside the ask itself, where the member reads it
-// with the question (the main agent concept). An ask already answered is
-// done; a card with no ask needs escalate, not an analysis.
+// with the ask (the main agent concept). An ask already settled is done;
+// a card with no ask needs escalate, not an analysis.
 func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	found, recommendation := strings.TrimSpace(in.Found), strings.TrimSpace(in.Recommendation)
 	switch {
@@ -32,16 +32,26 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	var settled *factoryd.AskSettledError
 	switch {
 	case errors.As(err, &settled):
-		line := fmt.Sprintf("The ask of #%d is %s", k.IssueNumber, settled.Word)
+		line := fmt.Sprintf("The %s of #%d is %s", askNoun(settled.Kind), k.IssueNumber, settled.Word)
 		if settled.By != "" {
 			line += " by " + settled.By
 		}
-		return "", refuse(http.StatusConflict, line+". An ask already answered is done.")
+		return "", refuse(http.StatusConflict, line+". A settled ask is done; escalate files a new one when you need a person.")
 	case errors.Is(err, factoryd.ErrNoAsk):
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("Card #%d asks nothing in the chat; escalate files an ask when you need a person.", k.IssueNumber))
 	case err != nil:
 		log.Printf("console: the analysis of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The analysis could not be recorded; see the factoryd log.")
 	}
-	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the question.", k.IssueNumber), nil
+	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the ask.", k.IssueNumber), nil
+}
+
+// askNoun is an ask kind's noun for a refusal: the approval kinds' own
+// words with request, a question's own word.
+func askNoun(kind string) string {
+	switch kind {
+	case factoryd.ApprovalMerge, factoryd.ApprovalPlan, factoryd.ApprovalCriteria:
+		return kind + " request"
+	}
+	return "question"
 }

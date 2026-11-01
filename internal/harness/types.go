@@ -142,6 +142,7 @@ const (
 	EventPushFailed EventKind = "push_failed" // the worker's push failed or was refused; detail carries branch and error
 	EventSupervisor EventKind = "supervisor"  // factoryd's supervisor decided after a trip; never from a worker
 	EventNote       EventKind = "note"        // an adapter's note on its own stream: a dropped too-long opencode event line
+	EventCompacted  EventKind = "compacted"   // the harness compacted the session's conversation; no detail rides the bus
 )
 
 // Event is one normalized stream item from a running harness. The git

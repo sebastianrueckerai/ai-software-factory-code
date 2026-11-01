@@ -792,10 +792,15 @@ func (f *fakeChat) TakeProposal(_ context.Context, kind, token, repository, logi
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range f.proposals {
-		if p.Kind != kind || p.Token != token || p.Repository != repository || !p.used.IsZero() || now.After(p.ExpiresAt) {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
 			continue
 		}
-		if p.Login != login {
+		switch {
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		case p.Login != login:
 			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
 		}
 		p.used = now
@@ -878,6 +883,10 @@ type chatGateway struct {
 	// no arrived, so the turns' script and counts stand
 	titleCalls []map[string]any
 	titleNames []string
+	// window is the alias's served context window, windows the aliases
+	// the turns asked for one
+	window  int
+	windows []string
 }
 
 // refuseContext scripts an operator call the provider refuses for a
@@ -889,6 +898,13 @@ const refuseContext = "REFUSE_CONTEXT"
 func refuseFor(decision, reason string) string { return "REFUSE " + decision + " " + reason }
 
 func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if alias, ok := strings.CutPrefix(r.URL.Path, "/v1/window/"); ok {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		g.windows = append(g.windows, alias)
+		fmt.Fprintf(w, `{"window":%d}`, g.window)
+		return
+	}
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeTitle {
 		g.serveTitle(w, r)
 		return
@@ -958,6 +974,17 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.replies = g.replies[1:]
 	if reply == nil {
 		http.Error(w, "upstream down", http.StatusBadGateway)
+		return
+	}
+	if s, ok := strings.CutPrefix(reply[0], "STATUS "); ok && len(reply) == 1 {
+		code, body, _ := strings.Cut(s, " ")
+		n, err := strconv.Atoi(code)
+		if err != nil {
+			g.t.Fatalf("STATUS script %q: %v", reply[0], err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(n)
+		fmt.Fprint(w, body)
 		return
 	}
 	if len(reply) == 1 && reply[0] == refuseContext {
@@ -2699,6 +2726,9 @@ func TestChatAskPressRunsTheBoundAction(t *testing.T) {
 	if len(do) != 1 || do[0].ID != "do-"+token[:12] || do[0].Name != "close" || do[0].Result != "Closed #5; factoryd ends the card. It cannot be undone." {
 		t.Fatalf("the press's row = %+v", do)
 	}
+	if rows[len(rows)-2].Role != "user" || rows[len(rows)-2].Content != "close it" {
+		t.Fatalf("the press's answer row = %+v", rows[len(rows)-2])
+	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
 }
 
@@ -2725,6 +2755,37 @@ func TestChatAskPressOfAnotherChoiceSettles(t *testing.T) {
 	}
 	if p, ok := chat.proposal(rows[1].Proposal); !ok || p.used.IsZero() {
 		t.Fatalf("the settling press left the binding live: %+v", p)
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The press of an expired binding answers an ordinary ask, even its bound
+// choice's: the choice lands as the human's row, the agent's turn reads
+// it, and nothing runs. A used binding's press still hears it is gone.
+func TestChatAskPressOfAnExpiredBindingSettles(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+	chat.mu.Unlock()
+	before := r.events.count()
+	g.replies = [][]string{{say("Holding it.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press of the expired binding = %d: %v", code, events)
+	}
+	equal(t, "the settling press", events, []string{`text {"text":"Holding it."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if rows[2].Role != "user" || rows[2].Content != "close it" {
+		t.Fatalf("the human's row = %+v", rows[2])
+	}
+	if got := messages(t, g.calls()[1]); got[len(got)-1]["content"] != "close it" {
+		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
 	}
 	chatRows(t, r.events, before, "sebastian")
 }
@@ -3642,6 +3703,44 @@ func TestChatGatewayFailure(t *testing.T) {
 	}
 	if got := answer.Messages; len(got) != 1 || got[0].Role != "user" || got[0].Content != "hello again" {
 		t.Fatalf("conversation = %+v, want the message alone", got)
+	}
+}
+
+// A 4xx answer of the model ends the turn naming the refusal and the
+// status, not a network failure: a deterministic refusal cannot be
+// retried into success (sol refused the tools' null properties all day,
+// 2026-11-01, shown as "try again").
+func TestChatModelRefusal(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{`STATUS 400 {"error":{"message":"Invalid schema for function 'system': None is not of type 'object'.","type":"invalid_request_error","param":"tools[0].parameters"}}`}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	equal(t, "model refused", events, []string{`error {"message":"The model refused the call (400): {\"error\":{\"message\":\"Invalid schema for function 'system': None is not of type 'object'.\",\"type\":\"invalid_request_error\",\"param\":\"tools[0].parameters\"}} Retrying will not change it; the refusal needs a fix."}`})
+}
+
+// Every tool's schema carries its properties as an object, an empty one
+// for a tool without arguments: null there made sol refuse the whole
+// call (2026-11-01).
+func TestChatToolSchemasKeepPropertiesAnObject(t *testing.T) {
+	for _, tool := range tools {
+		b, err := json.Marshal(tool.def(false))
+		if err != nil {
+			t.Fatalf("%s: %v", tool.name, err)
+		}
+		var def struct {
+			Function struct {
+				Parameters struct {
+					Type       string         `json:"type"`
+					Properties map[string]any `json:"properties"`
+				} `json:"parameters"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(b, &def); err != nil {
+			t.Fatalf("%s: %v", tool.name, err)
+		}
+		if def.Function.Parameters.Type != "object" || def.Function.Parameters.Properties == nil {
+			t.Fatalf("%s: parameters %s, want type object with a properties object", tool.name, b)
+		}
 	}
 }
 

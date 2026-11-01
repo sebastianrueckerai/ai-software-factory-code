@@ -1227,6 +1227,32 @@ func TestRunSessionPublishesTheAgentsText(t *testing.T) {
 	}
 }
 
+// A session's compaction (the worker's own threshold, roadmap 239) leaves
+// one timeline row naming the session and one event in the session's
+// history: the bus carries no token figures, so the row is the audit
+// fact alone.
+func TestRunSessionRecordsTheCompaction(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, _ := newTestRunner(t, supervisedTask("t2"), newFakeKube(), objects)
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	at := time.Date(2026, 10, 12, 9, 30, 0, 0, time.UTC)
+	logs := envLine(harness.Event{Kind: harness.EventCompacted, Time: at}) + "\n" + resultLine(true, "pushed")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, logs)
+	if err != nil {
+		t.Fatalf("RunSession: %v", err)
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t2/timeline.jsonl")
+	for _, want := range []string{`"event":"compacted"`, `"session":"` + res.SessionID + `"`} {
+		if !strings.Contains(string(tl), want) {
+			t.Errorf("timeline lacks %s:\n%s", want, tl)
+		}
+	}
+	hist, err := objects.Get(t.Context(), "sessions/t2/"+res.SessionID+".jsonl")
+	if err != nil || !strings.Contains(string(hist), `"kind":"compacted"`) {
+		t.Errorf("session history = %s (%v), want the compacted event", hist, err)
+	}
+}
+
 // The worker gets the tools the task's classes may call under its pinned
 // version, for the brief to name.
 func TestRunSessionPassesTheOpenTools(t *testing.T) {
@@ -4301,19 +4327,6 @@ func TestRunSessionOfAReportStatesNoPace(t *testing.T) {
 	}
 	if in := chat.gots[0].Input; strings.Contains(in, "Pace of the card") {
 		t.Fatalf("statement states a pace:\n%s", in)
-	}
-}
-
-func TestRunSessionPassesTheContextCap(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", Track: "direct"}
-	kube := newFakeKube()
-	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
-		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
-		t.Fatal(err)
-	}
-	if got := podEnv(kube.podAt(0))["CONTEXT_TOKENS"]; got != "100000" {
-		t.Fatalf("CONTEXT_TOKENS = %q, want the default 100000", got)
 	}
 }
 

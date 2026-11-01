@@ -119,3 +119,17 @@ func TestLocateRawFindsNestedJSON(t *testing.T) {
 		t.Fatal("the claim's offsets do not hold the tool json")
 	}
 }
+
+// Two spans claiming the same bytes, or two spans overlapping without
+// containment, break the one-span-one-origin model; both are rot with
+// the names attached.
+func TestLocateRejectsDuplicateAndOverlappingSpans(t *testing.T) {
+	if _, err := Locate("abcDEFghi", []Span{{Name: "one", Text: "DEF"}, {Name: "two", Text: "DEF"}}); err == nil {
+		t.Fatal("two spans with the same text both claimed the bytes")
+	} else if !strings.Contains(err.Error(), "one") || !strings.Contains(err.Error(), "two") {
+		t.Fatalf("the error names neither span: %v", err)
+	}
+	if _, err := Locate("abcdef", []Span{{Name: "left", Text: "abcd"}, {Name: "right", Text: "cdef"}}); err == nil {
+		t.Fatal("partially overlapping spans both claimed the bytes")
+	}
+}

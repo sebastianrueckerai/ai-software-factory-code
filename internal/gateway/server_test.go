@@ -1381,6 +1381,56 @@ func TestRoutes(t *testing.T) {
 
 func ptr(f float64) *float64 { return &f }
 
+// The window route serves the alias's context window from the price
+// book's own /model/info poll: the chat's and the worker's compaction
+// read it. A priced alias no deployment gives a window serves 0, an
+// unknown or unpriced alias answers 404 with the price book's reason, and
+// a caller the gateway cannot identify answers 401. No task row and no
+// hold: it answers a question, no call is made.
+func TestWindowRoute(t *testing.T) {
+	s := NewServer(ServerOptions{
+		Auth:          fakeAuth{err: errors.New("not a JWT")},
+		Store:         newMemStore(),
+		Minter:        &fakeMinter{},
+		LiteLLMURL:    "http://127.0.0.1:1",
+		Prices:        fakePrices{"premium": {In: 2e-6, Out: 1e-5, MaxOutput: 128000, Window: 128000}, "big": testPrice},
+		FactorydToken: testFactorydToken,
+	})
+	h := s.Routes("test")
+	get := func(path, token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set(HeaderFactoryTask, "t-window-x-2026-11")
+			r.Header.Set(HeaderFactoryPurpose, policy.PurposeOperator)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr
+	}
+	for name, tc := range map[string]struct {
+		alias  string
+		token  string
+		status int
+		body   string
+	}{
+		"the alias's window":   {alias: "premium", token: testFactorydToken, status: 200, body: `{"window":128000}`},
+		"a window nobody sets": {alias: "big", token: testFactorydToken, status: 200, body: `{"window":0}`},
+		"an unknown alias":     {alias: "nope", token: testFactorydToken, status: 404, body: `has no model`},
+		"an unidentified call": {alias: "premium", status: 401, body: `not a JWT`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := get("/v1/window/"+tc.alias, tc.token)
+			if rr.Code != tc.status {
+				t.Fatalf("status %d, want %d: %s", rr.Code, tc.status, rr.Body)
+			}
+			if !strings.Contains(rr.Body.String(), tc.body) {
+				t.Fatalf("body %q, want it to contain %q", rr.Body.String(), tc.body)
+			}
+		})
+	}
+}
+
 // An agent calls only its session's alias (tasks.model_alias): on a task
 // whose session runs on small, big, which its class
 // lists, is refused 403 naming both aliases before any hold or upstream
@@ -2487,11 +2537,12 @@ func TestThreadOnTheAudit(t *testing.T) {
 	}
 }
 
-// A premium call past its cap that big cannot fit either is refused on
-// big's refusal, and its audit row keeps why it left premium.
-func TestPremiumCapThenBigRefused(t *testing.T) {
+// A premium call past its cap is refused on the premium cap: no other
+// model serves it, nothing reaches the upstream, and the audit row names
+// the cap.
+func TestPremiumCapRefused(t *testing.T) {
 	stub := newStubUpstream(t)
-	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 0.001, Status: "running"}
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}
 	store := newMemStore(task)
 	pol := factoryPolicy()
 	pol.Document.Chat = &policy.ChatConfig{Model: policy.Premium}
@@ -2506,8 +2557,11 @@ func TestPremiumCapThenBigRefused(t *testing.T) {
 	}
 	audits := store.auditRows()
 	last := audits[len(audits)-1]
-	if last.Decision != policy.RefusedBudget || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big, which refused it: free headroom 0.001000 EUR") {
-		t.Errorf("audit row %s %q, want refused_budget naming the premium cap first", last.Decision, last.Reason)
+	if last.Decision != policy.RefusedPremiumCap || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it") {
+		t.Errorf("audit row %s %q, want refused_premium_cap naming the cap", last.Decision, last.Reason)
+	}
+	if len(store.ledger) != 0 {
+		t.Errorf("ledger = %+v, want no row for a refused call", store.ledger)
 	}
 }
 
@@ -2522,20 +2576,15 @@ func TestUnbilledOptionsAreNotForwarded(t *testing.T) {
 	}
 }
 
-// A premium call under its cap goes to premium; past it the gateway
-// serves it on big: the forwarded body, the ledger ref and
-// the audit row's alias name big, and the row's reason says why. No cap:
-// premium is an alias like any other.
-func TestPremiumCapServesOnBig(t *testing.T) {
+// A premium call under its cap goes to premium, and with no cap premium
+// is an alias like any other.
+func TestPremiumCapUnderCap(t *testing.T) {
 	for name, tc := range map[string]struct {
 		capEUR                float64
 		wantModel, wantLedger string
-		wantReason            string
 	}{
 		"under the cap": {capEUR: 50, wantModel: policy.Premium, wantLedger: "operator/premium"},
-		"past the cap": {capEUR: 0.001, wantModel: policy.Big, wantLedger: "operator/big",
-			wantReason: "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big"},
-		"no cap": {wantModel: policy.Premium, wantLedger: "operator/premium"},
+		"no cap":        {wantModel: policy.Premium, wantLedger: "operator/premium"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stub := newStubUpstream(t)
@@ -2561,8 +2610,8 @@ func TestPremiumCapServesOnBig(t *testing.T) {
 			}
 			audits := store.auditRows()
 			last := audits[len(audits)-1]
-			if last.ModelAlias != tc.wantModel || !strings.HasSuffix(last.Reason, tc.wantReason) || tc.wantReason == "" && last.Reason != "" {
-				t.Errorf("audit row alias %q reason %q, want %q ending %q", last.ModelAlias, last.Reason, tc.wantModel, tc.wantReason)
+			if last.ModelAlias != tc.wantModel || last.Reason != "" {
+				t.Errorf("audit row alias %q reason %q, want %q and no reason", last.ModelAlias, last.Reason, tc.wantModel)
 			}
 		})
 	}
