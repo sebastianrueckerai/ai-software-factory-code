@@ -976,6 +976,17 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream down", http.StatusBadGateway)
 		return
 	}
+	if s, ok := strings.CutPrefix(reply[0], "STATUS "); ok && len(reply) == 1 {
+		code, body, _ := strings.Cut(s, " ")
+		n, err := strconv.Atoi(code)
+		if err != nil {
+			g.t.Fatalf("STATUS script %q: %v", reply[0], err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(n)
+		fmt.Fprint(w, body)
+		return
+	}
 	if len(reply) == 1 && reply[0] == refuseContext {
 		w.Header().Set(gateway.HeaderDecision, gateway.RefusedContext)
 		w.Header().Set("Content-Type", "application/json")
@@ -3692,6 +3703,44 @@ func TestChatGatewayFailure(t *testing.T) {
 	}
 	if got := answer.Messages; len(got) != 1 || got[0].Role != "user" || got[0].Content != "hello again" {
 		t.Fatalf("conversation = %+v, want the message alone", got)
+	}
+}
+
+// A 4xx answer of the model ends the turn naming the refusal and the
+// status, not a network failure: a deterministic refusal cannot be
+// retried into success (sol refused the tools' null properties all day,
+// 2026-11-01, shown as "try again").
+func TestChatModelRefusal(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{`STATUS 400 {"error":{"message":"Invalid schema for function 'system': None is not of type 'object'.","type":"invalid_request_error","param":"tools[0].parameters"}}`}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"hello"}})
+	equal(t, "model refused", events, []string{`error {"message":"The model refused the call (400): {\"error\":{\"message\":\"Invalid schema for function 'system': None is not of type 'object'.\",\"type\":\"invalid_request_error\",\"param\":\"tools[0].parameters\"}} Retrying will not change it; the refusal needs a fix."}`})
+}
+
+// Every tool's schema carries its properties as an object, an empty one
+// for a tool without arguments: null there made sol refuse the whole
+// call (2026-11-01).
+func TestChatToolSchemasKeepPropertiesAnObject(t *testing.T) {
+	for _, tool := range tools {
+		b, err := json.Marshal(tool.def(false))
+		if err != nil {
+			t.Fatalf("%s: %v", tool.name, err)
+		}
+		var def struct {
+			Function struct {
+				Parameters struct {
+					Type       string         `json:"type"`
+					Properties map[string]any `json:"properties"`
+				} `json:"parameters"`
+			} `json:"function"`
+		}
+		if err := json.Unmarshal(b, &def); err != nil {
+			t.Fatalf("%s: %v", tool.name, err)
+		}
+		if def.Function.Parameters.Type != "object" || def.Function.Parameters.Properties == nil {
+			t.Fatalf("%s: parameters %s, want type object with a properties object", tool.name, b)
+		}
 	}
 }
 

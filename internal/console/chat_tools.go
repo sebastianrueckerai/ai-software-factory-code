@@ -183,7 +183,11 @@ type chatTool struct {
 // def is the tool's schema, its sentence marked (needs OK) when the
 // chat's confirm names it.
 func (tool chatTool) def(confirm bool) factoryd.OperatorTool {
-	params := map[string]any{"type": "object", "properties": tool.params}
+	props := tool.params
+	if props == nil {
+		props = map[string]any{} // nil would marshal to null, which is no schema object
+	}
+	params := map[string]any{"type": "object", "properties": props}
 	if len(tool.required) > 0 {
 		params["required"] = tool.required
 	}

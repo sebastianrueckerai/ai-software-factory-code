@@ -78,6 +78,19 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 		"function": map[string]any{"name": t.Name, "description": t.Description, "parameters": t.Parameters}})
 }
 
+// StatusError is the gateway's answer with a status outside 200: Code its
+// HTTP status, Body the answer's first bytes. A caller tells a model's
+// refusal, which a retry cannot change, from a gateway or provider it
+// could not reach.
+type StatusError struct {
+	Code int
+	Body string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("status %d: %s", e.Code, e.Body)
+}
+
 // Stream is one call of alias on task taskID's account with messages and
 // tools, cut after operatorTimeout: each piece of the answer's text goes
 // to text as it arrives, each piece of its reasoning to think, and the
@@ -218,7 +231,7 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
 			return OperatorMessage{}, fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
 		}
-		return OperatorMessage{}, fmt.Errorf("status %d: %s", res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(body)), 300))
+		return OperatorMessage{}, &StatusError{Code: res.StatusCode, Body: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
 	}
 	answer := OperatorMessage{Role: "assistant"}
 	calls := map[int]*OperatorCall{}

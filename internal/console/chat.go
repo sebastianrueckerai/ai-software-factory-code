@@ -977,6 +977,15 @@ func (t *turn) run(id, notice string) {
 				t.fail("The gateway refused the call: " + refusal.Reason)
 				return
 			}
+			var status *factoryd.StatusError
+			// a 4xx answer refused the call (a rate limit or a timeout
+			// aside: those pass, the router already retried them)
+			if errors.As(err, &status) && status.Code >= 400 && status.Code < 500 &&
+				status.Code != http.StatusTooManyRequests && status.Code != http.StatusRequestTimeout {
+				t.fail("The model refused the call (" + strconv.Itoa(status.Code) + "): " + status.Body +
+					" Retrying will not change it; the refusal needs a fix.")
+				return
+			}
 			t.fail("The model could not be reached; try again.")
 			return
 		}
