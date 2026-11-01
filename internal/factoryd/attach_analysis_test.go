@@ -299,7 +299,7 @@ func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested),
-		approvalAskRow + "\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Waive c1"; got != want {
+		approvalAskRow+"\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Waive c1"; got != want {
 		t.Fatalf("the request's row = %q, want %q", got, want)
 	}
 	if got, want := rowContent(t, s, "sf/wake", "t-1", EventQuestionAsked), "#40 - Use a replica? needs you: Use a replica?"; got != want {
@@ -307,6 +307,26 @@ func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 1 || rows[0].Detail["found"] != "The replica adds 12 ms of lag; the board reads it fine." {
 		t.Fatalf("the analysis rows = %+v", rows)
+	}
+}
+
+// The card's open approval ask takes the analysis even behind a newer
+// answered question: an answer on another venue is no word on a request.
+func TestAttachAnalysisReachesTheApprovalAskBehindANewerAnswer(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
+		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "Use one replica"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
+		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", "sebastian"); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	if got, want := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested),
+		approvalAskRow+"\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Waive c1"; got != want {
+		t.Fatalf("the request's row = %q, want %q", got, want)
 	}
 }
 

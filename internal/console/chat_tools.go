@@ -851,18 +851,22 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	return all[i], nil
 }
 
-// humanAnswerLine is the thread's newest line the human typed themselves,
-// the word an answer to a criteria request is decided on; false when the
-// thread holds none, so a turn that runs on no human's word — a wake, a
-// turn the agent runs alone — cannot answer one.
+// humanAnswerLine is the line this turn answers, when the human typed it
+// themselves — the row the turn started on, stored as theirs — the word an
+// answer to a criteria request is decided on. A line of theirs from an
+// earlier turn is not this turn's word, so a wake over a thread that
+// holds one, or a turn the agent runs alone, cannot answer one.
 func (t *turn) humanAnswerLine() (string, bool, error) {
 	rows, err := t.c.cfg.Chat.ChatMessages(t.r.Context(), t.p.Repository, t.owner, t.conv, 50)
 	if err != nil {
 		log.Printf("console: chat messages: %v", err)
 		return "", false, refuse(http.StatusInternalServerError, "cannot read the thread")
 	}
-	for i := len(rows) - 1; i >= 0; i-- {
-		if m := rows[i]; m.Role == "user" && m.Kind == "" && m.BirthKind == "" {
+	for _, m := range rows {
+		if m.ID < t.upto {
+			break
+		}
+		if m.ID == t.upto && m.Role == "user" && m.Kind == "" && m.BirthKind == "" {
 			return m.Content, true, nil
 		}
 	}
@@ -1477,7 +1481,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			if !ok {
-				return "", nil, refuse(http.StatusConflict, "This thread holds no line of the human's that answers the criteria request: ask them to answer here or on the board's card, and answer_criteria runs on their word.")
+				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word.")
 			}
 			q, err := t.criteriaRequest(in)
 			if err != nil {

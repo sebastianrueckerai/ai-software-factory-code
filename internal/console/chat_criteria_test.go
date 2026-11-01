@@ -130,7 +130,7 @@ func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
 	if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[1].Content != "" || rows[2].Content != "I asked them." {
 		t.Fatalf("the wake's rows = %+v", rows)
 	}
-	want := "Refused: This thread holds no line of the human's that answers the criteria request: ask them to answer here or on the board's card, and answer_criteria runs on their word."
+	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word."
 	if got := rows[1].ToolCalls[0].Result; got != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", got, want)
 	}
@@ -139,5 +139,51 @@ func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if len(calls) != 0 || criteria != 1 {
 		t.Fatalf("a wake without the human's line decided something: calls %v, %d verdict rows", calls, criteria)
+	}
+}
+
+// A wake over a thread that already holds a line of the human's acts on
+// no word of theirs: an older line is not this turn's trigger, so
+// answer_criteria refuses and nothing is decided.
+func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	verdictRig(r)
+	var calls []string
+	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
+		calls = append(calls, id+" "+cid+" "+verdict)
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say("Noted.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"waive c3: the timeout is the provider's SLA"}, "conversation": {fmt.Sprint(conv)}})
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"waive","criterion":"c3","reason":"not mine to decide"}`)}, {say("I asked them.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "The criteria gap of #3 waits."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refusal string
+	for _, m := range rows {
+		for _, c := range m.ToolCalls {
+			if c.Name == "answer_criteria" {
+				refusal = c.Result
+			}
+		}
+	}
+	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word."
+	if refusal != want {
+		t.Errorf("the wake's tool result = %q\nwant %q", refusal, want)
+	}
+	r.tasks.mu.Lock()
+	criteria := len(r.tasks.criteria["t-int"])
+	r.tasks.mu.Unlock()
+	if len(calls) != 0 || criteria != 1 {
+		t.Fatalf("a wake over an older line of the human's decided something: calls %v, %d verdict rows", calls, criteria)
 	}
 }

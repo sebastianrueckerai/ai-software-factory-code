@@ -93,6 +93,11 @@ func (f *fakeBriefStore) SetApprovalBrief(ctx context.Context, id int64, brief, 
 
 func (f *fakeBriefStore) SetApprovalBriefError(ctx context.Context, id int64, e string) error {
 	f.failed[id] = e
+	for i, a := range f.rows {
+		if a.ID == id {
+			f.rows[i].BriefError = e
+		}
+	}
 	return nil
 }
 
@@ -224,6 +229,32 @@ func TestBriefWriterFallback(t *testing.T) {
 				t.Fatalf("the failure is not in telemetry: %v", store.events)
 			}
 		})
+	}
+}
+
+// A terminal failure — no plan revision left to read — marks the row
+// with the failure's class, so the pass never retries it, and telemetry
+// hears it once: a pass that meets the same mark again records no second
+// event.
+func TestBriefWriterMarksTerminalFailures(t *testing.T) {
+	row := ApprovalRequest{ID: 11, Kind: ApprovalCriteria, TaskID: "t1", Project: "o/r",
+		Spec: json.RawMessage(`{"task":"t-int"}`), Reason: "a criterion unmet", CreatedAt: time.Unix(0, 0).UTC()}
+	gw := briefGateway(t, http.StatusOK, `{}`)
+	defer gw.Close()
+	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
+		rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
+	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+	for range 2 {
+		if err := w.Pass(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mark := store.failed[11]
+	if !strings.HasPrefix(mark, "terminal: ") {
+		t.Fatalf("the mark %q carries no terminal class", mark)
+	}
+	if len(store.events) != 1 || store.events[0].Kind != EventBriefFailed {
+		t.Fatalf("the terminal failure's events = %+v, want one brief_failed", store.events)
 	}
 }
 

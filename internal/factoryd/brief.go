@@ -30,6 +30,10 @@ import (
 // briefBatch bounds the rows one pass takes.
 const briefBatch = 20
 
+// briefTerminal prefixes a brief_error a terminal failure wrote: no retry
+// can fix it, so a pass takes the row no more.
+const briefTerminal = "terminal: "
+
 // briefChars and detailChars bound what a card shows of the writer's
 // answer, marked when cut.
 const (
@@ -46,7 +50,8 @@ type BriefStore interface {
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
 	// BrieflessApprovals are the pending approval requests without a
 	// brief, oldest first, at most limit: a row a failure once marked
-	// retries, unless the card's own budget refused it.
+	// retries, unless the card's own budget refused it or the failure was
+	// terminal.
 	BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error)
 	// SetApprovalBrief files a request's brief and detail.
 	SetApprovalBrief(ctx context.Context, id int64, brief, detail string) error
@@ -97,7 +102,8 @@ func (b *BriefWriter) Pass(ctx context.Context) error {
 
 // write files a's brief: the one model call on its task's account, a
 // parse of the answer, and the row; a failed call marks the row and
-// records the failure, never an error for the pass.
+// records the failure, once per mark, never an error for the pass. A
+// terminal failure's mark carries its class, which the pass then skips.
 func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 	t, ok, err := b.Store.Task(ctx, a.TaskID)
 	if err != nil || !ok {
@@ -114,7 +120,13 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 		if errors.As(err, &refusal) {
 			mark = refusal.Decision + ": " + refusal.Reason
 		}
+		if isTerminal(err) {
+			mark = briefTerminal + mark
+		}
 		mark = textutil.Truncate(mark, 500)
+		if a.BriefError == mark {
+			return nil
+		}
 		if markErr := b.Store.SetApprovalBriefError(context.WithoutCancel(ctx), a.ID, mark); markErr != nil {
 			return markErr
 		}
@@ -152,7 +164,7 @@ func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t Task, alias 
 func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]criterionFact, error) {
 	var s CriteriaSpec
 	if err := json.Unmarshal(a.Spec, &s); err != nil {
-		return nil, err
+		return nil, terminalError("the criteria request's spec does not parse: %v", err)
 	}
 	rev, ok, err := b.Store.PlanRevision(ctx, a.TaskID, 0)
 	if err != nil {
@@ -226,7 +238,7 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact) (any, strin
 	case ApprovalMerge:
 		var s MergeSpec
 		if err := json.Unmarshal(a.Spec, &s); err != nil {
-			return nil, "", err
+			return nil, "", terminalError("the spec of a ApprovalMerge request does not parse: %v", err)
 		}
 		m["risk_class"], m["migration"], m["migrations"] = s.RiskClass, s.Migration, s.Migrations
 		m["review_verdict"], m["review_summary"] = s.Review.Verdict, s.VerdictSummary
@@ -247,7 +259,7 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact) (any, strin
 	case ApprovalResource:
 		var s cloudres.ResourceSpec
 		if err := json.Unmarshal(a.Spec, &s); err != nil {
-			return nil, "", err
+			return nil, "", terminalError("the spec of a ApprovalResource request does not parse: %v", err)
 		}
 		m["server_type"], m["volume_gb"], m["location"], m["purpose"] = s.ServerType, s.VolumeGB, s.Location, s.Purpose
 		m["lease_minutes"], m["hourly_eur"], m["reservation_eur"] = s.LeaseMinutes, s.HourlyEUR, s.ReservationEUR
@@ -256,20 +268,20 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact) (any, strin
 	case ApprovalPlan:
 		var s PlanSpec
 		if err := json.Unmarshal(a.Spec, &s); err != nil {
-			return nil, "", err
+			return nil, "", terminalError("the spec of a ApprovalPlan request does not parse: %v", err)
 		}
 		m["revision"], m["plan_summary"] = s.Revision, textutil.Truncate(t.Objective, 2000)
 		acts = "The answers to the plan's open questions send it back to the planner, whose next revision files its cards once no question stays open; Request changes asks for changes with the human's words."
 	case ApprovalCriteria:
 		var s CriteriaSpec
 		if err := json.Unmarshal(a.Spec, &s); err != nil {
-			return nil, "", err
+			return nil, "", terminalError("the spec of a ApprovalCriteria request does not parse: %v", err)
 		}
 		m["verdict_rows_of"] = s.Task
 		m["criteria"] = criteria
 		acts = "Waive ends one criterion with your one-line reason; Approve grants one more bounded card, which the planner drafts for the criteria still open; Confirm records the delivered cards as meeting every criterion, offered once every child card is done. Every criterion met or waived ends the request on the next sweep; no final press."
 	default:
-		return nil, "", fmt.Errorf("kind %q carries no brief", a.Kind)
+		return nil, "", terminalError("kind %q carries no brief", a.Kind)
 	}
 	return m, acts, nil
 }
@@ -337,9 +349,10 @@ func BriefUnfunded(a ApprovalRequest) bool {
 func (s *PGStore) BrieflessApprovals(ctx context.Context, limit int) ([]ApprovalRequest, error) {
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
-		        status, decided_by, decided_at, decision_note, created_at
-		 FROM approval_requests WHERE status = 'pending' AND brief = '' AND (brief_error = '' OR brief_error NOT LIKE $2)
-		 ORDER BY id LIMIT $1`, limit, policy.RefusedBudget+": %")
+		        status, decided_by, decided_at, decision_note, created_at, brief_error
+		 FROM approval_requests WHERE status = 'pending' AND brief = ''
+		 AND (brief_error = '' OR (brief_error NOT LIKE $2 AND brief_error NOT LIKE $3))
+		 ORDER BY id LIMIT $1`, limit, policy.RefusedBudget+": %", briefTerminal+"%")
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +362,7 @@ func (s *PGStore) BrieflessApprovals(ctx context.Context, limit int) ([]Approval
 		var a ApprovalRequest
 		var spec []byte
 		if err := rows.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
-			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt); err != nil {
+			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.BriefError); err != nil {
 			return nil, err
 		}
 		a.Spec = spec

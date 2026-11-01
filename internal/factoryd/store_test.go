@@ -2449,6 +2449,7 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	newTask("a1")
 	newTask("a2")
 	newTask("a3")
+	newTask("a4")
 	marked := open("a1")
 	mark(marked, `kind "criteria" carries no brief`)
 	unfunded := open("a2")
@@ -2457,12 +2458,14 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	if err := s.SetApprovalBrief(ctx, briefed, "Two criteria wait on you.", "- c1 met"); err != nil {
 		t.Fatal(err)
 	}
+	terminal := open("a4")
+	mark(terminal, "terminal: plan a4 has no revision")
 	rows, err := s.BrieflessApprovals(ctx, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(rows) != 1 || rows[0].ID != marked {
-		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal stays marked, the briefed row is done", rows, marked)
+		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal and the terminal failure stay marked, the briefed row is done", rows, marked)
 	}
 }
 

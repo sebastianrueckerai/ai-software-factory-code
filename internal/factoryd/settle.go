@@ -48,10 +48,17 @@ func AskFamily(m ChatMessage) string {
 	return ""
 }
 
-// settles reports whether event kind settles family's rows.
+// settles reports whether event kind settles family's rows: a question's
+// or a poke's any answer on any venue, an approval's its own family's
+// events alone — a merge or plan decided, the task's end, or a newer
+// request superseding it. An answer on another venue is no word on a
+// request, so it settles no approval.
 func settles(kind, family string) bool {
-	return slices.Contains(answerKinds, kind) || kind == EventTaskEnded ||
-		family == "approval" && kind == EventApprovalRequested
+	if family == "approval" {
+		return kind == EventApprovalRequested || kind == EventTaskEnded ||
+			kind == EventMergeApproved || kind == EventMergeDenied || kind == EventPlanChangesRequested
+	}
+	return slices.Contains(answerKinds, kind) || kind == EventTaskEnded
 }
 
 // settleWords are a settling event's reason word (the concept's table).

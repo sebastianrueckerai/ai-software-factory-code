@@ -1191,6 +1191,16 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	if err := r.timeline.RecordFactRow(ctx, filing.Event(p.Repository, p.IssueNumber, detail)); err != nil {
 		return fmt.Errorf("record the revision's filing row: %w", err)
 	}
+	for _, c := range planOrder(next, planEdges(next)) {
+		if issues[c.Key] == 0 {
+			continue // a card kept as it is files no new row
+		}
+		f := filing
+		f.Card, f.Key = issues[c.Key], c.Key
+		if err := r.timeline.RecordFactRow(ctx, f.Event(p.Repository, issues[c.Key], nil)); err != nil {
+			return fmt.Errorf("record %s's filing row: %w", c.Key, err)
+		}
+	}
 	return nil
 }
 
