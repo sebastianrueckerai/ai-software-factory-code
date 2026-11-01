@@ -148,11 +148,15 @@ func (s *PGStore) issueNumbers(ctx context.Context, query string, args ...any) (
 
 // RecordChainRun upserts one pull request's row to the run that carries
 // it; a newer run wins, a fold's carry moving the change to the fold.
-func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, status, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
-		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $3, run_id = $4, status = $5, updated_at = now()
-		WHERE chain_runs.run_id < $4`, repository, pr, sha, run, status)
+// run is the id the API speaks, index the run's number on the forge, 0
+// when it reports none — and never erases a number the row already has.
+func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run, index int64, status string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, run_index, status, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
+		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $3, run_id = $4,
+			run_index = CASE WHEN $5 > 0 THEN $5 ELSE chain_runs.run_index END,
+			status = $6, updated_at = now()
+		WHERE chain_runs.run_id < $4`, repository, pr, sha, run, index, status)
 	return err
 }
 
@@ -162,15 +166,17 @@ func (s *PGStore) RecordChainRun(ctx context.Context, repository string, pr int6
 // already carries leaves it untouched. A pending never unseats a stall
 // the row records; a newer run or a real verdict still rewrites. The
 // stall ladder stays with its commit: a new commit clears it.
-func (s *PGStore) RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, status, updated_at)
-		VALUES ($1, 0, $2, $3, $4, now())
-		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $2, run_id = $3, status = $4, updated_at = now(),
+func (s *PGStore) RecordChainHead(ctx context.Context, repository, sha string, run, index int64, status string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, run_index, status, updated_at)
+		VALUES ($1, 0, $2, $3, $4, $5, now())
+		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $2, run_id = $3,
+			run_index = CASE WHEN $4 > 0 THEN $4 ELSE chain_runs.run_index END,
+			status = $5, updated_at = now(),
 			rerun_at = CASE WHEN chain_runs.sha = $2 THEN chain_runs.rerun_at END,
 			dismissed_at = CASE WHEN chain_runs.sha = $2 THEN chain_runs.dismissed_at END
-		WHERE chain_runs.run_id <= $3 AND (chain_runs.sha <> $2 OR chain_runs.run_id <> $3 OR chain_runs.status <> $4)
-		AND NOT (chain_runs.status = 'stalled' AND $4 = 'pending' AND chain_runs.run_id = $3 AND chain_runs.sha = $2)`,
-		repository, sha, run, status)
+		WHERE chain_runs.run_id <= $3 AND (chain_runs.sha <> $2 OR chain_runs.run_id <> $3 OR chain_runs.status <> $5)
+		AND NOT (chain_runs.status = 'stalled' AND $5 = 'pending' AND chain_runs.run_id = $3 AND chain_runs.sha = $2)`,
+		repository, sha, run, index, status)
 	return err
 }
 
@@ -339,8 +345,8 @@ type ChainStore interface {
 	ChainCovered(ctx context.Context, repository string) (map[string]int64, error)
 	MergedCardCommits(ctx context.Context, repository string, shas []string) (map[string]int64, error)
 	UncarriedMerged(ctx context.Context, repository string) ([]Task, error)
-	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error
-	RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error
+	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run, index int64, status string) error
+	RecordChainHead(ctx context.Context, repository, sha string, run, index int64, status string) error
 	UnsettledChainCommits(ctx context.Context, repository string, shas []string) (map[string]bool, error)
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
 	RecordChainStall(ctx context.Context, repository, sha string) error
@@ -897,7 +903,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 				return err
 			}
 			for _, pr := range prs {
-				if err := p.Store.RecordChainRun(ctx, proj.Repository, pr, run.CommitSHA, run.ID, v); err != nil {
+				if err := p.Store.RecordChainRun(ctx, proj.Repository, pr, run.CommitSHA, run.ID, run.Index, v); err != nil {
 					return err
 				}
 			}
@@ -909,7 +915,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	if err != nil {
 		return err
 	}
-	if err := p.Store.RecordChainHead(ctx, proj.Repository, newest.CommitSHA, newest.ID, verdict); err != nil {
+	if err := p.Store.RecordChainHead(ctx, proj.Repository, newest.CommitSHA, newest.ID, newest.Index, verdict); err != nil {
 		return err
 	}
 	p.watch(ctx, proj, verdict, cfg.Stall, newest, findings, stuck)
@@ -1028,7 +1034,7 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 			if err != nil {
 				return err
 			}
-			if err := p.Store.RecordChainRun(ctx, proj.Repository, pr, run.CommitSHA, run.ID, v); err != nil {
+			if err := p.Store.RecordChainRun(ctx, proj.Repository, pr, run.CommitSHA, run.ID, run.Index, v); err != nil {
 				return err
 			}
 			delete(late, sha)
@@ -1064,12 +1070,12 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 		switch run.Status {
 		case "success":
 		case "failure":
-			red = append(red, fmt.Sprintf("run %d %s", run.ID, run.Status))
+			red = append(red, fmt.Sprintf("run %d %s", run.Index, run.Status))
 		default: // running, skipped, cancelled
 			if run.Status != "skipped" {
 				stuck = append(stuck, run)
 			}
-			part := fmt.Sprintf("run %d %s", run.ID, run.Status)
+			part := fmt.Sprintf("run %d %s", run.Index, run.Status)
 			if run.Index > 0 {
 				part += fmt.Sprintf(" (%s/%s/actions/runs/%d)", p.Forgejo.PublicURL, repo, run.Index)
 			}

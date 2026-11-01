@@ -62,7 +62,7 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 		{7, "e10", 10, "failure"},
 		{0, "e10", 10, "failure"},
 	} {
-		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.status); err != nil {
+		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, 0, row.status); err != nil {
 			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
 		}
 	}
@@ -117,7 +117,7 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 		t.Fatal("the uncarried merged card reads live: every row of its repository was written after its merge, but only a done card is grandfathered")
 	}
 	// a green head run after the carry run covers the change
-	if err := s.RecordChainRun(ctx, "sf/r", 0, "e12", 12, "success"); err != nil {
+	if err := s.RecordChainRun(ctx, "sf/r", 0, "e12", 12, 0, "success"); err != nil {
 		t.Fatalf("RecordChainRun run 12: %v", err)
 	}
 	board("t-merged")
@@ -164,7 +164,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		{8, "e12", 12, "pending"},
 		{0, "e12", 12, "pending"},
 	} {
-		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.status); err != nil {
+		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, 0, row.status); err != nil {
 			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
 		}
 	}
@@ -252,7 +252,7 @@ func TestStalledHeadSurfacesOnTheCard(t *testing.T) {
 		{7, "e15", 15, "pending"},
 		{0, "e15", 15, "pending"},
 	} {
-		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.status); err != nil {
+		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, 0, row.status); err != nil {
 			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
 		}
 	}
@@ -354,7 +354,7 @@ func TestUncarriedMergedListsOnlyRowlessCards(t *testing.T) {
 	if got := ids("sf/r"); !slices.Equal(got, []string{"t-a", "t-nocommit"}) {
 		t.Fatalf("UncarriedMerged = %v, want t-a and t-nocommit: merged with a pull request and no row, the merge commit or none", got)
 	}
-	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 3, "success"); err != nil {
+	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 3, 0, "success"); err != nil {
 		t.Fatal(err)
 	}
 	if got := ids("sf/r"); !slices.Equal(got, []string{"t-nocommit"}) {
@@ -503,7 +503,7 @@ func TestFailedCardsStayInFinished(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed', finished_at = $1 WHERE id = 't-c'`, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 1, "success"); err != nil {
+	if err := s.RecordChainRun(ctx, "sf/r", 7, "e1", 1, 0, "success"); err != nil {
 		t.Fatal(err)
 	}
 	got, _, err := s.FinishedTasks(ctx, FinishedQuery{Repository: "sf/r", Statuses: FinalStatuses, Since: now.Add(-time.Hour)})
