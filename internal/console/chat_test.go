@@ -1462,14 +1462,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources", "settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
-			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
+			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
-			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
+			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2395,7 +2395,7 @@ func TestChatAskOffersChoices(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("Filed.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the card when I say so"}})
 	equal(t, "the ask turn", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the member; this turn ends. A press or their next message answers it."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press or their next message answers it."}`,
 		`done {}`})
 	if n := len(g.calls()); n != 1 {
 		t.Fatalf("%d model calls, want the ask to end the turn", n)
@@ -2452,6 +2452,100 @@ func TestChatAskBounds(t *testing.T) {
 
 // png1x1 is a real 1×1 PNG: an image body small enough to ride every
 // upload test.
+// The ask tool binds one of its choices to a tool call: the binding is a
+// proposal of kind ask with the bound choice and the call's stored
+// arguments, the ask row carries its token, and no Do it card appears —
+// the ask row is the bound action's one surface.
+func TestChatAskBindsAToolCall(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close #5 when you are sure"}})
+	equal(t, "the bound ask", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. Pressing “close it” runs Close a card, #5 t-m \"Fix the cache. It drops entries.\"; another press answers it."}`,
+		`done {}`})
+	var binds []factoryd.ChatProposal
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			binds = append(binds, p.ChatProposal)
+		}
+	}
+	chat.mu.Unlock()
+	if len(binds) != 1 {
+		t.Fatalf("%d ask bindings stored, want 1: %+v", len(binds), binds)
+	}
+	b := binds[0]
+	if b.Tool != "close" || b.Choice != "close it" || string(b.Args) != `{"task_id":"t-m"}` ||
+		b.Description != `Close a card, #5 t-m "Fix the cache. It drops entries."` ||
+		b.Repository != "sf/code" || b.Login != "sebastian" || b.Conversation != 1 {
+		t.Fatalf("the ask binding = %+v", b)
+	}
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Proposals) != 0 {
+		t.Fatalf("the bound ask left a Do it card: %+v", answer.Proposals)
+	}
+	if row := answer.Messages[len(answer.Messages)-1]; row.Kind != "ask" || row.Proposal != b.Token {
+		t.Fatalf("the ask row = %+v", row)
+	}
+}
+
+// A bound choice runs a write tool: a read tool refuses, the refusal
+// feeds the model its correction, and no ask row or binding lands.
+func TestChatAskBindsOnlyWriteTools(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"board","args":{},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask without a binding.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close #5 when you are sure"}})
+	equal(t, "the refused binding", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: tool: board reads; a bound tool writes"}`,
+		`text {"text":"I will ask without a binding."}`, `done {}`})
+	chat.mu.Lock()
+	binds := len(chat.proposals)
+	chat.mu.Unlock()
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			t.Fatalf("a refused binding stored an ask row: %+v", m)
+		}
+	}
+	if binds != 0 {
+		t.Fatalf("a refused binding stored a proposal: %d rows", binds)
+	}
+}
+
+// The binding admits by the human's roles: a writer who is no approver
+// binds no approve_merge; the refusal names the rule and nothing lands.
+func TestChatAskBindingAdmitsByRole(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	args := `{"ask":"Approve #5?","choices":["approve it","hold"],"tool":"approve_merge","args":{"task_id":"t-m"},"choice":"approve it"}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask plainly.")}}
+	_, events, _ := chatPost(t, r, ak, as, chatPath, url.Values{"message": {"should we approve #5?"}})
+	equal(t, "the unadmitted binding", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: Only the approvers of project ai-software-factory-code may authorize spend."}`,
+		`text {"text":"I will ask plainly."}`, `done {}`})
+	chat.mu.Lock()
+	binds := slices.DeleteFunc(slices.Clone(chat.proposals), func(p *fakeProposal) bool { return p.Kind != "ask" })
+	chat.mu.Unlock()
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "anna", 0, 10)
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			t.Fatalf("an unadmitted binding stored an ask row: %+v", m)
+		}
+	}
+	if len(binds) != 0 {
+		t.Fatalf("an unadmitted binding stored a proposal: %+v", binds)
+	}
+}
+
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 // A pasted image rides the composer's send like a file rides it: the

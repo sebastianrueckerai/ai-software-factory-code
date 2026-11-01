@@ -1,10 +1,13 @@
 package console
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -136,9 +139,13 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 // askMember is the ask tool: the question kept in this thread as an ask
 // row, its choices offered as presses. The row rides the answer's own
 // row (run merges it in), and the turn ends on it: the member's press or
-// their next message is the answer the next turn reads.
-func (t *turn) askMember(question string, choices []string) (string, error) {
-	question = strings.TrimSpace(question)
+// their next message is the answer the next turn reads. A question may
+// bind one choice to a tool call (tool, args, choice): that choice's
+// press runs the call in code as the member's own session, under the
+// checks the propose path runs in call, until the binding expires.
+func (t *turn) askMember(in toolInput) (string, error) {
+	question := strings.TrimSpace(in.Ask)
+	choices := slices.Clone(in.Choices)
 	for i := range choices {
 		choices[i] = strings.TrimSpace(choices[i])
 	}
@@ -149,8 +156,68 @@ func (t *turn) askMember(question string, choices []string) (string, error) {
 		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
 	}
-	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices}
-	return "Asked the member; this turn ends. A press or their next message answers it.", nil
+	token, desc, err := t.askBinding(in.Tool, in.Args, in.Choice, choices)
+	if err != nil {
+		return "", err
+	}
+	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices, Proposal: token}
+	if token == "" {
+		return "Asked the human; this turn ends. A press or their next message answers it.", nil
+	}
+	return fmt.Sprintf("Asked the human; this turn ends. Pressing “%s” runs %s; another press answers it.", in.Choice, strings.TrimSuffix(desc, ".")), nil
+}
+
+// askBinding validates and stores the ask's bound action, the tool a
+// press of choice runs with args, under the checks the propose path runs
+// in call: the tool exists and writes, the arguments normalise and
+// decode, admitTool passes for the member's roles, describe writes the
+// human-facing line. It answers the binding's token and its description;
+// both "" when the ask binds nothing.
+func (t *turn) askBinding(name string, args json.RawMessage, choice string, choices []string) (string, string, error) {
+	if name == "" && choice == "" && len(args) == 0 {
+		return "", "", nil
+	}
+	if name == "" || choice == "" {
+		return "", "", refuse(http.StatusBadRequest, "tool: the write tool the bound choice runs, with its choice")
+	}
+	if !slices.Contains(choices, choice) {
+		return "", "", refuse(http.StatusBadRequest, "choice: one of the ask's choices")
+	}
+	tool, ok := t.c.chatTool(name)
+	if !ok {
+		return "", "", refuse(http.StatusBadRequest, "tool: there is no tool "+name)
+	}
+	if !tool.write {
+		return "", "", refuse(http.StatusBadRequest, "tool: "+name+" reads; a bound tool writes")
+	}
+	var in toolInput
+	raw := cmp.Or(string(args), "{}")
+	raw = tool.normalized(raw)
+	if json.Unmarshal([]byte(raw), &in) != nil {
+		return "", "", refuse(http.StatusBadRequest, "args: no JSON object of "+name+"'s parameters")
+	}
+	asked := in
+	if err := t.byTaskID(&in); err != nil {
+		return "", "", err
+	}
+	if err := t.admitTool(name, in); err != nil {
+		return "", "", err
+	}
+	desc, err := t.describe(tool, &in)
+	if err != nil {
+		return "", "", err
+	}
+	if !reflect.DeepEqual(in, asked) {
+		if b, err := json.Marshal(in); err == nil {
+			raw = string(b)
+		}
+	}
+	token := t.store(factoryd.ChatProposal{Token: randomToken(), Kind: "ask", Choice: choice, Repository: t.p.Repository, Login: t.a.s.user,
+		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv})
+	if token == "" {
+		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored; nothing runs.")
+	}
+	return token, desc, nil
 }
 
 // escalate is the escalate tool: the question and its five parts (the

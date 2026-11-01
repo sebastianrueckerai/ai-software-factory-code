@@ -869,7 +869,7 @@ func (t *turn) run(id, notice string) {
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if t.ask != nil {
-			row.Kind, row.Content, row.Choices = t.ask.Kind, t.ask.Content, t.ask.Choices
+			row.Kind, row.Content, row.Choices, row.Proposal = t.ask.Kind, t.ask.Content, t.ask.Choices, t.ask.Proposal
 			t.ask = nil
 		}
 		if _, ok := t.save(row); !ok {
