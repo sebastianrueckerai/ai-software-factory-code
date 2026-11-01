@@ -1258,8 +1258,12 @@ type statusLine struct {
 	// chat's own) or the month's turn; ChatTask is its task id. Approver:
 	// the viewer may fund it.
 	ChatSpent bool
-	ChatTask  string
-	Approver  bool
+	// Pool is the project face's pool status (projectPool): the same
+	// projection the chat's status line and the board read tool read, so
+	// the face and the chat agree on its figures.
+	Pool     poolLine
+	ChatTask string
+	Approver bool
 	// Dependencies are the factory's own dependencies' latest health with
 	// each row's age, the panel's list (roadmap 299); the strip's one dot
 	// carries the worst of them: DepsDown red, DepsDegraded amber, DepsUp
@@ -2508,6 +2512,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
+		s.Pool = c.projectPool(ctx, v.policy, p, time.Now())
 	}
 	s.TodayEUR = e.Day
 	if s.PremiumCapEUR > 0 {

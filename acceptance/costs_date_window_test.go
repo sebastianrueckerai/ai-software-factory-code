@@ -924,6 +924,11 @@ func (f *acceptChat) ProjectMonthSpend(_ context.Context, _ string, _ time.Time)
 	return factoryd.ProjectSpend{}, nil
 }
 
+// AgentFundedEUR: this rig funds nothing from a pool.
+func (f *acceptChat) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
 func (f *acceptChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

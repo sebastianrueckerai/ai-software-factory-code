@@ -768,6 +768,9 @@ func boardWords(d boardData) string {
 	if h := d.Status.Hold; h != nil {
 		fmt.Fprintf(&b, "Production held for %s: %s.\n", h.For, h.Reason)
 	}
+	if d.Status.Pool.Present {
+		fmt.Fprintf(&b, "Pool (%s, %s UTC): %s.\n", d.Status.Pool.Policy, d.Status.Pool.Month, d.Status.Pool.Words)
+	}
 	b.WriteString("Open cards:\n")
 	for _, col := range d.Columns {
 		if col.Finished == "" {

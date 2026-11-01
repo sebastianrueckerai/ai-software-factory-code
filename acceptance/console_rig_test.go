@@ -1013,6 +1013,11 @@ func (a *AcceptanceRig) ProjectMonthSpend(context.Context, string, time.Time) (f
 	return factoryd.ProjectSpend{}, nil
 }
 
+// AgentFundedEUR: this rig funds nothing from a pool.
+func (a *AcceptanceRig) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
 func (a *AcceptanceRig) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
 	return 0, nil
 }

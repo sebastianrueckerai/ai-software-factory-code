@@ -147,6 +147,11 @@ type Chat interface {
 	ProjectConversations(ctx context.Context, repository string) ([]factoryd.ChatConversation, error)
 	ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error)
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error)
+	// AgentFundedEUR is the EUR the agent funded cards with in repository
+	// in the UTC month of at — the projection FundCard guards the pool
+	// with, the sole figure the pool read-outs read, never a second
+	// aggregate; a member's raise is not the pool's.
+	AgentFundedEUR(ctx context.Context, repository string, at time.Time) (float64, error)
 	// TaskSpendSince is a task's ledger spend from a time on: the chat
 	// task's, which the fund its stop offers carries to the month's end
 	TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error)
