@@ -30,6 +30,10 @@ import (
 // on the cluster — a green run covers it, it never opened a pull request,
 // or it finished before the chain began recording — the fact a finished
 // card's own page waits on.
+// ChainRun is the run that carries the card's pull request, 0 while none
+// does; ChainGreen is the repository's newest green run, 0 for none, and
+// ChainGreenAt when it went green — the run and the moment a done card's
+// cover clause names (C38).
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -43,6 +47,9 @@ type BoardTask struct {
 	AnswersPending  int
 	ChainState      string
 	ChainLive       bool
+	ChainRun        int64
+	ChainGreen      int64
+	ChainGreenAt    time.Time
 	// RollID and RollIssue name the roll task that carries a merged card's
 	// pull request in an opened or merged request; "" and 0 for none.
 	RollID    string
@@ -100,6 +107,9 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
 		        ORDER BY cr.run_id DESC LIMIT 1), ''),
 		        (` + deployLive + `),
+		        COALESCE((SELECT cr.run_id FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number), 0),
+		        ` + chainGreen + `,
+		        (SELECT g.updated_at FROM chain_runs g WHERE g.repository = tasks.repository AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1),
 		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0)`
 
 const boardTaskFrom = `
@@ -111,11 +121,16 @@ const boardTaskFrom = `
 
 func scanBoardTask(scan func(dest ...any) error) (BoardTask, error) {
 	var b BoardTask
-	var at sql.NullTime
+	var at, greenAt sql.NullTime
 	var choices, question []byte
 	t, err := scanTask(func(dest ...any) error {
-		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending, &b.ChainState, &b.ChainLive, &b.RollID, &b.RollIssue)...)
+		return scan(append(dest, &b.Escalation, &at, &choices, &b.EscalationAlert, &b.WaitingOn, &b.Dependencies, &b.QueueAhead, &question, &b.AnswersPending,
+			&b.ChainState, &b.ChainLive, &b.ChainRun, &b.ChainGreen, &greenAt, &b.RollID, &b.RollIssue)...)
 	})
+	if err != nil {
+		return b, err
+	}
+	b.ChainGreenAt = greenAt.Time
 	if err != nil {
 		return b, err
 	}
@@ -246,6 +261,66 @@ func (s *PGStore) BoardTask(ctx context.Context, id string) (BoardTask, bool, er
 		return BoardTask{}, false, nil
 	}
 	return b, err == nil, err
+}
+
+// ChainFacts are the chain behind one card's change (C38): the run that
+// carries its pull request with its verdict and its moment, main's head
+// row with the stall ladder on it, the newest green run with its moment,
+// and the chain's own cards that act — the repair card a red head files,
+// the stall card a stalled one asks with, nil while none stands. A zero
+// CarryRun names a change the chain has not carried yet.
+type ChainFacts struct {
+	CarryRun      int64
+	CarryStatus   string
+	CarryAt       time.Time
+	HeadRun       int64
+	HeadStatus    string
+	HeadAt        time.Time
+	RerunAt       time.Time
+	Dismissed     bool
+	GreenRun      int64
+	GreenAt       time.Time
+	Stall, Repair *Task
+}
+
+// ChainFacts reads the chain behind repository's pull request pr: its
+// carry row with the head row of main and the stall ladder on it, the
+// newest green run, and the chain's acting cards. Zero facts without a
+// carry row: the chain has not picked the change up, so there is nothing
+// to read.
+func (s *PGStore) ChainFacts(ctx context.Context, repository string, pr int64) (ChainFacts, error) {
+	var f ChainFacts
+	var headRun sql.NullInt64
+	var headStatus sql.NullString
+	var headAt, rerunAt, greenAt sql.NullTime
+	var dismissed sql.NullBool
+	err := s.db.QueryRowContext(ctx, `SELECT c.run_id, c.status, c.updated_at,
+			h.run_id, h.status, h.updated_at, h.rerun_at, h.dismissed_at,
+			COALESCE((SELECT max(g.run_id) FROM chain_runs g WHERE g.repository = $1 AND g.status = 'success'), 0),
+			(SELECT g.updated_at FROM chain_runs g WHERE g.repository = $1 AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1)
+		FROM chain_runs c LEFT JOIN chain_runs h ON h.repository = c.repository AND h.pr_number = 0
+		WHERE c.repository = $1 AND c.pr_number = $2`, repository, pr).
+		Scan(&f.CarryRun, &f.CarryStatus, &f.CarryAt, &headRun, &headStatus, &headAt, &rerunAt, &dismissed, &f.GreenRun, &greenAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ChainFacts{}, nil
+	}
+	if err != nil {
+		return ChainFacts{}, err
+	}
+	f.HeadRun, f.HeadStatus, f.HeadAt, f.RerunAt, f.GreenAt = headRun.Int64, headStatus.String, headAt.Time, rerunAt.Time, greenAt.Time
+	for _, actor := range []struct {
+		source string
+		into   **Task
+	}{{SourceChainStall, &f.Stall}, {SourceChainRepair, &f.Repair}} {
+		card, ok, err := s.ChainCard(ctx, repository, actor.source)
+		if err != nil {
+			return ChainFacts{}, err
+		}
+		if ok {
+			*actor.into = &card
+		}
+	}
+	return f, nil
 }
 
 // SortBoardTasks orders open tasks in memory as BoardTasks' ORDER BY

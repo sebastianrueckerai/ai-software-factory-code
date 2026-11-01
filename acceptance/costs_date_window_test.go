@@ -223,6 +223,11 @@ type acceptTasks struct {
 	tasks []factoryd.BoardTask
 }
 
+// ChainFacts: these cards ride no chain.
+func (s *acceptTasks) ChainFacts(context.Context, string, int64) (factoryd.ChainFacts, error) {
+	return factoryd.ChainFacts{}, nil
+}
+
 func (s *acceptTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

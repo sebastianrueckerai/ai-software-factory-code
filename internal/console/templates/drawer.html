@@ -51,6 +51,7 @@
 {{end}}<details class="sec" data-sec="links"><summary>Links</summary><div class="sec-body"><p class="links">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">issue #{{.Card.IssueNumber}}</a> · {{end}}{{if .Card.PRURL}}<a href="{{.Card.PRURL}}" target="_blank" rel="noopener">PR #{{.Card.PRNumber}}</a> · <a href="{{.Card.PRURL}}.diff">the diff</a> · {{end}}<a href="/tasks/{{.Card.ID}}/timeline">the full timeline</a> · <span class="ref-plain">{{.Card.ID}}</span></p></div></details>
 {{else if eq .Tab "activity"}}{{if not .Problem}}{{template "gates" .}}
 {{template "steps" .}}
+{{template "chain" .}}
 {{end}}{{else if eq .Tab "chat"}}{{with .Session}}<p class="meta">Session {{.N}} · {{.Model}} · {{.Outcome}}</p>
 <div id="session-log" class="session-log" role="log" aria-label="The messages of session {{.N}}" data-task="{{$.Card.ID}}" data-session="{{.ID}}">{{range $.Said}}
 <div class="msg {{if .Agent}}agent{{else}}you{{end}}" data-key="{{.Key}}"><span class="av" aria-hidden="true">{{if not .Agent}}{{initial .Who}}{{end}}</span><p class="who"><span class="name">{{.Who}}</span> <time>{{.At.UTC.Format "01-02 15:04Z"}}</time></p><p class="said">{{.Text}}</p></div>{{end}}

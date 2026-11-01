@@ -77,7 +77,8 @@ const mustHave = {
   fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
-  quiet: ["3 working", "0 need you", "€4.10", "#624", "#622", "#621", "#620", "done"],
+  quiet: ["4 working", "0 need you", "€4.10", "#624", "#625", "#622", "#621", "#620", "done",
+    "chain run 3251", "live through run 3248, 25 min after merge"],
 
   metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
     "spend by model", "served by", "7 days", "28 days", "90 days"],
@@ -396,9 +397,40 @@ async function text(page) {
         await word.click();
         await p.page.waitForTimeout(600);
         if (!(await p.page.locator("#drawer").innerText()).includes("roll 5e1f0a2")) fails.push("quiet: a click on the roll word does not open the roll card's drawer");
+        await p.page.keyboard.press("Escape");
+        await p.page.waitForTimeout(300);
       }
       const rollCol = await p.page.locator('#board section:has(h3:has-text("In progress")) [data-card="' + labID(626) + '"]').count();
       if (!rollCol) fails.push("quiet: the roll card is not in the In progress column");
+      // the chain's steps on the card (round 15): the carried card's face
+      // names its run and links the forge, the Activity tab reads the chain
+      // behind it collapsed to its summary, and the covered done face
+      // carries the cover clause
+      const carrier = p.page.locator('#board [data-card="' + labID(625) + '"]');
+      const runWord = carrier.locator(".line2 .st a");
+      if ((await runWord.count()) !== 1 || (await runWord.innerText()).trim() !== "chain run 3251") fails.push("quiet: the carried card's face does not read the linked chain word chain run 3251");
+      else if ((await runWord.getAttribute("href")) !== "https://git.example/sf/code/actions/runs/3251") fails.push("quiet: the chain word links " + (await runWord.getAttribute("href")) + ", not the run on the forge");
+      else {
+        await carrier.click({ position: { x: 4, y: 4 } });
+        await p.page.waitForTimeout(600);
+        const d = p.page.locator("#drawer");
+        await d.getByRole("tab", { name: "Activity" }).click();
+        await p.page.waitForTimeout(400);
+        const chain = d.locator('details[data-sec="chain"]');
+        if (!(await chain.count())) fails.push("quiet: the Activity tab shows no Chain section");
+        else {
+          if (await chain.getAttribute("open")) fails.push("quiet: the Chain section stands open while the chain is quiet");
+          if (!(await chain.locator("summary").innerText()).includes("run 3251 pending")) fails.push("quiet: the Chain summary's hint does not carry the live fact");
+          await chain.locator("summary").click();
+          await p.page.waitForTimeout(300);
+          const ct = await chain.innerText();
+          for (const w of ["carry run", "factory/roll", "run 3260", "green"]) if (!ct.includes(w)) fails.push('quiet: the Chain readout lacks "' + w + '"');
+          if (!(await chain.locator('a[href="https://git.example/sf/code/actions/runs/3251"]').count())) fails.push("quiet: the carry run does not link the forge");
+        }
+        await p.page.keyboard.press("Escape");
+        await p.page.waitForTimeout(300);
+      }
+      if (!(await p.page.locator('#board [data-card="' + labID(622) + '"]').innerText()).includes("live through run 3248, 25 min after merge")) fails.push("quiet: the covered done face lacks its cover clause");
     }
     if (sc === "busy") {
       // the theme selector (C15): the sun sets light and is pressed, a second

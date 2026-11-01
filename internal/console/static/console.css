@@ -48,6 +48,7 @@ html, body { margin: 0; }
 body { background: var(--bg); color: var(--text); font: 400 13px/1.45 var(--font-ui); -webkit-font-smoothing: antialiased; }
 button, input, select, textarea { font: inherit; color: inherit; }
 a { color: var(--accent); }
+.st a { color: inherit; }
 :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 [hidden] { display: none !important; }
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -544,6 +545,8 @@ a.dr-ref:hover { text-decoration: underline; text-underline-offset: 3px; }
 .sec > summary .hint, .sec > p.summary .hint { margin-left: auto; color: var(--text-faint); font: 400 11.5px var(--font-mono); text-align: right; }
 .sec.empty > p.summary { color: var(--text-faint); cursor: default; font-weight: 400; }
 .sec.empty > p.summary::before { border-left-color: var(--line-strong); }
+/* the chain readout's summary in the console's small-capitals idiom (C38) */
+.sec[data-sec="chain"] > summary { font-variant-caps: all-small-caps; letter-spacing: .07em; }
 .sec.empty > p.summary:hover { color: var(--text-faint); }
 .sec-body { padding: 0 0 16px 15px; font-size: 13px; line-height: 1.55; }
 .sec-body p { margin: 0 0 8px; }

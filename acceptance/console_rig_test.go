@@ -664,6 +664,11 @@ func (a *AcceptanceRig) BoardTasks(_ context.Context, repository string) ([]fact
 	return cards, nil
 }
 
+// ChainFacts: the rig's cards ride no chain.
+func (a *AcceptanceRig) ChainFacts(context.Context, string, int64) (factoryd.ChainFacts, error) {
+	return factoryd.ChainFacts{}, nil
+}
+
 // ProjectImageParks: the rig's cards wait for no image.
 func (a *AcceptanceRig) ProjectImageParks(context.Context, string) ([]factoryd.ImagePark, error) {
 	return nil, nil

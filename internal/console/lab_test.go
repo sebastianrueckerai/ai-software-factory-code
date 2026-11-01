@@ -297,8 +297,10 @@ type labScene struct {
 	monthCap float64
 	prFiles  map[string]string
 	// remote is the mirror's remote, "" for the code project's
-	remote    string
-	tasks     []factoryd.BoardTask
+	remote string
+	tasks  []factoryd.BoardTask
+	// chain are the chain rows the scene's pull requests carry
+	chain     map[string]factoryd.ChainFacts
 	deps      map[string][]string
 	plans     map[string][]factoryd.PlanRevision
 	questions map[string][]factoryd.PlanQuestion
@@ -593,7 +595,7 @@ func (r *rig) seedScene(s labScene) string {
 	}
 	labObjects.Unlock()
 	r.tasks.mu.Lock()
-	r.tasks.tasks, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.deps, s.plans, s.questions
+	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.mu.Unlock()
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
@@ -1463,14 +1465,27 @@ func quietScene(now time.Time) labScene {
 	roll.Source = factoryd.SourceRoll
 	merged := finished(labCard(now, 623, "merged", "direct", 2*time.Hour, "Footer: link the licence", "Link the licence in the footer."), now, time.Hour, 0.12)
 	merged.PRNumber = 623
+	// the chain carries #625's change: its face names the run, its
+	// Activity tab reads it (C38)
+	carry := finished(labCard(now, 625, "merged", "direct", 40*time.Minute, "Console: the chain's steps on the card",
+		"A merged card's face names the run that carries its change; its Activity tab reads the chain behind it."), now, 20*time.Minute, 0.15)
+	carry.PRNumber = 625
+	covered := finished(labCard(now, 622, "done", "direct", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
+		"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)
+	covered.PRNumber = 622
 	s.tasks = []factoryd.BoardTask{{Task: run}, {Task: roll}, {Task: merged, ChainState: "success", RollID: roll.ID, RollIssue: 626},
-		{Task: finished(labCard(now, 622, "done", "direct", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
-			"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)},
+		{Task: carry, ChainState: "pending", ChainRun: 3251},
+		{Task: covered, ChainState: "success", ChainRun: 3248, ChainGreen: 3248, ChainGreenAt: now.Add(-3*time.Hour + 25*time.Minute)},
 		{Task: finished(labCard(now, 621, "done", "direct", 6*time.Hour, "Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."), now, 5*time.Hour, 0.18)},
 		{Task: finished(labCard(now, 620, "done", "direct", 9*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer."), now, 8*time.Hour, 0.33)},
 	}
+	s.chain = map[string]factoryd.ChainFacts{"sf/code 625": {CarryRun: 3251, CarryStatus: "pending",
+		CarryAt: now.Add(-14 * time.Minute), HeadRun: 3260, HeadStatus: "success", HeadAt: now.Add(-10 * time.Minute)}}
+	s.config = &policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "seed",
+		Agents: "coder", Process: "spec", Namespaces: []string{"factory"},
+		Chain: policy.ChainConfig{Requires: []string{"factory/roll"}}}
 	s.events = []factoryd.Event{labStatus(624, "running", factoryd.GateSession, now.Add(-3*time.Minute))}
 	return s
 }

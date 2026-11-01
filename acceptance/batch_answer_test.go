@@ -77,6 +77,11 @@ func newAccBatchTasks() *accBatchTasks {
 	}
 }
 
+// ChainFacts: these cards ride no chain.
+func (s *accBatchTasks) ChainFacts(context.Context, string, int64) (factoryd.ChainFacts, error) {
+	return factoryd.ChainFacts{}, nil
+}
+
 func (s *accBatchTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
