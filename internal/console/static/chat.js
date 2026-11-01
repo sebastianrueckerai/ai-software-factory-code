@@ -842,10 +842,16 @@ var chatView = (function () {
     return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).catch(function () {});
   }
+  // clearInput empties the box and takes its height back to its base: a
+  // paste's growth must not outlive the message or the clear that ends it
+  function clearInput() {
+    input.value = "";
+    input.style.height = "";
+  }
   function send() {
     var text = input.value.trim();
     if (!text || readOnly) return;
-    input.value = "";
+    clearInput();
     var images = pendingImages, docs = pendingDocs;
     pendingImages = [];
     pendingDocs = [];
@@ -1113,7 +1119,7 @@ var chatView = (function () {
     input.setAttribute("aria-activedescendant", "cmd-" + pal.list[pal.sel].name);
   }
   function command(name) {
-    input.value = "";
+    clearInput();
     drawPalette();
     if (name === "new") {
       fresh.click();
