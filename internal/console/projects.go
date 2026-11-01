@@ -36,6 +36,9 @@ type projectRow struct {
 	Approver bool
 	// Envs are a factory project's environments with their deploy state.
 	Envs []envRow
+	// Pool is the project's pool status (projectPool): the same line the
+	// project's face and the policy page read.
+	Pool poolLine
 }
 
 // envRow is an environment with its deploy state (deployState).
@@ -162,6 +165,7 @@ func (c *Console) settings(w http.ResponseWriter, r *http.Request) {
 		}
 		row.Approver = slices.Contains(v.ApproversOf(p.Repository), current(r).user)
 		row.Envs = c.envRows(r.Context(), ps[pick:pick+1])[0]
+		row.Pool = c.projectPool(r.Context(), v, p, time.Now())
 		if c.cfg.Mirrors != nil && p.Objects == policy.ObjectsFactory {
 			m, ok, err := c.cfg.Mirrors.Mirror(r.Context(), p.Name, factoryd.MirrorExport)
 			if err != nil {

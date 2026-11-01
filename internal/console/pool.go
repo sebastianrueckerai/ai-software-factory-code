@@ -75,3 +75,11 @@ func (c *Console) projectPool(ctx context.Context, v policy.Version, p factoryd.
 	}
 	return out
 }
+
+// poolChat is the pool line a chat page read shows: the loaded policy's
+// identity and the month with the same words the settings, policy and
+// project pages read — one projection through them all.
+func (c *Console) poolChat(ctx context.Context, v policy.Version, p factoryd.Project) string {
+	pl := c.projectPool(ctx, v, p, time.Now())
+	return fmt.Sprintf("Pool (%s, %s UTC): %s", pl.Policy, pl.Month, pl.Words)
+}

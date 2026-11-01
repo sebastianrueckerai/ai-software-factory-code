@@ -11,6 +11,7 @@
 <dt>Objects</dt><dd>{{.Objects}}{{if eq .Objects "seed"}}: the infra repository and the seed make them, factoryd reads and reports{{end}}</dd>
 <dt>Agents</dt><dd>{{.Agents}}{{if eq .Agents "none"}}: every issue goes to the human lane{{end}}</dd>
 <dt>Merge rule</dt><dd>{{.MergeRule}}</dd>
+{{if .Pool.Words}}<dt>Pool</dt><dd><span class="pool" title="{{.Pool.Policy}}, {{.Pool.Month}} UTC: the same figures the project's face and the chat's status line read">{{.Pool.Words}}</span></dd>{{end}}
 <dt>Notify</dt><dd>{{range $i, $u := .NotifyList}}{{if $i}}, {{end}}{{$u}}{{end}}{{if .NotifyDefault}} (the project's approvers){{end}}</dd>
 <dt>Namespaces</dt><dd>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{else}}none{{end}}</dd>
 {{if eq .Objects "factory"}}<dt>Quota per namespace</dt><dd>{{.Quota.CPU}} CPU, {{.Quota.Memory}} memory, {{.Quota.Storage}} storage</dd>
