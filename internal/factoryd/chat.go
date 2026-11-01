@@ -1330,13 +1330,13 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 	return ChatProposal{}, ErrNoProposal
 }
 
-// LiveAskBinds are conversation's open ask bindings on repository at
-// now, in their order: the ask-kind proposals unused and unexpired, each
-// with its tool and the choice whose press runs it. The settle rule and
-// the tool park of a bound ask read here.
-func (s *PGStore) LiveAskBinds(ctx context.Context, repository string, conversation int64, now time.Time) ([]ChatProposal, error) {
+// LiveAskBinds are the open ask bindings of login's conversation on
+// repository at now, in their order: the ask-kind proposals unused and
+// unexpired, each with its tool and the choice whose press runs it. The
+// settle rule and the tool park of a bound ask read here.
+func (s *PGStore) LiveAskBinds(ctx context.Context, repository, login string, conversation int64, now time.Time) ([]ChatProposal, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT token, login, tool, description, choice, expires_at, conversation FROM chat_proposals
-		WHERE repository = $1 AND conversation = $2 AND kind = 'ask' AND used_at IS NULL AND expires_at >= $3 ORDER BY expires_at`, repository, conversation, now)
+		WHERE repository = $1 AND login = $2 AND conversation = $3 AND kind = 'ask' AND used_at IS NULL AND expires_at >= $4 ORDER BY expires_at`, repository, login, conversation, now)
 	if err != nil {
 		return nil, err
 	}

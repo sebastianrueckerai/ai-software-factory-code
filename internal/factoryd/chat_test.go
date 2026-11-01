@@ -397,7 +397,7 @@ func TestPGStoreAskBinds(t *testing.T) {
 		Content: "Approve the merge of #22?", Choices: []string{"approve it", "hold"}, Conversation: 3, Proposal: "ask-1"}); err != nil || id == 0 {
 		t.Fatalf("the ask row = %d, %v", id, err)
 	}
-	live, err := s.LiveAskBinds(ctx, "sf/code", 3, now)
+	live, err := s.LiveAskBinds(ctx, "sf/code", "anna", 3, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -405,8 +405,11 @@ func TestPGStoreAskBinds(t *testing.T) {
 		live[1].Token != "ask-2" || live[1].Description != "Approve the merge of #22" {
 		t.Fatalf("LiveAskBinds = %+v", live)
 	}
-	if got, err := s.LiveAskBinds(ctx, "sf/code", 4, now); err != nil || len(got) != 0 {
+	if got, err := s.LiveAskBinds(ctx, "sf/code", "anna", 4, now); err != nil || len(got) != 0 {
 		t.Fatalf("another thread's LiveAskBinds = %+v, %v", got, err)
+	}
+	if got, err := s.LiveAskBinds(ctx, "sf/code", "bob", 3, now); err != nil || len(got) != 0 {
+		t.Fatalf("another member's thread 3 LiveAskBinds = %+v, %v", got, err)
 	}
 	rows, err := s.ChatMessages(ctx, "sf/code", "anna", 3, 10)
 	if err != nil || len(rows) != 1 || rows[0].Proposal != "ask-1" {
@@ -416,7 +419,7 @@ func TestPGStoreAskBinds(t *testing.T) {
 	if err != nil || p.Choice != "approve it" || p.Tool != "approve_merge" {
 		t.Fatalf("the take = %+v, %v", p, err)
 	}
-	if live, err := s.LiveAskBinds(ctx, "sf/code", 3, now); err != nil || len(live) != 1 || live[0].Token != "ask-2" {
+	if live, err := s.LiveAskBinds(ctx, "sf/code", "anna", 3, now); err != nil || len(live) != 1 || live[0].Token != "ask-2" {
 		t.Fatalf("LiveAskBinds after the take = %+v, %v", live, err)
 	}
 }

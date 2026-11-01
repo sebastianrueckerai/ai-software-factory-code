@@ -122,6 +122,10 @@ type turn struct {
 	// ask is the ask row the tool's run left for the answer's own row,
 	// which the turn ends on; nil until an ask runs.
 	ask *factoryd.ChatMessage
+	// parked are the tools this thread's open ask bindings name: their
+	// call refuses while the binding stands, for the member's press runs
+	// the bound tool, not the model's reading of a typed reply.
+	parked map[string]bool
 	// carriedQuestion is the thread's open question when this turn's
 	// prompt carries it — a reply passed it without answering — and
 	// carried marks that the prompt carries it (card #1345).
@@ -811,6 +815,14 @@ func (t *turn) run(id, notice string) {
 		t.send("text", map[string]string{"text": notice + "\n\n"})
 	}
 	defs := t.offered()
+	t.parked = map[string]bool{}
+	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
+		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Name, err)
+	} else {
+		for _, b := range binds {
+			t.parked[b.Tool] = true
+		}
+	}
 	forced := 0
 	for {
 		out := &unstamper{send: func(s string) { t.send("text", map[string]string{"text": s}) }}
@@ -945,6 +957,8 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	switch {
 	case !ok:
 		result = "There is no tool " + call.Name + "."
+	case t.parked[call.Name]:
+		result = "Refused: an open ask of this thread binds " + call.Name + "; the member's press runs it, their press or their message answers it."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	default:

@@ -158,6 +158,10 @@ type Chat interface {
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
+	// LiveAskBinds are the thread's open ask bindings, each with its tool
+	// and its choice: the settle rule and the tool park of a bound ask
+	// read them
+	LiveAskBinds(ctx context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error)
 	// the threads (roadmap 239): one thread's row, the switch, the title,
 	// the seen marker, and a queued row's landing in its place (263)
 	Conversation(ctx context.Context, repository, login string, n int64) (factoryd.ChatConversation, bool, error)

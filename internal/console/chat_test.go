@@ -807,6 +807,19 @@ func (f *fakeChat) PurgeProposals(_ context.Context, before time.Time) (int64, e
 	return int64(n - len(f.proposals)), nil
 }
 
+func (f *fakeChat) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range f.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
+}
+
 // proposal is token's row; false for none.
 func (f *fakeChat) proposal(token string) (fakeProposal, bool) {
 	f.mu.Lock()
@@ -2544,6 +2557,66 @@ func TestChatAskBindingAdmitsByRole(t *testing.T) {
 	if len(binds) != 0 {
 		t.Fatalf("an unadmitted binding stored a proposal: %+v", binds)
 	}
+}
+
+// While a bound ask stands open, the agent's own call of the bound tool
+// refuses: the member's press runs it, not the model's reading of a
+// typed reply. Nothing runs until the press.
+func TestChatParkRefusesTheBoundTool(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	chat.mu.Lock()
+	token := ""
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			token = p.Token
+		}
+	}
+	chat.mu.Unlock()
+	if token == "" {
+		t.Fatal("no ask binding stored")
+	}
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}, {say("Their press runs it.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the parked call", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the member's press runs it, their press or their message answers it."}`,
+		`text {"text":"Their press runs it."}`, `done {}`})
+	if p, ok := chat.proposal(token); !ok || !p.used.IsZero() {
+		t.Fatalf("the refused call settled the binding: %+v", p)
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The park lives the binding's life: once expired, the agent's call of
+// the tool goes the way of any call — a confirm tool's, a proposal the
+// member may press.
+func TestChatParkLiftsOnExpiry(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	before := r.events.count()
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+	chat.mu.Unlock()
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the unparked call", events, []string{
+		`proposal {"arguments":{"task_id":"t-m"},"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\"","id":"TOKEN","tool":"close"}`,
+		`done {}`})
+	if len(tokens) != 1 {
+		t.Fatalf("%d proposals, want the close proposal", len(tokens))
+	}
+	chatRows(t, r.events, before, "sebastian")
 }
 
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")

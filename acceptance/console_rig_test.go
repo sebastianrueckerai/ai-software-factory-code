@@ -1065,6 +1065,19 @@ func (a *AcceptanceRig) PurgeProposals(_ context.Context, before time.Time) (int
 	return int64(n - len(a.proposals)), nil
 }
 
+func (a *AcceptanceRig) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range a.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
+}
+
 // Projects: the code project, a coder of maintenance, and no others.
 
 func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error) {

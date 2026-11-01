@@ -955,6 +955,19 @@ func (f *acceptChat) PurgeProposals(_ context.Context, before time.Time) (int64,
 	return n, nil
 }
 
+func (f *acceptChat) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range f.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
+}
+
 // acceptForgejo is the sign-in's provider: it hands out tokens and answers
 // only who the bearer of one is, which is what the login reads.
 type acceptForgejo struct {

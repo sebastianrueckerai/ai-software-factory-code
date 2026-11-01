@@ -1151,6 +1151,19 @@ func (f *accBatchChat) TakeProposal(_ context.Context, kind, token, repository, 
 	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
 }
 
+func (f *accBatchChat) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range f.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
+}
+
 func (f *accBatchChat) PurgeProposals(_ context.Context, before time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
