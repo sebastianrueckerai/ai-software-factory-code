@@ -966,3 +966,104 @@ Promise.resolve().then(function () {
 		t.Error("the turn's end leaves the chevron, the fold or the mark behind")
 	}
 }
+
+// The composer gives its height back when its words go (the lab check's
+// busy board): the input's handler grows the box while its words wrap,
+// and words that leave shrink it back to its base, so a box emptied by
+// hand never stands taller than its pane and over the board. A height
+// the member set by the drag bar or its arrow keys is theirs: typing
+// that fits inside it leaves it, and the bar's double-click still
+// resets it. Run under node, which the test needs.
+func TestTheComposerShrinksWhenItsWordsLeave(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var byId = {}, madeBar = null;
+function el(id) {
+  var listeners = {};
+  var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", id: id || "",
+    scrollHeight: 66, clientHeight: 66,
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    addEventListener: function (kind, fn) { (listeners[kind] = listeners[kind] || []).push(fn); },
+    fire: function (kind, ev) { (listeners[kind] || []).slice().forEach(function (fn) {
+      fn(Object.assign({preventDefault: function () {}, stopPropagation: function () {}}, ev || {})); }); },
+    setAttribute: function () {}, removeAttribute: function () {}, hasAttribute: function () { return false; },
+    getAttribute: function () { return null; }, focus: function () {}, blur: function () {}, remove: function () {},
+    insertBefore: function (n) { if (!e.firstChild) madeBar = n; }, firstChild: null,
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0, height: 66}; }};
+  return e;
+}
+var input = el("chat-input"), form = el("chat-form");
+var document = {title: "Factory console", hidden: false,
+  createElement: function () { return el(); },
+  getElementById: function (id) {
+    if (id === "chat-input") return input;
+    if (id === "chat-form") return form;
+    return (id === "screen" || id === "chat-divider") ? null : byId[id] || (byId[id] = el(id));
+  },
+  addEventListener: function () {}, querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el()};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  innerHeight: 900,
+  fetch: function (url) { return Promise.resolve({ok: true, json: function () {
+    return Promise.resolve(String(url).endsWith("/conversations") ? [] : {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active"}}); }}); },
+  setInterval: function () { return 0; }, setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var out = {};
+Promise.resolve().then(function () {
+  input.scrollHeight = 440; input.clientHeight = 66;
+  input.fire("input");
+  out.grew = input.style.height === "440px";
+  input.scrollHeight = 44; input.clientHeight = parseInt(input.style.height, 10) || 66;
+  input.fire("input");
+  out.shrank = input.style.height === "";
+  var bar = madeBar;
+  bar.fire("pointerdown", {clientY: 500, pointerId: 1});
+  bar.fire("pointermove", {clientY: 200, pointerId: 1});
+  bar.fire("pointerup", {});
+  out.dragged = input.style.height === "366px";
+  input.scrollHeight = 44; input.clientHeight = 366;
+  input.fire("input");
+  out.held = input.style.height === "366px";
+  bar.fire("dblclick", {});
+  out.reset = input.style.height === "";
+}).then(function () {
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		Grew, Shrank, Dragged, Held, Reset bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if !got.Grew {
+		t.Error("the composer does not grow while its words wrap")
+	}
+	if !got.Shrank {
+		t.Error("the composer keeps its grown height after its words leave")
+	}
+	if !got.Dragged {
+		t.Error("the drag bar does not size the composer")
+	}
+	if !got.Held {
+		t.Error("typing that fits inside a dragged size snaps the composer back to its base")
+	}
+	if !got.Reset {
+		t.Error("the bar's double-click no longer resets the composer")
+	}
+}

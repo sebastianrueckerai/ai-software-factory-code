@@ -562,6 +562,11 @@ var chatView = (function () {
     bar.setAttribute("tabindex", "0");
     form.insertBefore(bar, form.firstChild);
     var y0 = 0, h0 = 0, sizing = false;
+    // sized is set when the member sizes the box by hand, by the drag or
+    // its arrow keys: that height is theirs, and words that fit inside it
+    // leave it. Only the bar's double-click and a sent message give the
+    // height back to the words.
+    var sized = false;
     bar.addEventListener("pointerdown", function (e) {
       sizing = true; y0 = e.clientY; h0 = input.getBoundingClientRect().height;
       try { bar.setPointerCapture(e.pointerId); } catch (err) {}
@@ -569,16 +574,19 @@ var chatView = (function () {
     });
     bar.addEventListener("pointermove", function (e) {
       if (!sizing) return;
+      sized = true;
       input.style.height = Math.round(Math.max(44, Math.min(window.innerHeight * 0.6, h0 + (y0 - e.clientY)))) + "px";
     });
     ["pointerup", "pointercancel"].forEach(function (n) { bar.addEventListener(n, function () { sizing = false; }); });
-    bar.addEventListener("dblclick", function () { input.style.height = ""; });
+    bar.addEventListener("dblclick", function () { sized = false; input.style.height = ""; });
     bar.addEventListener("keydown", function (e) {
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      sized = true;
       input.style.height = Math.round(Math.max(44, Math.min(window.innerHeight * 0.6, input.getBoundingClientRect().height + (e.key === "ArrowUp" ? 24 : -24)))) + "px";
       e.preventDefault();
     });
     input.addEventListener("input", function () {
+      if (!sized) input.style.height = "";
       if (input.scrollHeight > input.clientHeight) {
         input.style.height = Math.min(Math.round(window.innerHeight * 0.6), input.scrollHeight) + "px";
       }
@@ -903,6 +911,7 @@ var chatView = (function () {
   // paste's growth must not outlive the message or the clear that ends it
   function clearInput() {
     input.value = "";
+    sized = false;
     input.style.height = "";
   }
   // stopTurn ends the open thread's turn in flight: a press on the mark's

@@ -313,7 +313,7 @@ func TestPGStorePokes(t *testing.T) {
 	if err := s.CreateTask(ctx, repair); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RecordChainRun(ctx, "sf/code", 9, "ffeeddccb00112233445566778899aabbccddeeff", 21, "failure"); err != nil {
+	if err := s.RecordChainRun(ctx, "sf/code", 9, "ffeeddccb00112233445566778899aabbccddeeff", 21, 0, "failure"); err != nil {
 		t.Fatal(err)
 	}
 	record(Event{Repository: "sf/code", TaskID: "t-3", Kind: EventPullRequestMerged, Actor: "sebastian", Via: ViaButton,

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,6 +34,7 @@ type fakeChainRun struct {
 	pr     int64
 	sha    string
 	run    int64
+	index  int64
 	status string
 	// updated is the row's last change, as the store's now() stamps it;
 	// a test wires s.chainNow to the poller's clock where it matters
@@ -61,7 +63,7 @@ func (s *fakeStore) ChainHead(ctx context.Context, repository string) (int64, er
 	return head, nil
 }
 
-func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run int64, status string) error {
+func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run, index int64, status string) error {
 	for i, c := range s.chain {
 		if c.repo != repository || c.pr != pr {
 			continue
@@ -69,14 +71,17 @@ func (s *fakeStore) RecordChainRun(ctx context.Context, repository string, pr in
 		if c.run >= run {
 			return nil
 		}
-		s.chain[i] = fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, status: status, updated: s.stamp()}
+		if index == 0 {
+			index = c.index
+		}
+		s.chain[i] = fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, index: index, status: status, updated: s.stamp()}
 		return nil
 	}
-	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, status: status, updated: s.stamp()})
+	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: pr, sha: sha, run: run, index: index, status: status, updated: s.stamp()})
 	return nil
 }
 
-func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string, run int64, status string) error {
+func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string, run, index int64, status string) error {
 	for i, c := range s.chain {
 		if c.repo != repository || c.pr != 0 {
 			continue
@@ -85,14 +90,38 @@ func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string,
 			(c.status == "stalled" && status == "pending" && c.run == run && c.sha == sha) {
 			return nil
 		}
-		row := fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()}
+		if index == 0 {
+			index = c.index
+		}
+		row := fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, index: index, status: status, updated: s.stamp()}
 		if c.sha == sha {
 			row.rerunAt, row.dismissed = c.rerunAt, c.dismissed
 		}
 		s.chain[i] = row
 		return nil
 	}
-	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, status: status, updated: s.stamp()})
+	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, index: index, status: status, updated: s.stamp()})
+	return nil
+}
+
+// UnmappedChainRuns mirrors PGStore's read: the rows without a forge
+// number, by repository.
+func (s *fakeStore) UnmappedChainRuns(ctx context.Context) (map[string][]int64, error) {
+	out := map[string][]int64{}
+	for _, c := range s.chain {
+		if c.index == 0 && c.run > 0 {
+			out[c.repo] = append(out[c.repo], c.run)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) SetChainRunIndex(ctx context.Context, repository string, runID, index int64) error {
+	for i, c := range s.chain {
+		if c.repo == repository && c.run == runID {
+			s.chain[i].index = index
+		}
+	}
 	return nil
 }
 
@@ -248,12 +277,20 @@ func (s *fakeStore) ChainCarriedIssues(ctx context.Context, repository, sha stri
 }
 
 // ChainCovered mirrors PGStore's read: every merged card with a pull
-// request the repository's newest green run covers, named by that run.
+// request the repository's newest green run covers, named by the forge
+// number that run speaks. The cover test compares ids, as the store's SQL
+// does; the value is the greatest green number, as max(run_index) is.
 func (s *fakeStore) ChainCovered(ctx context.Context, repository string) (map[string]int64, error) {
-	green := int64(0)
+	greenAt, greenNumber := int64(0), int64(0)
 	for _, c := range s.chain {
-		if c.repo == repository && c.status == "success" && c.run > green {
-			green = c.run
+		if c.repo != repository || c.status != "success" {
+			continue
+		}
+		if c.run > greenAt {
+			greenAt = c.run
+		}
+		if c.index > greenNumber {
+			greenNumber = c.index
 		}
 	}
 	covered := map[string]int64{}
@@ -271,8 +308,8 @@ func (s *fakeStore) ChainCovered(ctx context.Context, repository string) (map[st
 				mine = c.run
 			}
 		}
-		if carried && green >= mine && mine > 0 {
-			covered[t.ID] = green
+		if carried && greenAt >= mine && mine > 0 {
+			covered[t.ID] = greenNumber
 		}
 	}
 	return covered, nil
@@ -419,7 +456,25 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				t.Errorf("runs query %v", r.URL.Query())
 			}
 			f.runReads = append(f.runReads, repo)
-			reply(map[string]any{"workflow_runs": f.runs[repo]})
+			runs := f.runs[repo]
+			// limit and page slice the list, as the forge's runs API does
+			if q := r.URL.Query(); q.Get("limit") != "" {
+				n, err := strconv.Atoi(q.Get("limit"))
+				page := 1
+				if v, perr := strconv.Atoi(q.Get("page")); perr == nil {
+					page = v
+				}
+				if err == nil && n > 0 {
+					if lo := (page - 1) * n; lo >= len(runs) {
+						runs = nil
+					} else if hi := lo + n; hi < len(runs) {
+						runs = runs[lo:hi]
+					} else {
+						runs = runs[lo:]
+					}
+				}
+			}
+			reply(map[string]any{"workflow_runs": runs})
 		case r.Method == "GET" && p == "/commits":
 			reply(f.comps[repo])
 		case strings.HasPrefix(p, "/git/commits/"):
@@ -906,7 +961,7 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 		}}}
 	}
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		runs: map[string][]map[string]any{codeRepo: {chainRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
 			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
 		},
@@ -978,10 +1033,10 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if got := row(); got != "success" {
 		t.Fatalf("carry row = %s after the context concluded, want success", got)
 	}
-	if run := covered(); run != 61 {
-		t.Fatalf("after the context concluded: covered by run %d, want live at run 61", run)
+	if run := covered(); run != 56 {
+		t.Fatalf("after the context concluded: covered by run %d, want live at the run's number 56", run)
 	}
-	if !slices.Equal(ended, []string{"t-wait run 61"}) {
+	if !slices.Equal(ended, []string{"t-wait run 56"}) {
 		t.Fatalf("ended %q, want t-wait once, on the tick its context concluded", ended)
 	}
 }
@@ -1057,13 +1112,159 @@ func TestUnsettledChainCommitsOverPostgres(t *testing.T) {
 		{"sf/r", 4, "d4", 4, "pending"},
 		{"sf/o", 5, "a1", 5, "pending"},
 	} {
-		if err := pg.RecordChainRun(ctx, row.repo, row.pr, row.sha, row.run, row.status); err != nil {
+		if err := pg.RecordChainRun(ctx, row.repo, row.pr, row.sha, row.run, 0, row.status); err != nil {
 			t.Fatalf("RecordChainRun %+v: %v", row, err)
 		}
 	}
 	got, err := pg.UnsettledChainCommits(ctx, "sf/r", []string{"a1", "b2", "c3", "e5"})
 	if want := map[string]bool{"b2": true, "c3": true}; err != nil || !maps.Equal(got, want) {
 		t.Fatalf("UnsettledChainCommits = %v, %v; want %v", got, err, want)
+	}
+}
+
+// The chain rows keep the forge's run number beside the API id — the id
+// the rerun API speaks, the number the forge's own pages and the board's
+// links do — and a run reporting no number (0) never erases a known one.
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestChainRowsKeepTheForgesRunNumber(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE chain_runs`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(pg.RecordChainRun(ctx, "sf/r", 7, "a1", 3356, 2260, "success"))
+	must(pg.RecordChainRun(ctx, "sf/r", 0, "a1", 3356, 2260, "success"))
+	must(pg.RecordChainRun(ctx, "sf/r", 7, "a2", 3400, 0, "success"))
+	must(pg.RecordChainHead(ctx, "sf/r", "a3", 3500, 0, "pending"))
+	for _, row := range []struct {
+		pr         int64
+		run, index int64
+	}{
+		{7, 3400, 2260},
+		{0, 3500, 2260},
+	} {
+		var run, index int64
+		if err := pg.db.QueryRowContext(ctx, `SELECT run_id, run_index FROM chain_runs WHERE repository = 'sf/r' AND pr_number = $1`, row.pr).Scan(&run, &index); err != nil {
+			t.Fatalf("pr %d: %v", row.pr, err)
+		}
+		if run != row.run || index != row.index {
+			t.Fatalf("pr %d: run %d index %d; want run %d index %d", row.pr, run, index, row.run, row.index)
+		}
+	}
+}
+
+// numbered lists push runs with ids from down to to, newest first, each
+// carrying its forge number: id − 1096, as id 3356 carries 2260.
+func numbered(from, to int64) []map[string]any {
+	var out []map[string]any
+	for id := from; id >= to; id-- {
+		m := pushRun(id, fmt.Sprintf("c%d", id), "success")
+		m["index_in_repo"] = id - 1096
+		out = append(out, m)
+	}
+	return out
+}
+
+// The store lists the chain rows whose forge number is still unset, by
+// repository, and sets one row's number by its API id: the backfill's
+// read and write. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestTheStoreListsAndSetsUnmappedChainRuns(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE chain_runs`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(pg.RecordChainRun(ctx, "sf/r", 7, "a1", 3356, 0, "success"))
+	must(pg.RecordChainRun(ctx, "sf/r", 0, "a2", 3400, 0, "pending"))
+	must(pg.RecordChainRun(ctx, "sf/other", 3, "a3", 3200, 2150, "success"))
+	got, err := pg.UnmappedChainRuns(ctx)
+	if err != nil {
+		t.Fatalf("UnmappedChainRuns: %v", err)
+	}
+	if len(got) != 1 || !slices.Equal(got["sf/r"], []int64{3356, 3400}) {
+		t.Fatalf("UnmappedChainRuns = %v; want sf/r: [3356 3400]", got)
+	}
+	must(pg.SetChainRunIndex(ctx, "sf/r", 3356, 2260))
+	got, err = pg.UnmappedChainRuns(ctx)
+	if err != nil {
+		t.Fatalf("UnmappedChainRuns: %v", err)
+	}
+	if len(got) != 1 || !slices.Equal(got["sf/r"], []int64{3400}) {
+		t.Fatalf("UnmappedChainRuns after the set = %v; want sf/r: [3400]", got)
+	}
+	var index int64
+	if err := pg.db.QueryRowContext(ctx, `SELECT run_index FROM chain_runs WHERE repository = 'sf/r' AND run_id = 3356`).Scan(&index); err != nil || index != 2260 {
+		t.Fatalf("the set row's index %d, %v; want 2260", index, err)
+	}
+}
+
+// The backfill walks the runs API once at start and gives the chain rows
+// written before the number was kept their forge numbers; a second start
+// reads nothing, the rows already speak them.
+func TestBackfillGivesOldRowsTheirForgeNumbers(t *testing.T) {
+	f := &chainForgejo{runs: map[string][]map[string]any{demoRepo: numbered(3400, 3398)}}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	store.chain = []fakeChainRun{
+		{repo: demoRepo, pr: 7, sha: "a1", run: 3400},
+		{repo: demoRepo, pr: 0, sha: "a2", run: 3398},
+	}
+	if err := p.backfillRunIndexes(context.Background()); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	for _, row := range store.chain {
+		if row.index != row.run-1096 {
+			t.Fatalf("row pr %d run %d index %d; want the forge's number %d", row.pr, row.run, row.index, row.run-1096)
+		}
+	}
+	reads := len(f.runReads)
+	if err := p.backfillRunIndexes(context.Background()); err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if len(f.runReads) != reads {
+		t.Fatalf("the second backfill read the runs API %d times; want none", len(f.runReads)-reads)
+	}
+}
+
+// The backfill stops paging a repository once a page's oldest run falls
+// below the oldest id it still lacks: that run is older than the list or
+// not of it, and reading to the end of history buys nothing. The row
+// stays without its number and the board hides its link.
+func TestBackfillStopsBelowTheOldestRunItLacks(t *testing.T) {
+	// the list skips run 3330 and reaches below it: the page that passes
+	// beneath the missing id is the last one read
+	runs := append(numbered(3360, 3331), numbered(3329, 3321)...)
+	f := &chainForgejo{runs: map[string][]map[string]any{demoRepo: runs}}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: "a1", run: 3330}}
+	if err := p.backfillRunIndexes(context.Background()); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if len(f.runReads) != 2 {
+		t.Fatalf("runs pages read %d; want 2, the bound stops the third", len(f.runReads))
+	}
+	if store.chain[0].index != 0 {
+		t.Fatalf("row gained index %d; want 0, the run is not in the list", store.chain[0].index)
 	}
 }
 
@@ -1192,10 +1393,10 @@ func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 		"t-wait":  {ID: "t-wait", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14},
 	}
 	// pr 13 rode the red run 11, pr 12 the green run 12 after it, pr 14
-	// the run 14 still running
+	// the run 14 still running; the green run's forge number is 12
 	store.chain = []fakeChainRun{
 		{repo: codeRepo, pr: 13, sha: "c11", run: 11, status: "failure"},
-		{repo: codeRepo, pr: 12, sha: "c12", run: 12, status: "success"},
+		{repo: codeRepo, pr: 12, sha: "c12", run: 12, index: 12, status: "success"},
 		{repo: codeRepo, pr: 14, sha: "c14", run: 14, status: "pending"},
 	}
 	var ended []string
@@ -1261,7 +1462,7 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 	r, hub, store, objects := chainRunner(t, withStatus(mergedCard, "in-review"), policy.ChainModeRun)
 	hub.pulls = map[int64]string{7: mergedAt(7, mergePR12)}
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{"sf/repo": {pushRun(61, commitC2, "success")}},
+		runs: map[string][]map[string]any{"sf/repo": {chainRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
 			"sf/repo": {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
 		},
@@ -1282,10 +1483,10 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, "sf/repo"); !slices.Equal(got, []fakeChainRun{
-		{repo: "sf/repo", pr: 0, sha: commitC2, run: 61, status: "success"},
-		{repo: "sf/repo", pr: 7, sha: commitC2, run: 61, status: "success"},
+		{repo: "sf/repo", pr: 0, sha: commitC2, run: 61, index: 56, status: "success"},
+		{repo: "sf/repo", pr: 7, sha: commitC2, run: 61, index: 56, status: "success"},
 	}) {
-		t.Fatalf("chain %+v, want the head and pr 7 green at run 61", got)
+		t.Fatalf("chain %+v, want the head and pr 7 green at run 61, the forge's number 56", got)
 	}
 	if ends != 0 {
 		t.Fatalf("ended %d times before the merge, want none", ends)
@@ -1306,8 +1507,8 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		if ends != 1 {
 			t.Fatalf("ended %d times after tick %d past the merge, want once", ends, tick)
 		}
-		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 61"}) {
-			t.Fatalf("task_ended after tick %d = %q, want one naming run 61", tick, got)
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 56"}) {
+			t.Fatalf("task_ended after tick %d = %q, want one naming the run's number 56", tick, got)
 		}
 		if len(store.alerts) != 0 {
 			t.Fatalf("alerts after tick %d = %+v, want none", tick, store.alerts)
@@ -1402,10 +1603,11 @@ func TestChainAlertsRule(t *testing.T) {
 	}
 }
 
-// chainRun is a push run with its run number, which a repair card links.
+// chainRun is a push run with its run number — the forge's number, which
+// is not the id: the fake keeps the two apart, as the live forge does.
 func chainRun(id int64, sha, status string) map[string]any {
 	m := pushRun(id, sha, status)
-	m["index_in_repo"] = id
+	m["index_in_repo"] = id - 5
 	return m
 }
 
@@ -1492,9 +1694,9 @@ func TestRepairCardCarriesTheFindings(t *testing.T) {
 	}
 	card := cards[demoRepo][0]
 	for _, want := range []string{
-		"run 21 failure",
+		"run 16 failure",
 		"required context factory/roll: failure",
-		"/" + demoRepo + "/actions/runs/21",
+		"/" + demoRepo + "/actions/runs/16",
 		"#77",
 		"find the cause, fix it on this card's branch from main's head, and push",
 	} {
@@ -1671,7 +1873,7 @@ func TestAStallRerunsOnceThenAsks(t *testing.T) {
 	if card.SHA != demoCommit {
 		t.Fatalf("stall card on %q, want the head's commit %s", card.SHA, demoCommit)
 	}
-	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 21 running", "https://git.example/" + demoRepo + "/actions/runs/21", "The stall holds #76, #77:"} {
+	for _, want := range []string{"since 2026-10-20 09:00 UTC", "run 16 running", "https://git.example/" + demoRepo + "/actions/runs/16", "The stall holds #76, #77:"} {
 		if !strings.Contains(card.Objective, want) {
 			t.Fatalf("the card misses %q:\n%s", want, card.Objective)
 		}
@@ -1760,7 +1962,7 @@ func TestAStalledSkippedRunIsNotRerun(t *testing.T) {
 	if len(f.reruns) != 0 || len(cards) != 1 {
 		t.Fatalf("reruns %q, stall cards %+v; want no re-run and the card at once", f.reruns, cards)
 	}
-	if !strings.Contains(cards[0].Objective, "run 21 skipped") {
+	if !strings.Contains(cards[0].Objective, "run 16 skipped") {
 		t.Fatalf("the card misses the skipped run:\n%s", cards[0].Objective)
 	}
 	if err := p.RerunStall(context.Background(), demoRepo, demoCommit); !errors.Is(err, ErrNothingToRerun) || len(f.reruns) != 0 {
@@ -1815,7 +2017,7 @@ func TestARedHeadClosesTheStallCardAndRepairs(t *testing.T) {
 	if want := fmt.Sprintf("%s#%d", demoRepo, cards[0].IssueNumber); !slices.Equal(f.closed, []string{want}) {
 		t.Fatalf("closed %q, want the stall card's issue %s", f.closed, want)
 	}
-	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "run 21 failure") {
+	if repairs := repairCards(store)[demoRepo]; len(repairs) != 1 || !strings.Contains(repairs[0].Objective, "run 16 failure") {
 		t.Fatalf("repair cards %+v, want the red head's", repairs)
 	}
 }
@@ -2003,7 +2205,7 @@ func TestChainLadderRows(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	must(pg.RecordChainHead(ctx, demoRepo, demoCommit, 21, "pending"))
+	must(pg.RecordChainHead(ctx, demoRepo, demoCommit, 21, 0, "pending"))
 	if l := ladder(demoCommit); !l.RerunAt.IsZero() || l.Dismissed {
 		t.Fatalf("a fresh head's ladder = %+v, want none", l)
 	}
@@ -2042,11 +2244,11 @@ func TestChainLadderRows(t *testing.T) {
 		t.Fatalf("alerts %v, want %v", got, want)
 	}
 	// a newer run on the same commit keeps the ladder, a new commit clears it
-	must(pg.RecordChainHead(ctx, demoRepo, demoCommit, 22, "pending"))
+	must(pg.RecordChainHead(ctx, demoRepo, demoCommit, 22, 0, "pending"))
 	if l := ladder(demoCommit); !l.Dismissed || l.RerunAt.IsZero() {
 		t.Fatalf("ladder %+v after the commit's newer run, want it kept", l)
 	}
-	must(pg.RecordChainHead(ctx, demoRepo, demoNext, 23, "pending"))
+	must(pg.RecordChainHead(ctx, demoRepo, demoNext, 23, 0, "pending"))
 	if l := ladder(demoNext); l.Dismissed || !l.RerunAt.IsZero() {
 		t.Fatalf("ladder %+v of the new commit, want none", l)
 	}
@@ -2067,7 +2269,7 @@ func TestChainLadderRows(t *testing.T) {
 	if l := ladder(demoNext); l.Dismissed || openStalls() != 1 {
 		t.Fatalf("ladder %+v, %d open stalls after the refused dismissal; want both untouched", l, openStalls())
 	}
-	must(pg.RecordChainHead(ctx, demoRepo, demoNext, 23, "success"))
+	must(pg.RecordChainHead(ctx, demoRepo, demoNext, 23, 0, "success"))
 	if err := pg.DismissChainStall(ctx, demoRepo, demoNext, "sebastian"); err == nil ||
 		err.Error() != "the head concluded green; this stall no longer stands" {
 		t.Fatalf("a dismissal of a concluded head = %v, want the head concluded green", err)
@@ -2129,7 +2331,7 @@ func TestChainHeldIssues(t *testing.T) {
 		run    int64
 		status string
 	}{{1, "a1", 10, "success"}, {2, "b2", 11, "failure"}, {3, "c3", 12, "stalled"}, {5, "a1", 10, "success"}} {
-		if err := pg.RecordChainRun(ctx, demoRepo, row.pr, row.sha, row.run, row.status); err != nil {
+		if err := pg.RecordChainRun(ctx, demoRepo, row.pr, row.sha, row.run, 0, row.status); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2202,7 +2404,7 @@ func TestARedHeadWithoutAgentsFilesAHumanRepairCard(t *testing.T) {
 	ask := "chain of sf/demo-app at 9d9d9d9: required context flux/platform: failure. Fix it from main's head and push."
 	q := askedQuestion(t, store, card.ID)
 	if q.Ask != ask || !strings.HasPrefix(card.Objective, ask+"\n\n") ||
-		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/21\n\nNo card's change rides this head") ||
+		!strings.HasPrefix(q.Info, "The run: /sf/demo-app/actions/runs/16\n\nNo card's change rides this head") ||
 		!strings.Contains(q.Info, "Closing it yourself dismisses the red at 9d9d9d9") ||
 		!slices.Equal(q.Choices, []QuestionChoice{{AnswerClose, "Handled, close"}}) {
 		t.Fatalf("question %+v, objective %q; want the red head's ask, the run's link and the dismissal", q, card.Objective)
@@ -2556,15 +2758,15 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 	if got, _ := store.ChainCovered(ctx, codeRepo); len(got) != 0 || len(ended) != 0 {
 		t.Fatalf("covered %v, ended %v after the cancelled run, want none", got, ended)
 	}
-	f.runs[codeRepo] = []map[string]any{pushRun(11, commitC2, "success"), pushRun(10, commitC1, "cancelled")}
+	f.runs[codeRepo] = []map[string]any{chainRun(11, commitC2, "success"), chainRun(10, commitC1, "cancelled")}
 	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := store.ChainCovered(ctx, codeRepo); !maps.Equal(got, map[string]int64{"t-7": 11}) {
-		t.Fatalf("covered %v, want t-7 by run 11", got)
+	if got, _ := store.ChainCovered(ctx, codeRepo); !maps.Equal(got, map[string]int64{"t-7": 6}) {
+		t.Fatalf("covered %v, want t-7 by the run's number 6", got)
 	}
-	if !slices.Equal(ended, []string{"t-7 run 11"}) {
-		t.Fatalf("ended %v, want t-7 done by run 11", ended)
+	if !slices.Equal(ended, []string{"t-7 run 6"}) {
+		t.Fatalf("ended %v, want t-7 done by the run's number 6", ended)
 	}
 }
 
@@ -2588,10 +2790,10 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	store.tasks["t-never"] = Task{ID: "t-never", Repository: codeRepo, PRNumber: 13, Status: "merged", FinishedAt: justNow(), MergeCommit: "0c0c", Track: "direct"}
 	store.tasks["t-held"] = Task{ID: "t-held", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14, Track: "direct"}
 	ctx := context.Background()
-	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC1, 61, "success"); err != nil {
+	if err := store.RecordChainRun(ctx, codeRepo, 14, commitC1, 61, 0, "success"); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
+	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, 0, "success"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Tick(ctx); err != nil {
@@ -2646,7 +2848,7 @@ func TestALateCompareFailureStopsNothingElse(t *testing.T) {
 		sha string
 		run int64
 	}{{20, commitC1, 61}, {0, commitC1, 61}} {
-		if err := store.RecordChainRun(ctx, codeRepo, row.pr, row.sha, row.run, "success"); err != nil {
+		if err := store.RecordChainRun(ctx, codeRepo, row.pr, row.sha, row.run, 0, "success"); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -2687,7 +2889,7 @@ func TestTheLateSweepStopsAtTheLastCard(t *testing.T) {
 	p.End = func(ctx context.Context, taskID string, run int64) error { return nil }
 	store.tasks["t-a"] = Task{ID: "t-a", Repository: codeRepo, PRNumber: 20, Status: "merged", FinishedAt: justNow(), MergeCommit: "b0b0", Track: "direct"}
 	ctx := context.Background()
-	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, "success"); err != nil {
+	if err := store.RecordChainRun(ctx, codeRepo, 0, commitC2, 62, 0, "success"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Tick(ctx); err != nil {
@@ -2764,7 +2966,7 @@ func TestAnUncarriedMergedCardAlertsAfterTheBound(t *testing.T) {
 			t.Fatalf("alert %+v, want fingerprint %q, source %s and detail card %s since %v", a, c.repo+" "+c.card, c.repo, c.card, merged)
 		}
 	}
-	if err := store.RecordChainRun(context.Background(), codeRepo, 12, commitC2, 61, "success"); err != nil {
+	if err := store.RecordChainRun(context.Background(), codeRepo, 12, commitC2, 61, 0, "success"); err != nil {
 		t.Fatal(err)
 	}
 	tick()
@@ -2925,7 +3127,7 @@ func TestAnUncarriedCardAlertsInARepositoryWhoseChainBlockIsBroken(t *testing.T)
 
 func factoryChain(statuses ...map[string]string) (*chainForgejo, func() policy.Version) {
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		runs: map[string][]map[string]any{codeRepo: {chainRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
 			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}, {"sha": mergePR14}}},
 		},
@@ -3035,7 +3237,7 @@ func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
 		}
 	}
 	slices.Sort(ended)
-	if want := []string{"t-12 run 61", "t-14 run 61"}; !slices.Equal(ended, want) {
+	if want := []string{"t-12 run 56", "t-14 run 56"}; !slices.Equal(ended, want) {
 		t.Fatalf("ended %q, want %q", ended, want)
 	}
 }
