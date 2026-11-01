@@ -120,6 +120,38 @@ func TestBriefObjectiveDropsTheShipsLine(t *testing.T) {
 	}
 }
 
+// The Roadmap line: the item a pulled card builds, as its number; 0
+// without one.
+func TestAskedRoadmapItem(t *testing.T) {
+	for name, tc := range map[string]struct {
+		body string
+		want int
+	}{
+		"hash":         {"Build the thing\n\nRoadmap: #276\n", 276},
+		"bare number":  {"Roadmap: 276", 276},
+		"any case":     {"roadmap: #312", 312},
+		"last wins":    {"Roadmap: #312\nRoadmap: #276", 276},
+		"no line":      {"No item.", 0},
+		"not a number": {"Roadmap: many", 0},
+		"zero":         {"Roadmap: #0", 0},
+		"negative":     {"Roadmap: #-1", 0},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := askedRoadmapItem(tc.body); got != tc.want {
+				t.Fatalf("askedRoadmapItem = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+// The Roadmap line is card data too: the brief drops it with the others.
+func TestBriefObjectiveDropsTheRoadmapLine(t *testing.T) {
+	got := briefObjective("The band goes\n\nThe screen.\n\nRoadmap: #276", false)
+	if got != "The band goes\n\nThe screen." {
+		t.Fatalf("brief = %q, want it without the Roadmap line", got)
+	}
+}
+
 // The Carries line is card data too: the brief drops it with the others,
 // and the carry sentence says what the clone holds.
 func TestBriefObjectiveDropsTheCarriesLine(t *testing.T) {

@@ -127,6 +127,17 @@ func (c *Console) docCommit(ctx context.Context, repo factoryd.Repo, docPath str
 	return rows[0].SHA, rows[0].Commit.Committer.Date, nil
 }
 
+// RoadmapHead is docRepo's docs/roadmap.md head commit: the Waker's
+// roadmap pull reads it, an unchanged head no wake.
+func (c *Console) RoadmapHead(ctx context.Context, docRepo string) (string, error) {
+	repo, err := factoryd.SplitRepo(docRepo)
+	if err != nil {
+		return "", err
+	}
+	head, _, err := c.docCommit(ctx, repo, "docs/roadmap.md")
+	return head, err
+}
+
 // docAuthor is path's head commit's author and that commit's time: who
 // changed the document last and when, the stale save's merge and clash
 // facts (the 2026-10-15 plan, item 5). The author is the commit's Forgejo

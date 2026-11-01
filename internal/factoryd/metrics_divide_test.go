@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The divide-and-conquer panels' SQL (roadmap 336): the store answers
@@ -81,6 +83,14 @@ func dcMerged(t *testing.T, s *PGStore, task, repository string, at time.Time) {
 // covers is unknown, not zero. [size_bound_escape]
 func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	s := metricsStore(t)
+	// the package's tests share one database: clear the tables the
+	// panels read, as the metrics suite's own seeds do, so earlier
+	// files' cards cannot collide with these fixtures' ids
+	for _, table := range []string{"events", "alerts", "ledger", "audit", "project_rolls", "ci_runs", "rolls", "chat_messages", "tasks"} {
+		if _, err := s.db.ExecContext(context.Background(), `TRUNCATE `+table+` CASCADE`); err != nil {
+			t.Fatal(err)
+		}
+	}
 	from, to := metricsTestWindow()
 	dcCard(t, s, "t-escape", "sf/dc1", "small", "", 51)
 	// the crossed head, 301 lines against the small bound 300, retried
@@ -104,8 +114,10 @@ func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	// for no panel here
 	dcCard(t, s, "t-review", "sf/dc1", "small", "", 53)
 	dcGateHead(t, s, "t-review", "sf/dc1", "r1", GateReview, 300, 400, 50, from.AddDate(0, 0, 4))
-	dcCard(t, s, "t-other", "sf/other1", "small", "", 54)
-	dcGateHead(t, s, "t-other", "sf/other1", "o1", GateMerge, 300, 400, 50, from.AddDate(0, 0, 5))
+	// t-afar, not t-other again: the package's tests share one
+	// database, and console_store_pg_test's t-other already sits in it
+	dcCard(t, s, "t-afar", "sf/other1", "small", "", 54)
+	dcGateHead(t, s, "t-afar", "sf/other1", "o1", GateMerge, 300, 400, 50, from.AddDate(0, 0, 5))
 
 	r, err := s.ProjectMetrics(context.Background(), "sf/dc1", from, to)
 	if err != nil {
@@ -256,15 +268,17 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	dcCard(t, s, "t-o", "sf/other3", "small", "", 73)
 	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "c7", Round: 1, Model: "big", Note: "elsewhere"}.Event("t-o", "sf/other3", 73), from.AddDate(0, 0, 5))
 
-	// the reason a fact row carries is bounded where it was written
-	var bounded int
+	// the reason a fact row carries is bounded where it was written:
+	// the payload's own cut of the 600-note, ellipsis marked — compared
+	// as text, so no database encoding's length() is trusted
+	var reason string
 	if err := s.db.QueryRowContext(context.Background(),
-		`SELECT length(detail->>'reason') FROM events WHERE kind = $1 AND repository = $2 AND detail->>'commit' = 'c1'`,
-		EventModelReview, "sf/dc3").Scan(&bounded); err != nil {
+		`SELECT detail->>'reason' FROM events WHERE kind = $1 AND repository = $2 AND detail->>'commit' = 'c1'`,
+		EventModelReview, "sf/dc3").Scan(&reason); err != nil {
 		t.Fatal(err)
 	}
-	if bounded != maxFactReason {
-		t.Fatalf("the stored reason is %d long, want %d: bounded where the payload wrote it", bounded, maxFactReason)
+	if want := textutil.Truncate(strings.Repeat("n", 600), maxFactReason); reason != want {
+		t.Fatalf("the stored reason is %q, want the payload's bounded %q", reason, want)
 	}
 
 	r, err := s.ProjectMetrics(context.Background(), "sf/dc3", from, to)
@@ -273,8 +287,9 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	}
 	// two of the window's three answers never judged; the previous
 	// window's one answer reviewed, a proven zero; the early unjudged
-	// answer fills bucket 1 and the window's two bucket 5
-	if r.DivideConquer.ReviewsNotReviewed != (Figure{Has: true, PrevHas: true, Weeks: [7]float64{0, 1, 0, 0, 0, 2, 0}}) {
+	// answer fills bucket 0 (Aug 26, the spark opens Aug 24) and the
+	// window's two bucket 5
+	if r.DivideConquer.ReviewsNotReviewed != (Figure{Value: 2, Has: true, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 2, 0}}) {
 		t.Fatalf("reviews not reviewed = %+v", r.DivideConquer.ReviewsNotReviewed)
 	}
 	// a repository no answer covers reads unknown, never zero
@@ -300,10 +315,11 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	dcGateHead(t, s, "c1", "sf/dc4", "g0", GateMerge, 300, 350, 0, from.AddDate(0, 0, -8)) // previous window, bucket 3
 	dcSessionEnd(t, s, "se1", string(OutcomeWallClock), "c1", "sf/dc4", 1, from.AddDate(0, 0, 9))
 	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k1", Round: 1, Model: "big", Verdict: "approve"}.Event("c1", "sf/dc4", 81), from.AddDate(0, 0, 9))
-	// another repository's rows the same instants
-	dcCard(t, s, "o1", "sf/other4", "small", "", 82)
-	dcGateHead(t, s, "o1", "sf/other4", "g1", GateMerge, 300, 999, 0, from.AddDate(0, 0, 8))
-	dcSessionEnd(t, s, "oe1", string(OutcomePushed), "o1", "sf/other4", 1, from.AddDate(0, 0, 9))
+	// another repository's rows the same instants — ow1, not o1 again:
+	// the package's tests share one database, one task id once
+	dcCard(t, s, "ow1", "sf/other4", "small", "", 82)
+	dcGateHead(t, s, "ow1", "sf/other4", "g1", GateMerge, 300, 999, 0, from.AddDate(0, 0, 8))
+	dcSessionEnd(t, s, "oe1", string(OutcomePushed), "ow1", "sf/other4", 1, from.AddDate(0, 0, 9))
 	// a done card of the window: the deck's throughput still counts it
 	done := Task{ID: "c-done", Status: "done", Objective: "the deck's figure", Repository: "sf/dc4", Kind: "agent",
 		Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: 83, Size: "small",
@@ -317,7 +333,9 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := r.DivideConquer
-	if d.CoveredFrom != from.AddDate(0, 0, -8) {
+	// Equal, not ==: the store's timestamp comes back in the driver's
+	// location, an equal instant beside time.UTC's pointer
+	if !d.CoveredFrom.Equal(from.AddDate(0, 0, -8)) {
 		t.Fatalf("covered from = %v, want the earliest fact row %v", d.CoveredFrom, from.AddDate(0, 0, -8))
 	}
 	if d.GateAboveBound != (Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 1}}) {

@@ -51,7 +51,11 @@ type Task struct {
 	// holds no git credential, so the head must be in the clone before the
 	// agent runs; 0 = the card carries none.
 	CarryPR int64
-	Usage   TaskUsage
+	// RoadmapItem is the docs/roadmap.md item a pulled card builds (its
+	// issue's "Roadmap: #<n>" line): no second card of the repository
+	// cites it, whatever its status. 0 = the card builds none.
+	RoadmapItem int
+	Usage       TaskUsage
 	// ReproCommand is the task's reproduction (the issue's fenced block
 	// labelled repro, or the API's repro_command): GateReproduction runs it
 	// against the pull request head and it must pass. Empty = none.
@@ -883,6 +887,23 @@ func insertTask(ctx context.Context, db interface {
 			return err
 		}
 	}
+	// One card per roadmap item (the roadmap pull of 2026-11-01): any
+	// card of the repository citing the item holds it — open or done, a
+	// finished card frees only when its Priority leaves the roadmap — and
+	// a second filing is refused, naming the holder.
+	if t.RoadmapItem != 0 {
+		var holderID string
+		err := db.QueryRowContext(ctx, `SELECT id FROM tasks
+			WHERE repository = $1 AND roadmap_item = $2 AND id <> $3
+			ORDER BY created_at LIMIT 1`, t.Repository, t.RoadmapItem, t.ID).
+			Scan(&holderID)
+		switch {
+		case err == nil:
+			return fmt.Errorf("card %s already builds roadmap item %d of %s", holderID, t.RoadmapItem, t.Repository)
+		case !errors.Is(err, sql.ErrNoRows):
+			return err
+		}
+	}
 	caps, err := toJSON(t.RequiredCapabilities)
 	if err != nil {
 		return err
@@ -902,17 +923,17 @@ func insertTask(ctx context.Context, db interface {
 	// (roadmap 271): the tasks_final_finished_at check refuses one without
 	q := `INSERT INTO tasks (id, priority, required_capabilities, risk_class, budget_eur, spent_eur, status,
 		                    objective, repository, sha, repro_base, kind, issue_number, source, repro_command, created_at, gate, gate_since,
-		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at)
+		                    author, author_writer, parent_task, track, process, plan_key, alert_fingerprint, rung, size, pr_number, carry_pr, ships_ruling, ships_clauses, image, finished_at, roadmap_item)
 	 VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8, $9, $10, NULLIF($11, ''), $12, $13, $14, $15, COALESCE($16, now()),
          CASE WHEN $12 = 'agent' THEN $17 ELSE '' END,
          CASE WHEN $12 = 'agent' THEN COALESCE($16, now()) END, $18, $19, NULLIF($20, ''),
          NULLIF($21, ''), NULLIF($22, ''), NULLIF($23, ''), NULLIF($24, ''), $25, $26, $27, $31, $28, $29::jsonb, $30,
-         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END)
+         CASE WHEN $7 IN ('done', 'failed', 'closed', 'merged') THEN COALESCE($16, now()) END, $32)
 	 ` + onConflict // #nosec G202 -- onConflict is one of insertTask's constant clauses
 	_, err = db.ExecContext(ctx, q,
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
-		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR)
+		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem)
 	return err
 }
 
@@ -921,6 +942,22 @@ func insertTask(ctx context.Context, db interface {
 // pass their conflict clauses through it.
 func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) error {
 	return insertTask(ctx, s.db, t, onConflict)
+}
+
+// RoadmapHolder names the card of repository that builds roadmap item —
+// the check insertTask enforces — so the filing refuses before an issue
+// is posted; false when no card cites it.
+func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int) (string, bool, error) {
+	var holder string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM tasks
+		WHERE repository = $1 AND roadmap_item = $2 ORDER BY created_at LIMIT 1`, repository, item).Scan(&holder)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return holder, true, nil
 }
 
 // OpenReportTask inserts report task t unless its parent has one of its
@@ -951,6 +988,13 @@ func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bo
 // plan's verdict, rounds and replan passes are its callers.
 func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
+}
+
+// HeldPlanCards are the repository's plan cards waiting on a human's
+// approval, the cards a landed companion pin can wake (versionCompanions).
+func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2 AND status = $3 AND gate = $4 ORDER BY id`,
+		repository, SourcePlan, "waiting-human", GateApproval)
 }
 
 // SetTaskPlanRevision records the plan revision a card first runs
@@ -998,7 +1042,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0)`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1013,7 +1057,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem); err != nil {
 		return Task{}, err
 	}
 	var err error

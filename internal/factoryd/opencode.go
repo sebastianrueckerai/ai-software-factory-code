@@ -709,6 +709,13 @@ func briefText(brief harness.TaskBrief, tag string) string {
 	case brief.DocsFailed != "":
 		fmt.Fprintf(&b, "The project's document repository could not be read: %s\n", brief.DocsFailed)
 	}
+	if len(brief.Companions) > 0 {
+		b.WriteString("The project's companion repositories are cloned read-only, for reading; changes go in /workspace/repo:\n")
+		for _, c := range brief.Companions {
+			fmt.Fprintf(&b, "- %s\n", c)
+		}
+		b.WriteString("\n")
+	}
 	if brief.IssueURL != "" {
 		fmt.Fprintf(&b, "Issue: %s\n", brief.IssueURL)
 	}

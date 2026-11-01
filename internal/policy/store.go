@@ -153,19 +153,24 @@ type CostLine struct {
 // DateLayout is the ledger's day format.
 const DateLayout = "2006-01-02"
 
-// LedgerDaySpend is the ledger's total of one UTC day.
-func LedgerDaySpend(ctx context.Context, db *sql.DB, day time.Time) (float64, error) {
-	var eur float64
-	err := db.QueryRowContext(ctx, `SELECT COALESCE(sum(eur), 0)::float8 FROM ledger WHERE day = $1::date`, day.UTC().Format(DateLayout)).Scan(&eur)
-	return eur, err
+// Enforced is the spend the caps count at one moment: the ledger's spend
+// of the UTC day and month and on the premium class in the month, each
+// with the outstanding holds that count against it, standing lines left
+// out (holds.go's expressions, so these figures and the caps stop
+// together).
+type Enforced struct {
+	Day, Month, Premium float64
 }
 
-// LedgerPremiumMonthSpend is the ledger's spend on Premium in the UTC
-// month of at.
-func LedgerPremiumMonthSpend(ctx context.Context, db *sql.DB, at time.Time) (float64, error) {
-	var eur float64
-	err := db.QueryRowContext(ctx, `SELECT `+PremiumMonthSpentSQL("$1::timestamptz")+`::float8`, at).Scan(&eur)
-	return eur, err
+// LedgerEnforced reads the enforced spend of the UTC day and month of at.
+func LedgerEnforced(ctx context.Context, db *sql.DB, at time.Time) (Enforced, error) {
+	var e Enforced
+	err := db.QueryRowContext(ctx,
+		`SELECT (`+daySpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
+		        (`+MonthSpentSQL("$1::timestamptz")+` + `+heldSQL+`)::float8,
+		        (`+PremiumMonthSpentSQL("$1::timestamptz")+` + COALESCE((SELECT sum(eur) FROM holds WHERE `+premiumRef+`), 0))::float8`,
+		at).Scan(&e.Day, &e.Month, &e.Premium)
+	return e, err
 }
 
 func LedgerCosts(ctx context.Context, db *sql.DB, from, to time.Time) (Costs, error) {

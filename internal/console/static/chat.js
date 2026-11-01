@@ -975,9 +975,9 @@ var chatView = (function () {
     }, true);
   }
   // the intake switch in the chat's head (an approver's): a click flips
-  // it — closed refuses the agent's own wake filings, open takes them
-  // again, and the member's ask always files — and the button answers in
-  // place
+  // it — closed stops exactly the roadmap pull, open returns it, and
+  // every ask and need still files — and the button and its setter line
+  // answer in place
   var intakeBtn = document.getElementById("intake-btn");
   if (intakeBtn) {
     intakeBtn.addEventListener("click", function () {
@@ -990,6 +990,13 @@ var chatView = (function () {
         intakeBtn.setAttribute("aria-pressed", to === "closed" ? "true" : "false");
         var name = intakeBtn.querySelector(".intake-name");
         if (name) name.textContent = to;
+        var by = intakeBtn.parentElement.querySelector(".intake-by");
+        if (!by) {
+          by = document.createElement("span");
+          by.className = "intake-by";
+          intakeBtn.after(by);
+        }
+        by.textContent = "set by " + login + ", " + new Date().toISOString().slice(0, 16).replace("T", " ") + " UTC";
       }).catch(failed);
     });
   }

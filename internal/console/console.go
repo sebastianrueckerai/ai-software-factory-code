@@ -132,6 +132,10 @@ type Tasks interface {
 	// its unstarted filings, the ready check's room (roadmap 239).
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	CountQueue(ctx context.Context, repository string) (int, error)
+	// RoadmapHolder is the card that builds repository's docs/roadmap.md
+	// item, whatever its state (the roadmap pull, 2026-11-01); false
+	// when no card cites it.
+	RoadmapHolder(ctx context.Context, repository string, item int) (string, bool, error)
 	// ProjectImageParks are the parks of project's cards that wait for an
 	// image, the oldest first, each with its tool card's issue.
 	ProjectImageParks(ctx context.Context, project string) ([]factoryd.ImagePark, error)

@@ -621,6 +621,16 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			v, stop = failed("policy gate", err)
 			return nil, v, stop
 		}
+		// the plan card's companion pins read live at each pass
+		// (versionCompanions), so a held card that wakes reads them again
+		if t.companions >= versionCompanions {
+			var cs []CompanionGate
+			if err := workflow.ExecuteActivity(t.short, ActivityGateCompanion, t.taskID).Get(t.ctx, &cs); err != nil {
+				v, stop = failed("companion gate", err)
+				return nil, v, stop
+			}
+			g.Companions = cs
+		}
 		if g.Policy.Outcome == policy.OutcomeForbidden {
 			return []string{fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
 				g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}, verdict{}, false
@@ -1107,8 +1117,14 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			break
 		}
 	}
-	if !v.rerun && !v.moved {
+	if !v.rerun && !v.moved && !v.recheck {
 		return v
+	}
+	if v.recheck {
+		// a companion reached its pin while the approval waited
+		// (versionCompanions): the gates read again from the first stage,
+		// so the merge follows the pins it sees now
+		return t.verify(commit)
 	}
 	if v.moved {
 		// the merge was refused on a head the agent moved past its gates

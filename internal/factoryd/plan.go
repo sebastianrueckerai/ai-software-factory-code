@@ -186,6 +186,17 @@ type PlanCard struct {
 	From string `json:"from,omitempty"`
 	// Round is the planning round that filed the card, factoryd's stamp
 	Round int `json:"round,omitempty"`
+	// Companions are the companion pins factoryd stamped at the filing:
+	// each companion repository's default-branch head when the plan was
+	// filed, which the card's merge waits to be reached again
+	Companions []CardCompanion `json:"companions,omitempty"`
+}
+
+// CardCompanion is one companion pin stamped on a plan card at its
+// filing: the companion repository and the head its default branch held.
+type CardCompanion struct {
+	Repository string `json:"repository"`
+	At         string `json:"at"`
 }
 
 // PlanRevision is one valid plan of a plan task, as stored.
@@ -2230,6 +2241,29 @@ func projectPins(v policy.Version, repository string) map[string]policy.ImagePin
 	return p.Images
 }
 
+// companionPins reads the pins a plan filing stamps on its cards: the
+// default-branch heads of the project's declared companions, read through
+// the factory-config token at the filing. A companion that cannot be read
+// is a finding that refuses the filing: the pin is the system's own fact,
+// so a filing that cannot stamp it stores nothing.
+func (r *Runner) companionPins(ctx context.Context, v policy.Version, repository string) ([]CardCompanion, []string) {
+	_, p, _ := v.ProjectOf(repository)
+	if len(p.Companions) == 0 {
+		return nil, nil
+	}
+	token := r.forgejo.Seeded[policy.SecretConfig]
+	pins := make([]CardCompanion, 0, len(p.Companions))
+	for _, c := range p.Companions {
+		owner, name, _ := strings.Cut(c.Repository, "/")
+		head, err := r.forgejo.DefaultHead(ctx, token, Repo{Owner: owner, Name: name})
+		if err != nil {
+			return nil, []string{"plan: " + companionUnread(c.Repository)}
+		}
+		pins = append(pins, CardCompanion{Repository: c.Repository, At: head})
+	}
+	return pins, nil
+}
+
 // planShape is the plan track's shape of the process task t follows in
 // version v, and the process's name.
 func planShape(v policy.Version, t Task) (policy.PlanShape, string, error) {
@@ -2434,6 +2468,13 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	p.Round = round
 	for i := range p.Cards {
 		p.Cards[i].Round = round
+	}
+	pins, unread := r.companionPins(ctx, v, t.Repository)
+	if len(unread) > 0 {
+		return PlanResult{Findings: unread}, nil
+	}
+	for i := range p.Cards {
+		p.Cards[i].Companions = pins
 	}
 	if st.newest != nil {
 		settled := settledCards(*st.newest, st.old, round)

@@ -290,6 +290,11 @@ type ProjectConfig struct {
 	// stamp, the queued cards a slot has not taken yet; a filing at the
 	// cap refuses. Absent: 8.
 	QueueCap int `yaml:"queue_cap,omitempty" json:"queue_cap,omitempty"`
+	// RefillBelow is the queue depth the project's roadmap pull wakes at:
+	// when the waiting cards fall below it, one turn reads the doc
+	// repository's roadmap and files its ripe items. Absent or 0: no
+	// pull wake.
+	RefillBelow int `yaml:"refill_below,omitempty" json:"refill_below,omitempty"`
 	// Routines are the project's recurring work, each run filing a card on
 	// its schedule.
 	Routines []Routine `yaml:"routines,omitempty" json:"routines,omitempty"`
@@ -301,6 +306,22 @@ type ProjectConfig struct {
 	// block through an auto-merged pull request after each build, and cards
 	// run on the pinned digests.
 	Images map[string]ImagePin `yaml:"images,omitempty" json:"images,omitempty"`
+	// Companions are the repositories of this Forgejo the project reads
+	// beside its own: a card's plan filing pins each companion's main on
+	// the card and its gates hold the merge until the project's own merge
+	// chain has reached that pin. Absent: none.
+	Companions []Companion `yaml:"companions,omitempty" json:"companions,omitempty"`
+}
+
+// Companion is one repository of this Forgejo the project reads beside its
+// own.
+type Companion struct {
+	// Repository is the companion's Forgejo repository, owner/name of this
+	// instance.
+	Repository string `yaml:"repository" json:"repository"`
+	// Sandbox lets a session clone the companion read-only into
+	// /workspace/companions/<name>; absent: no clone, the gates still pin.
+	Sandbox bool `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 }
 
 // AutonomyState is the project's autonomy as the selector shows it: full
@@ -320,6 +341,15 @@ func (t Tree) QueueCapOf(repository string) int {
 		return p.QueueCap
 	}
 	return DefaultQueueCap
+}
+
+// RefillBelowOf is the queue depth repository's roadmap pull wakes at:
+// its project file's refill_below, 0 — no pull wake — without one.
+func (t Tree) RefillBelowOf(repository string) int {
+	if _, p, ok := t.ProjectOf(repository); ok {
+		return p.RefillBelow
+	}
+	return 0
 }
 
 // ChainConfig is a project file's chain block: how the CI chain of its
@@ -494,6 +524,23 @@ func (p ProjectConfig) Validate(name string) error {
 	if !repositoryName.MatchString(p.Repository) {
 		bad("repository %q: owner/name in lower case", p.Repository)
 	}
+	for i, c := range p.Companions {
+		if !repositoryName.MatchString(c.Repository) {
+			bad("companion %q: owner/name in lower case", c.Repository)
+		}
+		if slices.Contains(p.Companions[:i], c) {
+			bad("companion %q: given twice", c.Repository)
+		}
+		if c.Repository == p.Repository {
+			bad("companion %q: the project's own repository", c.Repository)
+		}
+		name := c.Repository[strings.LastIndex(c.Repository, "/")+1:]
+		for _, other := range p.Companions[:i] {
+			if other.Repository[strings.LastIndex(other.Repository, "/")+1:] == name {
+				bad("companion %q: the same repository name as %q, and the sandbox clone goes by the name", c.Repository, other.Repository)
+			}
+		}
+	}
 	if !slices.Contains(MergeRules, p.MergeRule) {
 		bad("merge_rule %q: want one of %v", p.MergeRule, MergeRules)
 	}
@@ -586,6 +633,9 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.QueueCap < 0 {
 		bad("queue_cap %d: a count of cards", p.QueueCap)
+	}
+	if p.RefillBelow < 0 {
+		bad("refill_below %d: a count of cards", p.RefillBelow)
 	}
 	if err := p.Chat.validate(); err != nil {
 		bad("%v", err)

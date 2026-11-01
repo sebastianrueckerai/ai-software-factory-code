@@ -192,7 +192,8 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/"):
 		// the files at main, by their escaped paths
 		files := map[string]string{"README.md": strings.Repeat("r", 1200), "bin/x": "\x00" + strings.Repeat("b", 99),
-			"docs/a%20b.md": "spaced", "big.txt": strings.Repeat("g", 70<<10), "huge.txt": strings.Repeat("h", 1<<20+1)}
+			"docs/a%20b.md": "spaced", "big.txt": strings.Repeat("g", 70<<10), "huge.txt": strings.Repeat("h", 1<<20+1),
+			"long.txt": longFile}
 		body, ok := files[strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/")]
 		if !ok || r.URL.Query().Get("ref") != "main" {
 			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
@@ -310,7 +311,10 @@ type fakeTasks struct {
 	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
 	carries  map[string][]string // the cards a roll task carries
-	read     func(s *fakeTasks, id string)
+	// roadmap names, by "repository item", the card that builds a roadmap
+	// item (the roadmap pull of 2026-11-01)
+	roadmap map[string]string
+	read    func(s *fakeTasks, id string)
 	// fundedEUR is the month's chat funding FundCard's pool counts, events
 	// the ledger its card_funded row goes to
 	fundedEUR float64
@@ -417,6 +421,14 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 		}
 	}
 	return n, nil
+}
+
+// RoadmapHolder names the card that builds repository's roadmap item.
+func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	holder, ok := s.roadmap[fmt.Sprintf("%s %d", repository, item)]
+	return holder, ok, nil
 }
 
 func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error) {
@@ -878,6 +890,9 @@ type fakeLedger struct {
 	// premiumCap is the policy's budget.premium_month_eur and premium the
 	// month's spend on the premium class
 	premiumCap, premium float64
+	// enforced is the month's enforced spend the fake answers, the day's
+	// and the premium's derived as the store derives them
+	enforced policy.Enforced
 }
 
 // testProcesses are the shipped two processes: maintenance builds direct
@@ -904,21 +919,17 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 	return l.costs, nil
 }
 
-// PremiumMonthSpend is the fake's premium spend, whatever the month.
-func (l *fakeLedger) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
-	return l.premium, nil
-}
-
-// DaySpend is the fake's total of one day; it records no window, as it
-// is not the costs read the window tests watch.
-func (l *fakeLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
-	var eur float64
+// Enforced is the fake's enforced spend: the month's as set, the day's
+// summed of its costs days and the premium's its premium figure.
+func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced, error) {
+	e := l.enforced
+	e.Premium = l.premium
 	for _, d := range l.costs.Days {
-		if d.Day == day.Format(policy.DateLayout) {
-			eur += d.Total
+		if d.Day == at.Format(policy.DateLayout) {
+			e.Day += d.Total
 		}
 	}
-	return eur, nil
+	return e, nil
 }
 
 func (l *fakeLedger) ModelCalls(_ context.Context, taskID string) ([]policy.ModelCall, error) {
