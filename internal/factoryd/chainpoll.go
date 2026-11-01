@@ -1055,8 +1055,10 @@ func (p *ChainPoller) backfillRepository(ctx context.Context, proj Project, ids 
 	return slices.Collect(maps.Keys(want))
 }
 
-// backfillRunsPage is the runs-per-page the backfill asks the forge for.
-const backfillRunsPage = 50
+// backfillRunsPage is the runs-per-page the backfill asks the forge for;
+// rollRunsRead is the limit the forge is known to honor, and a larger
+// ask the forge caps would skip runs in the (page-1)*n walk above.
+const backfillRunsPage = rollRunsRead
 
 // chainCarried lists the pull requests of the cards whose own merge
 // commit lies in run's compare range, ascending.

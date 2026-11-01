@@ -1253,7 +1253,7 @@ func TestBackfillGivesOldRowsTheirForgeNumbers(t *testing.T) {
 func TestBackfillStopsBelowTheOldestRunItLacks(t *testing.T) {
 	// the list skips run 3330 and reaches below it: the page that passes
 	// beneath the missing id is the last one read
-	runs := append(numbered(3400, 3331), numbered(3329, 3301)...)
+	runs := append(numbered(3360, 3331), numbered(3329, 3321)...)
 	f := &chainForgejo{runs: map[string][]map[string]any{demoRepo: runs}}
 	p, store := newTestPoller(t, f, seedProject(demoRepo))
 	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: "a1", run: 3330}}
