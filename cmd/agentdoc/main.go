@@ -251,14 +251,16 @@ func requireCleanTree(root string) error {
 }
 
 // checkOpencodeVersion verifies the binary the loop modes drive is the
-// pinned harness, so no page labels a drifted binary.
+// pinned harness, so no page labels a drifted binary. The constant names
+// the harness and its version; the binary reports the version alone.
 func checkOpencodeVersion(bin, want string) error {
 	out, err := exec.Command(bin, "--version").Output() // #nosec G204,G702 -- the operator's own pinned harness binary; the flag names a binary the operator chose
 	if err != nil {
 		return fmt.Errorf("read the opencode binary's version: %w", err)
 	}
-	if !strings.Contains(string(out), want) {
-		return fmt.Errorf("the opencode binary reports %q, want the pinned %s", strings.TrimSpace(string(out)), want)
+	version := want[strings.LastIndexByte(want, ' ')+1:]
+	if !strings.Contains(string(out), version) {
+		return fmt.Errorf("the opencode binary reports %q, want the pinned %s", strings.TrimSpace(string(out)), version)
 	}
 	return nil
 }

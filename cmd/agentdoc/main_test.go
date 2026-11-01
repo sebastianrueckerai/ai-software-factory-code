@@ -48,15 +48,15 @@ func TestCheckOpencodeVersion(t *testing.T) {
 		}
 	}
 	write("1.18.32")
-	if err := checkOpencodeVersion(bin, "1.18.32"); err != nil {
+	if err := checkOpencodeVersion(bin, "opencode 1.18.32"); err != nil {
 		t.Fatalf("matching version refused: %v", err)
 	}
 	write("1.18.32 (abc123)")
-	if err := checkOpencodeVersion(bin, "1.18.32"); err != nil {
+	if err := checkOpencodeVersion(bin, "opencode 1.18.32"); err != nil {
 		t.Fatalf("build metadata rejected: %v", err)
 	}
 	write("9.9.9")
-	if err := checkOpencodeVersion(bin, "1.18.32"); err == nil {
+	if err := checkOpencodeVersion(bin, "opencode 1.18.32"); err == nil {
 		t.Fatal("a drifted binary passed as the pinned version")
 	}
 }
