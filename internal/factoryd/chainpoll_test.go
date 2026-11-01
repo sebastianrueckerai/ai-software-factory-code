@@ -277,12 +277,20 @@ func (s *fakeStore) ChainCarriedIssues(ctx context.Context, repository, sha stri
 }
 
 // ChainCovered mirrors PGStore's read: every merged card with a pull
-// request the repository's newest green run covers, named by that run.
+// request the repository's newest green run covers, named by the forge
+// number that run speaks. The cover test compares ids, as the store's SQL
+// does; the value is the greatest green number, as max(run_index) is.
 func (s *fakeStore) ChainCovered(ctx context.Context, repository string) (map[string]int64, error) {
-	green := int64(0)
+	greenAt, greenNumber := int64(0), int64(0)
 	for _, c := range s.chain {
-		if c.repo == repository && c.status == "success" && c.run > green {
-			green = c.run
+		if c.repo != repository || c.status != "success" {
+			continue
+		}
+		if c.run > greenAt {
+			greenAt = c.run
+		}
+		if c.index > greenNumber {
+			greenNumber = c.index
 		}
 	}
 	covered := map[string]int64{}
@@ -300,8 +308,8 @@ func (s *fakeStore) ChainCovered(ctx context.Context, repository string) (map[st
 				mine = c.run
 			}
 		}
-		if carried && green >= mine && mine > 0 {
-			covered[t.ID] = green
+		if carried && greenAt >= mine && mine > 0 {
+			covered[t.ID] = greenNumber
 		}
 	}
 	return covered, nil
@@ -953,7 +961,7 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 		}}}
 	}
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		runs: map[string][]map[string]any{codeRepo: {chainRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
 			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
 		},
@@ -1025,10 +1033,10 @@ func TestTheCarryRowCarriesItsVerdict(t *testing.T) {
 	if got := row(); got != "success" {
 		t.Fatalf("carry row = %s after the context concluded, want success", got)
 	}
-	if run := covered(); run != 61 {
-		t.Fatalf("after the context concluded: covered by run %d, want live at run 61", run)
+	if run := covered(); run != 56 {
+		t.Fatalf("after the context concluded: covered by run %d, want live at the run's number 56", run)
 	}
-	if !slices.Equal(ended, []string{"t-wait run 61"}) {
+	if !slices.Equal(ended, []string{"t-wait run 56"}) {
 		t.Fatalf("ended %q, want t-wait once, on the tick its context concluded", ended)
 	}
 }
@@ -1385,10 +1393,10 @@ func TestEveryTickEndsTheCoveredMergedCards(t *testing.T) {
 		"t-wait":  {ID: "t-wait", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 14},
 	}
 	// pr 13 rode the red run 11, pr 12 the green run 12 after it, pr 14
-	// the run 14 still running
+	// the run 14 still running; the green run's forge number is 12
 	store.chain = []fakeChainRun{
 		{repo: codeRepo, pr: 13, sha: "c11", run: 11, status: "failure"},
-		{repo: codeRepo, pr: 12, sha: "c12", run: 12, status: "success"},
+		{repo: codeRepo, pr: 12, sha: "c12", run: 12, index: 12, status: "success"},
 		{repo: codeRepo, pr: 14, sha: "c14", run: 14, status: "pending"},
 	}
 	var ended []string
@@ -1454,7 +1462,7 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 	r, hub, store, objects := chainRunner(t, withStatus(mergedCard, "in-review"), policy.ChainModeRun)
 	hub.pulls = map[int64]string{7: mergedAt(7, mergePR12)}
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{"sf/repo": {pushRun(61, commitC2, "success")}},
+		runs: map[string][]map[string]any{"sf/repo": {chainRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
 			"sf/repo": {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}}},
 		},
@@ -1475,10 +1483,10 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got := chainOf(store, "sf/repo"); !slices.Equal(got, []fakeChainRun{
-		{repo: "sf/repo", pr: 0, sha: commitC2, run: 61, status: "success"},
-		{repo: "sf/repo", pr: 7, sha: commitC2, run: 61, status: "success"},
+		{repo: "sf/repo", pr: 0, sha: commitC2, run: 61, index: 56, status: "success"},
+		{repo: "sf/repo", pr: 7, sha: commitC2, run: 61, index: 56, status: "success"},
 	}) {
-		t.Fatalf("chain %+v, want the head and pr 7 green at run 61", got)
+		t.Fatalf("chain %+v, want the head and pr 7 green at run 61, the forge's number 56", got)
 	}
 	if ends != 0 {
 		t.Fatalf("ended %d times before the merge, want none", ends)
@@ -1499,8 +1507,8 @@ func TestACardMergedUnderAGreenHeadEndsOnTheNextTick(t *testing.T) {
 		if ends != 1 {
 			t.Fatalf("ended %d times after tick %d past the merge, want once", ends, tick)
 		}
-		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 61"}) {
-			t.Fatalf("task_ended after tick %d = %q, want one naming run 61", tick, got)
+		if got := taskEnds(t, objects, "t1"); !slices.Equal(got, []string{"done: live: covered by run 56"}) {
+			t.Fatalf("task_ended after tick %d = %q, want one naming the run's number 56", tick, got)
 		}
 		if len(store.alerts) != 0 {
 			t.Fatalf("alerts after tick %d = %+v, want none", tick, store.alerts)
@@ -2750,15 +2758,15 @@ func TestACancelledRunsCardIsCoveredByTheNextGreen(t *testing.T) {
 	if got, _ := store.ChainCovered(ctx, codeRepo); len(got) != 0 || len(ended) != 0 {
 		t.Fatalf("covered %v, ended %v after the cancelled run, want none", got, ended)
 	}
-	f.runs[codeRepo] = []map[string]any{pushRun(11, commitC2, "success"), pushRun(10, commitC1, "cancelled")}
+	f.runs[codeRepo] = []map[string]any{chainRun(11, commitC2, "success"), chainRun(10, commitC1, "cancelled")}
 	if err := p.Tick(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := store.ChainCovered(ctx, codeRepo); !maps.Equal(got, map[string]int64{"t-7": 11}) {
-		t.Fatalf("covered %v, want t-7 by run 11", got)
+	if got, _ := store.ChainCovered(ctx, codeRepo); !maps.Equal(got, map[string]int64{"t-7": 6}) {
+		t.Fatalf("covered %v, want t-7 by the run's number 6", got)
 	}
-	if !slices.Equal(ended, []string{"t-7 run 11"}) {
-		t.Fatalf("ended %v, want t-7 done by run 11", ended)
+	if !slices.Equal(ended, []string{"t-7 run 6"}) {
+		t.Fatalf("ended %v, want t-7 done by the run's number 6", ended)
 	}
 }
 
@@ -3119,7 +3127,7 @@ func TestAnUncarriedCardAlertsInARepositoryWhoseChainBlockIsBroken(t *testing.T)
 
 func factoryChain(statuses ...map[string]string) (*chainForgejo, func() policy.Version) {
 	f := &chainForgejo{
-		runs: map[string][]map[string]any{codeRepo: {pushRun(61, commitC2, "success")}},
+		runs: map[string][]map[string]any{codeRepo: {chainRun(61, commitC2, "success")}},
 		carries: map[string]map[string][]map[string]any{
 			codeRepo: {"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}, {"sha": mergePR14}}},
 		},
@@ -3229,7 +3237,7 @@ func TestTheSettledStatusEndsTheCarriedCards(t *testing.T) {
 		}
 	}
 	slices.Sort(ended)
-	if want := []string{"t-12 run 61", "t-14 run 61"}; !slices.Equal(ended, want) {
+	if want := []string{"t-12 run 56", "t-14 run 56"}; !slices.Equal(ended, want) {
 		t.Fatalf("ended %q, want %q", ended, want)
 	}
 }

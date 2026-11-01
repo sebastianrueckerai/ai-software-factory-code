@@ -127,6 +127,91 @@ func TestChainCoverageHoldsTheCard(t *testing.T) {
 	}
 }
 
+// The board and the card's chain facts speak the forge's run numbers, not
+// the API ids the store keeps: a row with run_id 3356 and run_index 2260
+// projects ChainRun 2260, ChainFacts' runs read run_index too, and the
+// done card's cover comparison reads number against number — a green run
+// numbered 2259 against a carry of 2260 holds the card, one numbered 2260
+// covers it. A row without its number (0) projects 0, the board's "no
+// link". Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+func TestTheBoardSpeaksTheForgesRunNumbers(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	for _, tk := range []Task{
+		{ID: "t-done", Status: "done", PRNumber: 7},
+		{ID: "t-zero", Status: "done", PRNumber: 7},
+	} {
+		tk.BudgetEUR, tk.Repository, tk.Kind, tk.Track = 1, "sf/r", "agent", "direct"
+		if tk.ID == "t-zero" {
+			tk.Repository = "sf/z"
+		}
+		if err := s.CreateTask(ctx, tk); err != nil {
+			t.Fatalf("CreateTask %s: %v", tk.ID, err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET finished_at = now() - interval '20 minutes'`); err != nil {
+		t.Fatalf("stamp finished_at: %v", err)
+	}
+	// the carry row: the forge's number 2260 on API id 3356
+	if err := s.RecordChainRun(ctx, "sf/r", 7, "a1", 3356, 2260, "failure"); err != nil {
+		t.Fatalf("RecordChainRun: %v", err)
+	}
+	// a row that never learned its number
+	if err := s.RecordChainRun(ctx, "sf/z", 7, "z1", 4000, 0, "failure"); err != nil {
+		t.Fatalf("RecordChainRun sf/z: %v", err)
+	}
+	b, ok, err := s.BoardTask(ctx, "t-zero")
+	if err != nil || !ok {
+		t.Fatalf("BoardTask(t-zero) = %v, %v", ok, err)
+	}
+	if b.ChainRun != 0 {
+		t.Fatalf("a row without its number projects ChainRun %d; want 0", b.ChainRun)
+	}
+	b, ok, err = s.BoardTask(ctx, "t-done")
+	if err != nil || !ok {
+		t.Fatalf("BoardTask(t-done) = %v, %v", ok, err)
+	}
+	if b.ChainRun != 2260 {
+		t.Fatalf("ChainRun = %d; want the forge's number 2260, not the API id 3356", b.ChainRun)
+	}
+	if b.ChainLive {
+		t.Fatal("the card reads live with no green run at all")
+	}
+	// a green head numbered below the carry holds the card
+	if err := s.RecordChainHead(ctx, "sf/r", "a2", 3355, 2259, "success"); err != nil {
+		t.Fatalf("RecordChainHead: %v", err)
+	}
+	b, _, _ = s.BoardTask(ctx, "t-done")
+	if b.ChainGreen != 2259 || b.ChainLive {
+		t.Fatalf("green %d, live %v; want green 2259 holding the card", b.ChainGreen, b.ChainLive)
+	}
+	f, err := s.ChainFacts(ctx, "sf/r", 7)
+	if err != nil {
+		t.Fatalf("ChainFacts: %v", err)
+	}
+	if f.CarryRun != 2260 || f.HeadRun != 2259 || f.GreenRun != 2259 {
+		t.Fatalf("facts carry %d head %d green %d; want the numbers 2260, 2259, 2259", f.CarryRun, f.HeadRun, f.GreenRun)
+	}
+	// a green head numbered at the carry covers it
+	if err := s.RecordChainHead(ctx, "sf/r", "a3", 3358, 2260, "success"); err != nil {
+		t.Fatalf("RecordChainHead: %v", err)
+	}
+	b, _, err = s.BoardTask(ctx, "t-done")
+	if err != nil {
+		t.Fatalf("BoardTask: %v", err)
+	}
+	if b.ChainGreen != 2260 || !b.ChainLive {
+		t.Fatalf("green %d, live %v; want green 2260 covering the card", b.ChainGreen, b.ChainLive)
+	}
+}
+
 // The reconciler over the real store, ending through the runner's EndCovered:
 // a merged card a green run covers ends done, one the chain has not
 // covered yet stays merged, the covered card's task_ended event and its
@@ -164,7 +249,7 @@ func TestTheReconcilerEndsACoveredMergedCardOnce(t *testing.T) {
 		{8, "e12", 12, "pending"},
 		{0, "e12", 12, "pending"},
 	} {
-		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, 0, row.status); err != nil {
+		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.run, row.status); err != nil {
 			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
 		}
 	}
