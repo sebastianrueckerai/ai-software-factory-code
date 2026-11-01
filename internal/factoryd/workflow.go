@@ -2676,6 +2676,9 @@ func (t *taskRun) gate(commit string) verdict {
 		return verdict{final: "failed", reason: fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
 			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
 	}
+	if g.Policy.OverBound != "" {
+		return verdict{stronger: true, reason: "over the card's line bound", findings: []string{g.Policy.OverBound}}
+	}
 	if len(g.Policy.Migrations) > 0 {
 		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}

@@ -264,9 +264,9 @@ func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 const EventGateHead = "gate_head"
 
 // GateHeadFact is that reading: the merge decision's snapshot of the card
-// as the gates judged it — the card's size, the bound that size planned
-// under the policy the gates read (cardLineBound, never the policy's
-// large_lines standing in for a smaller size's bound), the policy version
+// as the gates judged it — the card's size, the effective bound under
+// the policy the gates read (the size's plan plus the raises its extend
+// answers added), the policy version
 // and the lines the gates counted. Decision is "auto" (the gates let it
 // merge) or "approval" (a person decides). Identity: the card and the
 // head; one head, one row.
@@ -276,7 +276,7 @@ type GateHeadFact struct {
 	Gate          string
 	Decision      string
 	Size          string
-	Bound         int // the size's effective cardLineBound at the reading
+	Bound         int // the effective line bound at the reading
 	PolicyVersion int64
 	Files         int
 	Insertions    int

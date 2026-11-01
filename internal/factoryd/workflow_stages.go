@@ -396,12 +396,16 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 	return verdict{}, false
 }
 
-// cheatFindings sends the policy gate's anti-cheat findings and its images
-// file's where the checks stage's on_findings sends its own: the policy
-// stage's rule is fail by a floor and would fail the task for a skipped
-// test.
+// cheatFindings sends the policy gate's anti-cheat findings, its images
+// file's and the card's line-bound refusal where the checks stage's
+// on_findings sends its own: the policy stage's rule is fail by a floor
+// and would fail the task for a skipped test — and the over-bound head
+// still has its exits, the agent's merge or a human's extend.
 func (t *taskRun) cheatFindings(g GateResults, capped, card *[]string) (verdict, bool) {
 	findings := slices.Concat(g.Policy.Cheats, g.Policy.Images)
+	if g.Policy.OverBound != "" {
+		findings = append(findings, g.Policy.OverBound)
+	}
 	if len(findings) == 0 {
 		return verdict{}, false
 	}
