@@ -279,6 +279,10 @@ func (s *agentDocChat) ChatOpenQuestion(context.Context, string, string, int64) 
 	return "", false, nil
 }
 
+func (s *agentDocChat) LiveAskBinds(context.Context, string, string, int64, time.Time) ([]factoryd.ChatProposal, error) {
+	return nil, nil
+}
+
 func (s *agentDocChat) ChatAttachments(context.Context, string, string, int64) ([]factoryd.ChatAttachment, error) {
 	return nil, nil
 }
