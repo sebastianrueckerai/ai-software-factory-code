@@ -280,13 +280,21 @@ type PlanFilingFact struct {
 
 // Event is the filing's row of repository's issue; extra carries what
 // the filing names (the fates of the old cards and the new ones, or a
-// round's cards).
+// round's cards). The detail is a fresh copy of extra — the caller's
+// map stays its own — over which every canonical field comes from the
+// fact: revision and origin always, card and key on a card's own row.
+// A reserved extra can neither disagree with the row the identity
+// names nor forge a card's membership on a revision's row; the extras
+// no fact owns survive.
 func (f PlanFilingFact) Event(repository string, issue int64, extra map[string]any) Event {
-	detail := map[string]any{"revision": f.Revision, "origin": f.Origin}
+	detail := make(map[string]any, len(extra)+2)
+	maps.Copy(detail, extra)
+	delete(detail, "card")
+	delete(detail, "key")
+	detail["revision"], detail["origin"] = f.Revision, f.Origin
 	if f.Card != 0 {
 		detail["card"], detail["key"] = f.Card, f.Key
 	}
-	maps.Copy(detail, extra)
 	id := fmt.Sprintf("%d", f.Revision)
 	if f.Key != "" {
 		id += " " + f.Key

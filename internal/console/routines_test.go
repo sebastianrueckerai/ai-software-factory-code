@@ -170,9 +170,9 @@ func htmxPost(path string, form url.Values) *http.Request {
 	return req
 }
 
-// Skip once marks the routine's next run for the member and answers with
-// the run after it; the undo clears the mark. Each is one event with its
-// via on the project's repository.
+// Skip once marks the routine's next run for the member; the undo clears
+// the mark. The board answers with no note: the drawer's answer carries
+// it. Each is one event with its via on the project's repository.
 func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
@@ -180,14 +180,14 @@ func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
 	const path = "/routines/ai-software-factory-code/weekly-bump/skip"
 
 	rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Skipped once · next Mon 20 Oct 06:00</p>`) {
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
 		t.Fatalf("skip = %d:\n%s", rec.Code, rec.Body)
 	}
 	if by := r.routines.skips["ai-software-factory-code/weekly-bump"]; by != "sebastian" {
 		t.Fatalf("the skip reached the port as %q", by)
 	}
 	rec = r.do(htmxPost(path, url.Values{"csrf": {s.csrf}, "undo": {"1"}}), ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Skip once undone</p>`) {
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
 		t.Fatalf("undo = %d:\n%s", rec.Code, rec.Body)
 	}
 	if by, ok := r.routines.skips["ai-software-factory-code/weekly-bump"]; !ok || by != "" {
@@ -270,15 +270,15 @@ func TestRoutineToggle(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		routine, field, note, side string
+		routine, field, side string
 	}{
-		{"weekly-bump", "needs_me=0", "Weekly bump runs on its own.", "agent by sebastian"},
-		{"audit", "needs_me=1", "Audit needs you.", "human by sebastian"},
-		{"nightly-hold", "undo=1", "Nightly hold follows its config.", ""},
+		{"weekly-bump", "needs_me=0", "agent by sebastian"},
+		{"audit", "needs_me=1", "human by sebastian"},
+		{"nightly-hold", "undo=1", ""},
 	} {
 		name, value, _ := strings.Cut(tt.field, "=")
 		rec := r.do(htmxPost("/routines/ai-software-factory-code/"+tt.routine+"/needs-me", url.Values{"csrf": {s.csrf}, name: {value}}), ck)
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">`+tt.note+`</p>`) {
+		if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), `class="note"`) {
 			t.Fatalf("%s = %d:\n%s", tt.field, rec.Code, rec.Body)
 		}
 		if got := r.routines.needsMe["ai-software-factory-code/"+tt.routine]; got != tt.side {
@@ -304,9 +304,9 @@ func TestRoutineToggle(t *testing.T) {
 	}
 }
 
-// Run now starts a run and answers with what it did once its outcome is
-// in: the card it filed and the column it waits in, the hold that kept it,
-// or "Filing…" when no outcome came within the wait.
+// Run now starts a run and the drawer answers with what it did once its
+// outcome is in: the card it filed and the column it waits in, the hold
+// that kept it, or "Filing…" when no outcome came within the wait.
 func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	wait, poll := runNowWait, runNowPoll
 	runNowWait, runNowPoll = 50*time.Millisecond, 5*time.Millisecond
@@ -323,7 +323,7 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	note := func(hook func(string, string) (factoryd.RoutineRun, error)) string {
 		t.Helper()
 		r.routines.runNow = hook
-		rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}}), ck)
+		rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}, "from": {"drawer"}, "tab": {"runs"}}), ck)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("run now = %d %s", rec.Code, rec.Body)
 		}

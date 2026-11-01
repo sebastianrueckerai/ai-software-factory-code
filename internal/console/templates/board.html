@@ -7,7 +7,6 @@
 {{end}}<a href="/{{.ToggleQuery}}" id="view-toggle" class="view-toggle" data-view="{{if ne .View "wide"}}wide{{end}}" aria-keyshortcuts="w">{{if eq .View "wide"}}Four columns{{else}}Wide view{{end}}</a>
 
 <button type="button" id="keys-toggle" class="keys-toggle" aria-haspopup="dialog" aria-controls="keys" aria-keyshortcuts="Shift+?" title="Keys" aria-label="Keys">?</button></div>
-{{with .Note}}<p class="note" role="status">{{.}}</p>{{end}}
 {{range .Problems}}<p class="problem" role="alert">{{.}}</p>{{end}}
 {{if eq .View "wide"}}<section aria-labelledby="human-lane" id="needs-you">
 <h2 id="human-lane">Human lane</h2>
@@ -50,9 +49,11 @@
 <span class="cell spend{{gaugeClass .Spend.EUR .CapEUR}}" title="spend this UTC month against the month cap: the project file's when it sets one, else the factory's, holds included">{{if $.Factory}}<a href="/costs">{{end}}<span><b class="n">{{eur2 .Spend.EUR}}</b> <span class="of">/ {{eur2 .CapEUR}}</span></span><span class="gauge"><meter min="0" max="100" value="{{pct100 .Spend.EUR .CapEUR}}" aria-label="Spend of the month cap">{{pct .Spend.EUR .CapEUR}} percent</meter></span>{{if $.Factory}}</a>{{end}}<span class="pct">{{pct .Spend.EUR .CapEUR}}%</span></span>
 {{if gt .PremiumCapEUR 0.0}}<span class="cell spend{{gaugeClass .PremiumEUR .PremiumCapEUR}}" title="spend on the premium model this UTC month against its cap, budget.premium_month_eur; past it, premium calls run on big"><span><span class="of">premium</span> <b class="n">{{eur2 .PremiumEUR}}</b> <span class="of">/ {{eur2 .PremiumCapEUR}}</span></span><span class="gauge"><meter min="0" max="100" value="{{pct100 .PremiumEUR .PremiumCapEUR}}" aria-label="Premium spend of its month cap">{{pct .PremiumEUR .PremiumCapEUR}} percent</meter></span><span class="pct">{{pct .PremiumEUR .PremiumCapEUR}}%</span></span>
 {{end}}
-{{- if .Pool.Ready}}<span class="cell spend{{gaugeClass .Pool.Used .Pool.Configured}}" title="the month pool the agent's own raises fund from: the budget block's discretionary_eur, this UTC month">pool {{eur2 .Pool.Used}} <span class="of">/ {{eur2 .Pool.Configured}}</span>, {{eur2 .Pool.Remaining}} left</span>
-{{else if .Pool.Unavailable}}<span class="cell warn" title="the month pool could not be read">pool unread</span>
+{{- if .MonthPool.Ready}}<span class="cell spend{{gaugeClass .MonthPool.Used .MonthPool.Configured}}" title="the month pool the agent's own raises fund from: the budget block's discretionary_eur, this UTC month">pool {{eur2 .MonthPool.Used}} <span class="of">/ {{eur2 .MonthPool.Configured}}</span>, {{eur2 .MonthPool.Remaining}} left</span>
+{{else if .MonthPool.Unavailable}}<span class="cell warn" title="the month pool could not be read">pool unread</span>
 {{end}}
+{{- if .Pool.Present}}<span class="cell pool" title="the discretionary pool (discretionary_eur), {{.Pool.Policy}}, {{.Pool.Month}} UTC: the same figures the chat's status line reads">{{.Pool.Words}}</span>
+{{- end}}
 {{- if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
 {{end}}{{if .RoutineCell}}<span class="cell routine{{if .RoutineHeld}} warn{{end}}">{{.RoutineCell}}</span>
 {{end}}{{with .Hold}}<span class="cell warn hold" title="{{.Reason}}: production waits until no plan is open on main">production held · {{.For}}</span>

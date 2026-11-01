@@ -12,7 +12,7 @@ func (c *Console) setSummary(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, "The card's summary is set.", nil)
+	c.showBoard(w, r, http.StatusOK, nil)
 }
 
 // setAccent is POST /tasks/{id}/accent (doSetAccent). The accent shows as
@@ -23,5 +23,5 @@ func (c *Console) setAccent(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, "The card's accent is set.", nil)
+	c.showBoard(w, r, http.StatusOK, nil)
 }

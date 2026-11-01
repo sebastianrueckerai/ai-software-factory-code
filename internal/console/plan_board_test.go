@@ -389,7 +389,7 @@ func TestRetryFilesTheReplacement(t *testing.T) {
 		t.Fatalf("alice retries: %d %q, retried %v, forgejo %v", rec.Code, rec.Body, r.retried, r.fg.calls)
 	}
 	rec := retry(ck, s.csrf)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Retried #7 as #9; it starts once a work slot is free.") {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
 		t.Fatalf("retry: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.retried, []string{"t-c7 by sebastian"}) || len(r.fg.labelled) != 0 {
@@ -427,7 +427,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The factory runs it as #16; card #15 closes.") {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
 		t.Fatalf("the go: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.handed, []string{"t-wait by sebastian"}) {

@@ -555,8 +555,9 @@ document.addEventListener("click", function (e) {
 // the board's swaps until the factory's board shows the card out of the
 // columns it left: an approval's answer does at once, a workflow's step
 // seconds later; then a drawer showing the card's open need loads again.
-// A refusal or a lost request puts the card back at once, the reason in
-// the flash, and so does a factory that has not moved it within a minute.
+// A refusal or a lost request puts the card back at once, and so does a
+// factory that has not moved it within a minute: the card returning to
+// its waiting column is the signal, no line above the board.
 (function () {
   var acts = {}, wait = 60000;
   function board() { return document.getElementById("board"); }
@@ -616,7 +617,7 @@ document.addEventListener("click", function (e) {
     a.off.forEach(function (b) { b.disabled = false; });
     a.busy.forEach(function (el) { el.removeAttribute("aria-busy"); });
   }
-  function back(a, why) {
+  function back(a) {
     for (var i = a.moved.length - 1; i >= 0; i--) {
       var m = a.moved[i];
       if (!m.el.isConnected) continue;
@@ -625,10 +626,6 @@ document.addEventListener("click", function (e) {
       m.el.removeAttribute("data-sent");
     }
     free(a);
-    var flash = document.getElementById("flash");
-    if (!why || !flash) return;
-    flash.textContent = why;
-    flash.hidden = false;
   }
   // the factory's board shows the card out of the columns it left: the
   // move is the factory's now
@@ -652,7 +649,7 @@ document.addEventListener("click", function (e) {
       a.ok = true;
       if (!a.from.length) landed(a);
     } else if (swaps) free(a);
-    else back(a, xhr.status ? "" : "The factory could not be reached; the card is back in its column.");
+    else back(a);
   }
   document.addEventListener("htmx:beforeRequest", function (e) {
     var f = e.detail.elt, k = f.closest && f.closest("[data-card], [data-ghost], [data-drawer], [data-routine-drawer]");
@@ -669,7 +666,7 @@ document.addEventListener("click", function (e) {
       a.from = cols.filter(function (c, i) { return cols.indexOf(c) === i && (!to || c !== to.getAttribute("aria-labelledby")); });
     }
     a.timer = setTimeout(function () {
-      if (acts[id] === a) back(a, "The factory has not moved the card yet; it is back in its column.");
+      if (acts[id] === a) back(a);
     }, wait);
     place(a, true);
   });

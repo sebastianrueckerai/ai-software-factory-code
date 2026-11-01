@@ -76,6 +76,10 @@ type fakeChat struct {
 	totals   map[string][2]float64
 	next     int64
 	spend    []spendRow
+	// funded is the month's agent-funded EUR by repository the pool
+	// read-outs project, and fundedErr a usage read that fails
+	funded    map[string]float64
+	fundedErr error
 	// atts are the stored image rows, any member's, in arrival order
 	atts []storedAttachment
 	// proposals are the proposals and undos, in the order stored
@@ -741,6 +745,14 @@ func (f *fakeChat) ProjectMonthSpend(_ context.Context, repository string, at ti
 		}
 	}
 	return s, nil
+}
+
+// AgentFundedEUR is the month's agent-funded usage the pool read-outs
+// project: the figure the test sets by repository, or the read's failure.
+func (f *fakeChat) AgentFundedEUR(_ context.Context, repository string, _ time.Time) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.funded[repository], f.fundedErr
 }
 
 // TaskSpendSince sums the chat rows of chat task id's repository booked

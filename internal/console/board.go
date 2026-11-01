@@ -1246,12 +1246,12 @@ type statusLine struct {
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
 	// 0 shows no premium meter.
 	PremiumEUR, PremiumCapEUR float64
-	// Pool is the project's month pool, the budget block's
+	// MonthPool is the project's month pool, the budget block's
 	// discretionary_eur: what the agent's own raises have funded of it
 	// this UTC month and what remains (poolOf). Zero: no pool is in
 	// force or no read is wired; Unavailable: the read failed, so no
 	// figure of it shows but the strip says so.
-	Pool      pool
+	MonthPool pool
 	GitHub    string
 	GitHubURL string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
@@ -1264,8 +1264,12 @@ type statusLine struct {
 	// chat's own) or the month's turn; ChatTask is its task id. Approver:
 	// the viewer may fund it.
 	ChatSpent bool
-	ChatTask  string
-	Approver  bool
+	// Pool is the project face's pool status (projectPool): the same
+	// projection the chat's status line and the board read tool read, so
+	// the face and the chat agree on its figures.
+	Pool     poolLine
+	ChatTask string
+	Approver bool
 	// Dependencies are the factory's own dependencies' latest health with
 	// each row's age, the panel's list (roadmap 299); the strip's one dot
 	// carries the worst of them: DepsDown red, DepsDegraded amber, DepsUp
@@ -1309,7 +1313,6 @@ type boardData struct {
 	User  string
 	CSRF  string
 	Filed string
-	Note  string // what the human's last action did
 	Page  string // the layout marks the bar's current destination: the board
 	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
@@ -1733,10 +1736,10 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 }
 
 // showBoard answers a board action with the board of the form's project:
-// to htmx the fragment carrying note, and problems on the approval cards
-// of the tasks they name; a browser's form a redirect to the board after a
-// success (a reload resends nothing), else the page.
-func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
+// to htmx the fragment, and problems on the approval cards of the tasks
+// they name; a browser's form a redirect to the board after a success (a
+// reload resends nothing), else the page.
+func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, problems map[string]string) {
 	f := formFilter(r)
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
 		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
@@ -1749,10 +1752,9 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
-		http.Error(w, note+" The board could not be read; reload it.", http.StatusInternalServerError)
+		http.Error(w, "The board could not be read; reload it.", http.StatusInternalServerError)
 		return
 	}
-	d.Note = note
 	// the approval cards: the wide view's human lane, else Needs you
 	cards := make([]*approvalCard, 0, len(d.Approvals))
 	for i := range d.Approvals {
@@ -2514,6 +2516,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
+		s.Pool = c.projectPool(ctx, v.policy, p, time.Now())
 	}
 	s.TodayEUR = e.Day
 	if s.PremiumCapEUR > 0 {
@@ -2521,7 +2524,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	}
 	if c.cfg.Pools != nil {
 		pl, err := c.poolOf(ctx, v.policy, p, time.Now().UTC())
-		s.Pool = pl
+		s.MonthPool = pl
 		if err != nil {
 			log.Printf("console: the month pool of %s: %v", p.Repository, err)
 			d.Problems = append(d.Problems, "the month's pool could not be read")
@@ -3085,7 +3088,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.showBoard(w, r, http.StatusOK, nil)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -3095,12 +3098,11 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
-	if err != nil {
+	if _, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil); err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.showBoard(w, r, http.StatusOK, nil)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
