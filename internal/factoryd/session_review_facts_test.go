@@ -246,6 +246,86 @@ func TestDivideConquerSessionReviewRetries(t *testing.T) {
 	}
 }
 
+// Roadmap 336: a named start is a fact row beside its timeline line,
+// as stable as the end — the row an activity retry replays is one row
+// (the identity is the card and the session), and a refused write is
+// the activity's error, so its retry records the start instead of
+// losing it while the timeline line stands. A session whose activity
+// failed has no id — it counts against the cap, and no start row names
+// a session "" — and a session without a model answer started none:
+// the ModelAnswered boundary is unchanged.
+func TestDivideConquerSessionStartRetries(t *testing.T) {
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t8"), newFakeKube(), objects)
+	store.answered = map[string]bool{"t8": true}
+	in := SessionAnswerInput{TaskID: "t8", SessionID: "s1", Model: "factory/small", Attempt: 2,
+		Since: time.Now().Add(-time.Minute)}
+
+	// the refused row is observable: the activity fails and no row is
+	// taken, while the timeline line keeps the start's words
+	store.recordFails = map[string]int{EventSessionStarted: 1}
+	if ok, err := runner.SessionAnswered(t.Context(), in); err == nil || !strings.Contains(err.Error(), "the store is down") || ok {
+		t.Fatalf("session answered = (%v, %v), want the refused start row", ok, err)
+	}
+	if rows := eventsOfKind(store, EventSessionStarted); len(rows) != 0 {
+		t.Fatalf("session_started rows = %d, want none taken", len(rows))
+	}
+	tl, _ := objects.Get(t.Context(), "sessions/t8/timeline.jsonl")
+	if !strings.Contains(string(tl), `"event":"session_started"`) || !strings.Contains(string(tl), `"session":"s1"`) {
+		t.Fatalf("timeline = %s, want the line whatever the row does", tl)
+	}
+
+	// the retry records the start, and the replay is the same fact: the
+	// identity is the card and the session, so both calls leave one row
+	for call := 1; call <= 2; call++ {
+		if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+			t.Fatalf("session answered, call %d = (%v, %v), want true", call, ok, err)
+		}
+	}
+	rows := eventsOfKind(store, EventSessionStarted)
+	if len(rows) != 1 {
+		t.Fatalf("session_started rows = %d (%v), want the start once", len(rows), rows)
+	}
+	if key := fmt.Sprintf("%s %s %s", EventSessionStarted, "t8", "s1"); rows[0].IdentityKey != key {
+		t.Fatalf("row identity = %q, want %q", rows[0].IdentityKey, key)
+	}
+	if rows[0].TaskID != "t8" || rows[0].Repository != "sf/repo" || rows[0].Actor != FactoryDecider || rows[0].Via != ViaFactoryd {
+		t.Fatalf("row = %+v, want task t8's, by the decider through factoryd", rows[0])
+	}
+	if rows[0].Detail["session"] != "s1" || rows[0].Detail["model"] != "small" || rows[0].Detail["attempt"] != 2 {
+		t.Fatalf("row detail = %v, want session s1, the model's alias and attempt 2", rows[0].Detail)
+	}
+
+	// another session of the card is its own fact
+	in.SessionID = "s2"
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("second session answered = (%v, %v), want true", ok, err)
+	}
+	if rows := eventsOfKind(store, EventSessionStarted); len(rows) != 2 {
+		t.Fatalf("session_started rows = %d, want one per session", len(rows))
+	}
+
+	// a session whose activity failed has no id: it counts, and no row
+	// names a session ""
+	in.SessionID = ""
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("answered session without an id = (%v, %v), want true", ok, err)
+	}
+	if rows := eventsOfKind(store, EventSessionStarted); len(rows) != 2 {
+		t.Fatalf("session_started rows = %d, want the named sessions alone", len(rows))
+	}
+
+	// a session without a model answer started no session
+	store.answered = map[string]bool{"t8": false}
+	in.SessionID = "s3"
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || ok {
+		t.Fatalf("starved session = (%v, %v), want false", ok, err)
+	}
+	if rows := eventsOfKind(store, EventSessionStarted); len(rows) != 2 {
+		t.Fatalf("session_started rows = %d, want none for the starved session", len(rows))
+	}
+}
+
 // eventsOfKind picks the fake store's event rows of one kind, oldest
 // first.
 func eventsOfKind(store *fakeStore, kind string) []Event {

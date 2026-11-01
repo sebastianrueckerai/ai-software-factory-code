@@ -181,6 +181,34 @@ func (f SessionEndFact) Event(task, repository string, issue int64, ended time.T
 		IdentityKey: identityKey(EventSessionEnd, f.Session, fmt.Sprintf("%d", f.Attempt))}
 }
 
+// SessionStartFact is one named session's start on a card: the moment a
+// session's first model call came back answered, which is what made the
+// pod a session — a pod that started and made no answered call records
+// none. Identity: the card and the session; one session, one row,
+// whichever retry or reattachment records it. A session whose activity
+// failed has no id and records none.
+type SessionStartFact struct {
+	Task    string // with Session: the identity
+	Session string
+	Model   string
+	Attempt int
+}
+
+func (f SessionStartFact) detail() map[string]any {
+	return map[string]any{"session": f.Session, "model": aliasOf(f.Model), "attempt": f.Attempt}
+}
+
+// Event is the start's row of task's card in repository's issue, the row
+// the sessions panel counts: detail {"session", "model", "attempt"} —
+// the timeline line's own words. Identity: the card and the session, so
+// a retry and a reattached write leave one row.
+func (f SessionStartFact) Event(task, repository string, issue int64, at time.Time) Event {
+	return Event{Repository: repository, TaskID: task, IssueNumber: issue, Kind: EventSessionStarted,
+		Actor: FactoryDecider, Via: ViaFactoryd, At: at,
+		Detail:      f.detail(),
+		IdentityKey: identityKey(EventSessionStarted, task, f.Session)}
+}
+
 // ReviewAttemptFact is one model review of one head, the model_review
 // step: an empty Verdict is one the model never judged.
 type ReviewAttemptFact struct {
@@ -422,6 +450,24 @@ func sameJSONValue(a, b any) bool {
 	return bytes.Equal(ja, jb)
 }
 
+// SessionsCoverage names how far the sessions panel reaches: the
+// window's first-merged cohort and the holes around its averages. A card
+// no merge-gate reading at the head it actually built on covers has no
+// historical size — unknown, never the task row's mutable size — and a
+// reading that planned no size is named beside the unsized bucket's own
+// average. A card merged before the repository's first named start holds
+// no start evidence, and a card whose terminal ends name sessions no
+// start row names holds partial evidence: neither is a measured zero,
+// none enters an average, and no start is invented for either — the
+// ends they hold stay the ends panel's own facts.
+type SessionsCoverage struct {
+	Cards         int `json:"cards"`          // first-merged cards in the window
+	UnknownSize   int `json:"unknown_size"`   // of them, cards no reading at their head covers
+	Unsized       int `json:"unsized"`        // of them, cards whose reading planned no size
+	MissingStarts int `json:"missing_starts"` // of them, cards merged before the repository's first named start
+	PartialStarts int `json:"partial_starts"` // of them, cards whose ends name sessions no start row names
+}
+
 // DivideConquer measures the divide-and-conquer plan (roadmap 336, doc
 // docs/plans/2026-10-29-divide-and-conquer.md): whether cards stay
 // within their size bound, what one costs in sessions and euros, and
@@ -429,7 +475,8 @@ func sameJSONValue(a, b any) bool {
 //
 // Every panel reads hard rows the factory already stores, one row per
 // fact, each recorded through the fact payload that names its identity:
-// SessionEndFact (session and attempt), ReviewAttemptFact (head and
+// SessionEndFact (session and attempt), SessionStartFact (card and
+// session), ReviewAttemptFact (head and
 // round), GateHeadFact (card and head), PlanFilingFact (plan and
 // revision, and on a card's own filing row its key), CutFact (plan and cut
 // card). Beside
@@ -453,7 +500,12 @@ type DivideConquer struct {
 
 	GateAboveBound  Figure       `json:"gate_above_bound"`
 	SessionsPerCard []SizeFigure `json:"sessions_per_card"`
-	SessionEnds     []NamedCount `json:"session_ends"`
+	// SessionsCoverage counts the window's first-merged cards and the
+	// holes panel 2's averages read around — unknown or unsized
+	// historical size, missing or partial start evidence — so an old
+	// merged card without start evidence is never a measured zero.
+	SessionsCoverage SessionsCoverage `json:"sessions_coverage"`
+	SessionEnds      []NamedCount     `json:"session_ends"`
 	// EurPerMergedLine divides the window's actual euros by its merged
 	// changed lines; no merged line means undefined, not zero.
 	EurPerMergedLine Figure          `json:"eur_per_merged_line"`
@@ -1514,16 +1566,16 @@ func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricW
 }
 
 // metricDivideConquer populates the divide-and-conquer block the store
-// answers today: CoveredFrom, GateAboveBound, SessionsPerCard,
-// SessionEnds and ReviewsNotReviewed. The economics panels (panels 4,
-// 5, 7, 8, 10, 11, 12) land on another card; their fields stay zero
-// until then.
+// answers today: CoveredFrom, GateAboveBound, SessionsPerCard with its
+// coverage, SessionEnds and ReviewsNotReviewed. The economics panels
+// (panels 4, 5, 7, 8, 10, 11, 12) land on another card; their fields
+// stay zero until then.
 func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
 	var d DivideConquer
 	var covered sql.NullTime
 	if err := db.QueryRowContext(ctx,
 		`SELECT min(e.at) FROM events e JOIN tasks t ON t.id = e.task_id WHERE `+dcCardReach+` AND e.identity_key IS NOT NULL AND e.kind = ANY($2)`,
-		repo, []string{EventGateHead, EventSessionEnd, EventModelReview}).Scan(&covered); err != nil {
+		repo, []string{EventGateHead, EventSessionStarted, EventSessionEnd, EventModelReview}).Scan(&covered); err != nil {
 		return d, err
 	}
 	if covered.Valid {
@@ -1533,7 +1585,7 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 	if d.GateAboveBound, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
 		return d, err
 	}
-	if d.SessionsPerCard, err = metricDivideSessions(ctx, db, repo, w); err != nil {
+	if d.SessionsPerCard, d.SessionsCoverage, err = metricDivideSessions(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	if d.SessionEnds, err = metricDivideSessionEnds(ctx, db, repo, w); err != nil {
@@ -1559,21 +1611,57 @@ func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metri
 		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+over+`)`+from+` GROUP BY 1`, "$2"))
 }
 
-// metricDivideSessions — panel 2: mean lifetime distinct actually
-// started sessions per merged card, grouped by the card's filed size
-// including unsized. The cohort is cards whose first merge lands in
-// the span; the card's lifetime sessions are distinct session_started
-// rows across all time. A size absent from the cohort is absent from
-// the slice.
-func metricDivideSessions(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]SizeFigure, error) {
-	const cohort = ` FROM (
-			SELECT COALESCE(t.size, '') AS size, m.at,
-				(SELECT count(DISTINCT s.detail->>'session') FROM events s
-					WHERE s.task_id = t.id AND s.kind = 'session_started' AND s.detail->>'session' <> '') AS started
-			FROM tasks t JOIN LATERAL (SELECT min(e.at) AS at FROM events e
-				WHERE e.task_id = t.id AND e.kind = 'pull_request_merged') m ON m.at IS NOT NULL
-			WHERE ` + dcCardReach + ` AND m.at >= %s AND m.at < $3
-		) c`
+// metricDivideSessions — panel 2: mean lifetime distinct named starts
+// per merged card, grouped by the historical size the merge gate's
+// reading planned at the head the card actually built on — never the
+// task row's mutable size. The cohort is cards whose first merge lands
+// in the span; the card's starts are its distinct named session_started
+// rows across all time, a start before the window included. A card no
+// reading at its head covers has no historical size and sits the
+// averages out; so does one whose start evidence is missing — merged
+// before the repository's first named start, so its silence is the
+// recorder's, not the card's — or partial, its ends naming sessions no
+// start row names: neither is a measured zero, and every hole is
+// counted in the coverage, never guessed into an average. A size absent
+// from the measured cohort is absent from the slice.
+func metricDivideSessions(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]SizeFigure, SessionsCoverage, error) {
+	lo := w.SparkFrom
+	if w.PrevFrom.Before(lo) {
+		lo = w.PrevFrom
+	}
+	cards, err := metricSessionPull(ctx, db, repo, lo, w.To)
+	if err != nil {
+		return nil, SessionsCoverage{}, err
+	}
+	// the repository's first named start bounds when start recording
+	// began: a card merged before it holds no start evidence
+	var firstStart sql.NullTime
+	if err := db.QueryRowContext(ctx,
+		`SELECT min(e.at) FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE t.repository = $1 AND e.kind = 'session_started' AND e.detail->>'session' <> ''`, repo).Scan(&firstStart); err != nil {
+		return nil, SessionsCoverage{}, err
+	}
+	var cov SessionsCoverage
+	for _, c := range cards {
+		if !withinWindow(c.merged, w.From, w.To) {
+			continue
+		}
+		cov.Cards++
+		switch {
+		case !c.size.Valid:
+			cov.UnknownSize++
+		case c.size.String == "":
+			cov.Unsized++
+		}
+		if !c.evidenced(firstStart) {
+			if c.started == 0 {
+				cov.MissingStarts++
+			}
+			if c.endsNoStart > 0 {
+				cov.PartialStarts++
+			}
+		}
+	}
 	figs := map[string]*SizeFigure{}
 	at := func(size string) *SizeFigure {
 		if f, ok := figs[size]; ok {
@@ -1583,71 +1671,142 @@ func metricDivideSessions(ctx context.Context, db *sql.DB, repo string, w metric
 		figs[size] = f
 		return f
 	}
-	scalar := `SELECT c.size, sum(c.started)::float8, count(*)::float8`
-	for _, sp := range []struct {
-		from, to time.Time
-		prev     bool
-	}{{w.From, w.To, false}, {w.PrevFrom, w.PrevTo, true}} {
-		rows, err := db.QueryContext(ctx, scalar+fmt.Sprintf(cohort, "$2")+` GROUP BY 1`, repo, sp.from, sp.to)
-		if err != nil {
-			return nil, err
-		}
-		for rows.Next() {
-			var size string
-			var sum, cards float64
-			if err := rows.Scan(&size, &sum, &cards); err != nil {
-				_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
-				return nil, err
+	type totals struct{ starts, cards float64 }
+	spans := []struct {
+		lo, hi time.Time
+		set    func(f *Figure, v float64, has bool)
+	}{
+		{w.From, w.To, func(f *Figure, v float64, has bool) { f.Value, f.Has = v, has }},
+		{w.PrevFrom, w.PrevTo, func(f *Figure, v float64, has bool) { f.Prev, f.PrevHas = v, has }},
+	}
+	for _, sp := range spans {
+		tots := map[string]*totals{}
+		for _, c := range cards {
+			if !c.size.Valid || !c.evidenced(firstStart) || !withinWindow(c.merged, sp.lo, sp.hi) {
+				continue
 			}
-			f := at(size)
-			if sp.prev {
-				f.Figure.Prev, f.Figure.PrevHas = metricRatio(sum, cards)
-			} else {
-				f.Figure.Value, f.Figure.Has = metricRatio(sum, cards)
+			t, ok := tots[c.size.String]
+			if !ok {
+				t = &totals{}
+				tots[c.size.String] = t
 			}
+			t.starts, t.cards = t.starts+c.started, t.cards+1
 		}
-		if err := rows.Err(); err != nil {
-			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
-			return nil, err
-		}
-		_ = rows.Close() // #nosec G104 -- the read is exhausted and rows.Err checked; Close repeats it at most
-	}
-	weekly := `SELECT ` + metricBucket("c.at") + `, c.size, sum(c.started)::float8, count(*)::float8`
-	rows, err := db.QueryContext(ctx, weekly+fmt.Sprintf(cohort, "$2")+` GROUP BY 1, 2`, repo, w.SparkFrom, w.To)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var b int
-		var size string
-		var sum, cards float64
-		if err := rows.Scan(&b, &size, &sum, &cards); err != nil {
-			return nil, err
-		}
-		if b >= 0 && b < 7 {
-			f := at(size)
-			f.Figure.Weeks[b], _ = metricRatio(sum, cards)
+		for size, t := range tots {
+			v, has := metricRatio(t.starts, t.cards)
+			sp.set(&at(size).Figure, v, has)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	var weekTots [7]map[string]*totals
+	for _, c := range cards {
+		if !c.size.Valid || !c.evidenced(firstStart) {
+			continue
+		}
+		b := weekBucket(c.merged, w.SparkFrom)
+		if b < 0 || b >= len(weekTots) || !withinWindow(c.merged, w.SparkFrom, w.To) {
+			continue
+		}
+		if weekTots[b] == nil {
+			weekTots[b] = map[string]*totals{}
+		}
+		t, ok := weekTots[b][c.size.String]
+		if !ok {
+			t = &totals{}
+			weekTots[b][c.size.String] = t
+		}
+		t.starts, t.cards = t.starts+c.started, t.cards+1
+	}
+	for b, sizes := range weekTots {
+		for size, t := range sizes {
+			at(size).Figure.Weeks[b], _ = metricRatio(t.starts, t.cards)
+		}
 	}
 	out := make([]SizeFigure, 0, len(figs))
 	for _, f := range figs {
 		out = append(out, *f)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Size < out[j].Size })
-	return out, nil
+	return out, cov, nil
+}
+
+// metricSessionCard is one card of the sessions cohort: its first merge,
+// the historical size the merge gate's reading planned at the head the
+// card actually built on (valid false: no reading covers the head — an
+// abandoned head's reading is another head's), its lifetime distinct
+// named starts, and the sessions its terminal ends name that no start
+// row names — partial start evidence: the end is a fact, the missing
+// start is never invented from it.
+type metricSessionCard struct {
+	merged      time.Time
+	size        sql.NullString
+	started     float64
+	endsNoStart float64
+}
+
+// evidenced tells whether the card's starts are evidence, not silence:
+// a start row of its own, or a merge after the repository began
+// recording starts, with no ended session its start rows fail to name.
+func (c metricSessionCard) evidenced(firstStart sql.NullTime) bool {
+	if c.endsNoStart > 0 {
+		return false
+	}
+	return c.started > 0 || firstStart.Valid && !c.merged.Before(firstStart.Time)
+}
+
+// metricSessionPull reads the repository's first-merged cards whose
+// first merge falls in [lo, hi) — the economics pull's own shape:
+// DISTINCT ON keeps one row per card before the joins, so duplicate
+// merges and the lookups never fan a card out. The reading is the
+// card's final gate_head fact at the head the task actually built on
+// (task.sha), so an abandoned head's reading cannot stand in for the
+// merged head's; the starts and the ends-without-starts are the card's
+// lifetime rows, unbounded below.
+func metricSessionPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Time) ([]metricSessionCard, error) {
+	rows, err := db.QueryContext(ctx, `SELECT m.at, g.size,
+		(SELECT count(DISTINCT st.detail->>'session')::float8 FROM events st
+			WHERE st.task_id = m.task_id AND st.kind = 'session_started' AND st.detail->>'session' <> '') AS starts,
+		(SELECT count(DISTINCT en.detail->>'session')::float8 FROM events en
+			WHERE en.task_id = m.task_id AND en.kind = 'session_end' AND en.detail->>'outcome' <> 'not_started'
+				AND NOT EXISTS (SELECT 1 FROM events st WHERE st.task_id = en.task_id
+					AND st.kind = 'session_started' AND st.detail->>'session' = en.detail->>'session')) AS ends_no_start
+		FROM (SELECT DISTINCT ON (e.task_id) e.task_id, e.at
+			FROM events e JOIN tasks t ON t.id = e.task_id
+			WHERE e.kind = 'pull_request_merged' AND t.repository = $1 AND t.kind <> 'chat'
+				AND t.source <> 'roll' AND e.at < $3
+			ORDER BY e.task_id, e.at, e.id) m
+		JOIN tasks t ON t.id = m.task_id
+		LEFT JOIN LATERAL (SELECT gh.detail->>'size' AS size
+			FROM events gh WHERE gh.kind = 'gate_head' AND gh.task_id = m.task_id
+				AND gh.detail->>'head' = t.sha
+			ORDER BY gh.id DESC LIMIT 1) g ON true
+		WHERE m.at >= $2`, repo, lo, hi)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []metricSessionCard
+	for rows.Next() {
+		var c metricSessionCard
+		if err := rows.Scan(&c.merged, &c.size, &c.started, &c.endsNoStart); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // metricDivideSessionEnds — panel 3: the window's session ends by
 // cause, ordered by count descending then name. The causes are the
-// session outcomes the runner records.
+// session outcomes the runner records; a not_started end is no
+// session's — a pod that never became one — so however its row landed,
+// it inflates no distribution. An end whose start row is missing stays
+// the fact it is: the ends panel keeps it, the sessions panel's
+// coverage names the hole.
 func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
 	rows, err := db.QueryContext(ctx, `SELECT e.detail->>'outcome', count(*)::float8
 		FROM events e JOIN tasks t ON t.id = e.task_id
-		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.at >= $2 AND e.at < $3
+		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.detail->>'outcome' <> 'not_started'
+			AND e.at >= $2 AND e.at < $3
 		GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To)
 	if err != nil {
 		return nil, err
