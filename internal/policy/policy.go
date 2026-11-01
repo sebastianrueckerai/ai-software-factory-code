@@ -129,7 +129,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_summary", "set_accent", "invite", "github_export",
-	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
+	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool",
 	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset",
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}
@@ -144,7 +144,7 @@ var VisionModels = []string{"vision"}
 var DefaultChat = ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
 	Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 		"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
-		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip"}}
+		"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
 
 // The autonomy levels of a project (roadmap 239): how much the project
 // agent may do without its member's OK. Full auto is no level of its
@@ -190,9 +190,10 @@ var fullAutoOff = []string{"approve_merge", "deny_merge", "alert_verdict", "writ
 
 // AlwaysConfirm are the tools confirmed at every level: merges while the
 // rule is human, invites, the actions outside the project, and the
-// changes of the project's file: the level, the cap and the routines.
+// changes of the project's file: the level, the cap, the pool and the
+// routines.
 var AlwaysConfirm = []string{"approve_merge", "deny_merge", "invite", "alert_verdict",
-	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete"}
+	"promote_resource", "release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete", "set_pool"}
 
 // ConfirmFor resolves the confirm list of autonomy level at merge rule
 // over base, the list the policy and the project file set: manual is
