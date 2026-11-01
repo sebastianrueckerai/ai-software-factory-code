@@ -90,6 +90,27 @@ func (g *turnGate) leave(key string) {
 	close(next)
 }
 
+// unline takes the waiting channel back out of the thread's line,
+// waking no one: a turn that queued but never runs — its message could
+// not store, or a member's stop ended its wait — leaves the turns behind
+// it in their places. False answers that the line no longer holds it:
+// its turn already opened, so it owns the line as a running turn does.
+func (g *turnGate) unline(key string, wait <-chan struct{}) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	line := g.threads[key]
+	if line == nil {
+		return false
+	}
+	for i, ch := range line.waiting {
+		if ch == wait {
+			line.waiting = append(line.waiting[:i], line.waiting[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
 // listen opens the thread's turn in flight to the messages sent while it
 // runs.
 func (g *turnGate) listen(key string) {
@@ -141,20 +162,38 @@ func (g *turnGate) working(key string) bool {
 }
 
 // slot takes one of repository's limit model turns, waiting for one to
-// free, and answers its release.
-func (g *turnGate) slot(repository string, limit int) func() {
+// free, and answers its release. Nil, taking none, when ctx ends while
+// it waits: the chat's own turn, which a member's press may stop there,
+// passes its stop's context; every turn that registers no stop waits on
+// Background as long as a turn takes.
+func (g *turnGate) slot(ctx context.Context, repository string, limit int) func() {
+	stop := context.AfterFunc(ctx, g.wake)
+	defer stop()
 	g.mu.Lock()
-	for g.running[repository] >= max(limit, 1) {
+	defer g.mu.Unlock()
+	for {
+		if ctx.Err() != nil {
+			return nil
+		}
+		if g.running[repository] < max(limit, 1) {
+			g.running[repository]++
+			return func() {
+				g.mu.Lock()
+				g.running[repository]--
+				g.cond.Broadcast()
+				g.mu.Unlock()
+			}
+		}
 		g.cond.Wait()
 	}
-	g.running[repository]++
+}
+
+// wake ends every slot wait at once, so one whose context ended takes no
+// turn and leaves.
+func (g *turnGate) wake() {
+	g.mu.Lock()
+	g.cond.Broadcast()
 	g.mu.Unlock()
-	return func() {
-		g.mu.Lock()
-		g.running[repository]--
-		g.cond.Broadcast()
-		g.mu.Unlock()
-	}
 }
 
 // Behind takes a writer's place in thread n's line behind its turn in
@@ -181,56 +220,77 @@ func (c *Console) Behind(repository, login string, n int64) (queued bool, land f
 	}
 }
 
-// stopGate holds each chat thread's running turn that a member may stop
-// (the chat-stop plan): its cancel and, once pressed, who stopped it.
-// Only the chat's own message path registers a turn: a compaction, a
-// fund's resume, a wake's and a card answer's run unregistered, so a
-// press during them finds nothing and changes nothing.
+// stopGate holds each chat thread's turns that a member may stop (the
+// chat-stop plan): each one's cancel and, once pressed, who stopped it.
+// A turn registers when its POST owns it, before it waits behind the
+// thread's turn in flight or for a model slot, so the stop button the
+// page shows from the POST always reaches a turn. Only the chat's own
+// message path registers a turn: a compaction, a fund's resume, a wake's
+// and a card answer's run unregistered, so a press during them finds
+// nothing and changes nothing.
 type stopGate struct {
 	mu    sync.Mutex
-	stops map[string]*stopEntry
+	stops map[string][]*stopEntry
 }
 
-// stopEntry is one running turn's stop: cancel ends its model call at
-// once; by names the member whose press did, and the entry is spent with
-// the press, so a second one answers as if no turn ran.
+// stopEntry is one turn's stop: cancel ends its model call at once; by
+// names the member whose press did, and the entry is spent with the
+// press, so a second one answers as if no turn ran.
 type stopEntry struct {
 	cancel context.CancelFunc
 	by     string
 }
 
-func newStopGate() *stopGate { return &stopGate{stops: map[string]*stopEntry{}} }
+func newStopGate() *stopGate { return &stopGate{stops: map[string][]*stopEntry{}} }
 
-// enter registers the thread's running turn's cancel; leave, when the
-// turn ends however it ends, takes the entry back.
+// enter registers the thread's turn's cancel at the queue's end: a
+// successor never displaces an unspent predecessor.
 func (g *stopGate) enter(key string, cancel context.CancelFunc) *stopEntry {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	e := &stopEntry{cancel: cancel}
-	g.stops[key] = e
+	g.stops[key] = append(g.stops[key], e)
 	return e
 }
 
-func (g *stopGate) leave(key string) {
+// leave, when the turn ends however it ends, takes its own entry back;
+// the thread's later turns keep theirs.
+func (g *stopGate) leave(key string, e *stopEntry) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	delete(g.stops, key)
+	s := g.stops[key]
+	for i, x := range s {
+		if x == e {
+			s = append(s[:i], s[i+1:]...)
+			break
+		}
+	}
+	if len(s) == 0 {
+		delete(g.stops, key)
+		return
+	}
+	g.stops[key] = s
 }
 
-// cancel stops the thread's running turn for by: false, changing nothing,
-// when none runs or a press already spent its entry. A true press lands
-// at the turn's next step boundary.
+// cancel stops the thread's turn for by — the one in flight, else the
+// next one waiting: false, changing nothing, when the thread holds no
+// unspent entry. The stopped turn ends at its next step boundary: a
+// wait it sits in at once, a model call cut, a tool call once the one in
+// flight ran. A press may spend each entry once, so a second one on the
+// same turn changes nothing while a later turn's stops the later turn.
 func (g *stopGate) cancel(key, by string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	e := g.stops[key]
-	if e == nil || e.cancel == nil {
-		return false
+	for _, e := range g.stops[key] {
+		if e.cancel == nil {
+			continue // a press already spent this entry
+		}
+		e.cancel()
+		e.cancel = nil
+		e.by = by
+		return true
 	}
-	e.cancel()
-	e.cancel = nil
-	e.by = by
-	return true
+	return false
 }
 
 // who names the member who stopped the entry's turn, "" while it runs.
@@ -247,12 +307,25 @@ func (g *stopGate) who(e *stopEntry) string {
 func (t *turn) key() string { return threadKey(t.p.Repository, t.owner, t.conv) }
 
 // takeTurn waits for the thread's turn: the stream says queued with its
-// place while one runs. The returned leave ends it.
-func (t *turn) takeTurn(pos int, wait <-chan struct{}) {
+// place while one runs. True answers that the poster owns the thread's
+// turn — the wait closed, or the line handed it over before a stop
+// ended the wait — so its leave must end the turn; false, that a
+// member's stop ended the wait first and the poster's channel has left
+// the line already.
+func (t *turn) takeTurn(pos int, wait <-chan struct{}) bool {
 	if pos > 0 {
 		t.send("queued", map[string]int{"position": pos})
 	}
-	<-wait
+	if t.sctx == nil {
+		<-wait
+		return true
+	}
+	select {
+	case <-wait:
+		return true
+	case <-t.sctx.Done():
+		return !t.c.turns.unline(t.key(), wait)
+	}
 }
 
 // detach lets the turn run to its end when the member leaves: the page

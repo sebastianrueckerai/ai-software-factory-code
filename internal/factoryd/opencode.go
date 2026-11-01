@@ -166,11 +166,15 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 		subagent = p + "/" + id
 	}
 	// every declared model's served window, asked of the gateway before
-	// the server starts; a window the gateway cannot name leaves that
-	// model on the trust cap and opencode's own threshold
+	// the server starts, all under one deadline: a gateway that answers
+	// nothing bounds the asks, not the session's start. A window it
+	// cannot name leaves that model on the trust cap and opencode's own
+	// threshold
+	askCtx, askCancel := context.WithTimeout(ctx, 10*time.Second)
+	defer askCancel()
 	windows := map[string]int{}
 	for _, id := range append([]string{modelID}, more...) {
-		w, err := o.servedWindow(ctx, id)
+		w, err := o.servedWindow(askCtx, id)
 		if err != nil {
 			log.Printf("opencode: the window of %s: %v; the session runs without one", id, err)
 			continue
@@ -918,14 +922,14 @@ const mcpTimeoutMS = 150000
 // session's sandbox identity: the same token the identity proxy attaches,
 // read fresh in case the credential rotated. A window of 0 means the
 // gateway prices the alias but no deployment reports one.
+// servedWindow asks the gateway for the alias's served context window on
+// a ctx whose deadline the caller set: one bound for every model's ask.
 func (o *Opencode) servedWindow(ctx context.Context, alias string) (int, error) {
 	token, err := readToken(o.TokenFile)
 	if err != nil {
 		return 0, err
 	}
-	cx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(cx, http.MethodGet, o.GatewayURL+"/v1/window/"+url.PathEscape(alias), nil) // #nosec G107 -- the host is the configured GatewayURL, a variable only in tests
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, o.GatewayURL+"/v1/window/"+url.PathEscape(alias), nil) // #nosec G107 -- the host is the configured GatewayURL, a variable only in tests
 	if err != nil {
 		return 0, err
 	}

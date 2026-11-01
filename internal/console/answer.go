@@ -127,7 +127,7 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 		t.apply(p)
 		return
 	}
-	release := t.c.turns.slot(t.p.Repository, t.parallelTurns())
+	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
 	defer release()
 	task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {

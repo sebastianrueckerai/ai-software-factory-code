@@ -38,6 +38,9 @@ type OperatorModel struct {
 const (
 	operatorTimeout = 2 * time.Minute
 	OperatorTokens  = 16384
+	// windowTimeout bounds the window ask alone: a metadata GET, not a
+	// model call, so it waits none of operatorTimeout's room.
+	windowTimeout = 10 * time.Second
 )
 
 // OperatorMessage is one message of the conversation, in the OpenAI chat
@@ -92,7 +95,7 @@ func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string
 // purpose; an alias the gateway cannot price is an error, and the caller
 // decides how it runs without a window.
 func (m *OperatorModel) Window(ctx context.Context, taskID, alias string) (int, error) {
-	ctx, cancel := context.WithTimeout(ctx, operatorTimeout)
+	ctx, cancel := context.WithTimeout(ctx, windowTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.GatewayURL+"/v1/window/"+url.PathEscape(alias), nil) // #nosec G704 -- the host is the configured GatewayURL and the alias a policy class
 	if err != nil {
