@@ -1221,15 +1221,8 @@ func TestRecordReplanOfARound(t *testing.T) {
 		} else if _, blob := e.Detail["cards"]; blob {
 			t.Fatalf("%s: the revision's row %+v carries the cards blob, want one row per card", tc.name, e.Detail)
 		}
-		if len(rows) != 1+len(tc.issues) {
-			t.Fatalf("%s: %d plan_replanned rows (%v), want one for the revision and one per card", tc.name, len(rows), rows)
-		}
-		for key, issue := range tc.issues {
-			e, ok := rows[identityKey(EventPlanReplanned, "p", "3", key)]
-			if !ok || e.Detail["card"] != issue || e.Detail["key"] != key ||
-				e.Detail["origin"] != ReplanRound || e.Detail["revision"] != 3 {
-				t.Fatalf("%s: %s's row %+v, want the card and its key canonical", tc.name, key, e)
-			}
+		if len(rows) != 1 {
+			t.Fatalf("%s: %d plan_replanned rows (%v), want the revision's alone: a card files its row at its filing", tc.name, len(rows), rows)
 		}
 		for _, id := range []string{"t-foundation", "t-links-api", "t-redirects"} {
 			if lines := stepsNamed(t, r, id, "replanned"); len(lines) != 0 {

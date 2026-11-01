@@ -273,7 +273,7 @@ func (f GateHeadFact) Event(repository string, issue int64) Event {
 type PlanFilingFact struct {
 	Plan     string // with Revision: the identity
 	Revision int
-	Origin   string // ReplanPerson, ReplanCut or "round": the panel's origin
+	Origin   string // ReplanPerson, ReplanCut or "round"; "" is a plain filing
 	Card     int64  // the filed card's issue; 0 on the revision's own row
 	Key      string // the filed card's plan key; "" on the revision's own row
 }
@@ -324,33 +324,6 @@ func (f CutFact) Event(repository string, issue int64) Event {
 		Actor: FactoryDecider, Via: ViaFactoryd,
 		Detail:      map[string]any{"plan": f.Plan, "group": f.Group, "revision": f.Revision, "into": f.Into, "session": f.Session, "spent": f.Spent},
 		IdentityKey: identityKey(EventCut, f.Plan, f.Card)}
-}
-
-// EventPlanCardFiled is one card's filing into a round of its plan, the
-// plan_card_filed row — distinct from card_filed, the row of who filed a
-// card's issue by hand. The row lands in the filing that gives the card
-// its issue, before the issue is stored, so a retry that runs the moment
-// again lands the one row; a card a later revision keeps — its issue
-// standing — is no new filing, and one filed before the rows were stays
-// unknown. Detail {"plan", "key", "round", "revision"}.
-const EventPlanCardFiled = "plan_card_filed"
-
-// CardFilingFact is that filing. Identity: the card; one card, one row,
-// at the filing that gave it its issue.
-type CardFilingFact struct {
-	Card     string // the identity
-	Plan     string
-	Key      string
-	Round    int
-	Revision int
-}
-
-// Event is the filing's row of repository's issue.
-func (f CardFilingFact) Event(repository string, issue int64) Event {
-	return Event{Repository: repository, TaskID: f.Card, IssueNumber: issue, Kind: EventPlanCardFiled,
-		Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail:      map[string]any{"plan": f.Plan, "key": f.Key, "round": f.Round, "revision": f.Revision},
-		IdentityKey: identityKey(EventPlanCardFiled, f.Card)}
 }
 
 // HoldIntervalFact is one production hold's end, the production_released
@@ -450,7 +423,8 @@ func sameJSONValue(a, b any) bool {
 // fact, each recorded through the fact payload that names its identity:
 // SessionEndFact (session and attempt), ReviewAttemptFact (head and
 // round), GateHeadFact (card and head), PlanFilingFact (plan and
-// revision), CutFact (plan and cut card) and CardFilingFact (the card). Beside
+// revision, and on a card's own filing row its key), CutFact (plan and cut
+// card). Beside
 // them the store's own rows: session_started and session_pushed events
 // (identity task and session), plan_closed events (identity task and
 // revision), the releases row (an open hold) and the task_status row
