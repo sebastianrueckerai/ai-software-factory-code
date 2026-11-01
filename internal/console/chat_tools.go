@@ -1243,8 +1243,9 @@ var tools = []chatTool{
 			s, err := t.c.spendLine(t.r.Context(), t.p)
 			return "The project's " + s + ".", nil, err
 		}},
-	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "A card's pull request diff, its first 20 KB.",
+	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam,
+		"from": stepParam("the first line to read"), "to": stepParam("the last line to read")}, required: []string{"task_id"},
+		about: "A card's pull request diff, its lines from and to, else its first 20 KB.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "The newest revision of a card's plan: its sha256, questions and cards.",
@@ -1946,7 +1947,9 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 // diffLimit bounds the diff the agent reads.
 const diffLimit = 20 << 10
 
-// diff is the diff of card in's pull request, read as the member.
+// diff is the diff of card in's pull request, read as the member: short
+// read whole, long cut at 20 KB with the line to read on from, or its
+// lines from..to as one numbered window under the same cap.
 func (t *turn) diff(in toolInput) (string, error) {
 	k, err := t.card(in)
 	if err != nil {
@@ -1964,8 +1967,12 @@ func (t *turn) diff(in toolInput) (string, error) {
 	if err := t.c.as(t.r.Context(), t.a.s, http.MethodGet, path, nil, http.StatusOK, &raw); err != nil {
 		return "", &forgejoRefusal{"read the pull request's diff", err}
 	}
+	if s, ok := lineWindow(fmt.Sprintf("card #%d's diff", k.IssueNumber), raw, in.From, in.To, diffLimit); ok {
+		return s, nil
+	}
 	if len(raw) > diffLimit {
-		return string(raw[:diffLimit]) + fmt.Sprintf("\n… the diff goes on for %s more bytes", answered(raw, len(raw)-diffLimit)), nil
+		next := strings.Count(string(raw[:diffLimit]), "\n") + 1
+		return string(raw[:diffLimit]) + fmt.Sprintf("\n(cut at 20 KB of %s bytes; read on from line %d)", answered(raw, len(raw)), next), nil
 	}
 	return string(raw), nil
 }

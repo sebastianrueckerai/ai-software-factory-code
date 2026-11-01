@@ -386,6 +386,54 @@ func TestChatFileRead(t *testing.T) {
 	}
 }
 
+// longDiff is the rig's long pull request diff: a header line of 31 bytes
+// and 5,000 lines of 16, so the 20 KB cut falls inside line 1280 and every
+// range reads whole lines.
+var longDiff = func() string {
+	var b strings.Builder
+	b.WriteString("diff --git a/long.go b/long.go\n")
+	for i := 1; i <= 5000; i++ {
+		fmt.Fprintf(&b, "body %010d\n", i)
+	}
+	return b.String()
+}()
+
+// The diff read is a card's pull request diff, short read whole, long cut
+// at 20 KB with its size and the line to read on from, from and to one
+// line-numbered window under the same cap, a range off its lines answered
+// with the line count.
+func TestChatDiffRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	equal(t, "the short diff reads", reads(t, r, g, "diff", `{"task_id":"t-r"}`), []string{
+		"diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n",
+	})
+	r.fg.mu.Lock()
+	r.fg.pullDiff = longDiff
+	r.fg.mu.Unlock()
+	equal(t, "the long diff reads", reads(t, r, g, "diff", `{"task_id":"t-r"}`), []string{
+		longDiff[:20<<10] + "\n(cut at 20 KB of 80031 bytes; read on from line 1280)",
+	})
+	head := "card #11's diff: 80031 bytes, 5001 lines."
+	window := "line 1: diff --git a/long.go b/long.go\n"
+	for i := 2; i <= 1364; i++ {
+		window += fmt.Sprintf("line %d: body %010d\n", i, i-1)
+	}
+	window += "… a narrower range fits: raise from or lower to.\n"
+	equal(t, "the diff reads its ranges", reads(t, r, g,
+		"diff", `{"task_id":"t-r","from":1280,"to":1282}`,
+		"diff", `{"task_id":"t-r","from":5000}`,
+		"diff", `{"task_id":"t-r","from":1,"to":5001}`,
+		"diff", `{"task_id":"t-r","from":30,"to":10}`,
+		"diff", `{"task_id":"t-r","from":5002}`,
+	), []string{
+		head + "\n\nline 1280: body 0000001279\nline 1281: body 0000001280\nline 1282: body 0000001281\n",
+		head + "\n\nline 5000: body 0000004999\nline 5001: body 0000005000\n",
+		head + "\n\n" + window,
+		head + " from 30 and to 10 name no line range of its 5001 lines: name from at or before to, inside lines 1 to 5001.",
+		head + " from 5002 and to 0 name no line range of its 5001 lines: name from at or before to, inside lines 1 to 5001.",
+	})
+}
+
 // ciHead is main's head in the fake Forgejo.
 var ciHead = "abc1234" + strings.Repeat("0", 33)
 

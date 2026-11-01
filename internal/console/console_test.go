@@ -77,6 +77,7 @@ type fakeForgejo struct {
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
 	pullHead string            // PR 9's current head; empty answers no pull read
+	pullDiff string            // PR 9's diff; empty answers the short fixture
 	// posted are the comment bodies per path, in the order they came
 	posted map[string][]string
 	// scene is a lab scene's repository, answered after the rig's own:
@@ -289,7 +290,7 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/commits/"), "/status")
 		io.WriteString(w, cmp.Or(f.statuses[sha], `{"state":"","statuses":null}`))
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9.diff":
-		io.WriteString(w, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
+		io.WriteString(w, cmp.Or(f.pullDiff, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n"))
 	default:
 		http.NotFound(w, r)
 	}

@@ -487,36 +487,52 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	if bytes.IndexByte(raw[:min(len(raw), binarySniff)], 0) >= 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%s bytes).", p, in.Ref, answered(raw, len(raw))))
 	}
-	if in.From != 0 || in.To != 0 {
-		lines := strings.Split(string(raw), "\n")
-		if bytes.HasSuffix(raw, []byte("\n")) {
-			lines = lines[:len(lines)-1]
-		}
-		if len(raw) == 0 {
-			lines = nil
-		}
-		head := fmt.Sprintf("%s at %s: %s bytes, %d lines.", p, in.Ref, answered(raw, len(raw)), len(lines))
-		if in.From < 0 || in.To < 0 || in.From > len(lines) || (in.From > 0 && in.To > 0 && in.From > in.To) {
-			return head + fmt.Sprintf(" from %d and to %d name no line range of its %d lines: name from at or before to, inside lines 1 to %d.", in.From, in.To, len(lines), len(lines)), nil
-		}
-		var b strings.Builder
-		size := 0
-		for i := max(in.From, 1); i <= min(cmp.Or(in.To, len(lines)), len(lines)); i++ {
-			if l := lines[i-1]; size+len(l) > fileLimit {
-				fmt.Fprint(&b, "… a narrower range fits: raise from or lower to.\n")
-				break
-			} else {
-				size += len(l)
-				fmt.Fprintf(&b, "line %d: %s\n", i, l)
-			}
-		}
-		return head + "\n\n" + b.String(), nil
+	if s, ok := lineWindow(fmt.Sprintf("%s at %s", p, in.Ref), raw, in.From, in.To, fileLimit); ok {
+		return s, nil
 	}
 	if len(raw) > fileLimit {
 		next := bytes.Count(raw[:fileLimit], []byte{'\n'}) + 1
 		return string(raw[:fileLimit]) + fmt.Sprintf("\n(cut at 64 KiB of %s bytes; read on from line %d)", answered(raw, len(raw)), next), nil
 	}
 	return string(raw), nil
+}
+
+// splitLines splits raw into its lines, dropping the empty one a final
+// newline adds.
+func splitLines(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(raw), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// lineWindow answers name's lines from..to under limit, its head naming
+// the whole; asked no range it answers "" and reports false.
+func lineWindow(name string, raw []byte, from, to, limit int) (string, bool) {
+	if from == 0 && to == 0 {
+		return "", false
+	}
+	lines := splitLines(raw)
+	head := fmt.Sprintf("%s: %s bytes, %d lines.", name, answered(raw, len(raw)), len(lines))
+	if from < 0 || to < 0 || from > len(lines) || (from > 0 && to > 0 && from > to) {
+		return head + fmt.Sprintf(" from %d and to %d name no line range of its %d lines: name from at or before to, inside lines 1 to %d.", from, to, len(lines), len(lines)), true
+	}
+	var b strings.Builder
+	size := 0
+	for i := max(from, 1); i <= min(cmp.Or(to, len(lines)), len(lines)); i++ {
+		if l := lines[i-1]; size+len(l) > limit {
+			fmt.Fprint(&b, "… a narrower range fits: raise from or lower to.\n")
+			break
+		} else {
+			size += len(l)
+			fmt.Fprintf(&b, "line %d: %s\n", i, l)
+		}
+	}
+	return head + "\n\n" + b.String(), true
 }
 
 // answered is n, a count of bytes of raw, an answer api read: "at least
