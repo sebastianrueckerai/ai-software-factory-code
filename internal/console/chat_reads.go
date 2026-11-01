@@ -136,7 +136,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if m := newest(steps, "audit"); m != nil {
 		fmt.Fprintf(&b, "\naudit: %s: see pr", verdict(m))
 	}
-	if n := newestChecksCount(steps); n != "" {
+	if n := newestChecksCount(steps, pushedHead(steps)); n != "" {
 		fmt.Fprintf(&b, "\nchecks: %s: see pr", n)
 	}
 	if k.Track == policy.TrackPlan || planChild(k) {
