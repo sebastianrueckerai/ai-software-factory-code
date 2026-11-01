@@ -192,7 +192,8 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/"):
 		// the files at main, by their escaped paths
 		files := map[string]string{"README.md": strings.Repeat("r", 1200), "bin/x": "\x00" + strings.Repeat("b", 99),
-			"docs/a%20b.md": "spaced", "big.txt": strings.Repeat("g", 70<<10), "huge.txt": strings.Repeat("h", 1<<20+1)}
+			"docs/a%20b.md": "spaced", "big.txt": strings.Repeat("g", 70<<10), "huge.txt": strings.Repeat("h", 1<<20+1),
+			"long.txt": longFile}
 		body, ok := files[strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/")]
 		if !ok || r.URL.Query().Get("ref") != "main" {
 			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)

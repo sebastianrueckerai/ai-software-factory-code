@@ -304,9 +304,22 @@ func TestChatPRRead(t *testing.T) {
 	})
 }
 
+// longFile is the rig's long.txt: 5,000 lines of 16 bytes each, so the
+// 64 KiB cut falls on the boundary after line 4096 and every range reads
+// whole lines.
+var longFile = func() string {
+	var b strings.Builder
+	for i := 1; i <= 5000; i++ {
+		fmt.Fprintf(&b, "body %010d\n", i)
+	}
+	return b.String()
+}()
+
 // The file read is a file of the project's repository at a ref, read raw
 // with each path segment escaped and the path cleaned: cut at 64 KiB with
-// its size, a binary file and a path out of the repository refused.
+// its size and the line to read on from, from and to one line-numbered
+// window under the same cap, a range off its lines answered with the line
+// count, a binary file and a path out of the repository refused.
 func TestChatFileRead(t *testing.T) {
 	r, g := newReadsRig(t)
 	equal(t, "the file reads", reads(t, r, g,
@@ -317,6 +330,7 @@ func TestChatFileRead(t *testing.T) {
 		"file", `{"ref":"main","path":"big.txt"}`,
 		"file", `{"ref":"main","path":"/docs/./a b.md"}`,
 		"file", `{"ref":"main","path":"huge.txt"}`,
+		"file", `{"ref":"main","path":"long.txt"}`,
 		"file", `{"path":"README.md"}`,
 		"file", `{"ref":"main","path":"//README.md"}`,
 	), []string{
@@ -324,11 +338,36 @@ func TestChatFileRead(t *testing.T) {
 		"Refused: bin/x at main is binary (100 bytes).",
 		"Refused: There is no missing.txt at main.",
 		"Refused: The path ../x leaves the repository.",
-		strings.Repeat("g", 64<<10) + "\n(cut at 64 KiB of 71680)",
+		strings.Repeat("g", 64<<10) + "\n(cut at 64 KiB of 71680 bytes; read on from line 1)",
 		"spaced",
-		strings.Repeat("h", 64<<10) + "\n(cut at 64 KiB of at least 1048576)",
+		strings.Repeat("h", 64<<10) + "\n(cut at 64 KiB of at least 1048576 bytes; read on from line 1)",
+		longFile[:64<<10] + "\n(cut at 64 KiB of 80000 bytes; read on from line 4097)",
 		"Refused: The file read needs a ref and a path.",
 		strings.Repeat("r", 1200),
+	})
+	longHead := "long.txt at main: 80000 bytes, 5000 lines."
+	var window, tail string
+	for i := 1; i <= 4369; i++ {
+		window += fmt.Sprintf("line %d: body %010d\n", i, i)
+	}
+	window += "… a narrower range fits: raise from or lower to.\n"
+	for i := 4998; i <= 5000; i++ {
+		tail += fmt.Sprintf("line %d: body %010d\n", i, i)
+	}
+	equal(t, "the file reads its ranges", reads(t, r, g,
+		"file", `{"ref":"main","path":"long.txt","from":4097,"to":4099}`,
+		"file", `{"ref":"main","path":"long.txt","from":4998}`,
+		"file", `{"ref":"main","path":"long.txt","from":1,"to":5000}`,
+		"file", `{"ref":"main","path":"long.txt","from":30,"to":10}`,
+		"file", `{"ref":"main","path":"long.txt","from":5001}`,
+		"file", `{"ref":"main","path":"big.txt","from":1}`,
+	), []string{
+		longHead + "\n\nline 4097: body 0000004097\nline 4098: body 0000004098\nline 4099: body 0000004099\n",
+		longHead + "\n\n" + tail,
+		longHead + "\n\n" + window,
+		longHead + " from 30 and to 10 name no line range of its 5000 lines: name from at or before to, inside lines 1 to 5000.",
+		longHead + " from 5001 and to 0 name no line range of its 5000 lines: name from at or before to, inside lines 1 to 5000.",
+		"big.txt at main: 71680 bytes, 1 lines.\n\n… a narrower range fits: raise from or lower to.\n",
 	})
 	for _, c := range []struct {
 		in     toolInput
