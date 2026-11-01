@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"math"
 	"net/http"
 	"slices"
@@ -454,8 +455,8 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 }
 
 // SessionAnswered reports whether the session of a task that began at in.Since
-// got a model answer, and records the session_started event of one that did:
-// a pod that started and made no answered call is no session. The ledger, not
+// got a model answer, and records the named start of one that did: a pod that
+// started and made no answered call is no session. The ledger, not
 // the timeline, is the fact the session cap counts. A session whose activity
 // failed has no id: it counts, and no record names it.
 func (r *Runner) SessionAnswered(ctx context.Context, in SessionAnswerInput) (bool, error) {
@@ -464,9 +465,36 @@ func (r *Runner) SessionAnswered(ctx context.Context, in SessionAnswerInput) (bo
 		return false, err
 	}
 	if in.SessionID != "" {
-		r.timeline.recordEvent(ctx, in.TaskID, EventSessionStarted, map[string]any{"session": in.SessionID, "model": aliasOf(in.Model), "attempt": in.Attempt})
+		if err := r.startFact(ctx, in); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
+}
+
+// startFact writes the named start's fact row beside its timeline line
+// (roadmap 336): one row per card and session, whichever retry or
+// reattachment records it — the identity keeps the row single, so the
+// sessions panel's lifetime count stays stable. A failed write is the
+// activity's error, not a log line: its retry writes the row instead of
+// losing the start. The timeline line stays whatever the row does.
+func (r *Runner) startFact(ctx context.Context, in SessionAnswerInput) error {
+	fact := SessionStartFact{Task: in.TaskID, Session: in.SessionID, Model: in.Model, Attempt: in.Attempt}
+	if r.timeline != nil {
+		entry := map[string]any{"event": EventSessionStarted}
+		maps.Copy(entry, fact.detail())
+		if err := r.timeline.Append(ctx, in.TaskID, StepEvent, entry); err != nil {
+			log.Printf("task %s: event %s: %v", in.TaskID, EventSessionStarted, err)
+		}
+	}
+	t, ok, err := r.store.Task(ctx, in.TaskID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("task %s: no such task", in.TaskID)
+	}
+	return r.timeline.RecordFactRow(ctx, fact.Event(in.TaskID, t.Repository, t.IssueNumber, time.Now()))
 }
 
 // price is alias's price with its output limit (policy.Document.Limited).
