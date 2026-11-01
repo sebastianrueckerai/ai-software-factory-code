@@ -97,6 +97,18 @@ func wakeAsk(t *testing.T, s *PGStore, repository, task, ask, via string) int64 
 	return id
 }
 
+// wakeAskComment records one ask of task on repository that filed the
+// issue comment id, and returns the event's id.
+func wakeAskComment(t *testing.T, s *PGStore, repository, task, ask string, comment int64, via string) int64 {
+	t.Helper()
+	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: EventQuestionAsked, Via: via,
+		Detail: map[string]any{"ask": ask, "comment": comment}})
+	if err != nil {
+		t.Fatalf("record the ask: %v", err)
+	}
+	return id
+}
+
 // wakeCursorOf reads repository's wake cursor, 0 with no row.
 func wakeCursorOf(t *testing.T, s *PGStore, repository string) int64 {
 	t.Helper()
@@ -213,8 +225,8 @@ func TestWakerBatchesAsks(t *testing.T) {
 	}
 }
 
-// The same ask text of the same card again is the same ask: no second
-// wake.
+// An ask that carries no comment of its own falls back to its sentence:
+// the same text of the same card again wakes no second time.
 func TestWakerNoSecondAttemptOnRepeatedAsk(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
@@ -222,6 +234,42 @@ func TestWakerNoSecondAttemptOnRepeatedAsk(t *testing.T) {
 		t.Fatalf("Pass: %v", err)
 	}
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+}
+
+// A new ask that repeats a sentence wakes again: the mark keys the ask's
+// own comment, so two asks of one sentence are two asks.
+func TestWakerANewAskThatRepeatsASentenceWakesAgain(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, nil)
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27258, ViaFactoryd)
+	*clock = clock.Add(11 * time.Second)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 2 {
+		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
+	}
+}
+
+// The same ask again, the same comment however it reappears, is the one
+// the mark holds: no second wake.
+func TestWakerTheSameAskWakesOnce(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, nil)
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	if err := w.Pass(t.Context()); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	*clock = clock.Add(11 * time.Second)
 	if err := w.Pass(t.Context()); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -171,8 +172,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 			continue // the month cap refuses the agent's own calls: its ask wakes nobody
 		}
 		if e.Kind == EventQuestionAsked && p.Autonomy == policy.AutonomyAutonomous {
-			sum := sha256.Sum256([]byte(askSentence(e)))
-			key := "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
+			key := askKey(e)
 			if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {
 				return err
 			} else if done {
@@ -409,6 +409,35 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	}
 	b.WriteString(" For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
 	return b.String()
+}
+
+// askKey is the ask's own identity on its mark: the issue comment the ask
+// filed, so a new ask wakes however it is worded, for two asks of one
+// sentence are two asks, and a reprocessed batch still wakes once, the
+// same comment keeping its key. An ask that files no comment (the
+// planner's) falls back to its sentence's hash.
+func askKey(e Event) string {
+	if id := askCommentID(e); id != "" {
+		return "ask:" + e.TaskID + ":" + id
+	}
+	sum := sha256.Sum256([]byte(askSentence(e)))
+	return "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
+}
+
+// askCommentID is the issue comment the ask filed, decimal, empty when the
+// ask carried none.
+func askCommentID(e Event) string {
+	switch id := e.Detail["comment"].(type) {
+	case float64:
+		if id > 0 {
+			return strconv.FormatInt(int64(id), 10)
+		}
+	case int64:
+		if id > 0 {
+			return strconv.FormatInt(id, 10)
+		}
+	}
+	return ""
 }
 
 // askSentence is the ask event's own words: a shaped ask carries its full
