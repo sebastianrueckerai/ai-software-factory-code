@@ -800,6 +800,26 @@ func (f *fakeChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error
 	return nil
 }
 
+func (f *fakeChat) ReadProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.proposals {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
+			continue
+		}
+		switch {
+		case p.Login != login:
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		}
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+}
+
 func (f *fakeChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1205,6 +1225,58 @@ func chatPostDocs(t *testing.T, r *rig, ck *http.Cookie, s *session, path string
 	return code, events, tokens
 }
 
+// chatPostRaw posts body, raw with the session's CSRF token as a header,
+// to path on a real server as the member of ck: a corrected Do it's
+// press, whose body is the correction object. It answers as chatPost
+// does.
+func chatPostRaw(t *testing.T, r *rig, ck *http.Cookie, s *session, path, body string) (int, []string, []string) {
+	t.Helper()
+	srv := httptest.NewServer(r.c)
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", s.csrf)
+	req.AddCookie(ck)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, events, tokens, err := readStream(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code, events, tokens
+}
+
+// readStream is a chat poster's response read: the status, the stream's
+// events with every duration 0 and every proposal id and undo token
+// TOKEN, and those tokens in order; a status other than the stream's is
+// the body as one line.
+func readStream(resp *http.Response) (int, []string, []string, error) {
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
+		return resp.StatusCode, []string{strings.TrimSpace(string(raw))}, nil, nil
+	}
+	var events, tokens []string
+	for _, msg := range strings.Split(strings.TrimSuffix(string(raw), "\n\n"), "\n\n") {
+		event, _ := strings.CutPrefix(strings.Split(msg, "\n")[0], "event: ")
+		data, _ := strings.CutPrefix(strings.Split(msg, "\n")[1], "data: ")
+		for _, m := range tokenField.FindAllStringSubmatch(data, -1) {
+			tokens = append(tokens, m[0][len(m[1])+4:len(m[0])-1])
+		}
+		data = tokenField.ReplaceAllString(durationField.ReplaceAllString(data, `"duration_ms":0`), `"$1":"TOKEN"`)
+		events = append(events, event+" "+data)
+	}
+	return resp.StatusCode, events, tokens, nil
+}
+
 // postFiles is postStream with files riding the form as image parts: the
 // composer's send, fields and images in one multipart body.
 func postFiles(r *rig, ck *http.Cookie, s *session, path string, form url.Values, files ...testFile) (int, []string, []string, error) {
@@ -1245,25 +1317,7 @@ func postFiles(r *rig, ck *http.Cookie, s *session, path string, form url.Values
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return 0, nil, nil, err
-	}
-	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "text/event-stream" {
-		return resp.StatusCode, []string{strings.TrimSpace(string(raw))}, nil, nil
-	}
-	var events, tokens []string
-	for _, msg := range strings.Split(strings.TrimSuffix(string(raw), "\n\n"), "\n\n") {
-		event, _ := strings.CutPrefix(strings.Split(msg, "\n")[0], "event: ")
-		data, _ := strings.CutPrefix(strings.Split(msg, "\n")[1], "data: ")
-		for _, m := range tokenField.FindAllStringSubmatch(data, -1) {
-			tokens = append(tokens, m[0][len(m[1])+4:len(m[0])-1])
-		}
-		data = tokenField.ReplaceAllString(durationField.ReplaceAllString(data, `"duration_ms":0`), `"$1":"TOKEN"`)
-		events = append(events, event+" "+data)
-	}
-	return resp.StatusCode, events, tokens, nil
+	return readStream(resp)
 }
 
 // chatRows holds the rows after before to exactly wants, each via chat by

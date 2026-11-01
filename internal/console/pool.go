@@ -127,6 +127,15 @@ type poolChange struct {
 	source string
 }
 
+// poolArgs is a set_pool call's arguments as a confirmed press runs them:
+// the captured action and reason with the amount the member confirmed,
+// theirs when they corrected it, in the tool's own order.
+type poolArgs struct {
+	Action string  `json:"action"`
+	EUR    float64 `json:"eur"`
+	Reason string  `json:"reason"`
+}
+
 // poolAmounts are the cents a pool edit found and wrote: the pool before
 // the change and after it.
 type poolAmounts struct{ from, to int64 }
@@ -237,56 +246,68 @@ func poolMessage(name string, ch poolChange) string {
 	return fmt.Sprintf("Project %s: month pool %.2f EUR", name, ch.eur)
 }
 
-// poolEdit is the change of budget.discretionary_eur to cents: it asks
-// the file for a budget block with an explicit month_eur key and a
-// raise_max_eur above 0 — the bounds the pool needs, which only a policy
-// PR writes — and answers the cents the file held and wrote in amounts.
-// An absent month_eur is not an intentional month of zero: the write
-// refuses rather than invent one, and no other key, comment or cap
-// moves. A budget or a pool the file shares through a YAML alias is
-// never edited: the edit would land everywhere the alias reads, so it
-// refuses and a policy PR unshares the value first. The arithmetic is
+// capturePool is in's set_pool call captured as the proposal's own change:
+// the project file read from infra's main with the blob sha its Do it
+// guards on, the pool it holds with the bounds the write needs checked,
+// and the call's amount judged by poolCents — all at the proposal, so the
+// member reads the operation, the suggestion, the reason and the ceiling
+// the change would stand at before anything writes. A top-up over the
+// pool's bound refuses here with the write's own words.
+func (t *turn) capturePool(in toolInput) error {
+	path := policy.ProjectFile(t.p.Name)
+	raw, blob, present, err := t.c.infraFile(t.r.Context(), path)
+	switch {
+	case err != nil:
+		return err
+	case !present:
+		return refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+	}
+	cents, err := poolCents(poolChange{action: in.Action, eur: in.EUR, reason: in.Reason, source: blob})
+	if err != nil {
+		return err
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return refuse(http.StatusConflict, fmt.Sprintf("%s holds no YAML the pool can read: a policy PR corrects it", path))
+	}
+	from, err := poolBounds(&doc, path)
+	if err != nil {
+		return refuse(http.StatusConflict, err.Error())
+	}
+	if in.Action == poolTopUp && from+cents > poolMaxCents {
+		return refuse(http.StatusBadRequest, fmt.Sprintf("a top-up over the pool of %s does not fit: propose a set of the target instead", path))
+	}
+	t.pool = &factoryd.PoolCapture{Action: in.Action, Reason: in.Reason, Source: blob, From: from, EUR: in.EUR}
+	return nil
+}
+
+// poolDesc is the set_pool proposal's line for the member: the standing
+// pool the proposal captured, the operation with its suggested amount,
+// the reason, and the ceiling the change would stand at — what a Do it,
+// as-is or with the amount corrected, writes.
+func (t *turn) poolDesc(title string) string {
+	cents := factoryd.Cents(t.pool.EUR)
+	to := cents
+	op := fmt.Sprintf("set it at %.2f EUR", t.pool.EUR)
+	if t.pool.Action == poolTopUp {
+		to += t.pool.From
+		op = fmt.Sprintf("top it up by %.2f EUR", t.pool.EUR)
+	}
+	return fmt.Sprintf("%s, the pool stands at %.2f EUR, %s, reason %s, it would stand at %.2f EUR",
+		title, poolEUR(t.pool.From), op, t.pool.Reason, poolEUR(to))
+}
+
+// poolEdit is the change of budget.discretionary_eur to cents: the bounds
+// the file must hold checked by poolBounds, then the one key set, with
+// nothing else — no other key, comment or cap — moving. The arithmetic is
 // whole cents end to end; the file's own value is read as the exact
 // decimal it holds and the new one written as the cents the member
 // confirmed.
 func poolEdit(path, action string, cents int64, amounts *poolAmounts) func(doc *yaml.Node) error {
 	return func(doc *yaml.Node) error {
-		m := doc.Content[0]
-		i := keyIndex(m, "budget")
-		if i < 0 {
-			return fmt.Errorf("%s sets no budget block: a policy PR writes one, with month_eur and raise_max_eur, before a pool can change", path)
-		}
-		b := m.Content[i+1]
-		shared := poolAliased(doc)
-		if b.Kind == yaml.AliasNode || shared[b] {
-			return fmt.Errorf("%s aliases its budget or its pool: a policy PR removes the YAML alias before a pool change", path)
-		}
-		if b.Kind != yaml.MappingNode {
-			return fmt.Errorf("%s sets no budget block: a policy PR writes one, with month_eur and raise_max_eur, before a pool can change", path)
-		}
-		if keyIndex(b, "month_eur") < 0 {
-			return fmt.Errorf("%s sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)", path)
-		}
-		raises := false
-		if j := keyIndex(b, "raise_max_eur"); j >= 0 {
-			if v, err := strconv.ParseFloat(b.Content[j+1].Value, 64); err == nil && v > 0 {
-				raises = true
-			}
-		}
-		if !raises {
-			return fmt.Errorf("%s sets no budget.raise_max_eur above 0: a policy PR writes the per-raise bound first (every raise of the pool would refuse)", path)
-		}
-		from := int64(0)
-		if j := keyIndex(b, "discretionary_eur"); j >= 0 {
-			v := b.Content[j+1]
-			if v.Kind == yaml.AliasNode || shared[v] {
-				return fmt.Errorf("%s aliases its budget or its pool: a policy PR removes the YAML alias before a pool change", path)
-			}
-			c, ok := poolFileCents(v.Value)
-			if !ok {
-				return fmt.Errorf("%s holds a discretionary_eur the pool cannot take: a policy PR corrects it", path)
-			}
-			from = c
+		from, err := poolBounds(doc, path)
+		if err != nil {
+			return err
 		}
 		to := cents
 		if action == poolTopUp {
@@ -295,9 +316,60 @@ func poolEdit(path, action string, cents int64, amounts *poolAmounts) func(doc *
 			}
 		}
 		amounts.from, amounts.to = from, to
+		b := doc.Content[0].Content[keyIndex(doc.Content[0], "budget")+1]
 		setBudgetKey(b, "discretionary_eur", poolDecimal(to))
 		return nil
 	}
+}
+
+// poolBounds is the pool the file holds in cents once its bounds are
+// checked: a budget block with an explicit month_eur key and a
+// raise_max_eur above 0 — the bounds the pool needs, which only a policy
+// PR writes — and a discretionary_eur the pool can take exactly, absent
+// meaning zero. An absent month_eur is not an intentional month of zero:
+// the read refuses rather than read one, and a policy PR writes the cap.
+// A budget or a pool the file shares through a YAML alias is never read:
+// the edit would land everywhere the alias reads, so it refuses and a
+// policy PR unshares the value first.
+func poolBounds(doc *yaml.Node, path string) (int64, error) {
+	m := doc.Content[0]
+	i := keyIndex(m, "budget")
+	if i < 0 {
+		return 0, fmt.Errorf("%s sets no budget block: a policy PR writes one, with month_eur and raise_max_eur, before a pool can change", path)
+	}
+	b := m.Content[i+1]
+	shared := poolAliased(doc)
+	if b.Kind == yaml.AliasNode || shared[b] {
+		return 0, fmt.Errorf("%s aliases its budget or its pool: a policy PR removes the YAML alias before a pool change", path)
+	}
+	if b.Kind != yaml.MappingNode {
+		return 0, fmt.Errorf("%s sets no budget block: a policy PR writes one, with month_eur and raise_max_eur, before a pool can change", path)
+	}
+	if keyIndex(b, "month_eur") < 0 {
+		return 0, fmt.Errorf("%s sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)", path)
+	}
+	raises := false
+	if j := keyIndex(b, "raise_max_eur"); j >= 0 {
+		if v, err := strconv.ParseFloat(b.Content[j+1].Value, 64); err == nil && v > 0 {
+			raises = true
+		}
+	}
+	if !raises {
+		return 0, fmt.Errorf("%s sets no budget.raise_max_eur above 0: a policy PR writes the per-raise bound first (every raise of the pool would refuse)", path)
+	}
+	from := int64(0)
+	if j := keyIndex(b, "discretionary_eur"); j >= 0 {
+		v := b.Content[j+1]
+		if v.Kind == yaml.AliasNode || shared[v] {
+			return 0, fmt.Errorf("%s aliases its budget or its pool: a policy PR removes the YAML alias before a pool change", path)
+		}
+		c, ok := poolFileCents(v.Value)
+		if !ok {
+			return 0, fmt.Errorf("%s holds a discretionary_eur the pool cannot take: a policy PR corrects it", path)
+		}
+		from = c
+	}
+	return from, nil
 }
 
 // poolAliased is every node of doc another node aliases: an edit of a

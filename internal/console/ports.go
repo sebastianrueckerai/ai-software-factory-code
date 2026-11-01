@@ -168,6 +168,9 @@ type Chat interface {
 	// whose newest row is the chat budget's stop: the turns a fund resumes
 	BudgetStoppedThreads(ctx context.Context, repository string) ([]factoryd.ChatConversation, error)
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
+	// ReadProposal is TakeProposal's row read, nothing spent: the stored
+	// proposal a correction is judged against before its token is taken.
+	ReadProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
 	// LiveAskBinds are the thread's open ask bindings, each with its tool

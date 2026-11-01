@@ -124,7 +124,7 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 		return
 	}
 	if err == nil && choice == p.Choice {
-		t.apply(p)
+		t.apply(p, nil)
 		return
 	}
 	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())

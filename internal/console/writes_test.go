@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -553,7 +555,7 @@ func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 // set_pool, always confirmed, changes the project file's pool as the
 // approver's merged pull request and records one pool_changed row naming
 // the member; a top-up grows the standing pool, and a file without the
-// bounds the pool needs refuses without a write.
+// bounds the pool needs refuses at the proposal, before a write.
 func TestChatSetPool(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human"}}
@@ -593,13 +595,16 @@ func TestChatSetPool(t *testing.T) {
 	equal(t, "the top-up's detail", rows[len(rows)-1].Detail, map[string]any{"action": "top_up", "from_eur": 25.0, "confirmed_eur": 5.0, "to_eur": 30.0,
 		"reason": "a second finding", "pr": "sf/infra#12"})
 
-	// a file without the month cap the pool needs refuses without a write
+	// a file without the month cap the pool needs refuses at the proposal,
+	// before anything writes
 	infra.files["factory/projects/ai-software-factory-code.yaml"] = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  raise_max_eur: 5\n  discretionary_eur: 20\n"
 	args = `{"action":"set","eur":25,"reason":"no bounds"}`
-	_, done, _ = proposeAndDo(t, r, g, "set_pool", args, "Refused.")
-	if !strings.Contains(done[0], "Refused: projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)") {
-		t.Errorf("a file without the month cap = %v", done)
-	}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "set_pool", args)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set the pool"}})
+	equal(t, "the refusal", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)"}`,
+		`text {"text":"Refused."}`, `done {}`})
 	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
 		t.Fatalf("the refusals aside, %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
 	}
@@ -617,6 +622,245 @@ func TestChatSetPoolNeedsAnApprover(t *testing.T) {
 	equal(t, "the refusal", events, []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ai-software-factory-code may change the discretionary pool."}`,
 		`text {"text":"Refused."}`, `done {}`})
+}
+
+// poolChatRig is the writes rig with the project's file on infra's main
+// holding a pool of standing EUR under the bounds the pool needs, the
+// loaded policy's pool at standing and the reload that lands it, and a
+// month's agent-funded usage of used EUR.
+func poolChatRig(t *testing.T, standing, used float64) (*rig, *chatGateway, *infraFake) {
+	t.Helper()
+	r, g := newWritesRig(t)
+	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: " +
+		strings.Replace(fmt.Sprintf("%.2f", standing), ".00", "", 1) + "\n"
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human",
+		Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: standing, RaiseMaxEUR: 5}}}
+	r.chat.funded = map[string]float64{"sf/code": used}
+	infra := withInfra(t, r)
+	infra.files = map[string]string{"factory/projects/ai-software-factory-code.yaml": head}
+	return r, g, infra
+}
+
+// poolReload lands EUR e as the loaded policy's pool.
+func poolChatReload(r *rig, e float64) {
+	r.c.cfg.PolicyReload = func(context.Context) error {
+		r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = e
+		return nil
+	}
+}
+
+// A pool proposal is the member's to confirm: the turn captures the
+// change — the project file's blob, its standing pool, the call's
+// operation, amount and reason — and writes nothing until they press Do
+// it; their corrected amount, the one thing a press may change, reaches
+// the guarded writer as their own action, and the row names them.
+func TestPoolProposal(t *testing.T) {
+	r, g, infra := poolChatRig(t, 8, 3)
+	poolChatReload(r, 12)
+	ck, s := r.loggedIn(t)
+	args := `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`
+	g.replies = [][]string{{call(1, "set_pool", args)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
+	equal(t, "the proposal", events, []string{
+		`proposal {"arguments":{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"},` +
+			`"description":"Set the pool, the pool stands at 8.00 EUR, set it at 10.00 EUR, reason Allow two small verified follow-ups, it would stand at 10.00 EUR",` +
+			`"id":"TOKEN","tool":"set_pool"}`,
+		`done {}`})
+	if len(tokens) != 1 {
+		t.Fatalf("the turn proposed %v", tokens)
+	}
+	if len(infra.contents) != 0 || len(infra.pulls) != 0 || len(infra.merges) != 0 {
+		t.Fatalf("nothing writes before the confirmation: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":12}}`)
+	equal(t, "the corrected Do it", done, ran("set_pool", `{"action":"set","eur":12,"reason":"Allow two small verified follow-ups"}`,
+		"The pool of ai-software-factory-code is €12.00 now, was €8.00: sf/infra#12 carries the change and the policy in force holds it."))
+	if got, _ := infra.contents[0].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool 12.00 EUR\n") {
+		t.Errorf("the commit's message = %q", got)
+	}
+	var content string
+	if files, ok := infra.contents[0].body["files"].([]any); ok {
+		if f, ok := files[0].(map[string]any); ok {
+			content, _ = f["content"].(string)
+		}
+	}
+	if raw, err := base64.StdEncoding.DecodeString(content); err != nil || !strings.Contains(string(raw), "\n  discretionary_eur: 12\n") {
+		t.Errorf("the project file the guarded writer committed holds %q (err %v)", content, err)
+	}
+	rows := r.events.all()
+	e := rows[len(rows)-1]
+	equal(t, "the event", []any{e.Kind, e.Actor}, []any{factoryd.EventPoolChanged, "sebastian"})
+	equal(t, "the event's detail", e.Detail, map[string]any{"action": "set", "from_eur": 8.0, "confirmed_eur": 12.0, "to_eur": 12.0,
+		"reason": "Allow two small verified follow-ups", "pr": "sf/infra#12"})
+}
+
+// The pool's confirmation is the member's press and only theirs: full
+// auto and a custom confirm list that leaves set_pool out still propose
+// the call instead of running it, a human who writes the project's code
+// nothing gets the route's 403, another member's press is 403 and leaves
+// the proposal for its owner, an expired or used one is 404, and a wrong
+// correction — malformed, a forbidden field, an amount the pool cannot
+// take, a press against another tool's proposal — is 400 with the
+// proposal left usable. The row's actor is the pressing member's, from
+// the session alone.
+func TestPoolProposalAccess(t *testing.T) {
+	r, g, infra := poolChatRig(t, 10, 3)
+	members(r)
+	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: policy.MergeAuto,
+		Autonomy: policy.AutonomyAutonomous, Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: 10, RaiseMaxEUR: 5}}
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	poolChatReload(r, 11)
+	setArgs := `{"action":"set","eur":10,"reason":"the findings cost money"}`
+
+	// at full auto the call still proposes; nothing runs
+	ck, s := memberLogin(t, r, "alice")
+	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
+	equal(t, "the proposal at full auto", events, []string{
+		`proposal {"arguments":` + setArgs + `,"description":"Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR","id":"TOKEN","tool":"set_pool"}`,
+		`done {}`})
+
+	// a custom confirm list that leaves set_pool out proposes it too: the
+	// member alone decides the pool's money
+	req := httptest.NewRequest(http.MethodPost, chatPath, nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	custom := &turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, owner: "alice",
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, cfg: policy.ChatConfig{Confirm: []string{}}}
+	custom.stream(func(string) error { return nil }, nil)
+	result, customToken := custom.call(factoryd.OperatorCall{ID: "call_1", Name: "set_pool", Arguments: setArgs})
+	if customToken == "" || result != "Proposed to alice: Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR. Nothing runs until they press Do it." {
+		t.Fatalf("a custom confirm list that omits set_pool: %q %q", result, customToken)
+	}
+
+	// a member who writes the project's code nothing does not even reach
+	// the proposal
+	bk, bs := memberLogin(t, r, "bob")
+	if code, body, _ := chatPostRaw(t, r, bk, bs, chatPath+"/proposals/"+customToken, `{"correction":{"eur":11}}`); code != http.StatusForbidden ||
+		body[0] != "you write no project of ai-software-factory-code" {
+		t.Fatalf("bob's corrected Do it = %d %q, want 403", code, body)
+	}
+
+	// another member's press is 403 and leaves the proposal for its owner
+	ak, as := memberLogin(t, r, "anna")
+	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+customToken, nil); code != http.StatusForbidden ||
+		body[0] != "It is another human's." {
+		t.Fatalf("anna's Do it of alice's proposal = %d %q, want 403", code, body)
+	}
+	if p, ok := r.chat.proposal(customToken); !ok || !p.used.IsZero() {
+		t.Fatalf("anna's press spent alice's proposal: %+v", p)
+	}
+	if code, _, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+customToken, `{"correction":{"eur":11}}`); code != http.StatusOK {
+		t.Fatalf("alice's own corrected Do it after anna's = %d, want 200", code)
+	}
+	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+customToken, nil); code != http.StatusNotFound {
+		t.Fatalf("the used proposal's replay = %d, want 404", code)
+	}
+
+	// an expired proposal is gone the same way
+	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool again"}})
+	expired := tokens[0]
+	r.chat.mu.Lock()
+	for _, p := range r.chat.proposals {
+		if p.Token == expired {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+	r.chat.mu.Unlock()
+	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+expired, nil); code != http.StatusNotFound {
+		t.Fatalf("the expired proposal's press = %d, want 404", code)
+	}
+
+	// a wrong correction is 400 with its exact words and leaves the
+	// proposal usable
+	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool once more"}})
+	wrong := []struct {
+		body string
+		want string
+	}{
+		{`{"correction":{"eur":"12"}}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"correction":null}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"correction":{"eur":12,"reason":"x"}}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"correction":{"eur":12,"actor":"eve"}}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"correction":{"eur":12,"eur":13}}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"correction":{"eur":12}} trailing`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"eur":12}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
+		{`{"correction":{"eur":1e999}}`, "a pool change's amount is a finite number in EUR"},
+		{`{"correction":{"eur":12.005}}`, "a pool change's amount is whole cents"},
+		{`{"correction":{"eur":-3}}`, "a set takes a non-negative amount in EUR"},
+		{`{"correction":{"eur":900000000001}}`, "a pool change's amount is too large"},
+	}
+	for _, w := range wrong {
+		if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], w.body); code != http.StatusBadRequest || body[0] != w.want {
+			t.Errorf("the correction %s = %d %q, want 400 %q", w.body, code, body, w.want)
+		}
+	}
+	if p, ok := r.chat.proposal(tokens[0]); !ok || !p.used.IsZero() {
+		t.Fatalf("the wrong corrections spent the proposal: %+v", p)
+	}
+	if code, _, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusOK {
+		t.Fatalf("the proposal's own corrected Do it after the wrong ones = %d, want 200", code)
+	}
+	rows := r.events.all()
+	e := rows[len(rows)-1]
+	equal(t, "the event", []any{e.Kind, e.Actor}, []any{factoryd.EventPoolChanged, "alice"})
+
+	// a press against another tool's proposal corrects nothing
+	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
+	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusBadRequest ||
+		body[0] != "A set_autonomy proposal takes no correction: only the pool's amount may be corrected." {
+		t.Fatalf("the correction of a set_autonomy proposal = %d %q, want 400", code, body)
+	}
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
+		t.Fatalf("the refusals aside, %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+}
+
+// A corrected top-up grows the standing pool by the corrected amount
+// alone and the month's usage stands; a project file that moved since the
+// proposal answers 409 without a write — the attempt was valid, its token
+// is spent — and the replay is 404.
+func TestPoolProposalTopUp(t *testing.T) {
+	r, g, infra := poolChatRig(t, 10, 3)
+	poolChatReload(r, 14)
+	ck, s := r.loggedIn(t)
+	args := `{"action":"top_up","eur":5,"reason":"a second finding"}`
+	g.replies = [][]string{{call(1, "set_pool", args)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"top the pool up"}})
+	equal(t, "the proposal", events, []string{
+		`proposal {"arguments":` + args + `,` +
+			`"description":"Set the pool, the pool stands at 10.00 EUR, top it up by 5.00 EUR, reason a second finding, it would stand at 15.00 EUR",` +
+			`"id":"TOKEN","tool":"set_pool"}`,
+		`done {}`})
+	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)
+	equal(t, "the corrected top-up", done, ran("set_pool", `{"action":"top_up","eur":4,"reason":"a second finding"}`,
+		"The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."))
+	rows := r.events.all()
+	e := rows[len(rows)-1]
+	equal(t, "the event's detail", e.Detail, map[string]any{"action": "top_up", "from_eur": 10.0, "confirmed_eur": 4.0, "to_eur": 14.0,
+		"reason": "a second finding", "pr": "sf/infra#12"})
+	if used, err := r.chat.AgentFundedEUR(t.Context(), "sf/code", time.Now()); err != nil || used != 3 {
+		t.Errorf("the month's usage after the top-up = %.2f (err %v), want 3.00", used, err)
+	}
+
+	// a project file that moved since the proposal refuses without a
+	// write and consumes the token
+	g.replies = [][]string{{call(1, "set_pool", args)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"top the pool up again"}})
+	infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob2"}
+	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`); code != http.StatusConflict ||
+		body[0] != "projects/ai-software-factory-code.yaml changed since the change was proposed (its blob is now blob2): read it again and propose the change anew" {
+		t.Fatalf("the changed file's Do it = %d %q, want 409", code, body)
+	}
+	if len(infra.contents) != 1 || len(infra.pulls) != 1 || len(infra.merges) != 1 {
+		t.Fatalf("the stale proposal wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound {
+		t.Fatalf("the stale attempt's replay = %d, want 404", code)
+	}
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason
