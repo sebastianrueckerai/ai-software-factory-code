@@ -93,10 +93,10 @@ func dcDoneCard(t *testing.T, s *PGStore, id, repository, size, sha string, issu
 	}
 }
 
-// dcReading records one merge-gate reading of card's head at at, through
+// dcReadingFull records one merge-gate reading of card's head at at, through
 // the fact payload the recorder writes: the size the gates judged, the
 // bound that size planned under and the lines they counted.
-func dcReading(t *testing.T, s *PGStore, card, repository, head, size string, bound, insertions, deletions int, issue int64, at time.Time) int64 {
+func dcReadingFull(t *testing.T, s *PGStore, card, repository, head, size string, bound, insertions, deletions int, issue int64, at time.Time) int64 {
 	t.Helper()
 	return dcRecord(t, s, GateHeadFact{Task: card, Head: head, Gate: GateMerge, Decision: "auto",
 		Size: size, Bound: bound, PolicyVersion: 7, Files: 9,
@@ -623,8 +623,8 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	// abandoned lines never reach the economics panels
 	dcDoneCard(t, s, "cb1", "sf/dc5", "small", "cb1-h", 91, from.AddDate(0, 0, 7))
 	dcMerged(t, s, "cb1", "sf/dc5", from.AddDate(0, 0, 7).Add(10*time.Hour))
-	dcReading(t, s, "cb1", "sf/dc5", "cb1-h", "small", 300, 80, 20, 91, from.AddDate(0, 0, 7).Add(10*time.Hour+30*time.Minute))
-	dcReading(t, s, "cb1", "sf/dc5", "cb1-x", "small", 300, 500, 200, 91, from.AddDate(0, 0, 9).Add(9*time.Hour))
+	dcReadingFull(t, s, "cb1", "sf/dc5", "cb1-h", "small", 300, 80, 20, 91, from.AddDate(0, 0, 7).Add(10*time.Hour+30*time.Minute))
+	dcReadingFull(t, s, "cb1", "sf/dc5", "cb1-x", "small", 300, 500, 200, 91, from.AddDate(0, 0, 9).Add(9*time.Hour))
 	dcSpend(t, s, "cb1", "2026-10-05", 3)
 	dcStarted(t, s, "c1a", "cb1", "sf/dc5", 1, from.AddDate(0, 0, 7).Add(2*time.Hour))
 	dcStarted(t, s, "c1b", "cb1", "sf/dc5", 2, from.AddDate(0, 0, 7).Add(3*time.Hour))
@@ -635,7 +635,7 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	// one that judged the head and one that never did
 	dcDoneCard(t, s, "cb2", "sf/dc5", "small", "cb2-h", 92, from.AddDate(0, 0, 7))
 	dcMerged(t, s, "cb2", "sf/dc5", from.AddDate(0, 0, 7).Add(11*time.Hour))
-	dcReading(t, s, "cb2", "sf/dc5", "cb2-h", "small", 300, 240, 60, 92, from.AddDate(0, 0, 7).Add(11*time.Hour+30*time.Minute))
+	dcReadingFull(t, s, "cb2", "sf/dc5", "cb2-h", "small", 300, 240, 60, 92, from.AddDate(0, 0, 7).Add(11*time.Hour+30*time.Minute))
 	dcSpend(t, s, "cb2", "2026-10-05", 5)
 	dcStarted(t, s, "c2a", "cb2", "sf/dc5", 1, from.AddDate(0, 0, 7).Add(4*time.Hour))
 	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "cb2-r1", Round: 1, Model: "big", Verdict: "approve"}.Event("cb2", "sf/dc5", 92), from.AddDate(0, 0, 7).Add(14*time.Hour))
@@ -643,7 +643,7 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	// cb3: medium, 200 lines, 5 EUR; two sessions, one pushed
 	dcDoneCard(t, s, "cb3", "sf/dc5", "medium", "cb3-h", 93, from.AddDate(0, 0, 8))
 	dcMerged(t, s, "cb3", "sf/dc5", from.AddDate(0, 0, 8).Add(10*time.Hour))
-	dcReading(t, s, "cb3", "sf/dc5", "cb3-h", "medium", 600, 150, 50, 93, from.AddDate(0, 0, 8).Add(10*time.Hour+30*time.Minute))
+	dcReadingFull(t, s, "cb3", "sf/dc5", "cb3-h", "medium", 600, 150, 50, 93, from.AddDate(0, 0, 8).Add(10*time.Hour+30*time.Minute))
 	dcSpend(t, s, "cb3", "2026-10-06", 5)
 	dcStarted(t, s, "c3a", "cb3", "sf/dc5", 1, from.AddDate(0, 0, 8).Add(2*time.Hour))
 	dcStarted(t, s, "c3b", "cb3", "sf/dc5", 2, from.AddDate(0, 0, 8).Add(3*time.Hour))
@@ -651,7 +651,7 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	// cb4: medium, 400 lines, 7 EUR; one session, no end inside the window
 	dcDoneCard(t, s, "cb4", "sf/dc5", "medium", "cb4-h", 94, from.AddDate(0, 0, 8))
 	dcMerged(t, s, "cb4", "sf/dc5", from.AddDate(0, 0, 8).Add(11*time.Hour))
-	dcReading(t, s, "cb4", "sf/dc5", "cb4-h", "medium", 600, 300, 100, 94, from.AddDate(0, 0, 8).Add(11*time.Hour+30*time.Minute))
+	dcReadingFull(t, s, "cb4", "sf/dc5", "cb4-h", "medium", 600, 300, 100, 94, from.AddDate(0, 0, 8).Add(11*time.Hour+30*time.Minute))
 	dcSpend(t, s, "cb4", "2026-10-06", 7)
 	dcStarted(t, s, "c4a", "cb4", "sf/dc5", 1, from.AddDate(0, 0, 8).Add(5*time.Hour))
 	// cb5: merged and spent, its reading at the merged head carrying no
@@ -670,7 +670,7 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	// bound — its rows answer sf/other5's report alone
 	dcDoneCard(t, s, "cx1", "sf/other5", "small", "cx1-h", 96, from.AddDate(0, 0, 8))
 	dcMerged(t, s, "cx1", "sf/other5", from.AddDate(0, 0, 8).Add(15*time.Hour))
-	dcReading(t, s, "cx1", "sf/other5", "cx1-h", "small", 300, 900, 100, 96, from.AddDate(0, 0, 8).Add(15*time.Hour+30*time.Minute))
+	dcReadingFull(t, s, "cx1", "sf/other5", "cx1-h", "small", 300, 900, 100, 96, from.AddDate(0, 0, 8).Add(15*time.Hour+30*time.Minute))
 	dcSpend(t, s, "cx1", "2026-10-06", 50)
 	dcStarted(t, s, "x1a", "cx1", "sf/other5", 1, from.AddDate(0, 0, 8).Add(16*time.Hour))
 	dcSessionEnd(t, s, "x1a", string(OutcomePushed), "cx1", "sf/other5", 1, from.AddDate(0, 0, 8).Add(17*time.Hour))
