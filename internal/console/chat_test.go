@@ -2619,6 +2619,136 @@ func TestChatParkLiftsOnExpiry(t *testing.T) {
 	chatRows(t, r.events, before, "sebastian")
 }
 
+// askPress binds the ask of one rig thread and answers its ask row's id.
+func askPress(t *testing.T, r *rig, chat *fakeChat, g *chatGateway, ck *http.Cookie, s *session, owner string) int64 {
+	t.Helper()
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", owner, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			return m.ID
+		}
+	}
+	t.Fatal("no ask row stored")
+	return 0
+}
+
+// The press of the bound choice runs the bound tool call in code as the
+// human's session: the do- row lands, the card closes, and no model turn
+// reads the answer in between.
+func TestChatAskPressRunsTheBoundAction(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	before := r.events.count()
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press = %d", code)
+	}
+	equal(t, "the press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+	if n := len(g.calls()); n != 1 {
+		t.Fatalf("%d model calls after the press, want the ask's alone", n)
+	}
+	chat.mu.Lock()
+	token, used := "", false
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			token, used = p.Token, !p.used.IsZero()
+		}
+	}
+	chat.mu.Unlock()
+	if !used {
+		t.Fatal("the press left the binding live")
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	do := rows[len(rows)-1].ToolCalls
+	if len(do) != 1 || do[0].ID != "do-"+token[:12] || do[0].Name != "close" || do[0].Result != "Closed #5; factoryd ends the card. It cannot be undone." {
+		t.Fatalf("the press's row = %+v", do)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
+}
+
+// The press of another choice settles the ask: the human's row lands
+// with the choice, the agent's turn reads it and answers, and nothing
+// runs.
+func TestChatAskPressOfAnotherChoiceSettles(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	before := r.events.count()
+	g.replies = [][]string{{say("Holding it.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"hold"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press = %d", code)
+	}
+	equal(t, "the settling press", events, []string{`text {"text":"Holding it."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if rows[2].Role != "user" || rows[2].Content != "hold" {
+		t.Fatalf("the human's row = %+v", rows[2])
+	}
+	if got := messages(t, g.calls()[1]); got[len(got)-1]["content"] != "hold" {
+		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
+	}
+	if p, ok := chat.proposal(rows[1].Proposal); !ok || p.used.IsZero() {
+		t.Fatalf("the settling press left the binding live: %+v", p)
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// A typed message answers nothing while a bound ask stands open: the
+// agent may answer in words, but the ask row stays open for the press
+// and nothing runs.
+func TestChatAskTypedMessageRunsNothing(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	askPress(t, r, chat, g, ck, s, "sebastian")
+	before := r.events.count()
+	g.replies = [][]string{{say("Your press decides it.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the typed message", events, []string{`text {"text":"Your press decides it."}`, `done {}`})
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range answer.Messages {
+		if m.Kind == factoryd.MessageAsk && m.Settled {
+			t.Fatalf("a typed message settled the bound ask: %+v", m)
+		}
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The press is single-use and the binding's owner's alone: the second
+// press of any choice hears the ask is gone, another human's press
+// hears it is not theirs.
+func TestChatAskPressIsSingleUse(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	equal(t, "the first press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"hold"}})
+	equal(t, "the second press", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	aid := askPress(t, r, chat, g, ak, as, "anna")
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "owner": {"anna"}, "message": {strconv.FormatInt(aid, 10)}, "choice": {"close it"}})
+	equal(t, "another human's press", []any{code, body[0]}, []any{http.StatusForbidden, "It is another member's."})
+}
+
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 // A pasted image rides the composer's send like a file rides it: the

@@ -446,6 +446,14 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 			threads[id], whose[id] = th.Conversation, th.Login
 		}
 	}
+	live := map[string]bool{}
+	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
+		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Repository, err)
+	} else {
+		for _, b := range binds {
+			live[b.Token] = true
+		}
+	}
 	for i, m := range msgs {
 		if fundRow(m) {
 			msgs[i].Settled, msgs[i].Reason = fundSettle(m, stop)
@@ -454,8 +462,12 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		if m.Kind == factoryd.MessageAsk {
 			// an ask stands open while it is the thread's newest row: any
 			// row after it, the member's press or reply or another turn's,
-			// answers it
+			// answers it. A bound ask stands while its binding lives: the
+			// press that takes it or its expiry answers it, no row between.
 			msgs[i].Settled = i < len(msgs)-1
+			if live[m.Proposal] {
+				msgs[i].Settled = false
+			}
 			continue
 		}
 		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {

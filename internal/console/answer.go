@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -41,14 +43,22 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i := slices.IndexFunc(rows, func(m factoryd.ChatMessage) bool {
-		return m.ID == id && m.Kind == factoryd.MessageEscalation && m.TaskID != ""
+		return m.ID == id && ((m.Kind == factoryd.MessageEscalation && m.TaskID != "") || (m.Kind == factoryd.MessageAsk && m.Proposal != ""))
 	})
-	switch {
-	case i < 0:
+	if i < 0 {
 		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))
 		return
-	case !slices.Contains(rows[i].Choices, choice):
-		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of the escalation's"))
+	}
+	if !slices.Contains(rows[i].Choices, choice) {
+		whose := "the escalation's"
+		if rows[i].Kind == factoryd.MessageAsk {
+			whose = "the ask's"
+		}
+		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of "+whose))
+		return
+	}
+	if rows[i].Kind == factoryd.MessageAsk {
+		c.chatAskPress(w, r, t, rows[i], choice)
 		return
 	}
 	a := button(r)
@@ -71,6 +81,54 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, id)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// chatAskPress answers chatAnswer's ask branch: a choice of the
+// thread's bound ask row, the ask tool's question. The bound choice's
+// press runs the bound tool call in code as the human's session,
+// streamed, the do- row landing as a Do it's does; any other choice
+// settles the ask, lands the human's row with the choice and feeds the
+// agent a turn, which reads the row as their answer. Taking the binding
+// settles the ask: a second press hears it is gone, another human's
+// that it is not theirs.
+func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
+	p, err := t.take("ask", m.Proposal)
+	if err != nil {
+		// the press's own words, not fail's plain 404: the plan pins the
+		// expired binding's answer on the ask row's button
+		var no *refusal
+		if errors.As(err, &no) {
+			http.Error(w, no.msg, no.status)
+			return
+		}
+		c.fail(w, r, err)
+		return
+	}
+	if err := t.inThread(p.Conversation); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	pos, wait := c.turns.enter(t.key())
+	defer c.turns.leave(t.key())
+	t.detach()
+	t.open(w)
+	t.takeTurn(pos, wait)
+	if choice != p.Choice {
+		if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
+			return
+		}
+		release := t.c.turns.slot(t.p.Repository, t.parallelTurns())
+		defer release()
+		task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
+		if err != nil {
+			log.Printf("console: the chat task of %s: %v", t.p.Name, err)
+			t.fail("The chat's task could not be read.")
+			return
+		}
+		t.run(task.ID, "")
+		return
+	}
+	t.apply(p)
 }
 
 // resolveChoice decides card id with choice as its state asks: a pending
