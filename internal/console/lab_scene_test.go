@@ -26,8 +26,9 @@ var labGates = []string{factoryd.GateIntake, factoryd.GateSession, factoryd.Gate
 type labReply []labChunk
 
 type labChunk struct {
-	Say  string
-	Call [][2]string
+	Say   string
+	Think string
+	Call  [][2]string
 }
 
 // labSceneJSON is labScene as a recording script posts it to /lab/scene.

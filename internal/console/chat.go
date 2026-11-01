@@ -142,6 +142,12 @@ type turn struct {
 	viewEvent map[string]any
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
+	// sctx is the context of the turn's model calls, which a member's stop
+	// ends (the chat-stop plan); nil: the request's own. stopEntry is the
+	// turn's entry in the console's stopGate, nil when the turn cannot be
+	// stopped.
+	sctx      context.Context
+	stopEntry *stopEntry
 }
 
 // chatTurn is the request's turn on the project's chat; false once a
@@ -679,7 +685,62 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	}
 	release := c.turns.slot(t.p.Repository, t.parallelTurns())
 	defer release()
+	// the turn's stop (the chat-stop plan): its model calls run under a
+	// context a member's press ends, so the stop lands at the next call
+	sctx, cancel := context.WithCancel(t.r.Context())
+	defer cancel()
+	t.sctx, t.stopEntry = sctx, c.stops.enter(t.key(), cancel)
+	defer c.stops.leave(t.key())
 	t.run(task.ID, notice)
+}
+
+// chatStopPost answers POST /projects/{name}/chat/stop: the member stops
+// the thread's running turn, which ends at its next step boundary — its
+// model call at once, a tool call once the one in flight ran — keeping
+// the answer so far and a stop row. A press with no turn in flight, or a
+// second one, changes nothing: 204 either way. One chat_stopped event
+// names the member and the thread.
+func (c *Console) chatStopPost(w http.ResponseWriter, r *http.Request) {
+	t, ok := c.chatTurn(w, r)
+	if !ok {
+		return
+	}
+	if _, err := t.thread(r, true); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if c.stops.cancel(t.key(), t.a.s.user) {
+		c.event(context.WithoutCancel(r.Context()), factoryd.Event{Repository: t.p.Repository, Kind: factoryd.EventChatStopped,
+			Actor: t.a.s.user, Via: factoryd.ViaButton, Detail: map[string]any{"thread": t.conv}})
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// stopEvent is the stopped turn's stream event: the stop row.
+type stopEvent struct {
+	Message factoryd.ChatMessage `json:"message"`
+}
+
+// stopEnd ends the turn a member stopped: the answer that had arrived
+// stays as a row marked cut (none when it had said nothing), the stop row
+// names the member who pressed, and the stream answers stopped and ends.
+// A stopped turn settles no open question and leaves the messages that
+// joined it unread: the next turn of any kind reads them first.
+func (t *turn) stopEnd(partial string) {
+	if strings.TrimSpace(partial) != "" {
+		if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", Content: partial, Cut: true}); !ok {
+			return
+		}
+	}
+	row := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageStop,
+		Content: "Stopped by " + t.c.stops.who(t.stopEntry) + "."}
+	id, ok := t.save(row)
+	if !ok {
+		return
+	}
+	row.ID, row.At, row.Conversation = id, time.Now(), t.conv
+	t.send("stopped", stopEvent{Message: row})
+	t.send("done", struct{}{})
 }
 
 // abandonMessage withdraws a message whose images could not all be
@@ -803,12 +864,17 @@ func scrubTokens(text string) (string, bool) {
 func (t *turn) run(id, notice string) {
 	t.task = id
 	ctx := t.r.Context()
+	sctx := cmp.Or(t.sctx, ctx)
 	t.c.turns.listen(t.key())
 	defer func() {
+		if sctx.Err() != nil {
+			return // a stopped turn leaves the messages that joined it unread
+		}
 		for ids := t.c.turns.heard(t.key(), true); len(ids) > 0; ids = t.c.turns.heard(t.key(), true) {
 			t.land(ids)
 		}
 	}()
+	t.landUnread()
 	err := t.begin()
 	var msgs []factoryd.OperatorMessage
 	if err == nil {
@@ -837,10 +903,23 @@ func (t *turn) run(id, notice string) {
 	}
 	forced := 0
 	for {
+		if sctx.Err() != nil {
+			t.stopEnd("")
+			return
+		}
 		out := &unstamper{send: func(s string) { t.send("text", map[string]string{"text": s}) }}
-		answer, err := t.c.cfg.Operator.Stream(ctx, id, t.cfg.Model, t.threadRef(), msgs, defs, out.write)
+		// the reasoning rides the bus only (the session_said rule): the
+		// fold reads it live, no row keeps it
+		think := func(d string) { t.send("think", map[string]string{"text": d}) }
+		answer, err := t.c.cfg.Operator.Stream(sctx, id, t.cfg.Model, t.threadRef(), msgs, defs, out.write, think)
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Name, err)
+			if sctx.Err() != nil {
+				// the member's stop ended the call: the words that had
+				// arrived stay, the tool calls being described never ran
+				t.stopEnd(unstamp(answer.Content))
+				return
+			}
 			var refusal *policy.Refusal
 			if errors.As(err, &refusal) && refusal.Decision == gateway.RefusedContext {
 				// the forced trigger: compact and retry, at most twice, the
@@ -899,6 +978,11 @@ func (t *turn) run(id, notice string) {
 		if _, ok := t.save(row); !ok {
 			return
 		}
+		if sctx.Err() != nil {
+			// the tools that ran are recorded; the turn ends on the stop
+			t.stopEnd("")
+			return
+		}
 		ended := len(answer.ToolCalls) == 0 || proposed || row.Kind == factoryd.MessageAsk
 		if ids := t.c.turns.heard(t.key(), ended); len(ids) > 0 {
 			t.land(ids)
@@ -954,6 +1038,24 @@ func (t *turn) land(ids []int64) {
 			log.Printf("console: land the joined message %d of %s on %s: %v", id, t.owner, t.p.Repository, err)
 		}
 	}
+}
+
+// landUnread starts the thread's rows still queued — a stop left them
+// unread — so this turn, of any kind, reads them first.
+func (t *turn) landUnread() {
+	ctx := context.WithoutCancel(t.r.Context())
+	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, compactRead)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return
+	}
+	var ids []int64
+	for _, m := range rows {
+		if m.Queued {
+			ids = append(ids, m.ID)
+		}
+	}
+	t.land(ids)
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
@@ -1259,13 +1361,14 @@ func (t *turn) context() ([]factoryd.OperatorMessage, error) {
 // is left out for when it was read and the call that reads the present,
 // so neither stands as the project now; a write's result, the record of
 // an action, stays whole. An assistant row with no tool calls whose
-// content claims an action is dropped, and so is a budget row, the
-// factory's stop: a resumed turn goes on from the message or the tool
-// results it stopped at.
+// content claims an action is dropped, and so are a budget row, the
+// factory's stop, and a stop row, a member's: a resumed turn goes on from
+// the message, the cut answer or the tool results it stopped at.
 func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 	var msgs []factoryd.OperatorMessage
 	for _, m := range rows {
-		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) || m.Kind == factoryd.MessageBudget {
+		if m.Role == "assistant" && len(m.ToolCalls) == 0 && isClaim(m.Content) ||
+			m.Kind == factoryd.MessageBudget || m.Kind == factoryd.MessageStop {
 			continue
 		}
 		earlier := m.ID <= t.upto
@@ -1514,7 +1617,7 @@ func (t *turn) summarizeAttachment(in toolInput) (string, error) {
 		b = cut
 	}
 	answer, err := t.c.cfg.Operator.Stream(t.r.Context(), t.task, t.cfg.Model, t.threadRef(),
-		[]factoryd.OperatorMessage{{Role: "user", Content: cmp.Or(in.Ask, "Summarise this document.") + "\n\n" + string(b)}}, nil, func(string) {})
+		[]factoryd.OperatorMessage{{Role: "user", Content: cmp.Or(in.Ask, "Summarise this document.") + "\n\n" + string(b)}}, nil, func(string) {}, nil)
 	if err != nil {
 		return "", err
 	}

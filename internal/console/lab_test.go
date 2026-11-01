@@ -136,6 +136,16 @@ func TestLab(t *testing.T) {
 		r.gateway.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// the model's paced stream (the thinking-fold plan): each line of an
+	// answer arrives ?ms apart, so a turn reasoning in the open can be
+	// photographed mid-stream; ?ms=0 sets it unpaced
+	mux.HandleFunc("POST /lab/model-line-slow", func(w http.ResponseWriter, req *http.Request) {
+		ms, _ := strconv.Atoi(req.URL.Query().Get("ms"))
+		r.gateway.mu.Lock()
+		r.gateway.lineSlow = time.Duration(ms) * time.Millisecond
+		r.gateway.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// an outside change of a document (items 5+6): master moves as if
 	// committed by ?by at 14:08 — ?line names the line it changes, from
 	// 1, else the file's last said one; ?text replaces that line, else it
@@ -350,7 +360,7 @@ type labScene struct {
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene, "metrics": metricsScene}
+	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -459,6 +469,38 @@ func compactedScene(now time.Time) labScene {
 	return s
 }
 
+// stoppedScene is the threads scene with the planning thread's turn
+// stopped: the partial answer stays, cut mid-sentence under the grey
+// stopped mark, the factory's stop row names the member, and no turn
+// runs (the 2026-10-31 stop plan).
+func stoppedScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.chat = append(slices.Clone(s.chat),
+		factoryd.ChatMessage{Conversation: 3, Role: "assistant", Cut: true,
+			Content: "The members page lists who is on the project: their logins, roles and", At: ago(8 * time.Minute)},
+		factoryd.ChatMessage{Conversation: 3, Role: "assistant", Kind: factoryd.MessageStop,
+			Content: "Stopped by sebastian.", At: ago(8*time.Minute - 2*time.Second)},
+	)
+	s.working, s.open, s.seen[3] = nil, 3, 9
+	return s
+}
+
+// thinkingScene is the threads scene with the model's next answer
+// scripted to reason in the open (the thinking-fold plan): reasoning
+// chunks pace the stream, so the lab can photograph the fold mid-turn.
+func thinkingScene(now time.Time) labScene {
+	s := threadsScene(now)
+	s.replies = []labReply{{
+		{Think: "The member asks what is open. The board has two cards in flight. "},
+		{Think: "One waits on the human; the build of the other still runs. "},
+		{Say: "Two cards are open. "},
+		{Think: "Keep it short. "},
+		{Say: "The rest waits on you."},
+	}}
+	return s
+}
+
 // assistedScene is the factory's own code at autonomy assisted: the
 // agent filed the login card itself (its applied filing in the chat, the
 // event naming it the decider, the inbox's poke with its decider line),
@@ -529,7 +571,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake or metrics", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking or metrics", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }

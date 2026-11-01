@@ -858,6 +858,13 @@ type chatGateway struct {
 	// slow, the lab's, delays each answer, so a member can write while a
 	// turn runs
 	slow time.Duration
+	// lineSlow, the lab's, paces a streamed answer line by line, so a
+	// turn can be photographed mid-stream
+	lineSlow time.Duration
+	// midHold, when set, keeps each reply's line midHoldLine (counting
+	// [DONE]) out of the stream until it closes: a turn in flight to stop
+	midHold     chan struct{}
+	midHoldLine int
 	// lenient makes a lab of the gateway: a call off the script answers 500
 	// "unscripted chat turn" and no check fails the test
 	lenient bool
@@ -969,8 +976,17 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	for _, line := range append(reply, "[DONE]") {
+	for i, line := range append(reply, "[DONE]") {
+		if g.midHold != nil && i == g.midHoldLine {
+			<-g.midHold
+		}
+		if g.lineSlow > 0 {
+			time.Sleep(g.lineSlow)
+		}
 		fmt.Fprintf(w, "data: %s\n\n", line)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 	}
 }
 
@@ -1019,6 +1035,9 @@ func (g *chatGateway) script(project string, replies []labReply) {
 		var lines []string
 		calls := 0
 		for _, chunk := range reply {
+			if chunk.Think != "" {
+				lines = append(lines, thinks(chunk.Think))
+			}
 			if chunk.Say != "" {
 				lines = append(lines, say(chunk.Say))
 			}
@@ -3635,7 +3654,8 @@ func TestChatTurnSaysACutAnswer(t *testing.T) {
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`}}
 	const cut = "The answer stopped at the model's output limit of 16384 tokens before it wrote anything; send a message to try again."
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
-	equal(t, "the cut turn", events, []string{`text {"text":"` + cut + `"}`, `done {}`})
+	equal(t, "the cut turn", events, []string{`think {"text":"The board first."}`,
+		`text {"text":"` + cut + `"}`, `done {}`})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	var answer chatGetAnswer
 	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {

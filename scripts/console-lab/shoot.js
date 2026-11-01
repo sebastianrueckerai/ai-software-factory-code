@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 const base = process.env.BASE || "http://127.0.0.1:8090";
 const labDir = process.env.CONSOLE_LAB_DIR || "/tmp/claude-1000/console-lab";
 const out = process.env.OUT || path.join(labDir, "shots");
-const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake", "metrics"];
+const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake", "stopped", "thinking", "metrics"];
 const themes = ["dark", "light"];
 const desk = { width: 1440, height: 900 };
 const wide = { width: 1920, height: 1080 };
@@ -155,6 +155,54 @@ async function main() {
             await p.page.locator("#thread-head [data-delete]").click();
             await p.idle();
           }, false);
+          // the working thread's mark is the Stop button (the 2026-10-31
+          // stop plan), drawn from the thread's working flag
+          await shot("chat-mark-1440.png", desk, "/", async (p) => {
+            await p.page.locator('#thread-rows .trow[data-thread="3"]').click();
+            await p.idle();
+            await p.page.locator("#chat-full").click();
+            await p.idle();
+          }, false);
+        }
+        if (s === "stopped") {
+          // the stopped turn: the cut answer under the grey stopped mark,
+          // the factory's stop row naming the member
+          await shot("chat-stopped-1440.png", desk, "/", async (p) => {
+            await p.page.locator("#chat-full").click();
+            await p.idle();
+            await p.page.evaluate(() => { document.getElementById("chat-log").scrollTop = document.getElementById("chat-log").scrollHeight; });
+            await p.page.waitForTimeout(200);
+          }, false);
+        }
+        if (s === "thinking") {
+          // the live fold (the thinking-fold plan): a turn in flight
+          // reasons on the stream, the chevron beside the mark opens the
+          // reasoning, and it is gone once the turn lands. The shot is
+          // taken mid-stream, before the pacing resets, or the turn
+          // finishes under the camera; the reset waits for the mark.
+          await seed(s);
+          const p0 = await open(browser, desk, theme);
+          try {
+            await go(p0, "/");
+            await p0.page.locator("#chat-full").click();
+            await p0.idle();
+            await p0.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/model-line-slow?ms=350");
+            await p0.page.locator("#chat-input").click();
+            await p0.page.keyboard.type("what is open?");
+            await p0.page.keyboard.press("Enter");
+            await p0.page.locator("#chat-log [data-think]").waitFor({ state: "visible" });
+            await p0.page.locator("#chat-log [data-think]").click();
+            await p0.page.waitForTimeout(800);
+            await p0.page.evaluate(() => { document.getElementById("chat-log").scrollTop = document.getElementById("chat-log").scrollHeight; });
+            await p0.page.waitForTimeout(100);
+            await p0.page.screenshot({ path: path.join(dir, "chat-fold-1440.png") });
+            n++;
+            console.log(path.join(s, theme, "chat-fold-1440.png"));
+            await p0.page.locator("#chat-log .thinking[data-stop]").waitFor({ state: "detached", timeout: 15000 });
+            await p0.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/model-line-slow?ms=0");
+          } finally {
+            await p0.ctx.close();
+          }
         }
         // the routines (C16): the ghosts at the foot of Needs you and Queued, each
         // column's body scrolled to its foot; the routine's drawer, the control at

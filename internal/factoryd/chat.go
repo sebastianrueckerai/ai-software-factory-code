@@ -57,6 +57,9 @@ type ChatMessage struct {
 	// the row's family in the settle rule (the notification-settling
 	// concept); "" for a row no event wrote.
 	BirthKind string `json:"birth_kind,omitempty"`
+	// Cut marks an answer a member's stop cut short: the row keeps the
+	// words that had arrived when the model call ended.
+	Cut bool `json:"cut,omitempty"`
 	// Settled and Reason are the console's read of a poke row at render:
 	// the row wants nothing any more, an ask with its reason line. They
 	// are derived, never stored.
@@ -912,9 +915,9 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 		return 0, err
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal, cut)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal, m.Cut).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -949,7 +952,7 @@ func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
@@ -961,7 +964,7 @@ func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, co
 	for rows.Next() {
 		var m ChatMessage
 		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal, &m.Cut); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {

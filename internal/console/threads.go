@@ -181,6 +181,68 @@ func (c *Console) Behind(repository, login string, n int64) (queued bool, land f
 	}
 }
 
+// stopGate holds each chat thread's running turn that a member may stop
+// (the chat-stop plan): its cancel and, once pressed, who stopped it.
+// Only the chat's own message path registers a turn: a compaction, a
+// fund's resume, a wake's and a card answer's run unregistered, so a
+// press during them finds nothing and changes nothing.
+type stopGate struct {
+	mu    sync.Mutex
+	stops map[string]*stopEntry
+}
+
+// stopEntry is one running turn's stop: cancel ends its model call at
+// once; by names the member whose press did, and the entry is spent with
+// the press, so a second one answers as if no turn ran.
+type stopEntry struct {
+	cancel context.CancelFunc
+	by     string
+}
+
+func newStopGate() *stopGate { return &stopGate{stops: map[string]*stopEntry{}} }
+
+// enter registers the thread's running turn's cancel; leave, when the
+// turn ends however it ends, takes the entry back.
+func (g *stopGate) enter(key string, cancel context.CancelFunc) *stopEntry {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := &stopEntry{cancel: cancel}
+	g.stops[key] = e
+	return e
+}
+
+func (g *stopGate) leave(key string) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	delete(g.stops, key)
+}
+
+// cancel stops the thread's running turn for by: false, changing nothing,
+// when none runs or a press already spent its entry. A true press lands
+// at the turn's next step boundary.
+func (g *stopGate) cancel(key, by string) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	e := g.stops[key]
+	if e == nil || e.cancel == nil {
+		return false
+	}
+	e.cancel()
+	e.cancel = nil
+	e.by = by
+	return true
+}
+
+// who names the member who stopped the entry's turn, "" while it runs.
+func (g *stopGate) who(e *stopEntry) string {
+	if e == nil {
+		return ""
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return e.by
+}
+
 // key is the turn's thread's key in the gate.
 func (t *turn) key() string { return threadKey(t.p.Repository, t.owner, t.conv) }
 

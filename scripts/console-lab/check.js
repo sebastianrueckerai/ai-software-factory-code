@@ -52,6 +52,8 @@ const mustHave = {
   compacted: ["4 earlier messages, compacted", "summary", "#11 waits until the store is settled.",
     "Why is the session store card waiting?"],
   wake: ["wake", "#603: Which store keeps the nightly board snapshots?"],
+  stopped: ["Plan the members page", "their logins, roles and", "Stopped by sebastian."],
+  thinking: ["Plan the members page"],
   assisted: ["Inbox", "Board", "autonomy", "assisted", "Filed sf/code#8 on track direct.",
     "#7", "#8", "#9", "Speed up the find box", "Fix the login redirect", "Trim the roll notes"],
 
@@ -376,6 +378,42 @@ async function text(page) {
     const low = (await text(p.page)).toLowerCase();
     if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
+    if (sc === "stopped") {
+      // the stopped turn (the 2026-10-31 stop plan): the cut answer keeps
+      // one grey stopped mark that is no button, and the factory's stop
+      // row names the member
+      if ((await p.page.locator("#chat-log .thinking.stopped").count()) !== 1) fails.push("stopped: the cut answer carries no grey stopped mark");
+      if (await p.page.locator("#chat-log button.thinking").count()) fails.push("stopped: the stopped mark is still a button");
+      if (!(await p.page.locator("#chat-log .msg .said").filter({ hasText: "Stopped by sebastian." }).count())) fails.push("stopped: the factory's stop row is missing");
+    }
+    if (sc === "thinking") {
+      // the live fold (the thinking-fold plan): a turn in flight carries
+      // the chevron beside the stop mark, a press opens the reasoning
+      // while the stream runs, and the reasoning never lands: once the
+      // turn ends and the page reloads, no fold and no chevron remain
+      await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/model-line-slow?ms=300");
+      await p.page.locator("#chat-input").click();
+      await p.page.keyboard.type("what is open?");
+      await p.page.keyboard.press("Enter");
+      await p.page.locator("#chat-log [data-think]").waitFor({ state: "visible" });
+      if ((await p.page.locator("#chat-log .thinking[data-stop]").count()) !== 1) fails.push("thinking: the reasoning turn carries no stop mark");
+      await p.page.locator("#chat-log [data-think]").click();
+      await p.page.waitForTimeout(700);
+      const openFold = await p.page.evaluate(() => {
+        const chev = document.querySelector("#chat-log [data-think]"), fold = document.querySelector("#chat-log .tfold");
+        return { open: chev && chev.getAttribute("aria-expanded") === "true", shown: fold && !fold.hidden, text: fold && fold.textContent || "" };
+      });
+      if (!openFold.open || !openFold.shown) fails.push("thinking: a press on the chevron does not open the fold");
+      if (!/The member asks what is open/.test(openFold.text)) fails.push("thinking: the open fold does not carry the live reasoning");
+      await p.page.locator("#chat-log .thinking[data-stop]").waitFor({ state: "detached", timeout: 15000 });
+      await p.page.evaluate(async (u) => { await fetch(u, { method: "POST" }); }, base + "/lab/model-line-slow?ms=0");
+      await p.page.waitForTimeout(400);
+      if (!(await p.page.locator("#chat-log .said").filter({ hasText: "Two cards are open." }).count())) fails.push("thinking: the turn's answer does not land");
+      await p.page.reload({ waitUntil: "load" });
+      await p.page.waitForTimeout(700);
+      if (await p.page.locator("#chat-log [data-think], #chat-log .tfold").count()) fails.push("thinking: the fold or its chevron survives the reload");
+      if (!(await p.page.locator("#chat-log .said").filter({ hasText: "Two cards are open." }).count())) fails.push("thinking: the answer does not survive the reload");
+    }
     if (sc === "metrics") {
       // the deck's rows fit the desk and the phone, no sideways scroll
       const sw = await sideways(p.page);
@@ -1327,6 +1365,14 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       if (await p.page.locator("#thread-dialog").count()) fails.push("threads: Delete the thread leaves the warning open");
       if (await p.page.locator('#thread-rows .trow[data-thread="2"]').count()) fails.push("threads: Delete the thread leaves its row");
+      // the stop button (the 2026-10-31 stop plan): the working thread's
+      // mark is the Stop button, drawn from the thread's working flag with
+      // no stream open on this page
+      await p.page.locator('#thread-rows .trow[data-thread="3"]').click();
+      await p.page.waitForTimeout(600);
+      const mark = p.page.locator("#chat-log button.thinking[data-stop]");
+      if (!(await mark.count())) fails.push("threads: the working thread's mark is no Stop button");
+      else if ((await mark.getAttribute("title")) !== "Stop") fails.push("threads: the mark's title reads " + (await mark.getAttribute("title")));
       // the commands run (C14): "/ne" and Enter in the palette start a new thread, as the
       // /new chip does, each opening empty with the focus in the box
       for (const [what, run] of [

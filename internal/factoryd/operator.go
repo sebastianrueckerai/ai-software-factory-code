@@ -76,13 +76,14 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 
 // Stream is one call of alias on task taskID's account with messages and
 // tools, cut after operatorTimeout: each piece of the answer's text goes
-// to text as it arrives, and the answer comes back with its tool calls in
-// their index order. A gateway refusal is a *policy.Refusal in the chain;
-// any other status, an unreadable chunk or a stream that ends before its
-// [DONE] is an error.
+// to text as it arrives, each piece of its reasoning to think, and the
+// answer comes back with its tool calls in their index order. The
+// reasoning is never part of the answer. A gateway refusal is a
+// *policy.Refusal in the chain; any other status, an unreadable chunk or
+// a stream that ends before its [DONE] is an error.
 // The call names the chat thread it serves, which its audit row keeps.
-func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
-	return m.stream(ctx, policy.PurposeOperator, OperatorTokens, taskID, alias, thread, messages, tools, text)
+func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text, think func(string)) (OperatorMessage, error) {
+	return m.stream(ctx, policy.PurposeOperator, OperatorTokens, taskID, alias, thread, messages, tools, text, think)
 }
 
 // compactTokens bounds a compaction's summary (roadmap 239).
@@ -92,7 +93,7 @@ const compactTokens = 2048
 // taskID's account: the cheap alias summarises messages, its answer the
 // summary text.
 func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, messages []OperatorMessage) (string, error) {
-	answer, err := m.stream(ctx, policy.PurposeCompact, compactTokens, taskID, policy.Small, thread, messages, nil, func(string) {})
+	answer, err := m.stream(ctx, policy.PurposeCompact, compactTokens, taskID, policy.Small, thread, messages, nil, func(string) {}, nil)
 	return answer.Content, err
 }
 
@@ -105,7 +106,7 @@ func (m *OperatorModel) Vision(ctx context.Context, taskID, alias, thread, ask s
 		{"type": "image_url", "image_url": map[string]any{"url": "data:" + contentType + ";base64," + base64.StdEncoding.EncodeToString(image)}}}
 	answer, err := m.call(ctx, policy.PurposeVision, taskID, thread, map[string]any{
 		"model": alias, "stream": true, "max_tokens": OperatorTokens,
-		"messages": []map[string]any{{"role": "user", "content": parts}}}, func(string) {})
+		"messages": []map[string]any{{"role": "user", "content": parts}}}, func(string) {}, nil)
 	return answer.Content, err
 }
 
@@ -124,23 +125,23 @@ const titlePrompt = "You name a chat thread from its first message. " +
 // message's head, its answer is the title before the console cleans it.
 func (m *OperatorModel) Title(ctx context.Context, taskID, thread, first string) (string, error) {
 	answer, err := m.stream(ctx, policy.PurposeTitle, titleTokens, taskID, policy.Small, thread,
-		[]OperatorMessage{{Role: "system", Content: titlePrompt}, {Role: "user", Content: first}}, nil, func(string) {})
+		[]OperatorMessage{{Role: "system", Content: titlePrompt}, {Role: "user", Content: first}}, nil, func(string) {}, nil)
 	return answer.Content, err
 }
 
 // stream is Stream for purpose with an answer of at most maxTokens; no
 // tools sends none, no thread names none.
-func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text func(string)) (OperatorMessage, error) {
+func (m *OperatorModel) stream(ctx context.Context, purpose string, maxTokens int, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text, think func(string)) (OperatorMessage, error) {
 	body := map[string]any{"model": alias, "messages": messages, "stream": true, "max_tokens": maxTokens}
 	if len(tools) > 0 {
 		body["tools"] = tools
 	}
-	return m.call(ctx, purpose, taskID, thread, body, text)
+	return m.call(ctx, purpose, taskID, thread, body, text, think)
 }
 
 // call posts body to the gateway's chat door under purpose on task
 // taskID's account and reads its one streamed answer.
-func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string, body map[string]any, text func(string)) (OperatorMessage, error) {
+func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string, body map[string]any, text, think func(string)) (OperatorMessage, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return OperatorMessage{}, err
@@ -201,6 +202,7 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 				FinishReason string `json:"finish_reason"`
 				Delta        struct {
 					Content   string `json:"content"`
+					Reasoning string `json:"reasoning_content"`
 					ToolCalls []struct {
 						Index    int    `json:"index"`
 						ID       string `json:"id"`
@@ -226,6 +228,9 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 			if d := ch.Delta.Content; d != "" {
 				answer.Content += d
 				text(d)
+			}
+			if d := ch.Delta.Reasoning; d != "" && think != nil {
+				think(d)
 			}
 			for _, d := range ch.Delta.ToolCalls {
 				c := calls[d.Index]
