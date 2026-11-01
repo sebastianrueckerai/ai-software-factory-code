@@ -1294,6 +1294,7 @@ type ChatProposal struct {
 // TakeProposal's refusals.
 var (
 	ErrNoProposal     = errors.New("no such proposal or undo")
+	ErrUsedProposal   = errors.New("the proposal or undo is used")
 	ErrOthersProposal = errors.New("the proposal or undo is another human's")
 )
 
@@ -1307,7 +1308,8 @@ func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
 
 // TakeProposal uses token of kind for login on repository at now, once:
 // the row unused and unexpired, marked used. ErrOthersProposal for such a
-// row of another login, which stays unused; ErrNoProposal for none.
+// row of another login, which stays unused; ErrUsedProposal for one
+// already used, ErrNoProposal for none.
 func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (ChatProposal, error) {
 	p := ChatProposal{Token: token, Kind: kind, Repository: repository, Login: login}
 	var args []byte
@@ -1322,13 +1324,17 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 	case !errors.Is(err, sql.ErrNoRows):
 		return ChatProposal{}, err
 	}
-	var others bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM chat_proposals
-		WHERE token = $1 AND repository = $2 AND used_at IS NULL AND expires_at >= $3 AND kind = $4)`, token, repository, now, kind).Scan(&others); err != nil {
+	var used, others bool
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		EXISTS (SELECT 1 FROM chat_proposals WHERE token = $1 AND repository = $2 AND used_at IS NULL AND expires_at >= $3 AND kind = $4),
+		EXISTS (SELECT 1 FROM chat_proposals WHERE token = $1 AND repository = $2 AND used_at IS NOT NULL AND kind = $4)`, token, repository, now, kind).Scan(&others, &used); err != nil {
 		return ChatProposal{}, err
 	}
-	if others {
+	switch {
+	case others:
 		return ChatProposal{}, ErrOthersProposal
+	case used:
+		return ChatProposal{}, ErrUsedProposal
 	}
 	return ChatProposal{}, ErrNoProposal
 }

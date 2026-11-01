@@ -253,15 +253,16 @@ decimals: a task's model calls cost fractions of a cent.
   one choice to a write tool call (`tool`, `args`, `choice`, admitted
   as the propose path admits a call): the binding is a proposal of
   kind `ask`, kept out of the pending Do it list, so only the ask row
-  offers it. The bound choice's press runs the call in code as the
-  human's session through `POST /projects/{name}/chat/answer`,
-  streamed, its `do-<token>` row landing as a confirmed call's does;
-  any other choice's press lands as the human's row and feeds the
-  agent a turn, which reads it as their answer. While the binding
+  offers it. Every press lands as the human's row with its choice. The
+  bound choice's press also runs the call in code as the human's
+  session through `POST /projects/{name}/chat/answer`, streamed, its
+  `do-<token>` row landing as a confirmed call's does; any other
+  choice's press feeds the agent a turn, which reads the row as their
+  answer. While the binding
   lives, a typed message settles nothing and the bound tool refuses in
   the turn, naming the press as its answer; the binding lives the
   proposal's 30 minutes, and its expiry leaves the question an
-  ordinary ask. A wake, the turn the Waker starts on a member's
+  ordinary ask, its presses answering it by the row and the turn. A wake, the turn the Waker starts on a member's
   thread with no member behind it, makes every Forgejo call as
   `factory-chat` with the project's chat token (`Forgejo.Access`'s
   `Chat`): it needs no login of the member and reads none. A wake's turn

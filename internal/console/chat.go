@@ -85,7 +85,7 @@ func (t *turn) take(kind, token string) (factoryd.ChatProposal, error) {
 	switch {
 	case errors.Is(err, factoryd.ErrOthersProposal):
 		return p, refuse(http.StatusForbidden, "It is another human's.")
-	case errors.Is(err, factoryd.ErrNoProposal):
+	case errors.Is(err, factoryd.ErrNoProposal), errors.Is(err, factoryd.ErrUsedProposal):
 		return p, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
 	}
 	return p, err

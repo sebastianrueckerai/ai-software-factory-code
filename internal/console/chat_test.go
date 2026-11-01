@@ -792,10 +792,15 @@ func (f *fakeChat) TakeProposal(_ context.Context, kind, token, repository, logi
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, p := range f.proposals {
-		if p.Kind != kind || p.Token != token || p.Repository != repository || !p.used.IsZero() || now.After(p.ExpiresAt) {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
 			continue
 		}
-		if p.Login != login {
+		switch {
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		case p.Login != login:
 			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
 		}
 		p.used = now
@@ -2699,6 +2704,9 @@ func TestChatAskPressRunsTheBoundAction(t *testing.T) {
 	if len(do) != 1 || do[0].ID != "do-"+token[:12] || do[0].Name != "close" || do[0].Result != "Closed #5; factoryd ends the card. It cannot be undone." {
 		t.Fatalf("the press's row = %+v", do)
 	}
+	if rows[len(rows)-2].Role != "user" || rows[len(rows)-2].Content != "close it" {
+		t.Fatalf("the press's answer row = %+v", rows[len(rows)-2])
+	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
 }
 
@@ -2725,6 +2733,37 @@ func TestChatAskPressOfAnotherChoiceSettles(t *testing.T) {
 	}
 	if p, ok := chat.proposal(rows[1].Proposal); !ok || p.used.IsZero() {
 		t.Fatalf("the settling press left the binding live: %+v", p)
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The press of an expired binding answers an ordinary ask, even its bound
+// choice's: the choice lands as the human's row, the agent's turn reads
+// it, and nothing runs. A used binding's press still hears it is gone.
+func TestChatAskPressOfAnExpiredBindingSettles(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+	chat.mu.Unlock()
+	before := r.events.count()
+	g.replies = [][]string{{say("Holding it.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press of the expired binding = %d: %v", code, events)
+	}
+	equal(t, "the settling press", events, []string{`text {"text":"Holding it."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if rows[2].Role != "user" || rows[2].Content != "close it" {
+		t.Fatalf("the human's row = %+v", rows[2])
+	}
+	if got := messages(t, g.calls()[1]); got[len(got)-1]["content"] != "close it" {
+		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
 	}
 	chatRows(t, r.events, before, "sebastian")
 }
