@@ -666,9 +666,10 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 
 	// 2 of 3: the window's two answers that never judged over its three
 	// genuine answers, the replay having added none; the previous
-	// window's one answer reviewed, a proven zero; the early unjudged
-	// answer fills bucket 0 (Aug 26, the spark opens Aug 24) and the
-	// window's two bucket 5
+	// window's one answer reviewed, a proven zero; the spark names both
+	// its weeks — the early unjudged answer bucket 0 (Aug 26, the spark
+	// opens Aug 24), the previous window's reviewed answer bucket 3
+	// (Sep 20) — and the window's two answers bucket 5
 	r, err := s.ProjectMetrics(context.Background(), "sf/dc3", from, to)
 	if err != nil {
 		t.Fatal(err)
@@ -676,7 +677,7 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	if r.DivideConquer.ReviewsNotReviewed != (Figure{Value: 2, Has: true, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 2, 0}}) {
 		t.Fatalf("reviews not reviewed = %+v, want 2 of 3", r.DivideConquer.ReviewsNotReviewed)
 	}
-	if r.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 3, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 3, 0}}) {
+	if r.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 3, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 1, 0, 3, 0}}) {
 		t.Fatalf("review answers = %+v, want the measured denominator 3", r.DivideConquer.ReviewEvidence.Answers)
 	}
 	// a separate genuine round of that same head adds its own answer,
@@ -693,7 +694,7 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	if again.DivideConquer.ReviewsNotReviewed != (Figure{Value: 3, Has: true, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 2, 1}}) {
 		t.Fatalf("reviews not reviewed = %+v, want 3 of 5", again.DivideConquer.ReviewsNotReviewed)
 	}
-	if again.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 5, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 4, 1}}) {
+	if again.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 5, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 1, 0, 4, 1}}) {
 		t.Fatalf("review answers = %+v, want the measured denominator 5", again.DivideConquer.ReviewEvidence.Answers)
 	}
 	// every row a genuine answer: no hole to name, a measured zero of
@@ -792,12 +793,15 @@ func TestDivideConquerReviewEvidenceSQL(t *testing.T) {
 	if r.DivideConquer.ReviewEvidence.Unknown != (Figure{Value: 2, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 1, 0, 1, 1}}) {
 		t.Fatalf("review unknown = %+v, want the holes over the three spans", r.DivideConquer.ReviewEvidence.Unknown)
 	}
-	// the other repository's answer answers its own report alone
+	// the other repository's answer answers its own report alone — one
+	// not-reviewed of one genuine answer, its own spark week (Sep 30,
+	// bucket 5) and nothing before the window
 	other, err := s.ProjectMetrics(context.Background(), "sf/other7", from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if other.DivideConquer.ReviewsNotReviewed != (Figure{Value: 1, Has: true}) || other.DivideConquer.ReviewEvidence.Answers.Value != 1 {
+	if other.DivideConquer.ReviewsNotReviewed != (Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) ||
+		other.DivideConquer.ReviewEvidence.Answers.Value != 1 {
 		t.Fatalf("other repository reviews = %+v %+v, want its one answer alone",
 			other.DivideConquer.ReviewsNotReviewed, other.DivideConquer.ReviewEvidence.Answers)
 	}
@@ -822,7 +826,9 @@ func TestDivideConquerReviewEvidenceSQL(t *testing.T) {
 	if zero.DivideConquer.ReviewsNotReviewed != (Figure{Has: true}) {
 		t.Fatalf("reviews of judged answers = %+v, want a measured zero", zero.DivideConquer.ReviewsNotReviewed)
 	}
-	if zero.DivideConquer.ReviewEvidence != (ReviewEvidence{Answers: Figure{Value: 2, Has: true}, Unknown: Figure{Has: true}}) {
+	// two judged answers, both of the window's week (Sep 30 and Oct 4,
+	// bucket 5): no hole to name over the measured denominator
+	if zero.DivideConquer.ReviewEvidence != (ReviewEvidence{Answers: Figure{Value: 2, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 2, 0}}, Unknown: Figure{Has: true}}) {
 		t.Fatalf("review evidence of judged answers = %+v, want two answers and no hole", zero.DivideConquer.ReviewEvidence)
 	}
 }
@@ -844,7 +850,11 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	dcGateHead(t, s, "c1", "sf/dc4", "g1", GateMerge, 300, 350, 0, from.AddDate(0, 0, 8))  // window, bucket 6
 	dcGateHead(t, s, "c1", "sf/dc4", "g0", GateMerge, 300, 350, 0, from.AddDate(0, 0, -8)) // previous window, bucket 3
 	dcSessionEnd(t, s, "se1", string(OutcomeWallClock), "c1", "sf/dc4", 1, from.AddDate(0, 0, 9))
-	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k1", Round: 1, Model: "big", Verdict: "approve"}.Event("c1", "sf/dc4", 81), from.AddDate(0, 0, 9))
+	// the window's one genuine answer (Oct 7, bucket 6): its own fact
+	// identity — commit f1, round 1 — because the package's tests share
+	// one database and the identity index holds one row per key, so a
+	// commit another test's answer already holds would drop this row
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "f1", Round: 1, Model: "big", Verdict: "approve"}.Event("c1", "sf/dc4", 81), from.AddDate(0, 0, 9))
 	// a legacy identity-less row, over-looking in the window (Sep 30,
 	// bucket 5) — it measures nothing: the panel keeps its one escape
 	// and the bucket its zero, and the coverage names the hole
@@ -904,12 +914,13 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	if d.ReviewsNotReviewed != (Figure{Has: true, PrevHas: false}) {
 		t.Fatalf("reviews not reviewed = %+v, want a measured zero of one reviewed answer", d.ReviewsNotReviewed)
 	}
-	// the window's one genuine answer over its one row, the previous
-	// window's legacy row a measured zero of genuine answers beside its
-	// one hole, and the spark's third week names that hole alone
+	// the window's one genuine answer over its one row — its hole count
+	// a measured zero, the row covers the span — the previous window's
+	// legacy row a measured zero of genuine answers beside its one hole,
+	// and the spark's third week names that hole alone
 	if d.ReviewEvidence != (ReviewEvidence{
 		Answers: Figure{Value: 1, Has: true, Prev: 0, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}},
-		Unknown: Figure{Prev: 1, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0}},
+		Unknown: Figure{Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0}},
 	}) {
 		t.Fatalf("review evidence = %+v, want one answer in the window and the legacy hole before it", d.ReviewEvidence)
 	}

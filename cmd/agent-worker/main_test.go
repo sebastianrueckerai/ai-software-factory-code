@@ -32,7 +32,7 @@ func setRequiredEnv(t *testing.T) {
 	for name, val := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo",
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
-		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
+		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200", "LINE_BOUND": "100",
 		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 		// the worker's own sandbox exports REPO_SHA; the seeded repos of
 		// the tests hold no such commit, so none is pinned here
@@ -359,7 +359,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	for k, v := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
-		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "MESSAGE_TOKEN_SHA256": testMessageHash,
+		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "LINE_BOUND": "0", "MESSAGE_TOKEN_SHA256": testMessageHash,
 		"EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 	} {
 		t.Setenv(k, v)
@@ -1914,6 +1914,15 @@ func changedSession(t *testing.T) (dir string, e workerEnv, base, mainHead, fork
 		t.Fatal(err)
 	}
 	return dir, e, base, mainHead, fork
+}
+
+// A diff that cannot run fails the rule rather than passing it: the
+// bound check never reads a broken git diff as zero changed lines.
+func TestChangedLinesFailsClosed(t *testing.T) {
+	dir, e, _, _, _ := changedSession(t)
+	if _, err := changedLines(e, dir, "no-such-object", e.repoSHA); err == nil {
+		t.Fatal("a diff that cannot run counted as zero changed lines")
+	}
 }
 
 // A factoryd that never answers the push request (one that died without

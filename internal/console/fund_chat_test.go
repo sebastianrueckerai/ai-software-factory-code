@@ -206,7 +206,7 @@ func answerFund(t *testing.T, r *rig, via, decider string) (string, error) {
 		}
 		return needRefusal, nil
 	}
-	return r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: via, decider: decider}, "t-e", "the fix is in", factoryd.AnswerFund)
+	return r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: via, decider: decider}, "t-e", "the fix is in", factoryd.AnswerFund, "")
 }
 
 // The chat answer's fund value is a chat-attributed raise: it meets the
@@ -315,7 +315,7 @@ func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
 func TestOneClickFundChoiceRaisesAndAnswersWithoutANote(t *testing.T) {
 	r := needRig(t)
 	_, s := r.loggedIn(t)
-	note, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73))
+	note, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73), "")
 	if err != nil || note != "Raised #13's budget by 0.73 EUR to 2.73 and posted your note as the answer; the card resumes." {
 		t.Fatalf("the one-click fund = %q, %v", note, err)
 	}

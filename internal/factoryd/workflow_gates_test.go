@@ -1351,3 +1351,31 @@ func TestWorkflowHoldoutSettlementRealGapRoutesTheCardToASession(t *testing.T) {
 		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }
+
+// A head over the card's line bound is refused to the agent, however the
+// over-bound diff was made: no approval is asked on it, the finding
+// goes back, and the card continues when the agent brings the head
+// under the bound (or a human extends it).
+func TestWorkflowOverTheCardLineBoundIsFindingsNotApproval(t *testing.T) {
+	over := "the pull request's diff is 20 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	g := newGateHarness(t)
+	g.gateSeq = []PolicyGate{
+		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7, OverBound: over},
+		{Class: "normal", Outcome: policy.OutcomeRequiresApproval, PolicyVersion: 7},
+	}
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{over}) {
+		t.Fatalf("sessions = %+v, want a second session holding the over-bound finding", g.sessions)
+	}
+	if len(g.approvals) != 1 || g.approvals[0].Commit != "c2" {
+		t.Fatalf("approvals = %+v, want one, on the head under the bound only", g.approvals)
+	}
+	if want := []string{"policy", "policy", "repro c2", "review c2", "criteria c2", "approval c2", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+}

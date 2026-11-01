@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -35,6 +36,21 @@ const (
 	AnswerClose       = "close"
 	AnswerKeepWaiting = "keep_waiting"
 	AnswerGo          = "go"
+	AnswerExtend      = "extend"
+	AnswerOverrule    = "overrule"
+	AnswerSuccessor   = "successor"
+)
+
+// The marks a stop's reason carries where it names an owner decision:
+// the deadlock headline (the repeat guard, workflow.go) and a refused
+// review's line in the work state (workStateLines). A stop that carries
+// one offers the decision as the exits.
+const (
+	deadlockAskMark    = "No reply can change this"
+	reviewConcernsMark = "review: concerns"
+	// SuccessorChoice is the successor exit's label, the answer that
+	// closes the card into its successor.
+	SuccessorChoice = "Close into a successor"
 )
 
 // HumanQuestion is the five-part question a card asks. Source names what
@@ -102,20 +118,41 @@ type QuestionFacts struct {
 	CheckinShare float64 // EUR, the policy's check-in share of the budget
 	FloorEUR     float64 // the policy's session floor of the card's rung
 	PlanTrack    bool    // the card runs the plan track: its answers steer a planner session
+	SessionCap   int     // sessions the card may run, its grants included
+	LineBound    int     // changed lines the card's size plans, its raises included
+	BudgetEUR    float64 // the card's budget
+	SpentEUR     float64 // EUR of the budget spent
+	LeftEUR      float64 // EUR of the budget left
 }
 
 // ShapedQuestion shapes the question the escalation reason asks: by
 // template for the deterministic stops, and from the reason itself for
 // every other ask (plainQuestion), so no question reaches a card without
-// its five parts.
+// its five parts. A stop that names an owner decision carries the exits:
+// the deadlock ask is its own template, and a work state that carries a
+// refused review swaps the ordinary answers for the exits.
 func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
+	if strings.Contains(reason, deadlockAskMark) {
+		return deadlockQuestion(reason, f)
+	}
+	q := templateQuestion(reason, f, choices)
+	if strings.Contains(reason, reviewConcernsMark) {
+		q.Choices = exitChoices()
+		q.Info = exitsInfo
+	}
+	return q
+}
+
+// templateQuestion is the template dispatch: the deterministic stops get
+// their template, every other ask plainQuestion.
+func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	switch {
 	case strings.HasPrefix(reason, checkinSpendAsk+"check-in call cap reached"),
 		reason == "check-in call cap reached":
-		return callCapQuestion(f)
+		return callCapQuestion(reason, f)
 	case strings.HasPrefix(reason, checkinSpendAsk+"the check-in's share of the budget is spent"),
 		reason == "the check-in's share of the budget is spent":
-		return checkinShareQuestion(f)
+		return checkinShareQuestion(reason, f)
 	case strings.HasPrefix(reason, capReached):
 		return sessionCapQuestion()
 	case strings.HasPrefix(reason, budgetRefused):
@@ -209,33 +246,74 @@ func continueChoices() []QuestionChoice {
 }
 
 // continueInfo is what an answer does at a spend stop: the attempt
-// starts again with the member's comment as guidance, re-verifying the
+// starts again with the human's comment as guidance, re-verifying the
 // pull request when there is one; the spent budget stays spent.
 const continueInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent."
 
-func callCapQuestion(f QuestionFacts) *HumanQuestion {
+// reasonBody is the work state a stop's reason carries under its first
+// line, if it carries any.
+func reasonBody(reason string) string {
+	if _, rest, ok := strings.Cut(reason, "\n"); ok {
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
+
+func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	ask := "The check-in gave no answer within its calls. May the card go on?"
 	if f.CheckinCap > 0 {
 		ask = fmt.Sprintf("The check-in gave no answer within its %d calls. May the card go on?", f.CheckinCap)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
-		Why:     "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person.",
+		Why:     cmp.Or(reasonBody(reason), "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."),
 		Info:    "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent.",
 		Choices: continueChoices(),
 	}
 }
 
-func checkinShareQuestion(f QuestionFacts) *HumanQuestion {
+func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	ask := "The card has spent its check-in share of the budget. May it go on?"
 	if f.CheckinSpent > 0 || f.CheckinShare > 0 {
 		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
-		Why:     "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+		Why:     cmp.Or(reasonBody(reason), "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person."),
 		Info:    continueInfo,
 		Choices: continueChoices(),
+	}
+}
+
+// exitChoices are the owner exits a stop that names a decision carries:
+// the card's limits move (extend), the review's word is set aside
+// (overrule), the card ends (close) or its work carries on in a successor.
+func exitChoices() []QuestionChoice {
+	return []QuestionChoice{
+		{AnswerExtend, "Extend the card"},
+		{AnswerOverrule, "Overrule the review"},
+		{AnswerClose, "End the card"},
+		{AnswerSuccessor, SuccessorChoice},
+	}
+}
+
+// exitsInfo is what the exits do, at any stop that offers them.
+const exitsInfo = "An answer restarts the card with your words as guidance. 'Extend the card' raises the card's session cap, line bound and budget by what you give, then answers the stop; 'Overrule the review' answers with your word over the review's; 'End the card' closes the card and its pull request; 'Close into a successor' ends the card and opens one that starts from main's tip, carrying its pull request's patch and the findings."
+
+// deadlockQuestion is the ask no reply can change: the repeat guard's
+// stop, which names the owner exits and carries them. With the facts at
+// hand the ask names the card's own limits; without them it names the
+// guard's finding.
+func deadlockQuestion(reason string, f QuestionFacts) *HumanQuestion {
+	ask := deadlockAskMark + ": the head and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting."
+	if f.SessionCap > 0 || f.LineBound > 0 || f.BudgetEUR > 0 {
+		ask = fmt.Sprintf("%s: the card holds a %d-session cap, a %d-line bound and €%.2f of its €%.2f budget. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, f.SessionCap, f.LineBound, f.LeftEUR, f.BudgetEUR)
+	}
+	return &HumanQuestion{
+		Ask:     ask,
+		Why:     cmp.Or(reasonBody(reason), "The last answer changed neither the head nor the card's limits, so the stop would repeat."),
+		Info:    exitsInfo,
+		Choices: exitChoices(),
 	}
 }
 
@@ -648,17 +726,28 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 
 // questionFacts reads the numbers the spend templates fill from: the
 // check-in spend the task has made, the policy's call cap and the card's
-// share. It reads nothing for a reason the spend templates do not cover.
+// share, and the exits' limits (the card's caps and money) wherever the
+// reason carries a decision. It reads nothing for a reason the templates
+// do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
 		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
 		return track
 	}
-	if !strings.HasPrefix(reason, checkinSpendAsk) {
-		return track
-	}
 	f := track
+	if strings.Contains(reason, deadlockAskMark) || strings.Contains(reason, reviewConcernsMark) {
+		if r.cfg.Policy != nil {
+			f.SessionCap = SessionCap(t, r.cfg.Policy().Document.Limits.Sessions) + t.Usage.ExtraAttempts
+			f.LineBound = EffectiveLineBound(t.Size, r.cfg.Policy().Document.Risk.LargeLines, t.Usage.ExtraLines)
+		}
+		f.BudgetEUR = t.BudgetEUR
+		f.SpentEUR = t.SpentEUR
+		f.LeftEUR = t.BudgetEUR - t.SpentEUR
+	}
+	if !strings.HasPrefix(reason, checkinSpendAsk) {
+		return f
+	}
 	if e, err := r.store.CheckinSpent(ctx, t.ID); err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	} else {

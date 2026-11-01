@@ -3,6 +3,8 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -94,6 +96,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityReconcile:                   r.Reconcile,
 		ActivityEscalate:                    r.Escalate,
 		ActivityRecordUsage:                 r.RecordUsage,
+		ActivityReadUsage:                   r.ReadUsage,
+		ActivitySuccessor:                   r.Successor,
 		ActivityGatePolicy:                  r.GatePolicy,
 		ActivityGateMigration:               r.GateMigration,
 		ActivityGateReproduction:            r.GateReproduction,
@@ -387,6 +391,124 @@ func (h *heartbeat) snapshot() sessionProgress {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events}
+}
+
+// ReadUsage reads the caps the task's row holds: the answer wake reloads
+// them, so a raise the console made while the card waited (ExtendCard)
+// is not overwritten by the usage snapshot the last session recorded.
+func (r *Runner) ReadUsage(ctx context.Context, taskID string) (TaskUsage, error) {
+	t, _, err := r.store.Task(ctx, taskID)
+	if err != nil {
+		return TaskUsage{}, err
+	}
+	return t.Usage, nil
+}
+
+// SuccessorInput is the successor a card closes into: the card, the
+// findings so far as the card's ask carried them (a packed block of
+// lines) and the pull request whose patch it carries.
+type SuccessorInput struct {
+	TaskID   string
+	Findings string
+	PR       int64
+}
+
+// SourceSuccessor is a card a stuck card closed into, which starts from
+// main's tip carrying the patch and the findings.
+const SourceSuccessor = "successor"
+
+// SuccessorID is the id of card id's successor, so a filing that stopped
+// part way finds it.
+func SuccessorID(id string) string {
+	sum := sha256.Sum256([]byte("successor " + id))
+	return "t-" + hex.EncodeToString(sum[:6])
+}
+
+// successorMarker marks the issue of card id's successor, so a filing that
+// stopped between the issue and its row finds it again.
+func successorMarker(id string) string {
+	return fmt.Sprintf("<!-- factoryd successor of %s -->", id)
+}
+
+// Successor files the successor of the stuck card in (task 6): a card of
+// the same objective with the findings so far, the carried pull request
+// and the card's size and budget, queued on the direct track under the
+// work bound with no base of its own — its first session starts from
+// main's tip. The row lands first and its issue after, so a filing that
+// stops part way runs again to the same one card: the row's identity holds
+// the card and the marker holds the issue.
+func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
+	old, repo, err := r.task(ctx, in.TaskID)
+	if err != nil {
+		return "", err
+	}
+	t, found, err := r.store.Task(ctx, SuccessorID(old.ID))
+	if err != nil {
+		return "", err
+	}
+	pr := cmp.Or(in.PR, old.PRNumber)
+	if !found {
+		p, ok, err := r.store.ProjectByRepository(ctx, old.Repository)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", errNoTrack(p)
+		}
+		var lines []string
+		if in.Findings != "" {
+			lines = append(lines, "Findings so far:"+in.Findings)
+		}
+		if pr > 0 {
+			lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
+		}
+		if old.Size != "" {
+			lines = append(lines, "Size: "+old.Size)
+		}
+		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
+		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
+			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
+			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
+			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
+			return "", err
+		}
+		// fileEntry gives a fresh intake card the project's process; the
+		// successor continues the card it came from, like a retry does
+		t.Process = old.Process
+		if err := r.store.CreateTask(ctx, t); err != nil {
+			return "", err
+		}
+	}
+	if t.IssueNumber == 0 {
+		marker := successorMarker(old.ID)
+		all, err := r.forgejo.Issues(ctx, repo.Owner, repo.Name)
+		if err != nil {
+			return "", fmt.Errorf("the successor of %s: search the issues: %w", old.ID, err)
+		}
+		title, body, _ := strings.Cut(t.Objective, "\n\n")
+		if i := slices.IndexFunc(all, func(is webhookIssue) bool {
+			return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
+		}); i >= 0 {
+			t.IssueNumber = all[i].Index
+		} else {
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			if err != nil {
+				return "", fmt.Errorf("the successor of %s: file its issue: %w", old.ID, err)
+			}
+			t.IssueNumber = ref.Number
+		}
+		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
+			return "", fmt.Errorf("the successor of %s: label its issue #%d: %w", old.ID, t.IssueNumber, err)
+		}
+		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
+			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
+		}
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track})
+	}
+	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
+		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
+	}
+	return t.ID, nil
 }
 
 // RecordUsage keeps what the task used of its caps on its row; agent time

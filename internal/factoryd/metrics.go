@@ -284,9 +284,9 @@ func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 const EventGateHead = "gate_head"
 
 // GateHeadFact is that reading: the merge decision's snapshot of the card
-// as the gates judged it — the card's size, the bound that size planned
-// under the policy the gates read (cardLineBound, never the policy's
-// large_lines standing in for a smaller size's bound), the policy version
+// as the gates judged it — the card's size, the effective bound under
+// the policy the gates read (the size's plan plus the raises its extend
+// answers added), the policy version
 // and the lines the gates counted. Decision is "auto" (the gates let it
 // merge) or "approval" (a person decides). Identity: the card and the
 // head; one head, one row.
@@ -296,7 +296,7 @@ type GateHeadFact struct {
 	Gate          string
 	Decision      string
 	Size          string
-	Bound         int // the size's effective cardLineBound at the reading
+	Bound         int // the effective line bound at the reading
 	PolicyVersion int64
 	Files         int
 	Insertions    int
@@ -1906,7 +1906,11 @@ func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w met
 func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, ReviewEvidence, error) {
 	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
 		WHERE ` + dcCardReach + ` AND e.kind = 'model_review' AND e.at >= %s AND e.at < $3`
-	const genuine = `e.identity_key IS NOT NULL AND e.detail->>'reviewed' IN ('true', 'false')`
+	// COALESCE holds the classification boolean to FALSE where the
+	// payload wrote none: an AND with SQL's NULL would answer NULL, and
+	// NOT NULL drops the row from the unknown filter too — a keyed row
+	// without its classification would count nowhere, hole or answer
+	const genuine = `e.identity_key IS NOT NULL AND COALESCE(e.detail->>'reviewed' IN ('true', 'false'), FALSE)`
 	const notReviewed = genuine + ` AND e.detail->>'reviewed' = 'false'`
 	const unknown = `NOT (` + genuine + `)`
 	// the evidence of Answers and Unknown is every model_review row: a

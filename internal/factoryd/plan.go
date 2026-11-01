@@ -1210,6 +1210,15 @@ func cardLineBound(size string, largeLines int) (lines int, sized bool) {
 	return lines, sized
 }
 
+// EffectiveLineBound is the card's line bound: what its size plans under
+// the policy plus the raises its extend answers added. The worker's push
+// rule, the gate's check and the supervisor's trip all read this one
+// number, so a raise lifts them at once.
+func EffectiveLineBound(size string, largeLines, extraLines int) int {
+	lines, _ := cardLineBound(size, largeLines)
+	return lines + extraLines
+}
+
 // PlanAnswerComment is the console's comment, as the member, on the plan's
 // issue when they answer question idx: intake knows it for no change
 // request by the answer stored before it.
@@ -3164,7 +3173,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	}
 	fork := r.forgejo.Fork(repo)
 	cards := map[string]Task{}
-	var open []webhookIssue
+	var all []webhookIssue
 	for i, c := range order {
 		if c.Round < p.Round {
 			row, ok := rows[c.Key]
@@ -3233,16 +3242,16 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		if card.IssueNumber == 0 {
 			marker := cardMarker(t.ID, c.Key)
-			if open == nil {
-				if open, err = r.forgejo.OpenIssues(ctx, repo.Owner, repo.Name); err != nil {
+			if all == nil {
+				if all, err = r.forgejo.Issues(ctx, repo.Owner, repo.Name); err != nil {
 					return nil, err
 				}
 			}
-			i := slices.IndexFunc(open, func(is webhookIssue) bool {
+			i := slices.IndexFunc(all, func(is webhookIssue) bool {
 				return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
 			})
 			if i >= 0 {
-				card.IssueNumber = open[i].Index
+				card.IssueNumber = all[i].Index
 			} else {
 				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
 				if err != nil {

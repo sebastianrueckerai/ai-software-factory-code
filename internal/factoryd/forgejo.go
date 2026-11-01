@@ -1692,6 +1692,13 @@ func (f *Forgejo) OpenIssues(ctx context.Context, owner, repo string) ([]webhook
 	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=open&type=issues&", owner, repo))
 }
 
+// Issues lists owner/repo's issues, open and closed alike, not pull
+// requests: an idempotent filing searching for its marker must find the
+// issue it filed even after something closed it.
+func (f *Forgejo) Issues(ctx context.Context, owner, repo string) ([]webhookIssue, error) {
+	return GetPages[webhookIssue](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues?state=all&type=issues&", owner, repo))
+}
+
 // DefaultBranchHeadSHA is the head of owner/repo's default branch, the base
 // every agent task is stamped with at intake; branch is the default branch
 // when the caller already knows it (a webhook payload), else it is read.

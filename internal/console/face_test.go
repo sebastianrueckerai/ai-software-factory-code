@@ -288,6 +288,68 @@ func TestCardFaceChecks(t *testing.T) {
 	}
 }
 
+// The face's checks count names the head it judged: a newer push the
+// checks never ran on leaves the earlier pass's counts off the face
+// (#1396 wore "5/5 checks" from a pass its cycle had left behind), and
+// they return once checks run on that newer head. With no push at all,
+// the newest checks step stands on its own.
+func TestCardFaceChecksNameTheHeadTheyJudged(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	fiveOf := func(commit string) string {
+		return `{"step":"checks","commit":"` + commit + `","state":"success","jobs":[` +
+			`{"name":"build","status":"success"},{"name":"vet","status":"success"},{"name":"race","status":"success"},` +
+			`{"name":"lint","status":"success"},{"name":"docs","status":"success"}]}`
+	}
+	push := func(commit string) string {
+		return `{"step":"pushed","session":"s","branch":"b","commit":"` + commit + `"}`
+	}
+	start := `{"step":"session_start","attempt":1}`
+	r.objects["sessions/t-stale/timeline.jsonl"] = []byte(start + "\n" + push("aaa") + "\n" + fiveOf("aaa") + "\n" + push("bbb") + "\n")
+	r.objects["sessions/t-caught-up/timeline.jsonl"] = []byte(start + "\n" + push("aaa") + "\n" + fiveOf("aaa") + "\n" + push("bbb") + "\n" + fiveOf("bbb") + "\n")
+	r.objects["sessions/t-no-push/timeline.jsonl"] = []byte(start + "\n" + fiveOf("aaa") + "\n")
+	r.tasks.set("",
+		factoryd.Task{ID: "t-stale", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "a newer push", PRNumber: 4},
+		factoryd.Task{ID: "t-caught-up", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "checked again", PRNumber: 5},
+		factoryd.Task{ID: "t-no-push", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "checks only", PRNumber: 6})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-stale"); strings.Contains(face, `class="checks"`) {
+		t.Errorf("a push the checks never ran on still wears their counts:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-caught-up"); !strings.Contains(face, `<span class="checks">5/5 checks</span>`) {
+		t.Errorf("the checks on the newest head lack their 5/5:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-no-push"); !strings.Contains(face, `<span class="checks">5/5 checks</span>`) {
+		t.Errorf("checks with no push to be stale against lack their 5/5:\n%s", face)
+	}
+}
+
+// The face carries the newest session's attempt beside the gate clock,
+// which restarts on every retry: "under a minute" alone reads as
+// progress, not as the third try's restart. A card out of its stage
+// shows no floating attempt.
+func TestCardFaceAttemptBesideTheGateClock(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	attempts := `{"step":"session_start","attempt":1}
+{"step":"session_end","attempt":1,"outcome":"retry"}
+{"step":"session_start","attempt":2}
+{"step":"session_end","attempt":2,"outcome":"retry"}
+{"step":"session_start","attempt":3}`
+	r.objects["sessions/t-gate/timeline.jsonl"] = []byte(attempts)
+	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(attempts)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-gate", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "at the gate", PRNumber: 4},
+		factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-poster", Repository: "sf/code", Objective: "waiting", PRNumber: 5})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-gate"); !strings.Contains(face, `<span class="elapsed">attempt 3</span>`) {
+		t.Errorf("the card at its gate lacks its third attempt beside the clock:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-wait"); strings.Contains(face, "attempt") {
+		t.Errorf("a card out of its stage carries a floating attempt:\n%s", face)
+	}
+}
+
 // countedObjects counts the reads of each object key.
 type countedObjects struct {
 	fakeObjects

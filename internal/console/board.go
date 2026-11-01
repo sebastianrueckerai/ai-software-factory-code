@@ -500,6 +500,10 @@ type card struct {
 	// remaining budget cannot fund a call, which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
+	// Extend is the approver's Extend action on a card whose question
+	// offers the exit (a stop that names the owner's decision): the
+	// stated sessions, lines and EUR raise its caps and answer the stop.
+	Extend *extendForm
 	// AcceptanceClose is the approver's Close on a waiting card whose
 	// event trail shows one of its plan's acceptance commands run green
 	// in a session (roadmap 208): the work is its own evidence, so the
@@ -542,6 +546,9 @@ type card struct {
 	// Checks is "n/n" from the task's newest checks step, "" on a card
 	// without a pull request, a final one, or one whose timeline holds none.
 	Checks string
+	// Attempt is the newest session's number, shown beside the stage
+	// clock, which the gate's restarts would else read as progress.
+	Attempt string
 	// NearBudget is spend at 80 percent of the budget or more.
 	NearBudget bool
 	// CallsText is the task's call rows summed beside the spend line
@@ -654,12 +661,32 @@ func nearBudget(spent, budget float64) bool {
 	return cents(spent)*5 >= cents(budget)*4
 }
 
-// newestChecksCount is the task's newest checks step: passed over total of
-// its jobs; "" when the steps hold none or it named no counts.
-func newestChecksCount(steps []map[string]any) string {
+// pushedHead is the task's newest pushed step's commit, "" when the
+// steps hold no push.
+func pushedHead(steps []map[string]any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if s, _ := steps[i]["step"].(string); s == "pushed" {
+			commit, _ := steps[i]["commit"].(string)
+			return commit
+		}
+	}
+	return ""
+}
+
+// newestChecksCount is the task's newest checks step that judged head,
+// the newest pushed commit: passed over total of its jobs; "" when the
+// steps hold none, it named no counts, or a newer push has run no checks
+// on it yet. With no push at all, the newest checks step stands on its
+// own, nothing supersedes it.
+func newestChecksCount(steps []map[string]any, head string) string {
 	for i := len(steps) - 1; i >= 0; i-- {
 		if s, _ := steps[i]["step"].(string); s != "checks" {
 			continue
+		}
+		if head != "" {
+			if commit, _ := steps[i]["commit"].(string); commit != head {
+				continue
+			}
 		}
 		jobs, _ := steps[i]["jobs"].([]any)
 		var passed, ran int
@@ -677,6 +704,21 @@ func newestChecksCount(steps []map[string]any) string {
 			return ""
 		}
 		return fmt.Sprintf("%d/%d", passed, ran)
+	}
+	return ""
+}
+
+// attemptOf is the task's newest session's number, "" when no session
+// started or the step named no attempt.
+func attemptOf(steps []map[string]any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if s, _ := steps[i]["step"].(string); s == "session_start" {
+			a, _ := steps[i]["attempt"].(float64)
+			if a < 1 {
+				return ""
+			}
+			return strconv.Itoa(int(a))
+		}
 	}
 	return ""
 }
@@ -755,6 +797,7 @@ const checksTTL = 30 * time.Second
 // read.
 type checks struct {
 	count                    string
+	attempt                  string
 	retrying, held, provider bool
 	stepAt                   time.Time
 	at                       time.Time
@@ -775,6 +818,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 		if k.PRNumber > 0 {
 			k.Checks = got.count
 		}
+		k.Attempt = got.attempt
 		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
 		k.stepAt = got.stepAt
 	})
@@ -793,7 +837,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 	if steps, err := c.readTimeline(ctx, id); err != nil {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
-		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
+		got.count, got.attempt, got.retrying, got.held, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), held(steps), onProvider(steps)
 		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
@@ -874,6 +918,17 @@ func planRollup(cards []card) string {
 // fundForm is an approver's Fund action beside a capped card's answer box:
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
+
+// extendForm is an approver's Extend action beside a card's answer box,
+// where its question offers the exit: the stated sessions, lines and EUR
+// raise the card's caps, and the note answers the stop. Cap, Bound,
+// Budget and Left are the card's numbers the raise starts from.
+type extendForm struct {
+	CSRF       string
+	Cap, Bound int
+	Budget     float64
+	Left       float64
+}
 
 // acceptanceCloseForm is an approver's Close beside a waiting card's
 // answer box: the close ends the card done on its acceptance green
@@ -1471,7 +1526,7 @@ func (c *Console) counts(d boardData) ([]string, error) {
 func (d boardData) faces() string {
 	var b strings.Builder
 	add := func(k card) {
-		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge, k.StageAge)
+		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge, k.StageAge, k.Attempt)
 	}
 	for _, col := range d.Columns {
 		for _, k := range col.Cards {
@@ -1961,6 +2016,15 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
 			k.Fund = &fundForm{CSRF: v.csrf}
+		}
+		// the Extend action is offered where the card's question offers
+		// the exit, a stop that names the owner's decision: the same
+		// card, to its approvers, with its numbers the raise starts from
+		if v.approves(t.Repository) && bt.Question != nil && bt.Question.Offers(factoryd.AnswerExtend) {
+			k.Extend = &extendForm{CSRF: v.csrf,
+				Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.ExtraAttempts,
+				Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
+				Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
 		}
 		// the acceptance close is offered where the card's own trail
 		// proves the work (roadmap 208): the same card, to its approvers
@@ -3062,7 +3126,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 // matched none of the question's choices went to the chat (answerInChat):
 // the member lands on it.
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"))
+	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("instruction"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3077,6 +3141,27 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.pressNote(w, r, note, nil)
+}
+
+// extendCard raises a waiting card's caps (doExtend).
+func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
+	sessions, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("sessions")))
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
+		return
+	}
+	lines, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("lines")))
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "lines is a whole number"))
+		return
+	}
+	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
+		return
+	}
+	note, err := c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, eur, r.PostFormValue("reason"))
+	c.pressNote(w, r, note, err)
 }
 
 // fundCard raises a waiting card's budget (doFund).
