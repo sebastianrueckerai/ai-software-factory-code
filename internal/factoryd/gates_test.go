@@ -668,6 +668,38 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 	}
 }
 
+// The review reads the companion pins as facts: repository, the pin's
+// head, and the verdict's shas, so a change that leans on a companion
+// is judged with what the gates read.
+func TestReviewInputCompanions(t *testing.T) {
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	pin, head := "82ab24600000000000000000000000000000000", "fee3ff1000000000000000000000000000000000"
+	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval},
+		Companions: []CompanionGate{
+			{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head},
+			{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+		}}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
+		t.Fatal(err)
+	}
+	var in reviewInput
+	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
+		t.Fatal(err)
+	}
+	want := []CompanionGate{
+		{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head},
+		{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+	}
+	if !slices.Equal(in.Gates.Companions, want) {
+		t.Fatalf("review companions = %+v, want %+v", in.Gates.Companions, want)
+	}
+	if system := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(system, "companion repositories") {
+		t.Fatalf("the review prompt does not name the companions: %s", system)
+	}
+}
+
 // The review call waits the supervisor_timeout of the version the task
 // started under, not the current one.
 func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
