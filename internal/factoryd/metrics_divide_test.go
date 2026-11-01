@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -73,6 +74,42 @@ func dcMerged(t *testing.T, s *PGStore, task, repository string, at time.Time) {
 	t.Helper()
 	dcRecord(t, s, Event{Repository: repository, TaskID: task, Kind: EventPullRequestMerged,
 		Actor: MergeUser, Via: ViaFactoryd, Detail: map[string]any{"pr": 9, "commit": "m"}}, at)
+}
+
+// dcDoneCard inserts a done card of repository with size and sha — the
+// head the card actually built on, which the economics reading matches —
+// finished at created: the economics cohort, the sessions cohort and the
+// deck's throughput all read it.
+func dcDoneCard(t *testing.T, s *PGStore, id, repository, size, sha string, issue int64, created time.Time) {
+	t.Helper()
+	task := Task{ID: id, Status: "done", Objective: "the combined report's fixture", Repository: repository,
+		Kind: "agent", Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: issue,
+		CreatedAt: created, SHA: sha}
+	if size != "" {
+		task.Size = size
+	}
+	if err := s.insertTask(context.Background(), task, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dcReading records one merge-gate reading of card's head at at, through
+// the fact payload the recorder writes: the size the gates judged, the
+// bound that size planned under and the lines they counted.
+func dcReading(t *testing.T, s *PGStore, card, repository, head, size string, bound, insertions, deletions int, issue int64, at time.Time) int64 {
+	t.Helper()
+	return dcRecord(t, s, GateHeadFact{Task: card, Head: head, Gate: GateMerge, Decision: "auto",
+		Size: size, Bound: bound, PolicyVersion: 7, Files: 9,
+		Insertions: insertions, Deletions: deletions}.Event(repository, issue), at)
+}
+
+// dcSpend writes one lifetime ledger row of card's.
+func dcSpend(t *testing.T, s *PGStore, card, day string, eur float64) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO ledger (task_id, day, kind, ref, eur) VALUES ($1, $2, 'model', 'big', $3)`, card, day, eur); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // TestDivideConquerSizeBoundsSQL — panel 1: distinct cards that reached
@@ -362,5 +399,163 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	if e := empty.DivideConquer; !e.CoveredFrom.IsZero() || len(e.SessionsPerCard) != 0 || len(e.SessionEnds) != 0 ||
 		e.GateAboveBound != (Figure{}) || e.ReviewsNotReviewed != (Figure{}) {
 		t.Fatalf("divide conquer without evidence = %+v, want the zero block", e)
+	}
+}
+
+// TestDivideConquerCombinedReportSQL — the composed report: one window's
+// cards carry nonzero flow facts and nonzero economics facts together,
+// and the full ProjectMetrics answers both families at once. Four
+// measured cards — small (100,3) and (300,5), medium (200,5) and
+// (400,7), changed lines against whole-life euros — hold EUR per merged
+// line at 0.0200 and the size intercepts at small 2.00 and medium 3.00
+// through the flow block's composition, while the same cards' gate
+// readings, sessions and review answers fill the flow panels; a later
+// abandoned head never supplies a card's final lines, a reading without
+// diff statistics stays unavailable — never zero — and the deck's own
+// spend, throughput and dates read unchanged. The other project's card
+// answers only its own report. [merged_economics]
+// [window_and_existing_figures]
+func TestDivideConquerCombinedReportSQL(t *testing.T) {
+	s := seedEconStore(t)
+	from, to := metricsTestWindow()
+	eq := func(a, b float64) bool { return math.Abs(a-b) < 1e-9 }
+	// cb1: small, 100 merged lines, 3 EUR. Its abandoned head crossed the
+	// small bound (700 lines) and its reading landed after the merged
+	// head's own row: the crossing counts the card once for panel 1, the
+	// abandoned lines never reach the economics panels
+	dcDoneCard(t, s, "cb1", "sf/dc5", "small", "cb1-h", 91, from.AddDate(0, 0, 7))
+	dcMerged(t, s, "cb1", "sf/dc5", from.AddDate(0, 0, 7).Add(10*time.Hour))
+	dcReading(t, s, "cb1", "sf/dc5", "cb1-h", "small", 300, 80, 20, 91, from.AddDate(0, 0, 7).Add(10*time.Hour+30*time.Minute))
+	dcReading(t, s, "cb1", "sf/dc5", "cb1-x", "small", 300, 500, 200, 91, from.AddDate(0, 0, 9).Add(9*time.Hour))
+	dcSpend(t, s, "cb1", "2026-10-05", 3)
+	dcStarted(t, s, "c1a", "cb1", "sf/dc5", 1, from.AddDate(0, 0, 7).Add(2*time.Hour))
+	dcStarted(t, s, "c1b", "cb1", "sf/dc5", 2, from.AddDate(0, 0, 7).Add(3*time.Hour))
+	dcSessionEnd(t, s, "c1a", string(OutcomePushed), "cb1", "sf/dc5", 1, from.AddDate(0, 0, 7).Add(12*time.Hour))
+	dcSessionEnd(t, s, "c1b", string(OutcomeWallClock), "cb1", "sf/dc5", 2, from.AddDate(0, 0, 7).Add(13*time.Hour))
+	// cb2: small, 300 lines exactly at its bound — a bound is not a
+	// target — 5 EUR; one session, and the window's two review answers,
+	// one that judged the head and one that never did
+	dcDoneCard(t, s, "cb2", "sf/dc5", "small", "cb2-h", 92, from.AddDate(0, 0, 7))
+	dcMerged(t, s, "cb2", "sf/dc5", from.AddDate(0, 0, 7).Add(11*time.Hour))
+	dcReading(t, s, "cb2", "sf/dc5", "cb2-h", "small", 300, 240, 60, 92, from.AddDate(0, 0, 7).Add(11*time.Hour+30*time.Minute))
+	dcSpend(t, s, "cb2", "2026-10-05", 5)
+	dcStarted(t, s, "c2a", "cb2", "sf/dc5", 1, from.AddDate(0, 0, 7).Add(4*time.Hour))
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "cb2-r1", Round: 1, Model: "big", Verdict: "approve"}.Event("cb2", "sf/dc5", 92), from.AddDate(0, 0, 7).Add(14*time.Hour))
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "cb2-r2", Round: 1, Model: "big", Note: "the gateway refused"}.Event("cb2", "sf/dc5", 92), from.AddDate(0, 0, 8).Add(14*time.Hour))
+	// cb3: medium, 200 lines, 5 EUR; two sessions, one pushed
+	dcDoneCard(t, s, "cb3", "sf/dc5", "medium", "cb3-h", 93, from.AddDate(0, 0, 8))
+	dcMerged(t, s, "cb3", "sf/dc5", from.AddDate(0, 0, 8).Add(10*time.Hour))
+	dcReading(t, s, "cb3", "sf/dc5", "cb3-h", "medium", 600, 150, 50, 93, from.AddDate(0, 0, 8).Add(10*time.Hour+30*time.Minute))
+	dcSpend(t, s, "cb3", "2026-10-06", 5)
+	dcStarted(t, s, "c3a", "cb3", "sf/dc5", 1, from.AddDate(0, 0, 8).Add(2*time.Hour))
+	dcStarted(t, s, "c3b", "cb3", "sf/dc5", 2, from.AddDate(0, 0, 8).Add(3*time.Hour))
+	dcSessionEnd(t, s, "c3a", string(OutcomePushed), "cb3", "sf/dc5", 1, from.AddDate(0, 0, 8).Add(12*time.Hour))
+	// cb4: medium, 400 lines, 7 EUR; one session, no end inside the window
+	dcDoneCard(t, s, "cb4", "sf/dc5", "medium", "cb4-h", 94, from.AddDate(0, 0, 8))
+	dcMerged(t, s, "cb4", "sf/dc5", from.AddDate(0, 0, 8).Add(11*time.Hour))
+	dcReading(t, s, "cb4", "sf/dc5", "cb4-h", "medium", 600, 300, 100, 94, from.AddDate(0, 0, 8).Add(11*time.Hour+30*time.Minute))
+	dcSpend(t, s, "cb4", "2026-10-06", 7)
+	dcStarted(t, s, "c4a", "cb4", "sf/dc5", 1, from.AddDate(0, 0, 8).Add(5*time.Hour))
+	// cb5: merged and spent, its reading at the merged head carrying no
+	// diff statistics — the lines stay unavailable, a hole the coverage
+	// names, never a zero the panels divide by
+	dcDoneCard(t, s, "cb5", "sf/dc5", "small", "cb5-h", 95, from.AddDate(0, 0, 9))
+	dcMerged(t, s, "cb5", "sf/dc5", from.AddDate(0, 0, 9).Add(11*time.Hour))
+	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+		VALUES ($1, 'sf/dc5', 'cb5', 'gate_head', 'factoryd', 'factoryd', $2)`,
+		from.AddDate(0, 0, 9).Add(11*time.Hour+30*time.Minute),
+		`{"gate":"merge","head":"cb5-h","decision":"auto","size":"small","bound":300,"policy_version":7,"files":9}`); err != nil {
+		t.Fatal(err)
+	}
+	dcSpend(t, s, "cb5", "2026-10-07", 2)
+	// cx1, the other project's card: the same days, crossing its own
+	// bound — its rows answer sf/other5's report alone
+	dcDoneCard(t, s, "cx1", "sf/other5", "small", "cx1-h", 96, from.AddDate(0, 0, 8))
+	dcMerged(t, s, "cx1", "sf/other5", from.AddDate(0, 0, 8).Add(15*time.Hour))
+	dcReading(t, s, "cx1", "sf/other5", "cx1-h", "small", 300, 900, 100, 96, from.AddDate(0, 0, 8).Add(15*time.Hour+30*time.Minute))
+	dcSpend(t, s, "cx1", "2026-10-06", 50)
+	dcStarted(t, s, "x1a", "cx1", "sf/other5", 1, from.AddDate(0, 0, 8).Add(16*time.Hour))
+	dcSessionEnd(t, s, "x1a", string(OutcomePushed), "cx1", "sf/other5", 1, from.AddDate(0, 0, 8).Add(17*time.Hour))
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "cx1-r", Round: 1, Model: "big", Note: "elsewhere"}.Event("cx1", "sf/other5", 96), from.AddDate(0, 0, 8).Add(18*time.Hour))
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc5", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := r.DivideConquer
+	// 20 EUR over the merged heads' 1000 changed lines, all merged into
+	// the last bucket: the economics panels survive the flow block's
+	// composition, cb5's absent statistics included on neither side
+	if d.EurPerMergedLine != (Figure{Value: 0.02, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 0.02}}) {
+		t.Fatalf("eur per merged line = %+v, want 0.0200 after composition", d.EurPerMergedLine)
+	}
+	// small fits (100,3) and (300,5) at 2.00, medium (200,5) and (400,7)
+	// at 3.00: the abandoned head's 700 lines never enter the fit
+	fits := d.FixedEurPerCard
+	if len(fits) != 2 || fits[0].Size != "medium" || fits[1].Size != "small" {
+		t.Fatalf("fixed eur per card = %+v, want medium then small", fits)
+	}
+	for _, fit := range fits {
+		w := 3.0
+		if fit.Size == "small" {
+			w = 2.0
+		}
+		if !fit.Available || fit.Cards != 2 || !eq(fit.EUR, w) {
+			t.Fatalf("%s = %+v, want the intercept %.2f over 2 cards", fit.Size, fit, w)
+		}
+	}
+	if cov := d.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 5, MissingLines: 1}) {
+		t.Fatalf("coverage = %+v, want the five merged cards, cb5's statistics absent", cov)
+	}
+	// the same cards answer the flow panels beside the economics ones:
+	// the abandoned head's crossing counts its card once over five
+	// readings' evidence, the sessions fill both sizes, the ends name
+	// their causes and one answer of two never judged
+	if !d.CoveredFrom.Equal(from.AddDate(0, 0, 7).Add(10*time.Hour + 30*time.Minute)) {
+		t.Fatalf("covered from = %v, want the earliest fact row", d.CoveredFrom)
+	}
+	if d.GateAboveBound != (Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}) {
+		t.Fatalf("gate above bound = %+v, want cb1's crossing alone", d.GateAboveBound)
+	}
+	wantSessions := []SizeFigure{
+		{Size: "medium", Figure: Figure{Value: 1.5, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1.5}}},
+		{Size: "small", Figure: Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
+	}
+	if got := d.SessionsPerCard; len(got) != len(wantSessions) || got[0] != wantSessions[0] || got[1] != wantSessions[1] {
+		t.Fatalf("sessions per card = %+v, want %+v", got, wantSessions)
+	}
+	if len(d.SessionEnds) != 2 || d.SessionEnds[0] != (NamedCount{Name: string(OutcomePushed), Count: 2}) ||
+		d.SessionEnds[1] != (NamedCount{Name: string(OutcomeWallClock), Count: 1}) {
+		t.Fatalf("session ends = %+v, want pushed 2 and wall_clock 1", d.SessionEnds)
+	}
+	if d.ReviewsNotReviewed != (Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}) {
+		t.Fatalf("reviews not reviewed = %+v, want one of the two answers", d.ReviewsNotReviewed)
+	}
+	// the deck's own figures stand: the dates asked, the window's five
+	// done cards, the window's 22 ledger euros — cb5's included, whatever
+	// its absent statistics
+	if r.Repository != "sf/dc5" || !r.From.Equal(from) || !r.To.Equal(to) {
+		t.Fatalf("report = %s %v %v", r.Repository, r.From, r.To)
+	}
+	if r.Throughput != (Figure{Value: 5, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 5}}) {
+		t.Fatalf("throughput = %+v", r.Throughput)
+	}
+	if r.Spend != (Figure{Value: 22, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 22}}) {
+		t.Fatalf("spend = %+v", r.Spend)
+	}
+	// the other project's card answers only its own report
+	ro, err := s.ProjectMetrics(context.Background(), "sf/other5", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f := ro.DivideConquer.EurPerMergedLine; !f.Has || f.Value != 0.05 || f.PrevHas || f.Prev != 0 {
+		t.Fatalf("sf/other5 eur per merged line = %+v, want 50 EUR over 1000 lines", f)
+	}
+	if ro.DivideConquer.GateAboveBound != (Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}) {
+		t.Fatalf("sf/other5 gate above bound = %+v, want its own crossing alone", ro.DivideConquer.GateAboveBound)
+	}
+	if ro.Throughput != (Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}) ||
+		ro.Spend != (Figure{Value: 50, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 50}}) {
+		t.Fatalf("sf/other5 throughput = %+v spend = %+v, want its own alone", ro.Throughput, ro.Spend)
 	}
 }
