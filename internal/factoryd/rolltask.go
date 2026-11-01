@@ -221,17 +221,25 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 // task's committed requests merged, and the ones folded in after its
 // last commit forgotten, so the next poll judges their images again; a
 // task that ended otherwise fails its requests; a request whose task or
-// card never got filed is forgotten. It returns the requests it settled,
-// whose verdicts the caller reports as commit statuses (roadmap 297).
+// card never got filed is forgotten. A failed settle ends its commit's
+// Deploy now window in the same statement, so a poll that dies after the
+// settle cannot leave the window standing. It returns the requests it
+// settled, whose verdicts the caller reports as commit statuses (roadmap
+// 297).
 func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
 	rows, err := s.db.QueryContext(ctx, `WITH gone AS (
 		DELETE FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
 			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status IN ('done', 'merged'))
-		RETURNING r.sha)
+		RETURNING r.sha),
+	settled AS (
 		UPDATE roll_requests r SET state = CASE WHEN t.status IN ('done', 'merged') THEN 'merged' ELSE 'failed' END
 		FROM tasks t WHERE r.state = 'opened' AND t.id = r.task_id AND t.status = ANY($1 || ARRAY['merged'])
 		AND r.sha NOT IN (SELECT sha FROM gone)
-		RETURNING r.sha, r.state`, FinalStatuses)
+		RETURNING r.sha, r.state),
+	ended AS (
+		UPDATE releases SET deploy_now = '' WHERE deploy_now IN (SELECT sha FROM settled WHERE state = 'failed')
+		RETURNING repository)
+	SELECT r.sha, r.state FROM settled r`, FinalStatuses)
 	if err != nil {
 		return nil, err
 	}
@@ -447,13 +455,11 @@ func (r *Roller) poll(ctx context.Context) error {
 		return err
 	}
 	stuck := false
-	var failed []string
 	for _, req := range settled {
 		if req.State == RollMerged {
 			r.rollStatus(ctx, req.SHA, "success", "roll merged: the change runs live")
 		} else {
 			r.rollStatus(ctx, req.SHA, "failure", "roll task failed: the change does not run live")
-			failed = append(failed, req.SHA)
 			stuck = true
 		}
 	}
@@ -475,15 +481,6 @@ func (r *Roller) poll(ctx context.Context) error {
 		return err
 	}
 	groups, deploy := all[r.Repo.String()], release.DeployNow
-	// a release whose roll failed does not read as rolling forever: its
-	// window clears, so the panel's Deploy now returns and the roll-failed
-	// card keeps carrying the ask
-	if deploy != "" && slices.Contains(failed, deploy) {
-		if err := r.Store.ClearDeployNow(ctx, r.Repo.String(), deploy); err != nil {
-			return err
-		}
-		deploy = ""
-	}
 	held := len(groups) > 0
 	if !held {
 		r.heldPosted = ""

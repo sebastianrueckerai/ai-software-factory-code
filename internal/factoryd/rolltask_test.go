@@ -82,7 +82,8 @@ func (s *fakeStore) DeleteRollRequest(ctx context.Context, sha string) error {
 // SettleRollRequests settles the fake's open requests the way the store
 // does: a done task's committed request merged, its never-committed ones
 // forgotten, any other ended task's request failed, a request without its
-// task forgotten. It returns what it settled.
+// task forgotten, a failed settle ending its commit's Deploy now window.
+// It returns what it settled.
 func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
 	var settled []RollRequest
 	var gone []string
@@ -108,6 +109,11 @@ func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, erro
 	}
 	for _, sha := range gone {
 		s.DeleteRollRequest(ctx, sha)
+	}
+	for _, r := range settled {
+		if r.State == RollFailed {
+			s.ClearDeployNow(ctx, r.Repository, r.SHA)
+		}
 	}
 	return settled, nil
 }
