@@ -619,6 +619,10 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 		if err != nil {
 			v, stop = failed("policy gate", err)
+			// the refusal of a head the agent moved past the gates keeps
+			// its type: a resumed run's answer-verify holds it
+			// (versionResumeHold)
+			v.moved = isHeadMoved(err)
 			return nil, v, stop
 		}
 		// the plan card's companion pins read live at each pass

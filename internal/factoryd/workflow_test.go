@@ -2073,6 +2073,108 @@ func TestCheckinSpendResumeReVerifiesOpenPR(t *testing.T) {
 	}
 }
 
+// A run restarted on a check-in whose pull request head moved after its
+// checks verdict was recorded holds the moved head, as the gate path
+// does: the answer's verify adopts the branch's head, waits its checks
+// and asks the approval there — a run from before the head-holds change
+// meets the gate's refusal whole, for its gates hold no moved head
+// (2026-10-31: t-6eadec8912ab answered, PR #1385's head had moved, the
+// task died with its fix unmerged). A run from before the change keeps
+// that end.
+func TestCheckinSpendResumeHoldsAMovedHead(t *testing.T) {
+	for _, variant := range []string{"", ", before the change"} {
+		h := newWorkflowHarness(t)
+		if variant != "" {
+			h.env.OnGetVersion("resume-hold", workflow.DefaultVersion, versionResumeHold).Return(workflow.DefaultVersion)
+		}
+		h.env.OnGetVersion("head-holds", workflow.DefaultVersion, versionHeadHolds).Return(workflow.DefaultVersion)
+		h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+			PR: PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+		h.branchHead = "c2"
+		h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
+				if commit == "c1" {
+					return PolicyGate{}, headMovedError("pull request #9's head moved to c2 after its checks passed on c1")
+				}
+				return PolicyGate{}, nil
+			})
+		var steps []string
+		h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+		reviewed := []string{}
+		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+				reviewed = append(reviewed, commit)
+				return Review{}, nil
+			})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if variant == "" {
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals = %v", final, h.finals)
+			}
+			if want := []string{"pr c1 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+				t.Fatalf("steps = %v, want %v", steps, want)
+			}
+			if len(h.sessions) != 0 || !slices.Equal(reviewed, []string{"c2"}) {
+				t.Fatalf("sessions = %d, reviewed = %q; want no session and the moved head c2 alone reviewed", len(h.sessions), reviewed)
+			}
+		} else if final := h.run(t); final != "failed" || !strings.Contains(h.finals[0][1], "head moved to c2") {
+			t.Fatalf("final = %q, finals = %v; want the head-moved refusal's end", final, h.finals)
+		}
+	}
+}
+
+// A run restarted on a gate escalation's wait verifies the head again
+// from the first stage, and a head the agent moved past the gates is
+// held there too: adopted from the branch, its checks waited on, the
+// approval asked on it. A run from before the change dies on the gate's
+// refusal.
+func TestGateEscalationResumeHoldsAMovedHead(t *testing.T) {
+	for _, variant := range []string{"", ", before the change"} {
+		h := newWorkflowHarness(t)
+		if variant != "" {
+			h.env.OnGetVersion("resume-hold", workflow.DefaultVersion, versionResumeHold).Return(workflow.DefaultVersion)
+		}
+		h.env.OnGetVersion("head-holds", workflow.DefaultVersion, versionHeadHolds).Return(workflow.DefaultVersion)
+		h.state = RunState{Status: "waiting-human",
+			Question: "The gate supervisor stopped ModelReview (attempt 1) past its bound of 10m0s: hangs",
+			PR:       PullRequest{Number: 9}, Head: "c1", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+		h.branchHead = "c2"
+		h.env.OnActivity(ActivityGatePolicy, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
+				if commit == "c1" {
+					return PolicyGate{}, headMovedError("pull request #9's head moved to c2 after its checks passed on c1")
+				}
+				return PolicyGate{}, nil
+			})
+		var steps []string
+		h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+		reviewed := []string{}
+		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+				reviewed = append(reviewed, commit)
+				return Review{}, nil
+			})
+		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the gateway is back", Comment: 602})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if variant == "" {
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals = %v", final, h.finals)
+			}
+			if want := []string{"pr c1 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+				t.Fatalf("steps = %v, want %v", steps, want)
+			}
+			if len(h.sessions) != 0 || !slices.Equal(reviewed, []string{"c2"}) {
+				t.Fatalf("sessions = %d, reviewed = %q; want no session and the moved head c2 alone reviewed", len(h.sessions), reviewed)
+			}
+		} else if final := h.run(t); final != "failed" || !strings.Contains(h.finals[0][1], "head moved to c2") {
+			t.Fatalf("final = %q, finals = %v; want the head-moved refusal's end", final, h.finals)
+		}
+	}
+}
+
 // An answer to a check-in stopped at its call cap buys the session, and a
 // card with no pull request leaves the loop.
 func TestCheckinCallCapAnswerBuysTheSession(t *testing.T) {

@@ -598,6 +598,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.replan = workflow.GetVersion(ctx, "replan", workflow.DefaultVersion, versionReplan)
 	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
 	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
+	run.resumeHold = workflow.GetVersion(ctx, "resume-hold", workflow.DefaultVersion, versionResumeHold)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1196,6 +1197,18 @@ const (
 	// held approval, which re-runs the gates from the first stage. A run
 	// from before reads no pins and takes no wake.
 	versionCompanions workflow.Version = 1
+	// versionResumeHold (change id "resume-hold"): a resumed run's
+	// answer-verify — a spent check-in's or a gate escalation's answer,
+	// which verifies the head again from the first stage — holds a head
+	// the agent moved past the gates: the refusal (headIs's typed
+	// head-moved error) adopts the branch's head and verifies it instead,
+	// its checks waited on, the same hold the normal gate path holds
+	// (versionHeadHolds), bounded by maxHeadHolds. A run from before the
+	// head-holds change meets the refusal whole — its gates hold no moved
+	// head — and one from before this change keeps that end (2026-10-31:
+	// t-6eadec8912ab's answer re-entered the gate on PR #1385's moved head
+	// and the task died, its fix unmerged).
+	versionResumeHold workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1304,6 +1317,7 @@ type taskRun struct {
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
+	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
 	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
@@ -1686,9 +1700,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				// a spent check-in's answer verifies again, as the gate's
 				// stop does, but with no session: a bought one would stop
 				// at the same cap before any model call, so the answer
-				// rides the findings the review weighs instead
+				// rides the findings the review weighs instead. A head
+				// the agent moved past the gates is held, not died on
+				// (versionResumeHold)
 				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
-				v := t.verify(st.Head)
+				v := t.resumeVerify(&st.Head)
+				startRef = st.Head
 				if v.final != "" {
 					return t.finish(v.final, v.reason)
 				}
@@ -1703,13 +1720,16 @@ func (t *taskRun) lifecycle() (string, error) {
 				buy()
 			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
 				// a gate's answer verifies again, as the live gate does:
-				// here from the first stage, change requests back to the agent
+				// here from the first stage, change requests back to the
+				// agent. A head the agent moved past the gates is held,
+				// not died on (versionResumeHold)
 				if len(answer) > 0 {
 					apply(verdict{findings: answer, reason: "changes requested", requested: true})
 					break
 				}
 				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
-				v := t.verify(st.Head)
+				v := t.resumeVerify(&st.Head)
+				startRef = st.Head
 				if v.final != "" {
 					return t.finish(v.final, v.reason)
 				}
@@ -2613,6 +2633,31 @@ func (t *taskRun) verify(commit string) verdict {
 		return verdict{final: final, reason: why}
 	}
 	return verdict{findings: requested, reason: "changes requested", requested: true}
+}
+
+// resumeVerify is a resumed run's answer-verify (versionResumeHold):
+// verify from the first stage and, where the gates refuse a head the
+// agent moved past them — a run from before the head-holds change meets
+// the refusal whole, for its gates hold no moved head — adopt the
+// branch's head and verify it instead, its checks waited on, the same
+// hold the normal gate path holds (versionHeadHolds), bounded by
+// maxHeadHolds. head is the head the answer re-entered the gate on; it
+// takes the head the run adopted.
+func (t *taskRun) resumeVerify(head *string) verdict {
+	v := t.verify(*head)
+	for t.resumeHold >= versionResumeHold && v.final != "" && v.moved && t.holds < maxHeadHolds {
+		var branch string
+		if err := workflow.ExecuteActivity(t.short, ActivityBranchHead, t.taskID).Get(t.ctx, &branch); err != nil {
+			return verdict{final: "failed", reason: "read the branch head: " + errMessage(err)}
+		}
+		if branch == "" || branch == *head {
+			break // a raced read: the gate's refusal stands
+		}
+		t.holds++
+		*head = branch
+		v = t.verify(branch)
+	}
+	return v
 }
 
 // gate takes a commit with green checks through the gates, the model
