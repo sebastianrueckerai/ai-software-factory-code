@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -50,6 +51,19 @@ func dcGateHead(t *testing.T, s *PGStore, card, repository, head, gate string, b
 	t.Helper()
 	return dcRecord(t, s, GateHeadFact{Task: card, Head: head, Gate: gate, Decision: "auto",
 		Size: "small", Bound: bound, Insertions: insertions, Deletions: deletions}.Event(repository, 9), at)
+}
+
+// dcLegacyGateHead records one merge-gate row exactly as detail says,
+// as producers around the fact contract wrote them: keyed false leaves
+// it identity-less. The row is the reading's whole truth — whatever it
+// lacks, the reading lacks.
+func dcLegacyGateHead(t *testing.T, s *PGStore, card, repository, head string, keyed bool, detail map[string]any, at time.Time) int64 {
+	t.Helper()
+	e := Event{Repository: repository, TaskID: card, Kind: EventGateHead, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}
+	if keyed {
+		e.IdentityKey = identityKey(EventGateHead, card, head)
+	}
+	return dcRecord(t, s, e, at)
 }
 
 // dcSessionEnd records a session's terminal end at at.
@@ -117,7 +131,9 @@ func dcSpend(t *testing.T, s *PGStore, card, day string, eur float64) {
 // crosses, with 300 exactly it does not; a retried head records once, a
 // card crossing on many heads counts once, the window's bounds hold,
 // other repositories and other gates stay out, and a span no reading
-// covers is unknown, not zero. [size_bound_escape]
+// covers is unknown, not zero. The readings are history: the policy in
+// force now and the card's size now change nothing.
+// [size_bound_escape]
 func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	s := metricsStore(t)
 	// the package's tests share one database: clear the tables the
@@ -167,6 +183,32 @@ func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 		Weeks: [7]float64{0, 0, 0, 0, 1, 1, 1}}) {
 		t.Fatalf("gate above bound = %+v", r.DivideConquer.GateAboveBound)
 	}
+	// the window holds four readings, every one a complete fact: no
+	// hole to name
+	if cov := r.DivideConquer.GateBoundCoverage; cov != (GateBoundCoverage{Readings: 4, Measured: 4}) {
+		t.Fatalf("gate bound coverage = %+v, want four measured readings", cov)
+	}
+	// the readings are history: a new policy in force (large_lines 50,
+	// small 15) and the card re-sized change nothing — the bound stays
+	// the one the gates read
+	if _, _, err := policy.Record(context.Background(), s.db, "dc-size-bounds", policy.Tree{Document: policy.Document{Risk: policy.Risk{LargeLines: 50}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET size = 'large' WHERE id = 't-escape'`); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.ProjectMetrics(context.Background(), "sf/dc1", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DivideConquer.GateAboveBound != r.DivideConquer.GateAboveBound {
+		t.Fatalf("gate above bound after the change = %+v, want the historical %+v",
+			again.DivideConquer.GateAboveBound, r.DivideConquer.GateAboveBound)
+	}
+	if again.DivideConquer.GateBoundCoverage != r.DivideConquer.GateBoundCoverage {
+		t.Fatalf("gate bound coverage after the change = %+v, want the historical %+v",
+			again.DivideConquer.GateBoundCoverage, r.DivideConquer.GateBoundCoverage)
+	}
 	// a repository no reading covers reads unknown, never zero
 	empty, err := s.ProjectMetrics(context.Background(), "sf/dc-none1", from, to)
 	if err != nil {
@@ -174,6 +216,107 @@ func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	}
 	if empty.DivideConquer.GateAboveBound != (Figure{}) {
 		t.Fatalf("gate above bound without evidence = %+v, want unknown", empty.DivideConquer.GateAboveBound)
+	}
+	if empty.DivideConquer.GateBoundCoverage != (GateBoundCoverage{}) {
+		t.Fatalf("gate bound coverage without evidence = %+v, want none", empty.DivideConquer.GateBoundCoverage)
+	}
+}
+
+// TestDivideConquerSizeEvidenceSQL — panel 1's evidence: a reading
+// measures its card only complete, the fact's identity, a bound, both
+// line counts and the size whose bound it planned. A missing bound,
+// missing line statistics, a size the row never carried, an explicitly
+// unsized card and an identity-less legacy row each name their hole in
+// the coverage, never borrow the policy in force now or the card's
+// metadata, and never pass as measured — a span only holes cover is
+// unknown, not a zero, a span nothing covers is unknown with no
+// readings to name, and a complete reading at exactly its bound still
+// proves the zero. [size_bound_escape]
+func TestDivideConquerSizeEvidenceSQL(t *testing.T) {
+	s := metricsStore(t)
+	from, to := metricsTestWindow()
+	// the policy in force now, its bounds small enough that any fill
+	// from it would read every hole over: nothing is filled from it
+	if _, _, err := policy.Record(context.Background(), s.db, "dc-size-evidence", policy.Tree{Document: policy.Document{Risk: policy.Risk{LargeLines: 50}}}); err != nil {
+		t.Fatal(err)
+	}
+	// every hole on its own card, each card sized small so a fill from
+	// the task's metadata now would read over too
+	dcCard(t, s, "t-nobound", "sf/dc6", "small", "", 91)
+	if id := dcLegacyGateHead(t, s, "t-nobound", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 1)); id == 0 {
+		t.Fatal("the boundless reading recorded no row")
+	}
+	dcCard(t, s, "t-nolines", "sf/dc6", "small", "", 92)
+	dcLegacyGateHead(t, s, "t-nolines", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "bound": 300},
+		from.AddDate(0, 0, 2))
+	dcCard(t, s, "t-nosize", "sf/dc6", "small", "", 93)
+	dcLegacyGateHead(t, s, "t-nosize", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "bound": 300, "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 3))
+	dcCard(t, s, "t-unsized", "sf/dc6", "small", "", 94)
+	dcLegacyGateHead(t, s, "t-unsized", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "", "bound": 300, "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 4))
+	// an identity-less legacy row, complete in every field it carries
+	dcCard(t, s, "t-legacy", "sf/dc6", "small", "", 95)
+	if id := dcLegacyGateHead(t, s, "t-legacy", "sf/dc6", "h1", false,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "bound": 300, "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 5)); id == 0 {
+		t.Fatal("the legacy reading recorded no row")
+	}
+	// the one complete reading: 300 lines at exactly the small bound
+	// 300, a measured zero — the bound is a bound, not a target
+	dcCard(t, s, "t-zero", "sf/dc6", "small", "", 96)
+	if id := dcGateHead(t, s, "t-zero", "sf/dc6", "z1", GateMerge, 300, 150, 150, from.AddDate(0, 0, 6)); id == 0 {
+		t.Fatal("the measured reading recorded no row")
+	}
+	// a repository a hole alone covers: unknown, with the hole named
+	dcCard(t, s, "u-nobound", "sf/dc-unknown6", "small", "", 97)
+	if id := dcLegacyGateHead(t, s, "u-nobound", "sf/dc-unknown6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 1)); id == 0 {
+		t.Fatal("the boundless reading recorded no row")
+	}
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc6", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the panel stands on the one measured reading: a measured zero,
+	// with the four over-looking holes beside it measuring nothing —
+	// none of them escaped, and none of them passed
+	if r.DivideConquer.GateAboveBound != (Figure{Has: true}) {
+		t.Fatalf("gate above bound = %+v, want a measured zero on the one complete reading", r.DivideConquer.GateAboveBound)
+	}
+	if cov := r.DivideConquer.GateBoundCoverage; cov != (GateBoundCoverage{Readings: 6, Measured: 1,
+		MissingBound: 1, MissingLines: 1, UnknownSize: 1, UnsizedSize: 1, Identityless: 1}) {
+		t.Fatalf("gate bound coverage = %+v, want one measured reading and every hole named", cov)
+	}
+	// a span only holes cover reads unknown, never a measured zero —
+	// and stays tellable from a span nothing covers: both figures are
+	// unknown, only the coverage counts the readings behind them
+	unknown, err := s.ProjectMetrics(context.Background(), "sf/dc-unknown6", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.DivideConquer.GateAboveBound != (Figure{}) {
+		t.Fatalf("gate above bound on holes alone = %+v, want unknown", unknown.DivideConquer.GateAboveBound)
+	}
+	if cov := unknown.DivideConquer.GateBoundCoverage; cov != (GateBoundCoverage{Readings: 1, MissingBound: 1}) {
+		t.Fatalf("gate bound coverage on holes alone = %+v, want the one hole named", cov)
+	}
+	none, err := s.ProjectMetrics(context.Background(), "sf/dc-none6", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.DivideConquer.GateAboveBound != (Figure{}) {
+		t.Fatalf("gate above bound without evidence = %+v, want unknown", none.DivideConquer.GateAboveBound)
+	}
+	if none.DivideConquer.GateBoundCoverage != (GateBoundCoverage{}) {
+		t.Fatalf("gate bound coverage without evidence = %+v, want none", none.DivideConquer.GateBoundCoverage)
 	}
 }
 
@@ -541,7 +684,10 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 // every panel reads the window, the equal-length window before it and
 // the seven weekly buckets, holds the repository to its own rows,
 // answers an empty repository with the whole block unknown, and leaves
-// the deck's existing figures standing. [window_and_existing_figures]
+// the deck's existing figures standing. The size-bound panel's evidence
+// spans the same three: its window's reading measures, its previous
+// window's does, and a hole in a weekly bucket measures nothing there.
+// [window_and_existing_figures]
 func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	s := metricsStore(t)
 	from, to := metricsTestWindow()
@@ -550,11 +696,24 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	dcGateHead(t, s, "c1", "sf/dc4", "g0", GateMerge, 300, 350, 0, from.AddDate(0, 0, -8)) // previous window, bucket 3
 	dcSessionEnd(t, s, "se1", string(OutcomeWallClock), "c1", "sf/dc4", 1, from.AddDate(0, 0, 9))
 	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k1", Round: 1, Model: "big", Verdict: "approve"}.Event("c1", "sf/dc4", 81), from.AddDate(0, 0, 9))
+	// a legacy identity-less row, over-looking in the window (Sep 30,
+	// bucket 5) — it measures nothing: the panel keeps its one escape
+	// and the bucket its zero, and the coverage names the hole
+	dcCard(t, s, "c2", "sf/dc4", "small", "", 84)
+	if id := dcLegacyGateHead(t, s, "c2", "sf/dc4", "g8", false,
+		map[string]any{"gate": GateMerge, "head": "g8", "decision": "auto", "size": "small", "bound": 300, "insertions": 900, "deletions": 900},
+		from.AddDate(0, 0, 2)); id == 0 {
+		t.Fatal("the legacy reading recorded no row")
+	}
 	// another repository's rows the same instants — ow1, not o1 again:
 	// the package's tests share one database, one task id once
 	dcCard(t, s, "ow1", "sf/other4", "small", "", 82)
 	dcGateHead(t, s, "ow1", "sf/other4", "g1", GateMerge, 300, 999, 0, from.AddDate(0, 0, 8))
 	dcSessionEnd(t, s, "oe1", string(OutcomePushed), "ow1", "sf/other4", 1, from.AddDate(0, 0, 9))
+	dcCard(t, s, "ow2", "sf/other4", "small", "", 85)
+	dcLegacyGateHead(t, s, "ow2", "sf/other4", "g8", false,
+		map[string]any{"gate": GateMerge, "head": "g8", "decision": "auto", "size": "small", "bound": 300, "insertions": 900, "deletions": 900},
+		from.AddDate(0, 0, 2))
 	// a done card of the window: the deck's throughput still counts it
 	done := Task{ID: "c-done", Status: "done", Objective: "the deck's figure", Repository: "sf/dc4", Kind: "agent",
 		Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: 83, Size: "small",
@@ -576,6 +735,11 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	if d.GateAboveBound != (Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 1}}) {
 		t.Fatalf("gate above bound = %+v", d.GateAboveBound)
 	}
+	// the window's two readings: g1 measured, g8 an identity-less hole;
+	// the other repository's rows, measured or holed, stay out
+	if d.GateBoundCoverage != (GateBoundCoverage{Readings: 2, Measured: 1, Identityless: 1}) {
+		t.Fatalf("gate bound coverage = %+v, want one measured reading and its identity-less hole", d.GateBoundCoverage)
+	}
 	if len(d.SessionEnds) != 1 || d.SessionEnds[0] != (NamedCount{Name: string(OutcomeWallClock), Count: 1}) {
 		t.Fatalf("session ends = %+v, want the window's wall_clock alone", d.SessionEnds)
 	}
@@ -595,7 +759,7 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e := empty.DivideConquer; !e.CoveredFrom.IsZero() || len(e.SessionsPerCard) != 0 || len(e.SessionEnds) != 0 ||
-		e.GateAboveBound != (Figure{}) || e.ReviewsNotReviewed != (Figure{}) {
+		e.GateAboveBound != (Figure{}) || e.GateBoundCoverage != (GateBoundCoverage{}) || e.ReviewsNotReviewed != (Figure{}) {
 		t.Fatalf("divide conquer without evidence = %+v, want the zero block", e)
 	}
 }
