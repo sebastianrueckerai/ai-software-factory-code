@@ -668,6 +668,38 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 	}
 }
 
+// The review reads the companion pins as facts: repository, the pin's
+// head, and the verdict's shas, so a change that leans on a companion
+// is judged with what the gates read.
+func TestReviewInputCompanions(t *testing.T) {
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	pin, head := "82ab24600000000000000000000000000000000", "fee3ff1000000000000000000000000000000000"
+	gates := GateResults{Policy: PolicyGate{Class: "normal", Outcome: policy.OutcomeRequiresApproval},
+		Companions: []CompanionGate{
+			{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head},
+			{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+		}}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
+		t.Fatal(err)
+	}
+	var in reviewInput
+	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
+		t.Fatal(err)
+	}
+	want := []CompanionGate{
+		{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head},
+		{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+	}
+	if !slices.Equal(in.Gates.Companions, want) {
+		t.Fatalf("review companions = %+v, want %+v", in.Gates.Companions, want)
+	}
+	if system := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(system, "companion repositories") {
+		t.Fatalf("the review prompt does not name the companions: %s", system)
+	}
+}
+
 // The review call waits the supervisor_timeout of the version the task
 // started under, not the current one.
 func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
@@ -1394,6 +1426,127 @@ func TestAutoMergeApprovesAsTheGateFirst(t *testing.T) {
 		"- the project's merge rule is auto\n- the checks ran green\n- mechanical source roll: factoryd wrote the change, no agent"
 	if rv := fj.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "m1" || rv["body"] != want {
 		t.Fatalf("review = %v, want APPROVED on m1 with body %q", rv, want)
+	}
+}
+
+// A companion pin AutoMerge holds the card on, met or not, whatever the
+// source: the unmet line names the companion, its pin and the head, and an
+// unread companion holds on its own line.
+func TestAutoMergeCompanionLines(t *testing.T) {
+	yes := true
+	normal := PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}
+	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	rv := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}
+	green := func(cs ...CompanionGate) GateResults {
+		return GateResults{Policy: normal, ChecksPassed: true, Reproduction: ReproResult{NotReproduced: "the cache key"}, Companions: cs}
+	}
+	ok, met, unmet := AutoMerge(green(CompanionGate{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head, Met: true}), rv, "api")
+	if !ok || len(unmet) != 0 || !slices.Contains(met, "the companion sf/ai-software-factory-infra is at or after 82ab246") {
+		t.Fatalf("met pin = %v, met %q, unmet %q; want merged with the companion's line", ok, met, unmet)
+	}
+	ok, _, unmet = AutoMerge(green(CompanionGate{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head}), rv, "api")
+	if ok || len(unmet) != 1 || unmet[0] != "the companion sf/ai-software-factory-infra is still behind 82ab246, at fee3ff1" {
+		t.Fatalf("behind pin = %v %q; want held on the one line", ok, unmet)
+	}
+	ok, _, unmet = AutoMerge(green(CompanionGate{Repository: "sf/ai-software-factory-infra", Pin: pin, Unread: companionUnread("sf/ai-software-factory-infra")}), rv, "api")
+	if ok || len(unmet) != 1 || unmet[0] != companionUnread("sf/ai-software-factory-infra") {
+		t.Fatalf("unread companion = %v %q; want held on the unread line", ok, unmet)
+	}
+	ok, _, unmet = AutoMerge(GateResults{Policy: normal, ChecksPassed: true,
+		Companions: []CompanionGate{{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head}}}, Review{}, "roll")
+	if ok || len(unmet) != 1 {
+		t.Fatalf("a roll behind its pin = %v %q; want held on the companion alone", ok, unmet)
+	}
+}
+
+// GateCompanion reads the plan card's companion pins live through the
+// factory-config token: met, behind, or unread, a verdict that holds the
+// card. A task with no plan card carries no pins.
+func TestGateCompanion(t *testing.T) {
+	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"`+head+`"}]`)
+		case "/api/v1/repos/sf/infra/compare/" + pin + "..." + head:
+			io.WriteString(w, `{"status":"behind"}`)
+		case "/api/v1/repos/sf/other/commits":
+			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
+		case "/api/v1/repos/sf/other/compare/" + pin + "..." + pin:
+			io.WriteString(w, `{"status":"identical"}`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	r.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
+
+	p := testPlan()
+	p.Cards[0].Companions = []CardCompanion{{Repository: "sf/infra", At: pin}, {Repository: "sf/other", At: pin}, {Repository: "sf/locked", At: pin}}
+	raw, sha, err := planSHA(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	card := gateTask
+	card.ID, card.Parent, card.PlanKey, card.PlanRevision, card.Source = "t-card", "t-plan", "foundation", 1, SourcePlan
+	store.tasks["t-card"] = card
+	val, err := execActivity(t, r, ActivityGateCompanion, "t-card")
+	cs := getInto[[]CompanionGate](t, val, err)
+	want := []CompanionGate{
+		{Repository: "sf/infra", Pin: pin, Head: head},
+		{Repository: "sf/other", Pin: pin, Head: pin, Met: true},
+		{Repository: "sf/locked", Pin: pin, Unread: companionUnread("sf/locked")},
+	}
+	if !slices.Equal(cs, want) {
+		t.Fatalf("verdicts = %+v, want %+v", cs, want)
+	}
+	if !slices.Equal(auth, []string{"token config-tok", "token config-tok", "token config-tok", "token config-tok", "token config-tok"}) {
+		t.Fatalf("reads = %q, want every companion read, head and compare alike, through the factory-config token", auth)
+	}
+
+	direct := gateTask
+	direct.ID = "t-direct"
+	store.tasks["t-direct"] = direct
+	val, err = execActivity(t, r, ActivityGateCompanion, "t-direct")
+	cs = getInto[[]CompanionGate](t, val, err)
+	if len(cs) != 0 {
+		t.Fatalf("a direct card's companions = %+v, want none", cs)
+	}
+}
+
+// unreadPlanStore fails every plan revision read, playing a store blip on
+// the one query the companion gate reads the pins through.
+type unreadPlanStore struct {
+	*fakeStore
+}
+
+func (s *unreadPlanStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	return PlanRevision{}, false, errors.New("store down")
+}
+
+// A plan card the gate cannot read is not a card without pins: the read
+// failure holds the card on a line that names it, the way an unread
+// companion holds, instead of a silent pass with no companion gate.
+func TestGateCompanionHoldsAnUnreadPlanCard(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	card := gateTask
+	card.ID, card.Parent, card.PlanKey, card.PlanRevision, card.Source = "t-card", "t-plan", "foundation", 1, SourcePlan
+	store.tasks["t-card"] = card
+	r.store = &unreadPlanStore{store}
+	val, err := execActivity(t, r, ActivityGateCompanion, "t-card")
+	cs := getInto[[]CompanionGate](t, val, err)
+	want := []CompanionGate{{Unread: "the plan card cannot be read, so its companion pins are unknown"}}
+	if !slices.Equal(cs, want) {
+		t.Fatalf("verdicts = %+v, want the plan card's read failure to hold: %+v", cs, want)
 	}
 }
 

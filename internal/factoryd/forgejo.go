@@ -569,6 +569,67 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 	return res.Entries, nil
 }
 
+// companionWindow bounds the commits listing the companion head read
+// uses; the pin verdict has no window, the compare endpoint answers
+// however far main has moved past the pin.
+const companionWindow = 50
+
+// defaultCommits lists the newest commits of r's default branch, newest
+// first, as bare shas.
+func (f *Forgejo) defaultCommits(ctx context.Context, token string, r Repo) ([]string, error) {
+	body, err := f.tokenCall(token)(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/repos/%s/%s/commits?limit=%d", r.Owner, r.Name, companionWindow), nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("companion %s: %w", r, err)
+	}
+	var commits []struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.Unmarshal(body, &commits); err != nil || len(commits) == 0 {
+		return nil, fmt.Errorf("companion %s: no commits on the default branch (%v)", r, err)
+	}
+	shas := make([]string, len(commits))
+	for i, c := range commits {
+		shas[i] = c.SHA
+	}
+	return shas, nil
+}
+
+// MainAtLeast reports whether r's default branch holds sha at or after
+// it, with the branch's head: the compare of the pin and the head answers
+// the verdict, however far main has moved past the pin. A token that
+// cannot read the repository, or a compare without a status, is an error
+// naming the companion, not a verdict.
+func (f *Forgejo) MainAtLeast(ctx context.Context, token string, r Repo, sha string) (bool, string, error) {
+	head, err := f.DefaultHead(ctx, token, r)
+	if err != nil {
+		return false, "", err
+	}
+	body, err := f.tokenCall(token)(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", r.Owner, r.Name, sha, head), nil, http.StatusOK)
+	if err != nil {
+		return false, "", fmt.Errorf("companion %s: %w", r, err)
+	}
+	var res struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.Status == "" {
+		return false, "", fmt.Errorf("companion %s: compare %s...%s without a status", r, sha[:7], head[:7])
+	}
+	return res.Status == "identical" || res.Status == "ahead", head, nil
+}
+
+// DefaultHead is the head of r's default branch, the pin a plan filing
+// stamps on its cards. A token that cannot read the repository is an
+// error naming the companion, not an empty head.
+func (f *Forgejo) DefaultHead(ctx context.Context, token string, r Repo) (string, error) {
+	commits, err := f.defaultCommits(ctx, token, r)
+	if err != nil {
+		return "", err
+	}
+	return commits[0], nil
+}
+
 // ErrNoRerun is Forgejo's answer that it offers no re-run of an action
 // run or job: a 404 from a Forgejo before 17, which has no rerun route, or
 // a 403 to a token without the right, such as a read-only actions token.

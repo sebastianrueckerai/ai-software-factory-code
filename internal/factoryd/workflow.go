@@ -66,6 +66,10 @@ const (
 	// payload a PlanSwitch: the lifecycle takes it before its next session
 	// (versionDirectToPlan).
 	SignalToPlan = "to_plan"
+	// SignalCompanionLanded is the chain poller's wake of a card held at
+	// its approval on a companion pin (versionCompanions): the companion
+	// reached its pin, so the gates read again and the merge can go.
+	SignalCompanionLanded = "companion_landed"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -124,6 +128,7 @@ const (
 	ActivityRollCommit                  = "RollCommit"
 	ActivityRerunChecks                 = "RerunChecks"
 	ActivityGateAudit                   = "GateAudit"
+	ActivityGateCompanion               = "GateCompanion"
 	ActivityTaskConfig                  = "TaskConfig"
 	ActivityBranchHead                  = "BranchHead"
 	ActivityAwaitSessionGap             = "AwaitSessionGap"
@@ -592,6 +597,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sizing = workflow.GetVersion(ctx, "sizing", workflow.DefaultVersion, versionSizing)
 	run.replan = workflow.GetVersion(ctx, "replan", workflow.DefaultVersion, versionReplan)
 	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
+	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -641,7 +647,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan} {
+		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1183,6 +1189,13 @@ const (
 	// note, takes to_plan only before a session, and asks a person about a
 	// replan stop.
 	versionReplan workflow.Version = 1
+	// versionCompanions (change id "companions"): a plan card carries the
+	// companion pins its filing stamped, the gates read them live
+	// (GateCompanion at the policy stage) and AutoMerge holds the merge on
+	// a pin not met, and the chain poller's companion_landed wakes the
+	// held approval, which re-runs the gates from the first stage. A run
+	// from before reads no pins and takes no wake.
+	versionCompanions workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1296,6 +1309,7 @@ type taskRun struct {
 	sizing            workflow.Version // a person's card is sized before its first session (versionSizing)
 	replan            workflow.Version // a plan's run waits for its replan's stops and knows its note (versionReplan)
 	answeredRouting   workflow.Version // a confirming answer files with no session (versionAnsweredRouting)
+	companions        workflow.Version // the gates read the plan card's companion pins and a landed pin wakes the approval (versionCompanions)
 	replanBy          string           // the pending replan's person (versionReplan)
 	replanNote        string           // the pending replan's note (versionReplan)
 	planRefused       string           // why the last switch to the plan track was refused (switchToPlan)
@@ -1361,6 +1375,10 @@ type verdict struct {
 	// reask: a refused switch to the plan track voided the approval
 	// request, which is asked again (versionReplan)
 	reask bool
+	// recheck: a companion reached its pin while the approval waited, so
+	// the gates read again from the first stage before any merge
+	// (versionCompanions)
+	recheck bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -2403,6 +2421,14 @@ func (t *taskRun) drainReruns() bool {
 	return rerun
 }
 
+// drainCompanions takes a pending companion_landed (versionCompanions):
+// the poller sent it because every pin the card carries reads met, so the
+// gates read again from the first stage.
+func (t *taskRun) drainCompanions() bool {
+	var sig TaskSignal
+	return workflow.GetSignalChannel(t.ctx, SignalCompanionLanded).ReceiveAsync(&sig)
+}
+
 // drainFolds takes the pending roll_folded signals; RollCommit writes what
 // they announce.
 func (t *taskRun) drainFolds() bool {
@@ -2740,6 +2766,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		if t.replans() {
 			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalToPlan), func(workflow.ReceiveChannel, bool) {})
 		}
+		if t.companions >= versionCompanions {
+			sel.AddReceive(workflow.GetSignalChannel(t.ctx, SignalCompanionLanded), func(workflow.ReceiveChannel, bool) {})
+		}
 		if retry != nil {
 			sel.AddFuture(retry, func(workflow.Future) { retried = true })
 		}
@@ -2755,6 +2784,9 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		if t.factoryActions() && t.drainReruns() {
 			return verdict{rerun: true, reason: "the checks run again"}
+		}
+		if t.companions >= versionCompanions && t.drainCompanions() {
+			return verdict{recheck: true, reason: "a companion reached its pin"}
 		}
 		if t.replans() {
 			if sw, step, ok := t.takeToPlan(); ok {

@@ -990,6 +990,13 @@ func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
+// HeldPlanCards are the repository's plan cards waiting on a human's
+// approval, the cards a landed companion pin can wake (versionCompanions).
+func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND source = $2 AND status = $3 AND gate = $4 ORDER BY id`,
+		repository, SourcePlan, "waiting-human", GateApproval)
+}
+
 // SetTaskPlanRevision records the plan revision a card first runs
 // against; the WHERE plan_revision = 0 makes it once, the card's start
 // (roadmap 291). RunSession is its sole caller.

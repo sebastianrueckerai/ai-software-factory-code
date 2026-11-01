@@ -142,6 +142,7 @@ type fakeWorkflows struct {
 	started     []string
 	signals     []string // "<task> <signal> <author> #<pr>: <body>"
 	err         error    // returned by Signal when set
+	signalFails int      // Signal fails this many calls first
 	onStart     func(taskID string)
 	routineRuns []RoutineRunInput
 	reopens     []reopenCall // the reopens that started a run
@@ -177,6 +178,10 @@ func (w *fakeWorkflows) StartRoutineRun(ctx context.Context, in RoutineRunInput)
 }
 
 func (w *fakeWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	if w.signalFails > 0 {
+		w.signalFails--
+		return errors.New("temporal down")
+	}
 	if w.err != nil {
 		return w.err
 	}

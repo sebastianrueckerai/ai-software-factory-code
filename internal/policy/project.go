@@ -306,6 +306,22 @@ type ProjectConfig struct {
 	// block through an auto-merged pull request after each build, and cards
 	// run on the pinned digests.
 	Images map[string]ImagePin `yaml:"images,omitempty" json:"images,omitempty"`
+	// Companions are the repositories of this Forgejo the project reads
+	// beside its own: a card's plan filing pins each companion's main on
+	// the card and its gates hold the merge until the project's own merge
+	// chain has reached that pin. Absent: none.
+	Companions []Companion `yaml:"companions,omitempty" json:"companions,omitempty"`
+}
+
+// Companion is one repository of this Forgejo the project reads beside its
+// own.
+type Companion struct {
+	// Repository is the companion's Forgejo repository, owner/name of this
+	// instance.
+	Repository string `yaml:"repository" json:"repository"`
+	// Sandbox lets a session clone the companion read-only into
+	// /workspace/companions/<name>; absent: no clone, the gates still pin.
+	Sandbox bool `yaml:"sandbox,omitempty" json:"sandbox,omitempty"`
 }
 
 // AutonomyState is the project's autonomy as the selector shows it: full
@@ -507,6 +523,23 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if !repositoryName.MatchString(p.Repository) {
 		bad("repository %q: owner/name in lower case", p.Repository)
+	}
+	for i, c := range p.Companions {
+		if !repositoryName.MatchString(c.Repository) {
+			bad("companion %q: owner/name in lower case", c.Repository)
+		}
+		if slices.Contains(p.Companions[:i], c) {
+			bad("companion %q: given twice", c.Repository)
+		}
+		if c.Repository == p.Repository {
+			bad("companion %q: the project's own repository", c.Repository)
+		}
+		name := c.Repository[strings.LastIndex(c.Repository, "/")+1:]
+		for _, other := range p.Companions[:i] {
+			if other.Repository[strings.LastIndex(other.Repository, "/")+1:] == name {
+				bad("companion %q: the same repository name as %q, and the sandbox clone goes by the name", c.Repository, other.Repository)
+			}
+		}
 	}
 	if !slices.Contains(MergeRules, p.MergeRule) {
 		bad("merge_rule %q: want one of %v", p.MergeRule, MergeRules)

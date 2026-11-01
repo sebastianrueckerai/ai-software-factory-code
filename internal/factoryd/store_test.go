@@ -331,6 +331,17 @@ func (s *fakeStore) PlanClosed(ctx context.Context, plan string) (time.Time, boo
 	return at, ok, nil
 }
 
+func (s *fakeStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Source == SourcePlan && t.Status == "waiting-human" && t.Gate == "approval" {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
