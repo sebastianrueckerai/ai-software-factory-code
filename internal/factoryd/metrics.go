@@ -488,6 +488,23 @@ type SessionsCoverage struct {
 	PartialStarts int `json:"partial_starts"` // of them, cards whose ends name sessions no start row names
 }
 
+// ReviewEvidence names how far the review panel reaches: the span's
+// genuine answers — the measured denominator the not-reviewed count
+// stands over, "2 of 3" — and the model_review rows no usable evidence
+// covers. An answer is genuine only complete: the fact's attempt
+// identity, head and round, the persistence contract that keeps one
+// attempt one row so a replay adds no answer, and the classification
+// the payload wrote — reviewed true, the answer judged the head (a
+// negative verdict among them: concerns judged the change), or
+// reviewed false with its bounded reason. A row without its identity
+// or without a usable classification is unknown evidence, never an
+// inferred success: it measures nothing, and the coverage counts it
+// rather than any panel guessing it an answer.
+type ReviewEvidence struct {
+	Answers Figure `json:"answers"` // genuine answers, a fact even at zero
+	Unknown Figure `json:"unknown"` // rows without their attempt identity or classification
+}
+
 // DivideConquer measures the divide-and-conquer plan (roadmap 336, doc
 // docs/plans/2026-10-29-divide-and-conquer.md): whether cards stay
 // within their size bound, what one costs in sessions and euros, and
@@ -543,10 +560,14 @@ type DivideConquer struct {
 	GroupOpenHours     Figure            `json:"group_open_hours"`
 	HoldWaitHours      Figure            `json:"hold_wait_hours"`
 	ReviewsNotReviewed Figure            `json:"reviews_not_reviewed"`
-	PlansByRounds      []NamedCount      `json:"plans_by_rounds"`
-	CardsFirstRound    Figure            `json:"cards_first_round"`
-	CardsLaterRounds   Figure            `json:"cards_later_rounds"`
-	ReplansByOrigin    []NamedCount      `json:"replans_by_origin"`
+	// ReviewEvidence measures panel 9's coverage: the genuine answers
+	// the count above stands over, and the rows no usable evidence
+	// covers — unknown, never an inferred success.
+	ReviewEvidence   ReviewEvidence `json:"review_evidence"`
+	PlansByRounds    []NamedCount   `json:"plans_by_rounds"`
+	CardsFirstRound  Figure         `json:"cards_first_round"`
+	CardsLaterRounds Figure         `json:"cards_later_rounds"`
+	ReplansByOrigin  []NamedCount   `json:"replans_by_origin"`
 }
 
 // MetricsReport is every figure of one project over one window, the
@@ -1591,9 +1612,9 @@ func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricW
 
 // metricDivideConquer populates the divide-and-conquer block the store
 // answers today: CoveredFrom, GateAboveBound with GateBoundCoverage,
-// SessionsPerCard with its coverage, SessionEnds and ReviewsNotReviewed.
-// The economics panels (panels 4, 5, 7, 8, 10, 11, 12) land on another
-// card; their fields stay zero until then.
+// SessionsPerCard with its coverage, SessionEnds and ReviewsNotReviewed
+// with ReviewEvidence. The economics panels (panels 4, 5, 7, 8, 10, 11,
+// 12) land on another card; their fields stay zero until then.
 func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
 	var d DivideConquer
 	var covered sql.NullTime
@@ -1615,7 +1636,7 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 	if d.SessionEnds, err = metricDivideSessionEnds(ctx, db, repo, w); err != nil {
 		return d, err
 	}
-	if d.ReviewsNotReviewed, err = metricDivideReviews(ctx, db, repo, w); err != nil {
+	if d.ReviewsNotReviewed, d.ReviewEvidence, err = metricDivideReviews(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	return d, nil
@@ -1872,14 +1893,40 @@ func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w met
 }
 
 // metricDivideReviews — panel 9: reviews that answered not reviewed
-// (target: none). A review that returned no verdict carries reviewed
-// false and a bounded reason; without a model_review row in the span
-// the panel is unknown, not zero.
-func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+// (target: none). Only a genuine answer is evidence: a row that carries
+// its attempt identity — head and round, the persistence contract that
+// keeps one attempt one row, so a replay of one attempt adds no answer
+// while a second genuine round of the same head and a round of another
+// head each stay their own — and the classification the payload wrote:
+// reviewed true, the answer judged the head, a negative verdict among
+// them, or reviewed false with its bounded reason. A row without its
+// identity or without a usable classification is unknown evidence,
+// never an inferred success: the count stands on the genuine rest, and
+// a span no genuine answer covers is unknown, not zero.
+func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, ReviewEvidence, error) {
 	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
 		WHERE ` + dcCardReach + ` AND e.kind = 'model_review' AND e.at >= %s AND e.at < $3`
-	const notReviewed = `e.detail->>'reviewed' = 'false'`
-	return metricEvidenceCount(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+notReviewed+`), count(*)`+from, "$2"),
+	const genuine = `e.identity_key IS NOT NULL AND e.detail->>'reviewed' IN ('true', 'false')`
+	const notReviewed = genuine + ` AND e.detail->>'reviewed' = 'false'`
+	const unknown = `NOT (` + genuine + `)`
+	// the evidence of Answers and Unknown is every model_review row: a
+	// span rows cover measures, its genuine answers and its holes apart
+	of := func(what string) (string, string) {
+		return fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+what+`), count(*)`+from, "$2"),
+			fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(*) FILTER (WHERE "+what+`)`+from+` GROUP BY 1`, "$2")
+	}
+	f, err := metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+notReviewed+`), count(*) FILTER (WHERE `+genuine+`)`+from, "$2"),
 		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(*) FILTER (WHERE "+notReviewed+`)`+from+` GROUP BY 1`, "$2"))
+	var ev ReviewEvidence
+	if err != nil {
+		return f, ev, err
+	}
+	scalar, weeks := of(genuine)
+	if ev.Answers, err = metricEvidenceCount(ctx, db, repo, w, scalar, weeks); err != nil {
+		return f, ev, err
+	}
+	scalar, weeks = of(unknown)
+	ev.Unknown, err = metricEvidenceCount(ctx, db, repo, w, scalar, weeks)
+	return f, ev, err
 }
