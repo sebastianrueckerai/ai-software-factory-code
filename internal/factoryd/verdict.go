@@ -266,6 +266,59 @@ func RecordHumanCriteria(ctx context.Context, store Store, taskID, approver stri
 	return len(rows), store.PutCriteriaVerdicts(ctx, t.ID, "approver", approver, rows)
 }
 
+// ErrChildOpen is a plan's card that is not done or merged, which a
+// confirmation of the delivered cards cannot stand on.
+var ErrChildOpen = errors.New("a card of the plan is not done or merged")
+
+// ConfirmDeliveredCriteria records the human's confirmation that the
+// plan's delivered cards meet its criteria: every criterion still open
+// is met at once, their line the evidence, the rows on the integration
+// card where the review's stand. It refuses while a card of the plan is
+// not done or merged, records nothing when no criterion is open, and
+// decides no approval itself: the sweep that reads the rows ends the
+// request and closes the plan.
+func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line string) (int, error) {
+	t, ok, err := store.Task(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("plan %s: %w", id, err)
+	}
+	if !ok {
+		return 0, fmt.Errorf("plan %s: %w", id, ErrNotFound)
+	}
+	p, _, err := planOfStore(ctx, store, id, t.ID)
+	if err != nil {
+		return 0, err
+	}
+	integration, err := integrationCard(ctx, store, id, p)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := store.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return 0, err
+	}
+	open := openCriteria(p, rows)
+	if len(open) == 0 {
+		return 0, nil
+	}
+	cards, err := store.PlanCards(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	if i := slices.IndexFunc(cards, func(c Task) bool { return c.Status != "done" && c.Status != "merged" }); i >= 0 {
+		return 0, fmt.Errorf("%s is %s: %w", cards[i].ID, cards[i].Status, ErrChildOpen)
+	}
+	out := make([]CriterionVerdict, len(open))
+	for i, c := range open {
+		out[i] = CriterionVerdict{Criterion: c.ID, Verdict: "met", Evidence: cmp.Or(line, "confirmed by "+by), Kind: c.Kind}
+	}
+	if err := store.PutCriteriaVerdicts(ctx, integration.ID, "approver", by, out); err != nil {
+		return 0, err
+	}
+	log.Printf("plan %s: %s confirmed the delivered cards meet %d criteria", id, by, len(out))
+	return len(out), nil
+}
+
 // roleOf is the plan's role of card key.
 func roleOf(p Plan, key string) string {
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == key }); i >= 0 {

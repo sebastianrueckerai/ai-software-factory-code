@@ -133,3 +133,44 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 		t.Errorf("the grant left the request %+v", a)
 	}
 }
+
+// The confirm button is keyed on every child of the plan done or merged
+// (spec piece 2): it records the human's confirmation of the delivered
+// cards, and a child still open shows no button. The request closes on
+// the sweep, not here.
+func TestCriteriaGapConfirm(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %q", id, by, line))
+		return 2, nil
+	}
+	ck, s := r.loggedIn(t)
+	board := func() string {
+		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	}
+	if card := board(); !strings.Contains(card, `action="/approvals/30/confirm"`) ||
+		!strings.Contains(card, `aria-label="Confirm the delivered cards of t-plan"`) {
+		t.Errorf("the criteria card lacks the confirm button:\n%s", card)
+	}
+	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
+		t.Fatalf("confirm = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if want := []string{`confirm t-plan by sebastian: ""`}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+
+	// a child not done or merged shows no button
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-int" {
+			r.tasks.tasks[i].Status = "queued"
+		}
+	}
+	r.tasks.mu.Unlock()
+	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
+		t.Errorf("a plan with a child still open offers the confirm button:\n%s", card)
+	}
+}

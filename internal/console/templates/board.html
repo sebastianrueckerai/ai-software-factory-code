@@ -220,6 +220,9 @@
 <button type="submit" class="deny" aria-label="Waive criterion {{.ID}} of {{$.TaskID}}">Waive</button>
 </form>{{end}}
 </fieldset>{{end}}
+{{if and .Approver .Delivered}}<form method="post" action="/approvals/{{.ID}}/confirm" hx-post="/approvals/{{.ID}}/confirm" hx-target="#board" hx-swap="outerHTML">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}<button type="submit" aria-label="Confirm the delivered cards of {{.TaskID}}">Confirm the delivered cards</button>
+</form>{{end}}
 {{end}}
 {{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Plan</a>{{else}}Plan{{end}} {{if .IssueURL}}<a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{end}}, revision {{.PlanSpec.Revision}}</h4>
 {{template "brief-block" .}}

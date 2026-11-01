@@ -2093,6 +2093,37 @@ func (c *Console) doWaive(ctx context.Context, a actor, id int64, cid, reason st
 	return fmt.Sprintf("Criterion %s waived.", cid), nil
 }
 
+// doConfirmCriteria records the human's confirmation that the plan's
+// delivered cards meet its criteria: every open criterion met at once,
+// their line the evidence, on the human's own word when it arrives via
+// chat. The sweep that reads the rows ends the request and closes the
+// plan; a card of the plan not done or merged refuses, naming it.
+func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line string) (string, error) {
+	q, err := c.pendingRequest(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if q.Kind != factoryd.ApprovalCriteria {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which confirms nothing", q.ID, q.Kind))
+	}
+	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.s.user, line)
+	switch {
+	case errors.Is(err, factoryd.ErrChildOpen):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Cannot confirm the delivered cards: %v.", err))
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
+	case err != nil:
+		log.Printf("console: %s confirmed the criteria of %s: %v", a.s.user, q.TaskID, err)
+		return "", refuse(http.StatusInternalServerError, "the confirmation could not be recorded; see the factoryd log")
+	}
+	log.Printf("console: %s confirmed the delivered cards of %s via %s", a.s.user, q.TaskID, a.via)
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "met"})
+	if n == 0 {
+		return "Every criterion of the plan is met or waived already; the request closes on the next sweep.", nil
+	}
+	return fmt.Sprintf("Confirmed %d criteria met on the delivered cards; the request closes on the next sweep.", n), nil
+}
+
 // doRerun runs the red checks of a factory pull request card again
 // (roadmap 264), a writer's act: its merge request, whose head cannot
 // merge, is decided as the member's, and the card asks again once the

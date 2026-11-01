@@ -1332,3 +1332,60 @@ func TestClosedPlanCardDeniesItsCriteriaApproval(t *testing.T) {
 		t.Fatalf("after the close: plan_closed %d, pending %+v, denied %+v; want 1, none, the criteria approval denied by factoryd", closeRows(s), pending, denied)
 	}
 }
+
+// A human's confirmation of the delivered cards meets every open
+// criterion at once, their line the evidence, and the sweep that follows
+// ends the request and closes the plan. A child not done or merged
+// refuses naming the child; nothing open records nothing.
+func TestConfirmDeliveredCriteria(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r.CriteriaPass(ctx)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].TaskID != "t-plan" {
+		t.Fatalf("pending = %+v, want one criteria request of t-plan", pending)
+	}
+	n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", "the pages read well and no endpoint times out")
+	if err != nil || n != 2 {
+		t.Fatalf("confirm = %d, %v; want 2, nil", n, err)
+	}
+	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "met", Evidence: "the pages read well and no endpoint times out", Kind: CriterionHuman, Source: "approver", DecidedBy: "sebastian"},
+		{Criterion: "c3", Verdict: "met", Evidence: "the pages read well and no endpoint times out", Kind: CriterionInvariant, Source: "approver", DecidedBy: "sebastian"},
+	}
+	if fmt.Sprint(rows) != fmt.Sprint(want) {
+		t.Errorf("rows =\n%v\nwant\n%v", rows, want)
+	}
+	r.CriteriaPass(ctx)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("the request stayed open: %+v", pending)
+	}
+	approved, _ := s.ApprovalRequests(ctx, "approved")
+	if len(approved) != 1 || approved[0].DecisionNote != "every criterion is met or waived" {
+		t.Fatalf("approved = %+v", approved)
+	}
+	if _, closed, _ := s.PlanClosed(ctx, "t-plan"); !closed {
+		t.Error("the plan stayed open after the confirmation")
+	}
+	if n, err := ConfirmDeliveredCriteria(ctx, s, "t-plan", "sebastian", "again"); err != nil || n != 0 {
+		t.Errorf("confirm with nothing open = %d, %v; want 0, nil", n, err)
+	}
+
+	// a child not done or merged refuses, its name and state in the error
+	s2 := seedVerdictPlan(t, "t-open", "t-open-int", "queued")
+	_, err = ConfirmDeliveredCriteria(ctx, s2, "t-open", "sebastian", "they are done")
+	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), "t-open-int") || !strings.Contains(err.Error(), "queued") {
+		t.Fatalf("confirm with an open child = %v, want ErrChildOpen naming the child", err)
+	}
+	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
+		t.Errorf("a refused confirm wrote rows: %+v", rows)
+	}
+}

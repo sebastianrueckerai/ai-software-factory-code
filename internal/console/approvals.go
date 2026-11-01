@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -46,10 +47,12 @@ type approvalCard struct {
 	// stale; the card says so rather than fail silently.
 	HeadUnread bool
 	Resource   cloudres.ResourceSpec
-	// a plan's criteria gap: the spec, and the open criteria with their
-	// standing verdicts
+	// a plan's criteria gap: the spec, the open criteria with their
+	// standing verdicts, and whether every card of the plan is delivered
+	// (done or merged), which the confirm button keys on
 	CriteriaSpec factoryd.CriteriaSpec
 	Criteria     []criterionRow
+	Delivered    bool
 	// a plan: its revision, the summary, the cards in filing order and the
 	// keys it takes off main
 	PlanSpec    factoryd.PlanSpec
@@ -220,6 +223,11 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	if err != nil {
 		return fmt.Errorf("verdicts of %s: %w", k.CriteriaSpec.Task, err)
 	}
+	cards, err := c.cfg.Tasks.PlanCards(ctx, k.TaskID)
+	if err != nil {
+		return fmt.Errorf("cards of %s: %w", k.TaskID, err)
+	}
+	k.Delivered = !slices.ContainsFunc(cards, func(t factoryd.Task) bool { return t.Status != "done" && t.Status != "merged" })
 	for _, c := range p.Criteria {
 		verdict, evidence := "", ""
 		for _, v := range rows {
@@ -313,6 +321,14 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 func (c *Console) waive(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
 		return c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
+	})
+}
+
+// confirm records the member's confirmation that the plan's delivered
+// cards meet its criteria (doConfirmCriteria).
+func (c *Console) confirm(w http.ResponseWriter, r *http.Request) {
+	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
+		return c.doConfirmCriteria(ctx, a, id, "")
 	})
 }
 

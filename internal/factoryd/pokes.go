@@ -300,6 +300,8 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 			}
 		case ApprovalPlan:
 			m.Content = fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards"))
+		case ApprovalCriteria:
+			m.Content = fmt.Sprintf("Plan %s %q waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t))
 		default:
 			return m, false
 		}
