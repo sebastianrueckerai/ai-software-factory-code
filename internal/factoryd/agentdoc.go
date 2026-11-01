@@ -459,7 +459,7 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	t := Task{ID: agentDocTask, Objective: "Fix the counter so it counts the skipped rows too.",
 		Repository: "owner/name", IssueNumber: 42, Author: "fixture-author"}
-	facts, acts, err := briefFacts(a, t)
+	facts, acts, err := briefFacts(a, t, nil)
 	if err != nil {
 		return nil, err
 	}

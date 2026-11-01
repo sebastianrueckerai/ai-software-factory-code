@@ -3,6 +3,8 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -65,12 +67,14 @@ func TestBriefAnswer(t *testing.T) {
 // fakeBriefStore records the brief writer's writes.
 type fakeBriefStore struct {
 	BriefStore
-	tasks   map[string]Task
-	rows    []ApprovalRequest
-	brief   map[int64][2]string
-	failed  map[int64]string
-	events  []Event
-	taskErr error
+	tasks     map[string]Task
+	rows      []ApprovalRequest
+	revisions map[string]PlanRevision
+	verdicts  map[string][]CriterionVerdict
+	brief     map[int64][2]string
+	failed    map[int64]string
+	events    []Event
+	taskErr   error
 }
 
 func (f *fakeBriefStore) Task(ctx context.Context, id string) (Task, bool, error) {
@@ -90,6 +94,15 @@ func (f *fakeBriefStore) SetApprovalBrief(ctx context.Context, id int64, brief, 
 func (f *fakeBriefStore) SetApprovalBriefError(ctx context.Context, id int64, e string) error {
 	f.failed[id] = e
 	return nil
+}
+
+func (f *fakeBriefStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	rev, ok := f.revisions[id]
+	return rev, ok, nil
+}
+
+func (f *fakeBriefStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error) {
+	return f.verdicts[taskID], nil
 }
 
 func (f *fakeBriefStore) Record(ctx context.Context, e Event) (int64, error) {
@@ -249,7 +262,7 @@ func TestBriefFactsNameTheCardShape(t *testing.T) {
 		{"a plan names its answers, never Accept", ApprovalRequest{Kind: ApprovalPlan, Spec: json.RawMessage(`{"revision":2}`)}, "answers to the plan's open questions", "Accept"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			facts, acts, err := briefFacts(tt.a, briefTask())
+			facts, acts, err := briefFacts(tt.a, briefTask(), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -307,5 +320,95 @@ func TestBriefWriterMarksABudgetRefusal(t *testing.T) {
 	}
 	if BriefUnfunded(ApprovalRequest{Status: "approved", BriefError: "refused_budget: spent"}) {
 		t.Error("a decided request asks for a raise")
+	}
+}
+
+// A criteria request's brief reads the plan's criteria with their
+// standing verdicts and names the card's three answers (fault 7: the gap
+// card showed a brief error instead).
+func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
+	spec, err := json.Marshal(CriteriaSpec{Task: "t-int"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code",
+		Spec: spec, Reason: "the plan's cards ran out with a criterion unmet"}
+	criteria := []criterionFact{
+		{ID: "c1", Kind: "test", Text: "go test ./... is green", Verdict: "met", Evidence: "the review read the diff"},
+		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"},
+		{ID: "c3", Kind: "invariant", Text: "no endpoint times out", Verdict: "waived", Evidence: "the timeout is the provider's SLA"},
+	}
+	facts, acts, err := briefFacts(a, briefTask(), criteria)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := facts.(map[string]any)
+	if fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) {
+		t.Errorf("criteria = %v, want %v", m["criteria"], criteria)
+	}
+	for _, want := range []string{"Waive", "one more bounded card", "Confirm", "no final press"} {
+		if !strings.Contains(acts, want) {
+			t.Errorf("acts %q lack %q", acts, want)
+		}
+	}
+	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria gap") {
+		t.Errorf("the prompt does not name the card: %s", p)
+	}
+}
+
+// The writer reads a criteria request's plan and verdict rows itself and
+// the model's brief lands on the row, with the criteria as the model
+// reads them (fault 7).
+func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
+	spec, err := json.Marshal(CriteriaSpec{Task: "t-int"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, err := json.Marshal(Plan{Criteria: []PlanCriterion{
+		{ID: "c1", Kind: "test", Test: "go test ./... is green"},
+		{ID: "c2", Kind: "human", Claim: "the feature reads well"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent string
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+				Role    string `json:"role"`
+			} `json:"messages"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		for _, m := range req.Messages {
+			if m.Role == "user" {
+				sent = m.Content
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"brief\": \"Two criteria wait on you.\", \"detail\": \"- c1 met\"}"}}]}`))
+	}))
+	defer gw.Close()
+	store := &fakeBriefStore{
+		tasks: map[string]Task{"t-plan": {ID: "t-plan", Repository: "sf/code", RequiredCapabilities: []string{policy.ClassCoder}}},
+		rows:  []ApprovalRequest{{ID: 11, Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Spec: spec, Reason: "a criterion unmet", CreatedAt: time.Unix(0, 0).UTC()}},
+		brief: map[int64][2]string{}, failed: map[int64]string{},
+		revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}},
+		verdicts: map[string][]CriterionVerdict{"t-int": {
+			{Criterion: "c1", Verdict: "met", Evidence: "the review read the diff", Kind: "test", Source: "review"},
+		}},
+	}
+	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := store.brief[11]; got[0] != "Two criteria wait on you." || got[1] != "- c1 met" {
+		t.Fatalf("the brief = %v", got)
+	}
+	for _, want := range []string{"the feature reads well", `"verdict":"open"`, `"verdict":"met"`} {
+		if !strings.Contains(sent, want) {
+			t.Errorf("the model's facts lack %q: %s", want, sent)
+		}
 	}
 }

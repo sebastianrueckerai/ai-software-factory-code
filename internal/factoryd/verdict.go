@@ -352,22 +352,29 @@ func integrationCard(ctx context.Context, store Store, parent string, p Plan) (T
 	return cards[i], nil
 }
 
+// standingRow is a criterion's standing verdict row: the approver's over
+// the review's; false when no row holds one.
+func standingRow(rows []CriterionVerdict, criterion string) (CriterionVerdict, bool) {
+	for _, v := range rows {
+		if v.Source == "approver" && v.Criterion == criterion {
+			return v, true
+		}
+	}
+	for _, v := range rows {
+		if v.Criterion == criterion {
+			return v, true
+		}
+	}
+	return CriterionVerdict{}, false
+}
+
 // effectiveVerdict is a criterion's standing verdict: the approver's row
 // over the review's; "" when no row holds one.
 func effectiveVerdict(rows []CriterionVerdict, criterion string) string {
-	verdict := ""
-	for _, v := range rows {
-		if v.Criterion != criterion {
-			continue
-		}
-		if v.Source == "approver" {
-			return v.Verdict
-		}
-		if verdict == "" {
-			verdict = v.Verdict
-		}
+	if v, ok := standingRow(rows, criterion); ok {
+		return v.Verdict
 	}
-	return verdict
+	return ""
 }
 
 // openCriteria are the plan's criteria whose standing verdict is neither

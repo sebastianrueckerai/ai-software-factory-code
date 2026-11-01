@@ -2411,6 +2411,61 @@ func TestSwitchToPlan(t *testing.T) {
 	}
 }
 
+// The briefless read takes back a row a failure once marked, so a card
+// heals when the writer learns its kind; a budget refusal stays marked
+// until a raise clears it (fault 7).
+func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, approval_requests CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	spec := json.RawMessage(`{"task":"t-int"}`)
+	newTask := func(id string) {
+		t.Helper()
+		if err := s.CreateTask(ctx, Task{ID: id, Status: "queued", Repository: "sf/r", Track: "direct"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func(task string) int64 {
+		t.Helper()
+		id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: task, Project: "sf/r", Spec: spec, Reason: "a criterion unmet"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	mark := func(id int64, e string) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET brief_error = $2 WHERE id = $1`, id, e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newTask("a1")
+	newTask("a2")
+	newTask("a3")
+	marked := open("a1")
+	mark(marked, `kind "criteria" carries no brief`)
+	unfunded := open("a2")
+	mark(unfunded, "refused_budget: free headroom 0 EUR fits 0 output tokens")
+	briefed := open("a3")
+	if err := s.SetApprovalBrief(ctx, briefed, "Two criteria wait on you.", "- c1 met"); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.BrieflessApprovals(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].ID != marked {
+		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal stays marked, the briefed row is done", rows, marked)
+	}
+}
+
 func TestPGStoreApprovals(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
