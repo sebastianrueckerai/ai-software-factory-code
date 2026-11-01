@@ -70,7 +70,8 @@ func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 }
 
 // The supervisor-family agents call in JSON mode on the task's account;
-// the check-in calls unstreamed with tools and no response format.
+// the check-in calls unstreamed with tools and no response format; the
+// naming call streams on the small alias with a short answer.
 func TestAgentDocDirectEnvelope(t *testing.T) {
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {
@@ -83,9 +84,15 @@ func TestAgentDocDirectEnvelope(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if id == "checkin" {
+			switch id {
+			case "checkin":
 				if b.Stream || b.ResponseFormat != "" || b.MaxTokens != 0 {
 					t.Fatalf("the check-in calls unstreamed with no format and no limit, got %+v", b)
+				}
+				return
+			case "title":
+				if !b.Stream || b.ResponseFormat != "" || b.MaxTokens != titleTokens || b.Model != policy.Small {
+					t.Fatalf("the naming call streams on the small alias with a %d-token answer, got %+v", titleTokens, b)
 				}
 				return
 			}
@@ -104,7 +111,7 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 		"review-criteria": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
 		"holdout-redrafter": policy.PurposeReview, "answer-screener": policy.PurposeReview,
-		"brief-writer": policy.PurposeBrief,
+		"brief-writer": policy.PurposeBrief, "title": policy.PurposeTitle,
 	}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {

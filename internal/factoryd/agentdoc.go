@@ -35,7 +35,7 @@ var agentDocClasses = []string{"coder"}
 func AgentDocDirectIDs() []string {
 	return []string{"checkin", "model-review", "security-audit", "gate-supervisor",
 		"review-criteria", "review-behaviours", "delta-planner", "holdout-proposer",
-		"holdout-redrafter", "answer-screener", "brief-writer"}
+		"holdout-redrafter", "answer-screener", "brief-writer", "title"}
 }
 
 // AgentDocDirect drives agent id's first model call through the real
@@ -65,6 +65,8 @@ func AgentDocDirect(ctx context.Context, id, gwURL string, v policy.Version, hc 
 		return agentDocAnswer(ctx, gwURL, v, hc)
 	case "brief-writer":
 		return agentDocBrief(ctx, gwURL, v, hc)
+	case "title":
+		return agentDocTitle(ctx, gwURL, hc)
 	}
 	return nil, fmt.Errorf("agentdoc: unknown factoryd agent %q", id)
 }
@@ -139,7 +141,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
 		{Name: "the writing guide", Symbol: "writingguide.Guide", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: writingguide.Guide},
-		{Name: "the parent session's tail", Symbol: "fixture", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
+		{Name: "the parent session's tail", Symbol: "factoryd.agentDocCheckin", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
 			Text: string(parent)},
 	}
 	for _, tool := range checkinToolsFor(ask.Moment) {
@@ -190,6 +192,8 @@ func agentDocReview(ctx context.Context, gwURL string, v policy.Version, hc *htt
 	return []agentdoc.Span{
 		{Name: "the review prompt", Symbol: "factoryd.reviewPromptFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
 			Text: reviewPromptFor(gates)},
+		{Name: "the review's facts", Symbol: "factoryd.reviewInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: marshalled(in)},
 		{Name: "the task brief", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in.Brief)},
 		{Name: "the diff", Symbol: "factoryd.joinFiles", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(diff)},
@@ -218,6 +222,8 @@ func agentDocAudit(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	return []agentdoc.Span{
 		{Name: "the audit prompt", Symbol: "factoryd.auditPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: auditPrompt},
+		{Name: "the audit's facts", Symbol: "factoryd.auditInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: marshalled(in)},
 		{Name: "the diff", Symbol: "factoryd.joinFiles", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(diff)},
 		{Name: "the concurrency summary", Symbol: "factoryd.concurrencyBlock", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: agentDocJSON(concurrencyBlock(concurrencySites(files)))},
@@ -248,7 +254,7 @@ func agentDocGateSupervisor(ctx context.Context, gwURL string, v policy.Version,
 	return []agentdoc.Span{
 		{Name: "the gate supervisor prompt", Symbol: "factoryd.gateSupervisorPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: gateSupervisorPrompt},
-		{Name: "the diagnosis bundle", Symbol: "factoryd.gateBundle+scrubbed", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+		{Name: "the diagnosis bundle", Symbol: "factoryd.scrubbed", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(user)},
 	}, nil
 }
@@ -288,6 +294,8 @@ func agentDocCriterion(ctx context.Context, gwURL string, v policy.Version, hc *
 	return []agentdoc.Span{
 		{Name: "the criterion prompt", Symbol: "factoryd.reviewCriterionPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: reviewCriterionPrompt},
+		{Name: "the criterion call's facts", Symbol: "factoryd.criterionInput", Kind: agentdoc.KindBuilder,
+			Place: agentdoc.PlaceUser, Text: marshalled(in)},
 		{Name: "the objective", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: agentDocJSON(in.Objective)},
 		{Name: "the criterion", Symbol: "factoryd.PlanCriterion", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -316,6 +324,8 @@ func agentDocBehaviours(ctx context.Context, gwURL string, v policy.Version, hc 
 	return []agentdoc.Span{
 		{Name: "the behaviours prompt", Symbol: "factoryd.reviewBehavioursPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: reviewBehavioursPrompt},
+		{Name: "the behaviours call's facts", Symbol: "factoryd.behavioursInput", Kind: agentdoc.KindBuilder,
+			Place: agentdoc.PlaceUser, Text: marshalled(in)},
 		{Name: "the objective", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: agentDocJSON(in.Objective)},
 		{Name: "the criteria", Symbol: "factoryd.PlanCriterion", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -343,6 +353,8 @@ func agentDocDelta(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	return []agentdoc.Span{
 		{Name: "the delta prompt", Symbol: "factoryd.deltaPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
+		{Name: "the delta call's facts", Symbol: "factoryd.deltaInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: marshalled(in)},
 		{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)},
 	}, nil
 }
@@ -390,7 +402,12 @@ func agentDocHoldout(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, system, input); err != nil {
 		return nil, err
 	}
-	return append(spans, agentdoc.Span{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder,
+	cover := agentdoc.Span{Name: "the hold-out call's facts", Symbol: "factoryd.(*Runner).redraftHoldouts",
+		Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(input)}
+	if !fix {
+		cover.Name, cover.Symbol = "the hold-out call's facts", "factoryd.(*Runner).proposeHoldouts"
+	}
+	return append(spans, cover, agentdoc.Span{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder,
 		Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)}), nil
 }
 
@@ -414,7 +431,9 @@ func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *htt
 	}
 	return []agentdoc.Span{
 		{Name: "the screening prompt", Symbol: "factoryd.answerPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
-		{Name: "the answer between markers", Symbol: "factoryd.answerInput+sanitize.Inbound", Kind: agentdoc.KindBuilder,
+		{Name: "the screening call's facts", Symbol: "factoryd.answerInput", Kind: agentdoc.KindBuilder,
+			Place: agentdoc.PlaceUser, Text: marshalled(in)},
+		{Name: "the answer between markers", Symbol: "sanitize.Inbound", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceUser, Text: agentDocJSON(in.Answer)},
 	}, nil
 }
@@ -451,6 +470,22 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	return []agentdoc.Span{
 		{Name: "the brief prompt", Symbol: "factoryd.briefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the card's facts", Symbol: "factoryd.briefFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(facts)},
+	}, nil
+}
+
+// agentDocTitle drives the naming call (roadmap 304): the cheap alias
+// reads a chat thread's first message and answers the title alone. The
+// console fires it for threads the member just opened.
+func agentDocTitle(ctx context.Context, gwURL string, hc *http.Client) ([]agentdoc.Span, error) {
+	m := &OperatorModel{GatewayURL: gwURL, Token: "agentdoc", HTTP: hc}
+	thread := "owner/name:fixture-user:1"
+	first := "Set the staging budget to 40 euros."
+	if _, err := m.Title(ctx, agentDocTask, thread, first); err != nil {
+		return nil, err
+	}
+	return []agentdoc.Span{
+		{Name: "the naming rules", Symbol: "factoryd.titlePrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: titlePrompt},
+		{Name: "the thread's first message", Symbol: "(*OperatorModel).Title", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: first},
 	}, nil
 }
 
