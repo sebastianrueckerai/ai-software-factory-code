@@ -372,6 +372,7 @@ type chainForgejo struct {
 	runs      map[string][]map[string]any               // repository -> its push runs, newest first
 	carries   map[string]map[string][]map[string]any    // repository -> compare base...head -> its commits
 	merged    map[string][]map[string]any               // repository -> its merged pull requests, seeded as cards
+	comps     map[string][]map[string]any               // repository -> its default-branch commits, newest first, a companion's
 	statuses  map[string]map[string][]map[string]string // repository -> sha -> the statuses reported on it
 	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
 	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
@@ -419,6 +420,8 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			}
 			f.runReads = append(f.runReads, repo)
 			reply(map[string]any{"workflow_runs": f.runs[repo]})
+		case r.Method == "GET" && p == "/commits":
+			reply(f.comps[repo])
 		case strings.HasPrefix(p, "/git/commits/"):
 			reply(map[string]any{"parents": []map[string]string{{"sha": "parent-of-" + strings.TrimPrefix(p, "/git/commits/")}}})
 		case strings.HasPrefix(p, "/compare/"):
@@ -537,6 +540,54 @@ func newTestPoller(t *testing.T, f *chainForgejo, projects ...Project) (*ChainPo
 	f.seedCards(store)
 	return &ChainPoller{Forgejo: f.srv(t), Store: store, Projects: store,
 		Policy: func() policy.Version { return policy.Version{} }}, store
+}
+
+// A companion head that reaches a held plan card's pin wakes the card with
+// one companion_landed signal, and only once; a head still behind wakes
+// nothing.
+func TestChainPollCompanionWake(t *testing.T) {
+	pin, behind := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	code := seedProject("sf/code")
+	code.Companions = []policy.Companion{{Repository: "sf/infra"}}
+	f := &chainForgejo{comps: map[string][]map[string]any{"sf/infra": {{"sha": behind}}}}
+	p, store := newTestPoller(t, f, code)
+	p.Forgejo.Seeded = testSeeded
+	wf := &fakeWorkflows{}
+	p.Workflows = wf
+
+	p2 := testPlan()
+	p2.Cards[0].Companions = []CardCompanion{{Repository: "sf/infra", At: pin}}
+	raw, sha, err := planSHA(p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-card"] = Task{ID: "t-card", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+		Parent: "t-plan", PlanKey: "foundation", PlanRevision: 1, Source: SourcePlan, Gate: "approval"}
+
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none while the head is behind the pin", wf.signals)
+	}
+
+	f.comps["sf/infra"] = []map[string]any{{"sha": pin}}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "t-card companion_landed") {
+		t.Fatalf("signals = %q, want one companion_landed for t-card", wf.signals)
+	}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 1 {
+		t.Fatalf("signals = %q, want the wake once", wf.signals)
+	}
 }
 
 const demoRepo = "sf/demo-app"

@@ -34,12 +34,13 @@ type gateHarness struct {
 	criteria     []CriteriaResult    // in order, the last repeating; empty: no finding
 	settlements  []HoldoutSettlement // in order, the last repeating; empty: settled
 	review       Review
-	reviews      []Review      // in order, the last repeating; empty: review
-	earlier      [][]Review    // the earlier reviews each ModelReview call was given
-	rounds       []int         // the round each ModelReview call was given
-	reviewGates  []GateResults // the gates each ModelReview call was given
-	mu           sync.Mutex    // what the mocks record: the review and the audit run beside other activities, and a cancelled call still finishes in the test env
-	audits       []AuditResult // in order, the last repeating; empty: clear
+	reviews      []Review          // in order, the last repeating; empty: review
+	earlier      [][]Review        // the earlier reviews each ModelReview call was given
+	rounds       []int             // the round each ModelReview call was given
+	reviewGates  []GateResults     // the gates each ModelReview call was given
+	companions   [][]CompanionGate // in order, the last repeating; empty: no companion pinned
+	mu           sync.Mutex        // what the mocks record: the review and the audit run beside other activities, and a cancelled call still finishes in the test env
+	audits       []AuditResult     // in order, the last repeating; empty: clear
 	auditErr     error
 	auditGates   []GateResults   // the gates each GateAudit call was given
 	screened     int             // Screen calls
@@ -149,6 +150,17 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 				return g.reviews[min(len(g.earlier), len(g.reviews))-1], g.reviewErr
 			}
 			return g.review, g.reviewErr
+		})
+	ci := 0
+	g.env.OnActivity(ActivityGateCompanion, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) ([]CompanionGate, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			ci++
+			if len(g.companions) == 0 {
+				return nil, nil
+			}
+			return g.companions[min(ci, len(g.companions))-1], nil
 		})
 	a := 0
 	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.auditDelay).Return(
@@ -277,6 +289,41 @@ func TestWorkflowGatesThenApprovalMerges(t *testing.T) {
 	}
 	if !strings.Contains(g.finals[0][1], "factory-merge after sebastian's approval") {
 		t.Fatalf("reason = %q", g.finals[0][1])
+	}
+}
+
+// A companion pin the plan card carries holds an otherwise auto merge at
+// its approval: the ask names the companion still behind its pin, and the
+// chain poller's companion_landed signal wakes the card, which re-runs
+// its gates from the first stage at the now-met pin and merges without a
+// human.
+func TestCompanionLandedWakesTheHeldApproval(t *testing.T) {
+	pin, head := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	g := newGateHarness(t, autoGates, func(g *gateHarness) {
+		g.companions = [][]CompanionGate{
+			{{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: head}},
+			{{Repository: "sf/ai-software-factory-infra", Pin: pin, Head: pin, Met: true}},
+		}
+	})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalCompanionLanded, TaskSignal{})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1",
+		"policy", "repro c1", "review c1", "criteria c1", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("steps = %v, want %v", g.steps, want)
+	}
+	if len(g.approvals) != 1 || !slices.Contains(g.approvals[0].WhyHuman,
+		"the companion sf/ai-software-factory-infra is still behind 82ab246, at fee3ff1") {
+		t.Fatalf("approvals = %+v, want one ask naming the companion behind its pin", g.approvals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 " + AutoApprover}) || len(g.autoNotes) != 1 {
+		t.Fatalf("merges %q, notes %q: want one auto merge with its note", g.merges, g.autoNotes)
+	}
+	if len(g.reviewGates) == 0 || len(g.reviewGates[len(g.reviewGates)-1].Companions) != 1 {
+		t.Fatalf("review gates = %+v, want the companion gates beside the review", g.reviewGates)
 	}
 }
 

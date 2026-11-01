@@ -123,6 +123,26 @@ type GateResults struct {
 	Beside bool `json:",omitempty"`
 	// Audit is the audit stage's verdict; nil: not run.
 	Audit *AuditResult `json:",omitempty"`
+	// Companions are the plan card's companion pins' verdicts, read live
+	// at each gate pass; empty: no pin declared.
+	Companions []CompanionGate `json:",omitempty"`
+}
+
+// CompanionGate is one companion pin's verdict, read live from the
+// companion's default branch: Met while the branch still holds the pinned
+// commit in its window; Unread names a read that failed, which holds the
+// card like an unmet pin.
+type CompanionGate struct {
+	Repository string `json:"repository"`
+	Pin        string `json:"pin"`
+	Head       string `json:"head,omitempty"`
+	Met        bool   `json:"met,omitempty"`
+	Unread     string `json:"unread,omitempty"`
+}
+
+// companionUnread is the line an unread companion holds the card on.
+func companionUnread(repository string) string {
+	return fmt.Sprintf("the companion %s cannot be read; check its repository and the factory-config token", repository)
 }
 
 // Adjudication is a human's overrule of a review finding (roadmap 192):
@@ -191,6 +211,16 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 		met = append(met, "the checks ran green")
 	} else {
 		unmet = append(unmet, "the checks did not run green")
+	}
+	for _, c := range g.Companions {
+		switch {
+		case c.Unread != "":
+			unmet = append(unmet, c.Unread)
+		case c.Met:
+			met = append(met, fmt.Sprintf("the companion %s is at or after %s", c.Repository, c.Pin[:7]))
+		default:
+			unmet = append(unmet, fmt.Sprintf("the companion %s is still behind %s, at %s", c.Repository, c.Pin[:7], c.Head[:7]))
+		}
 	}
 	if mechanicalSource(source) {
 		met = append(met, "mechanical source "+source+": factoryd wrote the change, no agent")
@@ -345,7 +375,8 @@ func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, com
 		return err
 	}
 	r.record(ctx, t.ID, "auto_merge", map[string]any{"pr": pr, "commit": commit, "class": g.Policy.Class, "merge_rule": g.Policy.MergeRule,
-		"reproduction": g.Reproduction.Command, "review": rv.Summary, "not_reproduced": g.Reproduction.NotReproduced})
+		"reproduction": g.Reproduction.Command, "review": rv.Summary, "not_reproduced": g.Reproduction.NotReproduced,
+		"companions": g.Companions})
 	r.recordGateHead(ctx, t, commit, policy.OutcomeAuto, g.Policy)
 	return nil
 }
@@ -708,6 +739,65 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	}
 	r.record(ctx, t.ID, "gate_reproduction", gateEnd(t, GateReproduction, detail))
 	return res, nil
+}
+
+// planCards reads one plan revision's cards; nil when there is none to
+// read, whatever went wrong: a card that cannot be found carries no
+// companion pins, which holds nothing.
+type planCards interface {
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
+}
+
+// cardCompanions are the companion pins t's plan card carries: the pins
+// stamped on the card at the plan revision the card runs. A task with no
+// plan card carries none.
+func cardCompanions(ctx context.Context, store planCards, t Task) []CardCompanion {
+	if t.Source != SourcePlan || t.Parent == "" || t.PlanKey == "" || t.PlanRevision == 0 {
+		return nil
+	}
+	rev, ok, err := store.PlanRevision(ctx, t.Parent, t.PlanRevision)
+	if err != nil || !ok {
+		return nil
+	}
+	var p Plan
+	if json.Unmarshal(rev.Plan, &p) != nil {
+		return nil
+	}
+	for _, c := range p.Cards {
+		if c.Key == t.PlanKey {
+			return c.Companions
+		}
+	}
+	return nil
+}
+
+// GateCompanion reads the plan card's companion pins live through the
+// factory-config token: met while the companion's default branch still
+// holds the pinned commit, behind it once it has moved past, and unread
+// when the read fails. Every one of the three holds the card; none fails
+// it, and the next gate pass reads again.
+func (r *Runner) GateCompanion(ctx context.Context, taskID string) ([]CompanionGate, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	pins := cardCompanions(ctx, r.store, t)
+	if len(pins) == 0 {
+		return nil, nil
+	}
+	token := r.forgejo.Seeded[policy.SecretConfig]
+	cs := make([]CompanionGate, 0, len(pins))
+	for _, pin := range pins {
+		owner, name, _ := strings.Cut(pin.Repository, "/")
+		met, head, err := r.forgejo.MainAtLeast(ctx, token, Repo{Owner: owner, Name: name}, pin.At)
+		if err != nil {
+			cs = append(cs, CompanionGate{Repository: pin.Repository, Pin: pin.At, Unread: companionUnread(pin.Repository)})
+			continue
+		}
+		cs = append(cs, CompanionGate{Repository: pin.Repository, Pin: pin.At, Head: head, Met: met})
+	}
+	r.record(ctx, t.ID, "gate_companion", map[string]any{"pins": len(pins), "verdicts": cs})
+	return cs, nil
 }
 
 // reproSandbox builds the sandbox t's reproduction runs share: leftover

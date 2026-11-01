@@ -175,6 +175,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityModelReview: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{}, nil
 		},
+		ActivityGateCompanion: func(ctx context.Context, taskID string) ([]CompanionGate, error) {
+			return nil, nil
+		},
 		ActivityScreen:         func(ctx context.Context, taskID string) (ScreenResult, error) { return ScreenResult{}, nil },
 		ActivityJudgeScreening: func(ctx context.Context, taskID, verdict string) error { return nil },
 		ActivityScreenAnswer: func(ctx context.Context, taskID, text string, pin int64) (ScreenResult, error) {

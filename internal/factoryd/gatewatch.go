@@ -60,6 +60,7 @@ var activityGates = map[string]string{
 	ActivityRunSession:        GateSession,
 	ActivityWaitChecks:        GateChecks,
 	ActivityGatePolicy:        GatePolicy,
+	ActivityGateCompanion:     GatePolicy,
 	ActivityGateMigration:     GateMigration,
 	ActivityGateReproduction:  GateReproduction,
 	ActivityGateCriteria:      GateCriteria,

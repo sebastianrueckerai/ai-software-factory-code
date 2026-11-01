@@ -116,6 +116,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityRunReport:                   r.RunReport,
 		ActivityRollCommit:                  r.RollCommit,
 		ActivityGateAudit:                   r.GateAudit,
+		ActivityGateCompanion:               r.GateCompanion,
 		ActivityTaskConfig:                  r.TaskConfig,
 		ActivityDependencies:                r.Dependencies,
 		ActivityEnterQueue:                  r.EnterQueue,

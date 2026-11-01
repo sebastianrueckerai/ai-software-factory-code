@@ -575,29 +575,49 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 // force-push.
 const companionWindow = 50
 
+// defaultCommits lists the newest commits of r's default branch, newest
+// first, as bare shas.
+func (f *Forgejo) defaultCommits(ctx context.Context, token string, r Repo) ([]string, error) {
+	body, err := f.tokenCall(token)(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/repos/%s/%s/commits?limit=%d", r.Owner, r.Name, companionWindow), nil, http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("companion %s: %w", r, err)
+	}
+	var commits []struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.Unmarshal(body, &commits); err != nil || len(commits) == 0 {
+		return nil, fmt.Errorf("companion %s: no commits on the default branch (%v)", r, err)
+	}
+	shas := make([]string, len(commits))
+	for i, c := range commits {
+		shas[i] = c.SHA
+	}
+	return shas, nil
+}
+
 // MainAtLeast reports whether sha is among the newest commits of r's
 // default branch, with the branch's head: a pin is met while the companion
 // still holds the pinned commit in its window, so it stays met as main
 // moves ahead and unmet once main has moved past it. A token that cannot
 // read the repository is an error naming the companion, not a verdict.
 func (f *Forgejo) MainAtLeast(ctx context.Context, token string, r Repo, sha string) (bool, string, error) {
-	body, err := f.tokenCall(token)(ctx, http.MethodGet,
-		fmt.Sprintf("/api/v1/repos/%s/%s/commits?limit=%d", r.Owner, r.Name, companionWindow), nil, http.StatusOK)
+	commits, err := f.defaultCommits(ctx, token, r)
 	if err != nil {
-		return false, "", fmt.Errorf("companion %s: %w", r, err)
+		return false, "", err
 	}
-	var commits []struct {
-		SHA string `json:"sha"`
+	return slices.Contains(commits, sha), commits[0], nil
+}
+
+// DefaultHead is the head of r's default branch, the pin a plan filing
+// stamps on its cards. A token that cannot read the repository is an
+// error naming the companion, not an empty head.
+func (f *Forgejo) DefaultHead(ctx context.Context, token string, r Repo) (string, error) {
+	commits, err := f.defaultCommits(ctx, token, r)
+	if err != nil {
+		return "", err
 	}
-	if err := json.Unmarshal(body, &commits); err != nil || len(commits) == 0 {
-		return false, "", fmt.Errorf("companion %s: no commits on the default branch (%v)", r, err)
-	}
-	for _, c := range commits {
-		if c.SHA == sha {
-			return true, commits[0].SHA, nil
-		}
-	}
-	return false, commits[0].SHA, nil
+	return commits[0], nil
 }
 
 // ErrNoRerun is Forgejo's answer that it offers no re-run of an action

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -2910,6 +2911,112 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	}
 	if _, ok := runner.takeFiled("t-plan"); ok {
 		t.Fatal("a refused filing held for the session")
+	}
+}
+
+// A filing stamps the declared companions' heads on every card, overwriting
+// whatever the planner wrote, reading each head through the factory-config
+// token.
+func TestPlanFilingStampsCompanions(t *testing.T) {
+	pin, other := "82ab246"+strings.Repeat("0", 33), "fee3ff16"+strings.Repeat("1", 32)
+	var auth []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
+		case "/api/v1/repos/sf/other/commits":
+			io.WriteString(w, `[{"sha":"`+other+`"}]`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, BudgetEUR: 2, Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	runner.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
+	v := browserInForce(t)
+	if name, c, ok := v.ProjectOf("linkshort/linkshort"); ok {
+		c.Companions = []policy.Companion{{Repository: "sf/infra"}, {Repository: "sf/other"}}
+		v.Projects[name] = c
+	}
+	runner.cfg.Policy = func() policy.Version { return v }
+
+	p := testPlan()
+	p.Cards[0].Companions = []CardCompanion{{Repository: "sf/infra", At: "deadbeef" + strings.Repeat("9", 33)}} // the planner's own block, overwritten
+	b, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	res, err := runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Revision != 1 || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, want revision 1 with no findings", res)
+	}
+	rev, ok, err := store.PlanRevision(ctx, "t-plan", 0)
+	if err != nil || !ok {
+		t.Fatalf("stored = %v, %v", ok, err)
+	}
+	var stored Plan
+	if err := json.Unmarshal(rev.Plan, &stored); err != nil {
+		t.Fatal(err)
+	}
+	want := []CardCompanion{{Repository: "sf/infra", At: pin}, {Repository: "sf/other", At: other}}
+	for _, c := range stored.Cards {
+		if !slices.Equal(c.Companions, want) {
+			t.Fatalf("card %s companions = %v, want the stamped pins %v", c.Key, c.Companions, want)
+		}
+	}
+	if !slices.Equal(auth, []string{"token config-tok", "token config-tok"}) {
+		t.Fatalf("reads = %q, want both companions through the factory-config token", auth)
+	}
+}
+
+// A declared companion the factory-config token cannot read refuses the
+// filing: the pin is the system's own fact, so a filing that cannot stamp
+// it stores nothing.
+func TestFilePlanRefusesAnUnreadableCompanion(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"82ab246"}]`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, BudgetEUR: 2, Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	runner.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
+	v := browserInForce(t)
+	if name, c, ok := v.ProjectOf("linkshort/linkshort"); ok {
+		c.Companions = []policy.Companion{{Repository: "sf/infra"}, {Repository: "sf/locked"}}
+		v.Projects[name] = c
+	}
+	runner.cfg.Policy = func() policy.Version { return v }
+
+	b, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	res, err := runner.FilePlan(ctx, "t-plan", string(b))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"plan: " + companionUnread("sf/locked")}
+	if !slices.Equal(res.Findings, want) || res.Revision != 0 {
+		t.Fatalf("refused = %+v, want findings %q", res, want)
+	}
+	if rev, ok, _ := store.PlanRevision(ctx, "t-plan", 0); ok {
+		t.Fatalf("a refused plan stored as revision %d", rev.Revision)
 	}
 }
 

@@ -1254,3 +1254,28 @@ func TestForgejoMainAtLeast(t *testing.T) {
 		t.Fatalf("unreadable = %v, want an error naming the companion", err)
 	}
 }
+
+// DefaultHead is the companion's default-branch head, the pin a plan filing
+// stamps on its cards; a repository the token cannot read is an error naming
+// the companion.
+func TestForgejoDefaultHead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/repos/sf/infra/commits":
+			io.WriteString(w, `[{"sha":"fee3ff16"},{"sha":"82ab246"}]`)
+		case "/api/v1/repos/sf/locked/commits":
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	f := &Forgejo{BaseURL: srv.URL}
+	head, err := f.DefaultHead(context.Background(), "tok", Repo{Owner: "sf", Name: "infra"})
+	if err != nil || head != "fee3ff16" {
+		t.Fatalf("head = %s, %v; want fee3ff16", head, err)
+	}
+	if _, err := f.DefaultHead(context.Background(), "tok", Repo{Owner: "sf", Name: "locked"}); err == nil || !strings.Contains(err.Error(), "companion sf/locked") {
+		t.Fatalf("unreadable = %v, want an error naming the companion", err)
+	}
+}
