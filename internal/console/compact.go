@@ -96,7 +96,7 @@ func tailStart(rows []factoryd.ChatMessage, keep int) int {
 func transcript(rows []factoryd.ChatMessage) string {
 	var b strings.Builder
 	for _, m := range rows {
-		who := "the member"
+		who := "the human"
 		switch {
 		case m.Kind != "":
 			who = "the factory"
@@ -135,8 +135,8 @@ func chunks(text string, n int) []string {
 	return out
 }
 
-const compactPrompt = `You keep the running summary of a member's thread with the project agent of a software factory.
-Write the new summary from the summary so far and the turns after it: what the member asked for and decided, what the agent did (cards filed, moved, answered, steered, approved, with their issue numbers and task ids), what is open, and the facts a later turn needs.
+const compactPrompt = `You keep the running summary of a human's thread with the project agent of a software factory.
+Write the new summary from the summary so far and the turns after it: what the human asked for and decided, what the agent did (cards filed, moved, answered, steered, approved, with their issue numbers and task ids), what is open, and the facts a later turn needs.
 Keep issue numbers (#12), task ids (t-...), names, numbers and quoted decisions exactly. Leave out greetings, tool output nobody needs, and anything the turns settled and left behind.
 Answer with the summary alone, as short paragraphs, at most 400 words.`
 

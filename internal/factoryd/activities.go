@@ -31,8 +31,8 @@ import (
 const prBase = "main"
 
 // WorkflowDirs are the top-level directories whose contents run as
-// workflows on push; an agent branch must never change any of them
-// (ruling 100). The worker refuses the push, OpenPullRequest re-checks.
+// workflows on push; an agent branch must never change any of them.
+// The worker refuses the push, OpenPullRequest re-checks.
 var WorkflowDirs = []string{".forgejo", ".gitea", ".github"}
 
 // WorkflowDir is the workflow directory name names in any case, and
@@ -55,7 +55,7 @@ const HeartbeatEvery = 10 * time.Second
 const contentFilterRefusal = "the model provider's content filter refused this session's model call (DataInspectionFailed): "
 
 // providerStatus is the status an error_upstream audit reason names when
-// the provider is out (ruling 267): 429, 402 or 5xx as "upstream <code>",
+// the provider is out: 429, 402 or 5xx as "upstream <code>",
 // and 502 for a call the gateway could not make at all; 0 for any other.
 func providerStatus(reason string) int {
 	code, ok := strings.CutPrefix(reason, "upstream ")
@@ -152,7 +152,7 @@ func (r *Runner) RegisterActivities(w interface {
 // TerminalForgejoErrors is the worker interceptor that ends an activity's
 // retries on a Forgejo refusal or on a Forgejo 404 that escaped it, and
 // scrubs every activity error of Scrub's secrets before it leaves the
-// worker (ruling 152, item 48): no retry fixes a 4xx, and the activities
+// worker: no retry fixes a 4xx, and the activities
 // that tolerate an absent object swallow ErrNotFound themselves, so one
 // that escapes names an object gone for good. A kube, S3 or store
 // not-found keeps retrying. Temporal reads the non-retryable type off the
@@ -434,7 +434,7 @@ func floorRefused(reason string) bool {
 }
 
 // AttemptFunded is the attempt floor of a run from before
-// versionSessionLadder (ruling 322, finding 215), which schedules it on
+// versionSessionLadder, which schedules it on
 // replay: "" when the free headroom can fund the cheapest call of model, a
 // call of no prompt and policy.MinCallTokens output tokens, else the
 // refusal the waiting-human card carries. A newer run and the console's
@@ -766,7 +766,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}()
 	var deadline, startedAt time.Time
 	if live == nil {
-		// least privilege (ruling 97): read on the task's repository, the
+		// least privilege: read on the task's repository, the
 		// bot's fork (a resumed branch's head is on the fork) and the
 		// project's document repository for the clone init container,
 		// nothing else on sf; the write token on the fork is minted when
@@ -1091,7 +1091,7 @@ const (
 )
 
 // loopFinding is the next session's brief line on a loop: how the session
-// ended and what it repeated, a fact (ruling 263).
+// ended and what it repeated, a fact.
 func loopFinding(how string) string { return "the previous session ended in a loop after " + how }
 
 // lastToolRefusal is the refusal the task's newest session ended on: the
@@ -1143,7 +1143,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	// the reason in a code block: a mention the agent wrote rings no bell
 	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	if floorRefused(reason) {
-		// no answer can run (ruling 322): the card names why and the way out
+		// no answer can run: the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
 	}
 	if strings.HasPrefix(reason, dayCapResumes) {
@@ -1305,7 +1305,7 @@ func infoRequestComment(t Task, reason string, notify []string) string {
 }
 
 // CloseNotReproduced closes the task's issue, unanswered for 14 days, as
-// not reproducible (ruling 150): a comment, then the close.
+// not reproducible: a comment, then the close.
 func (r *Runner) CloseNotReproduced(ctx context.Context, taskID string) error {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1368,7 +1368,7 @@ func sessionDeadline(activityDeadline time.Time, agentTime time.Duration) time.T
 // bot's fork into main, as the bot, or reuses the one already open for the
 // branch (the idempotency key: a retried or repeated call never opens a
 // second). A commit whose .forgejo/, .gitea/ or .github/ differs from the
-// task's base gets no pull request (rulings 90, 100): PR workflows run
+// task's base gets no pull request: PR workflows run
 // from the PR's own tree, so a task branch must never carry an edit to its
 // own gate. If an earlier push already opened one, it is closed with the
 // reason.

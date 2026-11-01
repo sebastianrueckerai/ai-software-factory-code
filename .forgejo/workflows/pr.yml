@@ -1,4 +1,4 @@
-# Ruling 78/89 (task 41): pull requests from agent branches run on the
+# Task 41: pull requests from agent branches run on the
 # untrusted host executor — a fresh gVisor pod, no repository or registry
 # credential beyond the per-run job token Forgejo injects, default-deny
 # egress. Every tool a step needs (Go, gosec, govulncheck and its database, PostgreSQL's server) ships pre-installed in
@@ -14,8 +14,8 @@
 #
 # image-build verifies the changed Dockerfiles build, without ever pushing.
 # `runs-on: pr-untrusted-build` (only when there is something to build) gets factoryd's CI spawner to create a
-# throwaway Hetzner VM running buildkitd (ruling 110,
-# internal/factoryd/buildvm.go) and to hand the runner pod its address
+# throwaway Hetzner VM running buildkitd
+# (internal/factoryd/buildvm.go) and to hand the runner pod its address
 # (BUILDKIT_HOST) and a client certificate only that VM accepts
 # (BUILDKIT_TLS_DIR, BUILDKIT_TLS_SERVERNAME). The VM is deleted when the
 # job ends.
@@ -29,8 +29,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Affected-package selection. It lives in this file for the same reason
-      # the image map in `changes` does (.forgejo is closed to agent edits,
-      # ruling 90): a pull request must not be able to edit the code that
+      # the image map in `changes` does (.forgejo is closed to agent
+      # edits): a pull request must not be able to edit the code that
       # decides which of its packages get tested. One rule covers every input
       # the package walk cannot see — workflows, scripts, Dockerfiles,
       # migrations, testdata, go.mod: any non-Go file in the diff selects the
@@ -147,7 +147,7 @@ jobs:
   changes:
     # Build only what a PR changes. This map is the only place that decides
     # which images image-build builds, and it lives only here: .forgejo is
-    # closed to agent edits (ruling 90/100), so a PR cannot widen or narrow
+    # closed to agent edits, so a PR cannot widen or narrow
     # its own build coverage by editing a script elsewhere in the repo. Each
     # entry's inputs mirror that Dockerfile's own COPY lines from the build
     # context (a base image and ADD-fetched tools come from outside the
@@ -223,7 +223,7 @@ jobs:
           done
       - name: build changed images in parallel
         # Each build first copies its image's layer cache, written by main CI
-        # to the in-cluster build cache (read-only from here, ruling 111),
+        # to the in-cluster build cache (read-only from here),
         # into a local OCI layout that buildctl streams to the VM. A missing
         # cache only means a cold build.
         run: |

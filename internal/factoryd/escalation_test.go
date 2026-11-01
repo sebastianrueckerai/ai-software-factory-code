@@ -593,7 +593,7 @@ func TestRunSessionWaitsForTheDayCap(t *testing.T) {
 
 // A session whose first model call the provider refused, with no call
 // allowed after, ends provider_refused with the provider's status and the
-// worker's message (ruling 267); a refusal after work, a refusal the
+// worker's message; a refusal after work, a refusal the
 // provider's status names no outage of, and a session the audit holds no
 // call of end no_push as before.
 func TestRunSessionNamesAProviderRefusal(t *testing.T) {

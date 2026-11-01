@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-// Ruling 179: no Go source names the factory's own repositories; they are
+// No Go source names the factory's own repositories; they are
 // projects like any other, found through their files. The module path is
 // the Go import path, no repository reference. policytest holds the
 // check's fixtures, which only tests import.

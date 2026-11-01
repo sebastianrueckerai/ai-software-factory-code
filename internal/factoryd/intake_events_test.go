@@ -50,7 +50,7 @@ func answerEvents(rec *fakeEventRecorder, id string) []string {
 }
 
 // An answer that arrives as an issue comment leaves one question_answered
-// row via webhook (ruling 252): a writer's on a task waiting for a human,
+// row via webhook: a writer's on a task waiting for a human,
 // the poster's on one waiting for the author. A comment the console's
 // Answer button posted itself names stays silent: the button recorded its
 // own row naming that comment, so one question leaves one event whatever

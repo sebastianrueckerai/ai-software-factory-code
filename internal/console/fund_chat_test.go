@@ -346,7 +346,7 @@ func TestFundCardCapErrorReachesTheMemberThroughDoFund(t *testing.T) {
 	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go",
 		&factoryd.FundBounds{PoolEUR: 10, CardCapEUR: 2.5})
 	var no *refusal
-	want := "Card #13 holds €2.00 now; €0.90 more passes its cap of €2.50. Record your analysis with attach_analysis so the member can make a sizing exception."
+	want := "Card #13 holds €2.00 now; €0.90 more passes its cap of €2.50. Record your analysis with attach_analysis so the human can make a sizing exception."
 	if !errors.As(err, &no) || no.msg != want {
 		t.Fatalf("doFund = %v, want the capSpent refusal %q", err, want)
 	}

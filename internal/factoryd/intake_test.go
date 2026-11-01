@@ -722,7 +722,7 @@ func TestIntakeReviewRecordsEvent(t *testing.T) {
 	}
 }
 
-// The merge gate's approval (factory-gate, ruling R59) is the factory's
+// The merge gate's approval (factory-gate) is the factory's
 // own, as the bot's reviews are: a writer on the repository, it is still
 // no member's decision, so no intake event records it and nothing counts
 // or signals it.
@@ -741,8 +741,8 @@ func TestIntakeIgnoresTheGatesApproval(t *testing.T) {
 	wantSums(t, sums(t, reader, "factory.human.intervention"), map[string]float64{})
 }
 
-// The trust gate never trusts factory-gate, a writer on the repository
-// (ruling R61): a comment it posts is recorded and steers no task, so a
+// The trust gate never trusts factory-gate, a writer on the repository:
+// a comment it posts is recorded and steers no task, so a
 // leaked gate token cannot ask an agent for changes. factory-merge stays
 // trusted, whose merge closes the issue.
 func TestIntakeNeverTrustsTheGateUser(t *testing.T) {
@@ -1470,7 +1470,7 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}
 	// only a head on the bot's fork is the task's PR: a same-named branch on
-	// sf or on a stranger's fork is not (ruling 97); the bot's own close
+	// sf or on a stranger's fork is not; the bot's own close
 	// (Finish, a .forgejo refusal) is no signal either, Reconcile reads it
 	for _, body := range [][]byte{prClosedBody("factory/t1", true), prClosedBody("factory/t1", false), prClosedBody("feature/x", true),
 		prClosedBodyFrom("factory/t1", "sf/ai-software-factory-code", true), prClosedBodyFrom("factory/t1", "stranger/ai-software-factory-code", true),
@@ -1490,7 +1490,7 @@ func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 }
 
 // prCardRig is an intake on human card t-pr of a factory pull request on
-// a project without agents (ruling R62): linked to pull request #5, its
+// a project without agents: linked to pull request #5, its
 // issue #9 on the code repository. Its Forgejo answers the pull request
 // with pr ("" fails the read), the issue's state with closedBy and the
 // pull request's as an issue with prClosedBy ("" open), fails the issue's
@@ -1613,8 +1613,8 @@ func (g *prCardRig) ended(final, reason, kind, actor, via string) {
 	}
 }
 
-// A human card linked to a pull request ends with its pull request
-// (ruling R63). A merge is its answer: the card ends done, naming the merge
+// A human card linked to a pull request ends with its pull request.
+// A merge is its answer: the card ends done, naming the merge
 // and the merger. A close without a merge ends it closed. Either way the
 // person's answer settles the ask, one task_ended names why, and factoryd
 // closes the card's issue as its own close. A redelivery changes nothing.
@@ -2160,7 +2160,7 @@ func (codeRepoOnly) Projects(context.Context) ([]Project, error) {
 }
 
 // A factory project's trust gate reads its writers with the project's own
-// factory-merge token (ruling 164): collaborators on the assignee list,
+// factory-merge token: collaborators on the assignee list,
 // no org or team read; without the token it fails closed.
 func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2192,7 +2192,7 @@ func TestTrustedOnAProjectUsesItsOwnToken(t *testing.T) {
 	}
 }
 
-// Ruling 150's resume rule: the issue author's comment is signalled as
+// The resume rule: the issue author's comment is signalled as
 // information whatever their access (poster_comment), a stranger's is
 // only recorded, a writer's stays a human comment; the heal pass does not
 // record the author's comment a second time.
@@ -2231,7 +2231,7 @@ func TestIntakePosterCommentIsSignalledAsInformation(t *testing.T) {
 	}
 }
 
-// Ruling 179: every issue of a project on agents none lands in the human
+// Every issue of a project on agents none lands in the human
 // lane, whatever its labels, and runs nothing; the heal pass ends it when a
 // writer closes it, the writers read with the project's own read token
 // (the infra repository's factory-config, the addendum to Task 73). An
@@ -2409,7 +2409,7 @@ func TestQueuedTasksOfAProjectWithoutAgentsGoToTheHumanLane(t *testing.T) {
 	}
 }
 
-// Ruling 180: an alert filed into the human lane of a project on agents
+// An alert filed into the human lane of a project on agents
 // none is judged by its close: real when a writer closes it as fixed,
 // noise when they label it noise first.
 func TestHumanLaneAlertVerdictFollowsTheClose(t *testing.T) {

@@ -82,7 +82,7 @@ func TestParseRejectsBadRisk(t *testing.T) {
 	}
 }
 
-// auto merges without a human only on class normal (ruling 149): the
+// auto merges without a human only on class normal: the
 // decoder refuses it on any other class.
 func TestParseAutoOnlyOnNormal(t *testing.T) {
 	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]

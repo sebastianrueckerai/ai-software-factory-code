@@ -80,17 +80,17 @@ type Task struct {
 	Gate      string
 	GateSince *time.Time
 	// Author is who filed the task's issue and AuthorWriter whether they
-	// could write the repository then (ruling 152): the brief and the
+	// could write the repository then: the brief and the
 	// model review weigh an outside account's report as untrusted input.
 	Author       string
 	AuthorWriter bool
 	// AgentSummary is the agent's last message of its latest pushed
 	// session: its recommendation, and a not_reproduced line when it
-	// fixed a fault it did not reproduce exactly (ruling 149); a report
+	// fixed a fault it did not reproduce exactly; a report
 	// task's report.
 	AgentSummary string
 	// Parent is the task whose issue a report task reads and comments
-	// on (ruling 185); "" for every other task.
+	// on; "" for every other task.
 	Parent string
 	// ModelAlias is the alias of the task's last session's model, ""
 	// before its first.
@@ -159,12 +159,12 @@ var Accents = []string{"red", "orange", "amber", "green", "teal", "blue", "viole
 // fixed list before it writes the row; the list never changes at runtime.
 func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 
-// Report tells a report task (ruling 185) by its source: a plan's cards
+// Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
 // and the runner's RunState ask it; it folds Source alone, no row read.
 func (t Task) Report() bool { return t.Source == SourceScreening || t.Source == SourceSizing }
 
-// Standing is the issue author's standing (ruling 152): telemetry for an
+// Standing is the issue author's standing: telemetry for an
 // alert card, writer for an author who could write the repository,
 // outside otherwise, "" from before authors were kept — a fold of the
 // row's Author, AuthorWriter and Source the session briefs read.
@@ -194,7 +194,7 @@ func Final(status string) bool { return slices.Contains(FinalStatuses, status) }
 
 // TaskUsage is what a task has used of its caps and what a human granted
 // on top; the workflow keeps it on the row so a new run continues the
-// count (ruling 93: the caps hold across attempts, so across runs).
+// count (the caps hold across attempts, so across runs).
 type TaskUsage struct {
 	AgentTime     time.Duration // the agent's working time, summed over the sessions
 	Attempts      int
@@ -332,7 +332,7 @@ type Store interface {
 	// yet.
 	UnsettledTasks(ctx context.Context, olderThan time.Duration) ([]string, error)
 	// SettleSpendFinal sets the task's booked model spend to reported,
-	// LiteLLM's final figure, down as well as up (ruling 196): it books the
+	// LiteLLM's final figure, down as well as up: it books the
 	// difference as a settlement row, sets spent_eur to the task's ledger
 	// sum, marks the task settled and reports whether it booked a row; a
 	// settled task is never listed again.
@@ -1930,7 +1930,7 @@ func (s *PGStore) UnsettledTasks(ctx context.Context, olderThan time.Duration) (
 }
 
 // SettleSpendFinal sets the task's booked model spend to reported, down
-// as well as up (ruling 196): under a row lock only an unsettled task
+// as well as up: under a row lock only an unsettled task
 // gets, the delta both ways is booked on the task's own finish day and
 // the task marked settled. Completion's settle pass is its sole caller.
 func (s *PGStore) SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error) {

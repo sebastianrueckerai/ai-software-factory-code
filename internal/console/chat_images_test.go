@@ -22,7 +22,7 @@ import (
 // request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
-	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00"
+	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger"
 	for _, tc := range []struct {
 		agents string
 		pins   map[string]policy.ImagePin
@@ -35,12 +35,12 @@ func TestChatContextNamesTheSandboxImages(t *testing.T) {
 			"\nSandbox images: default (jq, go), video (ffmpeg); a card without an image runs image default."},
 		{policy.AgentsNone, map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}}, ""},
 	} {
-		r, chat, g := newChatRig(t)
+		r, _, g := newChatRig(t)
 		want := status
 		if tc.agents == policy.AgentsNone {
-			chat.spend = []spendRow{{"sf/code", time.Now(), 3.25, false}, {"sf/code", time.Now(), 0.5, true}}
+			r.ledger.enforced = policy.Enforced{Month: 3.75}
 			want = "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: agents none, every issue goes to the human lane; " +
-				"spend this month €3.75 of €50.00: the cards €3.25, the chat €0.50"
+				"spend this month €3.75 of €50.00, the factory's whole ledger"
 		}
 		r.projects.rows[0].Agents, r.projects.rows[0].Images = tc.agents, tc.pins
 		ck, s := r.loggedIn(t)
@@ -72,7 +72,7 @@ func TestChatStatusOfAProjectFactorydDoesNotWorkOn(t *testing.T) {
 	g.replies = [][]string{{say("ok")}}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
 	system, _ := messages(t, g.calls()[0])[0]["content"].(string)
-	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: no board, factoryd does not work on its repository; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."
 	if !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)

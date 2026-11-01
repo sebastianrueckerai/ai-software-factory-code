@@ -30,9 +30,9 @@ type SessionEscalator interface {
 }
 
 // AgentAsk is an agent's escalate (Kind AskEscalation: the
-// question, why, and what the agent would do, ruling 149, and the answers
-// it offers as Choices, ruling 256), request_info (AskInfo: the question
-// for the issue's author, what it tried, what it needs, ruling 150),
+// question, why, and what the agent would do, and the answers
+// it offers as Choices), request_info (AskInfo: the question
+// for the issue's author, what it tried, what it needs),
 // request_tool (AskTool: the tool the sandbox lacks and what for) or
 // request_cut (AskCut: why the card is too big, and the Parts it
 // proposes).
@@ -133,7 +133,7 @@ const (
 // IntakeEscalation records an escalation's issue comment (its CommentID)
 // and reason: human answers are the trusted issue comments newer than it.
 // IntakeInfoRequest records an information request's comment: the issue
-// author's comments newer than it answer it (ruling 150).
+// author's comments newer than it answer it.
 const (
 	IntakeEscalation  = "escalation"
 	IntakeInfoRequest = "info_request"
@@ -147,7 +147,7 @@ const IntakeEscalationWithdrawn = "escalation_withdrawn"
 
 // IntakePosterComment is a comment on the issue by its author when they
 // cannot write the repository: signalled as information for an
-// information request, never an escalation's answer (ruling 150).
+// information request, never an escalation's answer.
 const IntakePosterComment = "poster_comment"
 
 // IntakeFactoryClosed records, before factoryd closes a task's issue as the

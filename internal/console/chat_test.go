@@ -1279,16 +1279,16 @@ func TestChatTextReply(t *testing.T) {
 	msgs := messages(t, calls[0])
 	system, _ := msgs[0]["content"].(string)
 	for _, want := range []string{
-		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a writer of the project.",
+		"You are the project agent of project ai-software-factory-code in the AI software factory, and you work for sebastian, a human of the project.",
 		"To act, call the tool: words alone change nothing, so never say an action is done or proposed unless a tool's result says so.",
-		"The member decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
+		"The human decides. A proposal shows them the facts, including the review's open findings, before they confirm.",
 		"A tool marked (needs OK) is called like any other: the call shows sebastian a proposal with a Do it button, and nothing runs until they press it.",
 	} {
 		if !strings.Contains(system, want) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
@@ -1721,9 +1721,9 @@ func (l cappedPolicies) CurrentPolicy(ctx context.Context) (policy.Version, bool
 // process, the budgets and the chat's bounds. It lists no tool and no OK:
 // the schemas carry both. A read, it records nothing.
 func TestSystemTool(t *testing.T) {
-	const first = "Signals and members file cards; a card runs agent sessions in a sandbox; " +
+	const first = "Signals and humans file cards; a card runs agent sessions in a sandbox; " +
 		"its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys; " +
-		"a member steers through the chat, and every tool here is one of the console's actions."
+		"a human steers through the chat, and every tool here is one of the console's actions."
 	read := func(r *rig, g *chatGateway) string {
 		t.Helper()
 		ck, s := r.loggedIn(t)
@@ -1949,7 +1949,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		fmt.Sprintf("assistant %q calls call_1 board {}", earlier("Let me look.")),
 		`tool call_1 "[read at ` + read + `, 0 min ago, in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]"`,
 		fmt.Sprintf(`assistant %q calls call_2 set_summary {"task_id":"t-m","summary":"Cache fix"}`, earlier("Setting it.")),
-		`tool call_2 "The summary of #5 is set. The member may undo it."`,
+		`tool call_2 "The summary of #5 is set. The human may undo it."`,
 		fmt.Sprintf("assistant %q", earlier("Done.")),
 		fmt.Sprintf("assistant %q", earlier(`Undo of set_summary: The summary of #5 is back to "".`)),
 		`user "and now?"`,
@@ -1975,7 +1975,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 	}
 	stored[0].ReadAt, stored[0].At, stored[0].Ms = time.Time{}, time.Time{}, 0
 	equal(t, "the stored call", stored, []factoryd.ChatToolCall{{ID: "call_2", Name: "set_summary",
-		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The member may undo it."}})
+		Arguments: `{"task_id":"t-m","summary":"Cache fix"}`, Result: "The summary of #5 is set. The human may undo it."}})
 }
 
 // A tool the policy refuses the member's role answers the refusal to the
@@ -2209,7 +2209,7 @@ func TestChatProposalIsTheMembersOnce(t *testing.T) {
 	ak, as := r.as(t, "anna")
 	before := r.events.count()
 	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+first[0], nil); code != http.StatusForbidden ||
-		body[0] != "It is another member's." {
+		body[0] != "It is another human's." {
 		t.Fatalf("anna's Do it of sebastian's proposal = %d %q, want 403", code, body)
 	}
 	chat.mu.Lock()
@@ -2278,7 +2278,7 @@ func TestChatProposalIsStored(t *testing.T) {
 		t.Fatalf("GET = %s, want the proposal's token", rec.Body)
 	}
 	ak, as := r.as(t, "anna")
-	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusForbidden || body[0] != "It is another member's." {
+	if code, body, _ := chatPost(t, r, ak, as, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusForbidden || body[0] != "It is another human's." {
 		t.Fatalf("anna's Do it = %d %q, want 403", code, body)
 	}
 	if code, body, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil); code != http.StatusNotFound || body[0] != "404 page not found" {
@@ -2402,7 +2402,7 @@ func TestChatAskOffersChoices(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("Filed.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the card when I say so"}})
 	equal(t, "the ask turn", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the member; this turn ends. A press or their next message answers it."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press or their next message answers it."}`,
 		`done {}`})
 	if n := len(g.calls()); n != 1 {
 		t.Fatalf("%d model calls, want the ask to end the turn", n)
@@ -3097,11 +3097,11 @@ func TestChatRefusesANonWriter(t *testing.T) {
 	}
 }
 
-// The reads: the project's history, a card's, the month's spend with the
-// chat's own line, and a pull request's diff read as the member.
+// The reads: the project's history, a card's, the month's enforced
+// spend, and a pull request's diff read as the member.
 func TestChatReads(t *testing.T) {
-	r, chat, g := newChatRig(t)
-	chat.spend = []spendRow{{"sf/code", time.Now(), 1.5, false}, {"sf/code", time.Now(), 0.75, true}}
+	r, _, g := newChatRig(t)
+	r.ledger.enforced = policy.Enforced{Month: 5.5}
 	ck, s := r.loggedIn(t)
 	for _, e := range []factoryd.Event{
 		{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton,
@@ -3116,7 +3116,7 @@ func TestChatReads(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what happened?"}})
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_retried by sebastian via button {\"replacement\":9}`
-	costs := "The project's spend this month €2.25 of €50.00: the cards €1.50, the chat €0.75."
+	costs := "The project's spend this month €5.50 of €50.00, the factory's whole ledger."
 	if len(events) != 6 {
 		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
 	}
@@ -3829,7 +3829,7 @@ func TestChatTurnContextHasFreshStatus(t *testing.T) {
 		"user what is on the board?",
 		"assistant ",
 		"tool [read at " + stamp + ", in an earlier turn: its result is left out, as the project may have changed since; call board again for the present]",
-		"tool The accent of #5 is set. The member may undo it.",
+		"tool The accent of #5 is set. The human may undo it.",
 		"assistant [said at " + stamp + "] #5 waits for a work slot.",
 		"user how many cards are open?",
 	})

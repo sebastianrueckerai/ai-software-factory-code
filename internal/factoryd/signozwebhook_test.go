@@ -388,7 +388,7 @@ func TestAlertIntakeDedupesByFingerprint(t *testing.T) {
 }
 
 // A mention in the telemetry's value reaches the "fired again" comment
-// neutralised: AlertIntake sanitises with Outbound, not Inbound (ruling 214).
+// neutralised: AlertIntake sanitises with Outbound, not Inbound.
 func TestAlertCommentNeutralised(t *testing.T) {
 	r := newAlertRig(t)
 	r.post(t, "signoz", "hook-pw", sigAlert("firing", "fp1", "demo-staging", firedAt, neverEnds))
@@ -684,7 +684,7 @@ func TestAlertIntakeRefilesAFiringItsTaskDidNotEnd(t *testing.T) {
 	}
 }
 
-// Ruling 179: an alert in a namespace of a project on agents none files a
+// An alert in a namespace of a project on agents none files a
 // human-lane issue and task, and starts nothing.
 func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	r := newAlertRig(t)
@@ -703,7 +703,7 @@ func TestAlertIntakeOnAProjectWithoutAgentsIsHumanWork(t *testing.T) {
 	}
 }
 
-// Ruling 180: the factory's own namespaces route like a project's. An
+// The factory's own namespaces route like a project's. An
 // alert in factory, a namespace of the code repository's seed project on
 // agents coder, files a bug issue there and starts its task; one in
 // platform, of the infra repository's seed project on agents none, files
@@ -791,7 +791,7 @@ func TestAlertIssueNamesTheService(t *testing.T) {
 // with the task id it would file under, but no issue or task, and a sweep
 // inside the window files nothing. A resolve inside it judges the firing
 // the roll's noise. A later firing past the window files, and every other
-// rule files at once inside it (ruling 237). A rollout still running
+// rule files at once inside it. A rollout still running
 // holds its firing through a sweep, and the first sweep once the window
 // closed files it, while SigNoz still lists it, under its row's task id.
 //
@@ -1357,7 +1357,7 @@ func TestRestartWindowAlertNameMatchesTheRule(t *testing.T) {
 	}
 }
 
-// Ruling 181, card alert-window: an alert whose rule carries the capacity
+// Card alert-window: an alert whose rule carries the capacity
 // label is a human's decision even on a project with agents — a coding
 // agent can only raise a limit. The intake files a human-lane task and
 // starts no workflow.

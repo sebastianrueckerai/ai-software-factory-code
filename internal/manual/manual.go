@@ -15,7 +15,7 @@ import (
 
 // Loop is what the factory does, in one sentence; callers add their own
 // tail after it.
-const Loop = "Signals and members file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys"
+const Loop = "Signals and humans file cards; a card runs agent sessions in a sandbox; its pull request passes the gates (checks, policy, review, audit, approval), merges and deploys"
 
 // Images is the manual's section on sandbox images.
 var Images = "A sandbox image is the sandbox base with the tools a project's cards need. " +

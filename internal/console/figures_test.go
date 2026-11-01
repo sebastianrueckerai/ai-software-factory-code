@@ -42,9 +42,41 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 	}
 }
 
+// The month meter under the policy's cap reads the enforced month spend,
+// the whole factory's ledger with every outstanding hold as the gateway's
+// headroom counts it, not the project's own ledger spend: at the October
+// close (2026-10-31) the meter read 518 of 544, 95 percent, while the cap
+// had stopped the factory. A project file's own cap keeps the project's
+// spend, the chat's part apart.
+func TestMonthMeterReadsTheEnforcedSpend(t *testing.T) {
+	r, ck := screenRig(t)
+	r.chat.spend = []spendRow{{"sf/code", time.Now(), 45, false}, {"demo-app/demo-app", time.Now(), 3, false}}
+	r.ledger.enforced = policy.Enforced{Month: 48.5}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, r.readSession(t, ck)))
+	d, err := r.c.boardOf(req, urlFilter(req), button(req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Status.Spend.EUR != 48.5 || d.Status.CapEUR != 50 || !d.Status.FactoryCap {
+		t.Errorf("month %.2f of %.2f, factory cap %v, want 48.50 of 50 under the factory's cap", d.Status.Spend.EUR, d.Status.CapEUR, d.Status.FactoryCap)
+	}
+	if words := spendWords(d.Status.Spend, d.Status.CapEUR, d.Status.FactoryCap); !strings.Contains(words, "€48.50 of €50.00") || strings.Contains(words, "the cards") {
+		t.Errorf("spend words %q, want the factory's ledger without the project's split", words)
+	}
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code"}}
+	r.ledger.monthCaps = map[string]float64{"ai-software-factory-code": 60}
+	if d, err = r.c.boardOf(req, urlFilter(req), button(req)); err != nil {
+		t.Fatal(err)
+	}
+	if d.Status.Spend.EUR != 45 || d.Status.CapEUR != 60 || d.Status.FactoryCap {
+		t.Errorf("under the file's cap: month %.2f of %.2f, factory cap %v, want 45.00 of 60, the project's own spend", d.Status.Spend.EUR, d.Status.CapEUR, d.Status.FactoryCap)
+	}
+}
+
 // The board page carries what the status panel and the stage word read:
-// the factory's spend this UTC day and the policy's day cap as /costs
-// shows them, the GitHub export's remote, and each card in progress with
+// the factory's enforced spend this UTC day and the policy's day cap, the
+// GitHub export's remote, and each card in progress with
 // its stage and the time in it: planning on a plan-track card and
 // building on a direct one since the admission (the filing when never admitted),
 // verifying since the gate began; no stage in any other status.

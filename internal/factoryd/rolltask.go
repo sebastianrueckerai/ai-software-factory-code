@@ -26,7 +26,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// SourceRoll is the source of a roll task (ruling 178): factoryd writes its
+// SourceRoll is the source of a roll task: factoryd writes its
 // one commit, the digest bump under k8s/, and no agent session runs.
 const SourceRoll = "roll"
 
@@ -363,7 +363,7 @@ type FluxSwitch interface {
 	SuspendKustomization(ctx context.Context, namespace, name string, suspend bool) error
 }
 
-// Roller opens the roll of the code repository (ruling 178): for the push
+// Roller opens the roll of the code repository: for the push
 // runs of main whose three image jobs are green (the run itself may still
 // run) and it has not
 // judged, newest first and none older than a commit a roll carries, it
@@ -1627,7 +1627,7 @@ type RolloutResult struct {
 	Live      []string
 }
 
-// AwaitRollout is a roll's last wait (ruling 178): after its merge it
+// AwaitRollout is a roll's last wait: after its merge it
 // waits until the merge's rollout is confirmed — for every roll target
 // whose pinned reference the merge changed, read on the merge commit
 // against its first parent as the roll watcher judges it, its

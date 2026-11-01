@@ -61,12 +61,10 @@ type Policies interface {
 // and a task's model calls.
 type Costs interface {
 	Costs(ctx context.Context, from, to time.Time) (policy.Costs, error)
-	// DaySpend is the ledger's total of one UTC day, the board's figure
-	// against the day cap.
-	DaySpend(ctx context.Context, day time.Time) (float64, error)
-	// PremiumMonthSpend is the ledger's spend on the premium class in the
-	// UTC month of at, the board's figure against budget.premium_month_eur.
-	PremiumMonthSpend(ctx context.Context, at time.Time) (float64, error)
+	// Enforced is the spend the caps count at at — the day, the month and
+	// the premium class's month, each with its outstanding holds — the
+	// board's figures against the caps.
+	Enforced(ctx context.Context, at time.Time) (policy.Enforced, error)
 	ModelCalls(ctx context.Context, taskID string) ([]policy.ModelCall, error)
 	// CallTotals sums the tasks' audit call rows: their tokens and the
 	// modeled cost and plan credits derived from them at read time

@@ -426,7 +426,7 @@ func TestViews(t *testing.T) {
 		t.Fatalf("views %+v", vs)
 	}
 	bump, audit := vs[0], vs[1]
-	// the preview queues, whatever the routine files (ruling 2026-10-17);
+	// the preview queues, whatever the routine files;
 	// the routine's work reaches needs-you only as its filed card, below
 	if bump.Project != "ai-software-factory-code" || bump.Routine.Name != "weekly-bump" || !bump.Next.Equal(mon0540.Add(20*time.Minute)) ||
 		bump.NextWords != "Mon 06:00" || bump.MergesLeft != 0 || !bump.Soon || bump.Column != "queued" {

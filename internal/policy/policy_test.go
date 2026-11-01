@@ -300,8 +300,8 @@ func TestFitTool(t *testing.T) {
 	}
 }
 
-// A premium call under its cap fits the premium month headroom too
-// (ruling 329), with its whole output or not at all: a call the premium
+// A premium call under its cap fits the premium month headroom too,
+// with its whole output or not at all: a call the premium
 // headroom would clamp is refused refused_premium_cap, which the gateway
 // turns into a call on big. At 1e-6 in and 4e-6 out, a request of 1000
 // bytes holds 0.001 EUR of input; 0.005 EUR fits (0.005 - 0.001) / 4e-6 =

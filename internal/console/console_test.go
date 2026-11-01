@@ -889,6 +889,9 @@ type fakeLedger struct {
 	// premiumCap is the policy's budget.premium_month_eur and premium the
 	// month's spend on the premium class
 	premiumCap, premium float64
+	// enforced is the month's enforced spend the fake answers, the day's
+	// and the premium's derived as the store derives them
+	enforced policy.Enforced
 }
 
 // testProcesses are the shipped two processes: maintenance builds direct
@@ -915,21 +918,17 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 	return l.costs, nil
 }
 
-// PremiumMonthSpend is the fake's premium spend, whatever the month.
-func (l *fakeLedger) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
-	return l.premium, nil
-}
-
-// DaySpend is the fake's total of one day; it records no window, as it
-// is not the costs read the window tests watch.
-func (l *fakeLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
-	var eur float64
+// Enforced is the fake's enforced spend: the month's as set, the day's
+// summed of its costs days and the premium's its premium figure.
+func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced, error) {
+	e := l.enforced
+	e.Premium = l.premium
 	for _, d := range l.costs.Days {
-		if d.Day == day.Format(policy.DateLayout) {
-			eur += d.Total
+		if d.Day == at.Format(policy.DateLayout) {
+			e.Day += d.Total
 		}
 	}
-	return eur, nil
+	return e, nil
 }
 
 func (l *fakeLedger) ModelCalls(_ context.Context, taskID string) ([]policy.ModelCall, error) {
@@ -1679,7 +1678,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 	if !strings.Contains(form, `<option value="priority/p1">`) || strings.Contains(form, "priority/p0") {
 		t.Fatalf("form offers the existing priority labels only: %s", form)
 	}
-	// ruling 179: a picker over the projects agents work on, the first the
+	// A picker over the projects agents work on, the first the
 	// default; the infra project (agents none) is none of them
 	picker := `<option value="ai-software-factory-code">ai-software-factory-code (sf/code)</option><option value="demo-app">demo-app (demo-app/demo-app)</option>`
 	if !strings.Contains(form, picker) || strings.Contains(form, "infra") {
@@ -1887,7 +1886,7 @@ func TestAnswerRefusedOverMaxAnswer(t *testing.T) {
 	}
 }
 
-// Ruling 322 (finding 215): the answer is refused before it is posted
+// The unfunded answer is refused before it is posted
 // when the task's remaining budget cannot fund a call. No comment goes
 // to the issue, and the refusal carries the message the card will carry:
 // the outstanding holds and the two actions that fit (roadmap 243).
@@ -2584,7 +2583,7 @@ func TestFittingAnAgentPullRequestOnRedChecks(t *testing.T) {
 }
 
 // A resource request is approved for its task, once; the project's
-// envelope is its file's (ruling 183), no click widens it.
+// envelope is its file's, no click widens it.
 func TestResourceApproveForTheTaskAndDeny(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -2651,7 +2650,7 @@ func TestResourcesPageListsCommissionsAndEnvelopes(t *testing.T) {
 		`The project's file sets it: <a href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/demo-app.yaml" target="_blank" rel="noopener">change it in Git</a>.`,
 		"task block €30.00 a month, types cx23, cx33, 3 servers at once, leases up to 8 h, volumes up to 0 GB",
 		"this month €1.5000 used or reserved, 1 server open",
-		// the standing monthly line (ruling 147)
+		// the standing monthly line
 		"standing block €12.00 a month, types cx23, 2 servers · standing now 1 server, €5.9900 a month",
 		`name="csrf" value="` + s.csrf + `"`, `<a href="/resources" aria-current="page">Resources</a>`,
 	} {
@@ -2710,7 +2709,7 @@ func serverState(c *Console) int {
 	return n
 }
 
-// Ruling 128: only the policy's approvers may spend (approve a resource or
+// Only the policy's approvers may spend (approve a resource or
 // a merge, edit an envelope, promote); other writers see the cards without
 // those buttons, get 403, and may still deny and release.
 func TestSpendActionsNeedAPolicyApprover(t *testing.T) {
@@ -3201,7 +3200,7 @@ func TestTimelineStepsTimeReadsLikeTheGates(t *testing.T) {
 }
 
 // A roll's card sits in the human lane only when its merge decision is
-// the one remaining action (ruling 219): at a pending merge approval or
+// the one remaining action: at a pending merge approval or
 // in a waiting-human state; while its checks or review run the status
 // mapping places it in the verifying column. A roll task is a card like
 // any other (Sebastian, 2026-10-20); at its merge decision the approval

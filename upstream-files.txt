@@ -19,7 +19,7 @@
 # card bumps these lines.
 
 # Dockerfile.runner's downloads; the buildkit tarball also runs the
-# build VMs (internal/factoryd/buildvm.go, ruling 110)
+# build VMs (internal/factoryd/buildvm.go)
 buildkit v0.33.0 buildkit-v0.33.0.linux-amd64.tar.gz https://github.com/moby/buildkit/releases/download/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz b6242896d343100808dcbe37565caf381e0a444a6a83d7255926bb1519248ead
 crane v0.22.1 go-containerregistry_Linux_x86_64.tar.gz https://github.com/google/go-containerregistry/releases/download/v0.22.1/go-containerregistry_Linux_x86_64.tar.gz 0ab7a1d6932a213aed964ce97666c3077fe691c8606413674a8b3e0b9ec4cda0
 gosec v2.29.0 gosec_2.29.0_linux_amd64.tar.gz https://github.com/securego/gosec/releases/download/v2.29.0/gosec_2.29.0_linux_amd64.tar.gz 6431b119741c1f4a50fdfcf94e782e16b9e642afc8c7fa9b5d39d48bf3003095

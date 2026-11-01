@@ -349,7 +349,7 @@ var ErrNoExport = errors.New("the project has no GitHub export")
 // github/sync-<short sha> with a pull request to main as the bot, so its
 // CI runs as a fork's, without the repository's secrets, and an approver
 // merges it like any other. A head that changes .forgejo/, .gitea/ or
-// .github/ is refused, as a card's is (rulings 90, 100), and so is one
+// .github/ is refused, as a card's is, and so is one
 // main shares no history with. It answers what it did, which the export
 // row keeps as its last sync, or why it failed, which the row keeps too.
 func (r *Registrar) GitHubSync(ctx context.Context, name, by string) (string, error) {
@@ -417,7 +417,7 @@ func (r *Registrar) githubSync(ctx context.Context, name string, m Mirror, by st
 		return sha, "main holds " + of + " at " + short + ": nothing to sync.", nil
 	}
 	if _, err := git(ctx, dir, "", "diff", "--quiet", base, "refs/heads/github", "--", ".forgejo", ".gitea", ".github"); err != nil {
-		return "", "", fmt.Errorf("%s at %s changes .forgejo/, .gitea/ or .github/, which no pull request of the factory's may change (rulings 90, 100): bring it back by hand", of, short)
+		return "", "", fmt.Errorf("%s at %s changes .forgejo/, .gitea/ or .github/, which no pull request of the factory's may change: bring it back by hand", of, short)
 	}
 	repo, branch := p.Repo(), "github/sync-"+short
 	fork := r.Forgejo.Fork(repo)

@@ -307,8 +307,8 @@ func (c *Console) sight(r *http.Request, p factoryd.Project) (sees, writes bool,
 // and at most the newest eventLimitMax of them; a first connect replays
 // nothing. A member who only reads it gets no row: they carry steers and
 // the agent's text. countersWait
-// after a live event other than the agent's text, and at every heartbeat
-// (ruling 288), the stream reads the
+// after a live event other than the agent's text, and at every
+// heartbeat, the stream reads the
 // board under the query's filter: event "counters" carries its counters
 // when they changed, and a data-less event "board" says, at a heartbeat,
 // that a card's face changed with time alone, and, to a member who only

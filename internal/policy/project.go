@@ -13,9 +13,9 @@ import (
 	"time"
 )
 
-// ProjectDefault is what a project file leaves out takes (ruling 146):
+// ProjectDefault is what a project file leaves out takes:
 // the in-cluster quota of each of its namespaces and its envelope's
-// standing block (ruling 147).
+// standing block.
 type ProjectDefault struct {
 	// Quota is each of the project's namespaces' ResourceQuota.
 	Quota Quota `yaml:"quota" json:"quota"`
@@ -45,8 +45,8 @@ type Standing struct {
 	MaxCount int `yaml:"max_count" json:"max_count"`
 }
 
-// Merge rules: auto merges a clean agent pull request without a human
-// (ruling 149), human waits for an approver.
+// Merge rules: auto merges a clean agent pull request without a human,
+// human waits for an approver.
 const (
 	MergeAuto  = "auto"
 	MergeHuman = "human"
@@ -195,7 +195,7 @@ func (p ProjectDefault) validate() error {
 }
 
 // ProjectConfig is projects/<name>.yaml: one project, the file name its
-// name (rulings 146, 179).
+// name.
 type ProjectConfig struct {
 	// Repository is the project's Forgejo repository, owner/name.
 	Repository string `yaml:"repository" json:"repository"`
@@ -216,7 +216,7 @@ type ProjectConfig struct {
 	// the empty repository's main with; a factory project's only.
 	Template string `yaml:"template,omitempty" json:"template,omitempty"`
 	// Audit runs the process's audit stage on the project's pull
-	// requests (ruling 188); absent: it does not.
+	// requests; absent: it does not.
 	Audit bool `yaml:"audit,omitempty" json:"audit,omitempty"`
 	// Messengers forbids delivery on Telegram and Discord (roadmap 145):
 	// a notification line leaves the factory for the venue's servers.
@@ -386,8 +386,8 @@ type ProjectBudget struct {
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
-// secrets does what on its repository (ruling 179). factory-projects' is
-// none of them: it holds nothing in sf (ruling 164).
+// secrets does what on its repository. factory-projects' is
+// none of them: it holds nothing in sf.
 type SeedTokens struct {
 	// Read reads the collaborators and assignees (the trust gate) and the
 	// webhooks where its user administers the repository.
@@ -420,7 +420,7 @@ const (
 var SeedSecrets = []string{SecretCIRegistrar, SecretMerge, SecretConfig}
 
 // Environment is one Flux Kustomization: path of the repository applied
-// into namespace (ruling 157), and the public hostname, if any (ruling 155).
+// into namespace, and the public hostname, if any.
 type Environment struct {
 	// Namespace is one of the project's namespaces.
 	Namespace string `yaml:"namespace" json:"namespace"`
@@ -493,7 +493,7 @@ type ImagePin struct {
 }
 
 // Validate checks the file's shape; name is its file name without .yaml.
-// A factory project is its own organisation <name>/<name> (ruling 164)
+// A factory project is its own organisation <name>/<name>
 // whose objects registration creates; a seed project's objects are the
 // infra repository's and the seed's, so its file names the seeded tokens
 // factoryd reads it with and nothing registration would create.

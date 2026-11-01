@@ -9,7 +9,7 @@
    warning); every state shows its word next to its hue, in both themes at
    4.5:1 for text and 3:1 for a fill, so colour is never the only signal.
    An accent chip or edge wears a fixed hue that is never a state's hue at
-   the state's chroma (ruling 247). */
+   the state's chroma. */
 :root {
   color-scheme: dark;
   --bg: #070b12; --bg-panel: #0b111a; --bg-raised: #0f1723; --bg-card: #111b28; --bg-hover: #15212f;
@@ -390,7 +390,7 @@ form.inline button { margin: 0; }
 /* the board's faces whisper, every part of them: whatever a need's card
    carries, its column copy shows at most its first lines — the drawer
    holds the whole text. The clamp sits on the board's card list itself,
-   so a part added tomorrow is small the day it lands (ruling 293) */
+   so a part added tomorrow is small the day it lands */
 .cards .card :is(.ask, .why, .info, .finding, .need-line, .brief, .recommendation) { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .cards .card .ask { -webkit-line-clamp: 3; }
 .cards .card :is(.why, .info, .finding, .need-line, .brief) { -webkit-line-clamp: 2; }

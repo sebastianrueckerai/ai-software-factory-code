@@ -17,6 +17,7 @@ The one guide for any text a person reads: check-in questions, chat answers, not
 
 - One name for one thing. Do not rotate check / verify / validate / confirm for the same action.
 - One meaning per word. "fall" means to move down, not to decrease.
+- A human is a human. Say human, never member, operator or resource. A member may be an agent.
 - Take the short common word: start not begin or commence, use not utilise or leverage, help not facilitate, make sure not ensure, before not prior to, after not subsequent to, about not regarding, get not obtain, show not demonstrate, also not additionally or furthermore.
 - Introduce an uncommon term or an abbreviation before using it.
 - Noun clusters max three words.

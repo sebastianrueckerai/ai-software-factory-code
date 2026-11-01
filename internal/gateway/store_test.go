@@ -201,7 +201,7 @@ func TestSettledStreamBooksItsUsage(t *testing.T) {
 	}
 }
 
-// The premium month headroom (ruling 329) is the cap less this UTC
+// The premium month headroom is the cap less this UTC
 // month's ledger rows on premium, an agent's ref and factoryd's alike, and
 // the outstanding premium holds: 0.05 - 0.03 - 0.01 - 0.005 = 0.005 EUR.
 // Big's row and last month's premium row do not count. A call of 1000
@@ -226,8 +226,8 @@ func TestPGPremiumHeadroom(t *testing.T) {
 		INSERT INTO holds (task_id, kind, ref, eur, expires_at) VALUES ('t1', 'model', 'review/premium', 0.005, now() + interval '1 hour')`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := policy.LedgerPremiumMonthSpend(ctx, s.db, time.Now()); err != nil || math.Abs(got-0.04) > 1e-9 {
-		t.Fatalf("premium spend this month = (%v, %v), want 0.04", got, err)
+	if e, err := policy.LedgerEnforced(ctx, s.db, time.Now()); err != nil || math.Abs(e.Premium-0.045) > 1e-9 {
+		t.Fatalf("premium spend this month = (%v, %v), want 0.045, the ledger's 0.04 with the premium hold", e.Premium, err)
 	}
 	req := policy.HoldRequest{TaskID: "t1", Kind: policy.KindModel, Ref: "operator/premium", Bytes: 1000,
 		Price: policy.Price{In: 1e-6, Out: 4e-6, MaxOutput: 32768}, DayEUR: 100, MonthEUR: 100, ProjectEUR: math.Inf(1), PremiumEUR: 0.05}

@@ -46,7 +46,7 @@ var testWorkflowConfig = WorkflowConfig{
 	Stages:        testStages(),
 }
 
-// testStages is the Stage 9 workflow (rulings 177, 182): screening on
+// testStages is the Stage 9 workflow: screening on
 // for outside accounts, every other stage on; the local gates (policy,
 // migration, reproduction) come before the checks, whose wait the review
 // runs beside (roadmap 222, item b).
@@ -434,7 +434,7 @@ func TestStrongerProjectStartsOnTheStrongerRung(t *testing.T) {
 }
 
 // The version the workflow started under reaches every session and the
-// model review, which read their limits from it (ruling 183).
+// model review, which read their limits from it.
 func TestWorkflowSessionsAndReviewCarryThePin(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.onSessions(pushed("s1", "c1"))
@@ -682,7 +682,7 @@ func TestWorkflowBeforeSessionCapAttemptExhaustionFails(t *testing.T) {
 	}
 }
 
-// Ruling 177: sessions that run out of attempts without a pushed commit
+// Sessions that run out of attempts without a pushed commit
 // open the card with every finding so far; the answer buys one more
 // session, which starts with the last session's own findings, the
 // earlier ones' being stale (roadmap 201).
@@ -816,7 +816,7 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	}
 }
 
-// Ruling 322 (finding 215): a card whose task's remaining budget cannot
+// A card whose task's remaining budget cannot
 // fund a call refuses the attempt an answer would buy. No session starts
 // (no key is minted), no failure round is added, and the waiting-human
 // card says why an answer will not run: each answer re-asks the same
@@ -845,9 +845,9 @@ func TestWorkflowUnfundedAnswerRefusesTheAttempt(t *testing.T) {
 	}
 }
 
-// A fundable remainder grants the attempt exactly as before (ruling 322
-// guards only the unfunded one): the answer at the session cap buys the
-// next session once the floor read clears it.
+// A fundable remainder grants the attempt exactly as before (the
+// attempt grant's floor guards only the unfunded one): the answer at the
+// session cap buys the next session once the floor read clears it.
 func TestWorkflowFundedAnswerGrantsTheAttemptAsBefore(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
@@ -1596,7 +1596,7 @@ func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
 	}
 }
 
-// Ruling 225: a writer's change request on the merge card with no session
+// A writer's change request on the merge card with no session
 // left is the human's answer. It buys the next session, which gets the
 // change request, and no cap card follows: at the last regular attempt
 // and at the session cap an extra attempt, with no agent time left and
@@ -3497,8 +3497,8 @@ func TestWorkflowSessionThatCannotStartKeepsTheLastLines(t *testing.T) {
 
 // The slice a human answer buys is a quarter of the task's resolved agent
 // time, floored at min(minSession, WallClockCap) so the attempt it buys is
-// never born under the 5 minutes a session needs to start (ruling 237,
-// change id "answer-slice"). Each case escalates with no agent time left,
+// never born under the 5 minutes a session needs to start (change id
+// "answer-slice"). Each case escalates with no agent time left,
 // so the grant's ExtraTime is the slice itself, and the session after it
 // (1 minute, well inside even the smallest slice) completes: the slice was
 // the next session's remaining budget too.
@@ -3570,7 +3570,7 @@ func TestAnswerSliceBeforeTheChange(t *testing.T) {
 	}
 }
 
-// A new run continues the task's usage from its row (ruling 93: the caps
+// A new run continues the task's usage from its row (the caps
 // count across attempts, so across runs too): the attempts left and the
 // agent time left are what the earlier run left.
 func TestWorkflowNewRunResumesAttemptsFromTheRow(t *testing.T) {
@@ -3648,7 +3648,7 @@ func TestWorkflowHealedRunWaitingForAHumanWaitsAgain(t *testing.T) {
 	}
 }
 
-// Ruling 118: every human answer of the task travels with every later
+// Every human answer of the task travels with every later
 // session as its own list, newest first, not as a finding, each with the
 // question it answers (the escalation's first line): after two
 // escalations the third session carries both answers, and the second

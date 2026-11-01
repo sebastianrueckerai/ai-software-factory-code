@@ -27,7 +27,7 @@ type RollTarget struct {
 	Deployment string
 }
 
-// RollTargets are the factory's own images (ruling 178): main CI's image
+// RollTargets are the factory's own images: main CI's image
 // jobs push factory-gateway (both control-plane binaries), opencode-worker
 // with sandbox-base, its stage without the harness, and ci-runner; the
 // worker, base and runner references are factoryd's env.

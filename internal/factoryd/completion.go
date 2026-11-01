@@ -91,7 +91,7 @@ const SpendSettleWindow = policy.HoldTTL + time.Hour
 // least the spend LiteLLM reports for its keys, so a call whose cost the
 // gateway could not book (an abandoned stream) still counts; a task past
 // the window is set to LiteLLM's figure once, down as well as up, since a
-// call the gate cut was booked at its hold (ruling 196). It lists LiteLLM's
+// call the gate cut was booked at its hold. It lists LiteLLM's
 // keys once per pass and returns how many tasks' spend it changed.
 func (c *Completion) SettleSpend(ctx context.Context) (int, error) {
 	ids, err := c.Store.RecentlyFinishedTasks(ctx, SpendSettleWindow)

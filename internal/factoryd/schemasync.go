@@ -21,7 +21,7 @@ const schemaBranchPrefix = "factory/schema-"
 // SchemaCopier brings the configuration repository's copies of the
 // generated schemas to this build: once per process it compares main's
 // with its own and opens one pull request for the difference, as the bot
-// from its fork, the way a roll does (ruling 303). The pull request gets a
+// from its fork, the way a roll does. The pull request gets a
 // card of its own through FileFactoryPRTask (roadmap 187), so the chat, the
 // board and the merge rule cover it; an approver merges through that card.
 // Nothing else merges.

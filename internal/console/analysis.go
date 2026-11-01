@@ -43,5 +43,5 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		log.Printf("console: the analysis of %s on %s: %v", t.a.s.user, t.p.Repository, err)
 		return "", refuse(http.StatusBadGateway, "The analysis could not be recorded; see the factoryd log.")
 	}
-	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the members read it with the question.", k.IssueNumber), nil
+	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the question.", k.IssueNumber), nil
 }

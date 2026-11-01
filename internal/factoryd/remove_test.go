@@ -113,8 +113,8 @@ func newRemovalRig(t *testing.T) *removalRig {
 // The refusals of step 1, each naming the state and what to do, and none
 // of them touching anything. The factory's own code project is refused
 // like any other whose file is the configuration in force: its file is
-// the configuration's repository itself (ruling 179 names it in no
-// source).
+// the configuration's repository itself (no source names
+// it).
 func TestRemoveRefuses(t *testing.T) {
 	ctx := context.Background()
 	for _, c := range []struct {

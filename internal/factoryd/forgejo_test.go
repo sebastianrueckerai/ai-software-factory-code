@@ -360,8 +360,8 @@ func TestForgejoMintReadScope(t *testing.T) {
 	}
 }
 
-// The bot's fork of a repository carries the same name under the bot user
-// (ruling 97); EnsureFork creates it once and is a no-op once it exists.
+// The bot's fork of a repository carries the same name under the bot user;
+// EnsureFork creates it once and is a no-op once it exists.
 func TestForgejoEnsureForkCreatesOnceAsTheBot(t *testing.T) {
 	if got := (&Forgejo{BotUser: "factory-agent"}).Fork(Repo{Owner: "sf", Name: "r"}); got != (Repo{Owner: "factory-agent", Name: "r"}) {
 		t.Fatalf("Fork = %+v", got)
@@ -886,7 +886,7 @@ func TestForgejoClosePullRequest(t *testing.T) {
 // more on some unit), unless a team without code write could be what put
 // them there (Forgejo lists a read-only team's members as assignees
 // through its pull request read): then they fail closed. Team reads carry
-// the org-read token (ruling 108: a repository-limited token cannot hold
+// the org-read token (a repository-limited token cannot hold
 // read:organization), repository reads the project's read token.
 func TestForgejoRepoWritersTrustsCodeWritersOnly(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1144,9 +1144,9 @@ func TestPullRequestFileDiffsPastEightMiBIsDiffTooLong(t *testing.T) {
 	}
 }
 
-// Ruling 179's one mapping from a project to factoryd's tokens: a factory
+// The one mapping from a project to factoryd's tokens: a factory
 // project's registration tokens, a seed project's seeded secrets as its
-// file names them; ruling 164's bound: no seed project ever gets
+// file names them; the bound: no seed project ever gets
 // factory-projects' token, whatever its file says.
 func TestAccess(t *testing.T) {
 	f := &Forgejo{ProjectsToken: "projects-tok", Seeded: testSeeded}

@@ -881,7 +881,7 @@ func newRegisterRig(t *testing.T) *registerRig {
 // register-project on an empty Forgejo and cluster: the admin makes the
 // organisation (owned by factory-projects), the repository, the CI user in
 // team ci and every token; the projects token keeps the rest. A second run
-// writes nothing and logs only "no change" (ruling 164).
+// writes nothing and logs only "no change".
 func TestRegisterIsIdempotent(t *testing.T) {
 	rig := newRegisterRig(t)
 	ctx := context.Background()
@@ -1312,7 +1312,7 @@ func TestRegistrationFollowsSettings(t *testing.T) {
 }
 
 // A project registered before the merge gate had its user gets it on its
-// next reconcile (ruling R59): the row lacks the gate token, so the admin
+// next reconcile: the row lacks the gate token, so the admin
 // makes factory-gate a write collaborator and mints its token alone, and
 // main's protection takes it beside the approvers; a second reconcile
 // changes nothing.
@@ -1424,7 +1424,7 @@ func approversTree(approvers ...string) func() policy.Tree {
 }
 
 // demoApprovers is a configuration whose policy names sebastian and whose
-// demo-app file names approvers (ruling 254).
+// demo-app file names approvers.
 func demoApprovers(approvers ...string) func() policy.Tree {
 	return func() policy.Tree {
 		return policy.Tree{Document: policy.Document{Approvers: []string{"sebastian"}},
@@ -1434,7 +1434,7 @@ func demoApprovers(approvers ...string) func() policy.Tree {
 
 // A project file's approvers, not the policy's, become the project's
 // collaborators and main's whitelists, so Forgejo takes their approving
-// review for factory-merge's merge (ruling 254).
+// review for factory-merge's merge.
 func TestRegistrationTakesTheProjectsApprovers(t *testing.T) {
 	rig := newRegisterRig(t)
 	rig.fj.users["bob"] = true
@@ -1455,7 +1455,7 @@ func TestRegistrationTakesTheProjectsApprovers(t *testing.T) {
 	}
 }
 
-// Backlog 24 (ruling 203), members (ruling 254): factoryd owns who
+// Backlog 24, members: factoryd owns who
 // administers a factory project's repository. A member (permission write)
 // stays; a collaborator with admin who is not the bot, the merge user, the
 // gate user or an approver of the project leaves. The chat user stays and
@@ -1509,7 +1509,7 @@ func TestDeployKeyHeals(t *testing.T) {
 	}
 }
 
-// Backlog 20 (ruling 203): a project file's egress hosts are all its
+// Backlog 20: a project file's egress hosts are all its
 // namespaces reach outside the cluster, on 443 only, by name; Cilium
 // learns a name's addresses from the DNS answers its proxy sees, so the
 // DNS rule gets a visibility rule that still allows every lookup.
@@ -1988,7 +1988,7 @@ func TestPollRaisesTheFluxAlertsOfReadyFactoryProjects(t *testing.T) {
 	}
 }
 
-// Ruling 179: a seed project's reconcile keeps the labels and (agents
+// A seed project's reconcile keeps the labels and (agents
 // coder) the bot's fork as the bot, reads the webhook with the project's
 // read token and each namespace's factory/project label, reports them, and
 // creates nothing else: no factory-projects call, no hook, no cluster

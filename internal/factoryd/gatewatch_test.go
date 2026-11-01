@@ -129,7 +129,7 @@ func signallingEnv(g *GateWatch) *testsuite.TestActivityEnvironment {
 
 // A long gate's activity past its bound signals its task's workflow with
 // the alert; a short gate, an activity that opens no gate and the human
-// gate only alert (ruling 162).
+// gate only alert.
 func TestGateWatchSignalsAMachineGatesTrip(t *testing.T) {
 	store := newFakeStore()
 	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
@@ -350,7 +350,7 @@ func TestTripVerdict(t *testing.T) {
 }
 
 // A session's bound follows the agent time of the version its task
-// started under, not the current one (ruling 183); pin 0 reads the
+// started under, not the current one; pin 0 reads the
 // current version. A model review's or an audit's follows its diff's
 // parts: one call's supervisor_timeout of 10 min each, and two minutes.
 func TestPinnedBound(t *testing.T) {

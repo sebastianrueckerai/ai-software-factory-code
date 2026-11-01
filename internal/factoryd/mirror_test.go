@@ -506,7 +506,7 @@ func TestRegisterImportsFromGitHub(t *testing.T) {
 // registration error says the same and no log line holds the token. A
 // reconcile while the repository is under 20 minutes old waits; once it
 // is older, the reconcile deletes it as the admin and migrates again,
-// asking GitHub nothing (ruling 289). A refusal for good copies again at
+// asking GitHub nothing. A refusal for good copies again at
 // most once a reconcile, each time 20 minutes after the last leftover.
 func TestRegisterImportFailure(t *testing.T) {
 	rig, mirrors := importRig(t)

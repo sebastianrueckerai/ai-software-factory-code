@@ -438,7 +438,7 @@ func serverAt(id int64, ip string, labels map[string]string) hcloud.Server {
 	return s
 }
 
-// Ruling 123: a pass that sees a cluster node or another project's server
+// A pass that sees a cluster node or another project's server
 // holds the wrong token; it deletes nothing, not even what it would
 // otherwise collect.
 func TestCollectRefusesAPassOverTheWrongProject(t *testing.T) {
@@ -468,7 +468,7 @@ func TestCollectRefusesAPassOverTheWrongProject(t *testing.T) {
 }
 
 // Any listed kind with another project's label is the wrong token, even
-// with no server in sight (ruling 123).
+// with no server in sight.
 func TestCollectRefusesAForeignLabelOnAnyKind(t *testing.T) {
 	for _, kind := range []string{KindFirewall, KindVolume} {
 		t.Run(kind, func(t *testing.T) {
@@ -494,7 +494,7 @@ func TestCollectRefusesAForeignLabelOnAnyKind(t *testing.T) {
 
 // An unassigned primary IP on a node's address (the cluster's own during a
 // rebuild) or with another project's label is the wrong token too: the
-// pass would delete it (ruling 123).
+// pass would delete it.
 func TestCollectRefusesOverAWrongProjectsPrimaryIP(t *testing.T) {
 	for name, wrong := range map[string]hcloud.PrimaryIP{
 		"a node's address":        {ID: 900, IP: "198.51.100.11"},
@@ -832,7 +832,7 @@ func TestConcurrentReleasesDeleteOnce(t *testing.T) {
 	}
 }
 
-// ruling 124: a 60-minute lease is deleted on the last pass before the hour
+// A 60-minute lease is deleted on the last pass before the hour
 // ends (lease end within one interval plus the margin), never after it.
 func TestCollectEndsALeaseOnTheLastPassBeforeItsHour(t *testing.T) {
 	h := newHarness()
@@ -877,7 +877,7 @@ func TestCollectAdoptsALateCreate(t *testing.T) {
 	}
 }
 
-// ruling 124 with a volume: the lease's last pass deletes the whole
+// With a volume: the lease's last pass deletes the whole
 // commission, the volume waiting for its server's delete to detach it, and
 // both deletes are issued before the lease ends. Modelled on the fake
 // clock: every API call takes 1 s, a server delete completes 20 s after its

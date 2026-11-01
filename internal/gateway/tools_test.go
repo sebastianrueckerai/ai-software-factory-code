@@ -340,7 +340,7 @@ func TestEscalateSchemaOffersChoices(t *testing.T) {
 	}
 }
 
-// Ruling 263, roadmap 201: when to call request_info and
+// Roadmap 201: when to call request_info and
 // escalate is their descriptions' alone; factoryd's guides no
 // longer say it.
 func TestAskToolsSayWhenToCallThem(t *testing.T) {
@@ -737,7 +737,7 @@ func TestEscalateDropsAnOversizedChoiceList(t *testing.T) {
 	}
 }
 
-// The recommendation is required, at most 2000 bytes (ruling 149); a
+// The recommendation is required, at most 2000 bytes; a
 // refused call reaches no factoryd.
 func TestEscalateNeedsARecommendation(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
@@ -763,7 +763,7 @@ func TestEscalateNeedsARecommendation(t *testing.T) {
 	}
 }
 
-// request_info asks the issue's author (ruling 150): question, what the
+// request_info asks the issue's author: question, what the
 // agent tried and what it needs, each required; through the class's tool
 // list like every tool.
 func TestRequestInfo(t *testing.T) {
@@ -1393,7 +1393,7 @@ func TestManualTool(t *testing.T) {
 	v.Document.Classes["coder"].Tools["manual"] = policy.ToolCap{}
 	e := newToolEnv(t, running("coder"), v)
 	text, isErr := e.call(t, "manual", nil)
-	if isErr || !strings.Contains(text, "Signals and members file cards") ||
+	if isErr || !strings.Contains(text, "Signals and humans file cards") ||
 		!strings.Contains(text, "queued: waits for a free work slot, in filing order") ||
 		!strings.Contains(text, "approval: a human approves the merge") {
 		t.Fatalf("manual = %q", text)

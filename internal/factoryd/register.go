@@ -38,7 +38,7 @@ type ProjectKube interface {
 	SecretsByLabels(ctx context.Context, namespace string, labels map[string]string) ([]KubeSecret, error)
 }
 
-// Registrar keeps every project's objects (rulings 156, 164, 179). A
+// Registrar keeps every project's objects. A
 // seed project's are the infra repository's and the seed's: the Registrar
 // keeps only its labels and the bot's fork, as the bot, and reports its
 // webhook and its namespaces' factory/project label. A factory project is
@@ -48,12 +48,12 @@ type ProjectKube interface {
 // Forgejo site admin can do (the organisation, the repository, the CI
 // user, every token) happens in the reconcile of a project whose row has
 // no tokens yet, with the admin's login read from OpenBao for that run
-// only (ruling 212); Reconcile keeps the rest with factory-projects' token (write:repository, unlimited: a
+// only; Reconcile keeps the rest with factory-projects' token (write:repository, unlimited: a
 // repository-limited token never passes Forgejo's admin checks, and this
 // user owns project organisations and nothing in sf). In the cluster: each
 // namespace with its label, quota, limit range, default-deny network
 // policy and the Flux account, the Flux source and one Kustomization per
-// environment (ruling 157). Every run logs one line per object: created,
+// environment. Every run logs one line per object: created,
 // updated, no change, or what it waits for.
 type Registrar struct {
 	versionFailed atomic.Bool
@@ -186,7 +186,7 @@ const (
 	SecretFactoryRead      = "FACTORY_READ_TOKEN"
 	SecretDeployKey        = "DEPLOY_KEY"
 	// SecretSSHHostKey is Forgejo's SSH host key as a scan finds it, type
-	// and key, so no workflow pins a key a rebuild changes (ruling 165);
+	// and key, so no workflow pins a key a rebuild changes;
 	// Forgejo refuses secret names starting FORGEJO_, GITEA_ or GITHUB_
 	SecretSSHHostKey     = "FACTORY_SSH_HOST_KEY" // #nosec G101 -- an Actions secret name, not a credential value
 	SecretStagingURL     = "STAGING_URL"
@@ -260,7 +260,7 @@ func (r *Registrar) ReconcileAll(ctx context.Context) error {
 }
 
 // ReconcileLoop reconciles every project at its start, at each new policy
-// version (ruling 156) and every interval besides, so a hand edit in
+// version and every interval besides, so a hand edit in
 // Forgejo or the cluster is set back within that interval. It polls the
 // version, and reads the GitHub mirrors' states, every poll until ctx
 // ends.
@@ -376,7 +376,7 @@ func (r *Registrar) refreshStaging(ctx context.Context, p Project) {
 
 // MainPushed starts the push-main routines of the project whose
 // repository this is, and reconciles a factory project when DeployBranch
-// does not exist yet: a new project's first push (ruling 166). A
+// does not exist yet: a new project's first push. A
 // repository of no project is nothing to do.
 func (r *Registrar) MainPushed(ctx context.Context, repository string) error {
 	repo, err := SplitRepo(strings.ToLower(repository))
@@ -754,8 +754,8 @@ func (run *reconcileRun) collaborator(ctx context.Context, user string) (Change,
 // pruneCollaborators removes every direct collaborator who administers
 // the repository (permission admin or owner) but the bot, the merge user,
 // the gate user, the chat user and the approvers: factoryd owns who
-// administers a factory project's repository (ruling 203), and a member, a
-// collaborator with write, stays (ruling 254).
+// administers a factory project's repository, and a member, a
+// collaborator with write, stays.
 func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error) {
 	f, repo := run.r.Forgejo, run.p.Repo()
 	keep := append([]string{f.BotUser, MergeUser, GateUser, ChatUser}, run.approvers()...)
@@ -788,11 +788,10 @@ func (run *reconcileRun) pruneCollaborators(ctx context.Context) (Change, error)
 
 // Protection is main's protection for a project: the code repository's
 // (infra README, "The merge bot"). factory-merge and the approvers may push;
-// the deploy key may not, since the rolled state lives on DeployBranch
-// (ruling 166). A project on auto needs no approval, so factory-merge can
-// merge a clean pull request (ruling 149); the merge gate's factory-gate
-// approves beside the approvers and neither pushes nor merges (ruling
-// R59). Forgejo keeps only users with write in a whitelist, so the
+// the deploy key may not, since the rolled state lives on DeployBranch.
+// A project on auto needs no approval, so factory-merge can
+// merge a clean pull request; the merge gate's factory-gate
+// approves beside the approvers and neither pushes nor merges. Forgejo keeps only users with write in a whitelist, so the
 // approvers and factory-gate are write collaborators.
 func Protection(mergeRule string, approvers []string) BranchProtection {
 	required := 1
@@ -1166,7 +1165,7 @@ func ProjectNetworkPolicy(p Project, ns string) map[string]any {
 }
 
 // Kustomization applies e's path into its namespace as the namespace's
-// flux account (ruling 157). It lives in that namespace because Flux takes
+// flux account. It lives in that namespace because Flux takes
 // the account from the Kustomization's own namespace; the deployer role
 // covers no Flux kind, so the project cannot change it.
 func Kustomization(project string, e Environment, labels map[string]string) map[string]any {
@@ -1236,7 +1235,7 @@ func (r *Registrar) ReconcileError(name string) string {
 	return s
 }
 
-// register makes what only the site admin can (ruling 164); a copy from
+// register makes what only the site admin can; a copy from
 // GitHub still running is a wait, no failure.
 func (run *reconcileRun) register(ctx context.Context, rotate bool) {
 	err := run.r.admin(ctx, &run.p, rotate)
@@ -1397,7 +1396,7 @@ func (r *Registrar) admin(ctx context.Context, p *Project, rotate bool) error {
 // filling (Forgejo syncs branches and tags after the clone while the
 // repository reads empty): a copying row waits, any other fails. An older
 // empty one under a failed row is the refused migrate's, which Forgejo
-// keeps marked being migrated for good (ruling 289); under a pending or
+// keeps marked being migrated for good; under a pending or
 // copying row GitHub is asked: an empty source is imported, which the seed
 // fills whole; one with a commit was cut. A refused or cut copy's
 // repository is deleted by the admin, if a second read still finds it as

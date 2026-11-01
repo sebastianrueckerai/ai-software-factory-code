@@ -29,7 +29,7 @@ func questionsRig(r *rig) {
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": askedQuestions()}
 }
 
-// Ruling 264: the plan card asks the plan's open questions above its
+// The plan card asks the plan's open questions above its
 // Request changes, one button per choice and a text box each, its meta
 // line counting the open ones, and offers no Accept; an answer posts "Answer <n>:
 // <answer>" on the issue as the member, signals factoryd and shows on the

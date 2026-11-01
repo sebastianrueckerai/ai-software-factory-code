@@ -71,7 +71,7 @@ type SupervisorConfig struct {
 	SameFailure      int           // 0 = DefaultSameFailure
 	SameCall         int           // limits.same_call; 0 = policy.DefaultSameCall
 	Churn            int           // 0 = DefaultChurn
-	// NoWriteAfter: the progress detector (rulings 141, 161); 0 =
+	// NoWriteAfter: the progress detector; 0 =
 	// policy.DefaultDetectors
 	NoWriteAfter time.Duration
 	// ReadOnly: a report session, which writes no file; repetition and
@@ -293,7 +293,7 @@ func (s *Supervisor) sizeTrip() *Trip {
 func (s *Supervisor) CardLines() int { return s.cardLines }
 
 // newContent: the write ev records content the session has not written
-// before (ruling 280): a file change by its sha256, a moved shell diff by
+// before: a file change by its sha256, a moved shell diff by
 // its numbers and patch. One without a hash (a file over maxHashedFile, a
 // deleted file) counts as new.
 func (s *Supervisor) newContent(ev harness.Event) bool {
@@ -476,7 +476,7 @@ func (s *Supervisor) Resume(now time.Time) {
 // and arms the stuck rule until the next write. The command detectors
 // start afresh at the message; the alternation memory (contents, churn)
 // does not, so a circle of writes that spans messages still trips
-// flip_flop or churn, stuck (ruling 224: circles of writes are not
+// flip_flop or churn, stuck (circles of writes are not
 // progress; round 2's drill 4 looped for 38 minutes on the cleared
 // memory).
 func (s *Supervisor) Messaged(now time.Time) {
@@ -492,7 +492,7 @@ func (s *Supervisor) Messaged(now time.Time) {
 }
 
 // stuck is the stuck rule: after a delivered message, a detector trip with
-// no write since, or a circle of writes (flip_flop, churn; ruling 224).
+// no write since, or a circle of writes (flip_flop, churn).
 // Silence (no_progress: a long command) and the clock are no evidence.
 func (s *Supervisor) stuck(t *Trip) bool {
 	switch t.Kind {
@@ -572,7 +572,7 @@ const (
 	TripChurn       TripKind = "churn"
 	// TripCheckIn: no detector, the scheduled check-in (SupervisorConfig.CheckIn)
 	TripCheckIn TripKind = "check_in"
-	// progress detectors (ruling 141), their waits in the policy
+	// progress detectors, their waits in the policy
 	TripNoWrite TripKind = "no_write"
 	// TripCheapCap: the start rung's first attempt ran its cap without a
 	// push (roadmap 222, item 5)

@@ -2066,7 +2066,7 @@ func TestPGStore(t *testing.T) {
 	if _, err := s.SettleSpend(ctx, "nope", 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SettleSpend of an unknown task = %v, want ErrNotFound", err)
 	}
-	// the final settlement (ruling 196): a task past the window, two
+	// the final settlement: a task past the window, two
 	// reviews the gate cut booked at their hold of 0.1447 each on top of
 	// 0.1873 of answered calls (0.4767), while LiteLLM charged 0.2751: set
 	// to 0.2751, the difference a negative settlement row on the task's

@@ -198,7 +198,7 @@ func main() {
 			return inner.LastFailure(ctx, workflowID, activityID)
 		},
 		Workflows: &workflows,
-		// the attempt grant's floor (ruling 322) reads the same price
+		// the attempt grant's floor reads the same price
 		// table the gateway's hold math prices a call with
 		Prices:       &policy.PriceBook{BaseURL: litellm.BaseURL, MasterKey: litellm.MasterKey},
 		ProjectsUser: projectsUser(),
@@ -263,7 +263,7 @@ func main() {
 	// (the pod's 150 s termination grace covers it, plus the server's 5 s)
 	// the boot's remaining credentials, read here so every one of them is
 	// registered before the scrubber is built: it knows every secret value
-	// factoryd loads, not a subset (ruling 152, item 48)
+	// factoryd loads, not a subset
 	intakeToken := mustSecret("INTAKE_TOKEN")
 	webhookSecret := mustSecret("FORGEJO_WEBHOOK_SECRET")
 	signozWebhookPassword := mustSecret("SIGNOZ_WEBHOOK_PASSWORD")
@@ -412,7 +412,7 @@ func main() {
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Branch: "main",
 		Namespace: kube.Namespace(), Kube: kube, Store: store, Metrics: metrics, Poll: 15 * time.Second, Timeout: 30 * time.Minute}
 	go rolls.Run(ctx)
-	// the roll as a factory task (ruling 178): main CI's images of a green
+	// the roll as a factory task: main CI's images of a green
 	// commit, read with a read:package token, open the roll's pull request
 	log.Printf("roller: reads main CI's images as %s (read:package)", registry.User)
 	roller := &factoryd.Roller{Forgejo: forgejo, Store: store, Workflows: workflows, Timeline: runner.Timeline(), Repo: own.Repo(), Token: forgejo.Access(own).Actions, Budget: policyLoader.Budget, Poll: 15 * time.Second,
@@ -1006,7 +1006,7 @@ func mustEnv(name string) string {
 
 // bootSecrets is every credential mustSecret has loaded this boot: the
 // daemon's error scrubber is built from it, so a secret cannot be loaded
-// without being scrubbed (ruling 152, item 48).
+// without being scrubbed.
 var bootSecrets []string
 
 // mustSecret is mustEnv for a credential: the value is registered for

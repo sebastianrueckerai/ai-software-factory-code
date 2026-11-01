@@ -120,7 +120,7 @@ func (c *Console) deployState(ctx context.Context, p factoryd.Project, e factory
 	return "not deployed yet: " + cmp.Or(s.Message, fluxNotReconciled)
 }
 
-// settings shows the open project's file read-only (ruling 183): its
+// settings shows the open project's file read-only: its
 // settings with a link to the file, where every change is made, its
 // registration's state and its GitHub export. The bar's select picks the
 // project; the envelope's use reads on the resources page instead.
@@ -871,7 +871,7 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 // table has judged the approver.
 func (c *Console) exportable(ctx context.Context, a actor, p factoryd.Project) error {
 	if p.Objects != policy.ObjectsFactory {
-		return refuse(http.StatusBadRequest, p.Name+" is the factory's own: infra's push-mirrors CronJob mirrors it (ruling 126)")
+		return refuse(http.StatusBadRequest, p.Name+" is the factory's own: infra's push-mirrors CronJob mirrors it")
 	}
 	return nil
 }

@@ -6,8 +6,8 @@ import (
 	"slices"
 )
 
-// Process is processes/<name>.yaml: the blocks a project's cards pass
-// (ruling 206). A class is policy.yaml's; a process only names it.
+// Process is processes/<name>.yaml: the blocks a project's cards pass.
+// A class is policy.yaml's; a process only names it.
 type Process struct {
 	// Tracks are how a card's work runs, chosen by whoever files it
 	// (roadmap 225): direct always, plan for a process that builds from a
@@ -16,8 +16,8 @@ type Process struct {
 	// Dependencies is how a plan's cards wait on each other; only in a
 	// process with a plan track.
 	Dependencies *Dependencies `yaml:"dependencies,omitempty" json:"dependencies,omitempty"`
-	// Stages are the stages a coding task's work passes, in this order
-	// (ruling 177): checks, policy, approval and merge are required,
+	// Stages are the stages a coding task's work passes, in this order:
+	// checks, policy, approval and merge are required,
 	// approval right before merge, merge last; checks, policy, approval
 	// and merge always run; screening is first and for a human only. The
 	// local gates (policy, migration, reproduction) come before the
@@ -107,7 +107,7 @@ type Merge struct {
 // Stage is one named stage of a process and what its findings do.
 type Stage struct {
 	// Name is the stage's implementation. screening is first; migration
-	// comes after policy, which finds the migrations; audit (ruling 188)
+	// comes after policy, which finds the migrations; audit
 	// reads the reviewed head for a fixed security checklist, between
 	// review and approval, and runs for the projects whose file sets
 	// audit: true.
@@ -126,8 +126,8 @@ type Stage struct {
 	// is its only off switch, backlog 68): a review that gives no verdict
 	// is a finding on the card.
 	When string `yaml:"when,omitempty" json:"when,omitempty"`
-	// MaxReturns caps the stage's own returns to the agent before the card
-	// (ruling 190); absent: the session cap decides. On a stage whose
+	// MaxReturns caps the stage's own returns to the agent before the card;
+	// absent: the session cap decides. On a stage whose
 	// on_findings is agent only, at least 1.
 	MaxReturns *int `yaml:"max_returns,omitempty" json:"max_returns,omitempty"`
 }
@@ -306,8 +306,8 @@ func (p Process) Validate() error {
 // alone, policy failing the task, approval right before merge, merge last;
 // review with no when (a review skipped for any reason but enabled false
 // would be a pass without a verdict, backlog 68); approval, merge,
-// screening and audit with findings for a human (ruling 182: a suspect
-// issue never reaches the agent unread; ruling 188); screening first (it
+// screening and audit with findings for a human (a suspect
+// issue never reaches the agent unread); screening first (it
 // runs before the first session); migration after policy (policy finds
 // the migrations); audit between review and approval (it reads the
 // reviewed head); max_returns at least 1, on agent stages only.
