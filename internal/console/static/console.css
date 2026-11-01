@@ -95,6 +95,7 @@ button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transpa
 .chat-full[aria-pressed=true], .chat-grow[aria-pressed=true] { background: var(--bg-hover); color: var(--text); }
 .intake { border: 1px solid transparent; }
 .intake.closed { color: var(--need-text); border-color: var(--need-line); border-radius: 11px; }
+.intake-by { font-size: 11px; color: var(--text-muted); }
 button.htmx-request::after { content: ""; display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--line-strong); border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 /* fields: a line, the page's colour, a cyan ring when focused */

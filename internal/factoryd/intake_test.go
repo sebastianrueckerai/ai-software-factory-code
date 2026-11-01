@@ -370,6 +370,25 @@ func TestIntakeIssueCarriesLineSetsCarryPR(t *testing.T) {
 	}
 }
 
+// The Roadmap line: a pulled card names the roadmap item it builds, and
+// the intake puts its number on the task, where the dedupe reads it.
+func TestIntakeIssueRoadmapLineSetsRoadmapItem(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	body := issueOpenedBody(12, "sebastian", []string{"agent"}, "Build roadmap 276", "the plan's item\n\nRoadmap: #276")
+	rr := postWebhook(in, "issues", body, sign(webhookSecret, body))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rr.Code, rr.Body)
+	}
+	if len(store.tasks) != 1 {
+		t.Fatalf("tasks = %d, want 1", len(store.tasks))
+	}
+	for _, task := range store.tasks {
+		if task.RoadmapItem != 276 {
+			t.Fatalf("RoadmapItem = %d, want 276", task.RoadmapItem)
+		}
+	}
+}
+
 func TestIntakeIssueHumanLabelSkipsAgentWork(t *testing.T) {
 	in, store, requests := newTestIntake(t)
 	body := issueOpenedBody(9, "sebastian", []string{"human"}, "Needs a decision", "please look")

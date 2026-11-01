@@ -310,7 +310,10 @@ type fakeTasks struct {
 	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
 	carries  map[string][]string // the cards a roll task carries
-	read     func(s *fakeTasks, id string)
+	// roadmap names, by "repository item", the card that builds a roadmap
+	// item (the roadmap pull of 2026-11-01)
+	roadmap map[string]string
+	read    func(s *fakeTasks, id string)
 	// fundedEUR is the month's chat funding FundCard's pool counts, events
 	// the ledger its card_funded row goes to
 	fundedEUR float64
@@ -417,6 +420,14 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 		}
 	}
 	return n, nil
+}
+
+// RoadmapHolder names the card that builds repository's roadmap item.
+func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int) (string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	holder, ok := s.roadmap[fmt.Sprintf("%s %d", repository, item)]
+	return holder, ok, nil
 }
 
 func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error) {

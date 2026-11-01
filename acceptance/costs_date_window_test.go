@@ -380,6 +380,9 @@ type acceptEvents struct {
 }
 
 func (*acceptTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
+func (*acceptTasks) RoadmapHolder(context.Context, string, int) (string, bool, error) {
+	return "", false, nil
+}
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
 	if e.Repository == "" || e.Kind == "" {
@@ -764,6 +767,10 @@ func (f *acceptChat) SetChatIntake(context.Context, string, bool, string, time.T
 
 func (f *acceptChat) ChatIntakeClosed(context.Context, string) (bool, error) {
 	return false, nil
+}
+
+func (f *acceptChat) ChatIntake(context.Context, string) (factoryd.IntakeRow, bool, error) {
+	return factoryd.IntakeRow{}, false, nil
 }
 
 func (f *acceptChat) AbandonChatMessage(context.Context, string, string, int64, int64) ([]int64, error) {

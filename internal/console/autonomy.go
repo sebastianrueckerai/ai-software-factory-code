@@ -217,9 +217,10 @@ func (c *Console) autonomyButton(w http.ResponseWriter, r *http.Request) {
 }
 
 // intakeButton answers POST /projects/{name}/intake, the chat header's
-// intake switch: closed refuses the wake's own filings — the turns the
-// Waker starts without the member's ask — and open takes them again; the
-// member's own ask always files and starts. It answers 204.
+// intake switch: closed stops exactly the roadmap pull — the Waker's
+// queue_refill wake and the filings that carry a roadmap item — and open
+// returns it; every other filing, the member's ask first, always files
+// and starts. It answers 204.
 func (c *Console) intakeButton(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	closed := r.PostFormValue("intake") == "closed"
@@ -240,7 +241,7 @@ func (c *Console) intakeButton(w http.ResponseWriter, r *http.Request) {
 	}
 	c.event(context.WithoutCancel(r.Context()), factoryd.Event{Repository: p.Repository, Kind: factoryd.EventIntakeChanged,
 		Actor: b.s.user, Via: b.via, Detail: map[string]any{"from": from, "to": to}})
-	log.Printf("console: %s set the intake of %s %s", b.s.user, name, to)
+	log.Printf("console: %s set the intake of %s %s: the roadmap pull %s", b.s.user, name, to, map[bool]string{true: "stops", false: "returns"}[closed])
 	w.WriteHeader(http.StatusNoContent)
 }
 

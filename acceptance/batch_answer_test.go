@@ -356,6 +356,9 @@ func (s *accBatchTasks) openCount() int {
 }
 
 func (*accBatchTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
+func (*accBatchTasks) RoadmapHolder(context.Context, string, int) (string, bool, error) {
+	return "", false, nil
+}
 
 // accBatchApprovals are the approval_requests rows in memory;
 // ResolveApprovals is factoryd.PGStore.ResolveApprovals on them.
@@ -1002,6 +1005,10 @@ func (f *accBatchChat) SetChatIntake(context.Context, string, bool, string, time
 
 func (f *accBatchChat) ChatIntakeClosed(context.Context, string) (bool, error) {
 	return false, nil
+}
+
+func (f *accBatchChat) ChatIntake(context.Context, string) (factoryd.IntakeRow, bool, error) {
+	return factoryd.IntakeRow{}, false, nil
 }
 
 func (f *accBatchChat) AbandonChatMessage(context.Context, string, string, int64, int64) ([]int64, error) {

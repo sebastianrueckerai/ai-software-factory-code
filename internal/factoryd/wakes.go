@@ -49,6 +49,10 @@ type WakeStore interface {
 	SetWakeCursor(ctx context.Context, repository string, id int64) error
 	WakeMark(ctx context.Context, repository, key string, at time.Time) error
 	WakeMarkAt(ctx context.Context, repository, key string) (time.Time, bool, error)
+	CountQueue(ctx context.Context, repository string) (int, error)
+	ChatIntakeClosed(ctx context.Context, repository string) (bool, error)
+	RoadmapPullStamp(ctx context.Context, repository string) (string, bool, error)
+	SetRoadmapPullStamp(ctx context.Context, repository, head string, at time.Time) error
 }
 
 // The Waker wakes the project agent's turn on the factory's own events
@@ -62,6 +66,9 @@ type Waker struct {
 	Current func() policy.Version
 	Start   WakeStarter
 	Now     func() time.Time
+	// RoadmapHead reads the doc repository's head of docs/roadmap.md, the
+	// identity the pull checks and stamps. Nil: the pull never fires.
+	RoadmapHead func(ctx context.Context, docRepo string) (string, error)
 }
 
 const (
@@ -129,6 +136,9 @@ type pendingAsk struct {
 // cause stays and a later pass takes it.
 func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
 	if err := w.fireTimer(ctx, name, p, now); err != nil {
+		return err
+	}
+	if err := w.fireRefill(ctx, v, name, p, now); err != nil {
 		return err
 	}
 	after, err := w.Store.WakeCursor(ctx, p.Repository)
@@ -284,6 +294,74 @@ func (w *Waker) fireTimer(ctx context.Context, name string, p policy.ProjectConf
 	return w.Store.WakeMark(ctx, p.Repository, "turn", now)
 }
 
+// fireRefill wakes the roadmap pull (2026-11-01): when the project's
+// intake is open, its waiting cards fall below the tree's refill_below
+// and the doc repository's head of docs/roadmap.md is one no pull turn
+// of the project read, one turn reads the roadmap and files its ripe
+// items. The wake stamps the head it read, so a turn that files nothing
+// never loops and a failed start moves no stamp; the turn gaps and the
+// cooldown hold the pull like any wake.
+func (w *Waker) fireRefill(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
+	below := v.Tree.RefillBelowOf(p.Repository)
+	if below <= 0 || w.RoadmapHead == nil {
+		return nil
+	}
+	closed, err := w.Store.ChatIntakeClosed(ctx, p.Repository)
+	if err != nil || closed {
+		return err
+	}
+	docRepo := v.Tree.Document.ChatOf(p).DocRepo
+	if docRepo == "" {
+		return nil
+	}
+	waiting, err := w.Store.CountQueue(ctx, p.Repository)
+	if err != nil {
+		return err
+	}
+	if waiting >= below {
+		return nil
+	}
+	if held, err := w.held(ctx, p.Repository, now); err != nil {
+		return err
+	} else if held {
+		return nil
+	}
+	head, err := w.RoadmapHead(ctx, docRepo)
+	if err != nil {
+		// one unread head skips this pass — the whole loop of projects
+		// must not wait on one Forgejo answer
+		log.Printf("waker: the roadmap head of %s: %v", docRepo, err)
+		return nil
+	}
+	if stamped, ok, err := w.Store.RoadmapPullStamp(ctx, p.Repository); err != nil {
+		return err
+	} else if ok && stamped == head {
+		return nil
+	}
+	logins := pokeTo(v.Tree, p.Repository)
+	if len(logins) == 0 {
+		return nil
+	}
+	conv, err := w.Store.EnsureInbox(ctx, p.Repository, logins[0])
+	if err != nil {
+		return err
+	}
+	if err := w.Start.StartWake(ctx, name, logins[0], conv, "queue_refill", refillText(name, below)); err != nil {
+		log.Printf("wake %s: %v", name, err)
+		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+	}
+	if err := w.Store.SetRoadmapPullStamp(ctx, p.Repository, head, now); err != nil {
+		return err
+	}
+	return w.Store.WakeMark(ctx, p.Repository, "turn", now)
+}
+
+// refillText is the roadmap pull's wake: what the turn reads and files.
+func refillText(project string, below int) string {
+	return fmt.Sprintf("The queue of %s is below %d: read docs/roadmap.md of the project's doc repository, "+
+		"file every item whose Priority is filled and whose number no card cites, then end.", project, below)
+}
+
 // held says a turn or the cooldown holds repository's wakes back.
 func (w *Waker) held(ctx context.Context, repository string, now time.Time) (bool, error) {
 	for _, gap := range []struct {
@@ -408,4 +486,28 @@ func (s *PGStore) WakeMarkAt(ctx context.Context, repository, key string) (time.
 		return time.Time{}, false, err
 	}
 	return at, true, nil
+}
+
+// RoadmapPullStamp is the head of docs/roadmap.md repository's last pull
+// turn read, and when it read it; false before the first pull.
+func (s *PGStore) RoadmapPullStamp(ctx context.Context, repository string) (string, bool, error) {
+	var head string
+	var at time.Time
+	err := s.db.QueryRowContext(ctx, `SELECT head, at FROM roadmap_pull WHERE repository = $1`, repository).
+		Scan(&head, &at)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return head, true, nil
+}
+
+// SetRoadmapPullStamp stamps repository's pull with the head its wake
+// read, so the same roadmap never wakes the project twice.
+func (s *PGStore) SetRoadmapPullStamp(ctx context.Context, repository, head string, at time.Time) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO roadmap_pull (repository, head, at) VALUES ($1, $2, $3)
+		ON CONFLICT (repository) DO UPDATE SET head = excluded.head, at = excluded.at`, repository, head, at)
+	return err
 }

@@ -80,8 +80,8 @@ type fakeChat struct {
 	atts []storedAttachment
 	// proposals are the proposals and undos, in the order stored
 	proposals []*fakeProposal
-	// intake is the repositories' closed intake switches
-	intake map[string]bool
+	// intake is the repositories' intake switch rows
+	intake map[string]factoryd.IntakeRow
 	// now stamps the rows stored; nil: the fixed clock at, a second a row
 	now func() time.Time
 }
@@ -335,16 +335,23 @@ func (f *fakeChat) SetChatIntake(_ context.Context, repository string, closed bo
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.intake == nil {
-		f.intake = map[string]bool{}
+		f.intake = map[string]factoryd.IntakeRow{}
 	}
-	f.intake[repository] = closed
+	f.intake[repository] = factoryd.IntakeRow{Closed: closed, By: by, At: at}
 	return nil
 }
 
 func (f *fakeChat) ChatIntakeClosed(_ context.Context, repository string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.intake[repository], nil
+	return f.intake[repository].Closed, nil
+}
+
+func (f *fakeChat) ChatIntake(_ context.Context, repository string) (factoryd.IntakeRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	row, ok := f.intake[repository]
+	return row, ok, nil
 }
 
 func (f *fakeChat) ArchiveConversation(_ context.Context, repository, login string, n int64, archived bool) (bool, error) {

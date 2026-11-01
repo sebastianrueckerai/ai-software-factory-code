@@ -337,13 +337,16 @@ var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, pol
 // track, which its card_filed row records; its body ends, after a blank
 // line, with the field lines the intake reads, each when given: "Size: <size>",
 // "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
-// and "Carries: #<n>", the pull request whose head the card's clone
-// supplies as its pull branch; the webhook or the heal pass makes it a
-// task. It answers the repository and the issue's number. In a wake the
-// chat bot posts the issue, and the card_filed row that names the member is
-// written before the answer: an unrecorded filing closes its issue and
-// refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64) (factoryd.Repo, int64, error) {
+// "Carries: #<n>", the pull request whose head the card's clone
+// supplies as its pull branch, and "Roadmap: #<n>", the docs/roadmap.md
+// item the card builds; the webhook or the heal pass makes it a
+// task. A filing that names a roadmap item is the roadmap pull: one card
+// per item, whatever its state, so an item another card already builds is
+// refused naming it before any issue is posted. It answers the repository
+// and the issue's number. In a wake the chat bot posts the issue, and the
+// card_filed row that names the member is written before the answer: an
+// unrecorded filing closes its issue and refuses.
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -377,6 +380,16 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if _, ok := ps[i].Tracks.Track(track); !ok && track != factoryd.LabelHuman {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
 	}
+	if roadmapItem > 0 {
+		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem)
+		if err != nil {
+			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
+			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
+		}
+		if held {
+			return factoryd.Repo{}, 0, refuse(http.StatusConflict, fmt.Sprintf("Card %s already builds roadmap item %d.", holder, roadmapItem))
+		}
+	}
 	detail := map[string]any{"track": track, "title": title}
 	if reason = strings.TrimSpace(reason); reason != "" {
 		detail["reason"] = reason
@@ -398,6 +411,10 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		fields = append(fields, fmt.Sprintf("Carries: #%d", carry))
 		detail["carry"] = carry
 	}
+	if roadmapItem > 0 {
+		fields = append(fields, fmt.Sprintf("Roadmap: #%d", roadmapItem))
+		detail["roadmap_item"] = roadmapItem
+	}
 	if len(fields) > 0 {
 		body += "\n\n" + strings.Join(fields, "\n")
 	}
@@ -407,7 +424,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 			return factoryd.FileRefusal(ctx, c.cfg.Tasks, tree, ps[i].Repository, title, title, body, size)
 		}
 	}
-	if err := c.chatFiling(ctx, a, ps[i], check); err != nil {
+	if err := c.chatFiling(ctx, a, ps[i], roadmapItem, check); err != nil {
 		return factoryd.Repo{}, 0, err
 	}
 	repo := ps[i].Repo()
@@ -457,25 +474,25 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	return repo, issue.Number, nil
 }
 
-// chatFiling admits a chat filing by a of a card on project p (roadmap
-// 239): a closed intake refuses a wake's filing, the turn the Waker
-// started without the member's ask, while the member's own ask still
-// files and starts; then check, the ready check's line under the policy
-// in force ("" passes), judges it, nil for a human card, which meets
-// none. The human's buttons and the webhook intake file as they always
-// did.
-func (c *Console) chatFiling(ctx context.Context, a actor, p factoryd.Project, check func(policy.Tree) string) error {
+// chatFiling admits a chat filing by a of a card on project p: a closed
+// intake stops exactly the roadmap pull (2026-11-01), so it refuses a
+// filing that carries a roadmap item while every other filing — the
+// member's ask, a need, a wake's reactive card — still files and starts;
+// then check, the ready check's line under the policy in force (""
+// passes), judges it, nil for a human card, which meets none. The human's
+// buttons and the webhook intake file as they always did.
+func (c *Console) chatFiling(ctx context.Context, a actor, p factoryd.Project, roadmapItem int, check func(policy.Tree) string) error {
 	if a.via != factoryd.ViaChat {
 		return nil
 	}
-	if a.wake {
+	if roadmapItem > 0 {
 		closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, p.Repository)
 		if err != nil {
 			log.Printf("console: the intake of %s: %v", p.Name, err)
 			return refuse(http.StatusServiceUnavailable, "cannot read the intake of "+p.Name+"; try again")
 		}
 		if closed {
-			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: a wake files nothing. Tell the member what needs filing; their own ask still files and starts.")
+			return refuse(http.StatusForbidden, "The intake of "+p.Name+" is closed: the roadmap is not pulled. Tell the human what needs filing; an ask or a need still files.")
 		}
 	}
 	if v, ok := c.inForce(ctx); ok && check != nil {

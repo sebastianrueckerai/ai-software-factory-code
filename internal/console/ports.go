@@ -194,10 +194,13 @@ type Chat interface {
 	// could not be stored — the ids answered the same way.
 	DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error)
 	AbandonChatMessage(ctx context.Context, repository, login string, conversation, id int64) ([]int64, error)
-	// the intake switch (the chat header's): a closed intake refuses the
-	// wake's own filings, the member's ask still files
+	// the intake switch (the chat header's): a closed intake stops
+	// exactly the roadmap pull, every other filing still files
 	SetChatIntake(ctx context.Context, repository string, closed bool, by string, at time.Time) error
 	ChatIntakeClosed(ctx context.Context, repository string) (bool, error)
+	// ChatIntake is the switch's full row: its state, who set it and
+	// when, the board's line beside the switch.
+	ChatIntake(ctx context.Context, repository string) (factoryd.IntakeRow, bool, error)
 	// compaction: the summary a thread keeps, its newest call's tokens
 	// since a time, and its calls' totals
 	SaveSummary(ctx context.Context, repository, login string, n int64, s factoryd.ThreadSummary) error

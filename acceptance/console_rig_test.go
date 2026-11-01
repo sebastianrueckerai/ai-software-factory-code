@@ -1155,6 +1155,11 @@ func (a *AcceptanceRig) CountQueue(_ context.Context, repository string) (int, e
 	return n, nil
 }
 
+// RoadmapHolder answers none: the acceptance rig holds no roadmap pull.
+func (a *AcceptanceRig) RoadmapHolder(context.Context, string, int) (string, bool, error) {
+	return "", false, nil
+}
+
 func (a *AcceptanceRig) Conversation(_ context.Context, _, _ string, n int64) (factoryd.ChatConversation, bool, error) {
 	return factoryd.ChatConversation{Number: n, State: factoryd.ThreadActive, Current: true}, true, nil
 }
@@ -1217,6 +1222,13 @@ func (a *AcceptanceRig) ChatIntakeClosed(_ context.Context, repository string) (
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.intake[repository], nil
+}
+
+func (a *AcceptanceRig) ChatIntake(_ context.Context, repository string) (factoryd.IntakeRow, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	closed, ok := a.intake[repository]
+	return factoryd.IntakeRow{Closed: closed}, ok, nil
 }
 
 func (a *AcceptanceRig) DeleteConversation(context.Context, string, string, int64) (int64, []int64, error) {

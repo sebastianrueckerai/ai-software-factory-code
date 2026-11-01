@@ -1319,9 +1319,11 @@ type boardData struct {
 	Autonomy string
 	Levels   []level
 	// IntakeClosed is the shown project's intake switch (the chat
-	// header's): closed refuses the wake's own filings while the member's
-	// ask still files.
+	// header's): closed stops exactly the roadmap pull, every other
+	// filing still files; IntakeBy and IntakeAt name its last change.
 	IntakeClosed bool
+	IntakeBy     string
+	IntakeAt     time.Time
 	// Docs is the shown project's document repository (chat.doc_repo),
 	// the drawer's Documents button and its reads; empty: the project
 	// has no documents (roadmap 277).
@@ -2194,10 +2196,10 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	}
 	d.Chat = c.cfg.Chat != nil && c.cfg.Operator != nil && shown.Name != "" && !f.wide()
 	if d.Chat {
-		if closed, err := c.cfg.Chat.ChatIntakeClosed(ctx, shown.Repository); err != nil {
+		if row, ok, err := c.cfg.Chat.ChatIntake(ctx, shown.Repository); err != nil {
 			log.Printf("console: the intake of %s: %v", shown.Name, err)
-		} else {
-			d.IntakeClosed = closed
+		} else if ok {
+			d.IntakeClosed, d.IntakeBy, d.IntakeAt = row.Closed, row.By, row.At
 		}
 	}
 	v.filter, d.boardFilter, d.Query = f, f, f.query()
@@ -2956,7 +2958,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0)
+	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return

@@ -628,6 +628,24 @@ func askedCarry(body string) int64 {
 	return pr
 }
 
+// askedRoadmapItem is the issue body's line "Roadmap: #<n>" (the #
+// optional, key in any case, the last one winning): the docs/roadmap.md
+// item the pulled card builds, which no second card of the repository
+// cites; 0 without one.
+func askedRoadmapItem(body string) int {
+	var item int
+	for l := range strings.Lines(body) {
+		key, v, _ := strings.Cut(l, ":")
+		if !strings.EqualFold(strings.TrimSpace(key), "roadmap") {
+			continue
+		}
+		if n, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(v), "#"))); err == nil && n > 0 {
+			item = n
+		}
+	}
+	return item
+}
+
 // isRulingID: a design decision's C-entry id, "C20" in any case.
 func isRulingID(s string) bool {
 	if len(s) < 2 || (s[0] != 'C' && s[0] != 'c') {
@@ -643,9 +661,9 @@ func isRulingID(s string) bool {
 
 // briefObjective is objective as a model's brief carries it: its body
 // without the lines the intake reads into the card's fields (Size,
-// Budget, Rung, Ships, Carries), and when mapped, without the card's
-// directories line, which the brief's repository map lists (roadmap 201).
-// Every other line stands as its author wrote it.
+// Budget, Rung, Ships, Carries, Roadmap), and when mapped, without the
+// card's directories line, which the brief's repository map lists
+// (roadmap 201). Every other line stands as its author wrote it.
 func briefObjective(objective string, mapped bool) string {
 	title, body, ok := strings.Cut(objective, "\n\n")
 	if !ok {
@@ -658,7 +676,7 @@ func briefObjective(objective string, mapped bool) string {
 		ruling, _ := askedShips(l)
 		key, _, _ := strings.Cut(l, ":")
 		dirs := strings.EqualFold(strings.TrimSpace(key), "directories") || strings.TrimSpace(key) == cardDirectories
-		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && (!mapped || !dirs) {
+		if size == "" && eur == 0 && rung == "" && ruling == "" && askedCarry(l) == 0 && askedRoadmapItem(l) == 0 && (!mapped || !dirs) {
 			kept.WriteString(l)
 		}
 	}
@@ -1000,6 +1018,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		ShipsRuling:  shipsRuling,
 		ShipsClauses: shipsClauses,
 		CarryPR:      askedCarry(issue.Body),
+		RoadmapItem:  askedRoadmapItem(issue.Body),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",
