@@ -30,10 +30,12 @@ import (
 // on the cluster — a green run covers it, it never opened a pull request,
 // or it finished before the chain began recording — the fact a finished
 // card's own page waits on.
-// ChainRun is the run that carries the card's pull request, 0 while none
-// does; ChainGreen is the repository's newest green run, 0 for none, and
-// ChainGreenAt when it went green — the run and the moment a done card's
-// cover clause names (C38).
+// ChainRun is the forge's number of the run that carries the card's pull
+// request, 0 while none does; ChainGreen is the repository's newest green
+// run's number, 0 for none, and ChainGreenAt when it went green — the run
+// and the moment a done card's cover clause names (C38). The numbers are
+// what the forge's own pages and the board's links speak, not the API ids
+// the store keeps.
 type BoardTask struct {
 	Task
 	Escalation      string
@@ -73,14 +75,18 @@ const deployLive = `(tasks.pr_number = 0
 	   AND NOT EXISTS (SELECT 1 FROM chain_runs cr WHERE cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number)
 	   AND COALESCE((SELECT min(updated_at) FROM chain_runs WHERE repository = tasks.repository), 'infinity'::timestamptz) > COALESCE(tasks.finished_at, tasks.created_at))`
 
-// chainGreen is the newest green run of the card's repository, 0 for none.
-const chainGreen = `COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)`
+// chainGreen is the forge's number of the newest green run of the card's
+// repository, 0 for none — the number the board's links and words speak,
+// not the API id the row keeps.
+const chainGreen = `COALESCE((SELECT max(green.run_index) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)`
 
 // chainCovers is the SQL test that a green run covers the card's change:
 // the run that carried it is recorded and the newest green run sits at or
-// after it. deployLive and the reconciler's ChainCovered both read it.
+// after it. It compares run ids, not numbers: both order a repository's
+// runs the same way, and the ids are the rows' own keys. deployLive and
+// the reconciler's ChainCovered both read it.
 const chainCovers = `(EXISTS (SELECT 1 FROM chain_runs carry WHERE carry.repository = tasks.repository AND carry.pr_number = tasks.pr_number)
-	AND ` + chainGreen + `
+	AND COALESCE((SELECT max(green.run_id) FROM chain_runs green WHERE green.repository = tasks.repository AND green.status = 'success'), 0)
 	   >= (SELECT min(mine.run_id) FROM chain_runs mine WHERE mine.repository = tasks.repository AND mine.pr_number = tasks.pr_number))`
 
 // rollCarries is the SQL test that request rr lists the card's pull request.
@@ -107,7 +113,7 @@ const boardTaskColumns = taskColumns + `, COALESCE(esc.body, ''), esc.at, esc.ch
 		        COALESCE((SELECT cr.status FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number
 		        ORDER BY cr.run_id DESC LIMIT 1), ''),
 		        (` + deployLive + `),
-		        COALESCE((SELECT cr.run_id FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number), 0),
+		        COALESCE((SELECT cr.run_index FROM chain_runs cr WHERE tasks.pr_number > 0 AND cr.repository = tasks.repository AND cr.pr_number = tasks.pr_number), 0),
 		        ` + chainGreen + `,
 		        (SELECT g.updated_at FROM chain_runs g WHERE g.repository = tasks.repository AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1),
 		        COALESCE(rl.roll_id, ''), COALESCE(rl.roll_issue, 0)`
@@ -294,9 +300,9 @@ func (s *PGStore) ChainFacts(ctx context.Context, repository string, pr int64) (
 	var headStatus sql.NullString
 	var headAt, rerunAt, greenAt sql.NullTime
 	var dismissed sql.NullBool
-	err := s.db.QueryRowContext(ctx, `SELECT c.run_id, c.status, c.updated_at,
-			h.run_id, h.status, h.updated_at, h.rerun_at, h.dismissed_at,
-			COALESCE((SELECT max(g.run_id) FROM chain_runs g WHERE g.repository = $1 AND g.status = 'success'), 0),
+	err := s.db.QueryRowContext(ctx, `SELECT c.run_index, c.status, c.updated_at,
+			h.run_index, h.status, h.updated_at, h.rerun_at, h.dismissed_at,
+			COALESCE((SELECT max(g.run_index) FROM chain_runs g WHERE g.repository = $1 AND g.status = 'success'), 0),
 			(SELECT g.updated_at FROM chain_runs g WHERE g.repository = $1 AND g.status = 'success' ORDER BY g.run_id DESC, g.pr_number LIMIT 1)
 		FROM chain_runs c LEFT JOIN chain_runs h ON h.repository = c.repository AND h.pr_number = 0
 		WHERE c.repository = $1 AND c.pr_number = $2`, repository, pr).

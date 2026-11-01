@@ -177,7 +177,7 @@ func TestCriteriaGapConfirm(t *testing.T) {
 }
 
 // Fault 9: typed text on the board is draft state — every typed field it
-// renders carries the preserve treatment the find field already carries,
+// renders carries the preserve treatment the find's form already carries,
 // so one criterion's Waive does not erase its siblings' reasons — and the
 // card states its closing rule.
 func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
@@ -194,6 +194,11 @@ func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
 		t.Fatalf("the board's typed fields = %v", typed)
 	}
 	for _, f := range typed {
+		// the find field rides its form's preserve; its own mark would nest
+		// and the swap would carry the box out of the form
+		if strings.Contains(f, `id="q"`) {
+			continue
+		}
 		if !strings.Contains(f, "hx-preserve") {
 			t.Errorf("a typed field loses its text on a swap: %s", f)
 		}
