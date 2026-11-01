@@ -5069,3 +5069,28 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		}
 	})
 }
+
+// The worker pod carries the card's line bound as LINE_BOUND: the size's
+// plan plus the raises its extend answers added — the same effective
+// number the gate and the supervisor read. An unsized card is bound by
+// the policy's large_lines, like every line-bound check.
+func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
+	spec := sessionSpec{id: "s-1", policy: policy.Document{Risk: policy.Risk{LargeLines: 400}}}
+	pod := func(t Task) map[string]string {
+		p := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(t, spec)
+		vars := map[string]string{}
+		for _, e := range p["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
+			vars[e["name"].(string)] = e["value"].(string)
+		}
+		return vars
+	}
+	if got := pod(Task{ID: "t1", Size: "small"})["LINE_BOUND"]; got != "120" {
+		t.Fatalf("LINE_BOUND = %q for a small card under large_lines 400, want 120", got)
+	}
+	if got := pod(Task{ID: "t1", Size: "small", Usage: TaskUsage{ExtraLines: 30}})["LINE_BOUND"]; got != "150" {
+		t.Fatalf("LINE_BOUND = %q for a small card raised by 30, want 150", got)
+	}
+	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
+		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)
+	}
+}

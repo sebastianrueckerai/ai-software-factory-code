@@ -32,7 +32,7 @@ func setRequiredEnv(t *testing.T) {
 	for name, val := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "do it", "REPOSITORY": "sf/repo",
 		"BRANCH": "factory/t1", "PUSH_URL": "https://example/fork.git", "GATEWAY_URL": "http://gw",
-		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200",
+		"TOKEN_FILE": "/tmp/token", "MODEL": "openrouter/x", "ANSWER_TOKENS": "100", "HEADROOM_TOKENS": "10", "STEPS": "200", "LINE_BOUND": "100",
 		"MESSAGE_TOKEN_SHA256": testMessageHash, "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 		// the worker's own sandbox exports REPO_SHA; the seeded repos of
 		// the tests hold no such commit, so none is pinned here
@@ -359,7 +359,7 @@ func TestTokenStaysOutOfEnvAndGitConfig(t *testing.T) {
 	for k, v := range map[string]string{
 		"TASK_ID": "t1", "OBJECTIVE": "o", "REPOSITORY": "sf/r", "BRANCH": "b", "PUSH_URL": "https://example/fork.git",
 		"GATEWAY_URL": "http://gw", "TOKEN_FILE": "/tok", "MODEL": "m",
-		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "MESSAGE_TOKEN_SHA256": testMessageHash,
+		"ANSWER_TOKENS": "1", "HEADROOM_TOKENS": "1", "STEPS": "1", "LINE_BOUND": "0", "MESSAGE_TOKEN_SHA256": testMessageHash,
 		"EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443",
 	} {
 		t.Setenv(k, v)

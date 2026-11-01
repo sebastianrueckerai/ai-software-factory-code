@@ -14,6 +14,7 @@ type SessionFacts struct {
 	Attempt, Sessions   int
 	Size                string // the card's size; "" for an unsized card
 	LargeLines          int    // the policy's risk.large_lines
+	ExtraLines          int    // the line-bound raises its extend answers added
 }
 
 func (f SessionFacts) Line() string {
@@ -23,10 +24,10 @@ func (f SessionFacts) Line() string {
 		return line + "."
 	}
 	line += fmt.Sprintf("; this is session %d of the %d the policy allows before a human is asked.", f.Attempt, f.Sessions)
-	if lines, sized := cardLineBound(f.Size, f.LargeLines); sized {
-		line += fmt.Sprintf(" This card is planned at most %d changed lines (size %s).", lines, f.Size)
+	if _, sized := cardLineBound(f.Size, f.LargeLines); sized {
+		line += fmt.Sprintf(" This card is planned at most %d changed lines (size %s).", effectiveLineBound(f.Size, f.LargeLines, f.ExtraLines), f.Size)
 	} else {
-		line += fmt.Sprintf(" This card has no size, so it is planned at most %d changed lines, the policy's large_lines.", lines)
+		line += fmt.Sprintf(" This card has no size, so it is planned at most %d changed lines, the policy's large_lines.", effectiveLineBound(f.Size, f.LargeLines, f.ExtraLines))
 	}
 	if f.Attempt >= f.Sessions {
 		line += " It is the last one: push your work before it ends."

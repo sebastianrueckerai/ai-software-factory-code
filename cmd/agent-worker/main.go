@@ -479,9 +479,12 @@ type workerEnv struct {
 	cheapModel                                                string
 	answerTokens, headroomTokens                              int
 	steps                                                     int
-	findings, answers, posterInfo, tools                      []string
-	author, authorStanding                                    string
-	home                                                      string
+	// lineBound (LINE_BOUND) is the card's line bound: the changed lines
+	// the pushed diff against its merge base may hold; 0 is off
+	lineBound                            int
+	findings, answers, posterInfo, tools []string
+	author, authorStanding               string
+	home                                 string
 	// messageHash is sha256 of the session's message bearer, which only
 	// factoryd holds
 	messageHash [32]byte
@@ -591,6 +594,9 @@ func loadEnv() (workerEnv, error) {
 	}
 	if e.steps, err = strconv.Atoi(str("STEPS")); err != nil || e.steps <= 0 {
 		return e, fmt.Errorf("STEPS must be a positive step cap, is %q", str("STEPS"))
+	}
+	if e.lineBound, err = strconv.Atoi(str("LINE_BOUND")); err != nil || e.lineBound < 0 {
+		return e, fmt.Errorf("LINE_BOUND must be a non-negative line bound, is %q", str("LINE_BOUND"))
 	}
 	// FINDINGS, ANSWERS, POSTER_INFO, TOOLS, DIRECTORIES, MIGRATION_GLOBS and LEFT_OUT arrive as JSON arrays; absent means none.
 	for name, dst := range map[string]*[]string{"FINDINGS": &e.findings, "ANSWERS": &e.answers, "POSTER_INFO": &e.posterInfo, "TOOLS": &e.tools,
@@ -1012,17 +1018,19 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	}
 	// The fetch ran upload-pack under the agent's repo config, so the worker
 	// repo's config is not trusted either: the commit and the token-bearing
-	// push run from a bare repo made after every agent process is dead,
+	// push run from a fresh repo made after every agent process is dead,
 	// borrowing the worker repo's objects only.
 	send, err := os.MkdirTemp(filepath.Dir(agentRepo), ".send-")
 	if err != nil {
 		return "", err
 	}
 	defer os.RemoveAll(send)
-	if _, err := e.git("", "init", "-q", "--bare", send); err != nil {
+	// a plain repo, not bare: the line-bound rule's read-tree merge needs
+	// a work tree to run in
+	if _, err := e.git("", "init", "-q", send); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(send, "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(send, ".git", "objects", "info", "alternates"), []byte(filepath.Join(own, ".git", "objects")+"\n"), 0o600); err != nil {
 		return "", err
 	}
 	parents, guard := sessionParents(e, send, base, mainHead, agent)
@@ -1044,6 +1052,9 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err != nil {
 		return "", err
 	}
+	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
+		return "", err
+	}
 	if err := refuseWorkflowDirChange(e, send, guard, head); err != nil {
 		return "", err
 	}
@@ -1053,10 +1064,72 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if e.pushToken, err = pushToken(head); err != nil {
 		return "", err
 	}
-	if err := e.gitAuth(e.pushToken, "", "--git-dir="+send, "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
+	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
 	return head, nil
+}
+
+// errPushOverBound is the named refusal of the card's line bound: the
+// branch's diff against its merge base does not fit it, and no shape the
+// worker can give the push changes that.
+var errPushOverBound = errors.New("push refused: over the card's line bound")
+
+// fitBound is the card's line-bound rule on one push, and the shape the
+// sync lands in. A tree that already holds main's content — the sync the
+// session performed without main's ancestry — is recorded as the merge it
+// is, whatever its size, so main's commits stay main's in the pull
+// request's diff. A branch whose diff against its merge base is over the
+// bound is merged with main by the rule when that fits; what no merge can
+// fit is refused by name.
+func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound int) (string, string, error) {
+	if bound <= 0 {
+		return head, guard, nil
+	}
+	mb, err := e.git(send, "merge-base", head, mainHead)
+	if err != nil {
+		return "", "", err
+	}
+	billed := changedLines(e, send, mb, head)
+	merge := func(t string) (string, string, error) {
+		h, err := e.runGit(send, botIdentity, "commit-tree", t, "-p", base, "-p", mainHead, "-m", commitMessage(e))
+		return h, mainHead, err
+	}
+	merged, mErr := mergedTree(e, send, mb, head, mainHead)
+	// the faithful sync: the tree is what a merge with main would give
+	if mErr == nil && merged == tree && changedLines(e, send, mainHead, tree) <= bound {
+		return merge(tree)
+	}
+	if billed <= bound {
+		return head, guard, nil
+	}
+	if mErr == nil && changedLines(e, send, mainHead, merged) <= bound {
+		return merge(merged)
+	}
+	return "", "", fmt.Errorf("%w: the branch's diff against its merge base is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
+		errPushOverBound, billed-bound, bound)
+}
+
+// changedLines is the insertions plus deletions between two commits,
+// trees or both.
+func changedLines(e workerEnv, send, a, b string) int {
+	short, err := e.git(send, "diff", "--shortstat", a, b)
+	if err != nil {
+		return 0
+	}
+	d := parseShortstat(short)
+	return d.Insertions + d.Deletions
+}
+
+// mergedTree is the three-way merge of head and mainHead over base as a
+// tree, when git can make it without conflicts.
+func mergedTree(e workerEnv, send, base, head, mainHead string) (string, error) {
+	idx := filepath.Join(send, "fit-index")
+	defer os.Remove(idx)
+	if _, err := e.runGit(send, []string{"GIT_INDEX_FILE=" + idx}, "read-tree", "-m", base, head, mainHead); err != nil {
+		return "", err
+	}
+	return e.runGit(send, []string{"GIT_INDEX_FILE=" + idx}, "write-tree")
 }
 
 // sessionParents answers the pushed commit's parents and the commit whose

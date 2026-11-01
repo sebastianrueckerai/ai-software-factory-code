@@ -217,6 +217,10 @@ type TaskUsage struct {
 	// can run its own check-in moments while the card's own budget stays
 	// the cap and an unspent share stops no card that was never answered.
 	ExtraCheckinShare int
+	// ExtraLines is the line-bound raise the card's extend answers added:
+	// the effective bound every line-bound check reads is the size's plan
+	// plus this.
+	ExtraLines int
 }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
@@ -1038,7 +1042,7 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -1053,7 +1057,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1338,8 +1342,8 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 // task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
-		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
+		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9, extra_lines = $10 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare, u.ExtraLines)
 	return oneRow(res, err, "task "+id)
 }
 
