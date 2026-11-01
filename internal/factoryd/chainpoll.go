@@ -190,6 +190,35 @@ func (s *PGStore) RecordChainStall(ctx context.Context, repository, sha string) 
 	return err
 }
 
+// UnmappedChainRuns lists the chain rows whose forge number is still
+// unset, by repository: the ids the one-time backfill walks the runs API
+// for.
+func (s *PGStore) UnmappedChainRuns(ctx context.Context) (map[string][]int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT repository, run_id FROM chain_runs
+		WHERE run_index = 0 AND run_id > 0 ORDER BY repository, run_id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]int64{}
+	for rows.Next() {
+		var repository string
+		var id int64
+		if err := rows.Scan(&repository, &id); err != nil {
+			return nil, err
+		}
+		out[repository] = append(out[repository], id)
+	}
+	return out, rows.Err()
+}
+
+// SetChainRunIndex sets one chain row's forge number by its API id.
+func (s *PGStore) SetChainRunIndex(ctx context.Context, repository string, runID, index int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chain_runs SET run_index = $3
+		WHERE repository = $1 AND run_id = $2`, repository, runID, index)
+	return err
+}
+
 // ChainHeadSince is the head row of sha's last change: with a pending
 // verdict standing still it is the time the pending was first recorded.
 func (s *PGStore) ChainHeadSince(ctx context.Context, repository, sha string) (time.Time, bool, error) {
@@ -347,6 +376,8 @@ type ChainStore interface {
 	UncarriedMerged(ctx context.Context, repository string) ([]Task, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run, index int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run, index int64, status string) error
+	UnmappedChainRuns(ctx context.Context) (map[string][]int64, error)
+	SetChainRunIndex(ctx context.Context, repository string, runID, index int64) error
 	UnsettledChainCommits(ctx context.Context, repository string, shas []string) (map[string]bool, error)
 	RefreshChainStatus(ctx context.Context, repository, sha, status string) error
 	RecordChainStall(ctx context.Context, repository, sha string) error
@@ -465,6 +496,9 @@ type ChainPoller struct {
 func (p *ChainPoller) Run(ctx context.Context) {
 	p.once()
 	wake := p.wakeChan()
+	if err := p.backfillRunIndexes(ctx); err != nil {
+		log.Printf("chain poller: backfill the forge's run numbers: %v", err)
+	}
 	ticker := time.NewTicker(p.Poll)
 	defer ticker.Stop()
 	var last string
@@ -949,6 +983,80 @@ func (p *ChainPoller) mainRuns(ctx context.Context, proj Project) ([]ActionRun, 
 	}
 	return seen, nil
 }
+
+// backfillRunIndexes once gives the chain rows written before the forge's
+// run number was kept their number, from the runs API. It asks nothing
+// when every row speaks its number.
+func (p *ChainPoller) backfillRunIndexes(ctx context.Context) error {
+	unmapped, err := p.Store.UnmappedChainRuns(ctx)
+	if err != nil {
+		return err
+	}
+	if len(unmapped) == 0 {
+		return nil
+	}
+	projects, err := p.Projects.Projects(ctx)
+	if err != nil {
+		return err
+	}
+	byRepo := map[string]Project{}
+	for _, proj := range projects {
+		byRepo[proj.Repository] = proj
+	}
+	for repository, ids := range unmapped {
+		proj, ok := byRepo[repository]
+		if !ok {
+			log.Printf("chain poller: %s: %d chain runs without their forge numbers and no project to read them", repository, len(ids))
+			continue
+		}
+		if left := p.backfillRepository(ctx, proj, ids); len(left) > 0 {
+			log.Printf("chain poller: %s: %d chain runs below the runs list, left without their forge numbers", repository, len(left))
+		}
+	}
+	return nil
+}
+
+// backfillRepository maps proj's unmapped run ids to the forge numbers
+// the runs API reports, paging its push runs newest first. It stops when
+// the set empties, a page comes back empty, or a page's oldest run falls
+// below the oldest id it lacks — that id is older than the list, or not
+// of it, and reading on buys nothing. It returns the ids still unmapped.
+func (p *ChainPoller) backfillRepository(ctx context.Context, proj Project, ids []int64) []int64 {
+	repo := proj.Repo()
+	want := map[int64]bool{}
+	for _, id := range ids {
+		want[id] = true
+	}
+	oldest := slices.Min(ids)
+	for page := 1; len(want) > 0; page++ {
+		runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
+			url.Values{"event": {"push"}, "limit": {strconv.Itoa(backfillRunsPage)}, "page": {strconv.Itoa(page)}})
+		if err != nil {
+			log.Printf("chain poller: %s: backfill page %d: %v", proj.Repository, page, err)
+			break
+		}
+		if len(runs) == 0 {
+			break
+		}
+		for _, run := range runs {
+			if !want[run.ID] || run.Index <= 0 {
+				continue
+			}
+			if err := p.Store.SetChainRunIndex(ctx, proj.Repository, run.ID, run.Index); err != nil {
+				log.Printf("chain poller: %s: backfill run %d: %v", proj.Repository, run.ID, err)
+				return slices.Collect(maps.Keys(want))
+			}
+			delete(want, run.ID)
+		}
+		if runs[len(runs)-1].ID < oldest {
+			break
+		}
+	}
+	return slices.Collect(maps.Keys(want))
+}
+
+// backfillRunsPage is the runs-per-page the backfill asks the forge for.
+const backfillRunsPage = 50
 
 // chainCarried lists the pull requests of the cards whose own merge
 // commit lies in run's compare range, ascending.

@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -100,6 +101,27 @@ func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string,
 		return nil
 	}
 	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, index: index, status: status, updated: s.stamp()})
+	return nil
+}
+
+// UnmappedChainRuns mirrors PGStore's read: the rows without a forge
+// number, by repository.
+func (s *fakeStore) UnmappedChainRuns(ctx context.Context) (map[string][]int64, error) {
+	out := map[string][]int64{}
+	for _, c := range s.chain {
+		if c.index == 0 && c.run > 0 {
+			out[c.repo] = append(out[c.repo], c.run)
+		}
+	}
+	return out, nil
+}
+
+func (s *fakeStore) SetChainRunIndex(ctx context.Context, repository string, runID, index int64) error {
+	for i, c := range s.chain {
+		if c.repo == repository && c.run == runID {
+			s.chain[i].index = index
+		}
+	}
 	return nil
 }
 
@@ -426,7 +448,25 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				t.Errorf("runs query %v", r.URL.Query())
 			}
 			f.runReads = append(f.runReads, repo)
-			reply(map[string]any{"workflow_runs": f.runs[repo]})
+			runs := f.runs[repo]
+			// limit and page slice the list, as the forge's runs API does
+			if q := r.URL.Query(); q.Get("limit") != "" {
+				n, err := strconv.Atoi(q.Get("limit"))
+				page := 1
+				if v, perr := strconv.Atoi(q.Get("page")); perr == nil {
+					page = v
+				}
+				if err == nil && n > 0 {
+					if lo := (page - 1) * n; lo >= len(runs) {
+						runs = nil
+					} else if hi := lo + n; hi < len(runs) {
+						runs = runs[lo:hi]
+					} else {
+						runs = runs[lo:]
+					}
+				}
+			}
+			reply(map[string]any{"workflow_runs": runs})
 		case r.Method == "GET" && p == "/commits":
 			reply(f.comps[repo])
 		case strings.HasPrefix(p, "/git/commits/"):
@@ -1112,6 +1152,111 @@ func TestChainRowsKeepTheForgesRunNumber(t *testing.T) {
 		if run != row.run || index != row.index {
 			t.Fatalf("pr %d: run %d index %d; want run %d index %d", row.pr, run, index, row.run, row.index)
 		}
+	}
+}
+
+// numbered lists push runs with ids from down to to, newest first, each
+// carrying its forge number: id − 1096, as id 3356 carries 2260.
+func numbered(from, to int64) []map[string]any {
+	var out []map[string]any
+	for id := from; id >= to; id-- {
+		m := pushRun(id, fmt.Sprintf("c%d", id), "success")
+		m["index_in_repo"] = id - 1096
+		out = append(out, m)
+	}
+	return out
+}
+
+// The store lists the chain rows whose forge number is still unset, by
+// repository, and sets one row's number by its API id: the backfill's
+// read and write. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestTheStoreListsAndSetsUnmappedChainRuns(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE chain_runs`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	must := func(err error) {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	must(pg.RecordChainRun(ctx, "sf/r", 7, "a1", 3356, 0, "success"))
+	must(pg.RecordChainRun(ctx, "sf/r", 0, "a2", 3400, 0, "pending"))
+	must(pg.RecordChainRun(ctx, "sf/other", 3, "a3", 3200, 2150, "success"))
+	got, err := pg.UnmappedChainRuns(ctx)
+	if err != nil {
+		t.Fatalf("UnmappedChainRuns: %v", err)
+	}
+	if len(got) != 1 || !slices.Equal(got["sf/r"], []int64{3356, 3400}) {
+		t.Fatalf("UnmappedChainRuns = %v; want sf/r: [3356 3400]", got)
+	}
+	must(pg.SetChainRunIndex(ctx, "sf/r", 3356, 2260))
+	got, err = pg.UnmappedChainRuns(ctx)
+	if err != nil {
+		t.Fatalf("UnmappedChainRuns: %v", err)
+	}
+	if len(got) != 1 || !slices.Equal(got["sf/r"], []int64{3400}) {
+		t.Fatalf("UnmappedChainRuns after the set = %v; want sf/r: [3400]", got)
+	}
+	var index int64
+	if err := pg.db.QueryRowContext(ctx, `SELECT run_index FROM chain_runs WHERE repository = 'sf/r' AND run_id = 3356`).Scan(&index); err != nil || index != 2260 {
+		t.Fatalf("the set row's index %d, %v; want 2260", index, err)
+	}
+}
+
+// The backfill walks the runs API once at start and gives the chain rows
+// written before the number was kept their forge numbers; a second start
+// reads nothing, the rows already speak them.
+func TestBackfillGivesOldRowsTheirForgeNumbers(t *testing.T) {
+	f := &chainForgejo{runs: map[string][]map[string]any{demoRepo: numbered(3400, 3398)}}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	store.chain = []fakeChainRun{
+		{repo: demoRepo, pr: 7, sha: "a1", run: 3400},
+		{repo: demoRepo, pr: 0, sha: "a2", run: 3398},
+	}
+	if err := p.backfillRunIndexes(context.Background()); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	for _, row := range store.chain {
+		if row.index != row.run-1096 {
+			t.Fatalf("row pr %d run %d index %d; want the forge's number %d", row.pr, row.run, row.index, row.run-1096)
+		}
+	}
+	reads := len(f.runReads)
+	if err := p.backfillRunIndexes(context.Background()); err != nil {
+		t.Fatalf("second backfill: %v", err)
+	}
+	if len(f.runReads) != reads {
+		t.Fatalf("the second backfill read the runs API %d times; want none", len(f.runReads)-reads)
+	}
+}
+
+// The backfill stops paging a repository once a page's oldest run falls
+// below the oldest id it still lacks: that run is older than the list or
+// not of it, and reading to the end of history buys nothing. The row
+// stays without its number and the board hides its link.
+func TestBackfillStopsBelowTheOldestRunItLacks(t *testing.T) {
+	// the list skips run 3330 and reaches below it: the page that passes
+	// beneath the missing id is the last one read
+	runs := append(numbered(3400, 3331), numbered(3329, 3301)...)
+	f := &chainForgejo{runs: map[string][]map[string]any{demoRepo: runs}}
+	p, store := newTestPoller(t, f, seedProject(demoRepo))
+	store.chain = []fakeChainRun{{repo: demoRepo, pr: 0, sha: "a1", run: 3330}}
+	if err := p.backfillRunIndexes(context.Background()); err != nil {
+		t.Fatalf("backfill: %v", err)
+	}
+	if len(f.runReads) != 2 {
+		t.Fatalf("runs pages read %d; want 2, the bound stops the third", len(f.runReads))
+	}
+	if store.chain[0].index != 0 {
+		t.Fatalf("row gained index %d; want 0, the run is not in the list", store.chain[0].index)
 	}
 }
 
