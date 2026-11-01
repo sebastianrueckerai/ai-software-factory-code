@@ -95,6 +95,16 @@ func TestPressWiringConstruction(t *testing.T) {
 	if !strings.Contains(string(page), `<div id="note" aria-live="polite"></div>`) {
 		t.Errorf("FIX MISSING: the page holds no note outlet")
 	}
+	if !strings.Contains(string(page), `<div id="board-col"><div id="note" aria-live="polite"></div>{{template "board" .}}</div>`) {
+		t.Errorf("FIX MISSING: the note outlet sits in the screen grid, not in the board's cell")
+	}
+	css, err := os.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), "#board-col { display: flex") {
+		t.Errorf("FIX MISSING: the board's cell is no flex column, so the note cannot share it")
+	}
 }
 
 // The pending state rides the form: htmx marks the form it posts, not the

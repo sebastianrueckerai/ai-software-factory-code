@@ -763,8 +763,12 @@ body:has(#screen) #flash { flex: none; }
 #screen.wide .chat { display: none; }
 #screen.chat-only { grid-template-columns: minmax(0, 1fr); }
 #screen.chat-only .chat { display: flex; }
-#screen.chat-only #board, #screen.chat-only #chat-divider { display: none; }
-#board { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+#screen.chat-only #board-col, #screen.chat-only #chat-divider { display: none; }
+/* the board's cell holds the note outlet above the board: a fourth
+   child of the screen grid would take the board's column and push the
+   board under the chat */
+#board-col { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+#board { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
 .lane { flex: 1; min-height: 0; }
 .lane.five { grid-template-columns: minmax(0, 1.5fr) repeat(3, minmax(0, 1fr)); overflow: visible; }
 .lane.five .cards { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
