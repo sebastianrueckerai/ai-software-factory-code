@@ -711,7 +711,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 		return `action="` + action + `" hx-post="` + action + `" hx-target="#note" hx-swap="innerHTML"`
 	}
 	for _, want := range []string{
-		`data-query="?project=linkshort" hx-get="/?project=linkshort" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
+		`data-query="?project=linkshort" hx-get="/board?project=linkshort" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
 		htmx("/tasks/t-c7/retry") + ` class="inline">` + filter,
 		htmx("/tasks/t-spec2/plan/changes") + ` data-to="running">` + "\n" + filter,
 		`<form method="post" ` + htmx("/tasks/t-ask/answer") + ` data-to="running">` + "\n" + filter,

@@ -532,7 +532,7 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	if want := []string{"Queued", "Running", "Waiting on a human", "Waiting for image", "Waiting on the author", "In review", "Merged", "Done", "Failed", "Closed"}; !slices.Equal(titles, want) {
 		t.Errorf("the wide view's columns are %v, want %v", titles, want)
 	}
-	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide" hx-get="/?project=linkshort&amp;view=wide" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
+	for _, want := range []string{`<div id="board" data-project="linkshort" data-query="?project=linkshort&amp;view=wide" hx-get="/board?project=linkshort&amp;view=wide" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
 		`<section aria-labelledby="human-lane" id="needs-you">`, `id="status-line"`,
 		`<input type="hidden" name="project" value="linkshort"><input type="hidden" name="view" value="wide">`,
 		`<a href="/?project=linkshort" id="view-toggle" class="view-toggle" data-view="" aria-keyshortcuts="w">Four columns</a>`} {

@@ -77,7 +77,7 @@ func TestPressWiringConstruction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(board), `hx-trigger="board-refresh from:body"`) || !strings.Contains(string(board), `hx-get="/{{.Query}}"`) {
+	if !strings.Contains(string(board), `hx-trigger="board-refresh from:body"`) || !strings.Contains(string(board), `hx-get="/board{{.Query}}"`) {
 		t.Errorf("FIX MISSING: the board div carries no board-refresh trigger with its GET")
 	}
 	if !strings.Contains(string(board), `{{else}}hx-target="#note" hx-swap="innerHTML"{{end}}`) {
