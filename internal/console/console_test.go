@@ -316,10 +316,9 @@ type fakeTasks struct {
 	roadmap map[string]string
 	chain   map[string]factoryd.ChainFacts
 	read    func(s *fakeTasks, id string)
-	// fundedEUR is the month's chat funding FundCard's pool counts, events
-	// the ledger its card_funded row goes to
-	fundedEUR float64
-	events    *fakeEvents
+	// events is the ledger FundCard's card_funded row goes to and the
+	// pool its guard reads (fakeEvents)
+	events *fakeEvents
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -341,8 +340,12 @@ func (s *fakeTasks) ProjectImageParks(_ context.Context, project string) ([]fact
 // store's one transaction does.
 func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
 	if bounds != nil {
-		if factoryd.Cents(s.fundedEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
-			return 0, 0, &factoryd.PoolSpentError{Funded: s.fundedEUR}
+		funded, err := s.events.AgentFundedEUR(ctx, e.Repository, time.Now())
+		if err != nil {
+			return 0, 0, err
+		}
+		if factoryd.Cents(funded)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
+			return 0, 0, &factoryd.PoolSpentError{Funded: funded}
 		}
 		for _, k := range s.tasks {
 			if k.ID == id && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
@@ -1129,7 +1132,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Pools: r.events,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
