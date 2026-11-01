@@ -128,6 +128,10 @@ type Tasks interface {
 	// bounds mark the agent's own raise, checked under a lock on e's
 	// repository (*factoryd.PoolSpentError, *factoryd.CardCapError).
 	FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (from, to float64, err error)
+	// ExtendCard raises task id's caps — its granted sessions, its line
+	// bound and its budget — and writes e, the raise's card_extended row,
+	// in one transaction.
+	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -506,6 +510,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
 		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
+		{"POST /tasks/{id}/extend", http.HandlerFunc(c.extendCard), nil},
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},

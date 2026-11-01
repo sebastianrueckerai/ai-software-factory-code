@@ -757,7 +757,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 // its webhook delivers that very comment; at the session cap the answer
 // is a grant, and its event session_granted as doGrantSession's.
 func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (string, error) {
-	return c.doAnswerValue(ctx, a, id, text, "")
+	return c.doAnswerValue(ctx, a, id, text, "", "")
 }
 
 // doAnswerValue answers card id with text. value is the clicked choice's
@@ -778,7 +778,7 @@ func (c *Console) doAnswer(ctx context.Context, a actor, id, text string) (strin
 // wall, so the board form and the answer tool, which both ride here,
 // reach a session too. A human card's answer acts by its choice
 // (doHumanAnswer).
-func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value string) (string, error) {
+func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, instruction string) (string, error) {
 	text = strings.TrimSpace(text)
 	if len(text) > factoryd.MaxAnswer {
 		return "", answerFits(text)
@@ -805,6 +805,12 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 	}
 	if text == "" && value != "" && bt.Question != nil {
 		text = bt.Question.ChoiceLabel(value)
+	}
+	if value == factoryd.AnswerGrant {
+		// a grant carries its one-line instruction, or re-offers the newest
+		// denial's note, so the session the press buys is told what the
+		// human wants, not only that they want it
+		text = c.grantText(ctx, t, text, instruction)
 	}
 	if value == factoryd.AnswerFund || strings.HasPrefix(value, factoryd.AnswerFund+":") {
 		if why, err := c.unfundedSession(ctx, t); err != nil {
@@ -834,6 +840,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
 	case factoryd.AnswerClose:
 		return c.doClose(ctx, a, id, "")
+	case factoryd.AnswerExtend:
+		return "", refuse(http.StatusConflict, "an extend names its amounts: use the Extend form on the card, where you give them")
 	}
 	// the member's own words, matching none of the question's choices, are
 	// not an answer: they go to the member's chat, where the agent reads
@@ -852,6 +860,85 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value st
 		return "", err
 	}
 	return fmt.Sprintf("Answered #%d.", t.IssueNumber), nil
+}
+
+// grantText is a grant press's answer: the instruction its form named, or
+// the newest denial's note when the press named none — the session the
+// press buys hears what the human wants, not only that they want it.
+func (c *Console) grantText(ctx context.Context, t factoryd.Task, label, instruction string) string {
+	head := cmp.Or(label, "Grant one session")
+	if instruction = strings.TrimSpace(instruction); instruction == "" {
+		instruction = c.denialNote(ctx, t)
+	}
+	if instruction == "" {
+		return head
+	}
+	return head + ": " + instruction
+}
+
+// denialNote is the note the newest denied approval of t carries, "" when
+// there is none.
+func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
+	if c.cfg.Approvals == nil {
+		return ""
+	}
+	rows, err := c.cfg.Approvals.ApprovalRequests(ctx, "denied")
+	if err != nil {
+		return ""
+	}
+	var newest factoryd.ApprovalRequest
+	for _, r := range rows {
+		if r.TaskID == t.ID && r.DecisionNote != "" && (newest.DecisionNote == "" || r.CreatedAt.After(newest.CreatedAt)) {
+			newest = r
+		}
+	}
+	return newest.DecisionNote
+}
+
+// doExtend raises card id's caps — its granted sessions, its line bound
+// and its budget — the approver's answer to a stop that offers the exits:
+// one store transaction raises the three, and the note (or, when none, a
+// line naming the raise) is posted as the card's answer, so the raise and
+// the resume are one press and the run reloads the row when the answer
+// wakes it.
+func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines int, eur float64, note string) (string, error) {
+	note = strings.TrimSpace(note)
+	switch {
+	case sessions < 0 || lines < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
+		(sessions == 0 && lines == 0 && !(eur > 0)):
+		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and lines, and an amount in EUR")
+	}
+	formed := fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, eur))
+	if err := answerFits(cmp.Or(note, formed)); err != nil {
+		return "", err
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a question to extend")
+	}
+	from, to, err := c.cfg.Tasks.ExtendCard(ctx, t.ID, sessions, lines, eur,
+		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardExtended, map[string]any{"reason": note}))
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
+	case err != nil:
+		log.Printf("console: %s extends %s: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusInternalServerError, "The card could not be extended; see the factoryd log.")
+	}
+	log.Printf("console: %s extended %s by %s (%.2f to %.2f EUR) via %s: %s", a.s.user, t.ID, raiseLine(sessions, lines, eur), from, to, a.via, note)
+	if err := c.answerCard(ctx, a, t, cmp.Or(note, formed)); err != nil {
+		log.Printf("console: %s extended %s, the answer failed: %v", a.s.user, t.ID, err)
+		return "", refuse(http.StatusBadGateway, fmt.Sprintf("Extended #%d: %s (budget %.2f to %.2f), but Forgejo refused the note as the answer; answer the card on the board.", t.IssueNumber, raiseLine(sessions, lines, eur), from, to))
+	}
+	return fmt.Sprintf("Extended #%d: %s (budget %.2f to %.2f), and posted your note as the answer; the card resumes.", t.IssueNumber, raiseLine(sessions, lines, eur), from, to), nil
+}
+
+// raiseLine names an extend's raise: the sessions, lines and EUR it adds.
+func raiseLine(sessions, lines int, eur float64) string {
+	return fmt.Sprintf("+%d %s, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), lines, plural(lines, "line"), eur)
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the

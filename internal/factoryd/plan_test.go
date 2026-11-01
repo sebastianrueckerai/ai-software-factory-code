@@ -770,13 +770,13 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 				f.onIssue(body["title"].(string))
 			}
 			f.next++
-			f.issues[f.next] = &planIssue{title: body["title"].(string), body: body["body"].(string), poster: "factory-agent"}
+			f.issues[f.next] = &planIssue{title: body["title"].(string), body: body["body"].(string), poster: "factory-agent", state: "open"}
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"number":%d,"html_url":"https://git.example/linkshort/linkshort/issues/%d"}`, f.next, f.next)
 		case r.Method == "GET" && rest == "issues":
 			var list []map[string]any
 			for n := int64(1); n <= f.next; n++ {
-				if is := f.issues[n]; is != nil {
+				if is := f.issues[n]; is != nil && (r.URL.Query().Get("state") != "open" || is.state == "open") {
 					list = append(list, map[string]any{"number": n, "title": is.title, "body": is.body, "user": map[string]string{"login": is.poster}})
 				}
 			}
@@ -905,7 +905,7 @@ func newPlanRunner(t *testing.T, p Plan) (*Runner, *fakeStore, *fakeObjectStore,
 	t.Helper()
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		IssueNumber: 1, Author: "alice", AuthorWriter: true, Priority: 2, Objective: "Link shortener\n\nBuild a link shortener."}
-	fj := &planForgejo{issues: map[int64]*planIssue{1: {title: "Link shortener", poster: "alice"}}, next: 1}
+	fj := &planForgejo{issues: map[int64]*planIssue{1: {title: "Link shortener", poster: "alice", state: "open"}}, next: 1}
 	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
 	runner.forgejo = &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 	runner.completion.Forgejo = runner.forgejo

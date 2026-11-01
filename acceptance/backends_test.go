@@ -1003,6 +1003,21 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ 
 	return from, t.BudgetEUR, nil
 }
 
+func (s *acceptanceStore) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok {
+		return 0, 0, factoryd.ErrNotFound
+	}
+	from := t.BudgetEUR
+	t.BudgetEUR += eur
+	t.Usage.ExtraAttempts += sessions
+	t.Usage.ExtraLines += lines
+	s.tasks[id] = t
+	return from, t.BudgetEUR, nil
+}
+
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {
 	return 0, nil
 }

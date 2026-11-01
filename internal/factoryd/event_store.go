@@ -53,6 +53,10 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardReplanned        = "card_replanned"
 	EventCardFunded           = "card_funded"
+	// EventCardExtended is an approver's raise of a card's caps — its
+	// session cap, line bound and budget — the console's Extend the card:
+	// detail {"sessions", "lines", "amount_eur", "from_eur", "to_eur"}.
+	EventCardExtended = "card_extended"
 	// EventChatFunded is an approver's raise of a project's chat task's
 	// monthly budget, the console's Fund the chat: detail {"from_eur",
 	// "to_eur", "amount_eur", "reason"}.

@@ -96,9 +96,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 46 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
+	if pages != 47 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
 		"POST /notifications/disconnect", "POST /notifications/level", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 46 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
+		t.Fatalf("%d POST routes driven, skipped %v: want 47 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on

@@ -3106,3 +3106,37 @@ func TestRedPlainRevertRetryLinksTheSameCard(t *testing.T) {
 		t.Errorf("pause %+v, issues %q, started %q, t-rv %s; want the pause on %s, one card and t-rv closed", p, g.fj.issues, g.wf.started, g.store.tasks["t-rv"].Status, filed)
 	}
 }
+
+// The card's line bound, the same rule the worker enforces on the push,
+// refuses a head however the over-bound diff was made: no approval
+// lifts it, findings go back to the agent, and an extend raise lifts it
+// (fix 1 of the stuck-card faults). A card with no size is bound by the
+// policy's large_lines, as every line-bound check reads it.
+func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
+	run := func(size string, extra, lines int) (PolicyGate, *gateForgejo) {
+		fj := &gateForgejo{files: []string{fmt.Sprintf(`{"filename":"internal/a.go","additions":%d,"deletions":0}`, lines)}}
+		task := gateTask
+		task.Size = size
+		task.Usage.ExtraLines = extra
+		r, _, _ := newGateRunner(t, task, fj)
+		val, err := execActivity(t, r, ActivityGatePolicy, "t1", int64(9), "c1")
+		return getInto[PolicyGate](t, val, err), fj
+	}
+	want := "the pull request's diff is 20 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	g, fj := run("small", 0, 320)
+	if g.OverBound != want {
+		t.Fatalf("OverBound = %q, want %q", g.OverBound, want)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], want) {
+		t.Fatalf("comments = %q, want the refusal on the pull request", fj.comments)
+	}
+	if g, _ := run("small", 0, 300); g.OverBound != "" {
+		t.Fatalf("a small card at its 300-line bound is refused: %q", g.OverBound)
+	}
+	if g, _ := run("small", 30, 320); g.OverBound != "" {
+		t.Fatalf("an extend raise of 30 lines does not lift the refusal: %q", g.OverBound)
+	}
+	if g, _ := run("", 0, 320); g.OverBound != "" {
+		t.Fatalf("a card with no size is refused under the large bound: %q", g.OverBound)
+	}
+}

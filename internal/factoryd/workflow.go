@@ -105,6 +105,8 @@ const (
 	ActivityReconcile                   = "Reconcile"
 	ActivityEscalate                    = "Escalate"
 	ActivityRecordUsage                 = "RecordUsage"
+	ActivityReadUsage                   = "ReadUsage"
+	ActivitySuccessor                   = "Successor"
 	ActivityGatePolicy                  = "GatePolicy"
 	ActivityGateMigration               = "GateMigration"
 	ActivityGateReproduction            = "GateReproduction"
@@ -588,6 +590,9 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
+	run.extendRaise = workflow.GetVersion(ctx, "extend-raise", workflow.DefaultVersion, versionExtendRaise)
+	run.successor = workflow.GetVersion(ctx, "successor", workflow.DefaultVersion, versionSuccessor)
 
 	run.headHolds = workflow.GetVersion(ctx, "head-holds", workflow.DefaultVersion, versionHeadHolds)
 	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
@@ -1137,9 +1142,28 @@ const (
 	// buys the attempt alone and its next check-in moment stops the card
 	// again.
 	versionCheckinGrant workflow.Version = 1
+	// versionCheckinRepeat (change id "checkin-repeat"): a check-in stop
+	// whose answer changed nothing — neither the head nor the limits — is
+	// not asked again: the repeat names the unchanged commit when its
+	// answer bought a restart, else states that no reply can change it and
+	// names the exits. A run from before the change repeats its ask.
+	versionCheckinRepeat workflow.Version = 1
+	// versionExtendRaise (change id "extend-raise"): the answer wake
+	// reloads the caps from the row, so a raise the console's Extend made
+	// while the card waited reaches the run — its guard's marks and the
+	// usage the next session records — instead of the wake's grant
+	// overwriting the raise with the snapshot the last session recorded.
+	// A run from before the change keeps its in-memory usage.
+	versionExtendRaise workflow.Version = 1
 	// versionChainDone (change id "chain-done"): a run that recorded it
 	// waited at its merge for the chain; none waits now.
 	versionChainDone workflow.Version = 1
+	// versionSuccessor (change id "successor"): a session that ends on the
+	// named push refusal — the merge of main cannot fit the card's line
+	// bound — and the successor exit's answer close the card into its
+	// successor, which starts from main's tip and carries the patch and
+	// the findings. A run from before the change loops on the refusal.
+	versionSuccessor workflow.Version = 1
 	// versionToolPark (change id "tool-park"): a session that ends in
 	// missing_tool (request_tool) parks the card on an image (ParkForTool):
 	// a refusal goes to the next session at once, or to a human when the
@@ -1253,6 +1277,17 @@ const (
 	answerMax   = 3 * time.Minute
 )
 
+// checkinStopMark is a check-in stop's state: what a repeated stop
+// compares itself against (versionCheckinRepeat). Share is the count of
+// share raises its answers added, ExtraLines the line-bound raises;
+// Granted says the stop's answer bought a restart that pushed nothing.
+type checkinStopMark struct {
+	Kind, Head string
+	Share      int
+	ExtraLines int
+	Granted    bool
+}
+
 type taskRun struct {
 	ctx, short        workflow.Context
 	cfg               WorkflowConfig
@@ -1315,6 +1350,13 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
+	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
+	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
+	successor         workflow.Version // the push-bound refusal and its exit close into a successor (versionSuccessor)
+	// lastCheckinStop is the last check-in stop's mark, what a repeat
+	// compares against (versionCheckinRepeat); zero keeps a run from before
+	// the change silent
+	lastCheckinStop   checkinStopMark
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
@@ -2097,12 +2139,44 @@ func (t *taskRun) lifecycle() (string, error) {
 			if res.CheckIn.Record != nil {
 				moment = res.CheckIn.Record.Moment
 			}
-			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
+			// the work state rides the ask when no judgment ran, so the
+			// card's question holds the findings and the review verdict
+			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+			if t.checkinRepeat >= versionCheckinRepeat {
+				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Share: u.ExtraCheckinShare, ExtraLines: u.ExtraLines}
+				if prev := t.lastCheckinStop; prev.Kind == mark.Kind && prev.Head != "" && prev.Head == mark.Head {
+					sha := mark.Head
+					if len(sha) > 7 {
+						sha = sha[:7]
+					}
+					if prev.Granted {
+						reason = checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
+					} else if prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines {
+						reason = checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
+					}
+				}
+				t.lastCheckinStop = mark
+			}
+			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
+			}
+			if t.extendRaise >= versionExtendRaise {
+				// the row holds what the console's Extend raised while the
+				// card waited; the wake's grant and the next stop's marks
+				// read it, or the usage the next session records would write
+				// the raise away
+				u = t.readUsage(u)
+			}
+			if t.successor >= versionSuccessor && successorChosen(t.answers) {
+				// the successor exit's answer closes the card with its work
+				// carried on, before any branch of the chain could buy a
+				// session the close makes pointless
+				return t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review))
 			}
 			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
 				// the call cap's stop falls through to buy(), never the
 				// verify break: the answer buys the session
+				t.lastCheckinStop.Granted = true
 			} else if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
 				// a spent check-in with the pull request open verifies the
 				// head it judged below, like a dropped check-in: a bought
@@ -2116,6 +2190,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// it buys (versionCheckinGrant), so the next check-in
 				// moment runs where this one stopped the card
 				t.grantCheckin(&u, true)
+				t.lastCheckinStop.Granted = true
 			}
 			buy()
 			continue
@@ -2131,6 +2206,13 @@ func (t *taskRun) lifecycle() (string, error) {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
 				}
+			}
+			if t.successor >= versionSuccessor && res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) {
+				// the merge of main cannot fit the card's line bound: the
+				// card closes into a successor that starts from main's tip
+				// and carries the patch and the findings
+				packed, _ := packCardLines(slices.Clone(res.Findings))
+				return t.closeIntoSuccessor(packed)
 			}
 			if final, why := askUnanswered(); final != "" {
 				return t.finish(final, why)
@@ -2580,6 +2662,19 @@ func (t *taskRun) recordUsage(u TaskUsage) {
 	}
 }
 
+// readUsage reads the caps the task's row holds (ActivityReadUsage): the
+// answer wake reloads them, so a raise the console's Extend made while the
+// card waited survives the wake's own grant (versionExtendRaise). A
+// failure keeps the usage the run holds.
+func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
+	var u TaskUsage
+	if err := workflow.ExecuteActivity(t.short, ActivityReadUsage, t.taskID).Get(t.ctx, &u); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read usage", "task", t.taskID, "error", err)
+		return held
+	}
+	return u
+}
+
 // verify takes a pushed commit through its pull request, the checks and
 // the review wait. A card for a pull request factoryd opened outside any
 // card's workflow (roadmap 187) has that pull request already: with
@@ -2675,6 +2770,9 @@ func (t *taskRun) gate(commit string) verdict {
 	if g.Policy.Outcome == policy.OutcomeForbidden {
 		return verdict{final: "failed", reason: fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
 			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
+	}
+	if g.Policy.OverBound != "" {
+		return verdict{stronger: true, reason: "over the card's line bound", findings: []string{g.Policy.OverBound}}
 	}
 	if len(g.Policy.Migrations) > 0 {
 		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
@@ -4117,6 +4215,30 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 // new run, which reconciles the task and decides it again (one found
 // closing is finished at once), so no task is left running or closing
 // with its credentials live.
+// pushOverBoundMark is the worker's named refusal in a session's summary
+// (errPushOverBound, cmd/agent-worker): the branch's diff against its
+// merge base does not fit the card's line bound even after the merge of
+// main.
+const pushOverBoundMark = "push refused: over the card's line bound"
+
+// successorChosen reports whether the answer the run woke on chose the
+// successor exit: the newest answer's body carries its label.
+func successorChosen(answers []string) bool {
+	return len(answers) > 0 && strings.Contains(answers[0], ": "+SuccessorChoice)
+}
+
+// closeIntoSuccessor files the card's successor with the findings so far
+// (a packed block of lines) and finishes the card failed, the successor
+// named in its reason.
+func (t *taskRun) closeIntoSuccessor(findings string) (string, error) {
+	var succ string
+	in := SuccessorInput{TaskID: t.taskID, Findings: findings, PR: t.pr.Number}
+	if err := workflow.ExecuteActivity(t.short, ActivitySuccessor, in).Get(t.ctx, &succ); err != nil {
+		return t.finish("failed", "close into the successor: "+errMessage(err))
+	}
+	return t.finish("failed", "closed into successor "+succ)
+}
+
 func (t *taskRun) finish(final, reason string) (string, error) {
 	if t.switched != nil {
 		// the plan program finished the card; a wait it ran in returns here

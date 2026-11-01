@@ -75,8 +75,10 @@ type workflowHarness struct {
 	finishAt    time.Time
 	escalated   []string // Escalate reasons, in order
 	escalatedAt []time.Time
-	choices     [][]string // Escalate choices, in order
+	choices     [][]string       // Escalate choices, in order
+	successions []SuccessorInput // Successor filings, in order
 	usage       []TaskUsage
+	rowUsage    TaskUsage     // what ReadUsage reads back: the last recorded usage
 	logs        *lockedBuffer // the workflow's log
 	recorded    []recordedStep
 	infoAsked   []string    // RequestInfo reasons, in order
@@ -158,7 +160,15 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
-		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
+		ActivityRecordUsage: func(ctx context.Context, taskID string, u TaskUsage) error {
+			h.rowUsage = u
+			return nil
+		},
+		ActivityReadUsage: func(ctx context.Context, taskID string) (TaskUsage, error) { return h.rowUsage, nil },
+		ActivitySuccessor: func(ctx context.Context, in SuccessorInput) (string, error) {
+			h.successions = append(h.successions, in)
+			return "t-succ", nil
+		},
 		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
 		},
@@ -280,7 +290,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return nil
 		})
 	h.env.OnActivity(ActivityRecordUsage, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID string, u TaskUsage) error { h.usage = append(h.usage, u); return nil })
+		func(ctx context.Context, taskID string, u TaskUsage) error {
+			h.usage, h.rowUsage = append(h.usage, u), u
+			return nil
+		})
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
@@ -4142,6 +4155,165 @@ func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
 	}
 }
 
+// The fabricated spend stop carries its work state: the findings and the
+// last review verdict ride the escalation under the spend reason, so the
+// card's ask holds the work, not the spend number alone.
+func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason:   CheckinShareSpent,
+			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}, {Text: "the flag is read before it is set"}},
+			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 1 {
+		t.Fatalf("escalations = %q, want the one spend stop", h.escalated)
+	}
+	for _, want := range []string{CheckinShareSpent, "- the migration runs outside its transaction", "- the flag is read before it is set", "- review: concerns"} {
+		if !strings.Contains(h.escalated[0], want) {
+			t.Errorf("the escalation %q misses %q", h.escalated[0], want)
+		}
+	}
+}
+
+// A spend stop repeated on the same head and the same limits is not asked
+// again: the second ask states plainly that no reply can change it and
+// names the exits.
+func TestCheckinSpendStopRepeatedWithNoChangeNamesTheExits(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	if h.escalated[1] == h.escalated[0] {
+		t.Fatalf("the repeat ask equals the first ask: %q", h.escalated[1])
+	}
+	for _, want := range []string{"No reply can change this", "the head c1", "Extend the card, overrule the review, end the card, or leave it waiting"} {
+		if !strings.Contains(h.escalated[1], want) {
+			t.Errorf("the repeat ask %q misses %q", h.escalated[1], want)
+		}
+	}
+}
+
+// An answer that bought a restart which pushed nothing names the unchanged
+// commit (the parked spec's loop: each grant re-ran the gates on the same
+// head).
+func TestCheckinRestartThatPushedNothingNamesTheCommit(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	for _, want := range []string{"no new commit", "the head is still c1"} {
+		if !strings.Contains(h.escalated[1], want) {
+			t.Errorf("the repeat ask %q misses %q", h.escalated[1], want)
+		}
+	}
+}
+
+// A stop whose head moved since the last one is asked normally: the guard
+// compares the head, and a session that pushed clears it.
+func TestCheckinStopAfterAMovedHeadAsksAgainNormally(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.taskConfig.Sessions = 6
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		pushed("s3", "c2"),
+		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 || !strings.Contains(h.escalated[1], CheckinShareSpent) || strings.Contains(h.escalated[1], "No reply can change this") {
+		t.Fatalf("escalations = %q, want the second stop asked ordinarily on the moved head", h.escalated)
+	}
+}
+
+// A run from before the change repeats its stop as before: the guard is
+// versioned, and an old history never sees the replacement ask.
+func TestCheckinRepeatGuardIsVersioned(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.env.OnGetVersion("checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat).Return(workflow.DefaultVersion - 1)
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 || h.escalated[1] != h.escalated[0] {
+		t.Fatalf("escalations = %q, want the unversioned run repeating its ask", h.escalated)
+	}
+}
+
 // A dead-moment check-in that refuses runs the round on: its session was
 // sent back with the first session's stop lines and an empty handover
 // brief, and the dead moment dissolves into those stop lines — the next
@@ -4985,5 +5157,42 @@ func TestReplanRefusedAtTheStartVerifiesAgain(t *testing.T) {
 	}
 	if len(h.sessions) != 0 || !slices.Equal(*asked, []string{"c1"}) {
 		t.Fatalf("sessions %d, approval requests on %q; want none, [c1]", len(h.sessions), *asked)
+	}
+}
+
+// An extend answer raises the limits the guard reads: the row the extend
+// form raised reaches the run when the answer wakes it (change id
+// "extend-raise"), so the stop after an extend is an ordinary ask, not
+// the deadlock headline again.
+func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.taskConfig.Sessions = 6
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (TaskUsage, error) {
+			return TaskUsage{ExtraLines: 500}, nil
+		})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "extend it", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	if strings.Contains(h.escalated[1], "No reply can change this") || !strings.Contains(h.escalated[1], CheckinShareSpent) {
+		t.Errorf("the ask after the extend = %q, want the ordinary share ask: the raise changed the limits", h.escalated[1])
 	}
 }
