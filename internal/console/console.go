@@ -175,6 +175,10 @@ type Config struct {
 	// Dependencies reads the factory's own dependency health for the
 	// status line's red dot and the panel's list (roadmap 299).
 	Dependencies Dependencies
+	// Pools answers what a project's month pool has already funded
+	// (factoryd.PGStore.AgentFundedEUR): the status line's pool figures
+	// and the chat snapshot's words; nil shows no pool line.
+	Pools Pools
 	// ConfigRepo is the infra repository's web URL and ConfigDir the
 	// configuration tree's directory in it, where every change is made.
 	ConfigRepo   string

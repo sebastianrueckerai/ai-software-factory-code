@@ -69,6 +69,14 @@ const (
 	// factoryd), deploy_now when an approver chose Deploy now (by them, with
 	// "commit" and "decider"). A quiet record, no poke.
 	EventProductionReleased = "production_released"
+	// EventPoolChanged records a project's month pool set or topped up,
+	// the budget block's discretionary_eur: detail {"action", "from_eur",
+	// "to_eur", "reason"}, action set or top_up. The set_pool action that
+	// writes it takes action, eur and reason; the server owns the
+	// baseline — from_eur and to_eur are the pool in force and after, a
+	// correction of a confirmation carries only the amount — and it
+	// reaches the policy through the proposal routes as every write does.
+	EventPoolChanged = "pool_changed"
 )
 
 // StepEvent is the timeline step every event is recorded under.

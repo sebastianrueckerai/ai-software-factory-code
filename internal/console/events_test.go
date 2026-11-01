@@ -37,6 +37,8 @@ type fakeEvents struct {
 	bus  *factoryd.EventBus
 	// fail, when set, is every Record's answer
 	fail error
+	// poolErr, when set, is AgentFundedEUR's answer
+	poolErr error
 }
 
 func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
@@ -67,6 +69,30 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 	f.rows = append(f.rows, e)
 	f.bus.Publish(e)
 	return e.ID, nil
+}
+
+// AgentFundedEUR mirrors PGStore.AgentFundedEUR: the card_funded rows of
+// repository the agent decided via the chat in the UTC calendar month of
+// month, summed.
+func (f *fakeEvents) AgentFundedEUR(_ context.Context, repository string, month time.Time) (float64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.poolErr != nil {
+		return 0, f.poolErr
+	}
+	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
+	until := from.AddDate(0, 1, 0)
+	var eur float64
+	for _, e := range f.rows {
+		if e.Repository != repository || e.Kind != factoryd.EventCardFunded || e.Via != factoryd.ViaChat ||
+			e.Detail["decider"] != "agent" || e.At.Before(from) || !e.At.Before(until) {
+			continue
+		}
+		if amount, ok := e.Detail["amount_eur"].(float64); ok {
+			eur += amount
+		}
+	}
+	return eur, nil
 }
 
 func (f *fakeEvents) FiledPR(_ context.Context, name string) (int64, bool, error) {

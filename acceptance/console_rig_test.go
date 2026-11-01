@@ -148,7 +148,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
-		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a,
+		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a, Pools: a,
 		Bus: a.bus,
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
@@ -801,6 +801,27 @@ func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, erro
 	a.mu.Unlock()
 	a.bus.Publish(e)
 	return e.ID, nil
+}
+
+// AgentFundedEUR mirrors PGStore.AgentFundedEUR: the card_funded rows of
+// repository the agent decided via the chat in the UTC calendar month of
+// month, summed.
+func (a *AcceptanceRig) AgentFundedEUR(_ context.Context, repository string, month time.Time) (float64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
+	until := from.AddDate(0, 1, 0)
+	var eur float64
+	for _, e := range a.events {
+		if e.Repository != repository || e.Kind != factoryd.EventCardFunded || e.Via != factoryd.ViaChat ||
+			e.Detail["decider"] != "agent" || e.At.Before(from) || !e.At.Before(until) {
+			continue
+		}
+		if amount, ok := e.Detail["amount_eur"].(float64); ok {
+			eur += amount
+		}
+	}
+	return eur, nil
 }
 
 func (a *AcceptanceRig) ProjectEvents(_ context.Context, repository string, after int64, limit int) ([]factoryd.Event, error) {

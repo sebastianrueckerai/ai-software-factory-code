@@ -49,7 +49,11 @@
 {{end}}<a href="#needs-you" class="cell needs{{if .NeedYou}} on{{end}}"><span><b class="n">{{.NeedYou}}</b> need you</span></a>
 <span class="cell spend{{gaugeClass .Spend.EUR .CapEUR}}" title="spend this UTC month against the month cap: the project file's when it sets one, else the factory's, holds included">{{if $.Factory}}<a href="/costs">{{end}}<span><b class="n">{{eur2 .Spend.EUR}}</b> <span class="of">/ {{eur2 .CapEUR}}</span></span><span class="gauge"><meter min="0" max="100" value="{{pct100 .Spend.EUR .CapEUR}}" aria-label="Spend of the month cap">{{pct .Spend.EUR .CapEUR}} percent</meter></span>{{if $.Factory}}</a>{{end}}<span class="pct">{{pct .Spend.EUR .CapEUR}}%</span></span>
 {{if gt .PremiumCapEUR 0.0}}<span class="cell spend{{gaugeClass .PremiumEUR .PremiumCapEUR}}" title="spend on the premium model this UTC month against its cap, budget.premium_month_eur; past it, premium calls run on big"><span><span class="of">premium</span> <b class="n">{{eur2 .PremiumEUR}}</b> <span class="of">/ {{eur2 .PremiumCapEUR}}</span></span><span class="gauge"><meter min="0" max="100" value="{{pct100 .PremiumEUR .PremiumCapEUR}}" aria-label="Premium spend of its month cap">{{pct .PremiumEUR .PremiumCapEUR}} percent</meter></span><span class="pct">{{pct .PremiumEUR .PremiumCapEUR}}%</span></span>
-{{end}}{{if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
+{{end}}
+{{- if .Pool.Ready}}<span class="cell spend{{gaugeClass .Pool.Used .Pool.Configured}}" title="the month pool the agent's own raises fund from: the budget block's discretionary_eur, this UTC month">pool {{eur2 .Pool.Used}} <span class="of">/ {{eur2 .Pool.Configured}}</span>, {{eur2 .Pool.Remaining}} left</span>
+{{else if .Pool.Unavailable}}<span class="cell warn" title="the month pool could not be read">pool unread</span>
+{{end}}
+{{- if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
 {{end}}{{if .RoutineCell}}<span class="cell routine{{if .RoutineHeld}} warn{{end}}">{{.RoutineCell}}</span>
 {{end}}{{with .Hold}}<span class="cell warn hold" title="{{.Reason}}: production waits until no plan is open on main">production held · {{.For}}</span>
 {{end}}{{with .GitHub}}<span class="cell gh">GitHub: {{.}}</span>

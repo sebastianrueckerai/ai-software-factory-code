@@ -560,6 +560,7 @@ func main() {
 		Policies:         store,
 		Costs:            store,
 		Dependencies:     store,
+		Pools:            store,
 		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
