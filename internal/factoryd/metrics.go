@@ -1245,5 +1245,207 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 	if r.CIDuration, err = metricCIDuration(ctx, db, repository, w); err != nil {
 		return r, err
 	}
+	if r.DivideConquer, err = metricDivideConquer(ctx, db, repository, w); err != nil {
+		return r, err
+	}
 	return r, nil
+}
+
+// The divide-and-conquer panels this store answers today (roadmap 336):
+// cards above their size bound at the merge gate, sessions per merged
+// card by historical size, session ends by cause and reviews that
+// answered not reviewed. Every panel reads hard rows the factory
+// already stores — one row per fact, each recorded through its payload
+// with an identity key — joined to tasks for the project's card reach
+// (no chat task, no roll card). A span no row covers is unknown, never
+// zero: a target-of-none panel needs evidence before it can name none.
+
+const dcCardReach = `t.repository = $1 AND t.kind <> 'chat' AND t.source <> '` + SourceRoll + `'`
+
+// metricEvidenceCount is the shape of a target-of-none panel: the count
+// of the window's offending rows over the span's evidence, unknown when
+// no row covers the span — a measured zero needs evidence, never a
+// missing one. The scalar returns (num, evidence) and the weeks query
+// returns (bucket, num).
+func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricWindow, scalar, weeks string) (Figure, error) {
+	var f Figure
+	read := func(from, to time.Time) (n, evidence float64, err error) {
+		err = db.QueryRowContext(ctx, scalar, repo, from, to).Scan(&n, &evidence)
+		return
+	}
+	n, ev, err := read(w.From, w.To)
+	if err != nil {
+		return f, err
+	}
+	f.Value, f.Has = n, ev > 0
+	if n, ev, err = read(w.PrevFrom, w.PrevTo); err != nil {
+		return f, err
+	}
+	f.Prev, f.PrevHas = n, ev > 0
+	f.Weeks, err = metricWeeks(ctx, db, weeks, repo, w.SparkFrom, w.To)
+	return f, err
+}
+
+// metricDivideConquer populates the divide-and-conquer block the store
+// answers today: CoveredFrom, GateAboveBound, SessionsPerCard,
+// SessionEnds and ReviewsNotReviewed. The economics panels (panels 4,
+// 5, 7, 8, 10, 11, 12) land on another card; their fields stay zero
+// until then.
+func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
+	var d DivideConquer
+	var covered sql.NullTime
+	if err := db.QueryRowContext(ctx,
+		`SELECT min(e.at) FROM events e JOIN tasks t ON t.id = e.task_id WHERE `+dcCardReach+` AND e.identity_key IS NOT NULL AND e.kind = ANY($2)`,
+		repo, []string{EventGateHead, EventSessionEnd, EventModelReview}).Scan(&covered); err != nil {
+		return d, err
+	}
+	if covered.Valid {
+		d.CoveredFrom = covered.Time
+	}
+	var err error
+	if d.GateAboveBound, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.SessionsPerCard, err = metricDivideSessions(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.SessionEnds, err = metricDivideSessionEnds(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.ReviewsNotReviewed, err = metricDivideReviews(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	return d, nil
+}
+
+// metricDivideGateBound — panel 1: distinct cards reaching the merge
+// gate above their size bound (target: none). A card counts once
+// however many heads and retries crossed; the bound and the lines are
+// the ones the reading captured, never today's policy. Without a
+// reading in the span the panel is unknown, not zero.
+func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE ` + dcCardReach + ` AND e.kind = 'gate_head' AND e.detail->>'gate' = 'merge' AND e.at >= %s AND e.at < $3`
+	const over = `(e.detail->>'insertions')::int + (e.detail->>'deletions')::int > (e.detail->>'bound')::int`
+	return metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(DISTINCT e.task_id) FILTER (WHERE `+over+`), count(DISTINCT e.task_id)`+from, "$2"),
+		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+over+`)`+from+` GROUP BY 1`, "$2"))
+}
+
+// metricDivideSessions — panel 2: mean lifetime distinct actually
+// started sessions per merged card, grouped by the card's filed size
+// including unsized. The cohort is cards whose first merge lands in
+// the span; the card's lifetime sessions are distinct session_started
+// rows across all time. A size absent from the cohort is absent from
+// the slice.
+func metricDivideSessions(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]SizeFigure, error) {
+	const cohort = ` FROM (
+			SELECT COALESCE(t.size, '') AS size, m.at,
+				(SELECT count(DISTINCT s.detail->>'session') FROM events s
+					WHERE s.task_id = t.id AND s.kind = 'session_started' AND s.detail->>'session' <> '') AS started
+			FROM tasks t JOIN LATERAL (SELECT min(e.at) AS at FROM events e
+				WHERE e.task_id = t.id AND e.kind = 'pull_request_merged') m ON m.at IS NOT NULL
+			WHERE ` + dcCardReach + ` AND m.at >= %s AND m.at < $3
+		) c`
+	figs := map[string]*SizeFigure{}
+	at := func(size string) *SizeFigure {
+		if f, ok := figs[size]; ok {
+			return f
+		}
+		f := &SizeFigure{Size: size}
+		figs[size] = f
+		return f
+	}
+	scalar := `SELECT c.size, sum(c.started)::float8, count(*)::float8`
+	for _, sp := range []struct {
+		from, to time.Time
+		prev     bool
+	}{{w.From, w.To, false}, {w.PrevFrom, w.PrevTo, true}} {
+		rows, err := db.QueryContext(ctx, scalar+fmt.Sprintf(cohort, "$2")+` GROUP BY 1`, repo, sp.from, sp.to)
+		if err != nil {
+			return nil, err
+		}
+		for rows.Next() {
+			var size string
+			var sum, cards float64
+			if err := rows.Scan(&size, &sum, &cards); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			f := at(size)
+			if sp.prev {
+				f.Figure.Prev, f.Figure.PrevHas = metricRatio(sum, cards)
+			} else {
+				f.Figure.Value, f.Figure.Has = metricRatio(sum, cards)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	weekly := `SELECT ` + metricBucket("c.at") + `, c.size, sum(c.started)::float8, count(*)::float8`
+	rows, err := db.QueryContext(ctx, weekly+fmt.Sprintf(cohort, "$2")+` GROUP BY 1, 2`, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var b int
+		var size string
+		var sum, cards float64
+		if err := rows.Scan(&b, &size, &sum, &cards); err != nil {
+			return nil, err
+		}
+		if b >= 0 && b < 7 {
+			f := at(size)
+			f.Figure.Weeks[b], _ = metricRatio(sum, cards)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]SizeFigure, 0, len(figs))
+	for _, f := range figs {
+		out = append(out, *f)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Size < out[j].Size })
+	return out, nil
+}
+
+// metricDivideSessionEnds — panel 3: the window's session ends by
+// cause, ordered by count descending then name. The causes are the
+// session outcomes the runner records.
+func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
+	rows, err := db.QueryContext(ctx, `SELECT e.detail->>'outcome', count(*)::float8
+		FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE `+dcCardReach+` AND e.kind = 'session_end' AND e.at >= $2 AND e.at < $3
+		GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NamedCount
+	for rows.Next() {
+		var nc NamedCount
+		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, nc)
+	}
+	return out, rows.Err()
+}
+
+// metricDivideReviews — panel 9: reviews that answered not reviewed
+// (target: none). A review that returned no verdict carries reviewed
+// false and a bounded reason; without a model_review row in the span
+// the panel is unknown, not zero.
+func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE ` + dcCardReach + ` AND e.kind = 'model_review' AND e.at >= %s AND e.at < $3`
+	const notReviewed = `e.detail->>'reviewed' = 'false'`
+	return metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+notReviewed+`), count(*)`+from, "$2"),
+		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(*) FILTER (WHERE "+notReviewed+`)`+from+` GROUP BY 1`, "$2"))
 }
