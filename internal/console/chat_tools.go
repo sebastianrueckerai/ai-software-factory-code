@@ -88,8 +88,13 @@ type toolInput struct {
 	Info           string   `json:"info,omitempty"`
 	Recommendation string   `json:"recommendation,omitempty"`
 	Choices        []string `json:"choices,omitempty"`
+	// Choice is the ask's bound choice, Args the bound tool call's
+	// arguments, as the ask tool binds them.
+	Choice string          `json:"choice,omitempty"`
+	Args   json.RawMessage `json:"args,omitempty"`
 	// Tool, Need and Image are request_image's ask: the tool, what for
-	// and the image it goes into; Image is new_card's image too.
+	// and the image it goes into; Image is new_card's image too, and
+	// Tool the ask's bound tool.
 	Tool  string `json:"tool,omitempty"`
 	Need  string `json:"need,omitempty"`
 	Image string `json:"image,omitempty"`
@@ -1184,9 +1189,10 @@ var tools = []chatTool{
 		about:    "A card's pull request: its checks, reviews, audit and changed files.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
 	{name: "file", title: "Read a file",
-		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path")},
+		params: map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path"),
+			"from": stepParam("the first line to read"), "to": stepParam("the last line to read")},
 		required: []string{"ref", "path"},
-		about:    "A file of the project's repository at a branch, tag or commit, its first 64 KB.",
+		about:    "A file of the project's repository at a ref, its lines from and to, else its first 64 KiB.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
 	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
 		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
@@ -1620,16 +1626,6 @@ var tools = []chatTool{
 			s, err := t.escalate(in.Ask, in.Why, in.Info, in.Recommendation, in.Choices)
 			return s, nil, err
 		}},
-	{name: "ask", title: "Ask the human",
-		params: map[string]any{"ask": str("the question, with its state and its numbers"),
-			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
-				"description": "the answers the human may press"}},
-		required: []string{"ask", "choices"},
-		about:    "Ask this conversation's human a question, answered by a press or their next message.",
-		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.askMember(in.Ask, in.Choices)
-			return s, nil, err
-		}},
 	{name: "attach_analysis", title: "Attach an analysis to an ask", write: true,
 		params: map[string]any{"task_id": taskParam,
 			"found":          str("what you learned about the ask, the facts with their numbers"),
@@ -1710,6 +1706,25 @@ var tools = []chatTool{
 			s, err := t.summarizeAttachment(in)
 			return s, nil, err
 		}},
+}
+
+// The ask tool joins the table here, not in its initializer: its run
+// reads the table's own lookup (the binding validates the bound tool),
+// an initialization cycle Go refuses.
+func init() {
+	tools = append(tools, chatTool{name: "ask", title: "Ask the human",
+		params: map[string]any{"ask": str("the question, with its state and its numbers"),
+			"choices": map[string]any{"type": "array", "minItems": 2, "maxItems": factoryd.MaxChoices, "items": map[string]any{"type": "string", "maxLength": factoryd.MaxChoice},
+				"description": "the answers the human may press"},
+			"tool":   str("the write tool the bound press runs, none for a plain ask"),
+			"args":   map[string]any{"type": "object", "description": "the bound tool's arguments as it reads them"},
+			"choice": str("the choice whose press runs the bound tool call")},
+		required: []string{"ask", "choices"},
+		about:    "Ask the thread's human a question their press or message answers, one choice bound to a tool call.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			s, err := t.askMember(in)
+			return s, nil, err
+		}})
 }
 
 // imagesText is the project_images read: the project's pins in force,

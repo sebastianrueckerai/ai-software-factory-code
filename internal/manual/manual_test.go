@@ -36,6 +36,9 @@ func TestTextCarriesTheFactory(t *testing.T) {
 	if !strings.Contains(text, "message you through the card's chat") {
 		t.Fatalf("Text lacks who writes to the session:\n%s", text)
 	}
+	if !strings.Contains(text, "a bound choice's press runs the tool call the ask carries") {
+		t.Fatalf("Text lacks the ask tool's binding:\n%s", text)
+	}
 }
 
 // Text carries the section on sandbox images: what an image is, the
