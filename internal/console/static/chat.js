@@ -986,12 +986,15 @@ var chatView = (function () {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
   // pressAsk is a bound ask's press: it answers through /answer as a
-  // stream, the bound choice running the bound tool call in code and
-  // another settling the ask and running the agent's turn, drawn where
-  // the choices were; a binding gone since the read says so
+  // stream, the pressed choice drawn at once as the human's own row
+  // (the store keeps it, every press an answer), the bound choice
+  // running the bound tool call in code and another settling the ask
+  // and running the agent's turn, drawn where the choices were; a used
+  // binding's press says so
   function pressAsk(id, choice, after) {
     var out = document.createElement("div");
     after.after(out);
+    out.insertAdjacentHTML("beforebegin", chatView.userHTML(login, choice, new Date(), false));
     run(open, openOwner, base + "/answer", new URLSearchParams({
       conversation: open, owner: openOwner, message: id, choice: choice
     }).toString(), out, expired(out));
