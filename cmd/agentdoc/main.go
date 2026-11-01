@@ -71,10 +71,12 @@ func run() int {
 	}
 	ctx := context.Background()
 	var failed bool
+	var rows []indexRow
 	for _, a := range registry {
 		var md string
 		var raw []byte
 		var failures []string
+		var row indexRow
 		switch {
 		case a.Config:
 			frag, err := factoryd.AgentDocAgentConfig(v)
@@ -85,6 +87,7 @@ func run() int {
 			}
 			md, failures = configPage(a, sha, v.Commit, syms, frag)
 			raw = frag
+			row = configRow(a, frag)
 		case a.Loop:
 			spans, rec, err := factoryd.AgentDocLoop(ctx, a.ID, *opencode, v)
 			if err != nil {
@@ -94,6 +97,12 @@ func run() int {
 			}
 			md, failures = page(a, sha, v.Commit, syms, rec, spans)
 			raw = rec.Raw
+			row, err = rowOf(a, rec, spans)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
+				failed = true
+				continue
+			}
 		default:
 			g := agentdoc.NewGateway(a.Answer)
 			spans, err := a.Capture(ctx, a.ID, g.URL, v, nil)
@@ -111,6 +120,12 @@ func run() int {
 			}
 			md, failures = page(a, sha, v.Commit, syms, recs[0], spans)
 			raw = recs[0].Raw
+			row, err = rowOf(a, recs[0], spans)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
+				failed = true
+				continue
+			}
 		}
 		if len(failures) > 0 {
 			for _, f := range failures {
@@ -122,13 +137,27 @@ func run() int {
 		if err := writePage(*out, a.ID, md, raw); err != nil {
 			fmt.Fprintf(os.Stderr, "agentdoc: %s: %v\n", a.ID, err)
 			failed = true
+			continue
 		}
+		rows = append(rows, row)
 	}
 	if failed {
 		fmt.Fprintln(os.Stderr, "agentdoc: the map rotted; nothing shipped")
 		return 1
 	}
-	fmt.Printf("agentdoc: %d pages into %s\n", len(registry), *out)
+	imd, ifailures := index(rows, sha, v.Commit, factoryd.AgentDocOpencodeVersion)
+	if len(ifailures) > 0 {
+		for _, f := range ifailures {
+			fmt.Fprintf(os.Stderr, "agentdoc: %s\n", f)
+		}
+		fmt.Fprintln(os.Stderr, "agentdoc: the map rotted; nothing shipped")
+		return 1
+	}
+	if err := writeIndex(*out, imd); err != nil {
+		fmt.Fprintf(os.Stderr, "agentdoc: index: %v\n", err)
+		return 1
+	}
+	fmt.Printf("agentdoc: %d pages and the index into %s\n", len(registry), *out)
 	return 0
 }
 
@@ -190,4 +219,13 @@ func writePage(out, id, md string, raw []byte) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(out, "raw", id+".json"), raw, 0o600)
+}
+
+// writeIndex lands the map's index; it has no raw twin.
+func writeIndex(out, md string) error {
+	if err := os.MkdirAll(out, 0o750); err != nil {
+		return err
+	}
+	// #nosec G703 -- -out is the operator's own target directory; the map writes only where the operator pointed it
+	return os.WriteFile(filepath.Join(out, "index.md"), []byte(md), 0o600)
 }
