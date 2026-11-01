@@ -106,6 +106,7 @@ const (
 	ActivityEscalate                    = "Escalate"
 	ActivityRecordUsage                 = "RecordUsage"
 	ActivityReadUsage                   = "ReadUsage"
+	ActivitySuccessor                   = "Successor"
 	ActivityGatePolicy                  = "GatePolicy"
 	ActivityGateMigration               = "GateMigration"
 	ActivityGateReproduction            = "GateReproduction"
@@ -591,6 +592,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
 	run.extendRaise = workflow.GetVersion(ctx, "extend-raise", workflow.DefaultVersion, versionExtendRaise)
+	run.successor = workflow.GetVersion(ctx, "successor", workflow.DefaultVersion, versionSuccessor)
 
 	run.headHolds = workflow.GetVersion(ctx, "head-holds", workflow.DefaultVersion, versionHeadHolds)
 	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
@@ -1156,6 +1158,12 @@ const (
 	// versionChainDone (change id "chain-done"): a run that recorded it
 	// waited at its merge for the chain; none waits now.
 	versionChainDone workflow.Version = 1
+	// versionSuccessor (change id "successor"): a session that ends on the
+	// named push refusal — the merge of main cannot fit the card's line
+	// bound — and the successor exit's answer close the card into its
+	// successor, which starts from main's tip and carries the patch and
+	// the findings. A run from before the change loops on the refusal.
+	versionSuccessor workflow.Version = 1
 	// versionToolPark (change id "tool-park"): a session that ends in
 	// missing_tool (request_tool) parks the card on an image (ParkForTool):
 	// a refusal goes to the next session at once, or to a human when the
@@ -1344,6 +1352,7 @@ type taskRun struct {
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
 	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
+	successor         workflow.Version // the push-bound refusal and its exit close into a successor (versionSuccessor)
 	// lastCheckinStop is the last check-in stop's mark, what a repeat
 	// compares against (versionCheckinRepeat); zero keeps a run from before
 	// the change silent
@@ -2158,6 +2167,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				// the raise away
 				u = t.readUsage(u)
 			}
+			if t.successor >= versionSuccessor && successorChosen(t.answers) {
+				// the successor exit's answer closes the card with its work
+				// carried on, before any branch of the chain could buy a
+				// session the close makes pointless
+				return t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review))
+			}
 			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
 				// the call cap's stop falls through to buy(), never the
 				// verify break: the answer buys the session
@@ -2191,6 +2206,13 @@ func (t *taskRun) lifecycle() (string, error) {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
 				}
+			}
+			if t.successor >= versionSuccessor && res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) {
+				// the merge of main cannot fit the card's line bound: the
+				// card closes into a successor that starts from main's tip
+				// and carries the patch and the findings
+				packed, _ := packCardLines(slices.Clone(res.Findings))
+				return t.closeIntoSuccessor(packed)
 			}
 			if final, why := askUnanswered(); final != "" {
 				return t.finish(final, why)
@@ -4193,6 +4215,30 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 // new run, which reconciles the task and decides it again (one found
 // closing is finished at once), so no task is left running or closing
 // with its credentials live.
+// pushOverBoundMark is the worker's named refusal in a session's summary
+// (errPushOverBound, cmd/agent-worker): the branch's diff against its
+// merge base does not fit the card's line bound even after the merge of
+// main.
+const pushOverBoundMark = "push refused: over the card's line bound"
+
+// successorChosen reports whether the answer the run woke on chose the
+// successor exit: the newest answer's body carries its label.
+func successorChosen(answers []string) bool {
+	return len(answers) > 0 && strings.Contains(answers[0], ": "+SuccessorChoice)
+}
+
+// closeIntoSuccessor files the card's successor with the findings so far
+// (a packed block of lines) and finishes the card failed, the successor
+// named in its reason.
+func (t *taskRun) closeIntoSuccessor(findings string) (string, error) {
+	var succ string
+	in := SuccessorInput{TaskID: t.taskID, Findings: findings, PR: t.pr.Number}
+	if err := workflow.ExecuteActivity(t.short, ActivitySuccessor, in).Get(t.ctx, &succ); err != nil {
+		return t.finish("failed", "close into the successor: "+errMessage(err))
+	}
+	return t.finish("failed", "closed into successor "+succ)
+}
+
 func (t *taskRun) finish(final, reason string) (string, error) {
 	if t.switched != nil {
 		// the plan program finished the card; a wait it ran in returns here

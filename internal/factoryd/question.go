@@ -38,6 +38,7 @@ const (
 	AnswerGo          = "go"
 	AnswerExtend      = "extend"
 	AnswerOverrule    = "overrule"
+	AnswerSuccessor   = "successor"
 )
 
 // The marks a stop's reason carries where it names an owner decision:
@@ -47,6 +48,9 @@ const (
 const (
 	deadlockAskMark    = "No reply can change this"
 	reviewConcernsMark = "review: concerns"
+	// SuccessorChoice is the successor exit's label, the answer that
+	// closes the card into its successor.
+	SuccessorChoice = "Close into a successor"
 )
 
 // HumanQuestion is the five-part question a card asks. Source names what
@@ -283,17 +287,18 @@ func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 
 // exitChoices are the owner exits a stop that names a decision carries:
 // the card's limits move (extend), the review's word is set aside
-// (overrule) or the card ends (close).
+// (overrule), the card ends (close) or its work carries on in a successor.
 func exitChoices() []QuestionChoice {
 	return []QuestionChoice{
 		{AnswerExtend, "Extend the card"},
 		{AnswerOverrule, "Overrule the review"},
 		{AnswerClose, "End the card"},
+		{AnswerSuccessor, SuccessorChoice},
 	}
 }
 
 // exitsInfo is what the exits do, at any stop that offers them.
-const exitsInfo = "An answer restarts the card with your words as guidance. 'Extend the card' raises the card's session cap, line bound and budget by what you give, then answers the stop; 'Overrule the review' answers with your word over the review's; 'End the card' closes the card and its pull request."
+const exitsInfo = "An answer restarts the card with your words as guidance. 'Extend the card' raises the card's session cap, line bound and budget by what you give, then answers the stop; 'Overrule the review' answers with your word over the review's; 'End the card' closes the card and its pull request; 'Close into a successor' ends the card and opens one that starts from main's tip, carrying its pull request's patch and the findings."
 
 // deadlockQuestion is the ask no reply can change: the repeat guard's
 // stop, which names the owner exits and carries them. With the facts at

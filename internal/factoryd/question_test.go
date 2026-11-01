@@ -393,7 +393,7 @@ func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
 // with the card's caps named from the facts the extend form prefills.
 func TestDeadlockAskOffersTheExits(t *testing.T) {
 	reason := checkinSpendAsk + deadlockAskMark + ": the head a1b2c3d and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting."
-	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}}
+	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}, {AnswerSuccessor, SuccessorChoice}}
 	q := ShapedQuestion(reason, QuestionFacts{SessionCap: 4, LineBound: 1000, BudgetEUR: 9, SpentEUR: 8.6, LeftEUR: 0.4}, nil)
 	if !slices.Equal(q.Choices, exits) {
 		t.Errorf("choices = %v, want %v", q.Choices, exits)
@@ -411,7 +411,7 @@ func TestDeadlockAskOffersTheExits(t *testing.T) {
 // decision: whatever stop it rode, its choices become the exits. An
 // approved review keeps the ordinary answers.
 func TestReviewRefusedStopOffersTheExits(t *testing.T) {
-	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}}
+	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}, {AnswerSuccessor, SuccessorChoice}}
 	q := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+"\n- the migration runs outside its transaction\n- "+reviewConcernsMark, QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90}, nil)
 	if !slices.Equal(q.Choices, exits) {
 		t.Errorf("the share stop's choices = %v, want %v", q.Choices, exits)

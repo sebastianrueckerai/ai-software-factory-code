@@ -75,7 +75,8 @@ type workflowHarness struct {
 	finishAt    time.Time
 	escalated   []string // Escalate reasons, in order
 	escalatedAt []time.Time
-	choices     [][]string // Escalate choices, in order
+	choices     [][]string       // Escalate choices, in order
+	successions []SuccessorInput // Successor filings, in order
 	usage       []TaskUsage
 	rowUsage    TaskUsage     // what ReadUsage reads back: the last recorded usage
 	logs        *lockedBuffer // the workflow's log
@@ -164,6 +165,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return nil
 		},
 		ActivityReadUsage: func(ctx context.Context, taskID string) (TaskUsage, error) { return h.rowUsage, nil },
+		ActivitySuccessor: func(ctx context.Context, in SuccessorInput) (string, error) {
+			h.successions = append(h.successions, in)
+			return "t-succ", nil
+		},
 		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
 		},
