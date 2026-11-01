@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"log"
@@ -112,10 +113,10 @@ func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQues
 	switch {
 	case strings.HasPrefix(reason, checkinSpendAsk+"check-in call cap reached"),
 		reason == "check-in call cap reached":
-		return callCapQuestion(f)
+		return callCapQuestion(reason, f)
 	case strings.HasPrefix(reason, checkinSpendAsk+"the check-in's share of the budget is spent"),
 		reason == "the check-in's share of the budget is spent":
-		return checkinShareQuestion(f)
+		return checkinShareQuestion(reason, f)
 	case strings.HasPrefix(reason, capReached):
 		return sessionCapQuestion()
 	case strings.HasPrefix(reason, budgetRefused):
@@ -209,31 +210,40 @@ func continueChoices() []QuestionChoice {
 }
 
 // continueInfo is what an answer does at a spend stop: the attempt
-// starts again with the member's comment as guidance, re-verifying the
+// starts again with the human's comment as guidance, re-verifying the
 // pull request when there is one; the spent budget stays spent.
 const continueInfo = "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent."
 
-func callCapQuestion(f QuestionFacts) *HumanQuestion {
+// reasonBody is the work state a stop's reason carries under its first
+// line, if it carries any.
+func reasonBody(reason string) string {
+	if _, rest, ok := strings.Cut(reason, "\n"); ok {
+		return strings.TrimSpace(rest)
+	}
+	return ""
+}
+
+func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	ask := "The check-in gave no answer within its calls. May the card go on?"
 	if f.CheckinCap > 0 {
 		ask = fmt.Sprintf("The check-in gave no answer within its %d calls. May the card go on?", f.CheckinCap)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
-		Why:     "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person.",
+		Why:     cmp.Or(reasonBody(reason), "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."),
 		Info:    "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent.",
 		Choices: continueChoices(),
 	}
 }
 
-func checkinShareQuestion(f QuestionFacts) *HumanQuestion {
+func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	ask := "The card has spent its check-in share of the budget. May it go on?"
 	if f.CheckinSpent > 0 || f.CheckinShare > 0 {
 		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
 	return &HumanQuestion{
 		Ask:     ask,
-		Why:     "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person.",
+		Why:     cmp.Or(reasonBody(reason), "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person."),
 		Info:    continueInfo,
 		Choices: continueChoices(),
 	}

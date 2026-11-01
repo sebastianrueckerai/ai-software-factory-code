@@ -143,6 +143,11 @@ type CheckInOutcome struct {
 	Verdicts   map[string]CheckVerdict
 	Remarks    []string       `json:",omitempty"`
 	Record     *CheckInRecord `json:",omitempty"`
+	// Findings and Review are the work state a stop carries when no
+	// judgment ran: the ask's findings and the last review verdict, so a
+	// fabricated stop names the work, not the spend alone
+	Findings []CheckFinding `json:",omitempty"`
+	Review   *Review        `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under

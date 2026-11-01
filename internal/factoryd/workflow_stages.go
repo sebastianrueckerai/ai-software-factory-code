@@ -482,6 +482,18 @@ func (t *taskRun) sessionCapCard(last string, findings []string) string {
 			lines = append(lines, f)
 		}
 	}
+	packed, leftOut := packCardLines(lines)
+	head := capReached + "\nlast: " + textutil.Truncate(last, maxCardLine)
+	if leftOut > 0 {
+		head += fmt.Sprintf("\n- (%d earlier findings left out)", leftOut)
+	}
+	return head + packed
+}
+
+// packCardLines packs lines as the card's work state: each a "- " line at
+// most maxCardLine long, the newest kept when they outgrow the card.
+// leftOut counts the lines dropped off the front.
+func packCardLines(lines []string) (packed string, leftOut int) {
 	for i, l := range lines {
 		lines[i] = "\n- " + textutil.Truncate(l, maxCardLine)
 	}
@@ -490,11 +502,21 @@ func (t *taskRun) sessionCapCard(last string, findings []string) string {
 		from--
 		size += len(lines[from])
 	}
-	head := capReached + "\nlast: " + textutil.Truncate(last, maxCardLine)
-	if from > 0 {
-		head += fmt.Sprintf("\n- (%d earlier findings left out)", from)
+	return strings.Join(lines[from:], ""), from
+}
+
+// workStateLines is the work state a stop hands the human: each finding
+// and the last review's verdict as a "- " line, the newest kept.
+func workStateLines(findings []CheckFinding, review *Review) string {
+	lines := make([]string, 0, len(findings)+1)
+	for _, f := range findings {
+		lines = append(lines, f.Text)
 	}
-	return head + strings.Join(lines[from:], "")
+	if review != nil && review.Verdict != "" {
+		lines = append(lines, "review: "+review.Verdict)
+	}
+	packed, _ := packCardLines(lines)
+	return packed
 }
 
 func appendNew(list []string, s string) []string {

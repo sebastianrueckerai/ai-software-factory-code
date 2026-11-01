@@ -4539,12 +4539,16 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	// the coder card's 0.3 EUR budget at the default 10 percent share
 	store.checkinSpent = map[string]float64{"t2": 0.03}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}},
+			Review: &Review{Verdict: "concerns", Summary: "the undefined name breaks the build"}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != "the check-in's share of the budget is spent" {
 		t.Fatalf("result = (%+v, %v), want the human ask under spend on the share", res, err)
+	}
+	if !slices.Equal(res.CheckIn.Findings, []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}) || res.CheckIn.Review == nil || res.CheckIn.Review.Verdict != "concerns" {
+		t.Fatalf("the stop's work state = %+v, want the ask's findings and review", res.CheckIn)
 	}
 	if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
 		t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)

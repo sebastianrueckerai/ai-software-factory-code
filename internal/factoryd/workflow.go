@@ -2097,7 +2097,10 @@ func (t *taskRun) lifecycle() (string, error) {
 			if res.CheckIn.Record != nil {
 				moment = res.CheckIn.Record.Moment
 			}
-			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
+			// the work state rides the ask when no judgment ran, so the
+			// card's question holds the findings and the review verdict
+			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
 			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {

@@ -4142,6 +4142,39 @@ func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
 	}
 }
 
+// The fabricated spend stop carries its work state: the findings and the
+// last review verdict ride the escalation under the spend reason, so the
+// card's ask holds the work, not the spend number alone.
+func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent,
+			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}, {Text: "the flag is read before it is set"}},
+			Review:  &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+			Record:  &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 1 {
+		t.Fatalf("escalations = %q, want the one spend stop", h.escalated)
+	}
+	for _, want := range []string{CheckinShareSpent, "- the migration runs outside its transaction", "- the flag is read before it is set", "- review: concerns"} {
+		if !strings.Contains(h.escalated[0], want) {
+			t.Errorf("the escalation %q misses %q", h.escalated[0], want)
+		}
+	}
+}
+
 // A dead-moment check-in that refuses runs the round on: its session was
 // sent back with the first session's stop lines and an empty handover
 // brief, and the dead moment dissolves into those stop lines — the next

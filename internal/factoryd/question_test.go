@@ -356,6 +356,26 @@ func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
 	}
 }
 
+// A fabricated spend stop carries the work state its ask held: the
+// findings and the last review verdict ride the reason under its first
+// line, and the spend templates lead their Why with them; a bare reason
+// keeps today's Why.
+func TestSpendStopQuestionCarriesTheWorkState(t *testing.T) {
+	body := "\n- the migration runs outside its transaction\n- the flag is read before it is set\n- review: concerns"
+	share := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+body, QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90}, nil)
+	if share.Why != strings.TrimPrefix(body, "\n") {
+		t.Errorf("the share why = %q, want the reason's body %q", share.Why, strings.TrimPrefix(body, "\n"))
+	}
+	callCap := ShapedQuestion(checkinSpendAsk+"check-in call cap reached"+body, QuestionFacts{CheckinCap: 20}, nil)
+	if callCap.Why != strings.TrimPrefix(body, "\n") {
+		t.Errorf("the call-cap why = %q, want the reason's body %q", callCap.Why, strings.TrimPrefix(body, "\n"))
+	}
+	bare := ShapedQuestion(checkinSpendAsk+CheckinShareSpent, QuestionFacts{}, nil)
+	if bare.Why != "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person." {
+		t.Errorf("a bare reason's why = %q, want today's text", bare.Why)
+	}
+}
+
 func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
 	for _, tt := range []struct{ reason, source string }{
 		{gateStopped + "the run.\nRecommendation: retry the gate.", "the gate supervisor's"},
