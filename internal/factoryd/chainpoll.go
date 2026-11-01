@@ -621,9 +621,12 @@ func (p *ChainPoller) project(ctx context.Context, proj Project) error {
 // approval on a companion pin (versionCompanions): every pin the card
 // carries is read live through the factory-config token, and a card whose
 // pins all read met is signalled companion_landed once — the gates read
-// again and the card merges or holds on what they see. A read that fails
-// counts as unmet: the card's own gate names the unread companion, which
-// is where it shows.
+// again and the card merges or holds on what they see. A companion read
+// that fails counts as unmet: the card's own gate names the unread
+// companion, which is where it shows. A plan card that cannot be read is
+// skipped, its pins unknown, and the next tick reads again; a wake whose
+// signal fails is tried again on the next tick, for the card is only
+// woken once Temporal takes the signal.
 func (p *ChainPoller) companions(ctx context.Context, proj Project) {
 	if len(proj.Companions) == 0 {
 		return
@@ -638,8 +641,12 @@ func (p *ChainPoller) companions(ctx context.Context, proj Project) {
 		if p.woken[card.ID] {
 			continue
 		}
+		pins, err := cardCompanions(ctx, p.Store, card)
+		if err != nil {
+			continue
+		}
 		met := true
-		for _, pin := range cardCompanions(ctx, p.Store, card) {
+		for _, pin := range pins {
 			owner, name, _ := strings.Cut(pin.Repository, "/")
 			at, _, err := p.Forgejo.MainAtLeast(ctx, token, Repo{Owner: owner, Name: name}, pin.At)
 			if err != nil || !at {
@@ -650,10 +657,11 @@ func (p *ChainPoller) companions(ctx context.Context, proj Project) {
 		if !met {
 			continue
 		}
-		p.woken[card.ID] = true
 		if err := p.Workflows.Signal(ctx, card.ID, SignalCompanionLanded, TaskSignal{}); err != nil {
 			log.Printf("chain poller: %s: wake %s on a landed companion: %v", proj.Repository, card.ID, err)
+			continue
 		}
+		p.woken[card.ID] = true
 	}
 }
 

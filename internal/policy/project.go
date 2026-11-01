@@ -534,6 +534,12 @@ func (p ProjectConfig) Validate(name string) error {
 		if c.Repository == p.Repository {
 			bad("companion %q: the project's own repository", c.Repository)
 		}
+		name := c.Repository[strings.LastIndex(c.Repository, "/")+1:]
+		for _, other := range p.Companions[:i] {
+			if other.Repository[strings.LastIndex(other.Repository, "/")+1:] == name {
+				bad("companion %q: the same repository name as %q, and the sandbox clone goes by the name", c.Repository, other.Repository)
+			}
+		}
 	}
 	if !slices.Contains(MergeRules, p.MergeRule) {
 		bad("merge_rule %q: want one of %v", p.MergeRule, MergeRules)

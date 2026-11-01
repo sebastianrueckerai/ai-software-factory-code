@@ -431,7 +431,11 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return
 			}
-			reply(map[string]any{"commits": f.carries[repo][base+"..."+head]})
+			status := "behind"
+			if base == head {
+				status = "identical"
+			}
+			reply(map[string]any{"commits": f.carries[repo][base+"..."+head], "status": status})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			f.status = append(f.status, sha)
@@ -587,6 +591,51 @@ func TestChainPollCompanionWake(t *testing.T) {
 	}
 	if len(wf.signals) != 1 {
 		t.Fatalf("signals = %q, want the wake once", wf.signals)
+	}
+}
+
+// A wake whose signal fails is tried again on the next tick: the card
+// stays un-woken until Temporal takes the signal.
+func TestChainPollRetriesAFailedWake(t *testing.T) {
+	pin := "82ab246" + strings.Repeat("0", 33)
+	code := seedProject("sf/code")
+	code.Companions = []policy.Companion{{Repository: "sf/infra"}}
+	f := &chainForgejo{comps: map[string][]map[string]any{"sf/infra": {{"sha": pin}}}}
+	p, store := newTestPoller(t, f, code)
+	p.Forgejo.Seeded = testSeeded
+	wf := &fakeWorkflows{signalFails: 1}
+	p.Workflows = wf
+
+	p2 := testPlan()
+	p2.Cards[0].Companions = []CardCompanion{{Repository: "sf/infra", At: pin}}
+	raw, sha, err := planSHA(p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := store.AddPlanRevision(ctx, "t-plan", raw, sha); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-card"] = Task{ID: "t-card", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+		Parent: "t-plan", PlanKey: "foundation", PlanRevision: 1, Source: SourcePlan, Gate: "approval"}
+
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 0 {
+		t.Fatalf("signals = %q, want none while the signal fails", wf.signals)
+	}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "t-card companion_landed") {
+		t.Fatalf("signals = %q, want the wake retried", wf.signals)
+	}
+	if err := p.Tick(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(wf.signals) != 1 {
+		t.Fatalf("signals = %q, want the wake once it landed", wf.signals)
 	}
 }
 

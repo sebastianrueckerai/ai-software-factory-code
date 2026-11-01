@@ -425,6 +425,7 @@ func TestCompanionsDeclare(t *testing.T) {
 		"url":   {"companions: [{repository: https://git.example.com/sf/infra}]\n", `project demo-app: companion "https://git.example.com/sf/infra": owner/name in lower case`},
 		"empty": {"companions: [{sandbox: true}]\n", `companion "": owner/name in lower case`},
 		"twice": {"companions: [{repository: sf/one}, {repository: sf/one}]\n", `companion "sf/one": given twice`},
+		"name":  {"companions: [{repository: sf/infra}, {repository: other/infra}]\n", `companion "other/infra": the same repository name as "sf/infra", and the sandbox clone goes by the name`},
 		"own":   {"companions: [{repository: demo-app/demo-app}]\n", `companion "demo-app/demo-app": the project's own repository`},
 	} {
 		t.Run(name, func(t *testing.T) {

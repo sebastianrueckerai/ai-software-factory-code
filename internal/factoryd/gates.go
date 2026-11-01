@@ -741,47 +741,56 @@ func (r *Runner) GateReproduction(ctx context.Context, taskID string, pr int64, 
 	return res, nil
 }
 
-// planCards reads one plan revision's cards; nil when there is none to
-// read, whatever went wrong: a card that cannot be found carries no
-// companion pins, which holds nothing.
+// planCards reads one plan revision's cards, the source of a plan card's
+// companion pins.
 type planCards interface {
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 }
 
 // cardCompanions are the companion pins t's plan card carries: the pins
 // stamped on the card at the plan revision the card runs. A task with no
-// plan card carries none.
-func cardCompanions(ctx context.Context, store planCards, t Task) []CardCompanion {
+// plan card carries none; a plan card the store cannot read, or a revision
+// without the card, is an error, for its pins are unknown, not absent.
+func cardCompanions(ctx context.Context, store planCards, t Task) ([]CardCompanion, error) {
 	if t.Source != SourcePlan || t.Parent == "" || t.PlanKey == "" || t.PlanRevision == 0 {
-		return nil
+		return nil, nil
 	}
 	rev, ok, err := store.PlanRevision(ctx, t.Parent, t.PlanRevision)
-	if err != nil || !ok {
-		return nil
+	if err != nil {
+		return nil, fmt.Errorf("plan revision %s/%d: %w", t.Parent, t.PlanRevision, err)
+	}
+	if !ok {
+		return nil, fmt.Errorf("plan revision %s/%d: not found", t.Parent, t.PlanRevision)
 	}
 	var p Plan
-	if json.Unmarshal(rev.Plan, &p) != nil {
-		return nil
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return nil, fmt.Errorf("plan revision %s/%d: %w", t.Parent, t.PlanRevision, err)
 	}
 	for _, c := range p.Cards {
 		if c.Key == t.PlanKey {
-			return c.Companions
+			return c.Companions, nil
 		}
 	}
-	return nil
+	return nil, fmt.Errorf("plan revision %s/%d: no card %s", t.Parent, t.PlanRevision, t.PlanKey)
 }
 
 // GateCompanion reads the plan card's companion pins live through the
 // factory-config token: met while the companion's default branch still
 // holds the pinned commit, behind it once it has moved past, and unread
 // when the read fails. Every one of the three holds the card; none fails
-// it, and the next gate pass reads again.
+// it, and the next gate pass reads again. A plan card the store cannot
+// read holds the same way, for its pins are unknown.
 func (r *Runner) GateCompanion(ctx context.Context, taskID string) ([]CompanionGate, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return nil, err
 	}
-	pins := cardCompanions(ctx, r.store, t)
+	pins, err := cardCompanions(ctx, r.store, t)
+	if err != nil {
+		cs := []CompanionGate{{Unread: "the plan card cannot be read, so its companion pins are unknown"}}
+		r.record(ctx, t.ID, "gate_companion", map[string]any{"verdicts": cs})
+		return cs, nil
+	}
 	if len(pins) == 0 {
 		return nil, nil
 	}

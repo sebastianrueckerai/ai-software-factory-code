@@ -1470,8 +1470,12 @@ func TestGateCompanion(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/repos/sf/infra/commits":
 			io.WriteString(w, `[{"sha":"`+head+`"}]`)
+		case "/api/v1/repos/sf/infra/compare/" + pin + "..." + head:
+			io.WriteString(w, `{"status":"behind"}`)
 		case "/api/v1/repos/sf/other/commits":
 			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
+		case "/api/v1/repos/sf/other/compare/" + pin + "..." + pin:
+			io.WriteString(w, `{"status":"identical"}`)
 		case "/api/v1/repos/sf/locked/commits":
 			w.WriteHeader(http.StatusForbidden)
 		default:
@@ -1505,8 +1509,8 @@ func TestGateCompanion(t *testing.T) {
 	if !slices.Equal(cs, want) {
 		t.Fatalf("verdicts = %+v, want %+v", cs, want)
 	}
-	if !slices.Equal(auth, []string{"token config-tok", "token config-tok", "token config-tok"}) {
-		t.Fatalf("reads = %q, want each companion through the factory-config token", auth)
+	if !slices.Equal(auth, []string{"token config-tok", "token config-tok", "token config-tok", "token config-tok", "token config-tok"}) {
+		t.Fatalf("reads = %q, want every companion read, head and compare alike, through the factory-config token", auth)
 	}
 
 	direct := gateTask
@@ -1516,6 +1520,33 @@ func TestGateCompanion(t *testing.T) {
 	cs = getInto[[]CompanionGate](t, val, err)
 	if len(cs) != 0 {
 		t.Fatalf("a direct card's companions = %+v, want none", cs)
+	}
+}
+
+// unreadPlanStore fails every plan revision read, playing a store blip on
+// the one query the companion gate reads the pins through.
+type unreadPlanStore struct {
+	*fakeStore
+}
+
+func (s *unreadPlanStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	return PlanRevision{}, false, errors.New("store down")
+}
+
+// A plan card the gate cannot read is not a card without pins: the read
+// failure holds the card on a line that names it, the way an unread
+// companion holds, instead of a silent pass with no companion gate.
+func TestGateCompanionHoldsAnUnreadPlanCard(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	card := gateTask
+	card.ID, card.Parent, card.PlanKey, card.PlanRevision, card.Source = "t-card", "t-plan", "foundation", 1, SourcePlan
+	store.tasks["t-card"] = card
+	r.store = &unreadPlanStore{store}
+	val, err := execActivity(t, r, ActivityGateCompanion, "t-card")
+	cs := getInto[[]CompanionGate](t, val, err)
+	want := []CompanionGate{{Unread: "the plan card cannot be read, so its companion pins are unknown"}}
+	if !slices.Equal(cs, want) {
+		t.Fatalf("verdicts = %+v, want the plan card's read failure to hold: %+v", cs, want)
 	}
 }
 

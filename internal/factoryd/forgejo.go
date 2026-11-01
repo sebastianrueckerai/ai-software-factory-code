@@ -569,10 +569,9 @@ func (f *Forgejo) ActionRuns(ctx context.Context, token, owner, repo string, que
 	return res.Entries, nil
 }
 
-// companionWindow bounds how far back a pin is looked for on the
-// companion's default branch: a pin older than the window is gone, unmet,
-// because the companion rewound past it, whether by 50 merges or one
-// force-push.
+// companionWindow bounds the commits listing the companion head read
+// uses; the pin verdict has no window, the compare endpoint answers
+// however far main has moved past the pin.
 const companionWindow = 50
 
 // defaultCommits lists the newest commits of r's default branch, newest
@@ -596,17 +595,28 @@ func (f *Forgejo) defaultCommits(ctx context.Context, token string, r Repo) ([]s
 	return shas, nil
 }
 
-// MainAtLeast reports whether sha is among the newest commits of r's
-// default branch, with the branch's head: a pin is met while the companion
-// still holds the pinned commit in its window, so it stays met as main
-// moves ahead and unmet once main has moved past it. A token that cannot
-// read the repository is an error naming the companion, not a verdict.
+// MainAtLeast reports whether r's default branch holds sha at or after
+// it, with the branch's head: the compare of the pin and the head answers
+// the verdict, however far main has moved past the pin. A token that
+// cannot read the repository, or a compare without a status, is an error
+// naming the companion, not a verdict.
 func (f *Forgejo) MainAtLeast(ctx context.Context, token string, r Repo, sha string) (bool, string, error) {
-	commits, err := f.defaultCommits(ctx, token, r)
+	head, err := f.DefaultHead(ctx, token, r)
 	if err != nil {
 		return false, "", err
 	}
-	return slices.Contains(commits, sha), commits[0], nil
+	body, err := f.tokenCall(token)(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", r.Owner, r.Name, sha, head), nil, http.StatusOK)
+	if err != nil {
+		return false, "", fmt.Errorf("companion %s: %w", r, err)
+	}
+	var res struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &res); err != nil || res.Status == "" {
+		return false, "", fmt.Errorf("companion %s: compare %s...%s without a status", r, sha[:7], head[:7])
+	}
+	return res.Status == "identical" || res.Status == "ahead", head, nil
 }
 
 // DefaultHead is the head of r's default branch, the pin a plan filing
