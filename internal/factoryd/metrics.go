@@ -991,8 +991,11 @@ type metricEconCard struct {
 // merge falls in [lo, hi): DISTINCT ON keeps one row per card before
 // the joins, so duplicate merges and the reading and spend lookups
 // never fan a card out. The reading is the card's final gate_head fact
-// (whichever head the gates last judged); the spend is the card's whole
-// ledger life, every phase, not the span's slice.
+// for the head the task actually built on (task.sha), so a later
+// abandoned head's reading cannot replace the merged head's; the spend
+// is the card's whole ledger life, every phase, not the span's slice. A
+// gate_head without diff statistics stays unavailable — its line count
+// is NULL, never a measured zero.
 func metricEconPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Time) ([]metricEconCard, error) {
 	rows, err := db.QueryContext(ctx, `SELECT m.at, g.size, g.lines, s.eur
 		FROM (SELECT DISTINCT ON (e.task_id) e.task_id, e.at
@@ -1000,9 +1003,11 @@ func metricEconPull(ctx context.Context, db *sql.DB, repo string, lo, hi time.Ti
 			WHERE e.kind = '`+EventPullRequestMerged+`' AND t.repository = $1 AND t.kind <> 'chat'
 				AND t.source <> '`+SourceRoll+`' AND e.at < $3
 			ORDER BY e.task_id, e.at, e.id) m
+		JOIN tasks t ON t.id = m.task_id
 		LEFT JOIN LATERAL (SELECT gh.detail ->> 'size' AS size,
-				COALESCE((gh.detail ->> 'insertions')::float8, 0) + COALESCE((gh.detail ->> 'deletions')::float8, 0) AS lines
+				(gh.detail ->> 'insertions')::float8 + (gh.detail ->> 'deletions')::float8 AS lines
 			FROM events gh WHERE gh.kind = '`+EventGateHead+`' AND gh.task_id = m.task_id
+				AND gh.detail ->> 'head' = t.sha
 			ORDER BY gh.id DESC LIMIT 1) g ON true
 		LEFT JOIN LATERAL (SELECT sum(l.eur)::float8 AS eur FROM ledger l WHERE l.task_id = m.task_id) s ON true
 		WHERE m.at >= $2`, repo, lo, hi)

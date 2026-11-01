@@ -870,9 +870,10 @@ func seedEconStore(t *testing.T) *PGStore {
 }
 
 // seedEconCard writes one card of the economics cohort: a task of the
-// size, one pull_request_merged event per merge instant (the earliest
-// its first merge), a final gate_head reading when head is set (empty
-// head: none) and the card's lifetime ledger rows (no spend: none).
+// size and sha (head), one pull_request_merged event per merge instant
+// (the earliest its first merge), a final gate_head reading when head
+// is set (empty head: none) and the card's lifetime ledger rows (no
+// spend: none).
 func seedEconCard(t *testing.T, s *PGStore, repo, id, size, head string, ins, del int, merges []string, spend []econSpend) {
 	t.Helper()
 	ctx := context.Background()
@@ -882,8 +883,8 @@ func seedEconCard(t *testing.T, s *PGStore, repo, id, size, head string, ins, de
 			t.Fatalf("%s: %v", id, err)
 		}
 	}
-	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, size, track)
-		VALUES ($1, 1, 0, 'merged', $2, 'agent', 'webhook', $3, $3, $4, 'direct')`, id, repo, merges[0], size)
+	must(`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, created_at, finished_at, size, sha, track)
+		VALUES ($1, 1, 0, 'merged', $2, 'agent', 'webhook', $3, $3, $4, $5, 'direct')`, id, repo, merges[0], size, head)
 	for _, at := range merges {
 		must(`INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
 			VALUES ($1, $2, $3, 'pull_request_merged', 'factoryd', 'factoryd', '{}')`, at, repo, id)
@@ -1016,6 +1017,40 @@ func TestDivideConquerEconomicsSQL(t *testing.T) {
 	r = report("sf/neg")
 	if fits := r.DivideConquer.FixedEurPerCard; len(fits) != 1 || !fits[0].Available || fits[0].Cards != 2 || !eq(fits[0].EUR, -1) {
 		t.Fatalf("falling fit = %+v, want small at -1.00 over 2 cards", fits)
+	}
+
+	// conflicting later gate_head: a gate for an abandoned head recorded
+	// after the first merge must not replace the merged head's reading
+	seedEconCard(t, s, "sf/conflict", "c1", "small", "c1-merged", 80, 20,
+		[]string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 4}})
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, kind, actor, via, detail)
+		VALUES ('2026-10-07T10:00Z', 'sf/conflict', 'c1', 'gate_head', 'factoryd', 'factoryd', $1)`,
+		`{"gate":"merge","head":"c1-abandoned","decision":"auto","size":"large","bound":600,"policy_version":7,"files":20,"insertions":500,"deletions":200}`); err != nil {
+		t.Fatal(err)
+	}
+	r = report("sf/conflict")
+	if f := r.DivideConquer.EurPerMergedLine; !f.Has || !eq(f.Value, 4.0/100.0) {
+		t.Fatalf("conflicting later gate_head line = %+v, want 4 EUR over 100 lines (merged head), not 700", f)
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 1}) {
+		t.Fatalf("conflicting later gate_head coverage = %+v, want the merged card alone", cov)
+	}
+
+	// gate_head lacking diff statistics: insertions/deletions absent stays
+	// unavailable, never a measured zero
+	seedEconCard(t, s, "sf/nostat", "ns1", "small", "ns1", 0, 0,
+		[]string{"2026-10-06T10:00Z"}, []econSpend{{"2026-10-06", 3}})
+	if _, err := s.db.ExecContext(ctx, `UPDATE events SET detail = $1
+		WHERE repository = 'sf/nostat' AND task_id = 'ns1' AND kind = 'gate_head'`,
+		`{"gate":"merge","head":"ns1","decision":"auto","size":"small","bound":300,"policy_version":7,"files":9}`); err != nil {
+		t.Fatal(err)
+	}
+	r = report("sf/nostat")
+	if f := r.DivideConquer.EurPerMergedLine; f.Has || f.Value != 0 {
+		t.Fatalf("lacking-statistics line = %+v, want undefined, not a zero-line reading", f)
+	}
+	if cov := r.DivideConquer.EconomicsCoverage; cov != (EconomicsCoverage{Cards: 1, MissingLines: 1}) {
+		t.Fatalf("lacking-statistics coverage = %+v, want the card named as missing lines", cov)
 	}
 
 	// nothing at all: no cohort, no fit, no hole
