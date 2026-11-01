@@ -8,6 +8,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -102,10 +103,16 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 	type project struct {
 		Name string
 		policy.ProjectConfig
+		// Pool is the project's pool status (projectPool): the same line
+		// the project's face and the settings page read.
+		Pool poolLine
 	}
 	var projects []project
+	now := time.Now()
 	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
-		projects = append(projects, project{name, v.Projects[name]})
+		pc := v.Projects[name]
+		projects = append(projects, project{name, pc,
+			c.projectPool(r.Context(), v, factoryd.Project{Name: name, Repository: pc.Repository}, now)})
 	}
 	s := current(r)
 	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Version": v, "Projects": projects,

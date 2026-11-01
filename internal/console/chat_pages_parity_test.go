@@ -179,13 +179,14 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 		"Alerts:\n7 escalation cap \"t-r\" since 2026-10-11 09:30 UTC, open\n6 supervisor trip detector \"t-m\" since 2026-10-10 08:00 UTC, verdict noise by sebastian",
 		resources,
 		"Projects (2):\n" +
-			"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none\n" +
-			"ready-app (ready/app): objects factory; process none; merge rule auto; ready since 2026-10-11 09:30 UTC; GitHub export acme/ready (mirror, mirrored)",
+			"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + noPoolRead() + "\n" +
+			"ready-app (ready/app): objects factory; process none; merge rule auto; ready since 2026-10-11 09:30 UTC; GitHub export acme/ready (mirror, mirrored); " + noPoolRead(),
 		"Policy version 4 (commit c9d98bb0aa11).\nLimits and budgets:\n" +
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n" +
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n" +
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n" +
 			"  day cap: €20.00\n  month cap: €50.00\n  project demo-app month cap: €25.00\n  project infra month cap: €10.00\n" +
+			"  project demo-app " + noPoolRead() + "\n  project infra " + noPoolRead() + "\n  project linkshort " + noPoolRead() + "\n" +
 			"Risk classes (most severe first, default normal):\n  high: requires_approval, migration\n  normal: auto\n" +
 			"  internal/factoryd/migrations/**, deploy/** -> high\n" +
 			"Approvers:\n  factory: sebastian\n  linkshort: alice",

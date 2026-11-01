@@ -14,9 +14,9 @@
 </section>{{end}}<section class="ro">
 <h3>Projects</h3>
 <div class="tscroll"><table aria-label="The projects of this configuration">
-<thead><tr><th scope="col">Project</th><th scope="col">Repository</th><th scope="col">Merge rule</th><th scope="col">Objects</th><th scope="col">Agents</th><th scope="col">Namespaces</th></tr></thead>
+<thead><tr><th scope="col">Project</th><th scope="col">Repository</th><th scope="col">Merge rule</th><th scope="col">Objects</th><th scope="col">Agents</th><th scope="col">Namespaces</th><th scope="col">Pool</th></tr></thead>
 <tbody>
-{{range .Projects}}<tr><td><a href="{{$.At}}/projects/{{.Name}}.yaml" target="_blank" rel="noopener">{{.Name}}</a></td><td>{{.Repository}}</td><td>{{.MergeRule}}</td><td>{{.Objects}}</td><td>{{.Agents}}</td><td>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{end}}</td></tr>
+{{range .Projects}}<tr><td><a href="{{$.At}}/projects/{{.Name}}.yaml" target="_blank" rel="noopener">{{.Name}}</a></td><td>{{.Repository}}</td><td>{{.MergeRule}}</td><td>{{.Objects}}</td><td>{{.Agents}}</td><td>{{range $i, $n := .Namespaces}}{{if $i}}, {{end}}{{$n}}{{end}}</td><td>{{if .Pool.Words}}<span class="pool" title="{{.Pool.Policy}}, {{.Pool.Month}} UTC: the same figures the project's face and the settings page read">{{.Pool.Words}}</span>{{else}}—{{end}}</td></tr>
 {{end}}</tbody>
 </table></div>
 </section>

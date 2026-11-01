@@ -193,6 +193,14 @@ func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 		log.Printf("console: projects: %v", err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
 	}
+	v, ok, err := c.cfg.Policies.CurrentPolicy(ctx)
+	switch {
+	case err != nil:
+		log.Printf("console: current policy: %v", err)
+		return "", refuse(http.StatusInternalServerError, "cannot read the policy")
+	case !ok:
+		return "", refuse(http.StatusServiceUnavailable, "no policy version loaded")
+	}
 	var b strings.Builder
 	envs := c.envRows(ctx, ps)
 	for i, x := range ps {
@@ -227,6 +235,9 @@ func (c *Console) projectsText(ctx context.Context, a actor) (string, error) {
 			}
 			b.WriteString("; environments " + strings.Join(words, ", "))
 		}
+		if x.File {
+			b.WriteString("; " + c.poolChat(ctx, v, x))
+		}
 		b.WriteString("\n")
 	}
 	if len(ps) == 0 {
@@ -258,6 +269,11 @@ func (c *Console) policyText(ctx context.Context, a actor) (string, error) {
 	for _, name := range names {
 		if p := v.Projects[name]; p.Budget != nil {
 			fmt.Fprintf(&b, "  project %s month cap: €%.2f\n", name, p.Budget.MonthEUR)
+		}
+	}
+	for _, name := range names {
+		if p := v.Projects[name]; p.Repository != "" {
+			fmt.Fprintf(&b, "  project %s %s\n", name, c.poolChat(ctx, v, factoryd.Project{Name: name, Repository: p.Repository}))
 		}
 	}
 	r := d.Risk
