@@ -1,0 +1,58 @@
+graph LR
+  signals["signals: issues, telemetry, alerts"]
+  subgraph intake["intake"]
+    screening["screening"]
+    sizing["sizing"]
+    answer-screener["answer-screener"]
+  end
+  subgraph planning["planning"]
+    planner["planner"]
+    delta-planner["delta-planner"]
+  end
+  subgraph the-session["the session"]
+    coding["coding"]
+    message-responder["message-responder"]
+    checkin["checkin"]
+    opencode-subagents["opencode subagents"]
+  end
+  subgraph verification["verification"]
+    review-criteria["review-criteria"]
+    review-behaviours["review-behaviours"]
+    model-review["model-review"]
+    security-audit["security-audit"]
+    holdout-proposer["holdout-proposer"]
+    holdout-redrafter["holdout-redrafter"]
+    holdout-audit["holdout-audit"]
+    gate-supervisor["gate-supervisor"]
+  end
+  subgraph the-human["the human's page"]
+    brief-writer["brief-writer"]
+    human["the human"]
+  end
+  subgraph console["console"]
+    project-agent["project-agent"]
+    title["title"]
+    compact["compact"]
+    vision["vision"]
+  end
+  deploy["merge and deploy"]
+  telemetry["telemetry"]
+
+  signals --> screening --> sizing --> planner --> coding
+  signals -.-> answer-screener
+  coding -.-> opencode-subagents
+  message-responder --> coding
+  coding --> checkin
+  checkin -.-> coding
+  model-review --> gate-supervisor
+  security-audit --> gate-supervisor
+  holdout-audit --> gate-supervisor
+  review-criteria -.-> model-review
+  review-behaviours -.-> model-review
+  holdout-proposer -.-> holdout-audit
+  holdout-redrafter -.-> holdout-audit
+  model-review -.-> delta-planner
+  delta-planner -.-> coding
+  gate-supervisor -->|approve| deploy
+  gate-supervisor -->|escalate| brief-writer --> human
+  deploy --> telemetry --> signals

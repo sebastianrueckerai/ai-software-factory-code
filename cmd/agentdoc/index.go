@@ -60,9 +60,10 @@ func index(rows []indexRow, sha, policyCommit, opencodeVersion string) (string, 
 	md.WriteString("One page per agent: the first model request verbatim, every part pinned to the builder that wrote it, the offered tools under their server's provenance. This index is computed from the same captures as the pages — sizes, hashes and counts, no verdicts.\n\n")
 	d.writeSelfCheck(&md, rows, opencodeVersion)
 	d.writeInventory(&md, rows)
+	d.writeOneLiners(&md, rows)
 	d.writeTrunk(&md, rows)
 	d.writeMatrix(&md, rows)
-	d.writeMermaid(&md, rows)
+	d.writeMermaid(&md)
 	return md.String(), d.failures
 }
 
@@ -218,25 +219,22 @@ func (d *doc) writeMatrix(md *strings.Builder, rows []indexRow) {
 	md.WriteString("\n")
 }
 
-// writeMermaid renders the skeleton: every agent a node, grouped by
-// family, until the authored diagram replaces it.
-func (d *doc) writeMermaid(md *strings.Builder, rows []indexRow) {
-	md.WriteString("## The factory at a glance\n\n")
-	md.WriteString("```mermaid\ngraph LR\n")
-	var families []string
-	ofFamily := map[string][]indexRow{}
+// writeOneLiners carries the authored one-liner of every agent that has
+// one; the shape test holds the registry to full coverage.
+func (d *doc) writeOneLiners(md *strings.Builder, rows []indexRow) {
+	md.WriteString("## The agents in one line each\n\n")
 	for _, r := range rows {
-		if _, seen := ofFamily[r.agent.Family]; !seen {
-			families = append(families, r.agent.Family)
+		if b, ok := blurbOf(r.agent.ID); ok {
+			fmt.Fprintf(md, "- [%s](%s.md): %s\n", r.agent.ID, r.agent.ID, b)
 		}
-		ofFamily[r.agent.Family] = append(ofFamily[r.agent.Family], r)
 	}
-	for _, f := range families {
-		fmt.Fprintf(md, "  subgraph %s[\"family %s\"]\n", strings.ReplaceAll(f, "-", "_"), f)
-		for _, r := range ofFamily[f] {
-			fmt.Fprintf(md, "    %s[\"%s\"]\n", strings.ReplaceAll(r.agent.ID, "-", "_"), r.agent.ID)
-		}
-		md.WriteString("  end\n")
-	}
-	md.WriteString("```\n\nThe authored master diagram lands here once drafted and picked.\n")
+	md.WriteString("\n")
+}
+
+// writeMermaid embeds the authored master diagram, picked from the
+// drafts; a test holds it to a node for every registry agent.
+func (d *doc) writeMermaid(md *strings.Builder) {
+	md.WriteString("## The factory at a glance\n\n```mermaid\n")
+	md.WriteString(masterDiagram())
+	md.WriteString("\n```\n")
 }
