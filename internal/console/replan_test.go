@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -109,7 +108,7 @@ func TestReplanCard(t *testing.T) {
 	req := post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {"  " + note + "\n"}})
 	req.Header.Set("HX-Request", "true")
 	rec := r.do(req, ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), html.EscapeString(said)) {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Body.String(), `<div id="board"`) || strings.Contains(rec.Body.String(), `class="note"`) {
 		t.Fatalf("the button = %d:\n%s", rec.Code, rec.Body)
 	}
 	equal(t, "asked", asked, []string{"t-r by sebastian: " + note})

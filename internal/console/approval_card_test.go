@@ -211,7 +211,7 @@ func TestCardPressAnswersWithTheBoard(t *testing.T) {
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
 	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusOK || !strings.HasPrefix(body, `<div id="board"`) ||
-		!strings.Contains(body, `<p class="note" role="status">Approved pull request #9; factoryd merges it.</p>`) {
+		strings.Contains(body, `class="note"`) {
 		t.Fatalf("the htmx approve = %d:\n%s", rec.Code, body)
 	}
 	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {

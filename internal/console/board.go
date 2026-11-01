@@ -1313,7 +1313,6 @@ type boardData struct {
 	User  string
 	CSRF  string
 	Filed string
-	Note  string // what the human's last action did
 	Page  string // the layout marks the bar's current destination: the board
 	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
@@ -1737,10 +1736,10 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 }
 
 // showBoard answers a board action with the board of the form's project:
-// to htmx the fragment carrying note, and problems on the approval cards
-// of the tasks they name; a browser's form a redirect to the board after a
-// success (a reload resends nothing), else the page.
-func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
+// to htmx the fragment, and problems on the approval cards of the tasks
+// they name; a browser's form a redirect to the board after a success (a
+// reload resends nothing), else the page.
+func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, problems map[string]string) {
 	f := formFilter(r)
 	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
 		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
@@ -1753,10 +1752,9 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 	}
 	if err != nil {
 		log.Printf("console: board: %v", err)
-		http.Error(w, note+" The board could not be read; reload it.", http.StatusInternalServerError)
+		http.Error(w, "The board could not be read; reload it.", http.StatusInternalServerError)
 		return
 	}
-	d.Note = note
 	// the approval cards: the wide view's human lane, else Needs you
 	cards := make([]*approvalCard, 0, len(d.Approvals))
 	for i := range d.Approvals {
@@ -3090,7 +3088,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.showBoard(w, r, http.StatusOK, nil)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -3100,12 +3098,11 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
-	if err != nil {
+	if _, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil); err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	c.showBoard(w, r, http.StatusOK, note, nil)
+	c.showBoard(w, r, http.StatusOK, nil)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
