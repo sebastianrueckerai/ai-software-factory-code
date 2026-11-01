@@ -107,6 +107,10 @@ type ChatToolCall struct {
 	// chat's tool work (roadmap 198).
 	At time.Time `json:"at,omitempty"`
 	Ms int64     `json:"ms,omitempty"`
+	// Trail is the research tool's steps beside the thread, for the
+	// human's audit: every step's call and answer. The model never reads
+	// it; the report is the result.
+	Trail string `json:"trail,omitempty"`
 	// Proposal is the token of a call proposed to the member.
 	Proposal string `json:"proposal,omitempty"`
 }

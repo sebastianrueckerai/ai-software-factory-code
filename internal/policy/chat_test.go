@@ -41,6 +41,18 @@ func TestChatDefaults(t *testing.T) {
 	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeOperator); got != "" {
 		t.Fatalf("FactoryModel(coder, operator) = %q, want none: only a chat task calls the operator", got)
 	}
+	if got := tree.Document.FactoryModel([]string{ClassChat}, PurposeResearch); got != Big {
+		t.Fatalf("FactoryModel(chat, research) = %q, want the mid tier, hard-coded", got)
+	}
+	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeResearch); got != "" {
+		t.Fatalf("FactoryModel(coder, research) = %q, want none: only a chat task researches", got)
+	}
+	if !slices.Contains(Purposes, PurposeResearch) {
+		t.Fatalf("Purposes = %v, want research among them", Purposes)
+	}
+	if !slices.Contains(ChatTools, "research") {
+		t.Fatalf("ChatTools = %v, want research among them", ChatTools)
+	}
 }
 
 // A class that lists analyze_image names its vision model, which its

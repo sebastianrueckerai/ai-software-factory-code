@@ -129,7 +129,7 @@ const DefaultParallelTurns = 3
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
-	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "session", "session_steps", "session_step", "session_search", "ci",
+	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
@@ -948,6 +948,9 @@ const (
 	// PurposeTitle is a chat thread's naming call (roadmap 304): one
 	// cheap call that writes the thread's title from its first message.
 	PurposeTitle = "title"
+	// PurposeResearch is the chat's research subagent: the bounded loop
+	// behind the research tool, on the class below premium, hard-coded.
+	PurposeResearch = "research"
 	// PurposeBrief is a needs-you card's brief, on the
 	// class's supervisor model: the one call a card that waits on a person
 	// may make.
@@ -961,7 +964,7 @@ var LookTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 const MaxLookBytes = 8 << 20
 
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeResearch, PurposeBrief}
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
 // and Small are LiteLLM aliases routed to their z.ai model, Premium the
@@ -1412,12 +1415,14 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 	if purpose == PurposeVision && chat {
 		return d.ChatOf(ProjectConfig{}).VisionModel
 	}
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeDigest || purpose == PurposeTitle {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeDigest || purpose == PurposeTitle || purpose == PurposeResearch {
 		switch {
 		case !chat:
 			return ""
 		case purpose == PurposeCompact, purpose == PurposeDigest, purpose == PurposeTitle:
 			return Small
+		case purpose == PurposeResearch:
+			return Big
 		}
 		return d.ChatOf(ProjectConfig{}).Model
 	}

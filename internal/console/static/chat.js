@@ -143,13 +143,15 @@ var chatView = (function () {
   }
   // toolHTML is a tool call folded to its name, its duration when known
   // and its result's first line; a refusal (the policy's or the role's) is
-  // the agent's line instead
-  function toolHTML(name, args, ms, result) {
+  // the agent's line instead; the research tool's trail folds behind the
+  // result as its own steps
+  function toolHTML(name, args, ms, result, trail) {
     result = String(result || "");
     if (result.indexOf("Refused: ") === 0) return "<p class=\"refused\"><code>" + esc(name) + "</code> " + esc(result) + "</p>";
     var first = result.split("\n")[0];
     return "<details class=\"tool\"><summary>🔧 " + esc(name) + (ms == null ? "" : " · " + Number(ms) + " ms") + (first ? " · " + esc(first) : "") +
-      "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre></details>";
+      "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre>" +
+      (trail ? "<details class=\"trail\"><summary>the researcher's steps</summary><pre>" + esc(trail) + "</pre></details>" : "") + "</details>";
   }
   // callsHTML joins a message's parts, a tool call's as {call: html}: each
   // run of calls shows its newest, the earlier ones folded behind one line
@@ -250,7 +252,7 @@ var chatView = (function () {
             description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
           return;
         }
-        dst.push({call: toolHTML(c.name, c.arguments, null, c.result)});
+        dst.push({call: toolHTML(c.name, c.arguments, null, c.result, c.trail)});
         if (state) dst.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
       });
     });
@@ -825,7 +827,7 @@ var chatView = (function () {
       said = null;
       if (ev.event === "tool") {
         foldCall(cursor.previousElementSibling);
-        add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result));
+        add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result, d.trail));
       }
       else if (ev.event === "proposal") add(into, chatView.proposalHTML(d));
       else if (ev.event === "applied") add(into, chatView.appliedHTML(d, into.classList.contains("undoing")));

@@ -159,6 +159,16 @@ func (m *OperatorModel) Digest(ctx context.Context, taskID, thread, ask, text st
 	return answer.Content, err
 }
 
+// researchTokens bounds a research loop's answer: the report's cut.
+const researchTokens = 2048
+
+// Research is one call of the chat's research loop on chat task taskID's
+// account: the mid tier reads messages with the loop's read tools, its
+// answer a step's tool calls or the report.
+func (m *OperatorModel) Research(ctx context.Context, taskID, thread string, messages []OperatorMessage, tools []OperatorTool) (OperatorMessage, error) {
+	return m.stream(ctx, policy.PurposeResearch, researchTokens, taskID, policy.Big, thread, messages, tools, func(string) {}, nil)
+}
+
 // Vision is one look at image, ask's answer by the vision alias on chat
 // task taskID's account, purpose vision; an empty ask asks what the
 // image shows. A gateway refusal is a *policy.Refusal in the chain, as

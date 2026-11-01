@@ -192,6 +192,10 @@ console.log(JSON.stringify({
       {id: "c2", name: "card", arguments: "{}", result: "Refused: no card 9"}]},
     {role: "assistant", content: "", at: "2026-10-11T09:30:03Z", tool_calls: [{id: "c3", name: "ci", arguments: "{}", result: "green"}]},
     {role: "assistant", content: "All green.", at: "2026-10-11T09:30:04Z"}], "sebastian", []),
+  trail: chatView.historyHTML([{role: "user", content: "which files?", at: "2026-10-11T09:30:01Z"},
+    {role: "assistant", content: "", at: "2026-10-11T09:30:02Z", tool_calls: [{id: "c1", name: "research", arguments: "{\"ask\":\"which files?\"}",
+      result: "Findings:\nmain holds README.md.", trail: "\ntree {\"ref\":\"main\"}\nREADME.md 1200\n"}]},
+    {role: "assistant", content: "Done.", at: "2026-10-11T09:30:03Z"}], "sebastian", []),
   queuedRow: chatView.userHTML("sebastian", "also this", "2026-10-11T09:30:05Z", true),
   readRow: chatView.readHTML,
   openQ: [chatView.openQuestionHTML("Can you do that? <b>"), chatView.openQuestionHTML("")].join("|"),
@@ -313,6 +317,11 @@ console.log(JSON.stringify({
 			`<p class="refused"><code>card</code> Refused: no card 9</p></details>` +
 			`<details class="tool"><summary>🔧 ci · green</summary><pre>{}` + "\n\n" + `green</pre></details>` +
 			`<div class="said"><p>All green.</p></div></div>`},
+		{"trail", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">which files?</p></div>` +
+			agent + `<details class="tool"><summary>🔧 research · Findings:</summary><pre>{&quot;ask&quot;:&quot;which files?&quot;}` + "\n\n" +
+			`Findings:` + "\n" + `main holds README.md.</pre><details class="trail"><summary>the researcher's steps</summary><pre>` +
+			"\n" + `tree {&quot;ref&quot;:&quot;main&quot;}` + "\n" + `README.md 1200` + "\n" + `</pre></details></details>` +
+			`<div class="said"><p>Done.</p></div></div>`},
 		{"queuedRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
 			`<p class="said">also this</p><p class="meta chat-queued">not read yet: the agent reads it after its current step</p></div>`},
 		{"imgRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +

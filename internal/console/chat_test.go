@@ -955,6 +955,11 @@ type chatGateway struct {
 	// they get in order, "digest n" when none is scripted
 	digests []map[string]any
 	answers []string
+	// researchCalls are the research loop's requests, research the
+	// replies its calls get in order: a step's tool calls, else the
+	// report; a single-line REFUSE reply refuses the call
+	researchCalls []map[string]any
+	research      [][]string
 	// window is the alias's served context window, windows the aliases
 	// the turns asked for one
 	window  int
@@ -1022,6 +1027,34 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", say(answer))
+		return
+	}
+	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeResearch {
+		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.Big || body["max_tokens"] != float64(2048) || body["stream"] != true {
+			g.t.Errorf("research call: task %q, body %v: want the mid tier on %s, the report's cut, streamed", r.Header.Get(gateway.HeaderFactoryTask), body, task)
+		}
+		g.researchCalls = append(g.researchCalls, body)
+		reply := []string{say(fmt.Sprintf("research report %d", len(g.researchCalls)))}
+		if len(g.research) > 0 {
+			reply, g.research = g.research[0], g.research[1:]
+		}
+		if len(reply) == 1 {
+			if refused, ok := strings.CutPrefix(reply[0], "REFUSE "); ok {
+				decision, reason, _ := strings.Cut(refused, " ")
+				w.Header().Set(gateway.HeaderDecision, decision)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusPaymentRequired)
+				json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"message": reason, "type": "budget_exceeded"}})
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, line := range append(reply, "[DONE]") {
+			fmt.Fprintf(w, "data: %s\n\n", line)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+		}
 		return
 	}
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeVision {
@@ -1646,14 +1679,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 	}{
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
 		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
-			"file", "tree", "grep", "web_search", "web_scrape", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
+			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
-		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "session",
+		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",

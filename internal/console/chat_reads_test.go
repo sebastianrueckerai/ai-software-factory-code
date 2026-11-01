@@ -794,3 +794,118 @@ func TestChatReadsAreNeverProposed(t *testing.T) {
 		}
 	}
 }
+
+// The research tool runs one bounded loop: the mid tier drives the chat's
+// own reads, every step lands on the row's trail beside the thread, the
+// report is the tool's result the premium model reads, and its arguments
+// carry the ask, so replay keeps the report whole.
+func TestChatResearch(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.fg.trees = map[string]string{"main": treeJSON}
+	g.replies = [][]string{{call(1, "research", `{"ask":"which files sit at main?"}`)}, {say("The repo holds four files.")}}
+	g.research = [][]string{{call(1, "tree", `{"ref":"main"}`)}, {say("Findings:\nmain holds cmd/app.go, docs/a.md and README.md.\n\nSources:\n- the tree at main\n\nOpen questions:\n- none")}}
+	ck, s := r.loggedIn(t)
+	if code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"which files?"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	if len(g.researchCalls) != 2 {
+		t.Fatalf("the loop made %d calls, want a step and the report", len(g.researchCalls))
+	}
+	first := g.researchCalls[0]
+	msgs := first["messages"].([]any)
+	second := msgs[1].(map[string]any)
+	if msgs[0].(map[string]any)["role"] != "system" || second["role"] != "user" || second["content"] != "which files sit at main?" {
+		t.Fatalf("the loop's first messages = %v", msgs)
+	}
+	var names []string
+	for _, tool := range first["tools"].([]any) {
+		names = append(names, tool.(map[string]any)["function"].(map[string]any)["name"].(string))
+	}
+	equal(t, "the researcher's tools", names, []string{"tree", "grep", "file", "read_doc", "web_search", "web_scrape"})
+	step := g.researchCalls[1]["messages"].([]any)
+	if role := step[len(step)-1].(map[string]any)["role"]; role != "tool" {
+		t.Fatalf("the step's tool message = %v", step[len(step)-1])
+	}
+	if got := step[len(step)-1].(map[string]any)["content"].(string); !strings.Contains(got, "README.md 1200") {
+		t.Fatalf("the researcher's tree read = %q", got)
+	}
+	calls := g.calls()
+	operator := messages(t, calls[len(calls)-1])
+	report := operator[len(operator)-1]
+	if report["role"] != "tool" || report["content"].(string) != "Findings:\nmain holds cmd/app.go, docs/a.md and README.md.\n\nSources:\n- the tree at main\n\nOpen questions:\n- none" {
+		t.Fatalf("the report the model read = %v", report)
+	}
+	var row *factoryd.ChatToolCall
+	for _, m := range r.chat.msgs["sf/code sebastian"] {
+		for i := range m.ToolCalls {
+			if m.ToolCalls[i].Name == "research" {
+				row = &m.ToolCalls[i]
+			}
+		}
+	}
+	if row == nil {
+		t.Fatal("no research row in the thread")
+	}
+	if !strings.Contains(row.Trail, `tree {"ref":"main"}`) || !strings.Contains(row.Trail, "README.md 1200") {
+		t.Fatalf("the trail = %q", row.Trail)
+	}
+}
+
+// The loop's bounds are in code: the step bound stops a loop that keeps
+// calling tools, the wall a call that outruns it, and each refusal names
+// the stop and the fitting action. A gateway refusal of the loop's own
+// call reaches the member as the tool's refusal.
+func TestChatResearchStopsAtItsBounds(t *testing.T) {
+	r, g := newReadsRig(t)
+	g.replies = [][]string{{call(1, "research", `{"ask":"everything"}`)}, {say("done")}}
+	steps := make([][]string, researchSteps)
+	for i := range steps {
+		steps[i] = []string{call(1, "tree", `{"ref":"main"}`)}
+	}
+	g.research = steps
+	ck, s := r.loggedIn(t)
+	if code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"everything"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	calls := g.calls()
+	operator := messages(t, calls[len(calls)-1])
+	got := operator[len(operator)-1]["content"].(string)
+	if !strings.Contains(got, fmt.Sprintf("%d-step bound", researchSteps)) || !strings.Contains(got, "narrower question") {
+		t.Fatalf("the step bound's words = %q", got)
+	}
+	if len(g.researchCalls) != researchSteps {
+		t.Fatalf("the loop made %d calls, want %d", len(g.researchCalls), researchSteps)
+	}
+
+	r2, g2 := newReadsRig(t)
+	g2.replies = [][]string{{call(1, "research", `{"ask":"everything"}`)}, {say("done")}}
+	oldWall := researchWall
+	researchWall = time.Nanosecond
+	time.Sleep(2 * time.Millisecond)
+	defer func() { researchWall = oldWall }()
+	ck2, s2 := r2.loggedIn(t)
+	if code, events, _ := chatPost(t, r2, ck2, s2, chatPath, url.Values{"message": {"everything"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	calls2 := g2.calls()
+	operator2 := messages(t, calls2[len(calls2)-1])
+	got2 := operator2[len(operator2)-1]["content"].(string)
+	if !strings.Contains(got2, "1ns time bound") || !strings.Contains(got2, "narrower question") {
+		t.Fatalf("the wall bound's words = %q", got2)
+	}
+	researchWall = oldWall
+
+	r3, g3 := newReadsRig(t)
+	g3.replies = [][]string{{call(1, "research", `{"ask":"everything"}`)}, {say("done")}}
+	g3.research = [][]string{{"REFUSE refused_budget the day cap is used"}}
+	ck3, s3 := r3.loggedIn(t)
+	if code, events, _ := chatPost(t, r3, ck3, s3, chatPath, url.Values{"message": {"everything"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	calls3 := g3.calls()
+	operator3 := messages(t, calls3[len(calls3)-1])
+	got3 := operator3[len(operator3)-1]["content"].(string)
+	if !strings.HasPrefix(got3, "Refused: The research was refused: the day cap is used") {
+		t.Fatalf("the refusal's words = %q", got3)
+	}
+}

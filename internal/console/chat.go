@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -162,6 +163,9 @@ type turn struct {
 	pageQuery string
 	present   map[string]bool
 	viewEvent map[string]any
+	// trail is the research tool's steps this turn last captured, which
+	// the row's call stores beside the thread; empty once it is stamped.
+	trail string
 	// pool is the set_pool call this turn last captured: the change with
 	// the project file's blob and pool the proposal read, which its Do it
 	// — the amount the one thing a correction may change — writes
@@ -212,7 +216,10 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 		w.WriteHeader(http.StatusOK)
 	}
 	var failed error
+	var mu sync.Mutex
 	t.send = func(event string, data any) {
+		mu.Lock()
+		defer mu.Unlock()
 		b, err := json.Marshal(data)
 		if failed == nil && err == nil {
 			failed = write(fmt.Sprintf("event: %s\ndata: %s\n\n", event, b))
@@ -1038,7 +1045,8 @@ func (t *turn) run(id, notice string) {
 			proposed = proposed || token != ""
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
-				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token})
+				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token, Trail: t.trail})
+			t.trail = ""
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if t.ask != nil {
@@ -1243,8 +1251,12 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 		limit = 2000
 	}
 	result = textutil.Truncate(result, limit)
-	t.send("tool", map[string]any{"name": name, "arguments": arguments,
-		"duration_ms": took.Milliseconds(), "result": result})
+	event := map[string]any{"name": name, "arguments": arguments,
+		"duration_ms": took.Milliseconds(), "result": result}
+	if t.trail != "" {
+		event["trail"] = textutil.Truncate(t.trail, 8000)
+	}
+	t.send("tool", event)
 }
 
 // sentence is err as the member and the agent read it.
