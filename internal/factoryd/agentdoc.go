@@ -475,7 +475,7 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 
 // agentDocTitle drives the naming call (roadmap 304): the cheap alias
 // reads a chat thread's first message and answers the title alone. The
-// console fires it for threads the member just opened.
+// console fires it for threads the human just opened.
 func agentDocTitle(ctx context.Context, gwURL string, hc *http.Client) ([]agentdoc.Span, error) {
 	m := &OperatorModel{GatewayURL: gwURL, Token: "agentdoc", HTTP: hc}
 	thread := "owner/name:fixture-user:1"

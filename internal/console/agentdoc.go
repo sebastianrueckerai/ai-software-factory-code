@@ -58,7 +58,7 @@ func AgentDocConsole(ctx context.Context, id, gwURL string, v policy.Version, hc
 }
 
 // agentDocChatAgent drives POST /projects/fixture/chat: the real handler
-// stores the member's message, assembles the turn's context and offered
+// stores the human's message, assembles the turn's context and offered
 // tools, and streams the project agent's first model call. The spans
 // come from the same builders reading the same fixture state before the
 // drive; the thread is a card's, so no naming call races the capture.
@@ -102,7 +102,7 @@ func agentDocChatAgent(ctx context.Context, op *factoryd.OperatorModel, v policy
 			Text: "\n\nThe project now:\nToday is " + date + " UTC.\n" + now},
 		{Name: "board status", Symbol: "(*turn).snapshot", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: status},
 		{Name: "sandbox images", Symbol: "imagesFact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: images},
-		{Name: "the member's message", Symbol: "(*Console).chatPost", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocAsk},
+		{Name: "the human's message", Symbol: "(*Console).chatPost", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser, Text: agentDocAsk},
 	}
 	if images == "" {
 		spans = append(spans[:3], spans[4:]...)
@@ -171,7 +171,7 @@ func agentDocVision(ctx context.Context, op *factoryd.OperatorModel) ([]agentdoc
 	}, nil
 }
 
-// agentDocProject is the fixture project: a coder project the member
+// agentDocProject is the fixture project: a coder project the human
 // writes, with a namespace its tools may read.
 func agentDocProject() factoryd.Project {
 	return factoryd.Project{Name: agentDocName, Repository: agentDocRepo, Agents: policy.AgentsCoder,
@@ -194,7 +194,7 @@ func agentDocConsole(op *factoryd.OperatorModel, chat Chat, v policy.Version) *C
 	}}
 }
 
-// agentDocRequest is a request of the fixture member on the fixture
+// agentDocRequest is a request of the fixture human on the fixture
 // project: the session rides the context, no cookie is forged.
 func agentDocRequest(ctx context.Context, method, target string, body *bytes.Buffer, contentType string) *http.Request {
 	var r *http.Request
@@ -210,7 +210,7 @@ func agentDocRequest(ctx context.Context, method, target string, body *bytes.Buf
 	return r.WithContext(context.WithValue(ctx, ctxKey{}, &session{user: agentDocUser}))
 }
 
-// agentDocPost is the member's chat message as the console's client
+// agentDocPost is the human's chat message as the console's client
 // sends it: one multipart form.
 func agentDocPost(ctx context.Context) (*http.Request, error) {
 	var b bytes.Buffer
@@ -341,6 +341,10 @@ type agentDocCosts struct{}
 
 func (agentDocCosts) Costs(context.Context, time.Time, time.Time) (policy.Costs, error) {
 	return policy.Costs{}, nil
+}
+
+func (agentDocCosts) Enforced(context.Context, time.Time) (policy.Enforced, error) {
+	return policy.Enforced{}, nil
 }
 
 func (agentDocCosts) DaySpend(context.Context, time.Time) (float64, error) { return 0, nil }

@@ -45,7 +45,7 @@ var registry = []Agent{
 	{ID: "title", Pkg: "internal/factoryd", Family: "B", Job: "Names a chat thread from its first message", Runs: "the console's naming call, a factoryd direct client", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "project-agent", Pkg: "internal/console", Family: "B", Job: "The always-on repo chat agent; also answers escalations", Runs: "console, own tool loop", Answer: "The capture runs no tools.", Capture: console.AgentDocConsole},
 	{ID: "compact", Pkg: "internal/console", Family: "B", Job: "Summarises a chat thread's older turns", Runs: "console", Answer: "The capture runs no tools.", Capture: console.AgentDocConsole},
-	{ID: "vision", Pkg: "internal/console", Family: "B", Job: "Describes an image the member attached", Runs: "console", Answer: "The capture runs no tools.", Capture: console.AgentDocConsole},
+	{ID: "vision", Pkg: "internal/console", Family: "B", Job: "Describes an image the human attached", Runs: "console", Answer: "The capture runs no tools.", Capture: console.AgentDocConsole},
 }
 
 func agentByID(id string) *Agent {
