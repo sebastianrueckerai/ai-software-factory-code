@@ -97,7 +97,8 @@ button.deny:hover { background: color-mix(in srgb, var(--st-failed) 12%, transpa
 .intake { border: 1px solid transparent; }
 .intake.closed { color: var(--need-text); border-color: var(--need-line); border-radius: 11px; }
 .intake-by { font-size: 11px; color: var(--text-muted); }
-button.htmx-request::after { content: ""; display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--line-strong); border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
+form.htmx-request button { opacity: .5; pointer-events: none; }
+form.htmx-request button::after { content: ""; display: inline-block; width: .8rem; height: .8rem; border: 2px solid var(--line-strong); border-top-color: currentColor; border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 /* fields: a line, the page's colour, a cyan ring when focused */
 input[type=text], input[type=number], input[type=password], textarea, select { width: 100%; max-width: 48rem; padding: 6px 8px; border: 1px solid var(--btn-line); border-radius: 2px; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.45; }

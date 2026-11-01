@@ -96,3 +96,15 @@ func TestPressWiringConstruction(t *testing.T) {
 		t.Errorf("FIX MISSING: the page holds no note outlet")
 	}
 }
+
+// The pending state rides the form: htmx marks the form it posts, not the
+// button, so the dim and the spinner sit on the form's buttons.
+func TestPressPendingRidesTheForm(t *testing.T) {
+	css, err := os.ReadFile("static/console.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), "form.htmx-request button") || strings.Contains(string(css), "button.htmx-request") {
+		t.Error("FIX MISSING: the pending state does not ride the form's buttons")
+	}
+}
