@@ -181,7 +181,7 @@ func agentDocProject() factoryd.Project {
 // agentDocConsole wires the fixture Console: every store the drive
 // reaches is an in-memory fixture over an empty board.
 func agentDocConsole(op *factoryd.OperatorModel, chat Chat, v policy.Version) *Console {
-	return &Console{turns: newTurnGate(), ended: make(chan struct{}), cfg: Config{
+	return &Console{turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{}), cfg: Config{
 		Chat: chat, Operator: op, Policies: agentDocPolicies{v}, Projects: agentDocProjects{},
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			return agentDocRepo, map[string][]string{agentDocRepo: {agentDocUser}}, nil
@@ -277,6 +277,10 @@ func (s *agentDocChat) ChatMessages(context.Context, string, string, int64, int)
 
 func (s *agentDocChat) ChatOpenQuestion(context.Context, string, string, int64) (string, bool, error) {
 	return "", false, nil
+}
+
+func (s *agentDocChat) LiveAskBinds(context.Context, string, string, int64, time.Time) ([]factoryd.ChatProposal, error) {
+	return nil, nil
 }
 
 func (s *agentDocChat) ChatAttachments(context.Context, string, string, int64) ([]factoryd.ChatAttachment, error) {

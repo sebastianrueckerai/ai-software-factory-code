@@ -223,6 +223,11 @@ type acceptTasks struct {
 	tasks []factoryd.BoardTask
 }
 
+// ChainFacts: these cards ride no chain.
+func (s *acceptTasks) ChainFacts(context.Context, string, int64) (factoryd.ChainFacts, error) {
+	return factoryd.ChainFacts{}, nil
+}
+
 func (s *acceptTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -955,6 +960,19 @@ func (f *acceptChat) PurgeProposals(_ context.Context, before time.Time) (int64,
 		return drop
 	})
 	return n, nil
+}
+
+func (f *acceptChat) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range f.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
 }
 
 // acceptForgejo is the sign-in's provider: it hands out tokens and answers

@@ -136,6 +136,16 @@ func TestLab(t *testing.T) {
 		r.gateway.mu.Unlock()
 		w.WriteHeader(http.StatusNoContent)
 	})
+	// the model's paced stream (the thinking-fold plan): each line of an
+	// answer arrives ?ms apart, so a turn reasoning in the open can be
+	// photographed mid-stream; ?ms=0 sets it unpaced
+	mux.HandleFunc("POST /lab/model-line-slow", func(w http.ResponseWriter, req *http.Request) {
+		ms, _ := strconv.Atoi(req.URL.Query().Get("ms"))
+		r.gateway.mu.Lock()
+		r.gateway.lineSlow = time.Duration(ms) * time.Millisecond
+		r.gateway.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	// an outside change of a document (items 5+6): master moves as if
 	// committed by ?by at 14:08 — ?line names the line it changes, from
 	// 1, else the file's last said one; ?text replaces that line, else it
@@ -297,8 +307,10 @@ type labScene struct {
 	monthCap float64
 	prFiles  map[string]string
 	// remote is the mirror's remote, "" for the code project's
-	remote    string
-	tasks     []factoryd.BoardTask
+	remote string
+	tasks  []factoryd.BoardTask
+	// chain are the chain rows the scene's pull requests carry
+	chain     map[string]factoryd.ChainFacts
 	deps      map[string][]string
 	plans     map[string][]factoryd.PlanRevision
 	questions map[string][]factoryd.PlanQuestion
@@ -348,7 +360,7 @@ type labScene struct {
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene, "metrics": metricsScene}
+	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -457,6 +469,38 @@ func compactedScene(now time.Time) labScene {
 	return s
 }
 
+// stoppedScene is the threads scene with the planning thread's turn
+// stopped: the partial answer stays, cut mid-sentence under the grey
+// stopped mark, the factory's stop row names the member, and no turn
+// runs (the 2026-10-31 stop plan).
+func stoppedScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.chat = append(slices.Clone(s.chat),
+		factoryd.ChatMessage{Conversation: 3, Role: "assistant", Cut: true,
+			Content: "The members page lists who is on the project: their logins, roles and", At: ago(8 * time.Minute)},
+		factoryd.ChatMessage{Conversation: 3, Role: "assistant", Kind: factoryd.MessageStop,
+			Content: "Stopped by sebastian.", At: ago(8*time.Minute - 2*time.Second)},
+	)
+	s.working, s.open, s.seen[3] = nil, 3, 9
+	return s
+}
+
+// thinkingScene is the threads scene with the model's next answer
+// scripted to reason in the open (the thinking-fold plan): reasoning
+// chunks pace the stream, so the lab can photograph the fold mid-turn.
+func thinkingScene(now time.Time) labScene {
+	s := threadsScene(now)
+	s.replies = []labReply{{
+		{Think: "The member asks what is open. The board has two cards in flight. "},
+		{Think: "One waits on the human; the build of the other still runs. "},
+		{Say: "Two cards are open. "},
+		{Think: "Keep it short. "},
+		{Say: "The rest waits on you."},
+	}}
+	return s
+}
+
 // assistedScene is the factory's own code at autonomy assisted: the
 // agent filed the login card itself (its applied filing in the chat, the
 // event naming it the decider, the inbox's poke with its decider line),
@@ -527,7 +571,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake or metrics", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking or metrics", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -593,7 +637,7 @@ func (r *rig) seedScene(s labScene) string {
 	}
 	labObjects.Unlock()
 	r.tasks.mu.Lock()
-	r.tasks.tasks, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.deps, s.plans, s.questions
+	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
 	r.tasks.mu.Unlock()
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
@@ -1463,14 +1507,27 @@ func quietScene(now time.Time) labScene {
 	roll.Source = factoryd.SourceRoll
 	merged := finished(labCard(now, 623, "merged", "direct", 2*time.Hour, "Footer: link the licence", "Link the licence in the footer."), now, time.Hour, 0.12)
 	merged.PRNumber = 623
+	// the chain carries #625's change: its face names the run, its
+	// Activity tab reads it (C38)
+	carry := finished(labCard(now, 625, "merged", "direct", 40*time.Minute, "Console: the chain's steps on the card",
+		"A merged card's face names the run that carries its change; its Activity tab reads the chain behind it."), now, 20*time.Minute, 0.15)
+	carry.PRNumber = 625
+	covered := finished(labCard(now, 622, "done", "direct", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
+		"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)
+	covered.PRNumber = 622
 	s.tasks = []factoryd.BoardTask{{Task: run}, {Task: roll}, {Task: merged, ChainState: "success", RollID: roll.ID, RollIssue: 626},
-		{Task: finished(labCard(now, 622, "done", "direct", 4*time.Hour, "Chat form: center the Send button next to the two-row textarea",
-			"The Send button sits at the textarea's top edge; center it on the two rows."), now, 3*time.Hour, 0.41)},
+		{Task: carry, ChainState: "pending", ChainRun: 3251},
+		{Task: covered, ChainState: "success", ChainRun: 3248, ChainGreen: 3248, ChainGreenAt: now.Add(-3*time.Hour + 25*time.Minute)},
 		{Task: finished(labCard(now, 621, "done", "direct", 6*time.Hour, "Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."), now, 5*time.Hour, 0.18)},
 		{Task: finished(labCard(now, 620, "done", "direct", 9*time.Hour, "Console: show the configuration version",
 			"Show the commit of the configuration in force in the console's footer."), now, 8*time.Hour, 0.33)},
 	}
+	s.chain = map[string]factoryd.ChainFacts{"sf/code 625": {CarryRun: 3251, CarryStatus: "pending",
+		CarryAt: now.Add(-14 * time.Minute), HeadRun: 3260, HeadStatus: "success", HeadAt: now.Add(-10 * time.Minute)}}
+	s.config = &policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "seed",
+		Agents: "coder", Process: "spec", Namespaces: []string{"factory"},
+		Chain: policy.ChainConfig{Requires: []string{"factory/roll"}}}
 	s.events = []factoryd.Event{labStatus(624, "running", factoryd.GateSession, now.Add(-3*time.Minute))}
 	return s
 }

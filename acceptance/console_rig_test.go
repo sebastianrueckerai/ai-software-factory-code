@@ -664,6 +664,11 @@ func (a *AcceptanceRig) BoardTasks(_ context.Context, repository string) ([]fact
 	return cards, nil
 }
 
+// ChainFacts: the rig's cards ride no chain.
+func (a *AcceptanceRig) ChainFacts(context.Context, string, int64) (factoryd.ChainFacts, error) {
+	return factoryd.ChainFacts{}, nil
+}
+
 // ProjectImageParks: the rig's cards wait for no image.
 func (a *AcceptanceRig) ProjectImageParks(context.Context, string) ([]factoryd.ImagePark, error) {
 	return nil, nil
@@ -1063,6 +1068,19 @@ func (a *AcceptanceRig) PurgeProposals(_ context.Context, before time.Time) (int
 		return p.ExpiresAt.Before(before) && (p.used.IsZero() || p.Kind == "undo")
 	})
 	return int64(n - len(a.proposals)), nil
+}
+
+func (a *AcceptanceRig) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range a.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
 }
 
 // Projects: the code project, a coder of maintenance, and no others.

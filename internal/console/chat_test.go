@@ -814,6 +814,19 @@ func (f *fakeChat) PurgeProposals(_ context.Context, before time.Time) (int64, e
 	return int64(n - len(f.proposals)), nil
 }
 
+func (f *fakeChat) LiveAskBinds(_ context.Context, repository, login string, conversation int64, now time.Time) ([]factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var binds []factoryd.ChatProposal
+	for _, p := range f.proposals {
+		if p.Kind != "ask" || p.Repository != repository || p.Login != login || p.Conversation != conversation || !p.used.IsZero() || now.After(p.ExpiresAt) {
+			continue
+		}
+		binds = append(binds, p.ChatProposal)
+	}
+	return binds, nil
+}
+
 // proposal is token's row; false for none.
 func (f *fakeChat) proposal(token string) (fakeProposal, bool) {
 	f.mu.Lock()
@@ -845,6 +858,13 @@ type chatGateway struct {
 	// slow, the lab's, delays each answer, so a member can write while a
 	// turn runs
 	slow time.Duration
+	// lineSlow, the lab's, paces a streamed answer line by line, so a
+	// turn can be photographed mid-stream
+	lineSlow time.Duration
+	// midHold, when set, keeps each reply's line midHoldLine (counting
+	// [DONE]) out of the stream until it closes: a turn in flight to stop
+	midHold     chan struct{}
+	midHoldLine int
 	// lenient makes a lab of the gateway: a call off the script answers 500
 	// "unscripted chat turn" and no check fails the test
 	lenient bool
@@ -956,8 +976,17 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	for _, line := range append(reply, "[DONE]") {
+	for i, line := range append(reply, "[DONE]") {
+		if g.midHold != nil && i == g.midHoldLine {
+			<-g.midHold
+		}
+		if g.lineSlow > 0 {
+			time.Sleep(g.lineSlow)
+		}
 		fmt.Fprintf(w, "data: %s\n\n", line)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 	}
 }
 
@@ -1006,6 +1035,9 @@ func (g *chatGateway) script(project string, replies []labReply) {
 		var lines []string
 		calls := 0
 		for _, chunk := range reply {
+			if chunk.Think != "" {
+				lines = append(lines, thinks(chunk.Think))
+			}
 			if chunk.Say != "" {
 				lines = append(lines, say(chunk.Say))
 			}
@@ -1469,14 +1501,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources", "settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
-			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
+			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
+			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
-			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "ask",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment"}},
+			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
+			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2391,7 +2423,7 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 	}
 }
 
-// The ask tool questions the conversation's member in place: one row of
+// The ask tool questions the conversation's human in place: one row of
 // the thread, kind ask with its choices, the turn ending on it. Their
 // answer, pressed or typed, is the member's next message, and any row
 // after it settles the ask.
@@ -2459,6 +2491,354 @@ func TestChatAskBounds(t *testing.T) {
 
 // png1x1 is a real 1×1 PNG: an image body small enough to ride every
 // upload test.
+// The ask tool binds one of its choices to a tool call: the binding is a
+// proposal of kind ask with the bound choice and the call's stored
+// arguments, the ask row carries its token, and no Do it card appears —
+// the ask row is the bound action's one surface.
+func TestChatAskBindsAToolCall(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close #5 when you are sure"}})
+	equal(t, "the bound ask", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. Pressing “close it” runs Close a card, #5 t-m \"Fix the cache. It drops entries.\"; another press answers it."}`,
+		`done {}`})
+	var binds []factoryd.ChatProposal
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			binds = append(binds, p.ChatProposal)
+		}
+	}
+	chat.mu.Unlock()
+	if len(binds) != 1 {
+		t.Fatalf("%d ask bindings stored, want 1: %+v", len(binds), binds)
+	}
+	b := binds[0]
+	if b.Tool != "close" || b.Choice != "close it" || string(b.Args) != `{"task_id":"t-m"}` ||
+		b.Description != `Close a card, #5 t-m "Fix the cache. It drops entries."` ||
+		b.Repository != "sf/code" || b.Login != "sebastian" || b.Conversation != 1 {
+		t.Fatalf("the ask binding = %+v", b)
+	}
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Proposals) != 0 {
+		t.Fatalf("the bound ask left a Do it card: %+v", answer.Proposals)
+	}
+	if row := answer.Messages[len(answer.Messages)-1]; row.Kind != "ask" || row.Proposal != b.Token {
+		t.Fatalf("the ask row = %+v", row)
+	}
+}
+
+// A bound choice runs a write tool: a read tool refuses, the refusal
+// feeds the model its correction, and no ask row or binding lands.
+func TestChatAskBindsOnlyWriteTools(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"board","args":{},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask without a binding.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close #5 when you are sure"}})
+	equal(t, "the refused binding", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: tool: board reads; a bound tool writes"}`,
+		`text {"text":"I will ask without a binding."}`, `done {}`})
+	chat.mu.Lock()
+	binds := len(chat.proposals)
+	chat.mu.Unlock()
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10)
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			t.Fatalf("a refused binding stored an ask row: %+v", m)
+		}
+	}
+	if binds != 0 {
+		t.Fatalf("a refused binding stored a proposal: %d rows", binds)
+	}
+}
+
+// The binding admits by the human's roles: a writer who is no approver
+// binds no approve_merge; the refusal names the rule and nothing lands.
+func TestChatAskBindingAdmitsByRole(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	args := `{"ask":"Approve #5?","choices":["approve it","hold"],"tool":"approve_merge","args":{"task_id":"t-m"},"choice":"approve it"}`
+	g.replies = [][]string{{call(1, "ask", args)}, {say("I will ask plainly.")}}
+	_, events, _ := chatPost(t, r, ak, as, chatPath, url.Values{"message": {"should we approve #5?"}})
+	equal(t, "the unadmitted binding", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Refused: Only the approvers of project ai-software-factory-code may authorize spend."}`,
+		`text {"text":"I will ask plainly."}`, `done {}`})
+	chat.mu.Lock()
+	binds := slices.DeleteFunc(slices.Clone(chat.proposals), func(p *fakeProposal) bool { return p.Kind != "ask" })
+	chat.mu.Unlock()
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "anna", 0, 10)
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			t.Fatalf("an unadmitted binding stored an ask row: %+v", m)
+		}
+	}
+	if len(binds) != 0 {
+		t.Fatalf("an unadmitted binding stored a proposal: %+v", binds)
+	}
+}
+
+// While a bound ask stands open, the agent's own call of the bound tool
+// refuses: the human's press runs it, not the model's reading of a
+// typed reply. Nothing runs until the press.
+func TestChatParkRefusesTheBoundTool(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	chat.mu.Lock()
+	token := ""
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			token = p.Token
+		}
+	}
+	chat.mu.Unlock()
+	if token == "" {
+		t.Fatal("no ask binding stored")
+	}
+	before := r.events.count()
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}, {say("Their press runs it.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the parked call", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`,
+		`text {"text":"Their press runs it."}`, `done {}`})
+	if p, ok := chat.proposal(token); !ok || !p.used.IsZero() {
+		t.Fatalf("the refused call settled the binding: %+v", p)
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The park lives the binding's life: once expired, the agent's call of
+// the tool goes the way of any call — a confirm tool's, a proposal the
+// member may press.
+func TestChatParkLiftsOnExpiry(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	before := r.events.count()
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+	chat.mu.Unlock()
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the unparked call", events, []string{
+		`proposal {"arguments":{"task_id":"t-m"},"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\"","id":"TOKEN","tool":"close"}`,
+		`done {}`})
+	if len(tokens) != 1 {
+		t.Fatalf("%d proposals, want the close proposal", len(tokens))
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// askPress binds the ask of one rig thread and answers its ask row's id.
+func askPress(t *testing.T, r *rig, chat *fakeChat, g *chatGateway, ck *http.Cookie, s *session, owner string) int64 {
+	t.Helper()
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", owner, 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			return m.ID
+		}
+	}
+	t.Fatal("no ask row stored")
+	return 0
+}
+
+// The press of the bound choice runs the bound tool call in code as the
+// human's session: the do- row lands, the card closes, and no model turn
+// reads the answer in between.
+func TestChatAskPressRunsTheBoundAction(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	before := r.events.count()
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press = %d", code)
+	}
+	equal(t, "the press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+	if n := len(g.calls()); n != 1 {
+		t.Fatalf("%d model calls after the press, want the ask's alone", n)
+	}
+	chat.mu.Lock()
+	token, used := "", false
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" {
+			token, used = p.Token, !p.used.IsZero()
+		}
+	}
+	chat.mu.Unlock()
+	if !used {
+		t.Fatal("the press left the binding live")
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	do := rows[len(rows)-1].ToolCalls
+	if len(do) != 1 || do[0].ID != "do-"+token[:12] || do[0].Name != "close" || do[0].Result != "Closed #5; factoryd ends the card. It cannot be undone." {
+		t.Fatalf("the press's row = %+v", do)
+	}
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": ""}})
+}
+
+// The press of another choice settles the ask: the human's row lands
+// with the choice, the agent's turn reads it and answers, and nothing
+// runs.
+func TestChatAskPressOfAnotherChoiceSettles(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	before := r.events.count()
+	g.replies = [][]string{{say("Holding it.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"hold"}})
+	if code != http.StatusOK {
+		t.Fatalf("the press = %d", code)
+	}
+	equal(t, "the settling press", events, []string{`text {"text":"Holding it."}`, `done {}`})
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if rows[2].Role != "user" || rows[2].Content != "hold" {
+		t.Fatalf("the human's row = %+v", rows[2])
+	}
+	if got := messages(t, g.calls()[1]); got[len(got)-1]["content"] != "hold" {
+		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
+	}
+	if p, ok := chat.proposal(rows[1].Proposal); !ok || p.used.IsZero() {
+		t.Fatalf("the settling press left the binding live: %+v", p)
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// A typed message answers nothing while a bound ask stands open: the
+// agent may answer in words, but the ask row stays open for the press
+// and nothing runs.
+func TestChatAskTypedMessageRunsNothing(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	askPress(t, r, chat, g, ck, s, "sebastian")
+	before := r.events.count()
+	g.replies = [][]string{{say("Your press decides it.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
+	equal(t, "the typed message", events, []string{`text {"text":"Your press decides it."}`, `done {}`})
+	var answer chatGetAnswer
+	if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range answer.Messages {
+		if m.Kind == factoryd.MessageAsk && m.Settled {
+			t.Fatalf("a typed message settled the bound ask: %+v", m)
+		}
+	}
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The press is single-use and the binding's owner's alone: the second
+// press of any choice hears the ask is gone, another human's press
+// hears it is not theirs.
+func TestChatAskPressIsSingleUse(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	id := askPress(t, r, chat, g, ck, s, "sebastian")
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	equal(t, "the first press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"hold"}})
+	equal(t, "the second press", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	aid := askPress(t, r, chat, g, ak, as, "anna")
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "owner": {"anna"}, "message": {strconv.FormatInt(aid, 10)}, "choice": {"close it"}})
+	equal(t, "another human's press", []any{code, body[0]}, []any{http.StatusForbidden, "It is another human's."})
+}
+
+// A binding parks its tool the moment the ask stores it: a model answer
+// that asks and calls the bound tool in one batch meets the refusal too,
+// for the park reads what this answer just bound, not only what the turn
+// started with.
+func TestChatParkCoversTheSameAnswer(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args, "close", `{"task_id":"t-m"}`)}}
+	before := r.events.count()
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
+	refused := `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`
+	if !slices.Contains(events, refused) {
+		t.Fatalf("the same answer's bound call ran: %v", events)
+	}
+	chat.mu.Lock()
+	for _, p := range chat.proposals {
+		if p.Kind == "ask" && !p.used.IsZero() {
+			t.Fatalf("the same answer's call settled the binding: %+v", p)
+		}
+	}
+	chat.mu.Unlock()
+	chatRows(t, r.events, before, "sebastian")
+}
+
+// The binding belongs to the thread's human, not the talker: a writer who
+// talks in another's thread leaves the ask for its owner, whose press
+// runs the bound call — the ask asks the thread's human.
+func TestChatAskBindsForTheThreadsOwner(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("ok")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"open the thread"}})
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	args := `{"ask":"Close #5 now?","choices":["close it","hold"],"tool":"close","args":{"task_id":"t-m"},"choice":"close it"}`
+	g.replies = [][]string{{call(1, "ask", args)}}
+	if code, body, _ := chatPost(t, r, ak, as, chatPath, url.Values{"message": {"ask to close #5"}, "conversation": {"1"}, "owner": {"sebastian"}}); code != 200 {
+		t.Fatalf("anna's turn in sebastian's thread = %d: %v", code, body)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := int64(0)
+	for _, m := range rows {
+		if m.Kind == factoryd.MessageAsk {
+			id = m.ID
+		}
+	}
+	if id == 0 {
+		t.Fatal("no ask row in the owner's thread")
+	}
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(id, 10)}, "choice": {"close it"}})
+	if code != 200 {
+		t.Fatalf("the owner's press = %d: %v", code, events)
+	}
+	equal(t, "the owner's press", events, []string{
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
+		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+}
+
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 // A pasted image rides the composer's send like a file rides it: the
@@ -3274,7 +3654,8 @@ func TestChatTurnSaysACutAnswer(t *testing.T) {
 		`{"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}`}}
 	const cut = "The answer stopped at the model's output limit of 16384 tokens before it wrote anything; send a message to try again."
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
-	equal(t, "the cut turn", events, []string{`text {"text":"` + cut + `"}`, `done {}`})
+	equal(t, "the cut turn", events, []string{`think {"text":"The board first."}`,
+		`text {"text":"` + cut + `"}`, `done {}`})
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	var answer chatGetAnswer
 	if err := json.Unmarshal(rec.Body.Bytes(), &answer); err != nil {

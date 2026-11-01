@@ -223,7 +223,7 @@ func TestDivideConquerGateSnapshotRetries(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	r.timeline.Events = failingEvents{}
+	r.timeline.Events = refusingEvents{}
 	in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "h3", Gates: newer}
 	if _, err := execActivity(t, r, ActivityRequestApproval, "t-snap", in); err != nil {
 		t.Fatal(err)
@@ -236,9 +236,9 @@ func TestDivideConquerGateSnapshotRetries(t *testing.T) {
 	}
 }
 
-// failingEvents refuses every row: a fact's write that cannot land.
-type failingEvents struct{}
+// refusingEvents refuses every row: a fact's write that cannot land.
+type refusingEvents struct{}
 
-func (failingEvents) Record(context.Context, Event) (int64, error) {
+func (refusingEvents) Record(context.Context, Event) (int64, error) {
 	return 0, errors.New("events table down")
 }

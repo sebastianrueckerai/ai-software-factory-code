@@ -514,19 +514,25 @@ type card struct {
 	// how long it has been in its gate, which GateText names as the card
 	// reads it.
 	Total, GateAge string
+	// Cover is a done card's cover clause (C38): the run that ran its
+	// change live and how long after its merge, "" for a card the chain
+	// does not cover.
+	Cover string
 	// Stage is the work stage of a card in progress (C8): planning on a
 	// plan-track card, building on a direct one, verifying in review, ""
 	// in any other status. StageAge is how long the card has been in it.
-	Stage, StageAge    string
-	GateText           string
-	EscalationAlert    int64  // the escalation's open alert
-	WaitingOn          string // a card in waiting-deps: the issues it waits on
-	PlanIssue          int64  // a plan's card: the plan's issue
-	PlanKey            string // a plan's card: its key in the plan, on the face's plan chip
-	Plan               []card // a done plan's cards, which its drawer lists
-	Retry              *retry // a failed plan card's Retry, for an approver
-	Activity           string // the task's newest event as one line, or the escalation's question
-	WaitingForActivity bool   // the activity line stands for the wait's reason
+	// StageURL is the chain word's link, the run on the forge the word
+	// names (C38), "" for a word that names none.
+	Stage, StageAge, StageURL string
+	GateText                  string
+	EscalationAlert           int64  // the escalation's open alert
+	WaitingOn                 string // a card in waiting-deps: the issues it waits on
+	PlanIssue                 int64  // a plan's card: the plan's issue
+	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
+	Plan                      []card // a done plan's cards, which its drawer lists
+	Retry                     *retry // a failed plan card's Retry, for an approver
+	Activity                  string // the task's newest event as one line, or the escalation's question
+	WaitingForActivity        bool   // the activity line stands for the wait's reason
 	// Title is the face's first line: human_summary when a writer set
 	// one, else the objective's first paragraph, the title as the issue
 	// was filed.
@@ -1420,6 +1426,11 @@ func (c *Console) configTree(commit string) string {
 	return c.cfg.ConfigRepo + "/src/commit/" + url.PathEscape(commit) + "/" + c.cfg.ConfigDir
 }
 
+// runURL is a chain run's page on the forge.
+func (c *Console) runURL(repository string, run int64) string {
+	return fmt.Sprintf("%s/%s/actions/runs/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), repository, run)
+}
+
 // counts are the board's column counts in the page's order, the wide
 // view's human lane first.
 func (c *Console) counts(d boardData) ([]string, error) {
@@ -1835,8 +1846,8 @@ func (v *boardView) humanLane(t factoryd.Task) bool {
 
 // deployStage is the chain position a merged card shows while its change
 // is not live yet: the roll it waits for, else where its deploy chain
-// sits (roadmap 297).
-func deployStage(state string, rollIssue int64) string {
+// sits, naming the run that carries it when one does (roadmap 297, C38).
+func deployStage(state string, rollIssue, run int64) string {
 	if rollIssue > 0 {
 		return fmt.Sprintf("blocked by roll #%d", rollIssue)
 	}
@@ -1844,9 +1855,18 @@ func deployStage(state string, rollIssue int64) string {
 	case "":
 		return "waiting for the chain"
 	case "failure", "cancelled":
+		if run > 0 {
+			return fmt.Sprintf("run %d red", run)
+		}
 		return "chain red"
 	case "stalled":
+		if run > 0 {
+			return fmt.Sprintf("run %d stalled", run)
+		}
 		return "stalled"
+	}
+	if run > 0 {
+		return fmt.Sprintf("chain run %d", run)
 	}
 	return "chain running"
 }
@@ -1873,8 +1893,18 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	k.Place = fmt.Sprintf("%s %s %s %t %t %d %d", t.Status, t.Track, t.Accent, v.carded[t.ID], v.planned[t.ID], bt.EscalationAlert,
 		fiveColumn(t))
 	if bt.Status == "merged" {
-		k.Stage = deployStage(bt.ChainState, bt.RollIssue)
+		k.Stage = deployStage(bt.ChainState, bt.RollIssue, bt.ChainRun)
 		k.RollID = bt.RollID
+		if bt.RollID == "" && bt.ChainRun > 0 {
+			k.StageURL = c.runURL(bt.Repository, bt.ChainRun)
+		}
+	}
+	// a done card the chain covers names the run that ran its change
+	// live, and how long after its merge (C38)
+	if bt.Status == "done" && bt.PRNumber > 0 && bt.FinishedAt != nil && bt.ChainRun > 0 &&
+		bt.ChainGreen >= bt.ChainRun && !bt.ChainGreenAt.IsZero() {
+		k.Cover = fmt.Sprintf("live through run %d, %s after merge", bt.ChainGreen,
+			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
 	k.WaitingOn = bt.WaitingOn
 	// "blocked by n" counts the dependencies that are not done yet;
@@ -2853,7 +2883,7 @@ func stepOutcome(step string, m map[string]any) string {
 }
 
 func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
-	t, ok, err := c.cfg.Tasks.Task(r.Context(), r.PathValue("id"))
+	bt, ok, err := c.cfg.Tasks.BoardTask(r.Context(), r.PathValue("id"))
 	if err != nil {
 		http.Error(w, "cannot read the task", http.StatusInternalServerError)
 		return
@@ -2862,6 +2892,7 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	t := bt.Task
 	steps, err := c.readTimeline(r.Context(), t.ID)
 	if err != nil {
 		log.Printf("console: timeline of %s: %v", t.ID, err)
@@ -2873,8 +2904,13 @@ func (c *Console) timeline(w http.ResponseWriter, r *http.Request) {
 		entries = append(entries, entry(m))
 	}
 	gates, longest := gateRows(steps, t, time.Now())
+	force, _ := c.inForce(r.Context())
+	chain, err := c.chainOf(r.Context(), bt, force, time.Now())
+	if err != nil {
+		log.Printf("console: the chain of %s: %v", t.ID, err)
+	}
 	c.render(w, "timeline.html", map[string]any{"User": current(r).user, "CSRF": current(r).csrf, "Factory": c.factoryWriter(r),
-		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest})
+		"Card": c.card(t), "Entries": entries, "Gates": gates, "Longest": longest, "Chain": chain})
 }
 
 // userCall is a call as member s in the shape factoryd.GetPages calls.
@@ -3137,6 +3173,110 @@ type drawerData struct {
 	// RoutineLine names the routine run that filed the card, nil for a
 	// card no routine filed.
 	RoutineLine *routineProvenance
+	// Chain is the chain behind the card's change as the Chain section
+	// reads it (C38), nil while the chain holds nothing to say.
+	Chain *chainReadout
+}
+
+// chainReadout is the Chain section of a merged or done card's Activity
+// tab and timeline (C38): the chain behind its change in the drawer's
+// section grammar — the summary's hint the live fact, one row per fact,
+// the section opening itself while the chain is red or stalled.
+type chainReadout struct {
+	Hint string
+	Rows []chainRow
+	Open bool
+}
+
+// chainRow is one row of the Chain readout: its fact with its clock and
+// its age, its verdict, and the action that acts on it.
+type chainRow struct {
+	Why     string // the row's label: carry run, required, head of main
+	Ref     string // the row's fact: a run's number, a context's name
+	RefURL  string // the fact's link: a run on the forge, a card's id
+	Card    bool   // the fact's link opens a card of this board
+	At, Age string // the fact's clock and its age, "" to leave them out
+	Verdict string // the fact's verdict word
+	Hue     string // the verdict's colour class
+	Act     string // the action that acts on the row, a card of this board
+	ActID   string // the action card's id
+}
+
+// chainVerdict is a chain row's verdict word and hue: green for a
+// success, amber for a wait, red for a failure.
+func chainVerdict(status string) (word, hue string) {
+	switch status {
+	case "success":
+		return "green", "st-merged"
+	case "pending", "stalled":
+		return status, "st-waiting"
+	case "failure", "cancelled", "skipped":
+		return status, "st-failed"
+	}
+	return status, "st-other"
+}
+
+// chainOf is the Chain section of card bt's drawer and timeline (C38):
+// for a merged card the chain holds, its carry run with its verdict, the
+// project's required contexts, the head of main and the chain's actors —
+// the repair card of a red head, the re-run and the stall card of a
+// stall; for a done card the chain covered, the cover run. nil while the
+// chain holds nothing to say: no pull request, a roll that carries it, a
+// change no run has picked up, a done card no green covers.
+func (c *Console) chainOf(ctx context.Context, bt factoryd.BoardTask, force policy.Version, now time.Time) (*chainReadout, error) {
+	if bt.PRNumber == 0 || bt.Status == "merged" && bt.RollID != "" || bt.Status != "merged" && bt.Status != "done" {
+		return nil, nil
+	}
+	f, err := c.cfg.Tasks.ChainFacts(ctx, bt.Repository, bt.PRNumber)
+	if err != nil {
+		return nil, err
+	}
+	if bt.Status == "done" {
+		if f.GreenRun == 0 || f.GreenRun < f.CarryRun || f.GreenAt.IsZero() || bt.FinishedAt == nil {
+			return nil, nil
+		}
+		after := max(f.GreenAt.Sub(*bt.FinishedAt), 0)
+		return &chainReadout{
+			Hint: fmt.Sprintf("cover run %d · %s from merge", f.GreenRun, minutes(after)),
+			Rows: []chainRow{{Why: "cover run", Ref: fmt.Sprintf("run %d", f.GreenRun), RefURL: c.runURL(bt.Repository, f.GreenRun),
+				Age: minutes(after), Verdict: "live", Hue: "st-done"}},
+		}, nil
+	}
+	if f.CarryRun == 0 {
+		return nil, nil // the chain has not picked the change up
+	}
+	clock, age := func(t time.Time) string { return t.UTC().Format("15:04") }, func(t time.Time) string { return minutes(max(now.Sub(t), 0)) }
+	word, hue := chainVerdict(f.CarryStatus)
+	carry := chainRow{Why: "carry run", Ref: fmt.Sprintf("run %d", f.CarryRun), RefURL: c.runURL(bt.Repository, f.CarryRun),
+		At: clock(f.CarryAt), Age: age(f.CarryAt), Verdict: word, Hue: hue}
+	rows := []chainRow{carry}
+	hint := fmt.Sprintf("run %d %s · %s", f.CarryRun, word, age(f.CarryAt))
+	open := hue == "st-failed" || f.CarryStatus == "stalled"
+	if _, cfg, ok := force.ProjectOf(bt.Repository); ok {
+		if requires := cfg.Chain.Resolved().Requires; len(requires) > 0 {
+			rows = append(rows, chainRow{Why: "required", Ref: strings.Join(requires, " "), Verdict: word, Hue: hue})
+		}
+	}
+	if f.HeadRun > 0 {
+		headWord, headHue := chainVerdict(f.HeadStatus)
+		rows = append(rows, chainRow{Why: "head of main", Ref: fmt.Sprintf("run %d", f.HeadRun),
+			RefURL: c.runURL(bt.Repository, f.HeadRun), At: clock(f.HeadAt), Age: age(f.HeadAt), Verdict: headWord, Hue: headHue})
+		open = open || f.HeadStatus == "stalled"
+	}
+	switch {
+	case f.Repair != nil && !factoryd.Final(f.Repair.Status):
+		rows = append(rows, chainRow{Why: "repair card", Ref: fmt.Sprintf("#%d", f.Repair.IssueNumber), RefURL: f.Repair.ID,
+			Card: true, Age: age(f.Repair.CreatedAt), Verdict: f.Repair.Status, Hue: statusClass(f.Repair.Status)})
+		hint = fmt.Sprintf("run %d red · repair card #%d", f.CarryRun, f.Repair.IssueNumber)
+	case f.Stall != nil && !factoryd.Final(f.Stall.Status) && (f.CarryStatus == "stalled" || f.HeadStatus == "stalled"):
+		carry.Act, carry.ActID = fmt.Sprintf("stall card #%d", f.Stall.IssueNumber), f.Stall.ID
+		hint = fmt.Sprintf("run %d stalled %s · stall card #%d", f.CarryRun, age(f.CarryAt), f.Stall.IssueNumber)
+	case !f.RerunAt.IsZero() && f.HeadRun > 0:
+		rows = append(rows, chainRow{Why: "re-run", Ref: fmt.Sprintf("run %d", f.HeadRun),
+			RefURL: c.runURL(bt.Repository, f.HeadRun), Age: age(f.RerunAt), Verdict: "re-run", Hue: "st-waiting"})
+	}
+	rows[0] = carry
+	return &chainReadout{Hint: hint, Rows: rows, Open: open}, nil
 }
 
 // threadLink is the chat thread behind a card as its drawer names it:
@@ -3398,6 +3538,9 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 			d.Entries = append(d.Entries, entry(m))
 		}
 		d.Gates, d.Longest = gateRows(steps, bt.Task, time.Now())
+		if d.Chain, err = c.chainOf(ctx, bt, v.policy, time.Now()); err != nil {
+			problem("chain", err)
+		}
 	case "files":
 		if bt.PRNumber == 0 {
 			break

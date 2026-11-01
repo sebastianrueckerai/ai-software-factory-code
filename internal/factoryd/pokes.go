@@ -30,11 +30,14 @@ const (
 	// MessageAsk the chat's own question to the thread's member;
 	// MessageBudget the row a turn ends on when the gateway refuses its
 	// call for money, the chat task's budget (birth kind
-	// EventChatBudgetSpent, which a fund resumes) or a factory cap.
+	// EventChatBudgetSpent, which a fund resumes) or a factory cap;
+	// MessageStop the row a member's stop ends a turn on, which the next
+	// turn's context leaves out as the budget row's.
 	MessagePoke       = "poke"
 	MessageEscalation = "escalation"
 	MessageAsk        = "ask"
 	MessageBudget     = "budget"
+	MessageStop       = "stop"
 )
 
 // ChoiceRerun is the inbox's answer that runs a factory pull request's red

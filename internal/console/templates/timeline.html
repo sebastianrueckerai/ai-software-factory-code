@@ -4,6 +4,7 @@
 {{template "card" .Card}}
 {{template "gates" .}}
 {{template "steps" .}}
+{{template "chain" .}}
 </div>
 {{template "foot"}}
 
@@ -24,3 +25,7 @@
 {{else}}<tr><td colspan="4">No steps recorded yet.</td></tr>{{end}}
 </tbody>
 </table></div>{{end}}
+
+{{define "chain"}}{{with .Chain}}<details class="sec" data-sec="chain"{{if .Open}} open{{end}}><summary>Chain<span class="hint">{{.Hint}}</span></summary><div class="sec-body"><ul class="related">
+{{range .Rows}}<li><span class="why">{{.Why}}</span> {{if .Card}}<a href="#card={{.RefURL}}" hx-get="/cards/{{.RefURL}}/drawer" hx-target="#drawer" hx-swap="innerHTML">{{.Ref}}</a>{{else if .RefURL}}<a href="{{.RefURL}}" target="_blank" rel="noopener">{{.Ref}}</a>{{else}}<span class="mono">{{.Ref}}</span>{{end}}{{with .At}} <span class="mono num">{{.}}</span>{{end}}{{with .Age}} <span class="mono num">{{.}}</span>{{end}}{{if .Verdict}} <span class="{{.Hue}}">{{.Verdict}}</span>{{end}}{{if .Act}} · <a href="#card={{.ActID}}" hx-get="/cards/{{.ActID}}/drawer" hx-target="#drawer" hx-swap="innerHTML">{{.Act}}</a>{{end}}</li>
+{{end}}</ul></div></details>{{end}}{{end}}

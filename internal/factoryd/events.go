@@ -45,6 +45,10 @@ const (
 	// thread (roadmap 239): the actor is the member, detail {"thread",
 	// "messages"}, the thread's number and the rows that went.
 	EventChatThreadDeleted = "chat_thread_deleted"
+	// EventChatStopped records a member's stop of a chat turn in flight:
+	// the actor is the member, detail {"thread"}, the stopped turn's
+	// thread.
+	EventChatStopped = "chat_stopped"
 	// EventCriterionDecided records an approver's grant or waiver on a
 	// plan's criterion (the spec-intake concept, pieces 7 and 8): detail
 	// {"approval", "criteria", "verb"} or {"criterion", "verdict"}.

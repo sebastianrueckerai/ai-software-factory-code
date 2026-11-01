@@ -178,6 +178,53 @@ func TestChatCompactionLeavesReadsOut(t *testing.T) {
 		"the human: a1\nthe agent read board {}\n"+`the agent called set_accent {"task_id":"t-m","accent":"red"}: The accent of #5 is set.`+"\nthe agent: a2\n")
 }
 
+// A piece whose answer comes back empty is folded in halves, in order: the
+// second half folds over the first's summary, and the fold ends with the
+// last half's answer. The model spends its answer budget before its text
+// (2026-10-31: glm flash, 2048-token cap, thinking alone past it), and less
+// material leaves room for the text whatever spent it.
+func TestChatCompactionHalvesAnEmptySummariser(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b", "c")
+	g.summaries = []string{"", "half one folded", "both folded"}
+	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"/compact"}})
+	equal(t, "the fold", []any{code, compactedRows(t, events)}, []any{200, []int{2}})
+	equal(t, "the compaction calls", len(g.compacts), 3)
+	equal(t, "the whole piece", messages(t, g.compacts[0])[1]["content"],
+		"The summary so far:\n(none yet)\n\nThe turns after it:\nthe human: a1\nthe agent: a2\n")
+	equal(t, "the first half", messages(t, g.compacts[1])[1]["content"],
+		"The summary so far:\n(none yet)\n\nThe turns after it:\nthe human: a1\n")
+	equal(t, "the second half over the first's summary", messages(t, g.compacts[2])[1]["content"],
+		"The summary so far:\nhalf one folded\n\nThe turns after it:\nthe agent: a2\n")
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var got chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the saved summary", got.Thread.Summary, "both folded")
+}
+
+// A piece of one line that answers empty cannot shrink further: the fold
+// errors, nothing is saved.
+func TestChatCompactionErrorsWhenASingleLineAnswersNothing(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	seedTurns(t, chat, "a", "b", "c")
+	g.summaries = []string{"", ""}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"/compact"}})
+	equal(t, "the compaction calls", len(g.compacts), 2)
+	equal(t, "the compacted events", compactedRows(t, events), []int(nil))
+	equal(t, "the stream's end", events[len(events)-1],
+		`error {"message":"The thread could not be compacted: The action failed; see the factoryd log."}`)
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
+	var got chatGetAnswer
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the saved summary", got.Thread.Summary, "")
+}
+
 // A forced compaction weighs the rows it keeps as the context carries
 // them: the turn's own board read whole, its call's name and arguments,
 // four characters a token.

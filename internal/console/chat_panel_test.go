@@ -68,7 +68,7 @@ func TestChatPanel(t *testing.T) {
 		`<dt><kbd>/</kbd></dt><dd>write to the project agent; <kbd>/</kbd> at the start of the box lists the commands</dd>
 <dt><kbd>Ctrl</kbd>+<kbd>k</kbd></dt><dd>the threads: open one, or the inbox</dd>
 <dt><kbd>Enter</kbd></dt><dd>send the message; <kbd>Shift</kbd>+<kbd>Enter</kbd> breaks the line</dd>
-<dt><kbd>Escape</kbd></dt><dd>in the chat's input: leave it</dd>`,
+<dt><kbd>Escape</kbd></dt><dd>in the chat: stop the turn in flight; in the input when none runs: leave it</dd>`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the writer's page lacks\n%s", want)
@@ -128,7 +128,10 @@ func TestChatPanel(t *testing.T) {
 // row the agent has not read yet says so, and says read once it has. A
 // budget row renders as the factory's, and while the chat stands stopped
 // its newest open fund row alone offers the fund, prefilled with the
-// suggestion, or to a member who may not fund the line of who may. Run
+// suggestion, or to a member who may not fund the line of who may. The
+// thinking mark is the stop's button with the fold's chevron beside it,
+// and a stopped turn leaves its grey mark on the cut answer and the
+// factory's stop row. Run
 // under node, which the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -195,6 +198,14 @@ console.log(JSON.stringify({
   imgRow: chatView.userHTML("sebastian", "look at the run", "2026-10-11T09:30:01Z", false,
     [{id: 901, content_type: "image/png", name: "img1", url: "/projects/ai-software-factory-code/chat/attachments/901"}], []),
   zoom: chatView.zoomHTML("/projects/ai-software-factory-code/chat/attachments/901", "img1"),
+  mark: chatView.thinkingHTML,
+  stoppedMark: chatView.stoppedMarkHTML,
+  stopRow: chatView.factoryHTML({id: 13, role: "assistant", kind: "stop", content: "Stopped by sebastian.", at: "2026-10-11T09:20:00Z"}),
+  stoppedThread: chatView.historyHTML([{id: 1, role: "user", content: "what is open?", at: "2026-10-11T09:30:01Z"},
+    {id: 2, role: "assistant", content: "Partial", cut: true, at: "2026-10-11T09:30:02Z"},
+    {id: 3, role: "assistant", kind: "stop", content: "Stopped by sebastian.", at: "2026-10-11T09:30:03Z"}], "sebastian", []),
+  noFoldInHistory: chatView.historyHTML([{id: 1, role: "user", content: "what is open?", at: "2026-10-11T09:30:01Z"},
+    {id: 2, role: "assistant", content: "Partial", cut: true, at: "2026-10-11T09:30:02Z"}], "sebastian", []).indexOf("data-think") >= 0 ? "true" : "false",
   share: JSON.stringify([chatView.clampShare(300, 1200, 16), chatView.clampShare(100, 1200, 16),
     chatView.clampShare(1200, 1200, 16), chatView.clampShare(500.25, 1200, 16)]),
   budgetRow: chatView.factoryHTML({id: 12, role: "assistant", kind: "budget", birth_kind: "chat_budget_spent", at: "2026-10-28T22:20:00Z",
@@ -310,6 +321,18 @@ console.log(JSON.stringify({
 			`<img loading="lazy" src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></a></div></div>`},
 		{"zoom", `<div id="img-zoom" class="overlay imgbox" role="dialog" aria-modal="true" aria-label="the image full size; click or Escape closes">` +
 			`<img src="/projects/ai-software-factory-code/chat/attachments/901" alt="img1"></div>`},
+		{"mark", `<span class="turn-tail"><button type="button" class="tthink" data-think title="Show the thinking" aria-expanded="false" hidden></button>` +
+			`<button type="button" class="thinking" data-stop title="Stop">thinking</button><div class="tfold" hidden></div></span>`},
+		{"stoppedMark", `<span class="thinking stopped" aria-hidden="true">stopped</span>`},
+		{"stopRow", `<div class="msg agent poke" data-message="13"><span class="av" aria-hidden="true"></span>` +
+			`<p class="who"><span class="name">the factory</span> <time>10-11 09:20Z</time></p>` +
+			`<div class="said"><p>Stopped by sebastian.</p></div></div>`},
+		{"stoppedThread", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">what is open?</p></div>` +
+			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p>` +
+			`<div class="said"><p>Partial</p></div><span class="thinking stopped" aria-hidden="true">stopped</span></div>` +
+			`<div class="msg agent poke" data-message="3"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:30Z</time></p>` +
+			`<div class="said"><p>Stopped by sebastian.</p></div></div>`},
+		{"noFoldInHistory", `false`},
 		{"readRow", `<p class="meta chat-read">✓ read by the agent</p>`},
 		{"openQ", `<p class="meta chat-open">question that may be open: Can you do that? &lt;b&gt;</p>|`},
 		{"share", `[384,384,720,500.25]`},
@@ -446,6 +469,118 @@ Promise.resolve().then(drain).then(function () {
 	}
 }
 
+// A paste grows the composer's input with its content; sending or
+// clearing it takes the height back to the base the rows give, so the
+// expanded state never outlives the message that caused it. Run under
+// node, which the test needs.
+func TestChatPanelComposerHeight(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = {};
+function el(id) {
+  return {id: id, textContent: "", innerHTML: "", hidden: false, className: "", value: "",
+    dataset: {login: "sebastian", project: "p"}, style: {},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    _handlers: {},
+    addEventListener: function (kind, fn) { this._handlers[kind] = (this._handlers[kind] || []).concat(fn); },
+    setAttribute: function () {}, removeAttribute: function () {}, focus: function () {}, click: function () {},
+    appendChild: function () {}, insertBefore: function () {}, before: function () {},
+    firstChild: null,
+    querySelector: function () { return null; }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0, height: 0}; },
+    clientWidth: 0, clientHeight: 60, scrollHeight: 60, scrollTop: 0,
+    contains: function () { return false; }, disabled: false};
+}
+var input = el("chat-input"), form = el("chat-form"), log = el("chat-log");
+form.elements = {csrf: {value: "t"}};
+form.querySelectorAll = function () { return []; };
+var byID = {chat: el("chat"), "chat-log": log, "chat-form": form, "chat-input": input,
+  "chat-new": el("chat-new"), "thread-rows": el("thread-rows"), "thread-head": el("thread-head"),
+  "chat-answer": el("chat-answer"), "chat-commands": {textContent: "[]"},
+  "chat-palette": el("chat-palette"), "chat-images": el("chat-images"), "chat-docs": el("chat-docs"),
+  "chat-full": el("chat-full"), screen: null, "chat-divider": null, "thread-dialog": null,
+  "img-zoom": null};
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) {
+    if (tag === "template") {
+      var c = el(), kid = el(), chev = el(), fold = el();
+      kid.querySelector = function (sel) { return sel === "[data-think]" ? chev : sel === ".tfold" ? fold : null; };
+      c.firstElementChild = kid;
+      return {content: c};
+    }
+    return el();
+  },
+  getElementById: function (id) { return byID[id] || null; },
+  addEventListener: function (kind, fn) { (listeners[kind] = listeners[kind] || []).push(fn); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el()};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function () { return new Promise(function () {}); },
+  setInterval: function () { return 0; }, setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  FormData: function () { this.append = function () {}; },
+  TextDecoder: function () { this.decode = function () { return ""; }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+sandbox.window.innerHeight = 800;
+sandbox.window.matchMedia = function () { return {matches: false}; };
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var grow = function () {
+  input.value = "line\n".repeat(40) + "send me";
+  input.scrollHeight = 920;
+  (input._handlers.input || []).forEach(function (fn) { fn({}); });
+};
+var out = {};
+grow();
+out.pasteGrew = input.style.height;
+(form._handlers.submit || []).forEach(function (fn) { fn({preventDefault: function () {}}); });
+out.sendEmptied = input.value === "";
+out.sendBaseHeight = input.style.height === "";
+grow();
+(form._handlers.click || []).forEach(function (fn) {
+  fn({target: {closest: function (sel) { return sel === "[data-cmd]" ? {dataset: {cmd: "new"}} : null; }}});
+});
+out.commandEmptied = input.value === "";
+out.commandBaseHeight = input.style.height === "";
+console.log(JSON.stringify(out));`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		PasteGrew         string
+		SendEmptied       bool
+		SendBaseHeight    bool
+		CommandEmptied    bool
+		CommandBaseHeight bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if got.PasteGrew == "" {
+		t.Error("a large paste does not grow the input")
+	}
+	if !got.SendEmptied {
+		t.Error("send does not empty the input")
+	}
+	if !got.SendBaseHeight {
+		t.Errorf("an input emptied by send keeps the grown height %s", got.PasteGrew)
+	}
+	if !got.CommandEmptied {
+		t.Error("a command does not empty the input")
+	}
+	if !got.CommandBaseHeight {
+		t.Errorf("an input emptied by a command keeps the grown height %s", got.PasteGrew)
+	}
+}
+
 // A thumbnail's click opens its image full size over the page instead
 // of leaving the screen for the serving route — which answers as a
 // download — and a click on the dimmed page, the image or Escape closes
@@ -541,5 +676,272 @@ Promise.resolve().then(function () {
 	}
 	if got.KeptHref {
 		t.Error("the thumbnail's click follows its link instead of staying in the page")
+	}
+}
+
+// The panel stops a turn in flight (the chat-stop plan): a press on the
+// thinking mark's button and Escape in the chat's input and panel each
+// post the open thread's stop with its number and owner, Escape with no
+// turn in flight only leaves the input, and a press on a page that drew
+// the button from the thread's working flag — no stream open — reloads
+// the thread to show the rows the stop left. Run under node, which the
+// test needs.
+func TestChatPanelStopsATurn(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = [], posts = [], gets = 0, byId = {};
+function el() {
+  var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false, blurred: false,
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    setAttribute: function () {}, focus: function () {}, blur: function () { e.blurred = true; }, remove: function () {},
+    appendChild: function (c) { return c; }, insertBefore: function (c) { return c; }, contains: function () { return true; },
+    closest: function () { return null; }, firstChild: null, previousElementSibling: null,
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+  e.addEventListener = function (kind, fn) { listeners.push({el: e, kind: kind, fn: fn}); };
+  return e;
+}
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) { var t = el(); if (tag === "template") t.content = {firstElementChild: el()}; return t; },
+  getElementById: function (id) {
+    if (id === "img-zoom" || id === "thread-dialog" || id === "screen" || id === "chat-divider") return null;
+    return byId[id] || (byId[id] = el());
+  },
+  addEventListener: function (kind, fn) { listeners.push({el: document, kind: kind, fn: fn}); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el(), body: el(), activeElement: null};
+byId["chat-form"] = el();
+byId["chat-form"].elements = {csrf: {value: "tok"}};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url, opts) {
+    var u = String(url);
+    if (opts && opts.method === "POST") {
+      if (/\/chat\/stop$/.test(u)) {
+        posts.push({url: u, body: String(opts.body), csrf: opts.headers["X-CSRF-Token"]});
+        return Promise.resolve({ok: true});
+      }
+      return new Promise(function () {}); // the turn that never ends
+    }
+    if (/\/chat(\?|$)/.test(u)) gets++;
+    return Promise.resolve({ok: true, json: function () {
+      return Promise.resolve(/\/conversations$/.test(u) ? [] :
+        {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active", working: true}});
+    }});
+  },
+  setInterval: function () { return 0; }, setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }}, FormData: function () { return {append: function () {}}; },
+  URLSearchParams: function (p) { this.toString = function () { return Object.keys(p).map(function (k) { return k + "=" + p[k]; }).join("&"); }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
+var stopButton = function () { return {closest: function (sel) { return sel === "[data-stop]" ? this : null; }}; };
+var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
+var out = {};
+Promise.resolve().then(function () {
+  fire(byId["chat-input"], "keydown", {key: "Escape", stopPropagation: function () {}});
+  out.idleEscapeLeaves = byId["chat-input"].blurred && posts.length === 0;
+}).then(function () {
+  return tick(); // the opening read settles: the thread takes its number
+}).then(function () {
+  fire(byId["chat-log"], "click", {target: stopButton()});
+  out.stopWithoutStream = posts.length === 1 && posts[0].url === "/projects/p/chat/stop" &&
+    posts[0].body === "conversation=3&owner=" && posts[0].csrf === "tok";
+  return tick(); // the stop with no stream open reloads the thread
+}).then(function () {
+  out.reloadedAfterStop = gets === 2;
+  byId["chat-input"].value = "what is open?";
+  fire(byId["chat-form"], "submit", {preventDefault: function () {}});
+  return tick(); // the turn starts and streams
+}).then(function () {
+  fire(byId["chat-log"], "click", {target: stopButton()});
+  out.stopByClick = posts.length === 2;
+}).then(function () {
+  fire(byId["chat-input"], "keydown", {key: "Escape", stopPropagation: function () {}});
+  out.stopByEscapeInInput = posts.length === 3;
+}).then(function () {
+  fire(byId["chat"], "keydown", {key: "Escape", stopPropagation: function () {}});
+  out.stopByEscapeInPanel = posts.length === 4;
+}).then(function () {
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		IdleEscapeLeaves, StopWithoutStream, ReloadedAfterStop, StopByClick, StopByEscapeInInput, StopByEscapeInPanel bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if !got.IdleEscapeLeaves {
+		t.Error("Escape with no turn in flight does not only leave the input")
+	}
+	if !got.StopWithoutStream {
+		t.Error("a press on the mark's button posts no stop of the working thread")
+	}
+	if !got.ReloadedAfterStop {
+		t.Error("a stop with no stream open does not reload the thread")
+	}
+	if !got.StopByClick {
+		t.Error("a press on the mark's button during a turn posts no stop")
+	}
+	if !got.StopByEscapeInInput {
+		t.Error("Escape in the chat's input during a turn posts no stop")
+	}
+	if !got.StopByEscapeInPanel {
+		t.Error("Escape elsewhere in the chat panel during a turn posts no stop")
+	}
+}
+
+// The fold shows the live thinking of the turn in flight (the
+// thinking-fold plan): the chevron beside the stop mark stays hidden
+// until reasoning arrives, a press opens the fold with the thinking so
+// far, a delta past 16 KiB trims the front at a line boundary and keeps
+// the fold scrolled to the newest line, and the turn's end takes the
+// chevron, the fold and the mark with it, for nothing is stored. Run
+// under node, which the test needs.
+func TestChatPanelFoldsThinking(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = [], queries = [], templates = [], byId = {};
+var chunks = [], waiting = [], ended = false;
+var reader = {read: function () {
+  if (chunks.length) return Promise.resolve({done: false, value: chunks.shift()});
+  if (ended) return Promise.resolve({done: true});
+  return new Promise(function (res) { waiting.push(res); });
+}};
+function el() {
+  var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false, blurred: false, gone: false,
+    scrollTop: 0, scrollHeight: 0,
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}}, attrs: {},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    setAttribute: function (k, v) { e.attrs[k] = v; }, focus: function () {}, blur: function () { e.blurred = true; }, remove: function () { e.gone = true; },
+    appendChild: function (c) { return c; }, insertBefore: function (c) { return c; }, contains: function () { return true; },
+    closest: function () { return null; }, firstChild: null, previousElementSibling: null,
+    querySelector: function (sel) { var r = el(); r.sel = sel; queries.push(r); return r; },
+    querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+  e.addEventListener = function (kind, fn) { listeners.push({el: e, kind: kind, fn: fn}); };
+  return e;
+}
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) { var t = el(); if (tag === "template") { t.content = {firstElementChild: el()}; templates.push(t); } return t; },
+  getElementById: function (id) {
+    if (id === "img-zoom" || id === "thread-dialog" || id === "screen" || id === "chat-divider") return null;
+    return byId[id] || (byId[id] = el());
+  },
+  addEventListener: function (kind, fn) { listeners.push({el: document, kind: kind, fn: fn}); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el(), body: el(), activeElement: null};
+byId["chat-form"] = el();
+byId["chat-form"].elements = {csrf: {value: "tok"}};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url, opts) {
+    var u = String(url);
+    if (opts && opts.method === "POST") {
+      if (/\/chat\/stop$/.test(u) || /\/chat\/seen$/.test(u)) return Promise.resolve({ok: true});
+      return Promise.resolve({ok: true, headers: {get: function () { return "text/event-stream"; }}, body: {getReader: function () { return reader; }}});
+    }
+    return Promise.resolve({ok: true, json: function () {
+      return Promise.resolve(/\/conversations$/.test(u) ? [] :
+        {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active", working: false}});
+    }});
+  },
+  setInterval: function () { return 0; }, setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }}, FormData: function () { return {append: function () {}}; },
+  URLSearchParams: function (p) { this.toString = function () { return Object.keys(p).map(function (k) { return k + "=" + p[k]; }).join("&"); }; },
+  TextDecoder: function () { this.decode = function (v) { return v == null ? "" : String(v); }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
+var give = function (text) { chunks.push(text); waiting.splice(0).forEach(function (res) { res({done: false, value: chunks.shift()}); }); };
+var finish = function () { ended = true; waiting.splice(0).forEach(function (res) { res({done: true}); }); };
+var last = function (sel) { var q = queries.filter(function (r) { return r.sel === sel; }); return q.length ? q[q.length - 1] : null; };
+var tail = function () { var t = templates.filter(function (x) { return x.innerHTML.indexOf("turn-tail") >= 0; }); return t.length ? t[t.length - 1].content.firstElementChild : null; };
+var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
+var big = "";
+for (var i = 0; i < 600; i++) big += "line " + i + " of the reasoning trail\n";
+big += "the tail line";
+var out = {}, chev = null, fold = null, cursor = null;
+Promise.resolve().then(function () {
+  return tick(); // the opening read settles: the thread takes its number
+}).then(function () {
+  byId["chat-input"].value = "what is open?";
+  fire(byId["chat-form"], "submit", {preventDefault: function () {}});
+  return tick(); // the turn starts: its tail is drawn, both controls closed
+}).then(function () {
+  chev = last("[data-think]"); fold = last(".tfold"); cursor = tail();
+  out.turnStartsClosed = !!chev && !!fold && !!cursor && chev.hidden === true && fold.hidden === true;
+  give("event: think\ndata: {\"text\":\"Figuring \"}\n\n" + "event: think\ndata: {\"text\":\"what is open.\"}\n\n");
+  return tick(); // the reasoning arrives
+}).then(function () {
+  out.chevronShowsOnThinking = !!chev && chev.hidden === false && !!fold && fold.hidden === true;
+  if (chev) fire(chev, "click", {});
+  out.pressOpensFold = !!fold && !!chev && fold.hidden === false && fold.textContent === "Figuring what is open." && chev.attrs["aria-expanded"] === "true";
+  if (fold) fold.scrollHeight = 5000;
+  give("event: think\ndata: " + JSON.stringify({text: big}) + "\n\n");
+  return tick(); // the window passes 16 KiB: the front falls off at a line
+}).then(function () {
+  out.foldTrimsAtLine = !!fold && fold.textContent.length <= 16384 && /^line \d+ /.test(fold.textContent) &&
+    fold.textContent.slice(-13) === "the tail line";
+  out.foldScrolls = !!fold && fold.scrollTop === 5000;
+  fire(chev, "click", {});
+  out.pressClosesFold = !!fold && !!chev && fold.hidden === true && chev.attrs["aria-expanded"] === "false";
+  fire(chev, "click", {});
+  give("event: done\ndata: {}\n\n");
+  finish();
+  return tick(); // the stream ends: the tail goes, nothing is stored
+}).then(function () {
+  out.tailGoneOnDone = !!cursor && cursor.gone === true;
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		TurnStartsClosed, ChevronShowsOnThinking, PressOpensFold, FoldTrimsAtLine, FoldScrolls, PressClosesFold, TailGoneOnDone bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if !got.TurnStartsClosed {
+		t.Error("a turn's tail starts with the chevron and the fold closed")
+	}
+	if !got.ChevronShowsOnThinking {
+		t.Error("reasoning arrives and the chevron does not show with the fold closed")
+	}
+	if !got.PressOpensFold {
+		t.Error("a press on the chevron does not open the fold with the thinking so far")
+	}
+	if !got.FoldTrimsAtLine {
+		t.Error("thinking past 16 KiB is not trimmed at a line boundary with the newest kept")
+	}
+	if !got.FoldScrolls {
+		t.Error("the open fold does not follow the newest line")
+	}
+	if !got.PressClosesFold {
+		t.Error("a second press does not close the fold")
+	}
+	if !got.TailGoneOnDone {
+		t.Error("the turn's end leaves the chevron, the fold or the mark behind")
 	}
 }

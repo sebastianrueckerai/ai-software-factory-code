@@ -75,7 +75,7 @@ func TestOperatorStreamsTextAndParallelToolCalls(t *testing.T) {
 		{Role: "tool", ToolCallID: "call_0", Content: "EUR 1.20"},
 		{Role: "user", Content: "what is open?"},
 	}, []OperatorTool{{Name: "board", Description: "the board", Parameters: map[string]any{"type": "object"}}},
-		func(s string) { pieces = append(pieces, s) })
+		func(s string) { pieces = append(pieces, s) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestOperatorReadsLiteLLMsToolCallChunks(t *testing.T) {
 {"id":"chatcmpl-f9588acc-4553-9dba-85f5-fe7f9be95564","created":1791694136,"model":"operator","object":"chat.completion.chunk","choices":[{"index":0,"delta":{}}],"usage":{"completion_tokens":103,"prompt_tokens":4799,"total_tokens":4902,"prompt_tokens_details":{"cached_tokens":4608,"text_tokens":4799},"cost":0.0021520000000000003}}`, "\n"), "[DONE]")}
 	var pieces []string
 	answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", "", []OperatorMessage{{Role: "user", Content: "teal and smoke test"}}, nil,
-		func(s string) { pieces = append(pieces, s) })
+		func(s string) { pieces = append(pieces, s) }, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestOperatorMarksACutAnswer(t *testing.T) {
 				`{"choices":[{"index":0,"delta":{},"finish_reason":"` + tc.finish + `"}]}`,
 				`[DONE]`,
 			}}
-			answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", "", []OperatorMessage{{Role: "user", Content: "what is open?"}}, nil, func(string) {})
+			answer, err := g.start(t).Stream(t.Context(), "t-chat", "operator", "", []OperatorMessage{{Role: "user", Content: "what is open?"}}, nil, func(string) {}, nil)
 			if err != nil || !reflect.DeepEqual(answer, tc.want) {
 				t.Fatalf("answer = %+v, %v; want %+v", answer, err, tc.want)
 			}
@@ -181,7 +181,7 @@ func TestOperatorStreamFailures(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			m := tc.g.start(t)
-			_, err := m.Stream(t.Context(), "t-chat-x-2026-10", "operator", "", nil, nil, func(string) {})
+			_, err := m.Stream(t.Context(), "t-chat-x-2026-10", "operator", "", nil, nil, func(string) {}, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want %q", err, tc.want)
 			}

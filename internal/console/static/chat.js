@@ -106,8 +106,11 @@ var chatView = (function () {
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
     if (m.choices && m.choices.length && !esc1 && !m.settled) {
+      // a bound ask's press goes through /answer (its bound choice runs a
+      // tool in code), an unbound one as the member's own message
+      var k = m.kind === "ask" && m.proposal ? "data-answer" : "data-choice";
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
-        return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
+        return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
     if (fund) body += fundHTML(fund);
     var fold = "";
@@ -169,8 +172,23 @@ var chatView = (function () {
     return out.join("");
   }
   function earlierCalls(n) { return n + " earlier " + (n === 1 ? "call" : "calls"); }
-  // thinkingHTML ends a message whose turn is in flight
-  var thinkingHTML = "<span class=\"thinking\" aria-hidden=\"true\">thinking</span>";
+  // thinkingHTML ends a message whose turn is in flight: the mark is the
+  // stop control (the chat-stop plan), a press or Escape ends the turn,
+  // and the chevron beside it opens the fold of live reasoning (the
+  // thinking-fold plan) — closed until reasoning arrives, for none is
+  // stored to refill it from
+  var thinkingHTML = "<span class=\"turn-tail\"><button type=\"button\" class=\"tthink\" data-think title=\"Show the thinking\" aria-expanded=\"false\" hidden></button>" +
+    "<button type=\"button\" class=\"thinking\" data-stop title=\"Stop\">thinking</button><div class=\"tfold\" hidden></div></span>";
+  // trimThink keeps a fold's newest 16 KiB, the front falling off at a
+  // line boundary
+  function trimThink(s) {
+    if (s.length <= 16384) return s;
+    var cut = s.slice(s.length - 16384), nl = cut.indexOf("\n");
+    return nl >= 0 && nl < cut.length - 1 ? cut.slice(nl + 1) : cut;
+  }
+  // stoppedMarkHTML is the grey mark a stopped turn leaves where the
+  // thinking one ran, on the cut answer's row
+  var stoppedMarkHTML = "<span class=\"thinking stopped\" aria-hidden=\"true\">stopped</span>";
   function proposalHTML(p) {
     return "<div class=\"proposal\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" +
       "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>" +
@@ -202,7 +220,7 @@ var chatView = (function () {
     msgs.forEach(function (m, i) {
       // a row the factory wrote itself renders as its own whatever its
       // role: a card thread's first row is the ask, seeded as a user row
-      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary" || m.kind === "budget") {
+      if (m.kind === "poke" || m.kind === "escalation" || m.kind === "summary" || m.kind === "budget" || m.kind === "stop") {
         close();
         out.push(factoryHTML(m, i === fundAt ? budget : null));
         return;
@@ -224,6 +242,7 @@ var chatView = (function () {
         at = m.at;
       }
       if (m.content) dst.push(saidHTML(m.content));
+      if (m.cut) dst.push(stoppedMarkHTML);
       (m.tool_calls || []).forEach(function (c) {
         var state = c.proposal && states[c.proposal];
         if (state === "pending") {
@@ -408,8 +427,9 @@ var chatView = (function () {
     return m && m.choices && m.choices.length ? m : null;
   }
   function answerHTML(m) {
-    // an ask answers as the member's own message, an escalation through /answer
-    var k = m.kind === "ask" ? "data-choice" : "data-answer";
+    // an unbound ask answers as the member's own message, an escalation
+    // or a bound ask through /answer
+    var k = m.kind === "ask" && !m.proposal ? "data-choice" : "data-answer";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>";
     }).join("") + "<span class=\"answer-or\">or in your words below</span>";
@@ -464,7 +484,8 @@ var chatView = (function () {
   return {esc: esc, md: md, stamp: stamp, userHTML: userHTML, agentHTML: agentHTML, saidHTML: saidHTML, toolHTML: toolHTML,
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
-    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, zoomHTML: zoomHTML,
+    queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, trimThink: trimThink,
+    stoppedMarkHTML: stoppedMarkHTML, zoomHTML: zoomHTML,
     openQuestionHTML: openQuestionHTML};
 })();
 
@@ -668,7 +689,7 @@ var chatView = (function () {
     var t = document.createElement("template");
     t.innerHTML = html;
     var el = t.content.firstElementChild;
-    into.insertBefore(t.content, into.querySelector(":scope > .thinking"));
+    into.insertBefore(t.content, into.querySelector(":scope > .turn-tail"));
     scrollEnd();
     return el;
   }
@@ -678,12 +699,13 @@ var chatView = (function () {
   function threadOwner(t) { return t && t.login && t.login !== login ? t.login : ""; }
   function busy(k) { return !!running[k]; }
   // lock disables the composer while the open thread is read-only and the
-  // log's buttons while a turn of the open thread streams
+  // log's buttons while a turn of the open thread streams — the stop
+  // button alone stays live, it is what ends it
   function lock() {
     if (!form) return;
     form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = readOnly; });
     log.setAttribute("aria-busy", String(busy(openRef())));
-    log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(openRef()); });
+    log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(openRef()) && !b.closest(".turn-tail"); });
   }
   function read(reader, onEvent) {
     var decoder = new TextDecoder(), buf = "";
@@ -707,10 +729,22 @@ var chatView = (function () {
   // meanwhile is read again.
   function run(n, owner, url, body, into, onMissing, sent) {
     var k = ref(n, owner);
-    var ended = false, joined = false, stale = false, said = null, raw = "", reader = null, wait = null;
+    var ended = false, joined = false, stale = false, stopped = false, said = null, raw = "", reader = null, wait = null;
     var mark = document.createElement("template");
     mark.innerHTML = chatView.thinkingHTML;
     var cursor = mark.content.firstElementChild;
+    // the tail's two controls: the chevron keeps the fold of live
+    // reasoning, closed until the first think event opens its possibility
+    var chev = cursor.querySelector("[data-think]"), fold = cursor.querySelector(".tfold");
+    chev.hidden = true;
+    fold.hidden = true;
+    var thought = "";
+    chev.addEventListener("click", function () {
+      fold.hidden = !fold.hidden;
+      chev.setAttribute("aria-expanded", String(!fold.hidden));
+      chev.title = fold.hidden ? "Show the thinking" : "Hide the thinking";
+      if (!fold.hidden) { drawThink(); scrollEnd(true); }
+    });
     into.appendChild(cursor);
     running[k] = (running[k] || 0) + 1;
     lock();
@@ -720,6 +754,13 @@ var chatView = (function () {
     // boundary
     var headers = {"X-CSRF-Token": form.elements.csrf.value};
     if (typeof body === "string") headers["Content-Type"] = "application/x-www-form-urlencoded";
+    // drawThink puts the kept reasoning in the fold and follows its
+    // newest line while it is open
+    function drawThink() {
+      fold.textContent = thought;
+      fold.scrollTop = fold.scrollHeight;
+      scrollEnd();
+    }
     function event(ev) {
       var d = JSON.parse(ev.data);
       if (wait && ev.event !== "queued") {
@@ -762,6 +803,14 @@ var chatView = (function () {
         wait = cursor.previousElementSibling;
         return;
       }
+      if (ev.event === "think") {
+        // the reasoning rides the bus only: it shows in the fold, no row
+        // keeps it
+        if (chev.hidden) chev.hidden = false;
+        thought = chatView.trimThink(thought + d.text);
+        if (!fold.hidden) drawThink();
+        return;
+      }
       if (ev.event === "text") {
         if (!said) {
           add(into, "<div class=\"said\"></div>");
@@ -787,7 +836,16 @@ var chatView = (function () {
         log.querySelectorAll("[data-fund]").forEach(function (f) { f.remove(); });
         var host = into.closest(".msg") || into;
         host.insertAdjacentHTML("afterend", chatView.factoryHTML(d.message, d.budget || null));
-        if (host === into && !into.querySelector(":scope > :not(.av):not(.who):not(.thinking)")) into.remove();
+        if (host === into && !into.querySelector(":scope > :not(.av):not(.who):not(.turn-tail)")) into.remove();
+        scrollEnd();
+      }
+      else if (ev.event === "stopped") {
+        // the stop row lands under the turn, as a budget row's does; the
+        // mark goes grey where it ran when the stream ends
+        stopped = true;
+        var host = into.closest(".msg") || into;
+        host.insertAdjacentHTML("afterend", chatView.factoryHTML(d.message));
+        if (host === into && !into.querySelector(":scope > :not(.av):not(.who):not(.turn-tail)")) into.remove();
         scrollEnd();
       }
       else if (ev.event === "error") add(into, "<p class=\"chat-error\">" + chatView.esc(d.message) + "</p>");
@@ -811,7 +869,8 @@ var chatView = (function () {
       if (reader) reader.cancel().catch(function () {});
     }).then(function () {
       if (!ended) add(into, "<p class=\"chat-error\">the chat lost the connection, send again</p>");
-      cursor.remove();
+      if (stopped) cursor.outerHTML = chatView.stoppedMarkHTML;
+      else cursor.remove();
       running[k]--;
       lock();
       if (k !== openRef()) return listThreads();
@@ -838,10 +897,28 @@ var chatView = (function () {
     return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).catch(function () {});
   }
+  // clearInput empties the box and takes its height back to its base: a
+  // paste's growth must not outlive the message or the clear that ends it
+  function clearInput() {
+    input.value = "";
+    input.style.height = "";
+  }
+  // stopTurn ends the open thread's turn in flight: a press on the mark's
+  // button or Escape in the panel posts the stop. The stream answers
+  // stopped and ends; with none open — a page reloaded mid-turn, which
+  // drew the button from the thread's working flag — the thread reloads
+  // to show the rows the stop left
+  function stopTurn() {
+    var n = open, owner = openOwner, live = busy(openRef());
+    fetch(base + "/stop", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
+      headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}})
+      .then(function () { if (!live && n === open && owner === openOwner) return load(n, owner, true); })
+      .catch(function () {});
+  }
   function send() {
     var text = input.value.trim();
     if (!text || readOnly) return;
-    input.value = "";
+    clearInput();
     var images = pendingImages, docs = pendingDocs;
     pendingImages = [];
     pendingDocs = [];
@@ -907,6 +984,17 @@ var chatView = (function () {
   }
   function expired(el) {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
+  }
+  // pressAsk is a bound ask's press: it answers through /answer as a
+  // stream, the bound choice running the bound tool call in code and
+  // another settling the ask and running the agent's turn, drawn where
+  // the choices were; a binding gone since the read says so
+  function pressAsk(id, choice, after) {
+    var out = document.createElement("div");
+    after.after(out);
+    run(open, openOwner, base + "/answer", new URLSearchParams({
+      conversation: open, owner: openOwner, message: id, choice: choice
+    }).toString(), out, expired(out));
   }
 
   // the level control under Send (C14, C32): its menu of the four states;
@@ -1098,7 +1186,7 @@ var chatView = (function () {
     input.setAttribute("aria-activedescendant", "cmd-" + pal.list[pal.sel].name);
   }
   function command(name) {
-    input.value = "";
+    clearInput();
     drawPalette();
     if (name === "new") {
       fresh.click();
@@ -1133,8 +1221,15 @@ var chatView = (function () {
       send();
     } else if (e.key === "Escape") {
       e.stopPropagation();
-      input.blur();
+      if (busy(openRef())) stopTurn();
+      else input.blur();
     }
+  });
+  // Escape elsewhere in the chat panel stops the open thread's turn in
+  // flight too; an image zoomed full size keeps the first claim on it
+  panel.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape" || !busy(openRef()) || document.getElementById("img-zoom")) return;
+    stopTurn();
   });
   // Ctrl+k reaches the threads: the first row, the inbox (C14)
   document.addEventListener("keydown", function (e) {
@@ -1158,12 +1253,22 @@ var chatView = (function () {
     }
     input.focus();
   });
+  // the stop button in the log: a press ends the open thread's turn, so
+  // it answers while the turn streams, ahead of the busy guard below
+  log.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-stop]");
+    if (b && !b.disabled) stopTurn();
+  });
   log.addEventListener("click", function (e) {
     var b = e.target.closest("button");
     if (!b || busy(openRef())) return;
     var card = b.closest(".proposal");
     if (b.hasAttribute("data-choice")) {
       turn(b.dataset.choice);
+    } else if (b.hasAttribute("data-answer")) {
+      var picked = b.closest(".choices");
+      pressAsk(b.closest(".msg").dataset.message, b.dataset.answer, picked);
+      picked.remove();
     } else if (b.hasAttribute("data-skip")) {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
@@ -1237,7 +1342,7 @@ var chatView = (function () {
         form.classList.toggle("theirs", !!openOwner);
         form.querySelector(".arch-note").hidden = !readOnly;
       }
-      if (busy(openRef())) add(log, chatView.agentHTML(new Date(), chatView.thinkingHTML));
+      if (openThread.working || busy(openRef())) add(log, chatView.agentHTML(new Date(), chatView.thinkingHTML));
       pending = readOnly ? null : chatView.pendingOf(data.messages);
       drawAnswer();
       drawHead();
@@ -1401,6 +1506,14 @@ var chatView = (function () {
     }
     var b = e.target.closest("[data-answer]");
     if (!b || !pending || sending) return;
+    if (pending.kind === "ask") {
+      var ask = pending, pick = b.dataset.answer, row = log.querySelector(".msg[data-message=\"" + ask.id + "\"] .choices");
+      if (row) row.remove();
+      pending = null;
+      drawAnswer();
+      pressAsk(ask.id, pick, log.lastElementChild || answerRow);
+      return;
+    }
     var n = open, m = pending, choice = b.dataset.answer;
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });

@@ -142,8 +142,11 @@ Answer with the summary alone, as short paragraphs, at most 400 words.`
 
 // compact folds thread n's rows before its last keep turns, with its
 // summary so far, into a new summary on chat task taskID's account: one
-// cheap call, chunk by chunk past the summariser's window. False when the
-// thread holds nothing before its tail.
+// cheap call, chunk by chunk past the summariser's window. A piece whose
+// answer comes back empty folds in halves, in order, down to one line: an
+// empty answer means the model spent its answer budget before its text,
+// and less material leaves room for the text whatever spent it. False when
+// the thread holds nothing before its tail.
 func (t *turn) compact(taskID string, keep int) (bool, error) {
 	ctx := t.r.Context()
 	th, _, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, t.owner, t.conv)
@@ -160,16 +163,26 @@ func (t *turn) compact(taskID string, keep int) (bool, error) {
 		return false, nil
 	}
 	summary := th.Summary
-	for _, chunk := range chunks(transcript(rows[:start]), compactChunk) {
+	pieces := chunks(transcript(rows[:start]), compactChunk)
+	for len(pieces) > 0 {
+		piece := pieces[0]
+		pieces = pieces[1:]
 		so := cmp.Or(summary, "(none yet)")
 		msgs := []factoryd.OperatorMessage{{Role: "system", Content: compactPrompt},
-			{Role: "user", Content: "The summary so far:\n" + so + "\n\nThe turns after it:\n" + chunk}}
-		if summary, err = t.c.cfg.Operator.Compact(ctx, taskID, t.threadRef(), msgs); err != nil {
+			{Role: "user", Content: "The summary so far:\n" + so + "\n\nThe turns after it:\n" + piece}}
+		answer, err := t.c.cfg.Operator.Compact(ctx, taskID, t.threadRef(), msgs)
+		if err != nil {
 			return false, err
 		}
-		if summary = strings.TrimSpace(summary); summary == "" {
-			return false, fmt.Errorf("the summariser answered nothing")
+		if answer = strings.TrimSpace(answer); answer == "" {
+			halves := chunks(piece, len(piece)/2)
+			if len(halves) < 2 {
+				return false, fmt.Errorf("the summariser answered nothing")
+			}
+			pieces = append(halves, pieces...)
+			continue
 		}
+		summary = answer
 	}
 	before := t.weight(th.Summary, rows)
 	after := t.weight(summary, rows[start:])

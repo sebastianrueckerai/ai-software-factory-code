@@ -314,6 +314,7 @@ type fakeTasks struct {
 	// roadmap names, by "repository item", the card that builds a roadmap
 	// item (the roadmap pull of 2026-11-01)
 	roadmap map[string]string
+	chain   map[string]factoryd.ChainFacts
 	read    func(s *fakeTasks, id string)
 	// fundedEUR is the month's chat funding FundCard's pool counts, events
 	// the ledger its card_funded row goes to
@@ -605,6 +606,30 @@ func (s *fakeTasks) BoardTask(_ context.Context, id string) (factoryd.BoardTask,
 // set replaces the tasks; the escalated ones carry reason. ChainLive is
 // DeployLive over the set, as the store reads the column: a card whose
 // change no green chain covers is not live, done or not.
+// ChainFacts reads the chain rows the test seeded for repository's pull
+// request pr, with the chain's acting cards from the task set, newest
+// first as the store's ChainCard reads them.
+func (s *fakeTasks) ChainFacts(_ context.Context, repository string, pr int64) (factoryd.ChainFacts, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	f := s.chain[fmt.Sprintf("%s %d", repository, pr)]
+	for _, actor := range []struct {
+		source string
+		into   **factoryd.Task
+	}{{factoryd.SourceChainStall, &f.Stall}, {factoryd.SourceChainRepair, &f.Repair}} {
+		newest := -1
+		for i, t := range s.tasks {
+			if t.Repository == repository && t.Source == actor.source && (newest < 0 || t.CreatedAt.After(s.tasks[newest].CreatedAt)) {
+				newest = i
+			}
+		}
+		if newest >= 0 {
+			*actor.into = &s.tasks[newest].Task
+		}
+	}
+	return f, nil
+}
+
 func (s *fakeTasks) set(reason string, tasks ...factoryd.Task) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1069,7 +1094,7 @@ func newRig(t *testing.T) *rig {
 		t.Fatal(err)
 	}
 	repoWriters := map[string][]string{"sf/code": {"sebastian"}, "demo-app/demo-app": {"sebastian"}, "linkshort/linkshort": {"sebastian"}}
-	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{processes: testProcesses()},
+	r := &rig{fg: fg, tasks: &fakeTasks{}, writers: &fakeWriters{by: repoWriters}, objects: fakeObjects{}, ledger: &fakeLedger{files: map[string]policy.ProjectConfig{}, processes: testProcesses()},
 		approvals: &fakeApprovals{rows: []factoryd.ApprovalRequest{
 			{ID: 3, Kind: "resource", TaskID: "t-res", Project: "sf/code", Status: "pending", MonthlyEUR: &monthly,
 				Reason: "load test (beyond the envelope: a lease of 300 minutes exceeds the envelope's 4 h)",
@@ -1596,29 +1621,33 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
 	at := func(mins int) *time.Time { t := time.Now().Add(-time.Duration(mins) * time.Minute); return &t }
-	card := func(id string, pr int64, state string, finished int, status string) factoryd.BoardTask {
+	card := func(id string, pr int64, state string, finished int, status string, run int64) factoryd.BoardTask {
 		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: status, Repository: "sf/code",
-			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, ChainState: state}
+			PRNumber: pr, Objective: id + " change", FinishedAt: at(finished)}, ChainState: state, ChainRun: run}
 	}
 	// t-era finished before the first chain the set records; t-wait merged
 	// after t-chain's run was recorded, so the era no longer holds it live
 	r.tasks.tasks = []factoryd.BoardTask{
-		card("t-era", 8, "", 90, "done"),
-		card("t-chain", 9, "running", 40, "merged"),
-		card("t-wait", 10, "", 30, "merged"),
-		card("t-red", 11, "failure", 25, "merged"),
-		card("t-gone", 12, "cancelled", 20, "merged"),
-		card("t-live", 13, "success", 15, "done"),
-		card("t-skip", 14, "skipped", 10, "done"),
+		card("t-era", 8, "", 90, "done", 0),
+		card("t-chain", 9, "running", 40, "merged", 3251),
+		card("t-wait", 10, "", 30, "merged", 0),
+		card("t-red", 11, "failure", 25, "merged", 3252),
+		card("t-gone", 12, "cancelled", 20, "merged", 0),
+		{Task: factoryd.Task{ID: "t-live", Kind: "agent", Status: "done", Repository: "sf/code",
+			PRNumber: 13, Objective: "t-live change", FinishedAt: at(15)},
+			ChainState: "success", ChainRun: 3248, ChainGreen: 3248, ChainGreenAt: *at(10)},
+		card("t-skip", 14, "skipped", 10, "done", 0),
 		{Task: factoryd.Task{ID: "t-rollcard", Kind: "agent", Status: "done", Source: factoryd.SourceRoll,
 			Repository: "sf/code", PRNumber: 15, Objective: "the roll itself", FinishedAt: at(35)}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
 	progress, done := col(t, body, "In progress"), col(t, body, "Done")
+	// the chain word carries its run and links it to the forge, save the
+	// fallbacks when no run number is known
 	for id, stage := range map[string]string{
-		"t-chain": ">chain running</span>",
+		"t-chain": `https://git.example/sf/code/actions/runs/3251" target="_blank" rel="noopener">chain run 3251</a>`,
 		"t-wait":  ">waiting for the chain</span>",
-		"t-red":   ">chain red</span>",
+		"t-red":   `https://git.example/sf/code/actions/runs/3252" target="_blank" rel="noopener">run 3252 red</a>`,
 		"t-gone":  ">chain red</span>",
 	} {
 		if !strings.Contains(progress, `data-card="`+id+`"`) || !strings.Contains(progress, stage) {
@@ -1633,6 +1662,9 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 			t.Errorf("In progress holds the live card %s", id)
 		}
 	}
+	if cover := "live through run 3248, 5 min after merge"; !strings.Contains(done, cover) {
+		t.Errorf("t-live lacks its cover clause %q:\n%s", cover, done)
+	}
 	for _, id := range []string{"t-chain", "t-wait", "t-red", "t-gone"} {
 		if strings.Contains(done, `data-card="`+id+`"`) {
 			t.Errorf("Done holds %s, whose change is not live", id)
@@ -1645,6 +1677,126 @@ func TestBoardTracksEachCardsDeploy(t *testing.T) {
 	}
 	if strings.Contains(body, `data-card="t-rollcard"`) {
 		t.Error("the roll task rendered a card")
+	}
+}
+
+// The drawer's Activity tab carries the Chain readout: the carry run
+// linked to the forge, the project's required contexts, the head of
+// main, and the chain's actors — the repair card of a red head, the
+// stall card and the re-run of a stall — collapsed while the chain is
+// quiet, open when it is red or stalled; a done card reads its cover
+// run. The card's timeline page carries the same section.
+func TestCardChainReadout(t *testing.T) {
+	at := func(mins int) time.Time { return time.Now().Add(-time.Duration(mins) * time.Minute) }
+	merged := func(id string, pr, run int64) factoryd.BoardTask {
+		return factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "merged", Repository: "sf/code",
+			PRNumber: pr, Objective: id + " change"}, ChainRun: run}
+	}
+	finished, greenAt := at(15), at(10)
+	for _, c := range []struct {
+		name  string
+		tasks []factoryd.BoardTask
+		chain map[string]factoryd.ChainFacts
+		open  bool
+		wants []string
+		hides []string
+	}{
+		{
+			name:  "quiet",
+			tasks: []factoryd.BoardTask{merged("t-quiet", 9, 3251)},
+			chain: map[string]factoryd.ChainFacts{"sf/code 9": {CarryRun: 3251, CarryStatus: "pending", CarryAt: at(14),
+				HeadRun: 3260, HeadStatus: "success", HeadAt: at(10)}},
+			wants: []string{
+				"run 3251 pending · 14 min",
+				`https://git.example/sf/code/actions/runs/3251" target="_blank" rel="noopener">run 3251</a>`,
+				`<span class="mono num">` + at(14).UTC().Format("15:04") + `</span> <span class="mono num">14 min</span> <span class="st-waiting">pending</span>`,
+				`<span class="why">required</span> <span class="mono">factory/roll</span>`,
+				`https://git.example/sf/code/actions/runs/3260" target="_blank" rel="noopener">run 3260</a>`,
+				`<span class="st-merged">green</span>`,
+			},
+			hides: []string{"repair card", "stall card", `<span class="why">re-run</span>`},
+		},
+		{
+			name: "red head with its repair card",
+			tasks: []factoryd.BoardTask{
+				merged("t-red", 10, 3252),
+				{Task: factoryd.Task{ID: "t-fix", Kind: "agent", Status: "running", Repository: "sf/code",
+					Source: factoryd.SourceChainRepair, IssueNumber: 625, Objective: "repair the red head", CreatedAt: at(8)}},
+			},
+			chain: map[string]factoryd.ChainFacts{"sf/code 10": {CarryRun: 3252, CarryStatus: "failure", CarryAt: at(12)}},
+			open:  true,
+			wants: []string{
+				"run 3252 red · repair card #625",
+				`<span class="why">repair card</span> <a href="#card=t-fix" hx-get="/cards/t-fix/drawer" hx-target="#drawer" hx-swap="innerHTML">#625</a>`,
+				`<span class="mono num">8 min</span> <span class="st-running">running</span>`,
+				`<span class="st-failed">failure</span>`,
+			},
+		},
+		{
+			name: "stalled run with its stall card",
+			tasks: []factoryd.BoardTask{
+				merged("t-stall", 11, 3253),
+				{Task: factoryd.Task{ID: "t-ask", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+					Source: factoryd.SourceChainStall, IssueNumber: 209, Objective: "the chain stalled", CreatedAt: at(30)}},
+			},
+			chain: map[string]factoryd.ChainFacts{"sf/code 11": {CarryRun: 3253, CarryStatus: "stalled", CarryAt: at(26*60 + 5)}},
+			open:  true,
+			wants: []string{
+				"run 3253 stalled 1 d 2 h · stall card #209",
+				`· <a href="#card=t-ask" hx-get="/cards/t-ask/drawer" hx-target="#drawer" hx-swap="innerHTML">stall card #209</a>`,
+				`<span class="st-waiting">stalled</span>`,
+			},
+			hides: []string{"repair card", `<span class="why">re-run</span>`},
+		},
+		{
+			name:  "a stalled run the ladder re-ran, no stall card yet",
+			tasks: []factoryd.BoardTask{merged("t-rerun", 12, 3254)},
+			chain: map[string]factoryd.ChainFacts{"sf/code 12": {CarryRun: 3254, CarryStatus: "pending", CarryAt: at(30),
+				HeadRun: 3261, HeadStatus: "pending", HeadAt: at(20), RerunAt: at(6)}},
+			wants: []string{
+				`<span class="why">re-run</span> <a href="https://git.example/sf/code/actions/runs/3261" target="_blank" rel="noopener">run 3261</a> <span class="mono num">6 min</span> <span class="st-waiting">re-run</span>`,
+			},
+			hides: []string{"stall card"},
+		},
+		{
+			name: "a done card reads its cover run",
+			tasks: []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-cover", Kind: "agent", Status: "done", Repository: "sf/code",
+				PRNumber: 13, Objective: "t-cover change", FinishedAt: &finished},
+				ChainRun: 3248, ChainGreen: 3248, ChainGreenAt: greenAt}},
+			chain: map[string]factoryd.ChainFacts{"sf/code 13": {CarryRun: 3248, GreenRun: 3248, GreenAt: greenAt}},
+			wants: []string{
+				"cover run 3248 · 5 min from merge",
+				`<span class="why">cover run</span> <a href="https://git.example/sf/code/actions/runs/3248" target="_blank" rel="noopener">run 3248</a> <span class="mono num">5 min</span> <span class="st-done">live</span>`,
+			},
+			hides: []string{"carry run"},
+		},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			r := newRig(t)
+			ck, _ := r.loggedIn(t)
+			r.tasks.tasks = c.tasks
+			r.tasks.chain = c.chain
+			r.ledger.files["sf/code"] = policy.ProjectConfig{Repository: "sf/code", Chain: policy.ChainConfig{Requires: []string{"factory/roll"}}}
+			id := c.tasks[0].ID
+			drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=activity", nil), ck).Body.String()
+			for _, want := range c.wants {
+				if !strings.Contains(drawer, want) {
+					t.Errorf("drawer lacks %q:\n%s", want, drawer)
+				}
+			}
+			for _, hide := range c.hides {
+				if strings.Contains(drawer, hide) {
+					t.Errorf("drawer shows %q:\n%s", hide, drawer)
+				}
+			}
+			if open := strings.Contains(drawer, `data-sec="chain" open`); open != c.open {
+				t.Errorf("chain section open = %v, want %v", open, c.open)
+			}
+			page := r.do(httptest.NewRequest(http.MethodGet, "/tasks/"+id+"/timeline", nil), ck).Body.String()
+			if !strings.Contains(page, `data-sec="chain"`) || !strings.Contains(page, c.wants[0]) {
+				t.Errorf("timeline lacks the chain readout:\n%s", page)
+			}
+		})
 	}
 }
 

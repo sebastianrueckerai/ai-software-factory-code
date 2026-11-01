@@ -90,6 +90,10 @@ type Tasks interface {
 	FinishedTasks(ctx context.Context, q factoryd.FinishedQuery) ([]factoryd.BoardTask, int, error)
 	// BoardTask is task id as BoardTasks reads it, listed there or not.
 	BoardTask(ctx context.Context, id string) (factoryd.BoardTask, bool, error)
+	// ChainFacts reads the chain behind repository's pull request pr
+	// (C38): its carry run, the head of main with the stall ladder, the
+	// newest green run, and the chain's acting cards.
+	ChainFacts(ctx context.Context, repository string, pr int64) (factoryd.ChainFacts, error)
 	// PlanRevision is revision n of plan task id's plan, the newest for 0.
 	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
 	// PlanQuestions are revision's questions of plan task id, in order.
@@ -373,6 +377,9 @@ type Console struct {
 	// turns holds each chat thread's turn in flight and those queued
 	// behind it, and each project's model turns (roadmap 239).
 	turns *turnGate
+	// stops holds each chat thread's running turn that a member may stop
+	// (the chat-stop plan): the turn's cancel and who stopped it.
+	stops *stopGate
 	// refreshMu serializes token refreshes across requests: two concurrent
 	// requests presenting the same refresh token would both try to use it,
 	// Forgejo invalidates refresh tokens on use (INVALIDATE_REFRESH_TOKENS
@@ -506,6 +513,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/merge", http.HandlerFunc(c.mergeProject), nil},
 		{"POST /alerts/{id}/verdict", http.HandlerFunc(c.verdict), nil},
 		{"POST /projects/{name}/chat", http.HandlerFunc(c.chatPost), nil},
+		{"POST /projects/{name}/chat/stop", http.HandlerFunc(c.chatStopPost), nil},
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
 		{"POST /projects/{name}/chat/rename", http.HandlerFunc(c.chatRename), nil},
 		{"POST /projects/{name}/chat/seen", http.HandlerFunc(c.chatSeen), nil},
@@ -544,7 +552,7 @@ func New(cfg Config) (*Console, error) {
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
-	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), ended: make(chan struct{})}
+	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{})}
 	gets, err := c.getRoutes()
 	if err != nil {
 		return nil, err

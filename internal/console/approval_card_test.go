@@ -130,13 +130,15 @@ func TestDeployStageWords(t *testing.T) {
 	for _, c := range []struct {
 		state string
 		roll  int64
+		run   int64
 		want  string
 	}{
-		{"failure", 5, "blocked by roll #5"}, {"failure", 0, "chain red"}, {"cancelled", 0, "chain red"},
-		{"stalled", 0, "stalled"}, {"", 0, "waiting for the chain"}, {"pending", 0, "chain running"},
+		{"failure", 5, 3252, "blocked by roll #5"}, {"failure", 0, 3252, "run 3252 red"}, {"cancelled", 0, 0, "chain red"},
+		{"stalled", 0, 3253, "run 3253 stalled"}, {"stalled", 0, 0, "stalled"}, {"", 0, 0, "waiting for the chain"},
+		{"pending", 0, 3251, "chain run 3251"}, {"pending", 0, 0, "chain running"},
 	} {
-		if got := deployStage(c.state, c.roll); got != c.want {
-			t.Errorf("deployStage(%q, %d) = %q, want %q", c.state, c.roll, got, c.want)
+		if got := deployStage(c.state, c.roll, c.run); got != c.want {
+			t.Errorf("deployStage(%q, %d, %d) = %q, want %q", c.state, c.roll, c.run, got, c.want)
 		}
 	}
 }
