@@ -348,6 +348,9 @@ func (s *acceptTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (f
 func (s *acceptTasks) FundCard(_ context.Context, _ string, _ float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
 	return 0, 0, nil
 }
+func (s *acceptTasks) ExtendCard(_ context.Context, _ string, _, _ int, _ float64, _ factoryd.Event) (float64, float64, error) {
+	return 0, 0, nil
+}
 func (s *acceptTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }

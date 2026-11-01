@@ -314,6 +314,9 @@ func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) 
 func (s *accBatchTasks) FundCard(_ context.Context, _ string, _ float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
 	return 0, 0, nil
 }
+func (s *accBatchTasks) ExtendCard(_ context.Context, _ string, _, _ int, _ float64, _ factoryd.Event) (float64, float64, error) {
+	return 0, 0, nil
+}
 func (s *accBatchTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }
@@ -826,6 +829,9 @@ func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]
 	panic("unused")
 }
 func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
 	panic("unused")
 }
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {

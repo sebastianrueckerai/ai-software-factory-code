@@ -1210,11 +1210,11 @@ func cardLineBound(size string, largeLines int) (lines int, sized bool) {
 	return lines, sized
 }
 
-// effectiveLineBound is the card's line bound: what its size plans under
+// EffectiveLineBound is the card's line bound: what its size plans under
 // the policy plus the raises its extend answers added. The worker's push
 // rule, the gate's check and the supervisor's trip all read this one
 // number, so a raise lifts them at once.
-func effectiveLineBound(size string, largeLines, extraLines int) int {
+func EffectiveLineBound(size string, largeLines, extraLines int) int {
 	lines, _ := cardLineBound(size, largeLines)
 	return lines + extraLines
 }

@@ -94,6 +94,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityReconcile:                   r.Reconcile,
 		ActivityEscalate:                    r.Escalate,
 		ActivityRecordUsage:                 r.RecordUsage,
+		ActivityReadUsage:                   r.ReadUsage,
 		ActivityGatePolicy:                  r.GatePolicy,
 		ActivityGateMigration:               r.GateMigration,
 		ActivityGateReproduction:            r.GateReproduction,
@@ -387,6 +388,17 @@ func (h *heartbeat) snapshot() sessionProgress {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events}
+}
+
+// ReadUsage reads the caps the task's row holds: the answer wake reloads
+// them, so a raise the console made while the card waited (ExtendCard)
+// is not overwritten by the usage snapshot the last session recorded.
+func (r *Runner) ReadUsage(ctx context.Context, taskID string) (TaskUsage, error) {
+	t, _, err := r.store.Task(ctx, taskID)
+	if err != nil {
+		return TaskUsage{}, err
+	}
+	return t.Usage, nil
 }
 
 // RecordUsage keeps what the task used of its caps on its row; agent time

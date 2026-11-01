@@ -218,6 +218,27 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds
 	return from, t.BudgetEUR, err
 }
 
+// ExtendCard raises task id's caps — its granted sessions, its line bound
+// and its budget — and records e with the raise in its detail.
+func (s *fakeStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
+	t, ok := s.tasks[id]
+	if !ok {
+		return 0, 0, ErrNotFound
+	}
+	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
+	t.Usage.ExtraAttempts += sessions
+	t.Usage.ExtraLines += lines
+	s.tasks[id] = t
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, eur
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	_, err = s.Record(ctx, e)
+	return from, t.BudgetEUR, err
+}
+
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},

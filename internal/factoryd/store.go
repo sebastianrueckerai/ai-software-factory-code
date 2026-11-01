@@ -633,6 +633,10 @@ type Store interface {
 	// FundCard raises task id's budget by eur and writes e, its card_funded
 	// row (PGStore.FundCard).
 	FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error)
+	// ExtendCard raises task id's caps — its granted sessions, its line
+	// bound and its budget — and writes e, its card_extended row
+	// (PGStore.ExtendCard).
+	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error)
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
@@ -1610,6 +1614,44 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 		return 0, 0, err
 	}
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e, _, err = insertEvent(ctx, tx, e)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	s.publish(e)
+	return from, to, nil
+}
+
+// ExtendCard raises task id's caps — its granted sessions, its line bound
+// and its budget — and writes its card_extended row in one transaction; the
+// console extend action calls it. No task: ErrNotFound.
+func (s *PGStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	err = tx.QueryRowContext(ctx,
+		`UPDATE tasks SET extra_attempts = extra_attempts + $2, extra_lines = extra_lines + $3,
+			   budget_eur = budget_eur + $4
+		 WHERE id = $1
+		 RETURNING (budget_eur - $4::numeric)::float8, budget_eur::float8`,
+		id, sessions, lines, eur).Scan(&from, &to)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, from, to
 	e, _, err = insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, 0, err

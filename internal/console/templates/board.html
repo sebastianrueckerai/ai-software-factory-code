@@ -107,7 +107,8 @@
 <form method="post" action="/tasks/{{$.Card.ID}}/answer" hx-post="/tasks/{{$.Card.ID}}/answer" hx-target="#note" hx-swap="innerHTML" class="inline"{{if not $stays}} data-to="{{if $off}}off{{else}}running{{end}}"{{end}}>
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Card.Filter}}
 <input type="hidden" name="value" value="{{.Value}}">
-<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
+{{if eq .Value "grant"}}<input type="text" name="instruction" maxlength="{{maxAnswer}}" aria-label="instruction for the granted session, also the card's answer" placeholder="instruction (optional)">
+{{end}}<button type="submit"{{if eq .Value "close"}} class="deny"{{end}} aria-label="{{.Label}}{{if $kept}}, kept off the issue: the card stays waiting{{else}}, posted on the issue as you{{end}}">{{.Label}}</button></form>
 {{end}}{{end}}</div>
 {{if $.Suffix}}<details class="fold"><summary>What each answer does</summary>
 <div class="info">{{markup .Info}}</div>
@@ -135,6 +136,17 @@
 <label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">note, also the card's answer</label>
 <input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="{{maxAnswer}}" required hx-preserve>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
+</form>{{end}}{{with .Card.Extend}}<form method="post" action="/tasks/{{$.Card.ID}}/extend" hx-post="/tasks/{{$.Card.ID}}/extend" hx-target="#note" hx-swap="innerHTML" class="inline extend" data-to="running">
+<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
+<label for="extend-sessions-{{$.Card.ID}}{{$.Suffix}}">sessions more</label>
+<input type="number" step="1" min="0" id="extend-sessions-{{$.Card.ID}}{{$.Suffix}}" name="sessions" required>
+<label for="extend-lines-{{$.Card.ID}}{{$.Suffix}}">lines more</label>
+<input type="number" step="1" min="0" id="extend-lines-{{$.Card.ID}}{{$.Suffix}}" name="lines" required>
+<label for="extend-eur-{{$.Card.ID}}{{$.Suffix}}">budget more, EUR</label>
+<input type="number" step="0.01" min="0" id="extend-eur-{{$.Card.ID}}{{$.Suffix}}" name="eur" required>
+<label for="extend-reason-{{$.Card.ID}}{{$.Suffix}}">note, also the card's answer</label>
+<input type="text" id="extend-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="{{maxAnswer}}" hx-preserve>
+<button type="submit" title="holds a {{.Cap}}-session cap, a {{.Bound}}-line bound, €{{printf "%.2f" .Left}} of €{{printf "%.2f" .Budget}}">Extend the card</button>
 </form>{{end}}{{with .Card.AcceptanceClose}}<form method="post" action="/tasks/{{$.Card.ID}}/acceptance-close" hx-post="/tasks/{{$.Card.ID}}/acceptance-close" hx-target="#note" hx-swap="innerHTML" class="inline" data-to="done">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
 <button type="submit" title="{{.Evidence}}">Close: acceptance green</button>

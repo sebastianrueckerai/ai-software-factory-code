@@ -400,7 +400,7 @@ func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, com
 // policy in force now. A failed row is logged, never a failed decision.
 func (r *Runner) recordGateHead(ctx context.Context, t Task, head, decision string, g PolicyGate) {
 	r.timeline.RecordFact(ctx, GateHeadFact{Task: t.ID, Head: head, Gate: GateMerge, Decision: decision,
-		Size: t.Size, Bound: effectiveLineBound(t.Size, g.LargeLines, t.Usage.ExtraLines), PolicyVersion: g.PolicyVersion,
+		Size: t.Size, Bound: EffectiveLineBound(t.Size, g.LargeLines, t.Usage.ExtraLines), PolicyVersion: g.PolicyVersion,
 		Files: g.Files, Insertions: g.Insertions, Deletions: g.Deletions}.Event(t.Repository, t.IssueNumber))
 }
 
@@ -516,7 +516,7 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
-	if over := lines - effectiveLineBound(t.Size, v.Document.Risk.LargeLines, t.Usage.ExtraLines); over > 0 {
+	if over := lines - EffectiveLineBound(t.Size, v.Document.Risk.LargeLines, t.Usage.ExtraLines); over > 0 {
 		g.OverBound = fmt.Sprintf("the pull request's diff is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
 			over, lines-over)
 	}

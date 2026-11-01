@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
@@ -407,5 +409,137 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 			t.Errorf("%s = %d, dismissed %v, comment %q, patched %v; want a close on the label", word, rec.Code, r.dismissed, r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"], r.fg.patched)
 		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"})
+	}
+}
+
+// The extend action: one store transaction raises the card's session cap,
+// line bound and budget, and the note answers the card so the run takes
+// the raise when the answer wakes it.
+func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
+	r := fundRig(t)
+	_, s := r.loggedIn(t)
+	note, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "the restructure is worth it")
+	if err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+	if want := "Extended #13: +1 session, +500 lines, +2.00 EUR (budget 2.00 to 4.00), and posted your note as the answer; the card resumes."; note != want {
+		t.Errorf("note = %q, want %q", note, want)
+	}
+	task, _, _ := r.tasks.Task(t.Context(), "t-e")
+	if task.BudgetEUR != 4 || task.Usage.ExtraAttempts != 1 || task.Usage.ExtraLines != 500 {
+		t.Errorf("the card after the extend = budget %v, usage %+v, want 4 EUR, one extra session, 500 extra lines", task.BudgetEUR, task.Usage)
+	}
+	var rows []factoryd.Event
+	for _, e := range r.events.all() {
+		if e.Kind == factoryd.EventCardExtended {
+			rows = append(rows, e)
+		}
+	}
+	if len(rows) != 1 || rows[0].Actor != "sebastian" || rows[0].Detail["sessions"] != 1 || rows[0].Detail["lines"] != 500 || rows[0].Detail["amount_eur"] != 2.0 {
+		t.Errorf("card_extended rows = %+v, want one of sebastian's raise", rows)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "the restructure is worth it" {
+		t.Errorf("posted = %q, want the note as the answer", posted)
+	}
+}
+
+// Nothing extends when the raise names nothing or names a negative: the
+// refusal changes no row and posts no answer.
+func TestExtendRefusesWhatChangesNothing(t *testing.T) {
+	r := fundRig(t)
+	_, s := r.loggedIn(t)
+	for _, in := range []struct {
+		sessions, lines int
+		eur             float64
+	}{
+		{0, 0, 0}, {-1, 0, 0}, {0, -500, 0}, {0, 0, -2},
+	} {
+		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.eur, "")
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusBadRequest {
+			t.Errorf("extend %+v = %v, want a 400 refusal", in, err)
+		}
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || task.Usage != (factoryd.TaskUsage{}) {
+		t.Errorf("a refused extend moved the card: budget %v, usage %+v", task.BudgetEUR, task.Usage)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if len(r.fg.comments) != 0 {
+		t.Errorf("a refused extend posted %q", r.fg.comments)
+	}
+}
+
+// The extend route refuses a non-numeric field with its own line and
+// changes nothing.
+func TestExtendRouteRefusesNonNumeric(t *testing.T) {
+	r := fundRig(t)
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"sessions": {"many"}, "lines": {"500"}, "eur": {"2"}}), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "whole number") {
+		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
+		t.Errorf("a refused extend raised the budget to %v", task.BudgetEUR)
+	}
+}
+
+// The Extend form shows beside the answer box where the card's question
+// offers the exit, its fields naming what they raise.
+func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
+	r := fundRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-e" {
+			r.tasks.tasks[i].Question = factoryd.ShapedQuestion("check-in: spend_above_policy: No reply can change this: the head a1b2c3d and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", factoryd.QuestionFacts{}, nil)
+		}
+	}
+	r.tasks.mu.Unlock()
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="sessions"`, `name="lines"`, `name="eur"`, `value="overrule"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the card lacks %s", want)
+		}
+	}
+}
+
+// A grant press carries its one-line instruction into the posted answer,
+// so the session the press buys is told what the human wants (the parked
+// spec's fix 3: grants carry instruction).
+func TestGrantCarriesItsInstruction(t *testing.T) {
+	r := fundRig(t)
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
+	_, s := r.loggedIn(t)
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "land the smaller merge first"); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: land the smaller merge first" {
+		t.Errorf("posted = %q", posted)
+	}
+}
+
+// A bare grant on a card whose newest denial carries a note re-offers
+// that note as its instruction.
+func TestBareGrantReoffersTheDenialsNote(t *testing.T) {
+	r := fundRig(t)
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return "", nil }
+	r.approvals.mu.Lock()
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 7, Kind: factoryd.ApprovalMerge, TaskID: "t-e",
+		Status: "denied", DecisionNote: "split the migration first", CreatedAt: time.Now().Add(-time.Hour)})
+	r.approvals.mu.Unlock()
+	_, s := r.loggedIn(t)
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, ""); err != nil {
+		t.Fatalf("bare grant: %v", err)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: split the migration first" {
+		t.Errorf("posted = %q, want the denial's note re-offered", posted)
 	}
 }

@@ -388,3 +388,63 @@ func TestPlainQuestionReadsASupervisorRecommendation(t *testing.T) {
 		}
 	}
 }
+
+// The deadlock ask hands the owner's decision to the human as buttons,
+// with the card's caps named from the facts the extend form prefills.
+func TestDeadlockAskOffersTheExits(t *testing.T) {
+	reason := checkinSpendAsk + deadlockAskMark + ": the head a1b2c3d and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting."
+	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}}
+	q := ShapedQuestion(reason, QuestionFacts{SessionCap: 4, LineBound: 1000, BudgetEUR: 9, SpentEUR: 8.6, LeftEUR: 0.4}, nil)
+	if !slices.Equal(q.Choices, exits) {
+		t.Errorf("choices = %v, want %v", q.Choices, exits)
+	}
+	if want := "No reply can change this: the card holds a 4-session cap, a 1000-line bound and €0.40 of its €9.00 budget. Extend the card, overrule the review, end the card, or leave it waiting."; q.Ask != want {
+		t.Errorf("ask = %q, want %q", q.Ask, want)
+	}
+	q = ShapedQuestion(reason, QuestionFacts{}, nil)
+	if want := "No reply can change this: the head and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting."; q.Ask != want || !slices.Equal(q.Choices, exits) {
+		t.Errorf("the bare ask = %q, choices %v", q.Ask, q.Choices)
+	}
+}
+
+// A stop whose work state carries a refused review names the overrule
+// decision: whatever stop it rode, its choices become the exits. An
+// approved review keeps the ordinary answers.
+func TestReviewRefusedStopOffersTheExits(t *testing.T) {
+	exits := []QuestionChoice{{AnswerExtend, "Extend the card"}, {AnswerOverrule, "Overrule the review"}, {AnswerClose, "End the card"}}
+	q := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+"\n- the migration runs outside its transaction\n- "+reviewConcernsMark, QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90}, nil)
+	if !slices.Equal(q.Choices, exits) {
+		t.Errorf("the share stop's choices = %v, want %v", q.Choices, exits)
+	}
+	if want := "The card has spent €0.84 of its €0.90 check-in share. May it go on?"; q.Ask != want {
+		t.Errorf("ask = %q, want the share ask unchanged", q.Ask)
+	}
+	plain := ShapedQuestion("check-in: gate: the checks need a hand\n- "+reviewConcernsMark, QuestionFacts{}, nil)
+	if !slices.Equal(plain.Choices, exits) {
+		t.Errorf("an unshaped refusal's choices = %v, want the exits", plain.Choices)
+	}
+	approved := ShapedQuestion(checkinSpendAsk+CheckinShareSpent+"\n- review: approve", QuestionFacts{}, nil)
+	if slices.Equal(approved.Choices, exits) {
+		t.Errorf("an approved review offers the exits")
+	}
+}
+
+// The exits' numbers, as the extend form prefills them: the card's own
+// caps and money, read from the policy and the row.
+func TestQuestionFactsFillTheExitsLimits(t *testing.T) {
+	store := newFakeStore()
+	store.checkinSpent = map[string]float64{"t1": 1.2}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinShare: 20, Sessions: 3}, Risk: policy.Risk{LargeLines: 1000}}}}
+	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", Size: "small", BudgetEUR: 5, SpentEUR: 4.5, Usage: TaskUsage{ExtraAttempts: 1, ExtraLines: 200}}
+	f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent+"\n- "+reviewConcernsMark)
+	if f.SessionCap != 4 { // the policy's 3 sessions and one granted
+		t.Errorf("SessionCap = %d, want 4", f.SessionCap)
+	}
+	if f.LineBound != 500 { // small plans 300, the extend raised 200
+		t.Errorf("LineBound = %d, want 500", f.LineBound)
+	}
+	if f.BudgetEUR != 5 || f.SpentEUR != 4.5 || f.LeftEUR != 0.5 {
+		t.Errorf("money = %v of %v (left %v), want 4.5 of 5, 0.5 left", f.SpentEUR, f.BudgetEUR, f.LeftEUR)
+	}
+}

@@ -77,6 +77,7 @@ type workflowHarness struct {
 	escalatedAt []time.Time
 	choices     [][]string // Escalate choices, in order
 	usage       []TaskUsage
+	rowUsage    TaskUsage     // what ReadUsage reads back: the last recorded usage
 	logs        *lockedBuffer // the workflow's log
 	recorded    []recordedStep
 	infoAsked   []string    // RequestInfo reasons, in order
@@ -158,7 +159,11 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
-		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
+		ActivityRecordUsage: func(ctx context.Context, taskID string, u TaskUsage) error {
+			h.rowUsage = u
+			return nil
+		},
+		ActivityReadUsage: func(ctx context.Context, taskID string) (TaskUsage, error) { return h.rowUsage, nil },
 		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
 		},
@@ -280,7 +285,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return nil
 		})
 	h.env.OnActivity(ActivityRecordUsage, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID string, u TaskUsage) error { h.usage = append(h.usage, u); return nil })
+		func(ctx context.Context, taskID string, u TaskUsage) error {
+			h.usage, h.rowUsage = append(h.usage, u), u
+			return nil
+		})
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
@@ -4152,10 +4160,10 @@ func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
 	h.onVerify(&steps, []SessionResult{
 		pushed("s1", "c1"),
 		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
-			Reason: CheckinShareSpent,
+			Reason:   CheckinShareSpent,
 			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}, {Text: "the flag is read before it is set"}},
-			Review:  &Review{Verdict: "concerns", Summary: "two faults block the merge"},
-			Record:  &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
 			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
@@ -5144,5 +5152,42 @@ func TestReplanRefusedAtTheStartVerifiesAgain(t *testing.T) {
 	}
 	if len(h.sessions) != 0 || !slices.Equal(*asked, []string{"c1"}) {
 		t.Fatalf("sessions %d, approval requests on %q; want none, [c1]", len(h.sessions), *asked)
+	}
+}
+
+// An extend answer raises the limits the guard reads: the row the extend
+// form raised reaches the run when the answer wakes it (change id
+// "extend-raise"), so the stop after an extend is an ordinary ask, not
+// the deadlock headline again.
+func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.taskConfig.Sessions = 6
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (TaskUsage, error) {
+			return TaskUsage{ExtraLines: 500}, nil
+		})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "extend it", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	if strings.Contains(h.escalated[1], "No reply can change this") || !strings.Contains(h.escalated[1], CheckinShareSpent) {
+		t.Errorf("the ask after the extend = %q, want the ordinary share ask: the raise changed the limits", h.escalated[1])
 	}
 }

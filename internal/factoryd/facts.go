@@ -25,9 +25,9 @@ func (f SessionFacts) Line() string {
 	}
 	line += fmt.Sprintf("; this is session %d of the %d the policy allows before a human is asked.", f.Attempt, f.Sessions)
 	if _, sized := cardLineBound(f.Size, f.LargeLines); sized {
-		line += fmt.Sprintf(" This card is planned at most %d changed lines (size %s).", effectiveLineBound(f.Size, f.LargeLines, f.ExtraLines), f.Size)
+		line += fmt.Sprintf(" This card is planned at most %d changed lines (size %s).", EffectiveLineBound(f.Size, f.LargeLines, f.ExtraLines), f.Size)
 	} else {
-		line += fmt.Sprintf(" This card has no size, so it is planned at most %d changed lines, the policy's large_lines.", effectiveLineBound(f.Size, f.LargeLines, f.ExtraLines))
+		line += fmt.Sprintf(" This card has no size, so it is planned at most %d changed lines, the policy's large_lines.", EffectiveLineBound(f.Size, f.LargeLines, f.ExtraLines))
 	}
 	if f.Attempt >= f.Sessions {
 		line += " It is the last one: push your work before it ends."

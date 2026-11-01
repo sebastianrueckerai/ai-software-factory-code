@@ -366,6 +366,30 @@ func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds
 	return from, to, nil
 }
 
+// ExtendCard raises task id's caps and records e, both or neither, as the
+// store's one transaction does.
+func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
+	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.mu.Lock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].Usage.ExtraAttempts += sessions
+			s.tasks[i].Usage.ExtraLines += lines
+		}
+	}
+	s.mu.Unlock()
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	if _, err := s.events.Record(ctx, e); err != nil {
+		s.RaiseTaskBudget(ctx, id, -eur)
+		return 0, 0, err
+	}
+	return from, to, nil
+}
+
 // Dependencies are the tasks task id depends on, those not done first.
 func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
 	s.mu.Lock()

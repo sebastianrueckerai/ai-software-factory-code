@@ -500,6 +500,10 @@ type card struct {
 	// remaining budget cannot fund a call, which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
+	// Extend is the approver's Extend action on a card whose question
+	// offers the exit (a stop that names the owner's decision): the
+	// stated sessions, lines and EUR raise its caps and answer the stop.
+	Extend *extendForm
 	// AcceptanceClose is the approver's Close on a waiting card whose
 	// event trail shows one of its plan's acceptance commands run green
 	// in a session (roadmap 208): the work is its own evidence, so the
@@ -874,6 +878,17 @@ func planRollup(cards []card) string {
 // fundForm is an approver's Fund action beside a capped card's answer box:
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
+
+// extendForm is an approver's Extend action beside a card's answer box,
+// where its question offers the exit: the stated sessions, lines and EUR
+// raise the card's caps, and the note answers the stop. Cap, Bound,
+// Budget and Left are the card's numbers the raise starts from.
+type extendForm struct {
+	CSRF       string
+	Cap, Bound int
+	Budget     float64
+	Left       float64
+}
 
 // acceptanceCloseForm is an approver's Close beside a waiting card's
 // answer box: the close ends the card done on its acceptance green
@@ -1961,6 +1976,15 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
 			k.Fund = &fundForm{CSRF: v.csrf}
+		}
+		// the Extend action is offered where the card's question offers
+		// the exit, a stop that names the owner's decision: the same
+		// card, to its approvers, with its numbers the raise starts from
+		if v.approves(t.Repository) && bt.Question != nil && bt.Question.Offers(factoryd.AnswerExtend) {
+			k.Extend = &extendForm{CSRF: v.csrf,
+				Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.ExtraAttempts,
+				Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
+				Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
 		}
 		// the acceptance close is offered where the card's own trail
 		// proves the work (roadmap 208): the same card, to its approvers
@@ -3062,7 +3086,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 // matched none of the question's choices went to the chat (answerInChat):
 // the member lands on it.
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"))
+	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("instruction"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3077,6 +3101,27 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.pressNote(w, r, note, nil)
+}
+
+// extendCard raises a waiting card's caps (doExtend).
+func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
+	sessions, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("sessions")))
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
+		return
+	}
+	lines, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("lines")))
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "lines is a whole number"))
+		return
+	}
+	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
+		return
+	}
+	note, err := c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, eur, r.PostFormValue("reason"))
+	c.pressNote(w, r, note, err)
 }
 
 // fundCard raises a waiting card's budget (doFund).
