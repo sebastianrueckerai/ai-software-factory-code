@@ -883,6 +883,10 @@ type chatGateway struct {
 	// no arrived, so the turns' script and counts stand
 	titleCalls []map[string]any
 	titleNames []string
+	// window is the alias's served context window, windows the aliases
+	// the turns asked for one
+	window  int
+	windows []string
 }
 
 // refuseContext scripts an operator call the provider refuses for a
@@ -894,6 +898,13 @@ const refuseContext = "REFUSE_CONTEXT"
 func refuseFor(decision, reason string) string { return "REFUSE " + decision + " " + reason }
 
 func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if alias, ok := strings.CutPrefix(r.URL.Path, "/v1/window/"); ok {
+		g.mu.Lock()
+		defer g.mu.Unlock()
+		g.windows = append(g.windows, alias)
+		fmt.Fprintf(w, `{"window":%d}`, g.window)
+		return
+	}
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeTitle {
 		g.serveTitle(w, r)
 		return

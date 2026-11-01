@@ -500,10 +500,9 @@ func AgentDocLoop(ctx context.Context, id, bin string, v policy.Version) ([]agen
 	model.oc = &Opencode{
 		Binary: bin, WorkDir: dir, TokenFile: token,
 		Model: agentDocLoopModelAlias(id), Stronger: "factory/" + policy.Big, Cheap: "factory/" + policy.Small,
-		Budget:        TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384},
-		Steps:         v.Document.Limits.Steps,
-		ContextTokens: v.Document.Limits.ContextCap(),
-		GatewayURL:    srv.URL,
+		Budget:     TokenBudget{AnswerTokens: 8192, HeadroomTokens: 16384},
+		Steps:      v.Document.Limits.Steps,
+		GatewayURL: srv.URL,
 	}
 	brief := agentDocLoopBrief(id, v)
 	restoreTag := randomTag
@@ -554,7 +553,7 @@ func AgentDocAgentConfig(v policy.Version) (json.RawMessage, error) {
 		return nil, err
 	}
 	cfg, err := buildOpencodeConfig("https://gateway.invalid", "factory", policy.Small,
-		limit, v.Document.Limits.Steps, v.Document.Limits.ContextCap(), "factory/"+policy.Small, policy.Big)
+		limit, v.Document.Limits.Steps, nil, "factory/"+policy.Small, policy.Big)
 	if err != nil {
 		return nil, err
 	}

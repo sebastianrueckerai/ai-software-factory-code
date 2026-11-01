@@ -1952,19 +1952,6 @@ func TestLoadEnvReadsTheFacts(t *testing.T) {
 	}
 }
 
-func TestLoadEnvReadsTheContextCap(t *testing.T) {
-	setRequiredEnv(t)
-	t.Setenv("CONTEXT_TOKENS", "100000")
-	e, err := loadEnv()
-	if err != nil || e.contextTokens != 100000 {
-		t.Fatalf("contextTokens = %d, %v", e.contextTokens, err)
-	}
-	t.Setenv("CONTEXT_TOKENS", "lots")
-	if _, err := loadEnv(); err == nil {
-		t.Fatal("a malformed CONTEXT_TOKENS was accepted")
-	}
-}
-
 // The writing guide rides only with a report session's REPORT_GUIDE: a
 // coding session's env carries no guide at all (the question format's
 // context rule), for its words reach no person.

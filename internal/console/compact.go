@@ -42,8 +42,20 @@ func (t *turn) threadRef() string {
 	return t.p.Repository + ":" + t.owner + ":" + strconv.FormatInt(t.conv, 10)
 }
 
-// window is the context window of the alias the chat calls.
-func (t *turn) window() int { return cmp.Or(t.cfg.Window, policy.DefaultChatWindow) }
+// window is the context window of the alias the chat calls: the project's
+// chat.window pin, else the window the gateway serves for the alias. A
+// window the gateway cannot name answers 0, and the turn's check bounds
+// the rows alone.
+func (t *turn) window() int {
+	if t.cfg.Window > 0 {
+		return t.cfg.Window
+	}
+	w, err := t.c.cfg.Operator.Window(t.r.Context(), t.task, t.cfg.Model)
+	if err != nil {
+		log.Printf("console: the window of %s: %v; the turn bounds its context by its rows alone", t.cfg.Model, err)
+	}
+	return w
+}
 
 // estimate is text's tokens as a compaction counts them: four characters
 // a token.
@@ -226,7 +238,10 @@ func (t *turn) presetCompact(taskID string) {
 			projected = t.weight(th.Summary, rows)
 		}
 	}
-	if projected*10 <= t.window()*8 && len(rows) <= chatContextMax {
+	// a window of 0 (no pin, none served) leaves the rows bound alone: it
+	// must not invert into compacting every turn
+	w := t.window()
+	if (w == 0 || projected*10 <= w*8) && len(rows) <= chatContextMax {
 		return
 	}
 	if _, err := t.compact(taskID, keepTurns); err != nil {

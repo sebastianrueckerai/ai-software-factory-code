@@ -66,7 +66,6 @@ type Opencode struct {
 	Stronger, Cheap string
 	Budget          TokenBudget
 	Steps           int // the agent's step cap, policy limits.steps
-	ContextTokens   int // compaction threshold, policy limits.context_tokens; 0 = opencode's own
 	HTTP            *http.Client
 
 	mu        sync.Mutex
@@ -166,7 +165,21 @@ func (o *Opencode) Run(ctx context.Context, brief harness.TaskBrief, emit func(h
 	if p, id := splitModel(o.Cheap); o.Cheap != "" && p == provider {
 		subagent = p + "/" + id
 	}
-	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, o.ContextTokens, subagent, more...)
+	// every declared model's served window, asked of the gateway before
+	// the server starts; a window the gateway cannot name leaves that
+	// model on the trust cap and opencode's own threshold
+	windows := map[string]int{}
+	for _, id := range append([]string{modelID}, more...) {
+		w, err := o.servedWindow(ctx, id)
+		if err != nil {
+			log.Printf("opencode: the window of %s: %v; the session runs without one", id, err)
+			continue
+		}
+		if w > 0 {
+			windows[id] = w
+		}
+	}
+	cfg, err := buildOpencodeConfig("http://"+ln.Addr().String(), provider, modelID, outputLimit, o.Steps, windows, subagent, more...)
 	if err != nil {
 		return o.finish(emit, false, err.Error())
 	}
@@ -478,6 +491,12 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 	case "session.error":
 		if pr.SessionID == m.session && len(pr.Error) > 0 && string(pr.Error) != "null" {
 			return runLine("error", "error", pr.Error, false)
+		}
+	case "session.compacted":
+		// the bus carries the session id alone: no token figures ride it
+		if pr.SessionID == m.session {
+			id, _ := json.Marshal(pr.SessionID)
+			return runLine("compacted", "session", id, false)
 		}
 	case "session.status":
 		if pr.SessionID == m.session && pr.Status.Type == "idle" {
@@ -895,6 +914,47 @@ func featureGuide(role string, m *imagegen.Manifest, tools []string) string {
 // a 60 s wait, a cancel and a read within 75 s).
 const mcpTimeoutMS = 150000
 
+// servedWindow asks the gateway for alias's served context window on the
+// session's sandbox identity: the same token the identity proxy attaches,
+// read fresh in case the credential rotated. A window of 0 means the
+// gateway prices the alias but no deployment reports one.
+func (o *Opencode) servedWindow(ctx context.Context, alias string) (int, error) {
+	token, err := readToken(o.TokenFile)
+	if err != nil {
+		return 0, err
+	}
+	cx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(cx, http.MethodGet, o.GatewayURL+"/v1/window/"+url.PathEscape(alias), nil) // #nosec G107 -- the host is the configured GatewayURL, a variable only in tests
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	client := http.Client{}
+	if o.HTTP != nil {
+		client = *o.HTTP
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close() // #nosec G104 -- the body is only drained for the error path
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return 0, err
+	}
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("window %s: status %d: %s", alias, res.StatusCode, textutil.Truncate(string(body), 300))
+	}
+	var served struct {
+		Window int `json:"window"`
+	}
+	if err := json.Unmarshal(body, &served); err != nil {
+		return 0, fmt.Errorf("window %s: %w", alias, err)
+	}
+	return served.Window, nil
+}
+
 // buildOpencodeConfig produces the pinned v1.18.32 config for the identity
 // proxy at proxyURL (provider singular, options.baseURL under the provider
 // block; the current docs' top-level baseURL shape is the v2 line and
@@ -912,10 +972,13 @@ const mcpTimeoutMS = 150000
 // subagent, when set, is the model (provider/id) the general and explore
 // agents run on: the cheap rung under a frontier session (roadmap 222,
 // item 6); more lists further model ids to declare.
-// contextTokens, when positive, is the size at which opencode compacts:
-// limit.input with compaction.reserved 0 makes it the overflow line
-// (overflow.ts at v1.18.32).
-func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps, contextTokens int, subagent string, more ...string) ([]byte, error) {
+// windows maps each declared model's served context window; a model with
+// one runs under the smaller of it and the trust cap with limit.input at
+// 75 percent of that, and the session's own model having one turns the
+// auto compaction on (overflow.ts at v1.18.32 compacts at limit.input
+// with reserved 0). A model without a window keeps the trust cap and
+// opencode's own threshold.
+func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps int, windows map[string]int, subagent string, more ...string) ([]byte, error) {
 	if steps <= 0 {
 		return nil, fmt.Errorf("opencode: step cap must be positive, is %d", steps)
 	}
@@ -931,8 +994,10 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps,
 			continue
 		}
 		limit := map[string]any{"context": policy.ModelContext, "output": outputLimit}
-		if contextTokens > 0 {
-			limit["input"] = contextTokens
+		if w := windows[id]; w > 0 {
+			trusted := min(w, policy.ModelContext)
+			limit["context"] = trusted
+			limit["input"] = trusted * 3 / 4
 		}
 		models[id] = map[string]any{
 			"name":      "Factory model",
@@ -965,7 +1030,7 @@ func buildOpencodeConfig(proxyURL, provider, modelID string, outputLimit, steps,
 			},
 		},
 	}
-	if contextTokens > 0 {
+	if windows[modelID] > 0 {
 		cfg["compaction"] = map[string]any{"auto": true, "reserved": 0}
 	}
 	return json.Marshal(cfg)
@@ -1026,6 +1091,8 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 	switch raw.Type {
 	case "step_start":
 		emit(harness.Event{Time: at, Kind: harness.EventCheckpoint})
+	case "compacted":
+		emit(harness.Event{Time: at, Kind: harness.EventCompacted})
 	case "tool_use":
 		p.toolUse(raw.Part, at, raw.Subagent, emit)
 	case "text":

@@ -37,7 +37,6 @@ limits:
   supervisor_timeout: 6m
   stronger_after: 3
   steps: 1500
-  context_tokens: 100000
 classes:
   coder:
     session: code

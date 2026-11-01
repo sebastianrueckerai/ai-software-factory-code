@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -84,6 +85,42 @@ func (t OperatorTool) MarshalJSON() ([]byte, error) {
 // The call names the chat thread it serves, which its audit row keeps.
 func (m *OperatorModel) Stream(ctx context.Context, taskID, alias, thread string, messages []OperatorMessage, tools []OperatorTool, text, think func(string)) (OperatorMessage, error) {
 	return m.stream(ctx, policy.PurposeOperator, OperatorTokens, taskID, alias, thread, messages, tools, text, think)
+}
+
+// Window is the alias's served context window from the gateway's
+// /model/info poll, asked on task taskID's account with the operator
+// purpose; an alias the gateway cannot price is an error, and the caller
+// decides how it runs without a window.
+func (m *OperatorModel) Window(ctx context.Context, taskID, alias string) (int, error) {
+	ctx, cancel := context.WithTimeout(ctx, operatorTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, m.GatewayURL+"/v1/window/"+url.PathEscape(alias), nil) // #nosec G704 -- the host is the configured GatewayURL and the alias a policy class
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+m.Token)
+	req.Header.Set(gateway.HeaderFactoryTask, taskID)
+	req.Header.Set(gateway.HeaderFactoryPurpose, policy.PurposeOperator)
+	client := m.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	res, err := client.Do(req) // #nosec G704 -- the request built above, to GatewayURL
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("window %s: status %d: %s", alias, res.StatusCode, textutil.Truncate(string(bytes.TrimSpace(body)), 300))
+	}
+	var served struct {
+		Window int `json:"window"`
+	}
+	if err := json.Unmarshal(body, &served); err != nil {
+		return 0, err
+	}
+	return served.Window, nil
 }
 
 // compactTokens bounds a compaction's summary (roadmap 239).

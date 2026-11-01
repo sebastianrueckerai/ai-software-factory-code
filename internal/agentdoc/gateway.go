@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 )
 
@@ -48,6 +49,12 @@ func (g *Gateway) Bodies() []Recorded {
 }
 
 func (g *Gateway) serve(w http.ResponseWriter, r *http.Request) {
+	// the window ask is no chat call: it is not recorded, and the served
+	// window answers it
+	if strings.HasPrefix(r.URL.Path, "/v1/window/") {
+		fmt.Fprint(w, `{"window":128000}`)
+		return
+	}
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

@@ -1381,6 +1381,56 @@ func TestRoutes(t *testing.T) {
 
 func ptr(f float64) *float64 { return &f }
 
+// The window route serves the alias's context window from the price
+// book's own /model/info poll: the chat's and the worker's compaction
+// read it. A priced alias no deployment gives a window serves 0, an
+// unknown or unpriced alias answers 404 with the price book's reason, and
+// a caller the gateway cannot identify answers 401. No task row and no
+// hold: it answers a question, no call is made.
+func TestWindowRoute(t *testing.T) {
+	s := NewServer(ServerOptions{
+		Auth:          fakeAuth{err: errors.New("not a JWT")},
+		Store:         newMemStore(),
+		Minter:        &fakeMinter{},
+		LiteLLMURL:    "http://127.0.0.1:1",
+		Prices:        fakePrices{"premium": {In: 2e-6, Out: 1e-5, MaxOutput: 128000, Window: 128000}, "big": testPrice},
+		FactorydToken: testFactorydToken,
+	})
+	h := s.Routes("test")
+	get := func(path, token string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("GET", path, nil)
+		if token != "" {
+			r.Header.Set("Authorization", "Bearer "+token)
+			r.Header.Set(HeaderFactoryTask, "t-window-x-2026-11")
+			r.Header.Set(HeaderFactoryPurpose, policy.PurposeOperator)
+		}
+		rr := httptest.NewRecorder()
+		h.ServeHTTP(rr, r)
+		return rr
+	}
+	for name, tc := range map[string]struct {
+		alias  string
+		token  string
+		status int
+		body   string
+	}{
+		"the alias's window":   {alias: "premium", token: testFactorydToken, status: 200, body: `{"window":128000}`},
+		"a window nobody sets": {alias: "big", token: testFactorydToken, status: 200, body: `{"window":0}`},
+		"an unknown alias":     {alias: "nope", token: testFactorydToken, status: 404, body: `has no model`},
+		"an unidentified call": {alias: "premium", status: 401, body: `not a JWT`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rr := get("/v1/window/"+tc.alias, tc.token)
+			if rr.Code != tc.status {
+				t.Fatalf("status %d, want %d: %s", rr.Code, tc.status, rr.Body)
+			}
+			if !strings.Contains(rr.Body.String(), tc.body) {
+				t.Fatalf("body %q, want it to contain %q", rr.Body.String(), tc.body)
+			}
+		})
+	}
+}
+
 // An agent calls only its session's alias (tasks.model_alias): on a task
 // whose session runs on small, big, which its class
 // lists, is refused 403 naming both aliases before any hold or upstream

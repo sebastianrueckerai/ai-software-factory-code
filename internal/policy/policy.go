@@ -113,16 +113,13 @@ type ChatConfig struct {
 	// Window is the context window in tokens of the alias the project
 	// agent calls: a thread compacts before a turn projected past 80
 	// percent of it (roadmap 239). The provider's own refusal of a prompt
-	// past its window is the bound that always holds. Absent:
-	// DefaultChatWindow.
+	// past its window is the bound that always holds. Absent: the window
+	// the gateway serves for the alias.
 	Window int `yaml:"window,omitempty" json:"window,omitempty"`
 }
 
 // DefaultParallelTurns is the bound of a chat block without one.
 const DefaultParallelTurns = 3
-
-// DefaultChatWindow is the window of a chat block without one.
-const DefaultChatWindow = 128000
 
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
@@ -356,10 +353,6 @@ type Limits struct {
 	// pushed at which the session supervisor is called, 1 to 99. Absent:
 	// DefaultNoPushSpend.
 	NoPushSpend int `yaml:"no_push_spend,omitempty" json:"no_push_spend"`
-	// ContextTokens is the context size at which opencode compacts a
-	// session's conversation, MinContextTokens to ModelContext. Absent:
-	// DefaultContextTokens.
-	ContextTokens int `yaml:"context_tokens,omitempty" json:"context_tokens"`
 }
 
 // DefaultSameCall is the same_call detector's threshold of a policy
@@ -385,12 +378,10 @@ func (l Limits) ReviewDiffBytes() int { return cmp.Or(l.ReviewDiffKiB, DefaultRe
 // they existed. ModelContext is the context window the factory declares
 // for its models in opencode's config.
 const (
-	DefaultWarnAt        = 80
-	DefaultPlanWarnAt    = 67
-	DefaultNoPushSpend   = 60
-	DefaultContextTokens = 100000
-	MinContextTokens     = 40000
-	ModelContext         = 200000
+	DefaultWarnAt      = 80
+	DefaultPlanWarnAt  = 67
+	DefaultNoPushSpend = 60
+	ModelContext       = 200000
 )
 
 // WarnShare, PlanWarnShare and NoPushShare are the percents as shares of 1.
@@ -407,9 +398,6 @@ func (l Limits) PlanWarnShare() float64 {
 func (l Limits) NoPushShare() float64 {
 	return float64(cmp.Or(l.NoPushSpend, DefaultNoPushSpend)) / 100
 }
-
-// ContextCap is ContextTokens, or DefaultContextTokens when unset.
-func (l Limits) ContextCap() int { return cmp.Or(l.ContextTokens, DefaultContextTokens) }
 
 // The check-in agent's limits of a policy without the keys, and of a
 // version pinned before they existed (the escalation ladder's plan D).
@@ -514,15 +502,13 @@ type limitsJSON struct {
 	PlanWarnAt int `json:"plan_warn_at,omitempty"`
 	// NoPushSpend is limits.no_push_spend, left out when 0.
 	NoPushSpend int `json:"no_push_spend,omitempty"`
-	// ContextTokens is limits.context_tokens, left out when 0.
-	ContextTokens int `json:"context_tokens,omitempty"`
 }
 
 // MarshalJSON is Limits as limitsJSON, its durations as strings, as in
 // the YAML.
 func (l Limits) MarshalJSON() ([]byte, error) {
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
-		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.ContextTokens})
+		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend})
 }
 
 // UnmarshalJSON reads limitsJSON back into Limits, its duration strings
@@ -535,7 +521,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
 		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB,
 		CheckinCalls: j.CheckinCalls, CheckinShare: j.CheckinShare, CheckinTailKiB: j.CheckinTailKiB, CheckinHandoverChars: j.CheckinHandoverChars, CheckinSessions: j.CheckinSessions,
-		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend, ContextTokens: j.ContextTokens}
+		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -599,8 +585,6 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.plan_warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.PlanWarnAt)
 	case l.NoPushSpend < 0 || l.NoPushSpend > 99:
 		return fmt.Errorf("policy: limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", l.NoPushSpend)
-	case l.ContextTokens != 0 && (l.ContextTokens < MinContextTokens || l.ContextTokens > ModelContext):
-		return fmt.Errorf("policy: limits.context_tokens must lie between %d and %d when set in policy.yaml (0 means absent, as in a version pinned before the key), is %d", MinContextTokens, ModelContext, l.ContextTokens)
 	case l.ReviewDiffKiB != 0 && (l.ReviewDiffKiB < DefaultReviewDiffKiB || l.ReviewDiffKiB > MaxReviewDiffKiB):
 		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
 	case l.CheckinCalls != 0 && (l.CheckinCalls < 1 || l.CheckinCalls > 48):

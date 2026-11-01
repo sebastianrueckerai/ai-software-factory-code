@@ -683,6 +683,35 @@ func TestParseModelInfo(t *testing.T) {
 	}
 }
 
+func TestParseModelInfoWindow(t *testing.T) {
+	body := `{"data":[
+	 {"model_name":"glm","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"max_input_tokens":1000000}},
+	 {"model_name":"glm","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"max_input_tokens":"991808"}},
+	 {"model_name":"legacy","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"max_tokens":"1048576"}},
+	 {"model_name":"sol","model_info":{"input_cost_per_token":2e-6,"output_cost_per_token":1e-5,"max_output_tokens":128000,"max_input_tokens":128000}},
+	 {"model_name":"both","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"max_input_tokens":200000,"max_tokens":1048576}},
+	 {"model_name":"one-knows","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6,"max_input_tokens":500000}},
+	 {"model_name":"one-knows","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6}},
+	 {"model_name":"none","model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":2e-6}}]}`
+	prices, _, err := parseModelInfo([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{
+		"glm":       991808, // the smallest window across the alias's deployments
+		"legacy":    1048576,
+		"sol":       128000,
+		"both":      200000, // max_input_tokens over the legacy max_tokens
+		"one-knows": 500000, // a deployment without a window does not lower it
+		"none":      0,
+	}
+	for alias, w := range want {
+		if prices[alias].Window != w {
+			t.Errorf("%s window = %d, want %d", alias, prices[alias].Window, w)
+		}
+	}
+}
+
 func TestPriceBook(t *testing.T) {
 	fetches, fail := 0, false
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1250,16 +1279,16 @@ func TestLimitsStopValues(t *testing.T) {
 		t.Fatal(err)
 	}
 	l := d.Limits
-	if l.WarnShare() != 0.80 || l.PlanWarnShare() != 0.67 || l.NoPushShare() != 0.60 || l.ContextCap() != 100000 {
-		t.Errorf("defaults = %v %v %v %d, want 0.8 0.67 0.6 100000", l.WarnShare(), l.PlanWarnShare(), l.NoPushShare(), l.ContextCap())
+	if l.WarnShare() != 0.80 || l.PlanWarnShare() != 0.67 || l.NoPushShare() != 0.60 {
+		t.Errorf("defaults = %v %v %v, want 0.8 0.67 0.6", l.WarnShare(), l.PlanWarnShare(), l.NoPushShare())
 	}
-	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, warn_at: 75, plan_warn_at: 50, no_push_spend: 40, context_tokens: 90000}", 1)))
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, warn_at: 75, plan_warn_at: 50, no_push_spend: 40}", 1)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	l = d.Limits
-	if l.WarnShare() != 0.75 || l.PlanWarnShare() != 0.50 || l.NoPushShare() != 0.40 || l.ContextCap() != 90000 {
-		t.Errorf("set = %v %v %v %d, want 0.75 0.5 0.4 90000", l.WarnShare(), l.PlanWarnShare(), l.NoPushShare(), l.ContextCap())
+	if l.WarnShare() != 0.75 || l.PlanWarnShare() != 0.50 || l.NoPushShare() != 0.40 {
+		t.Errorf("set = %v %v %v, want 0.75 0.5 0.4", l.WarnShare(), l.PlanWarnShare(), l.NoPushShare())
 	}
 	b, err := json.Marshal(l)
 	if err != nil {
@@ -1273,8 +1302,8 @@ func TestLimitsStopValues(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1,"steps":200}`), &pinned); err != nil {
 		t.Fatal(err)
 	}
-	if pinned.WarnShare() != 0.80 || pinned.ContextCap() != 100000 {
-		t.Errorf("pinned version without the keys: %v, %d, want the defaults", pinned.WarnShare(), pinned.ContextCap())
+	if pinned.WarnShare() != 0.80 {
+		t.Errorf("pinned version without the keys: %v, want the default", pinned.WarnShare())
 	}
 }
 
@@ -1287,11 +1316,9 @@ func TestLimitsStopValuesAreBounded(t *testing.T) {
 		mutate func(*Limits)
 		want   string
 	}{
-		"warn_at 100":         {func(l *Limits) { l.WarnAt = 100 }, "limits.warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100"},
-		"plan_warn_at -1":     {func(l *Limits) { l.PlanWarnAt = -1 }, "limits.plan_warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is -1"},
-		"no_push_spend 100":   {func(l *Limits) { l.NoPushSpend = 100 }, "limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100"},
-		"context_tokens 1000": {func(l *Limits) { l.ContextTokens = 1000 }, "limits.context_tokens must lie between 40000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 1000"},
-		"context past window": {func(l *Limits) { l.ContextTokens = 200001 }, "limits.context_tokens must lie between 40000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 200001"},
+		"warn_at 100":       {func(l *Limits) { l.WarnAt = 100 }, "limits.warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100"},
+		"plan_warn_at -1":   {func(l *Limits) { l.PlanWarnAt = -1 }, "limits.plan_warn_at must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is -1"},
+		"no_push_spend 100": {func(l *Limits) { l.NoPushSpend = 100 }, "limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100"},
 	} {
 		l := d.Limits
 		tc.mutate(&l)
@@ -1300,12 +1327,10 @@ func TestLimitsStopValuesAreBounded(t *testing.T) {
 		}
 	}
 	for doc, want := range map[string]string{
-		"warn_at: 0":           "properties/warn_at: minimum: 0/1 is less than 1",
-		"plan_warn_at: 0":      "properties/plan_warn_at: minimum: 0/1 is less than 1",
-		"no_push_spend: 0":     "properties/no_push_spend: minimum: 0/1 is less than 1",
-		"context_tokens: 0":    "properties/context_tokens: minimum: 0/1 is less than 40000",
-		"context_tokens: 1000": "limits.context_tokens must lie between 40000 and 200000 when set in policy.yaml (0 means absent, as in a version pinned before the key), is 1000",
-		"no_push_spend: 100":   "limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100",
+		"warn_at: 0":         "properties/warn_at: minimum: 0/1 is less than 1",
+		"plan_warn_at: 0":    "properties/plan_warn_at: minimum: 0/1 is less than 1",
+		"no_push_spend: 0":   "properties/no_push_spend: minimum: 0/1 is less than 1",
+		"no_push_spend: 100": "limits.no_push_spend must lie between 1 and 99 percent when set in policy.yaml (0 means absent, as in a version pinned before the key), is 100",
 	} {
 		_, err := Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, "+doc+"}", 1)))
 		if err == nil || !strings.Contains(err.Error(), want) {
