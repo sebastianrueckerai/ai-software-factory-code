@@ -1603,6 +1603,28 @@ var tools = []chatTool{
 			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note, in.OffMain)
 			return note, nil, err
 		}},
+	{name: "set_pool", title: "Set the pool", write: true,
+		params: map[string]any{"action": enum("set the pool or top up the standing one", poolSet, poolTopUp),
+			"eur":    map[string]any{"type": "number", "description": "the pool in EUR, or the raise on a top-up", "exclusiveMinimum": 0},
+			"reason": str("why this number, one line")},
+		required: []string{"action", "eur", "reason"},
+		about:    "Set or top up the project's discretionary pool through a pull request on its project file.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			path := policy.ProjectFile(t.p.Name)
+			_, source, present, err := t.c.infraFile(t.r.Context(), path)
+			switch {
+			case err != nil:
+				return "", nil, err
+			case !present:
+				return "", nil, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+			}
+			res, err := t.c.doSetPool(t.r.Context(), t.p.Name, poolChange{action: in.Action, eur: in.EUR, reason: in.Reason, source: source}, t.a)
+			if err != nil {
+				return "", nil, err
+			}
+			return fmt.Sprintf("The pool of %s is €%.2f now, was €%.2f: %s#%d carries the change and the policy in force holds it.",
+				t.p.Name, res.to, res.from, t.c.cfg.InfraRepo, res.pr), nil, nil
+		}},
 	{name: "read_doc", title: "Read a document",
 		params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
 			"from":  stepParam("the first line to read"),

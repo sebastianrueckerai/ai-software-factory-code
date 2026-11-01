@@ -550,6 +550,75 @@ func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 		`done {}`})
 }
 
+// set_pool, always confirmed, changes the project file's pool as the
+// approver's merged pull request and records one pool_changed row naming
+// the member; a top-up grows the standing pool, and a file without the
+// bounds the pool needs refuses without a write.
+func TestChatSetPool(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human"}}
+	infra := withInfra(t, r)
+	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 20\n"
+	infra.files = map[string]string{"factory/projects/ai-software-factory-code.yaml": head}
+	next := 25.0
+	r.c.cfg.PolicyReload = func(context.Context) error {
+		r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human",
+			Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: next}}
+		return nil
+	}
+	args := `{"action":"set","eur":25,"reason":"the findings cost money"}`
+	_, done, _ := proposeAndDo(t, r, g, "set_pool", args)
+	equal(t, "set", done, ran("set_pool", args,
+		"The pool of ai-software-factory-code is €25.00 now, was €20.00: sf/infra#12 carries the change and the policy in force holds it."))
+	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool 25.00 EUR\n") || !strings.Contains(got, "Factory-Role: chat\n") {
+		t.Errorf("the commit's message = %q", got)
+	}
+	rows := r.events.all()
+	e := rows[len(rows)-1]
+	equal(t, "the event", []any{e.Kind, e.Actor}, []any{factoryd.EventPoolChanged, "sebastian"})
+	equal(t, "the event's detail", e.Detail, map[string]any{"action": "set", "from_eur": 20.0, "confirmed_eur": 25.0, "to_eur": 25.0,
+		"reason": "the findings cost money", "pr": "sf/infra#12"})
+
+	// a top-up grows the standing pool and keeps the file's other caps
+	infra.files["factory/projects/ai-software-factory-code.yaml"] = strings.Replace(head, "discretionary_eur: 20", "discretionary_eur: 25", 1)
+	next = 30.0
+	args = `{"action":"top_up","eur":5,"reason":"a second finding"}`
+	_, done, _ = proposeAndDo(t, r, g, "set_pool", args)
+	equal(t, "top up", done, ran("set_pool", args,
+		"The pool of ai-software-factory-code is €30.00 now, was €25.00: sf/infra#12 carries the change and the policy in force holds it."))
+	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool +5.00 EUR\n") {
+		t.Errorf("the top-up's message = %q", got)
+	}
+	rows = r.events.all()
+	equal(t, "the top-up's detail", rows[len(rows)-1].Detail, map[string]any{"action": "top_up", "from_eur": 25.0, "confirmed_eur": 5.0, "to_eur": 30.0,
+		"reason": "a second finding", "pr": "sf/infra#12"})
+
+	// a file without the month cap the pool needs refuses without a write
+	infra.files["factory/projects/ai-software-factory-code.yaml"] = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  raise_max_eur: 5\n  discretionary_eur: 20\n"
+	args = `{"action":"set","eur":25,"reason":"no bounds"}`
+	_, done, _ = proposeAndDo(t, r, g, "set_pool", args, "Refused.")
+	if !strings.Contains(done[0], "Refused: projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)") {
+		t.Errorf("a file without the month cap = %v", done)
+	}
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
+		t.Fatalf("the refusals aside, %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+}
+
+// set_pool is an approver's: a writer of the project's code who approves
+// nothing has the call refused with the rule's words.
+func TestChatSetPoolNeedsAnApprover(t *testing.T) {
+	r, _, g := newChatRig(t)
+	members(r)
+	ck, s := memberLogin(t, r, "controller")
+	args := `{"action":"set","eur":25,"reason":"the findings cost money"}`
+	g.replies = [][]string{{call(1, "set_pool", args)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set a pool"}})
+	equal(t, "the refusal", events, []string{
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ai-software-factory-code may change the discretionary pool."}`,
+		`text {"text":"Refused."}`, `done {}`})
+}
+
 // A rung on new_card reaches the issue as a Rung line with its reason
 // (roadmap 222, item 5); a rung without a reason is refused.
 func TestChatNewCardRung(t *testing.T) {
