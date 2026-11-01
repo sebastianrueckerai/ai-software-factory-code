@@ -134,6 +134,10 @@ func (s *PGStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, erro
 // ErrNoCriterion refuses a decision on a criterion the plan does not hold.
 var ErrNoCriterion = errors.New("the plan holds no such criterion")
 
+// ErrCriterionMet is a criterion that stands met already, which a waiver
+// cannot replace: a stale board offers one, the store refuses it.
+var ErrCriterionMet = errors.New("the criterion is met already")
+
 // ErrNotHuman refuses an approver's met on a criterion whose verdict the
 // review owns.
 var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's to record")
@@ -153,9 +157,10 @@ func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, 
 }
 
 // DecideCriterion records an approver's decision on one criterion of plan
-// task id: waived, with their one-line reason, for any criterion; met, for
-// a human criterion, whose proof is this recording. The row lands on the
-// plan's integration card, where the review's rows stand.
+// task id: waived, with their one-line reason, for any criterion that does
+// not stand met already; met, for a human criterion, whose proof is this
+// recording. The row lands on the plan's integration card, where the
+// review's rows stand.
 func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, reason string) error {
 	if verdict != "waived" && verdict != "met" {
 		return fmt.Errorf("no such verdict %q", verdict)
@@ -187,6 +192,13 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	integration, err := integrationCard(ctx, store, id, p)
 	if err != nil {
 		return err
+	}
+	rows, err := store.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return fmt.Errorf("verdicts of %s: %w", integration.ID, err)
+	}
+	if verdict == "waived" && effectiveVerdict(rows, cid) == "met" {
+		return ErrCriterionMet
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, "approver", by,
 		[]CriterionVerdict{{Criterion: cid, Verdict: verdict, Evidence: reason, Kind: c.Kind}})

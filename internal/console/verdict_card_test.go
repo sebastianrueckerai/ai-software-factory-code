@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -172,5 +173,84 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
 		t.Errorf("a plan with a child still open offers the confirm button:\n%s", card)
+	}
+}
+
+// Fault 9: typed text on the board is draft state — every typed field it
+// renders carries the preserve treatment the find field already carries,
+// so one criterion's Waive does not erase its siblings' reasons — and the
+// card states its closing rule.
+func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
+	card := col(t, body, "Needs you")
+	if !strings.Contains(card, "Every criterion met or waived ends the request on the next sweep; no final press.") {
+		t.Errorf("the card does not state its closing rule:\n%s", card)
+	}
+	typed := regexp.MustCompile(`<input[^>]*type="text"[^>]*>|<textarea[^>]*>`).FindAllString(body, -1)
+	if len(typed) < 4 { // the find field, the deny note and the two waiver reasons
+		t.Fatalf("the board's typed fields = %v", typed)
+	}
+	for _, f := range typed {
+		if !strings.Contains(f, "hx-preserve") {
+			t.Errorf("a typed field loses its text on a swap: %s", f)
+		}
+	}
+}
+
+// The grant answers an open criterion: with every criterion met or
+// waived, the card offers no Approve, says the request closes, and a
+// posted grant decides nothing (fault 9's approved grant with no
+// criterion left open).
+func TestTheGrantNeedsAnOpenCriterion(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.tasks.mu.Lock()
+	r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"],
+		factoryd.CriterionVerdict{Criterion: "c2", Verdict: "met", Evidence: "read them", Kind: factoryd.CriterionHuman, Source: "review"},
+		factoryd.CriterionVerdict{Criterion: "c3", Verdict: "waived", Evidence: "the SLA", Kind: factoryd.CriterionInvariant, Source: "review"})
+	r.tasks.mu.Unlock()
+	var grants int
+	r.c.cfg.GrantCriteria = func(_ context.Context, id, by string, approval int64) (int, error) {
+		grants++
+		return 0, nil
+	}
+	ck, s := r.loggedIn(t)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	if strings.Contains(card, `action="/approvals/30/approve"`) {
+		t.Errorf("the grant is offered with no criterion open:\n%s", card)
+	}
+	if !strings.Contains(card, "Every criterion is met or waived; the request closes on the next sweep.") {
+		t.Errorf("the card does not say its close:\n%s", card)
+	}
+	rec := r.do(post("/approvals/30/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Cannot grant one more card: every criterion is met or waived already") {
+		t.Fatalf("a grant with nothing open = %d %q", rec.Code, rec.Body.String())
+	}
+	if a := r.approvals.get(30); a.Status != "pending" || grants != 1 {
+		t.Errorf("the empty grant decided the request: %+v, grants %d", a, grants)
+	}
+}
+
+// A waiver of a criterion that stands met refuses, naming the criterion
+// and the reload (the stale board, fault 9).
+func TestCriteriaGapWaiveOfAMetOneRefuses(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	var calls int
+	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
+		calls++
+		return factoryd.ErrCriterionMet
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/approvals/30/waive", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"},
+		"criterion": {"c1"}, "reason": {"it holds"}}), ck)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "Criterion c1 is met already; reload the board.") {
+		t.Fatalf("a waiver of a met criterion = %d %q", rec.Code, rec.Body.String())
+	}
+	if calls != 1 || r.approvals.get(30).Status != "pending" {
+		t.Errorf("the refused waiver reached the store %d times or decided the request", calls)
 	}
 }

@@ -48,11 +48,13 @@ type approvalCard struct {
 	HeadUnread bool
 	Resource   cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, the open criteria with their
-	// standing verdicts, and whether every card of the plan is delivered
-	// (done or merged), which the confirm button keys on
+	// standing verdicts, whether every card of the plan is delivered
+	// (done or merged), which the confirm button keys on, and whether a
+	// criterion is still open, which the grant answers
 	CriteriaSpec factoryd.CriteriaSpec
 	Criteria     []criterionRow
 	Delivered    bool
+	Grantable    bool
 	// a plan: its revision, the summary, the cards in filing order and the
 	// keys it takes off main
 	PlanSpec    factoryd.PlanSpec
@@ -131,7 +133,7 @@ var holdoutBlurbs = map[string]string{
 }
 
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, act actor, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
-	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver}
+	k := approvalCard{ApprovalRequest: a, CSRF: csrf, Approver: approver, Grantable: true}
 	if a.MonthlyEUR != nil {
 		k.Monthly = *a.MonthlyEUR
 	}
@@ -240,6 +242,7 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 		}
 		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c, Verdict: verdict, Evidence: evidence})
 	}
+	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })
 	return nil
 }
 

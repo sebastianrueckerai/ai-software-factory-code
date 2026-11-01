@@ -1892,13 +1892,22 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Approved the resource for its task.", nil
 	case factoryd.ApprovalCriteria:
-		if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
-			return "", err
-		}
+		// the grant runs first and reports what it answered: one more
+		// card for an open criterion, nothing when every criterion is met
+		// or waived already — a request that closes on the next sweep
+		// takes no approved grant
 		n, err := c.cfg.GrantCriteria(ctx, q.TaskID, a.approver(), q.ID)
-		if err != nil {
+		switch {
+		case errors.Is(err, factoryd.ErrNotFound):
+			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
+		case err != nil:
 			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
 			return "", refuse(http.StatusInternalServerError, "the grant could not be recorded; see the factoryd log")
+		case n == 0:
+			return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
+		}
+		if err := c.decide(ctx, a, q, "approved", "granted: one more bounded card"); err != nil {
+			return "", err
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
 		return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
@@ -2082,6 +2091,8 @@ func (c *Console) doWaive(ctx context.Context, a actor, id int64, cid, reason st
 	switch err := c.cfg.DecideCriterion(ctx, q.TaskID, cid, "waived", a.s.user, reason); {
 	case errors.Is(err, factoryd.ErrNoCriterion):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s; reload the board.", cid))
+	case errors.Is(err, factoryd.ErrCriterionMet):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is met already; reload the board.", cid))
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:

@@ -1389,3 +1389,27 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
 	}
 }
+
+// The store guards a stale board: a criterion that stands met takes no
+// waiver, whichever source met it, while an open criterion still does.
+func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := DecideCriterion(ctx, s, "t-plan", "c1", "waived", "sebastian", "it holds"); !errors.Is(err, ErrCriterionMet) {
+		t.Fatalf("a waiver of a met criterion = %v, want ErrCriterionMet", err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 1 {
+		t.Errorf("the refused waiver wrote rows: %v", rows)
+	}
+	if err := DecideCriterion(ctx, s, "t-plan", "c3", "waived", "sebastian", "the timeout is the provider's SLA"); err != nil {
+		t.Fatalf("a waiver of an open criterion = %v", err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 2 || rows[1].Verdict != "waived" || rows[1].Criterion != "c3" {
+		t.Errorf("the open criterion's waiver rows = %v", rows)
+	}
+}
