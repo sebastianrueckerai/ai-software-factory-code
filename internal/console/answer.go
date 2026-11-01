@@ -1,13 +1,18 @@
 package console
 
 import (
+	"cmp"
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -18,7 +23,9 @@ import (
 // board's buttons do, with no model turn (roadmap 239, C14's answer row):
 // the member's row with the choice and the factory's row with what came
 // of it land in the thread behind a turn in flight there (roadmap 263),
-// then 204. A card that waits no more says so: the first answer wins.
+// then 204; a choice of a bound ask row runs its bound tool call in code
+// as the member's session or settles the ask, streamed (chatAskPress). A
+// card that waits no more says so: the first answer wins.
 func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -38,14 +45,22 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i := slices.IndexFunc(rows, func(m factoryd.ChatMessage) bool {
-		return m.ID == id && m.Kind == factoryd.MessageEscalation && m.TaskID != ""
+		return m.ID == id && ((m.Kind == factoryd.MessageEscalation && m.TaskID != "") || (m.Kind == factoryd.MessageAsk && m.Proposal != ""))
 	})
-	switch {
-	case i < 0:
+	if i < 0 {
 		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))
 		return
-	case !slices.Contains(rows[i].Choices, choice):
-		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of the escalation's"))
+	}
+	if !slices.Contains(rows[i].Choices, choice) {
+		whose := "the escalation's"
+		if rows[i].Kind == factoryd.MessageAsk {
+			whose = "the ask's"
+		}
+		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of "+whose))
+		return
+	}
+	if rows[i].Kind == factoryd.MessageAsk {
+		c.chatAskPress(w, r, t, rows[i], choice)
 		return
 	}
 	a := button(r)
@@ -68,6 +83,54 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 		ids = append(ids, id)
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// chatAskPress answers chatAnswer's ask branch: a choice of the
+// thread's bound ask row, the ask tool's question. The bound choice's
+// press runs the bound tool call in code as the human's session,
+// streamed, the do- row landing as a Do it's does; any other choice
+// settles the ask, lands the human's row with the choice and feeds the
+// agent a turn, which reads the row as their answer. Taking the binding
+// settles the ask: a second press hears it is gone, another human's
+// that it is not theirs.
+func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
+	p, err := t.take("ask", m.Proposal)
+	if err != nil {
+		// the press's own words, not fail's plain 404: the plan pins the
+		// expired binding's answer on the ask row's button
+		var no *refusal
+		if errors.As(err, &no) {
+			http.Error(w, no.msg, no.status)
+			return
+		}
+		c.fail(w, r, err)
+		return
+	}
+	if err := t.inThread(p.Conversation); err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	pos, wait := c.turns.enter(t.key())
+	defer c.turns.leave(t.key())
+	t.detach()
+	t.open(w)
+	t.takeTurn(pos, wait)
+	if choice != p.Choice {
+		if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
+			return
+		}
+		release := t.c.turns.slot(t.p.Repository, t.parallelTurns())
+		defer release()
+		task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
+		if err != nil {
+			log.Printf("console: the chat task of %s: %v", t.p.Name, err)
+			t.fail("The chat's task could not be read.")
+			return
+		}
+		t.run(task.ID, "")
+		return
+	}
+	t.apply(p)
 }
 
 // resolveChoice decides card id with choice as its state asks: a pending
@@ -136,9 +199,13 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 // askMember is the ask tool: the question kept in this thread as an ask
 // row, its choices offered as presses. The row rides the answer's own
 // row (run merges it in), and the turn ends on it: the member's press or
-// their next message is the answer the next turn reads.
-func (t *turn) askMember(question string, choices []string) (string, error) {
-	question = strings.TrimSpace(question)
+// their next message is the answer the next turn reads. A question may
+// bind one choice to a tool call (tool, args, choice): that choice's
+// press runs the call in code as the member's own session, under the
+// checks the propose path runs in call, until the binding expires.
+func (t *turn) askMember(in toolInput) (string, error) {
+	question := strings.TrimSpace(in.Ask)
+	choices := slices.Clone(in.Choices)
 	for i := range choices {
 		choices[i] = strings.TrimSpace(choices[i])
 	}
@@ -149,8 +216,73 @@ func (t *turn) askMember(question string, choices []string) (string, error) {
 		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
 	}
-	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices}
-	return "Asked the human; this turn ends. A press or their next message answers it.", nil
+	token, desc, err := t.askBinding(in.Tool, in.Args, in.Choice, choices)
+	if err != nil {
+		return "", err
+	}
+	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices, Proposal: token}
+	if token == "" {
+		return "Asked the human; this turn ends. A press or their next message answers it.", nil
+	}
+	return fmt.Sprintf("Asked the human; this turn ends. Pressing “%s” runs %s; another press answers it.", in.Choice, strings.TrimSuffix(desc, ".")), nil
+}
+
+// askBinding validates and stores the ask's bound action, the tool a
+// press of choice runs with args, under the checks the propose path runs
+// in call: the tool exists and writes, the arguments normalise and
+// decode, admitTool passes for the member's roles, describe writes the
+// human-facing line. It answers the binding's token and its description;
+// both "" when the ask binds nothing.
+func (t *turn) askBinding(name string, args json.RawMessage, choice string, choices []string) (string, string, error) {
+	if name == "" && choice == "" && len(args) == 0 {
+		return "", "", nil
+	}
+	if name == "" || choice == "" {
+		return "", "", refuse(http.StatusBadRequest, "tool: the write tool the bound choice runs, with its choice")
+	}
+	if !slices.Contains(choices, choice) {
+		return "", "", refuse(http.StatusBadRequest, "choice: one of the ask's choices")
+	}
+	tool, ok := t.c.chatTool(name)
+	if !ok {
+		return "", "", refuse(http.StatusBadRequest, "tool: there is no tool "+name)
+	}
+	if !tool.write {
+		return "", "", refuse(http.StatusBadRequest, "tool: "+name+" reads; a bound tool writes")
+	}
+	var in toolInput
+	raw := cmp.Or(string(args), "{}")
+	raw = tool.normalized(raw)
+	if json.Unmarshal([]byte(raw), &in) != nil {
+		return "", "", refuse(http.StatusBadRequest, "args: no JSON object of "+name+"'s parameters")
+	}
+	asked := in
+	if err := t.byTaskID(&in); err != nil {
+		return "", "", err
+	}
+	if err := t.admitTool(name, in); err != nil {
+		return "", "", err
+	}
+	desc, err := t.describe(tool, &in)
+	if err != nil {
+		return "", "", err
+	}
+	if !reflect.DeepEqual(in, asked) {
+		if b, err := json.Marshal(in); err == nil {
+			raw = string(b)
+		}
+	}
+	token := t.store(factoryd.ChatProposal{Token: randomToken(), Kind: "ask", Choice: choice, Repository: t.p.Repository, Login: t.owner,
+		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv})
+	if token == "" {
+		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored; nothing runs.")
+	}
+	// the park covers the tool at once: a later call of this same answer
+	// meets the refusal, not only the next turn's
+	if t.parked != nil {
+		t.parked[name] = true
+	}
+	return token, desc, nil
 }
 
 // escalate is the escalate tool: the question and its five parts (the

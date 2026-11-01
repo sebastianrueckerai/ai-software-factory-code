@@ -446,6 +446,113 @@ Promise.resolve().then(drain).then(function () {
 	}
 }
 
+// A paste grows the composer's input with its content; sending or
+// clearing it takes the height back to the base the rows give, so the
+// expanded state never outlives the message that caused it. Run under
+// node, which the test needs.
+func TestChatPanelComposerHeight(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = {};
+function el(id) {
+  return {id: id, textContent: "", innerHTML: "", hidden: false, className: "", value: "",
+    dataset: {login: "sebastian", project: "p"}, style: {},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    _handlers: {},
+    addEventListener: function (kind, fn) { this._handlers[kind] = (this._handlers[kind] || []).concat(fn); },
+    setAttribute: function () {}, removeAttribute: function () {}, focus: function () {}, click: function () {},
+    appendChild: function () {}, insertBefore: function () {}, before: function () {},
+    firstChild: null,
+    querySelector: function () { return null; }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0, height: 0}; },
+    clientWidth: 0, clientHeight: 60, scrollHeight: 60, scrollTop: 0,
+    contains: function () { return false; }, disabled: false};
+}
+var input = el("chat-input"), form = el("chat-form"), log = el("chat-log");
+form.elements = {csrf: {value: "t"}};
+form.querySelectorAll = function () { return []; };
+var byID = {chat: el("chat"), "chat-log": log, "chat-form": form, "chat-input": input,
+  "chat-new": el("chat-new"), "thread-rows": el("thread-rows"), "thread-head": el("thread-head"),
+  "chat-answer": el("chat-answer"), "chat-commands": {textContent: "[]"},
+  "chat-palette": el("chat-palette"), "chat-images": el("chat-images"), "chat-docs": el("chat-docs"),
+  "chat-full": el("chat-full"), screen: null, "chat-divider": null, "thread-dialog": null,
+  "img-zoom": null};
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) {
+    if (tag === "template") { var c = el(); c.firstElementChild = el(); return {content: c}; }
+    return el();
+  },
+  getElementById: function (id) { return byID[id] || null; },
+  addEventListener: function (kind, fn) { (listeners[kind] = listeners[kind] || []).push(fn); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el()};
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function () { return new Promise(function () {}); },
+  setInterval: function () { return 0; }, setTimeout: function () { return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  FormData: function () { this.append = function () {}; },
+  TextDecoder: function () { this.decode = function () { return ""; }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+sandbox.window.innerHeight = 800;
+sandbox.window.matchMedia = function () { return {matches: false}; };
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var grow = function () {
+  input.value = "line\n".repeat(40) + "send me";
+  input.scrollHeight = 920;
+  (input._handlers.input || []).forEach(function (fn) { fn({}); });
+};
+var out = {};
+grow();
+out.pasteGrew = input.style.height;
+(form._handlers.submit || []).forEach(function (fn) { fn({preventDefault: function () {}}); });
+out.sendEmptied = input.value === "";
+out.sendBaseHeight = input.style.height === "";
+grow();
+(form._handlers.click || []).forEach(function (fn) {
+  fn({target: {closest: function (sel) { return sel === "[data-cmd]" ? {dataset: {cmd: "new"}} : null; }}});
+});
+out.commandEmptied = input.value === "";
+out.commandBaseHeight = input.style.height === "";
+console.log(JSON.stringify(out));`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got struct {
+		PasteGrew         string
+		SendEmptied       bool
+		SendBaseHeight    bool
+		CommandEmptied    bool
+		CommandBaseHeight bool
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	if got.PasteGrew == "" {
+		t.Error("a large paste does not grow the input")
+	}
+	if !got.SendEmptied {
+		t.Error("send does not empty the input")
+	}
+	if !got.SendBaseHeight {
+		t.Errorf("an input emptied by send keeps the grown height %s", got.PasteGrew)
+	}
+	if !got.CommandEmptied {
+		t.Error("a command does not empty the input")
+	}
+	if !got.CommandBaseHeight {
+		t.Errorf("an input emptied by a command keeps the grown height %s", got.PasteGrew)
+	}
+}
+
 // A thumbnail's click opens its image full size over the page instead
 // of leaving the screen for the serving route — which answers as a
 // download — and a click on the dimmed page, the image or Escape closes

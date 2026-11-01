@@ -456,7 +456,9 @@ const (
 )
 
 // fileText is the file tool's answer: the file at a ref of the project's
-// repository, read raw as the member.
+// repository, read raw as the member, its first 64 KiB with the line to
+// read on from, or its lines from..to as one numbered window under the
+// same cap.
 func (t *turn) fileText(in toolInput) (string, error) {
 	if in.Ref == "" || in.Path == "" {
 		return "", refuse(http.StatusBadRequest, "The file read needs a ref and a path.")
@@ -485,8 +487,34 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	if bytes.IndexByte(raw[:min(len(raw), binarySniff)], 0) >= 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%s bytes).", p, in.Ref, answered(raw, len(raw))))
 	}
+	if in.From != 0 || in.To != 0 {
+		lines := strings.Split(string(raw), "\n")
+		if bytes.HasSuffix(raw, []byte("\n")) {
+			lines = lines[:len(lines)-1]
+		}
+		if len(raw) == 0 {
+			lines = nil
+		}
+		head := fmt.Sprintf("%s at %s: %s bytes, %d lines.", p, in.Ref, answered(raw, len(raw)), len(lines))
+		if in.From < 0 || in.To < 0 || in.From > len(lines) || (in.From > 0 && in.To > 0 && in.From > in.To) {
+			return head + fmt.Sprintf(" from %d and to %d name no line range of its %d lines: name from at or before to, inside lines 1 to %d.", in.From, in.To, len(lines), len(lines)), nil
+		}
+		var b strings.Builder
+		size := 0
+		for i := max(in.From, 1); i <= min(cmp.Or(in.To, len(lines)), len(lines)); i++ {
+			if l := lines[i-1]; size+len(l) > fileLimit {
+				fmt.Fprint(&b, "… a narrower range fits: raise from or lower to.\n")
+				break
+			} else {
+				size += len(l)
+				fmt.Fprintf(&b, "line %d: %s\n", i, l)
+			}
+		}
+		return head + "\n\n" + b.String(), nil
+	}
 	if len(raw) > fileLimit {
-		return string(raw[:fileLimit]) + fmt.Sprintf("\n(cut at 64 KiB of %s)", answered(raw, len(raw))), nil
+		next := bytes.Count(raw[:fileLimit], []byte{'\n'}) + 1
+		return string(raw[:fileLimit]) + fmt.Sprintf("\n(cut at 64 KiB of %s bytes; read on from line %d)", answered(raw, len(raw)), next), nil
 	}
 	return string(raw), nil
 }

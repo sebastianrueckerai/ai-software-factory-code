@@ -684,8 +684,9 @@ func TestReviewInputCompanions(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
 		t.Fatal(err)
 	}
+	raw := ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)
 	var in reviewInput
-	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
 		t.Fatal(err)
 	}
 	want := []CompanionGate{
@@ -695,8 +696,12 @@ func TestReviewInputCompanions(t *testing.T) {
 	if !slices.Equal(in.Gates.Companions, want) {
 		t.Fatalf("review companions = %+v, want %+v", in.Gates.Companions, want)
 	}
-	if system := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(system, "companion repositories") {
-		t.Fatalf("the review prompt does not name the companions: %s", system)
+	if !strings.Contains(raw, `"met":false`) || !strings.Contains(raw, `"met":true`) {
+		t.Fatalf("the companion facts hide met, the model reads it by absence: %s", raw)
+	}
+	system := ll.chats[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(system, "companion repositories") || !strings.Contains(system, "unread") {
+		t.Fatalf("the review prompt does not name the companions and their unread case: %s", system)
 	}
 }
 
@@ -1483,7 +1488,7 @@ func TestGateCompanion(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	r, store, objects := newGateRunner(t, gateTask, &gateForgejo{})
 	r.forgejo = &Forgejo{BaseURL: srv.URL, Seeded: testSeeded}
 
 	p := testPlan()
@@ -1513,6 +1518,14 @@ func TestGateCompanion(t *testing.T) {
 		t.Fatalf("reads = %q, want every companion read, head and compare alike, through the factory-config token", auth)
 	}
 
+	// the timeline records why a companion read failed, so a person
+	// investigating a hold sees the cause, not the generic line alone
+	rec := timelineStep(t, objects, "t-card", "gate_companion")
+	causes, _ := rec["reads"].([]any)
+	if len(causes) != 1 || !strings.Contains(fmt.Sprint(causes[0]), "sf/locked") || !strings.Contains(fmt.Sprint(causes[0]), "403") {
+		t.Fatalf("gate_companion reads = %v, want the locked companion's cause", causes)
+	}
+
 	direct := gateTask
 	direct.ID = "t-direct"
 	store.tasks["t-direct"] = direct
@@ -1537,7 +1550,7 @@ func (s *unreadPlanStore) PlanRevision(ctx context.Context, id string, n int) (P
 // failure holds the card on a line that names it, the way an unread
 // companion holds, instead of a silent pass with no companion gate.
 func TestGateCompanionHoldsAnUnreadPlanCard(t *testing.T) {
-	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	r, store, objects := newGateRunner(t, gateTask, &gateForgejo{})
 	card := gateTask
 	card.ID, card.Parent, card.PlanKey, card.PlanRevision, card.Source = "t-card", "t-plan", "foundation", 1, SourcePlan
 	store.tasks["t-card"] = card
@@ -1547,6 +1560,10 @@ func TestGateCompanionHoldsAnUnreadPlanCard(t *testing.T) {
 	want := []CompanionGate{{Unread: "the plan card cannot be read, so its companion pins are unknown"}}
 	if !slices.Equal(cs, want) {
 		t.Fatalf("verdicts = %+v, want the plan card's read failure to hold: %+v", cs, want)
+	}
+	rec := timelineStep(t, objects, "t-card", "gate_companion")
+	if causes, _ := rec["reads"].([]any); len(causes) != 1 || !strings.Contains(fmt.Sprint(causes[0]), "store down") {
+		t.Fatalf("gate_companion reads = %v, want the plan card's read cause", causes)
 	}
 }
 

@@ -374,6 +374,56 @@ func TestPGStoreTakeProposal(t *testing.T) {
 	}
 }
 
+// An ask binding is a proposal row of kind ask with the choice whose
+// press runs it: stored and taken as a proposal is, the choice carried
+// both ways, and the conversation's live read answers the binding with
+// its tool while it is unused and unexpired — used, expired or another
+// thread's it does not. The ask row carries the token, which the read of
+// the thread returns with the row.
+func TestPGStoreAskBinds(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	now := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	put := func(token, choice string, expires time.Time) {
+		t.Helper()
+		if err := s.PutProposal(ctx, ChatProposal{Token: token, Kind: "ask", Repository: "sf/code", Login: "anna", Tool: "approve_merge",
+			Args: json.RawMessage(`{}`), Description: "Approve the merge of #22", Choice: choice, ExpiresAt: expires, Conversation: 3}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("ask-1", "approve it", now.Add(30*time.Minute))
+	put("ask-2", "merge it", now.Add(30*time.Minute))
+	put("ask-3", "gone", now.Add(-time.Minute))
+	if id, err := s.AddChatMessage(ctx, "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessageAsk,
+		Content: "Approve the merge of #22?", Choices: []string{"approve it", "hold"}, Conversation: 3, Proposal: "ask-1"}); err != nil || id == 0 {
+		t.Fatalf("the ask row = %d, %v", id, err)
+	}
+	live, err := s.LiveAskBinds(ctx, "sf/code", "anna", 3, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 2 || live[0].Token != "ask-1" || live[0].Tool != "approve_merge" || live[0].Choice != "approve it" ||
+		live[1].Token != "ask-2" || live[1].Description != "Approve the merge of #22" {
+		t.Fatalf("LiveAskBinds = %+v", live)
+	}
+	if got, err := s.LiveAskBinds(ctx, "sf/code", "anna", 4, now); err != nil || len(got) != 0 {
+		t.Fatalf("another thread's LiveAskBinds = %+v, %v", got, err)
+	}
+	if got, err := s.LiveAskBinds(ctx, "sf/code", "bob", 3, now); err != nil || len(got) != 0 {
+		t.Fatalf("another member's thread 3 LiveAskBinds = %+v, %v", got, err)
+	}
+	rows, err := s.ChatMessages(ctx, "sf/code", "anna", 3, 10)
+	if err != nil || len(rows) != 1 || rows[0].Proposal != "ask-1" {
+		t.Fatalf("the ask row reads back = %+v, %v", rows, err)
+	}
+	p, err := s.TakeProposal(ctx, "ask", "ask-1", "sf/code", "anna", now)
+	if err != nil || p.Choice != "approve it" || p.Tool != "approve_merge" {
+		t.Fatalf("the take = %+v, %v", p, err)
+	}
+	if live, err := s.LiveAskBinds(ctx, "sf/code", "anna", 3, now); err != nil || len(live) != 1 || live[0].Token != "ask-2" {
+		t.Fatalf("LiveAskBinds after the take = %+v, %v", live, err)
+	}
+}
+
 // The purge deletes the rows expired before its time, used or not, but a
 // used proposal, which stays so the conversation reads it used; it keeps
 // the rows not yet expired.

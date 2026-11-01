@@ -56,7 +56,7 @@ const (
 // chatTTL under a fresh token, which it answers, and forgets the expired
 // ones but a used proposal; "" when the store fails.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
-	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.a.s.user,
+	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
 		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv})
 }
 
@@ -122,6 +122,10 @@ type turn struct {
 	// ask is the ask row the tool's run left for the answer's own row,
 	// which the turn ends on; nil until an ask runs.
 	ask *factoryd.ChatMessage
+	// parked are the tools this thread's open ask bindings name: their
+	// call refuses while the binding stands, for the member's press runs
+	// the bound tool, not the model's reading of a typed reply.
+	parked map[string]bool
 	// carriedQuestion is the thread's open question when this turn's
 	// prompt carries it — a reply passed it without answering — and
 	// carried marks that the prompt carries it (card #1345).
@@ -442,6 +446,14 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 			threads[id], whose[id] = th.Conversation, th.Login
 		}
 	}
+	live := map[string]bool{}
+	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
+		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Repository, err)
+	} else {
+		for _, b := range binds {
+			live[b.Token] = true
+		}
+	}
 	for i, m := range msgs {
 		if fundRow(m) {
 			msgs[i].Settled, msgs[i].Reason = fundSettle(m, stop)
@@ -450,8 +462,12 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		if m.Kind == factoryd.MessageAsk {
 			// an ask stands open while it is the thread's newest row: any
 			// row after it, the member's press or reply or another turn's,
-			// answers it
+			// answers it. A bound ask stands while its binding lives: the
+			// press that takes it or its expiry answers it, no row between.
 			msgs[i].Settled = i < len(msgs)-1
+			if live[m.Proposal] {
+				msgs[i].Settled = false
+			}
 			continue
 		}
 		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {
@@ -811,6 +827,14 @@ func (t *turn) run(id, notice string) {
 		t.send("text", map[string]string{"text": notice + "\n\n"})
 	}
 	defs := t.offered()
+	t.parked = map[string]bool{}
+	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
+		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Name, err)
+	} else {
+		for _, b := range binds {
+			t.parked[b.Tool] = true
+		}
+	}
 	forced := 0
 	for {
 		out := &unstamper{send: func(s string) { t.send("text", map[string]string{"text": s}) }}
@@ -869,7 +893,7 @@ func (t *turn) run(id, notice string) {
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if t.ask != nil {
-			row.Kind, row.Content, row.Choices = t.ask.Kind, t.ask.Content, t.ask.Choices
+			row.Kind, row.Content, row.Choices, row.Proposal = t.ask.Kind, t.ask.Content, t.ask.Choices, t.ask.Proposal
 			t.ask = nil
 		}
 		if _, ok := t.save(row); !ok {
@@ -945,6 +969,8 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	switch {
 	case !ok:
 		result = "There is no tool " + call.Name + "."
+	case t.parked[call.Name]:
+		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, their press or their message answers it."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	default:

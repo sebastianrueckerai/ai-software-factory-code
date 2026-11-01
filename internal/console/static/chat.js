@@ -106,8 +106,11 @@ var chatView = (function () {
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
     if (m.choices && m.choices.length && !esc1 && !m.settled) {
+      // a bound ask's press goes through /answer (its bound choice runs a
+      // tool in code), an unbound one as the member's own message
+      var k = m.kind === "ask" && m.proposal ? "data-answer" : "data-choice";
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
-        return "<button type=\"button\" data-choice=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
+        return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
     if (fund) body += fundHTML(fund);
     var fold = "";
@@ -408,8 +411,9 @@ var chatView = (function () {
     return m && m.choices && m.choices.length ? m : null;
   }
   function answerHTML(m) {
-    // an ask answers as the member's own message, an escalation through /answer
-    var k = m.kind === "ask" ? "data-choice" : "data-answer";
+    // an unbound ask answers as the member's own message, an escalation
+    // or a bound ask through /answer
+    var k = m.kind === "ask" && !m.proposal ? "data-choice" : "data-answer";
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
       return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>";
     }).join("") + "<span class=\"answer-or\">or in your words below</span>";
@@ -838,10 +842,16 @@ var chatView = (function () {
     return fetch(base + "/seen", {method: "POST", body: new URLSearchParams({conversation: n, owner: owner || ""}).toString(),
       headers: {"Content-Type": "application/x-www-form-urlencoded", "X-CSRF-Token": form.elements.csrf.value}}).catch(function () {});
   }
+  // clearInput empties the box and takes its height back to its base: a
+  // paste's growth must not outlive the message or the clear that ends it
+  function clearInput() {
+    input.value = "";
+    input.style.height = "";
+  }
   function send() {
     var text = input.value.trim();
     if (!text || readOnly) return;
-    input.value = "";
+    clearInput();
     var images = pendingImages, docs = pendingDocs;
     pendingImages = [];
     pendingDocs = [];
@@ -907,6 +917,17 @@ var chatView = (function () {
   }
   function expired(el) {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
+  }
+  // pressAsk is a bound ask's press: it answers through /answer as a
+  // stream, the bound choice running the bound tool call in code and
+  // another settling the ask and running the agent's turn, drawn where
+  // the choices were; a binding gone since the read says so
+  function pressAsk(id, choice, after) {
+    var out = document.createElement("div");
+    after.after(out);
+    run(open, openOwner, base + "/answer", new URLSearchParams({
+      conversation: open, owner: openOwner, message: id, choice: choice
+    }).toString(), out, expired(out));
   }
 
   // the level control under Send (C14, C32): its menu of the four states;
@@ -1098,7 +1119,7 @@ var chatView = (function () {
     input.setAttribute("aria-activedescendant", "cmd-" + pal.list[pal.sel].name);
   }
   function command(name) {
-    input.value = "";
+    clearInput();
     drawPalette();
     if (name === "new") {
       fresh.click();
@@ -1164,6 +1185,10 @@ var chatView = (function () {
     var card = b.closest(".proposal");
     if (b.hasAttribute("data-choice")) {
       turn(b.dataset.choice);
+    } else if (b.hasAttribute("data-answer")) {
+      var picked = b.closest(".choices");
+      pressAsk(b.closest(".msg").dataset.message, b.dataset.answer, picked);
+      picked.remove();
     } else if (b.hasAttribute("data-skip")) {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
@@ -1401,6 +1426,14 @@ var chatView = (function () {
     }
     var b = e.target.closest("[data-answer]");
     if (!b || !pending || sending) return;
+    if (pending.kind === "ask") {
+      var ask = pending, pick = b.dataset.answer, row = log.querySelector(".msg[data-message=\"" + ask.id + "\"] .choices");
+      if (row) row.remove();
+      pending = null;
+      drawAnswer();
+      pressAsk(ask.id, pick, log.lastElementChild || answerRow);
+      return;
+    }
     var n = open, m = pending, choice = b.dataset.answer;
     sending = true;
     answerRow.querySelectorAll("button").forEach(function (x) { x.disabled = true; });
