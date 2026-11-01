@@ -312,7 +312,12 @@ decimals: a task's model calls cost fractions of a cent.
   cap, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
-  one, and a refusal names the fitting action.
+  one, and a refusal names the fitting action. `set_pool` sets the
+  project's discretionary pool or tops up the standing one (a
+  `discretionary_eur` of a budget block whose `month_eur` and
+  `raise_max_eur` above 0 already stand, written through a pull request
+  on its project file), and the OK is asked for it at every autonomy
+  level.
 
 ## Projects (task 65)
 
