@@ -298,51 +298,9 @@ type upload struct {
 }
 
 func (c *Console) api(ctx context.Context, token, method, path string, payload any, want int, out any) error {
-	var body io.Reader
-	contentType := "application/json"
-	switch p := payload.(type) {
-	case nil:
-	case upload:
-		var form bytes.Buffer
-		mw := multipart.NewWriter(&form)
-		part, err := mw.CreateFormFile("attachment", p.name)
-		if err != nil {
-			return err
-		}
-		if _, err := part.Write(p.data); err != nil {
-			return err
-		}
-		if err := mw.Close(); err != nil {
-			return err
-		}
-		body, contentType = &form, mw.FormDataContentType()
-	default:
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.cfg.ForgejoURL, "/")+path, body)
+	b, err := c.call(ctx, token, method, path, payload, want, answerMax)
 	if err != nil {
 		return err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	if payload != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
-	res, err := c.cfg.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
-	}
-	defer res.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(res.Body, answerMax))
-	if err != nil {
-		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
-	}
-	if res.StatusCode != want {
-		return &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
 	}
 	if raw, ok := out.(*[]byte); ok {
 		*raw = b
@@ -354,4 +312,57 @@ func (c *Console) api(ctx context.Context, token, method, path string, payload a
 		}
 	}
 	return nil
+}
+
+// call is api's request and answer: it sends the call as the token's
+// member and reads at most limit bytes of the answer, an apiError for a
+// status other than want.
+func (c *Console) call(ctx context.Context, token, method, path string, payload any, want int, limit int64) ([]byte, error) {
+	var body io.Reader
+	contentType := "application/json"
+	switch p := payload.(type) {
+	case nil:
+	case upload:
+		var form bytes.Buffer
+		mw := multipart.NewWriter(&form)
+		part, err := mw.CreateFormFile("attachment", p.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := part.Write(p.data); err != nil {
+			return nil, err
+		}
+		if err := mw.Close(); err != nil {
+			return nil, err
+		}
+		body, contentType = &form, mw.FormDataContentType()
+	default:
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.cfg.ForgejoURL, "/")+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", contentType)
+	}
+	res, err := c.cfg.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(res.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
+	}
+	if res.StatusCode != want {
+		return nil, &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
+	}
+	return b, nil
 }

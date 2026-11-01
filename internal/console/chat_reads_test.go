@@ -1,6 +1,9 @@
 package console
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -383,6 +386,138 @@ func TestChatAskDigestsTheOtherReads(t *testing.T) {
 	if content := g.digests[2]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(content, "what is the store?\n\n# The cache plan") {
 		t.Fatalf("the read_doc digest's ask and text = %q", content)
 	}
+}
+
+// treeJSON is main's recursive tree: two files, a directory entry and a
+// file under docs.
+const treeJSON = `{"truncated":false,"tree":[
+{"path":"cmd","type":"tree"},
+{"path":"cmd/app.go","type":"blob","size":312},
+{"path":"docs/a.md","type":"blob","size":20},
+{"path":"README.md","type":"blob","size":1200}]}`
+
+// tgz is the tarball the archive endpoint answers: name and body a file.
+func tgz(t *testing.T, files ...[2]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, f := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: f[0], Mode: 0o644, Size: int64(len(f[1]))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(f[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// The tree read lists the repository's files at a ref, one line a file,
+// directories without lines of their own; a path prefix narrows it; the
+// cut at 500 lines names the whole count, Forgejo's own truncation with
+// it; and the refusals name a missing ref, an empty one and a path that
+// leaves the repository.
+func TestChatTreeRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.fg.trees = map[string]string{"main": treeJSON}
+	equal(t, "the tree reads", reads(t, r, g,
+		"tree", `{"ref":"main"}`,
+		"tree", `{"ref":"main","path":"docs"}`,
+	), []string{
+		"cmd/app.go 312\ndocs/a.md 20\nREADME.md 1200\n",
+		"docs/a.md 20\n",
+	})
+	// a wide, Forgejo-truncated tree: 502 files, the first 500 shown
+	wide := `{"truncated":true,"tree":[` + strings.TrimSuffix(strings.Repeat(`{"path":"g/x.go","type":"blob","size":1},`, 502), ",") + `]}`
+	r.fg.trees["wide"] = wide
+	if got := reads(t, r, g, "tree", `{"ref":"wide"}`)[0]; !strings.HasPrefix(got, "g/x.go 1\n") ||
+		!strings.HasSuffix(got, "(cut at 500 of 502 files; Forgejo's tree answer is itself truncated)\n") {
+		t.Fatalf("the cut tree = %q", got)
+	}
+	r.fg.trees["bare"] = `{"truncated":false,"tree":[{"path":"cmd","type":"tree"}]}`
+	equal(t, "the empty subtree", reads(t, r, g, "tree", `{"ref":"bare","path":"cmd"}`),
+		[]string{"There are no files under cmd at bare."})
+	var treeRefusals []string
+	var treeStatuses []int
+	for _, in := range []toolInput{{}, {Ref: "nope"}, {Ref: "main", Path: "../x"}} {
+		code, sentence := refused(t, r, "tree", in)
+		treeStatuses = append(treeStatuses, code)
+		treeRefusals = append(treeRefusals, sentence)
+	}
+	equal(t, "the tree refusal statuses", treeStatuses, []int{400, 404, 400})
+	equal(t, "the tree refusals", treeRefusals, []string{
+		"The tree read needs a ref.",
+		"There is no tree at nope.",
+		"The path ../x leaves the repository.",
+	})
+}
+
+// The grep read walks the ref's tarball in memory: one line a match,
+// binaries skipped by the NUL sniff, a file's first 64 KiB read, a line
+// cut at 200 characters, the walk stopped at 50 matches with the count
+// line naming every bound; and the refusals name a missing pattern or
+// ref, one that does not compile, a ref with no archive and an archive
+// over the read limit.
+func TestChatGrepRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	long := strings.Repeat("x", 150) + "cache" + strings.Repeat("y", 200)
+	r.fg.archives = map[string][]byte{"main": tgz(t,
+		[2]string{"a.go", "the cache leaks\nplain\ncache hits\n"},
+		[2]string{"b.bin", "\x00cache\n"},
+		[2]string{"docs/d.md", "cache in docs\n"},
+		[2]string{"long.txt", long + "\n"},
+		[2]string{"late.txt", strings.Repeat("n\n", 32<<10) + "cache\n"},
+	)}
+	equal(t, "the greps", reads(t, r, g,
+		"grep", `{"pattern":"cache","ref":"main"}`,
+		"grep", `{"pattern":"c.che in","ref":"main","path":"docs"}`,
+	), []string{
+		"a.go:1:the cache leaks\na.go:3:cache hits\ndocs/d.md:1:cache in docs\nlong.txt:1:" + long[:200] +
+			"\n(scanned 5 of 5 files, 4 matches)\n",
+		"docs/d.md:1:cache in docs\n(scanned 1 of 1 file, 1 match)\n",
+	})
+	// 51 matches: the 50 shown, the count line naming the cut
+	r.fg.archives["many"] = tgz(t, [2]string{"hits.txt", strings.Repeat("cache\n", 51)})
+	equal(t, "the match cut", reads(t, r, g, "grep", `{"pattern":"cache","ref":"many"}`),
+		[]string{repeatLines("hits.txt", "cache", 50) + "(scanned 1 of 1 file, 50 matches, cut)\n"})
+	r.fg.archives["big"] = bytes.Repeat([]byte{0}, 100<<20+1)
+	var grepRefusals []string
+	var grepStatuses []int
+	for _, in := range []toolInput{
+		{Ref: "main"},
+		{Pattern: "(", Ref: "main"},
+		{Pattern: "cache", Ref: "nope"},
+		{Pattern: "cache", Ref: "main", Path: "../x"},
+		{Pattern: "cache", Ref: "big"},
+	} {
+		code, sentence := refused(t, r, "grep", in)
+		grepStatuses = append(grepStatuses, code)
+		grepRefusals = append(grepRefusals, sentence)
+	}
+	equal(t, "the grep refusal statuses", grepStatuses, []int{400, 400, 404, 400, 413})
+	equal(t, "the grep refusals", grepRefusals, []string{
+		"The grep read needs a pattern and a ref.",
+		"The grep pattern \"(\" does not compile: error parsing regexp: missing closing ): `(`.",
+		"There is no archive at nope.",
+		"The path ../x leaves the repository.",
+		"The archive of big is over the grep read's limit of 100.0 MiB.",
+	})
+}
+
+// repeatLines is count match lines path:1..count of text.
+func repeatLines(path, text string, count int) string {
+	var b strings.Builder
+	for i := range count {
+		fmt.Fprintf(&b, "%s:%d:%s\n", path, i+1, text)
+	}
+	return b.String()
 }
 
 func TestChatFileRead(t *testing.T) {

@@ -138,6 +138,8 @@ type toolInput struct {
 	Card         string `json:"card,omitempty"`
 	Tab          string `json:"tab,omitempty"`
 	Theme        string `json:"theme,omitempty"`
+	// Pattern is the grep read's regular expression.
+	Pattern string `json:"pattern,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
@@ -1263,6 +1265,17 @@ var tools = []chatTool{
 		required: []string{"ref", "path"},
 		about:    "A file of the project's repository at a ref, its lines from and to, else its first 64 KiB.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
+	{name: "tree", title: "Read the tree",
+		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("a path prefix (default the whole tree)")},
+		required: []string{"ref"},
+		about:    "Every file of the repository at a ref, cut at 500 lines.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.treeText(in); return s, nil, err }},
+	{name: "grep", title: "Search the files",
+		params: map[string]any{"pattern": str("the text to find, a regular expression"), "ref": str("a branch, tag or commit"),
+			"path": str("a path prefix (default the whole tree)")},
+		required: []string{"pattern", "ref"},
+		about:    "Files at a ref whose lines match a pattern, at most 50.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.grepText(in); return s, nil, err }},
 	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
 		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
@@ -2008,6 +2021,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
   file, diff, read_doc and session_step answer an ask with one small digest of the read; read the raw slice where its answer points.
+  for a file you cannot name, tree first and grep for its words.
 `
 
 func (t *turn) systemText() (string, error) {

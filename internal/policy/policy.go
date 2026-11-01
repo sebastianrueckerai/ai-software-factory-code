@@ -124,7 +124,7 @@ const DefaultParallelTurns = 3
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
-	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci",
+	"plan", "pr", "file", "tree", "grep", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",

@@ -1,14 +1,18 @@
 package console
 
 import (
+	"archive/tar"
 	"bytes"
 	"cmp"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -565,6 +569,194 @@ func (t *turn) docText(in toolInput) (string, error) {
 		}
 	}
 	return t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
+}
+
+// subPrefix cleans a sub-tree prefix, the tree and grep reads' path
+// argument: "" is the whole tree, a path that leaves the repository a
+// refusal.
+func subPrefix(in toolInput) (string, error) {
+	if in.Path == "" {
+		return "", nil
+	}
+	p := path.Clean(strings.TrimLeft(in.Path, "/"))
+	switch {
+	case p == ".":
+		return "", nil
+	case p == ".." || strings.HasPrefix(p, "../"):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The path %s leaves the repository.", in.Path))
+	}
+	return p, nil
+}
+
+// treeCut bounds the tree read's lines: the first treeCut files, the
+// count line naming the rest.
+const treeCut = 500
+
+// treeText is the tree tool's answer: the project repository's whole
+// tree at a ref, one line a file with its size, the first treeCut of
+// them, the count line naming the rest and Forgejo's own truncation.
+func (t *turn) treeText(in toolInput) (string, error) {
+	if in.Ref == "" {
+		return "", refuse(http.StatusBadRequest, "The tree read needs a ref.")
+	}
+	prefix, err := subPrefix(in)
+	if err != nil {
+		return "", err
+	}
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return "", err
+	}
+	var tree struct {
+		Truncated bool `json:"truncated"`
+		Tree      []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+			Size int64  `json:"size"`
+		} `json:"tree"`
+	}
+	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?recursive=true",
+		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(in.Ref)), nil, http.StatusOK, &tree)
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no tree at %s.", in.Ref))
+	}
+	if err != nil {
+		return "", &forgejoRefusal{"read the tree", err}
+	}
+	var b strings.Builder
+	files := 0
+	for _, e := range tree.Tree {
+		if e.Type != "blob" || (prefix != "" && !strings.HasPrefix(e.Path, prefix)) {
+			continue
+		}
+		files++
+		if files <= treeCut {
+			fmt.Fprintf(&b, "%s %d\n", e.Path, e.Size)
+		}
+	}
+	if files == 0 {
+		if prefix == "" {
+			return fmt.Sprintf("%s holds no files.", in.Ref), nil
+		}
+		return fmt.Sprintf("There are no files under %s at %s.", prefix, in.Ref), nil
+	}
+	switch {
+	case files > treeCut && tree.Truncated:
+		fmt.Fprintf(&b, "(cut at %d of %d %s; Forgejo's tree answer is itself truncated)\n", treeCut, files, plural(files, "file"))
+	case files > treeCut:
+		fmt.Fprintf(&b, "(cut at %d of %d %s)\n", treeCut, files, plural(files, "file"))
+	case tree.Truncated:
+		b.WriteString("(Forgejo's tree answer is itself truncated)\n")
+	}
+	return b.String(), nil
+}
+
+// The grep read's bounds: the tarball it reads is at most archiveLimit
+// bytes, the walk opens at most grepFiles files and of each its first
+// fileLimit bytes, stops at grepMatches and shows a line's first
+// grepLine characters.
+const (
+	archiveLimit = 100 << 20
+	grepFiles    = 2000
+	grepMatches  = 50
+	grepLine     = 200
+)
+
+// grepText is the grep tool's answer: the files of the project's
+// repository at a ref whose lines match a pattern, read from the ref's
+// one tarball in memory, one line a match and a count line naming every
+// bound of the walk.
+func (t *turn) grepText(in toolInput) (string, error) {
+	if in.Pattern == "" || in.Ref == "" {
+		return "", refuse(http.StatusBadRequest, "The grep read needs a pattern and a ref.")
+	}
+	re, err := regexp.Compile(in.Pattern)
+	if err != nil {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The grep pattern %q does not compile: %v.", in.Pattern, err))
+	}
+	prefix, err := subPrefix(in)
+	if err != nil {
+		return "", err
+	}
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return "", err
+	}
+	tok, err := t.c.accessToken(t.r.Context(), t.a.s)
+	if err != nil {
+		if errors.Is(err, errLoggedOut) {
+			t.c.end(t.a.s)
+		}
+		return "", err
+	}
+	raw, err := t.c.call(t.r.Context(), tok, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/archive/%s.tar.gz",
+		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(in.Ref)), nil, http.StatusOK, archiveLimit+1)
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no archive at %s.", in.Ref))
+	}
+	if err != nil {
+		return "", &forgejoRefusal{"read the archive", err}
+	}
+	if int64(len(raw)) > archiveLimit {
+		return "", refuse(http.StatusRequestEntityTooLarge, fmt.Sprintf("The archive of %s is over the grep read's limit of %s.", in.Ref, imageSize(archiveLimit)))
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return "", &forgejoRefusal{"read the archive", err}
+	}
+	tr := tar.NewReader(gz)
+	var b strings.Builder
+	files, opened, matches := 0, 0, 0
+	for {
+		hd, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", &forgejoRefusal{"read the archive", err}
+		}
+		if hd.Typeflag != tar.TypeReg {
+			continue
+		}
+		name := strings.TrimPrefix(hd.Name, "./")
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		files++
+		if opened >= grepFiles || matches >= grepMatches {
+			continue
+		}
+		head := make([]byte, fileLimit)
+		n, _ := io.ReadFull(tr, head)
+		head, opened = head[:n], opened+1
+		if bytes.IndexByte(head[:min(n, binarySniff)], 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(string(head), "\n")
+		if bytes.HasSuffix(head, []byte{'\n'}) {
+			lines = lines[:len(lines)-1]
+		}
+		for i, line := range lines {
+			if !re.MatchString(line) {
+				continue
+			}
+			matches++
+			if matches > grepMatches {
+				break
+			}
+			fmt.Fprintf(&b, "%s:%d:%s\n", name, i+1, string(cutText([]byte(line), grepLine)))
+		}
+	}
+	shown, cut := min(matches, grepMatches), ""
+	if files > opened || matches > grepMatches {
+		cut = ", cut"
+	}
+	matchWord := "matches"
+	if shown == 1 {
+		matchWord = "match"
+	}
+	fmt.Fprintf(&b, "(scanned %d of %d %s, %d %s%s)\n", opened, files, plural(files, "file"), shown, matchWord, cut)
+	return b.String(), nil
 }
 
 // answered is n, a count of bytes of raw, an answer api read: "at least

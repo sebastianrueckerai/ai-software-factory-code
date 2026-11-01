@@ -85,6 +85,10 @@ type fakeForgejo struct {
 	// makes it a card
 	scene string
 	file  func(issue map[string]any) int64
+	// trees are the git trees answers by ref, raw JSON; archives the
+	// tarball answers by ref
+	trees    map[string]string
+	archives map[string][]byte
 }
 
 // asset is an upload as Forgejo's asset endpoints read it: the query's name
@@ -190,6 +194,22 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		pages := map[string]string{"1": `[{"filename":"a.go","status":"modified","additions":40,"deletions":3},` +
 			`{"filename":"b.go","status":"modified","additions":5,"deletions":5}]`}
 		w.Write([]byte(cmp.Or(pages[r.URL.Query().Get("page")], "[]")))
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/git/trees/"):
+		// the recursive tree of a ref, raw JSON, by the ref's name
+		if body, ok := f.trees[strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/git/trees/")]; ok {
+			w.Write([]byte(body))
+		} else {
+			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
+		}
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/archive/"):
+		// the tarball of a ref, by the ref's name without .tar.gz
+		ref := strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/archive/"), ".tar.gz")
+		if body, ok := f.archives[ref]; ok {
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Write(body)
+		} else {
+			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
+		}
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/"):
 		// the files at main, by their escaped paths
 		files := map[string]string{"README.md": strings.Repeat("r", 1200), "bin/x": "\x00" + strings.Repeat("b", 99),
