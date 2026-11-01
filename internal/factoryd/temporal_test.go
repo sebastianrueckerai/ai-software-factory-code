@@ -216,6 +216,54 @@ func TestTemporalSignalStartsTheWorkflowWhenNoneRuns(t *testing.T) {
 	}
 }
 
+// A press waits on its signal, so the signal is bounded: every attempt
+// carries a ten-second deadline of its own, and an unreachable frontend is
+// retried once before the failure answers the press.
+func TestTemporalSignalIsBoundedAndRetriesOnce(t *testing.T) {
+	c := &mocks.Client{}
+	var attempts []context.Context
+	c.On("SignalWithStartWorkflow", mock.Anything, "task-t1", SignalPlanAnswered, mock.Anything, mock.Anything, "TaskWorkflow", "t1").
+		Run(func(args mock.Arguments) { attempts = append(attempts, args.Get(0).(context.Context)) }).
+		Return(nil, serviceerror.NewUnavailable("frontend down")).Twice()
+	err := (TemporalWorkflows{Client: c}).Signal(context.Background(), "t1", SignalPlanAnswered, TaskSignal{Author: "sebastian"})
+	for i, ctx := range attempts {
+		dl, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("attempt %d carries no deadline", i)
+		}
+		if remain := time.Until(dl); remain <= 0 || remain > 10*time.Second {
+			t.Fatalf("attempt %d deadline = %v out, want at most 10s", i, remain)
+		}
+	}
+	if len(attempts) != 2 {
+		t.Fatalf("attempts = %d, want one retry", len(attempts))
+	}
+	var unavailable *serviceerror.Unavailable
+	if errors.As(err, &unavailable) != true {
+		t.Fatalf("Signal = %v, want the unreachable failure after the retry", err)
+	}
+}
+
+// The retry is the point: a frontend that answers the second attempt
+// delivers the signal, so one blip costs a press ten seconds, not the
+// press.
+func TestTemporalSignalSucceedsOnTheRetry(t *testing.T) {
+	c := &mocks.Client{}
+	calls := 0
+	c.On("SignalWithStartWorkflow", mock.Anything, "task-t1", SignalPlanAnswered, mock.Anything, mock.Anything, "TaskWorkflow", "t1").
+		Run(func(args mock.Arguments) { calls++ }).
+		Return(nil, serviceerror.NewUnavailable("blip")).Once()
+	c.On("SignalWithStartWorkflow", mock.Anything, "task-t1", SignalPlanAnswered, mock.Anything, mock.Anything, "TaskWorkflow", "t1").
+		Run(func(args mock.Arguments) { calls++ }).
+		Return(nil, nil).Once()
+	if err := (TemporalWorkflows{Client: c}).Signal(context.Background(), "t1", SignalPlanAnswered, TaskSignal{Author: "sebastian"}); err != nil {
+		t.Fatalf("Signal = %v, want the retry to deliver it", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls = %d, want two", calls)
+	}
+}
+
 // A reopen starts a new run of a completed workflow, with its signal when
 // it has one; a run that runs already is no error.
 func TestTemporalReopenStartsANewRun(t *testing.T) {
