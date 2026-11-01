@@ -286,25 +286,11 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 	case EventApprovalRequested:
 		m.Kind = MessageEscalation
-		switch str("kind") {
-		case ApprovalMerge:
-			m.Content = fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class"))
-			m.Choices = []string{"Approve"}
-			if bl("red_checks") {
-				m.Content = fmt.Sprintf("%s waits for you: the checks of PR #%d are red, so it cannot merge; run them again, or close it with your words.", ref, num("pr"))
-				m.Choices = []string{ChoiceRerun}
-				if !bl("factory") {
-					m.Content = fmt.Sprintf("%s waits for you: PR #%d cannot merge, its checks are red; send it back to the agent with what to change, or close it.", ref, num("pr"))
-					m.Choices = nil
-				}
-			}
-		case ApprovalPlan:
-			m.Content = fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards"))
-		case ApprovalCriteria:
-			m.Content = fmt.Sprintf("Plan %s %q waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t))
-		default:
+		content, choices, ok := approvalPoke(e, t)
+		if !ok {
 			return m, false
 		}
+		m.Content, m.Choices = content, choices
 	case EventTaskEnded:
 		switch {
 		case t.Kind != "agent":
@@ -369,6 +355,31 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 // schedule its schedule in words.
 func routineDecider(routine string, n int, schedule string) string {
 	return fmt.Sprintf("routine %s · run %d · %s", routine, n, schedule)
+}
+
+// approvalPoke is an approval request's poke row, its content and its
+// choices, false for a kind that pokes nobody: the one the Poker writes
+// and the analysis rebuilds to find the rows it rewrites.
+func approvalPoke(e Event, t Task) (string, []string, bool) {
+	ref := cardRef(e, t)
+	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
+	num := func(k string) int64 { n, _ := e.Detail[k].(float64); return int64(n) }
+	bl := func(k string) bool { v, _ := e.Detail[k].(bool); return v }
+	switch str("kind") {
+	case ApprovalMerge:
+		if bl("red_checks") {
+			if !bl("factory") {
+				return fmt.Sprintf("%s waits for you: PR #%d cannot merge, its checks are red; send it back to the agent with what to change, or close it.", ref, num("pr")), nil, true
+			}
+			return fmt.Sprintf("%s waits for you: the checks of PR #%d are red, so it cannot merge; run them again, or close it with your words.", ref, num("pr")), []string{ChoiceRerun}, true
+		}
+		return fmt.Sprintf("%s waits for you: merge PR #%d, %s risk.", ref, num("pr"), str("class")), []string{"Approve"}, true
+	case ApprovalPlan:
+		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
+	case ApprovalCriteria:
+		return fmt.Sprintf("Plan %s %q waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
+	}
+	return "", nil, false
 }
 
 // cardRef is how a poke names e's card: its issue, else its task id.
