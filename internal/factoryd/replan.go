@@ -1071,8 +1071,10 @@ func sameEntry(a, b PlanCard) bool {
 // card's issue what it was cut into, at which session and spend, and
 // steps it. The plan's replanned step comes last, as it ends the pending
 // replan: a failure before it fails the filing, which runs again, and
-// writes the comments, the cut and each old card's step once. A round's
-// step records its round alone (recordRound).
+// writes the comments, the cut and each old card's step once. The cut's
+// own row (CutFact) and the replan's row (PlanFilingFact) land the same
+// way, their identities holding each to one row. A round's step records
+// its round alone (recordRound).
 func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision int, next Plan, step ReplanStep, issues map[string]int64) error {
 	if step.Origin == ReplanRound {
 		return r.recordRound(ctx, p, repo, revision, next, issues)
@@ -1166,6 +1168,10 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		if _, err := r.timeline.AppendOnce(ctx, cut.ID, "cut", map[string]any{"into": cutInto, "session": session, "spent": spent}); err != nil {
 			return fmt.Errorf("record cut: %w", err)
 		}
+		fact := CutFact{Plan: p.ID, Card: cut.ID, Issue: cut.IssueNumber, Group: GroupOf(cut), Revision: revision, Into: cutInto, Session: session, Spent: spent}
+		if err := r.timeline.RecordFactRow(ctx, fact.Event(p.Repository, cut.IssueNumber)); err != nil {
+			return fmt.Errorf("record the cut's row: %w", err)
+		}
 	}
 	for _, f := range fates {
 		if f.k.ID == p.ID {
@@ -1184,10 +1190,16 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	if len(next.TakeOffMain) > 0 {
 		detail["take_off_main"] = next.TakeOffMain
 	}
+	// the row before the step that ends the replan: a failure before it
+	// fails the filing, which runs again, and the row's identity holds it
+	// to one however often that happens
+	filing := PlanFilingFact{Plan: p.ID, Revision: revision, Origin: step.Origin}
+	if err := r.timeline.RecordFactRow(ctx, filing.Event(p.Repository, p.IssueNumber, detail)); err != nil {
+		return fmt.Errorf("record the replan's row: %w", err)
+	}
 	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {
 		return fmt.Errorf("record replanned: %w", err)
 	}
-	r.timeline.RecordRow(ctx, p.ID, EventPlanReplanned, FactoryDecider, ViaFactoryd, detail)
 	return nil
 }
 

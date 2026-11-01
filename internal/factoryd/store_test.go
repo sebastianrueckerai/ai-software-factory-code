@@ -918,7 +918,10 @@ func (s *fakeStore) RecordDelivery(ctx context.Context, id string) error {
 
 // Record is the Timeline's sink: rows land newest last, as the webhook's
 // doc_written rows are read back. A row whose identity another row
-// already holds drops, as Postgres's unique indexes drop it.
+// already holds drops, as Postgres's unique indexes drop it — a row with
+// an identity lands once, whichever retry writes it. recordFails fails
+// that many Record calls by event kind, to test the callers that carry
+// the error.
 func (s *fakeStore) Record(ctx context.Context, e Event) (int64, error) {
 	if n := s.recordFails[e.Kind]; n > 0 {
 		s.recordFails[e.Kind] = n - 1

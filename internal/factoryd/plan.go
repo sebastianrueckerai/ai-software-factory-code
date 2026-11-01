@@ -3053,7 +3053,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		return ChildrenResult{}, fmt.Errorf("record %s: %w", stepFiling, err)
 	}
 	author := cmp.Or(t.Author, r.forgejo.BotUser)
-	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha, old)
+	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha, revision, old)
 	if err != nil {
 		return ChildrenResult{}, err
 	}
@@ -3139,8 +3139,14 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // card was taken off main files at main's head and lands that work again
 // from its merge in main's history (againLine). A card of an earlier round
 // is merged: its row in old stands for it, and nothing is filed, recorded
-// or started for it.
-func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, old []Task) ([]Task, error) {
+// or started for it. The filing that gives a card of the round its issue
+// records its card_filed row (CardFilingFact) — the card and the round
+// this filing stamped — before the issue is stored: a retry that fails
+// anywhere in the moment runs it again and the row's identity holds it to
+// one, and a card that already holds its issue — kept by this filing, or
+// filed before the rows were — records none, so a legacy card stays
+// unknown.
+func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, revision int, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
 	_, project, _ := v.ProjectOf(t.Repository)
@@ -3242,6 +3248,14 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 					return nil, err
 				}
 				card.IssueNumber = ref.Number
+			}
+			// the card's row lands with its issue, the one moment its
+			// filing is, before the issue is stored: a retry that fails
+			// here or later leaves the issue unstored, runs the moment
+			// again and the row's identity holds it to one
+			fact := CardFilingFact{Card: card.ID, Plan: t.ID, Key: c.Key, Round: c.Round, Revision: revision}
+			if err := r.timeline.RecordFactRow(ctx, fact.Event(t.Repository, card.IssueNumber)); err != nil {
+				return nil, fmt.Errorf("card %s: record its filing row: %w", c.Key, err)
 			}
 			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
 				return nil, err
