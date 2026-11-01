@@ -1740,10 +1740,6 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	return col, true
 }
 
-// showBoard answers a board action with the board of the form's project:
-// to htmx the fragment carrying note, and problems on the approval cards
-// of the tasks they name; a browser's form a redirect to the board after a
-// success (a reload resends nothing), else the page.
 // pressNote answers a press: the note at once into the page's note
 // outlet, the board's own re-render behind the board-refresh trigger, so
 // the press never waits on the board's reads. A form post without htmx
@@ -1754,16 +1750,18 @@ func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string,
 		return
 	}
 	if r.Header.Get("HX-Request") == "" {
-		c.showBoard(w, r, http.StatusOK, note, nil)
+		c.showBoard(w, r, note)
 		return
 	}
 	w.Header().Set("HX-Trigger", "board-refresh")
 	c.render(w, "note-fragment", note)
 }
 
-func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, note string, problems map[string]string) {
+// showBoard answers a browser's form post with the board's fragment to
+// htmx, else a redirect to the board (a reload resends nothing).
+func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, note string) {
 	f := formFilter(r)
-	if r.Header.Get("HX-Request") == "" && status == http.StatusOK {
+	if r.Header.Get("HX-Request") == "" {
 		http.Redirect(w, r, "/"+f.query(), http.StatusSeeOther)
 		return
 	}
@@ -1778,30 +1776,7 @@ func (c *Console) showBoard(w http.ResponseWriter, r *http.Request, status int, 
 		return
 	}
 	d.Note = note
-	// the approval cards: the wide view's human lane, else Needs you
-	cards := make([]*approvalCard, 0, len(d.Approvals))
-	for i := range d.Approvals {
-		cards = append(cards, &d.Approvals[i])
-	}
-	for _, col := range d.Columns {
-		for _, n := range col.Needs {
-			if n.Approval != nil {
-				cards = append(cards, n.Approval)
-			}
-		}
-	}
-	for _, a := range cards {
-		if p, ok := problems[a.TaskID]; ok {
-			a.Problem = p
-		}
-	}
-	name := "page.html"
-	if r.Header.Get("HX-Request") != "" {
-		name = "board-fragment"
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	c.render(w, name, d)
+	c.render(w, "board-fragment", d)
 }
 
 // boardView is what the cards of one render share: the viewer, the

@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -124,6 +125,11 @@ func TestPanelCarriesItsRelease(t *testing.T) {
 	head = "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
 	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, "deploy-now") {
 		t.Error("a head past the release does not bring the form back")
+	}
+	errHeadRead := errors.New("the head read failed")
+	r.c.cfg.MainCommit = func(context.Context, string) (string, error) { return "", errHeadRead }
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, `<p class="problem" role="alert">main&#39;s head could not be read</p>`) || !strings.Contains(body, "deploy-now") {
+		t.Error("a head read that fails neither says the problem nor brings the form back")
 	}
 	r.c.cfg.Hold = func(_ context.Context, repository string) (factoryd.Hold, error) {
 		if repository != "sf/code" {
