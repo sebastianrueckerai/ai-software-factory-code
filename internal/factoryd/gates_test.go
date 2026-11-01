@@ -901,21 +901,21 @@ func TestModelReviewEstimateIsTheExpectedSpend(t *testing.T) {
 	}
 }
 
-// A premium call the premium month cannot hold runs on big, as the gateway
-// serves it, and the estimate prices it there. Four parts of about 47,000
-// bytes of request with 9,000 output tokens: on premium (2e-5 and 1e-4 a
-// token) 4 x (0.94 + 0.90), about 7.3 EUR, past the 1.00 EUR free; on big
-// (2e-6 and 1e-5) 4 x (0.094 + 0.09), about 0.74 EUR, which runs. With
-// 100 EUR of premium month the calls are premium's and nothing runs; with
-// none, they are big's and all four run.
-func TestModelReviewEstimatePricesOnBigPastThePremiumMonth(t *testing.T) {
+// A premium call whose worst case the premium month cannot hold is a note,
+// since the gateway refuses it: the estimate reads the hold the gateway
+// takes. Four parts of about 47,000 bytes of request with 9,000 output
+// tokens on premium (2e-5 and 1e-4 a token) cost about 7.3 EUR, past the
+// 1.00 EUR the card holds; one call's worst case is 1.84 EUR. With
+// 100 EUR of premium month the note is the card's; with none, the premium
+// cap's.
+func TestModelReviewEstimateNamesThePremiumMonthPastIt(t *testing.T) {
 	for name, tc := range map[string]struct {
 		premium float64
 		calls   int
 		note    string
 	}{
 		"premium month free":  {100, 0, "model review not run: its 4 calls would cost about 7."},
-		"premium month spent": {0, 4, ""},
+		"premium month spent": {0, 0, "model review not run: a call's worst case is 1.8"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _, ll := fundedReview(t, 1.0, 0, 0, nil)
