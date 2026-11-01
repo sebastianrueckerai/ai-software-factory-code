@@ -681,17 +681,10 @@ func (s *PGStore) Costs(ctx context.Context, from, to time.Time) (policy.Costs, 
 	return policy.LedgerCosts(ctx, s.db, from, to)
 }
 
-// DaySpend is the ledger's total of one UTC day, the board's figure
-// against the day cap (policy.LedgerDaySpend).
-func (s *PGStore) DaySpend(ctx context.Context, day time.Time) (float64, error) {
-	return policy.LedgerDaySpend(ctx, s.db, day)
-}
-
-// PremiumMonthSpend is the ledger's spend on Premium in the UTC month
-// of at, the board's figure against budget.premium_month_eur
-// (policy.LedgerPremiumMonthSpend).
-func (s *PGStore) PremiumMonthSpend(ctx context.Context, at time.Time) (float64, error) {
-	return policy.LedgerPremiumMonthSpend(ctx, s.db, at)
+// Enforced is the spend the caps count at at, the board's figures
+// against the day, month and premium caps (policy.LedgerEnforced).
+func (s *PGStore) Enforced(ctx context.Context, at time.Time) (policy.Enforced, error) {
+	return policy.LedgerEnforced(ctx, s.db, at)
 }
 
 // ModelCalls are task taskID's model calls, oldest first

@@ -878,6 +878,9 @@ type fakeLedger struct {
 	// premiumCap is the policy's budget.premium_month_eur and premium the
 	// month's spend on the premium class
 	premiumCap, premium float64
+	// enforced is the month's enforced spend the fake answers, the day's
+	// and the premium's derived as the store derives them
+	enforced policy.Enforced
 }
 
 // testProcesses are the shipped two processes: maintenance builds direct
@@ -904,21 +907,17 @@ func (l *fakeLedger) Costs(_ context.Context, from, to time.Time) (policy.Costs,
 	return l.costs, nil
 }
 
-// PremiumMonthSpend is the fake's premium spend, whatever the month.
-func (l *fakeLedger) PremiumMonthSpend(context.Context, time.Time) (float64, error) {
-	return l.premium, nil
-}
-
-// DaySpend is the fake's total of one day; it records no window, as it
-// is not the costs read the window tests watch.
-func (l *fakeLedger) DaySpend(_ context.Context, day time.Time) (float64, error) {
-	var eur float64
+// Enforced is the fake's enforced spend: the month's as set, the day's
+// summed of its costs days and the premium's its premium figure.
+func (l *fakeLedger) Enforced(_ context.Context, at time.Time) (policy.Enforced, error) {
+	e := l.enforced
+	e.Premium = l.premium
 	for _, d := range l.costs.Days {
-		if d.Day == day.Format(policy.DateLayout) {
-			eur += d.Total
+		if d.Day == at.Format(policy.DateLayout) {
+			e.Day += d.Total
 		}
 	}
-	return eur, nil
+	return e, nil
 }
 
 func (l *fakeLedger) ModelCalls(_ context.Context, taskID string) ([]policy.ModelCall, error) {

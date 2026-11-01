@@ -1217,7 +1217,8 @@ func (f boardFilter) query() string {
 // statusLine is the shown project's state above the board,
 // which the project agent reads too: its word, its cards working, those
 // waiting on the model provider, what needs the viewer, its spend this
-// UTC month (the chat's part apart) against its month cap, and its GitHub
+// UTC month against its month cap — its own spend under its file's cap,
+// the factory's enforced spend under the policy's — and its GitHub
 // export's state word.
 type statusLine struct {
 	Project string
@@ -1228,8 +1229,12 @@ type statusLine struct {
 	Working, Waiting, NeedYou int
 	Spend                     factoryd.ProjectSpend
 	CapEUR                    float64
-	// TodayEUR is the factory's spend this UTC day and DayCapEUR the
-	// policy's day cap, as /costs shows them.
+	// FactoryCap: the month cap is the policy's factory-wide one, not a
+	// project file's, so the spend it stands next to is the factory's
+	// enforced month spend, not the project's own.
+	FactoryCap bool
+	// TodayEUR is the factory's enforced spend this UTC day, holds
+	// included, and DayCapEUR the policy's day cap.
 	TodayEUR, DayCapEUR float64
 	// PremiumEUR is the factory's spend on the premium class this UTC
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
@@ -2459,24 +2464,22 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		}
 	}
 	var err error
-	if s.Spend, err = c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now()); err != nil {
+	e, err := c.cfg.Costs.Enforced(ctx, time.Now().UTC())
+	if err != nil {
+		log.Printf("console: the enforced spend: %v", err)
+		d.Problems = append(d.Problems, "the spend against the caps could not be read")
+	}
+	if s.Spend, s.CapEUR, s.FactoryCap, err = c.monthFigures(ctx, v.policy, p, e); err != nil {
 		log.Printf("console: the spend of %s this month: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the project's spend this month could not be read")
 	}
-	s.CapEUR = monthCap(v.policy, p.Repository)
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
 	}
-	if s.TodayEUR, err = c.cfg.Costs.DaySpend(ctx, time.Now().UTC()); err != nil {
-		log.Printf("console: the spend today: %v", err)
-		d.Problems = append(d.Problems, "the spend today could not be read")
-	}
+	s.TodayEUR = e.Day
 	if s.PremiumCapEUR > 0 {
-		if s.PremiumEUR, err = c.cfg.Costs.PremiumMonthSpend(ctx, time.Now().UTC()); err != nil {
-			log.Printf("console: the premium spend this month: %v", err)
-			d.Problems = append(d.Problems, "the premium spend this month could not be read")
-		}
+		s.PremiumEUR = e.Premium
 	}
 	s.Approver = v.approves(p.Repository)
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
@@ -2644,17 +2647,26 @@ func runWords(l factoryd.RoutineRun) string {
 // a digit, so the segment is a plain word.
 func cellWord(name string) string { return name[strings.LastIndex(name, "-")+1:] }
 
-// monthCap is repository's month cap: its project file's budget.month_eur,
-// else the policy's month_eur.
-func monthCap(v policy.Version, repository string) float64 {
-	if _, eur := v.ProjectCap(repository); !math.IsInf(eur, 1) {
-		return eur
+// monthFigures is the status's month spend and cap: the project file's
+// budget.month_eur against the project's own spend, else the policy's
+// month_eur against the enforced month spend e counts — the factory's
+// whole ledger with its holds — so the meter reads what the cap stops.
+// The third return says the cap is the factory's, not a project file's.
+func (c *Console) monthFigures(ctx context.Context, v policy.Version, p factoryd.Project, e policy.Enforced) (factoryd.ProjectSpend, float64, bool, error) {
+	if _, eur := v.ProjectCap(p.Repository); !math.IsInf(eur, 1) {
+		spend, err := c.cfg.Chat.ProjectMonthSpend(ctx, p.Repository, time.Now())
+		return spend, eur, false, err
 	}
-	return v.Document.Budget.MonthEUR
+	return factoryd.ProjectSpend{EUR: e.Month}, v.Document.Budget.MonthEUR, true, nil
 }
 
-// spendWords is spend against the month cap as the project agent reads it.
-func spendWords(spend factoryd.ProjectSpend, capEUR float64) string {
+// spendWords is spend against the month cap as the project agent reads
+// it: under the factory's cap the whole enforced ledger, without the
+// project's own split, which does not sum to it.
+func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) string {
+	if factory {
+		return fmt.Sprintf("spend this month €%.2f of €%.2f, the factory's whole ledger", spend.EUR, capEUR)
+	}
 	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", spend.EUR, capEUR, spend.EUR-spend.ChatEUR, spend.ChatEUR)
 }
 

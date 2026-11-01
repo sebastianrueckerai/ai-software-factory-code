@@ -1281,7 +1281,7 @@ func TestChatTextReply(t *testing.T) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00: the cards €0.00, the chat €0.00\n" +
+	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
 		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
@@ -3090,11 +3090,11 @@ func TestChatRefusesANonWriter(t *testing.T) {
 	}
 }
 
-// The reads: the project's history, a card's, the month's spend with the
-// chat's own line, and a pull request's diff read as the member.
+// The reads: the project's history, a card's, the month's enforced
+// spend, and a pull request's diff read as the member.
 func TestChatReads(t *testing.T) {
-	r, chat, g := newChatRig(t)
-	chat.spend = []spendRow{{"sf/code", time.Now(), 1.5, false}, {"sf/code", time.Now(), 0.75, true}}
+	r, _, g := newChatRig(t)
+	r.ledger.enforced = policy.Enforced{Month: 5.5}
 	ck, s := r.loggedIn(t)
 	for _, e := range []factoryd.Event{
 		{Repository: "sf/code", TaskID: "t-m", IssueNumber: 5, Kind: factoryd.EventCardRetried, Actor: "sebastian", Via: factoryd.ViaButton,
@@ -3109,7 +3109,7 @@ func TestChatReads(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what happened?"}})
 	status := `2026-10-11 09:31 #11 t-r task_status by factoryd via factoryd {\"gate\":\"\",\"status\":\"running\"}`
 	moved := `2026-10-11 09:30 #5 t-m card_retried by sebastian via button {\"replacement\":9}`
-	costs := "The project's spend this month €2.25 of €50.00: the cards €1.50, the chat €0.75."
+	costs := "The project's spend this month €5.50 of €50.00, the factory's whole ledger."
 	if len(events) != 6 {
 		t.Fatalf("stream length = %d, want 6; events: %v", len(events), events)
 	}
