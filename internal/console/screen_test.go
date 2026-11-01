@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"golang.org/x/net/html"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -1213,6 +1214,45 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 // findForm is the find's form: as you type it swaps the board around
 // itself; console.js writes its query into the URL.
 const findForm = `<form class="find" id="find" role="search" method="get" action="/" hx-get="/" hx-trigger="input changed delay:250ms" hx-target="#board" hx-select="#board" hx-swap="outerHTML" hx-preserve>`
+
+// htmx keeps a field marked hx-preserve by moving the live element into the
+// answer it is about to swap in: a marked field inside a marked form (the
+// find box inside the find's form) is carried out of the form into content
+// the swap discards, and the field vanishes from the page. No preserved
+// element may sit inside another.
+func TestNoPreservedElementSitsInsideAnother(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	doc, err := html.Parse(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var walk func(*html.Node, bool)
+	walk = func(n *html.Node, preserved bool) {
+		marked := false
+		if n.Type == html.ElementNode {
+			for _, a := range n.Attr {
+				if a.Key != "hx-preserve" {
+					continue
+				}
+				if preserved {
+					id := ""
+					for _, a := range n.Attr {
+						if a.Key == "id" {
+							id = a.Val
+						}
+					}
+					t.Errorf("<%s id=%q> sits inside another preserved element; the swap carries it out and the field vanishes", n.Data, id)
+				}
+				marked = true
+			}
+		}
+		for c := n.FirstChild; c != nil; c = c.NextSibling {
+			walk(c, preserved || marked)
+		}
+	}
+	walk(doc, false)
+}
 
 // The filter's query carries the find, trimmed, beside the project and
 // the view.
