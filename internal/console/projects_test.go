@@ -320,8 +320,10 @@ type infraFake struct {
 	// contentsStatus answers the contents calls; 0: 201
 	contentsStatus int
 	// files are main's files a GET contents reads, by path, and reads
-	// the Authorization of each read
+	// the Authorization of each read; shas, when set, answer a file's
+	// GET with its blob sha in place of blob1
 	files map[string]string
+	shas  map[string]string
 	reads []string
 }
 
@@ -379,13 +381,14 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 		numbered := strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/pulls/") && strings.Trim(number, "0123456789") == ""
 		switch {
 		case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/") && f.files != nil:
-			text, ok := f.files[strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/")]
+			key := strings.TrimPrefix(req.URL.Path, "/api/v1/repos/sf/infra/contents/")
+			text, ok := f.files[key]
 			if !ok {
 				http.NotFound(w, req)
 				return
 			}
 			f.reads = append(f.reads, req.Header.Get("Authorization"))
-			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": "blob1"})
+			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": cmp.Or(f.shas[key], "blob1")})
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
 			c := rec()
 			f.contents = append(f.contents, c)
