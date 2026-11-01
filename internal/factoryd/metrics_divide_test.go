@@ -140,15 +140,44 @@ func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	}
 }
 
-// TestDivideConquerSessionsSQL — panels 2 and 3: mean lifetime
-// actually-started sessions per merged card by size — small 2.0, medium
-// 2.0 — and the window's session ends by cause — pushed 2, wall_clock
-// 1. Duplicate session_started rows, never-started sessions and one
-// session's reattached end leave every number standing. [session_efficiency]
+// dcHeadCard inserts a card of repository with size and the head it
+// actually built on, on its own issue: the head the merge gate read and
+// the panels' historical size hangs on.
+func dcHeadCard(t *testing.T, s *PGStore, id, repository, size, head string, issue int64) {
+	t.Helper()
+	task := Task{ID: id, Status: "in-review", Objective: "the divide panels' fixture", Repository: repository,
+		Kind: "agent", Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: issue, SHA: head}
+	if size != "" {
+		task.Size = size
+	}
+	if err := s.insertTask(context.Background(), task, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dcReading records the merge-gate reading of card's head at at, the
+// size the gates judged — the historical size the sessions panel keeps,
+// whatever the task row says later.
+func dcReading(t *testing.T, s *PGStore, card, repository, head, size string, at time.Time) int64 {
+	t.Helper()
+	return dcRecord(t, s, GateHeadFact{Task: card, Head: head, Gate: GateMerge, Decision: "auto",
+		Size: size, Bound: 300, Insertions: 90, Deletions: 10}.Event(repository, 9), at)
+}
+
+// TestDivideConquerSessionsSQL — panels 2 and 3: mean lifetime distinct
+// named starts per merged card by the size its merged head's reading
+// planned — small 2.0 over the cards with two, two, one and three
+// starts, medium 2.0 over two and two — and the window's session ends
+// by cause — pushed 2, wall_clock 1. Starts from before the window and
+// the spark count, a reattachment's repeated row does not; a detached
+// session's reattached end leaves one end, an ongoing session gains
+// none, and a never-started attempt — outside the window or inside it —
+// inflates no terminal distribution. [session_efficiency]
 func TestDivideConquerSessionsSQL(t *testing.T) {
 	s := metricsStore(t)
 	from, to := metricsTestWindow()
-	dcCard(t, s, "s1", "sf/dc2", "small", "", 61) // merged Oct 1, sessions sa and sb
+	dcHeadCard(t, s, "s1", "sf/dc2", "small", "h-s1", 61) // merged Oct 1, sessions sa and sb
+	dcReading(t, s, "s1", "sf/dc2", "h-s1", "small", from.AddDate(0, 0, 3))
 	dcMerged(t, s, "s1", "sf/dc2", from.AddDate(0, 0, 3))
 	dcMerged(t, s, "s1", "sf/dc2", from.AddDate(0, 0, 10)) // a later landing of the same card: the first merge is the cohort's
 	dcStarted(t, s, "sa", "s1", "sf/dc2", 1, from.AddDate(0, 0, 1))
@@ -162,14 +191,18 @@ func TestDivideConquerSessionsSQL(t *testing.T) {
 	}
 	dcSessionEnd(t, s, "sb", string(OutcomeWallClock), "s1", "sf/dc2", 2, from.AddDate(0, 0, 4))
 
-	dcCard(t, s, "s2", "sf/dc2", "small", "", 62) // merged Oct 6, sessions sc and sd
+	dcHeadCard(t, s, "s2", "sf/dc2", "small", "h-s2", 62) // merged Oct 6, sessions sc and sd
+	dcReading(t, s, "s2", "sf/dc2", "h-s2", "small", from.AddDate(0, 0, 8))
 	dcMerged(t, s, "s2", "sf/dc2", from.AddDate(0, 0, 8))
 	dcStarted(t, s, "sc", "s2", "sf/dc2", 1, from.AddDate(0, 0, 8))
 	dcStarted(t, s, "sc", "s2", "sf/dc2", 1, from.AddDate(0, 0, 8).Add(time.Hour)) // the reattachment's row
 	dcStarted(t, s, "sd", "s2", "sf/dc2", 2, from.AddDate(0, 0, 9))
-	dcSessionEnd(t, s, "sc", string(OutcomePushed), "s2", "sf/dc2", 1, to.AddDate(0, 0, 1)) // exactly To: outside
+	// the detached session's end lands exactly at To: outside, and the
+	// session is ongoing through the window
+	dcSessionEnd(t, s, "sc", string(OutcomePushed), "s2", "sf/dc2", 1, to.AddDate(0, 0, 1))
 
-	dcCard(t, s, "s3", "sf/dc2", "medium", "", 63) // merged Oct 2, sessions se and sf
+	dcHeadCard(t, s, "s3", "sf/dc2", "medium", "h-s3", 63) // merged Oct 2, sessions se and sf
+	dcReading(t, s, "s3", "sf/dc2", "h-s3", "medium", from.AddDate(0, 0, 4))
 	dcMerged(t, s, "s3", "sf/dc2", from.AddDate(0, 0, 4))
 	dcStarted(t, s, "se", "s3", "sf/dc2", 1, from.AddDate(0, 0, 4))
 	dcStarted(t, s, "sf", "s3", "sf/dc2", 2, from.AddDate(0, 0, 5))
@@ -178,29 +211,56 @@ func TestDivideConquerSessionsSQL(t *testing.T) {
 	// no started session, and its end is no end of the window
 	dcSessionEnd(t, s, "sn", string(OutcomeNotStarted), "s3", "sf/dc2", 3, from.AddDate(0, 0, -8))
 
-	dcCard(t, s, "s4", "sf/dc2", "", "", 64) // unsized, merged Oct 4, no session ever started
+	dcHeadCard(t, s, "s4", "sf/dc2", "", "h-s4", 64) // unsized, merged Oct 4, no session ever started
+	dcReading(t, s, "s4", "sf/dc2", "h-s4", "", from.AddDate(0, 0, 6))
 	dcMerged(t, s, "s4", "sf/dc2", from.AddDate(0, 0, 6))
+	// a never-started attempt ending inside the window: a pod that never
+	// became a session inflates no terminal distribution
+	dcSessionEnd(t, s, "sx", string(OutcomeNotStarted), "s4", "sf/dc2", 1, from.AddDate(0, 0, 7))
 
-	dcCard(t, s, "s5", "sf/dc2", "large", "", 65) // merged in the window's last instant, lifetime sessions from before the spark
+	dcHeadCard(t, s, "s5", "sf/dc2", "large", "h-s5", 65) // merged in the window's last instant, lifetime sessions from before the spark
+	dcReading(t, s, "s5", "sf/dc2", "h-s5", "large", to)
 	dcMerged(t, s, "s5", "sf/dc2", to)
 	for _, sess := range []string{"sl1", "sl2", "sl3"} {
 		dcStarted(t, s, sess, "s5", "sf/dc2", 1, from.AddDate(0, 0, -58))
 	}
 
-	dcCard(t, s, "s6", "sf/dc2", "small", "", 66) // merged in the previous window
+	dcHeadCard(t, s, "s9", "sf/dc2", "small", "h-s9", 66) // merged Oct 7, one lifetime start
+	dcReading(t, s, "s9", "sf/dc2", "h-s9", "small", from.AddDate(0, 0, 9))
+	dcMerged(t, s, "s9", "sf/dc2", from.AddDate(0, 0, 9))
+	dcStarted(t, s, "si", "s9", "sf/dc2", 1, from.AddDate(0, 0, 9))
+
+	dcHeadCard(t, s, "s10", "sf/dc2", "small", "h-s10", 67) // merged Oct 8, three distinct lifetime starts
+	dcReading(t, s, "s10", "sf/dc2", "h-s10", "small", from.AddDate(0, 0, 10))
+	dcMerged(t, s, "s10", "sf/dc2", from.AddDate(0, 0, 10))
+	for i, sess := range []string{"sj1", "sj2", "sj3"} {
+		dcStarted(t, s, sess, "s10", "sf/dc2", i+1, from.AddDate(0, 0, 10).Add(time.Duration(i)*time.Hour))
+	}
+
+	dcHeadCard(t, s, "s11", "sf/dc2", "medium", "h-s11", 68) // merged Oct 9, two distinct lifetime starts
+	dcReading(t, s, "s11", "sf/dc2", "h-s11", "medium", from.AddDate(0, 0, 11))
+	dcMerged(t, s, "s11", "sf/dc2", from.AddDate(0, 0, 11))
+	dcStarted(t, s, "sk1", "s11", "sf/dc2", 1, from.AddDate(0, 0, 11))
+	dcStarted(t, s, "sk2", "s11", "sf/dc2", 2, from.AddDate(0, 0, 11).Add(time.Hour))
+
+	dcHeadCard(t, s, "s6", "sf/dc2", "small", "h-s6", 69) // merged in the previous window
+	dcReading(t, s, "s6", "sf/dc2", "h-s6", "small", from.AddDate(0, 0, -8))
 	dcMerged(t, s, "s6", "sf/dc2", from.AddDate(0, 0, -8))
 	dcStarted(t, s, "sp", "s6", "sf/dc2", 1, from.AddDate(0, 0, -12))
 
-	dcCard(t, s, "s7", "sf/dc2", "small", "", 67) // merged exactly at To: no cohort anywhere
+	dcHeadCard(t, s, "s7", "sf/dc2", "small", "h-s7", 70) // merged exactly at To: no cohort anywhere
 	dcMerged(t, s, "s7", "sf/dc2", to.AddDate(0, 0, 1))
 	dcStarted(t, s, "sq", "s7", "sf/dc2", 1, to.AddDate(0, 0, 1))
+	// a session still running when the window closes: its start is a
+	// fact, and it gains no terminal end
+	dcStarted(t, s, "s-ongo", "s7", "sf/dc2", 2, from.AddDate(0, 0, 12))
 
-	dcCard(t, s, "s8", "sf/dc2", "small", SourceRoll, 68) // the factory's own roll card: no panel's cohort
+	dcCard(t, s, "s8", "sf/dc2", "small", SourceRoll, 71) // the factory's own roll card: no panel's cohort
 	dcMerged(t, s, "s8", "sf/dc2", from.AddDate(0, 0, 7))
 	dcStarted(t, s, "sr1", "s8", "sf/dc2", 1, from.AddDate(0, 0, 7))
 	dcStarted(t, s, "sr2", "s8", "sf/dc2", 2, from.AddDate(0, 0, 7))
 
-	dcCard(t, s, "o1", "sf/other2", "small", "", 69) // another repository's card
+	dcCard(t, s, "o1", "sf/other2", "small", "", 72) // another repository's card
 	dcMerged(t, s, "o1", "sf/other2", from.AddDate(0, 0, 7).Add(time.Hour))
 	dcStarted(t, s, "so1", "o1", "sf/other2", 1, from.AddDate(0, 0, 7).Add(2*time.Hour))
 	dcSessionEnd(t, s, "so1", string(OutcomePushed), "o1", "sf/other2", 1, from.AddDate(0, 0, 7).Add(3*time.Hour))
@@ -210,9 +270,9 @@ func TestDivideConquerSessionsSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []SizeFigure{
-		{Size: "", Figure: Figure{Has: true}}, // the unsized card, no started session
+		{Size: "", Figure: Figure{Has: true}}, // the unsized card's measured zero
 		{Size: "large", Figure: Figure{Value: 3, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 3}}},
-		{Size: "medium", Figure: Figure{Value: 2, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 2, 0}}},
+		{Size: "medium", Figure: Figure{Value: 2, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 2, 2}}},
 		{Size: "small", Figure: Figure{Value: 2, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 2, 2}}},
 	}
 	got := r.DivideConquer.SessionsPerCard
@@ -223,6 +283,11 @@ func TestDivideConquerSessionsSQL(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("sessions per card[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+	// the window's eight first-merged cards, one unsized, no hole: the
+	// starts the recorder holds cover them all
+	if cov := r.DivideConquer.SessionsCoverage; cov != (SessionsCoverage{Cards: 8, Unsized: 1}) {
+		t.Fatalf("sessions coverage = %+v, want the eight cards and the unsized one alone", cov)
 	}
 	// the window's ends by cause: sa and se pushed, sb against the clock
 	ends := r.DivideConquer.SessionEnds
@@ -237,6 +302,139 @@ func TestDivideConquerSessionsSQL(t *testing.T) {
 // a span every answer of which reviewed is a proven zero, a span no
 // answer covers stays unknown, and the window's bounds and the
 // repository's hold. [not_reviewed_answers]
+// TestDivideConquerSessionEvidenceSQL — panel 2's evidence: the size a
+// card counts by is the reading its merged head's snapshot planned, so
+// the task row's later size moves no merged card, an abandoned head's
+// reading never stands in for the merged head's, and a card no reading
+// covers is unknown, never a guessed bucket. A card merged before the
+// repository's first named start holds missing start evidence —
+// silence the recorder owns — and one whose ends name sessions no start
+// row names holds partial evidence; both sit the averages out and are
+// counted in the coverage, while a merged card after recording began
+// with no start rows is a measured zero in the average. The end a
+// partial card holds stays the fact it is. [session_evidence]
+func TestDivideConquerSessionEvidenceSQL(t *testing.T) {
+	s := metricsStore(t)
+	from, to := metricsTestWindow()
+	// e1's head was read small and merged; the task row moved to medium
+	// afterwards — the snapshot the merge gate planned is the size the
+	// panel keeps
+	dcHeadCard(t, s, "e1", "sf/dc5", "small", "h-e1", 91)
+	dcReading(t, s, "e1", "sf/dc5", "h-e1", "small", from.AddDate(0, 0, 1))
+	dcMerged(t, s, "e1", "sf/dc5", from.AddDate(0, 0, 2))
+	dcStarted(t, s, "ea1", "e1", "sf/dc5", 1, from.AddDate(0, 0, 2))
+	dcStarted(t, s, "ea2", "e1", "sf/dc5", 2, from.AddDate(0, 0, 2))
+	dcSessionEnd(t, s, "ea1", string(OutcomePushed), "e1", "sf/dc5", 1, from.AddDate(0, 0, 2).Add(3*time.Hour))
+	if err := s.SetTaskSizeBudget(context.Background(), "e1", "medium", 500, 5); err != nil {
+		t.Fatal(err)
+	}
+
+	// e2's row says small and its head's reading medium: the reading
+	// decides, against the row the other way
+	dcHeadCard(t, s, "e2", "sf/dc5", "small", "h-e2", 92)
+	dcReading(t, s, "e2", "sf/dc5", "h-e2", "medium", from.AddDate(0, 0, 3))
+	dcMerged(t, s, "e2", "sf/dc5", from.AddDate(0, 0, 3))
+	dcStarted(t, s, "eb1", "e2", "sf/dc5", 1, from.AddDate(0, 0, 3))
+	dcStarted(t, s, "eb2", "e2", "sf/dc5", 2, from.AddDate(0, 0, 3))
+
+	// e3's reading sits on an abandoned head; the head it merged on was
+	// never read: no historical size, not the abandoned head's
+	dcHeadCard(t, s, "e3", "sf/dc5", "small", "h-e3", 93)
+	dcReading(t, s, "e3", "sf/dc5", "h-e3x", "small", from.AddDate(0, 0, 4))
+	dcMerged(t, s, "e3", "sf/dc5", from.AddDate(0, 0, 4))
+	dcStarted(t, s, "ec1", "e3", "sf/dc5", 1, from.AddDate(0, 0, 4))
+	dcStarted(t, s, "ec2", "e3", "sf/dc5", 2, from.AddDate(0, 0, 4))
+
+	// e4's head was read unsized: its measured figure sits in the
+	// unsized bucket, covered
+	dcHeadCard(t, s, "e4", "sf/dc5", "", "h-e4", 94)
+	dcReading(t, s, "e4", "sf/dc5", "h-e4", "", from.AddDate(0, 0, 5))
+	dcMerged(t, s, "e4", "sf/dc5", from.AddDate(0, 0, 5))
+	dcStarted(t, s, "ed1", "e4", "sf/dc5", 1, from.AddDate(0, 0, 5))
+
+	// e5's end names a session no start row names: partial evidence, the
+	// large card sits the average out, and its end stays an end
+	dcHeadCard(t, s, "e5", "sf/dc5", "large", "h-e5", 95)
+	dcReading(t, s, "e5", "sf/dc5", "h-e5", "large", from.AddDate(0, 0, 6))
+	dcMerged(t, s, "e5", "sf/dc5", from.AddDate(0, 0, 6))
+	dcStarted(t, s, "ee1", "e5", "sf/dc5", 1, from.AddDate(0, 0, 6))
+	dcSessionEnd(t, s, "ee2", string(OutcomePushed), "e5", "sf/dc5", 2, from.AddDate(0, 0, 6).Add(2*time.Hour))
+
+	// e6 merged Sep 29, before the repository's first named start (e1's,
+	// Sep 30): its silence is the recorder's, missing evidence — not a
+	// zero, not in the average
+	dcHeadCard(t, s, "e6", "sf/dc5", "small", "h-e6", 96)
+	dcReading(t, s, "e6", "sf/dc5", "h-e6", "small", from.AddDate(0, 0, 1))
+	dcMerged(t, s, "e6", "sf/dc5", from.AddDate(0, 0, 1))
+
+	// e7 merged after recording began and started no session ever: a
+	// measured zero inside the small average
+	dcHeadCard(t, s, "e7", "sf/dc5", "small", "h-e7", 97)
+	dcReading(t, s, "e7", "sf/dc5", "h-e7", "small", from.AddDate(0, 0, 7))
+	dcMerged(t, s, "e7", "sf/dc5", from.AddDate(0, 0, 7))
+
+	// e8 merged in the previous window; its session row is dated inside
+	// the current one — the panel counts lifetime starts wherever they
+	// fall
+	dcHeadCard(t, s, "e8", "sf/dc5", "medium", "h-e8", 98)
+	dcReading(t, s, "e8", "sf/dc5", "h-e8", "medium", from.AddDate(0, 0, -8))
+	dcMerged(t, s, "e8", "sf/dc5", from.AddDate(0, 0, -8))
+	dcStarted(t, s, "eh1", "e8", "sf/dc5", 1, from.AddDate(0, 0, 4))
+
+	// another repository's card, however complete, is no figure here
+	dcHeadCard(t, s, "e9", "sf/other9", "small", "h-e9", 99)
+	dcReading(t, s, "e9", "sf/other9", "h-e9", "small", from.AddDate(0, 0, 5))
+	dcMerged(t, s, "e9", "sf/other9", from.AddDate(0, 0, 5))
+	dcStarted(t, s, "ei1", "e9", "sf/other9", 1, from.AddDate(0, 0, 5))
+	dcStarted(t, s, "ei2", "e9", "sf/other9", 2, from.AddDate(0, 0, 5))
+	dcSessionEnd(t, s, "ei1", string(OutcomePushed), "e9", "sf/other9", 1, from.AddDate(0, 0, 5).Add(time.Hour))
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc5", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// small holds e1 (2 starts) and e7 (a measured zero): 1.0, e6's
+	// missing evidence aside; medium holds e2's 2 with e8's 1 before the
+	// window; the unsized bucket holds e4; no large figure — e5's
+	// partial evidence sits it out
+	want := []SizeFigure{
+		{Size: "", Figure: Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}},
+		{Size: "medium", Figure: Figure{Value: 2, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 2, 0}}},
+		{Size: "small", Figure: Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 2, 0}}},
+	}
+	got := r.DivideConquer.SessionsPerCard
+	if len(got) != len(want) {
+		t.Fatalf("sessions per card = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sessions per card[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	// the seven window cards, one of each hole the evidence can hold
+	if cov := r.DivideConquer.SessionsCoverage; cov != (SessionsCoverage{Cards: 7, UnknownSize: 1, Unsized: 1,
+		MissingStarts: 1, PartialStarts: 1}) {
+		t.Fatalf("sessions coverage = %+v, want the seven cards with one unknown, unsized, missing and partial", cov)
+	}
+	// the partial card's end stays a fact of the window beside e1's
+	ends := r.DivideConquer.SessionEnds
+	if len(ends) != 1 || ends[0] != (NamedCount{Name: string(OutcomePushed), Count: 2}) {
+		t.Fatalf("session ends = %+v, want the two pushed ends, evidence aside", ends)
+	}
+	// the other repository's figures answer alone
+	other, err := s.ProjectMetrics(context.Background(), "sf/other9", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if o := other.DivideConquer.SessionsPerCard; len(o) != 1 || o[0] != (SizeFigure{Size: "small",
+		Figure: Figure{Value: 2, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 2, 0}}}) {
+		t.Fatalf("other repository sessions per card = %+v, want its small card's 2 alone", o)
+	}
+	if other.DivideConquer.SessionsCoverage != (SessionsCoverage{Cards: 1}) {
+		t.Fatalf("other repository sessions coverage = %+v, want its one covered card", other.DivideConquer.SessionsCoverage)
+	}
+}
+
 func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	s := metricsStore(t)
 	from, to := metricsTestWindow()
