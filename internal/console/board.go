@@ -1246,12 +1246,12 @@ type statusLine struct {
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
 	// 0 shows no premium meter.
 	PremiumEUR, PremiumCapEUR float64
-	// Pool is the project's month pool, the budget block's
+	// MonthPool is the project's month pool, the budget block's
 	// discretionary_eur: what the agent's own raises have funded of it
 	// this UTC month and what remains (poolOf). Zero: no pool is in
 	// force or no read is wired; Unavailable: the read failed, so no
 	// figure of it shows but the strip says so.
-	Pool      pool
+	MonthPool pool
 	GitHub    string
 	GitHubURL string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
@@ -1264,8 +1264,12 @@ type statusLine struct {
 	// chat's own) or the month's turn; ChatTask is its task id. Approver:
 	// the viewer may fund it.
 	ChatSpent bool
-	ChatTask  string
-	Approver  bool
+	// Pool is the project face's pool status (projectPool): the same
+	// projection the chat's status line and the board read tool read, so
+	// the face and the chat agree on its figures.
+	Pool     poolLine
+	ChatTask string
+	Approver bool
 	// Dependencies are the factory's own dependencies' latest health with
 	// each row's age, the panel's list (roadmap 299); the strip's one dot
 	// carries the worst of them: DepsDown red, DepsDegraded amber, DepsUp
@@ -2514,6 +2518,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
+		s.Pool = c.projectPool(ctx, v.policy, p, time.Now())
 	}
 	s.TodayEUR = e.Day
 	if s.PremiumCapEUR > 0 {
@@ -2521,7 +2526,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	}
 	if c.cfg.Pools != nil {
 		pl, err := c.poolOf(ctx, v.policy, p, time.Now().UTC())
-		s.Pool = pl
+		s.MonthPool = pl
 		if err != nil {
 			log.Printf("console: the month pool of %s: %v", p.Repository, err)
 			d.Problems = append(d.Problems, "the month's pool could not be read")
