@@ -583,3 +583,35 @@ func TestSuccessorRetryFilesNoSecondIssue(t *testing.T) {
 		t.Fatalf("the successor row's issue = %d, want 9", store.tasks[id].IssueNumber)
 	}
 }
+
+// A successor's issue that closed inside the retry window — filed, then
+// closed by a human or a rule before the retry lands — is still found:
+// the marker search reads closed issues too, so the retry files no
+// second issue.
+func TestSuccessorFindsItsIssueClosed(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	fj.failLabel = 1
+	if _, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"}); err == nil {
+		t.Fatal("the first filing must stop at its labels")
+	}
+	fj.mu.Lock()
+	fj.issues[9].state = "closed"
+	fj.mu.Unlock()
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	if err != nil {
+		t.Fatalf("the refiling = %v", err)
+	}
+	var filed []*planIssue
+	for n := int64(1); n <= fj.next; n++ {
+		if is := fj.issues[n]; is != nil && strings.Contains(is.body, successorMarker("t-a")) {
+			filed = append(filed, is)
+		}
+	}
+	if len(filed) != 1 {
+		t.Fatalf("issues with the marker = %d, want one", len(filed))
+	}
+	if store.tasks[id].IssueNumber != 9 {
+		t.Fatalf("the successor row's issue = %d, want 9", store.tasks[id].IssueNumber)
+	}
+}

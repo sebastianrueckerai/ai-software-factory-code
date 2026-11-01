@@ -1916,6 +1916,15 @@ func changedSession(t *testing.T) (dir string, e workerEnv, base, mainHead, fork
 	return dir, e, base, mainHead, fork
 }
 
+// A diff that cannot run fails the rule rather than passing it: the
+// bound check never reads a broken git diff as zero changed lines.
+func TestChangedLinesFailsClosed(t *testing.T) {
+	dir, e, _, _, _ := changedSession(t)
+	if _, err := changedLines(e, dir, "no-such-object", e.repoSHA); err == nil {
+		t.Fatal("a diff that cannot run counted as zero changed lines")
+	}
+}
+
 // A factoryd that never answers the push request (one that died without
 // its shutdown) costs the session its push: the worker waits
 // its bound, pushes nothing and says why.

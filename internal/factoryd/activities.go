@@ -481,15 +481,15 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 	}
 	if t.IssueNumber == 0 {
 		marker := successorMarker(old.ID)
-		open, err := r.forgejo.OpenIssues(ctx, repo.Owner, repo.Name)
+		all, err := r.forgejo.Issues(ctx, repo.Owner, repo.Name)
 		if err != nil {
-			return "", fmt.Errorf("the successor of %s: search the open issues: %w", old.ID, err)
+			return "", fmt.Errorf("the successor of %s: search the issues: %w", old.ID, err)
 		}
 		title, body, _ := strings.Cut(t.Objective, "\n\n")
-		if i := slices.IndexFunc(open, func(is webhookIssue) bool {
+		if i := slices.IndexFunc(all, func(is webhookIssue) bool {
 			return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
 		}); i >= 0 {
-			t.IssueNumber = open[i].Index
+			t.IssueNumber = all[i].Index
 		} else {
 			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
 			if err != nil {

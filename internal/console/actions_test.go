@@ -454,7 +454,7 @@ func TestExtendRefusesWhatChangesNothing(t *testing.T) {
 		sessions, lines int
 		eur             float64
 	}{
-		{0, 0, 0}, {-1, 0, 0}, {0, -500, 0}, {0, 0, -2},
+		{0, 0, 0}, {-1, 0, 0}, {0, -500, 0}, {0, 0, -2}, {1, 0, -5},
 	} {
 		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.eur, "")
 		var no *refusal
@@ -521,6 +521,36 @@ func TestGrantCarriesItsInstruction(t *testing.T) {
 	defer r.fg.mu.Unlock()
 	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: land the smaller merge first" {
 		t.Errorf("posted = %q", posted)
+	}
+}
+
+// The Extend exit's bare press answers nothing: an extend names its
+// amounts, and only the form carries them. A bare press would post
+// "Extend the card" as an ordinary answer and buy the one session every
+// answer buys, without raising anything — the card would stop at the
+// same place and ask again.
+func TestExtendPressNamesTheForm(t *testing.T) {
+	r := fundRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-e" {
+			r.tasks.tasks[i].Question = factoryd.ShapedQuestion("check-in: spend_above_policy: No reply can change this: the head a1b2c3d and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", factoryd.QuestionFacts{}, nil)
+		}
+	}
+	r.tasks.mu.Unlock()
+	_, s := r.loggedIn(t)
+	_, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerExtend, "")
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusConflict || !strings.Contains(err.Error(), "Extend form") {
+		t.Fatalf("a bare extend press = %v, want the refusal that names the form", err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || task.Usage != (factoryd.TaskUsage{}) {
+		t.Errorf("a refused extend press moved the card: budget %v, usage %+v", task.BudgetEUR, task.Usage)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if len(r.fg.comments) != 0 {
+		t.Errorf("a refused extend press posted %q", r.fg.comments)
 	}
 }
 

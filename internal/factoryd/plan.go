@@ -3173,7 +3173,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 	}
 	fork := r.forgejo.Fork(repo)
 	cards := map[string]Task{}
-	var open []webhookIssue
+	var all []webhookIssue
 	for i, c := range order {
 		if c.Round < p.Round {
 			row, ok := rows[c.Key]
@@ -3242,16 +3242,16 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		}
 		if card.IssueNumber == 0 {
 			marker := cardMarker(t.ID, c.Key)
-			if open == nil {
-				if open, err = r.forgejo.OpenIssues(ctx, repo.Owner, repo.Name); err != nil {
+			if all == nil {
+				if all, err = r.forgejo.Issues(ctx, repo.Owner, repo.Name); err != nil {
 					return nil, err
 				}
 			}
-			i := slices.IndexFunc(open, func(is webhookIssue) bool {
+			i := slices.IndexFunc(all, func(is webhookIssue) bool {
 				return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
 			})
 			if i >= 0 {
-				card.IssueNumber = open[i].Index
+				card.IssueNumber = all[i].Index
 			} else {
 				ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
 				if err != nil {

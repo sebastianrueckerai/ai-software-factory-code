@@ -1090,20 +1090,23 @@ func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound
 	if err != nil {
 		return "", "", err
 	}
-	billed := changedLines(e, send, mb, head)
+	billed, err := changedLines(e, send, mb, head)
+	if err != nil {
+		return "", "", err
+	}
 	merge := func(t string) (string, string, error) {
 		h, err := e.runGit(send, botIdentity, "commit-tree", t, "-p", base, "-p", mainHead, "-m", commitMessage(e))
 		return h, mainHead, err
 	}
 	merged, mErr := mergedTree(e, send, mb, head, mainHead)
 	// the faithful sync: the tree is what a merge with main would give
-	if mErr == nil && merged == tree && changedLines(e, send, mainHead, tree) <= bound {
+	if mErr == nil && merged == tree && fits(e, send, mainHead, tree, bound) {
 		return merge(tree)
 	}
 	if billed <= bound {
 		return head, guard, nil
 	}
-	if mErr == nil && changedLines(e, send, mainHead, merged) <= bound {
+	if mErr == nil && fits(e, send, mainHead, merged, bound) {
 		return merge(merged)
 	}
 	return "", "", fmt.Errorf("%w: the branch's diff against its merge base is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
@@ -1111,14 +1114,21 @@ func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound
 }
 
 // changedLines is the insertions plus deletions between two commits,
-// trees or both.
-func changedLines(e workerEnv, send, a, b string) int {
+// trees or both; a diff git cannot run is an error, never zero lines.
+func changedLines(e workerEnv, send, a, b string) (int, error) {
 	short, err := e.git(send, "diff", "--shortstat", a, b)
 	if err != nil {
-		return 0
+		return 0, err
 	}
 	d := parseShortstat(short)
-	return d.Insertions + d.Deletions
+	return d.Insertions + d.Deletions, nil
+}
+
+// fits is whether the diff between a and b holds the bound; a diff that
+// cannot run does not.
+func fits(e workerEnv, send, a, b string, bound int) bool {
+	n, err := changedLines(e, send, a, b)
+	return err == nil && n <= bound
 }
 
 // mergedTree is the three-way merge of head and mainHead over base as a

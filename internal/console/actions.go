@@ -840,6 +840,8 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 		return fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), nil
 	case factoryd.AnswerClose:
 		return c.doClose(ctx, a, id, "")
+	case factoryd.AnswerExtend:
+		return "", refuse(http.StatusConflict, "an extend names its amounts: use the Extend form on the card, where you give them")
 	}
 	// the member's own words, matching none of the question's choices, are
 	// not an answer: they go to the member's chat, where the agent reads
@@ -902,7 +904,7 @@ func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
 func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines int, eur float64, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
-	case sessions < 0 || lines < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
+	case sessions < 0 || lines < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
 		(sessions == 0 && lines == 0 && !(eur > 0)):
 		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and lines, and an amount in EUR")
 	}
