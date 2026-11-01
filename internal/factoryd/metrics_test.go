@@ -761,6 +761,23 @@ func TestMetricsFactEventIdentities(t *testing.T) {
 	if id5, err := s.Record(ctx, again.Event("sf/code", 41, nil)); err != nil || id5 != 0 {
 		t.Fatalf("Record filing again = %d, %v; want 0, no error", id5, err)
 	}
+	// a card the filing filed carries its own row: the card and its key
+	// canonical, its identity the plan, revision and key
+	card := filing
+	card.Card, card.Key = 41, "links"
+	if id, err := s.Record(ctx, card.Event("sf/code", 41, nil)); err != nil || id == 0 {
+		t.Fatalf("Record the card's filing: %d, %v", id, err)
+	}
+	refiled := card
+	refiled.Origin, refiled.Card = ReplanRound, 99 // the re-file keeps the original row
+	if id, err := s.Record(ctx, refiled.Event("sf/code", 99, nil)); err != nil || id != 0 {
+		t.Fatalf("Record the card's filing again = %d, %v; want 0, no error", id, err)
+	}
+	other := card
+	other.Card, other.Key = 42, "redirects" // another card of the same revision
+	if id, err := s.Record(ctx, other.Event("sf/code", 42, nil)); err != nil || id == 0 {
+		t.Fatalf("Record the next card's filing: %d, %v", id, err)
+	}
 	head := GateHeadFact{Task: "t-card", Head: "a1b2c3", Gate: GateReview, Decision: "approve",
 		Size: "small", Files: 9, Insertions: 120, Deletions: 40}
 	id6, err := s.Record(ctx, head.Event("sf/code", 42))
@@ -780,8 +797,8 @@ func TestMetricsFactEventIdentities(t *testing.T) {
 			t.Fatalf("Record unkeyed %d: %d, %v", i, id, err)
 		}
 	}
-	if got := recorded(); got != 6 {
-		t.Fatalf("%d events, want 6: the four identities, once each, and two unkeyed rows", got)
+	if got := recorded(); got != 8 {
+		t.Fatalf("%d events, want 8: the six identities, once each, and two unkeyed rows", got)
 	}
 	events, err := s.ProjectEvents(ctx, "sf/code", 0, 50)
 	if err != nil {
@@ -795,6 +812,16 @@ func TestMetricsFactEventIdentities(t *testing.T) {
 	}
 	if release.Detail["held_since"] != "2026-10-28T09:00:00Z" || release.Detail["how"] != "closed" {
 		t.Fatalf("the first hold's row = %+v, want the earliest kept", release.Detail)
+	}
+	var cardRow Event
+	for _, e := range events {
+		if e.Kind == EventPlanReplanned && e.Detail["key"] == "links" {
+			cardRow = e
+		}
+	}
+	if cardRow.Detail["card"] != float64(41) || cardRow.Detail["revision"] != float64(2) ||
+		cardRow.Detail["origin"] != ReplanCut {
+		t.Fatalf("the card's filing row = %+v, want the card and its key canonical", cardRow.Detail)
 	}
 }
 

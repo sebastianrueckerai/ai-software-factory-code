@@ -150,7 +150,20 @@ func (r *Runner) recordRound(ctx context.Context, p Task, repo Repo, revision in
 	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {
 		return fmt.Errorf("record replanned: %w", err)
 	}
-	r.timeline.RecordRow(ctx, p.ID, EventPlanReplanned, FactoryDecider, ViaFactoryd, detail)
+	filing := PlanFilingFact{Plan: p.ID, Revision: revision, Origin: ReplanRound}
+	if err := r.timeline.RecordFactRow(ctx, filing.Event(p.Repository, p.IssueNumber, map[string]any{"round": next.Round})); err != nil {
+		return fmt.Errorf("record the revision's filing row: %w", err)
+	}
+	for _, c := range planOrder(next, planEdges(next)) {
+		if c.Round != next.Round {
+			continue
+		}
+		f := filing
+		f.Card, f.Key = issues[c.Key], c.Key
+		if err := r.timeline.RecordFactRow(ctx, f.Event(p.Repository, issues[c.Key], nil)); err != nil {
+			return fmt.Errorf("record %s's filing row: %w", c.Key, err)
+		}
+	}
 	return nil
 }
 

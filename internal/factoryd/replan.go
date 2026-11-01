@@ -1187,7 +1187,10 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	if err := r.timeline.Append(ctx, p.ID, "replanned", detail); err != nil {
 		return fmt.Errorf("record replanned: %w", err)
 	}
-	r.timeline.RecordRow(ctx, p.ID, EventPlanReplanned, FactoryDecider, ViaFactoryd, detail)
+	filing := PlanFilingFact{Plan: p.ID, Revision: revision, Origin: step.Origin}
+	if err := r.timeline.RecordFactRow(ctx, filing.Event(p.Repository, p.IssueNumber, detail)); err != nil {
+		return fmt.Errorf("record the revision's filing row: %w", err)
+	}
 	return nil
 }
 
