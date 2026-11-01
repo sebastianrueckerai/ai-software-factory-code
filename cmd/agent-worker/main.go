@@ -522,6 +522,9 @@ type workerEnv struct {
 	docsDir string
 	// docsURL (DOCS_URL) is the clone container's source for it
 	docsURL string
+	// companions (COMPANIONS) are the clone container's sources for the
+	// project's sandbox companions; nil without any
+	companions []string
 	// companionDirs (COMPANION_DIRS) are where the clone put the project's
 	// sandbox companions, one directory each; nil without any
 	companionDirs []string
@@ -655,7 +658,7 @@ func runClone(log func(string, ...any), ws string) int {
 		branches, err = branchPairs(os.Getenv("BRANCHES"))
 	}
 	if err == nil {
-		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR"), docsURL: os.Getenv("DOCS_URL"), branches: branches}
+		e := workerEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], branch: v["BRANCH"], repoSHA: os.Getenv("REPO_SHA"), pushURL: os.Getenv("PUSH_URL"), pull: os.Getenv("PULL"), taskPR: os.Getenv("TASK_PR"), docsURL: os.Getenv("DOCS_URL"), companions: strings.Fields(os.Getenv("COMPANIONS")), branches: branches}
 		repoDir := filepath.Join(ws, "repo")
 		err = cloneBase(e, repoDir)
 		if err == nil {
@@ -664,7 +667,7 @@ func runClone(log func(string, ...any), ws string) int {
 		if err == nil && e.docsURL != "" {
 			recordDocs(log, ws, cloneDocs(e, filepath.Join(ws, "docs")))
 		}
-		for _, url := range strings.Fields(os.Getenv("COMPANIONS")) {
+		for _, url := range e.companions {
 			// a companion is code and config the agent reads, not
 			// documents: every file of it, no sparse filter
 			name := strings.TrimSuffix(filepath.Base(url), ".git")
