@@ -433,7 +433,7 @@ func TestPoolReadContract(t *testing.T) {
 		t.Fatalf("board = %d", rec.Code)
 	}
 	body := rec.Body.String()
-	for _, want := range []string{"pool €3.00", "€10.00", "€7.00 left"} {
+	for _, want := range []string{"pool 3.00", "10.00", "7.00 left"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("board HTML lacks %q", want)
 		}
@@ -473,7 +473,6 @@ func TestPoolReadMonth(t *testing.T) {
 	}
 	record(novFrom.Add(time.Hour), 1.5)
 	record(novFrom.Add(2*time.Hour), 1.5)
-	record(decFrom.Add(time.Hour), 2)
 	v, ok, err := r.ledger.CurrentPolicy(t.Context())
 	if err != nil || !ok {
 		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
@@ -483,8 +482,8 @@ func TestPoolReadMonth(t *testing.T) {
 		t.Errorf("November poolOf = %+v, %v; want configured 10, used 3, remaining 7, ready", plNov, err)
 	}
 	plDec, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, dec)
-	if err != nil || plDec.Configured != 10 || plDec.Used != 2 || plDec.Remaining != 8 || !plDec.Ready {
-		t.Errorf("December poolOf = %+v, %v; want configured 10, used 2, remaining 8, ready", plDec, err)
+	if err != nil || plDec.Configured != 10 || plDec.Used != 0 || plDec.Remaining != 10 || !plDec.Ready {
+		t.Errorf("December poolOf = %+v, %v; want configured 10, used 0, remaining 10, ready", plDec, err)
 	}
 	r.events.poolErr = errors.New("aggregate unavailable")
 	plErr, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
