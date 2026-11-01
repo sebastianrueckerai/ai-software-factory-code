@@ -403,45 +403,56 @@ func agentFundedRow(rows []factoryd.Event, eur float64) factoryd.Event {
 	return factoryd.Event{}
 }
 
-// TestPoolReadContract checks that Pools.AgentFundedEUR sums only the
-// agent-decided card_funded rows via the chat in the given UTC month,
-// ignoring other kinds, vias, deciders and months.
+// TestPoolReadContract constructs the console via console.New, drives an
+// authenticated HTTP board read with configured EUR 10 and aggregate EUR 3,
+// and asserts HTML shows EUR 7 remaining through the same projection.
 func TestPoolReadContract(t *testing.T) {
 	r := newRig(t)
-	now := time.Now().UTC()
-	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	record := func(kind, via, decider string, amount float64, at time.Time) {
+	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
+		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
+	nov := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	record := func(amount float64) {
 		t.Helper()
-		detail := map[string]any{"amount_eur": amount}
-		if decider != "" {
-			detail["decider"] = decider
-		}
-		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: kind, Via: via, At: at, Detail: detail}); err != nil {
+		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: from.Add(time.Hour),
+			Detail: map[string]any{"decider": "agent", "amount_eur": amount}}); err != nil {
 			t.Fatalf("record: %v", err)
 		}
 	}
-	record(factoryd.EventCardFunded, factoryd.ViaChat, "agent", 1.5, from.Add(time.Hour))
-	record(factoryd.EventCardFunded, factoryd.ViaChat, "member", 2, from.Add(2*time.Hour))
-	record(factoryd.EventCardFunded, factoryd.ViaButton, "agent", 3, from.Add(3*time.Hour))
-	record(factoryd.EventProductionReleased, factoryd.ViaChat, "agent", 4, from.Add(4*time.Hour))
-	record(factoryd.EventCardFunded, factoryd.ViaChat, "agent", 0.5, from.Add(-time.Hour))
-	record(factoryd.EventCardFunded, factoryd.ViaChat, "agent", 0.75, from.AddDate(0, 1, 0))
-	got, err := r.events.AgentFundedEUR(t.Context(), "sf/code", now)
-	if err != nil || got != 1.5 {
-		t.Fatalf("AgentFundedEUR = %v, %v; want 1.5 (only the in-month agent chat card_funded)", got, err)
+	record(1.5)
+	record(1.5)
+	ck, _ := r.loggedIn(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("board = %d", rec.Code)
 	}
-	if wrongRepo, err := r.events.AgentFundedEUR(t.Context(), "other/repo", now); err != nil || wrongRepo != 0 {
-		t.Errorf("wrong repository = %v, %v; want 0", wrongRepo, err)
+	body := rec.Body.String()
+	for _, want := range []string{"pool €3.00", "€10.00", "€7.00 left"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("board HTML lacks %q", want)
+		}
+	}
+	v, ok, err := r.ledger.CurrentPolicy(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
+	}
+	pl, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
+	if err != nil || pl.Configured != 10 || pl.Used != 3 || pl.Remaining != 7 || !pl.Ready {
+		t.Errorf("poolOf = %+v, %v; want configured 10, used 3, remaining 7, ready", pl, err)
 	}
 }
 
-// TestPoolReadMonth confirms AgentFundedEUR buckets by UTC calendar month:
-// a raise at the previous month's last instant is not counted in this one.
+// TestPoolReadMonth uses explicit November 2026 and December 2026 UTC instants,
+// verifies EUR 10/3/7 figures at each instant, and confirms aggregate errors
+// surface as unavailable rather than zero.
 func TestPoolReadMonth(t *testing.T) {
 	r := newRig(t)
-	now := time.Now().UTC()
-	from := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-	prev := from.Add(-time.Second)
+	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
+		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
+	nov := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	dec := time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC)
+	novFrom := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	decFrom := time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 	record := func(at time.Time, amount float64) {
 		t.Helper()
 		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: at,
@@ -449,14 +460,24 @@ func TestPoolReadMonth(t *testing.T) {
 			t.Fatalf("record: %v", err)
 		}
 	}
-	record(prev, 2)
-	record(from.Add(time.Hour), 1)
-	got, err := r.events.AgentFundedEUR(t.Context(), "sf/code", now)
-	if err != nil || got != 1 {
-		t.Fatalf("this month = %v, %v; want 1 (the previous month's 2 excluded)", got, err)
+	record(novFrom.Add(time.Hour), 1.5)
+	record(novFrom.Add(2*time.Hour), 1.5)
+	record(decFrom.Add(time.Hour), 2)
+	v, ok, err := r.ledger.CurrentPolicy(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
 	}
-	prevMonth := time.Date(now.Year(), now.Month()-1, 1, 0, 0, 0, 0, time.UTC)
-	if prevGot, err := r.events.AgentFundedEUR(t.Context(), "sf/code", prevMonth); err != nil || prevGot != 2 {
-		t.Errorf("previous month = %v, %v; want 2", prevGot, err)
+	plNov, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
+	if err != nil || plNov.Configured != 10 || plNov.Used != 3 || plNov.Remaining != 7 || !plNov.Ready {
+		t.Errorf("November poolOf = %+v, %v; want configured 10, used 3, remaining 7, ready", plNov, err)
+	}
+	plDec, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, dec)
+	if err != nil || plDec.Configured != 10 || plDec.Used != 2 || plDec.Remaining != 8 || !plDec.Ready {
+		t.Errorf("December poolOf = %+v, %v; want configured 10, used 2, remaining 8, ready", plDec, err)
+	}
+	r.events.poolErr = errors.New("aggregate unavailable")
+	plErr, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
+	if err == nil || !plErr.Unavailable || plErr.Ready {
+		t.Errorf("error poolOf = %+v, %v; want unavailable, not ready", plErr, err)
 	}
 }
