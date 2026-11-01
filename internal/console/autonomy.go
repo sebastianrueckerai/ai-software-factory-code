@@ -99,6 +99,15 @@ func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCa
 // One commit with message lands on a new branch, its pull request opens
 // with message as its title, and the member merges it.
 func (c *Console) commitProjectFile(ctx context.Context, a actor, name, message string, edit func(doc *yaml.Node) error, extra map[string]string) (int64, error) {
+	return c.commitProjectFileGuarded(ctx, a, name, message, "", edit, extra)
+}
+
+// commitProjectFileGuarded is commitProjectFile for a change a proposal
+// captured: source is the blob sha of the project file the proposal read,
+// and a file whose blob is another refuses with 409 before any edit is
+// judged, so a change is never applied to a file the proposal never saw.
+// "" guards nothing.
+func (c *Console) commitProjectFileGuarded(ctx context.Context, a actor, name, message, source string, edit func(doc *yaml.Node) error, extra map[string]string) (int64, error) {
 	l := docLock(c.cfg.InfraRepo.String())
 	l.Lock()
 	defer l.Unlock()
@@ -109,6 +118,8 @@ func (c *Console) commitProjectFile(ctx context.Context, a actor, name, message 
 		return 0, err
 	case !present:
 		return 0, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+	case source != "" && blob != source:
+		return 0, refuse(http.StatusConflict, fmt.Sprintf("%s changed since the change was proposed (its blob is now %s): read it again and propose the change anew", path, blob))
 	}
 	out, err := editProjectFile(raw, edit)
 	if err != nil {
