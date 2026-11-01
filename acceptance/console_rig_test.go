@@ -1065,6 +1065,26 @@ func (a *AcceptanceRig) PutProposal(_ context.Context, p factoryd.ChatProposal) 
 	return nil
 }
 
+func (a *AcceptanceRig) ReadProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.proposals {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
+			continue
+		}
+		switch {
+		case p.Login != login:
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		}
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+}
+
 func (a *AcceptanceRig) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

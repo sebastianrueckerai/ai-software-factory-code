@@ -1151,6 +1151,26 @@ func (f *accBatchChat) PutProposal(_ context.Context, p factoryd.ChatProposal) e
 	return nil
 }
 
+func (f *accBatchChat) ReadProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.proposals {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
+			continue
+		}
+		switch {
+		case p.Login != login:
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		}
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+}
+
 func (f *accBatchChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

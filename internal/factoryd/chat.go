@@ -1336,6 +1336,37 @@ type ChatProposal struct {
 	// Choice is the ask binding's choice: the one of the ask row's
 	// choices whose press runs Tool, as the ask tool bound it.
 	Choice string
+	// Pool is the pool change a set_pool proposal captured: what the row
+	// itself holds, so the member's Do it — the amount the one thing it
+	// may correct — writes the operation, the reason and the baseline the
+	// proposal read, not ones a request names. nil for every other row
+	// and a row stored before the pool carried captures.
+	Pool *PoolCapture
+}
+
+// PoolCapture is the pool change a set_pool proposal carries: the action,
+// the suggested amount and the reason of the call, with the blob sha of
+// the project file and the pool in cents the proposal read — the
+// baseline the member's Do it writes against and a correction's amount
+// is judged with.
+type PoolCapture struct {
+	Action string  `json:"action"`
+	Reason string  `json:"reason"`
+	Source string  `json:"source"`
+	From   int64   `json:"from"`
+	EUR    float64 `json:"eur"`
+}
+
+// poolOf is the row's stored pool capture, nil for none.
+func poolOf(b []byte) (*PoolCapture, error) {
+	if b == nil {
+		return nil, nil
+	}
+	var p PoolCapture
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
 }
 
 // TakeProposal's refusals.
@@ -1347,9 +1378,17 @@ var (
 
 // PutProposal stores p.
 func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation, choice)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)`,
-		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation, p.Choice)
+	var pool []byte
+	if p.Pool != nil {
+		b, err := json.Marshal(p.Pool)
+		if err != nil {
+			return err
+		}
+		pool = b
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation, choice, pool)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::jsonb)`,
+		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation, p.Choice, pool)
 	return err
 }
 
@@ -1359,14 +1398,18 @@ func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
 // already used, ErrNoProposal for none.
 func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (ChatProposal, error) {
 	p := ChatProposal{Token: token, Kind: kind, Repository: repository, Login: login}
-	var args []byte
+	var args, pool []byte
 	err := s.db.QueryRowContext(ctx, `UPDATE chat_proposals SET used_at = $4
 		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4 AND kind = $5
-		RETURNING tool, args, description, expires_at, conversation, choice`, token, repository, login, now, kind).
-		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation, &p.Choice)
+		RETURNING tool, args, description, expires_at, conversation, choice, pool`, token, repository, login, now, kind).
+		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation, &p.Choice, &pool)
 	switch {
 	case err == nil:
 		p.Args = args
+		p.Pool, err = poolOf(pool)
+		if err != nil {
+			return ChatProposal{}, err
+		}
 		return p, nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return ChatProposal{}, err
@@ -1384,6 +1427,41 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 		return ChatProposal{}, ErrUsedProposal
 	}
 	return ChatProposal{}, ErrNoProposal
+}
+
+// ReadProposal is token's row of kind for login on repository at now,
+// nothing spent: the stored proposal a correction is judged against
+// before its token is taken. ErrOthersProposal for another login's row,
+// which stays unused; ErrUsedProposal for one used, ErrNoProposal for
+// none, an expired one or another kind's.
+func (s *PGStore) ReadProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (ChatProposal, error) {
+	p := ChatProposal{Token: token, Kind: kind, Repository: repository}
+	var args, pool []byte
+	var rowLogin string
+	var used sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT tool, args, description, login, expires_at, used_at, conversation, choice, pool FROM chat_proposals
+		WHERE token = $1 AND repository = $2 AND kind = $3`, token, repository, kind).
+		Scan(&p.Tool, &args, &p.Description, &rowLogin, &p.ExpiresAt, &used, &p.Conversation, &p.Choice, &pool)
+	switch {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		return ChatProposal{}, ErrNoProposal
+	default:
+		return ChatProposal{}, err
+	}
+	switch {
+	case rowLogin != login:
+		return ChatProposal{}, ErrOthersProposal
+	case used.Valid:
+		return ChatProposal{}, ErrUsedProposal
+	case p.ExpiresAt.Before(now):
+		return ChatProposal{}, ErrNoProposal
+	}
+	p.Login, p.Args = rowLogin, args
+	if p.Pool, err = poolOf(pool); err != nil {
+		return ChatProposal{}, err
+	}
+	return p, nil
 }
 
 // LiveAskBinds are the open ask bindings of login's conversation on

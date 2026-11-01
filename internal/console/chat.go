@@ -54,10 +54,17 @@ const (
 // keep stores a proposal (kind proposal) or an applied action's undo
 // (kind undo) of tool with args for the member on the project, for
 // chatTTL under a fresh token, which it answers, and forgets the expired
-// ones but a used proposal; "" when the store fails.
+// ones but a used proposal; "" when the store fails. A proposal holds
+// what its call captured beside its arguments; an undo and an ask
+// binding hold none.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
-	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
-		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv})
+	p := factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
+		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv}
+	if kind == "proposal" {
+		p.Pool = t.pool
+	}
+	t.pool = nil
+	return t.store(p)
 }
 
 // store is keep's row put under a fresh token, which it answers; "" when
@@ -82,13 +89,28 @@ func (t *turn) store(p factoryd.ChatProposal) string {
 // another member's, which stays.
 func (t *turn) take(kind, token string) (factoryd.ChatProposal, error) {
 	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), kind, token, t.p.Repository, t.a.s.user, time.Now())
+	return p, t.proposalRefusal(err)
+}
+
+// peek is take's row read without the spend: the stored proposal of kind
+// under token for the member on the project, unused and unexpired, with
+// take's refusals for every other row. A correction is judged against it
+// before its token is taken, so a wrong one leaves the proposal usable.
+func (t *turn) peek(kind, token string) (factoryd.ChatProposal, error) {
+	p, err := t.c.cfg.Chat.ReadProposal(t.r.Context(), kind, token, t.p.Repository, t.a.s.user, time.Now())
+	return p, t.proposalRefusal(err)
+}
+
+// proposalRefusal is a proposal store's error as the member's press
+// reads it.
+func (t *turn) proposalRefusal(err error) error {
 	switch {
 	case errors.Is(err, factoryd.ErrOthersProposal):
-		return p, refuse(http.StatusForbidden, "It is another human's.")
+		return refuse(http.StatusForbidden, "It is another human's.")
 	case errors.Is(err, factoryd.ErrNoProposal), errors.Is(err, factoryd.ErrUsedProposal):
-		return p, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
+		return refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
 	}
-	return p, err
+	return err
 }
 
 // turn is one answer of the project agent to the member, streamed.
@@ -140,6 +162,12 @@ type turn struct {
 	pageQuery string
 	present   map[string]bool
 	viewEvent map[string]any
+	// pool is the set_pool call this turn last captured: the change with
+	// the project file's blob and pool the proposal read, which its Do it
+	// — the amount the one thing a correction may change — writes
+	// against. nil until a set_pool call describes one, and again once its
+	// proposal is stored or the call moves on.
+	pool *factoryd.PoolCapture
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
 	// sctx is the context of the turn's model calls and of its waits for
@@ -1101,10 +1129,11 @@ func (t *turn) landUnread() {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it, and answers the result the agent reads and the
-// proposal's token.
+// confirm names it or the tool is the member's alone to decide, and
+// answers the result the agent reads and the proposal's token.
 func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	tool, ok := t.c.chatTool(call.Name)
+	t.pool = nil
 	var in toolInput
 	args := call.Arguments
 	if ok {
@@ -1123,7 +1152,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 			result = "Refused: " + t.sentence(err)
 			break
 		}
-		if !slices.Contains(t.cfg.Confirm, tool.name) {
+		if !tool.memberOnly && !slices.Contains(t.cfg.Confirm, tool.name) {
 			t.a.decider = "agent"
 			return t.runTool(tool, args, in), ""
 		}
@@ -1241,16 +1270,44 @@ func (t *turn) sentence(err error) string {
 }
 
 // chatProposal answers POST /projects/{name}/chat/proposals/{id}: the
-// member's Do it runs the proposal, streamed as a turn is.
+// member's Do it runs the proposal, streamed as a turn is. Its body may
+// correct a set_pool proposal's amount — one correction object, decoded
+// and judged against the stored proposal before the token is spent, so a
+// wrong correction leaves the proposal usable. A captured pool change
+// whose file moved since the proposal answers 409 without a write; that
+// attempt was valid, the token stays spent and the change is proposed
+// anew.
 func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
 	}
+	fix, err := readPoolCorrection(r)
+	if err != nil {
+		c.fail(w, r, err)
+		return
+	}
+	if fix != nil {
+		p, err := t.peek("proposal", r.PathValue("id"))
+		if err != nil {
+			c.fail(w, r, err)
+			return
+		}
+		if err := fix.against(p); err != nil {
+			c.fail(w, r, err)
+			return
+		}
+	}
 	p, err := t.take("proposal", r.PathValue("id"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
+	}
+	if p.Pool != nil {
+		if err := t.stalePool(p.Pool.Source); err != nil {
+			c.fail(w, r, err)
+			return
+		}
 	}
 	if err := t.inThread(p.Conversation); err != nil {
 		c.fail(w, r, err)
@@ -1261,20 +1318,191 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	t.detach()
 	t.open(w)
 	t.takeTurn(pos, wait)
-	t.apply(p)
+	t.apply(p, fix)
 }
 
-// apply is the member's Do it on proposal p: the tool runs with its
-// stored arguments, streamed, and the result lands in the conversation.
-// A refusal feeds the agent a turn, which reads the refused row and
-// answers it as an in-turn refusal; a success ends the stream.
-func (t *turn) apply(p factoryd.ChatProposal) {
+// poolCorrection is a member's correction of a set_pool proposal's
+// amount: eur alone, as the one number the member may change of what the
+// proposal captured — the operation, the reason and the baseline stay the
+// row's.
+type poolCorrection struct{ eur float64 }
+
+// correctionForm is what a corrected press's body holds, as its refusals
+// name it.
+const correctionForm = `one JSON object {"correction":{"eur":12}} and nothing else`
+
+// correctionBytes is the most a corrected press's body holds. One byte
+// past it and the body refuses whole, never reads as its first bytes
+// alone: a correction hidden past the bound must not read as none.
+const correctionBytes = 8 << 10
+
+// readPoolCorrection is the correction in the press's request: a body
+// holding none — the plain press of today — answers nil. A body over
+// correctionBytes never reads as a shorter one: it refuses whole. A body
+// holding one must be exactly the correction object: null, a string, a
+// bool, an object or an array for eur, a second correction, a field
+// beside eur, a duplicate of either, or JSON after the object refuses
+// with 400.
+func readPoolCorrection(r *http.Request) (*poolCorrection, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, correctionBytes+1))
+	if err != nil {
+		return nil, refuse(http.StatusBadRequest, "The correction's body does not read; press the proposal again.")
+	}
+	if len(body) > correctionBytes {
+		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("The correction's body is over %d bytes; press the proposal again.", correctionBytes))
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, nil
+	}
+	return decodePoolCorrection(body)
+}
+
+// decodePoolCorrection is readPoolCorrection's judgement of a body that
+// holds one.
+func decodePoolCorrection(body []byte) (*poolCorrection, error) {
+	wrong := func() error {
+		return refuse(http.StatusBadRequest, "The correction is "+correctionForm+".")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	next := func() (json.Token, error) {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, wrong()
+		}
+		return tok, nil
+	}
+	delim := func(tok json.Token, open byte) bool {
+		d, ok := tok.(json.Delim)
+		return ok && d == json.Delim(open)
+	}
+	tok, err := next()
+	if err != nil {
+		return nil, err
+	}
+	if !delim(tok, '{') {
+		return nil, wrong()
+	}
+	var fix poolCorrection
+	correction, eur := false, false
+	for dec.More() {
+		k, err := next()
+		if err != nil {
+			return nil, err
+		}
+		switch k.(string) {
+		case "correction":
+			if correction {
+				return nil, wrong()
+			}
+			correction = true
+			tok, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if !delim(tok, '{') {
+				return nil, wrong()
+			}
+			for dec.More() {
+				k, err := next()
+				if err != nil {
+					return nil, err
+				}
+				if k.(string) != "eur" || eur {
+					return nil, wrong()
+				}
+				eur = true
+				tok, err := next()
+				if err != nil {
+					return nil, err
+				}
+				n, ok := tok.(json.Number)
+				if !ok {
+					return nil, wrong()
+				}
+				f, err := n.Float64()
+				if err != nil {
+					return nil, refuse(http.StatusBadRequest, "a pool change's amount is a finite number in EUR")
+				}
+				fix.eur = f
+			}
+			if tok, err = next(); err != nil {
+				return nil, err
+			}
+			if !delim(tok, '}') {
+				return nil, wrong()
+			}
+		default:
+			return nil, wrong()
+		}
+	}
+	if tok, err = next(); err != nil {
+		return nil, err
+	}
+	if !delim(tok, '}') || !correction || !eur {
+		return nil, wrong()
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, wrong()
+	}
+	return &fix, nil
+}
+
+// against judges the correction against the proposal it corrects: only a
+// set_pool proposal's amount may be corrected, and the amount takes the
+// change's own rules — poolCents' with the row's captured action, reason
+// and source, so the correction writes no operation, reason or baseline
+// of its own.
+func (c *poolCorrection) against(p factoryd.ChatProposal) error {
+	if p.Pool == nil {
+		return refuse(http.StatusBadRequest, fmt.Sprintf("A %s proposal takes no correction: only the pool's amount may be corrected.", p.Tool))
+	}
+	if _, err := poolCents(poolChange{action: p.Pool.Action, eur: c.eur, reason: p.Pool.Reason, source: p.Pool.Source}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// stalePool is the captured pool change's guard before the stream: the
+// blob sha its proposal read against the project file on infra's main
+// now, with the write's own refusals — the file gone, or changed since
+// the proposal, which nothing rebases onto. The guarded writer checks
+// again under its lock.
+func (t *turn) stalePool(source string) error {
+	path := policy.ProjectFile(t.p.Name)
+	_, blob, present, err := t.c.infraFile(t.r.Context(), path)
+	switch {
+	case err != nil:
+		return err
+	case !present:
+		return refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+	case blob != source:
+		return refuse(http.StatusConflict, fmt.Sprintf("%s changed since the change was proposed (its blob is now %s): read it again and propose the change anew", path, blob))
+	}
+	return nil
+}
+
+// apply is the member's Do it on proposal p — fix, when the press
+// corrected it, the one amount the row lets change — the tool runs with
+// its stored arguments, streamed, and the result lands in the
+// conversation. A refusal feeds the agent a turn, which reads the refused
+// row and answers it as an in-turn refusal; a success ends the stream.
+func (t *turn) apply(p factoryd.ChatProposal, fix *poolCorrection) {
 	t.a.decider = "member"
+	t.pool = p.Pool
 	var in toolInput
 	tool, ok := t.c.chatTool(p.Tool)
 	result := "There is no tool " + p.Tool + "."
 	start := time.Now()
 	if ok && json.Unmarshal(p.Args, &in) == nil {
+		if fix != nil {
+			// the corrected press runs the captured change with its amount
+			// alone changed, in the row's arguments and in the tool's input
+			in.EUR = fix.eur
+			if b, err := json.Marshal(poolArgs{Action: p.Pool.Action, EUR: fix.eur, Reason: p.Pool.Reason}); err == nil {
+				p.Args = b
+			}
+		}
 		result = t.runTool(tool, string(p.Args), in)
 	}
 	t.freshRead = time.Now()
