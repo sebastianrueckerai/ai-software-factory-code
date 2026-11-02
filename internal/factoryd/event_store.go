@@ -131,6 +131,13 @@ const EventPlanReplanned = "plan_replanned"
 // poke it raises asks at the needs-you level.
 const EventChatBudgetSpent = "chat_budget_spent"
 
+// EventChatTokenMade and EventChatTokenRevoked are the console's record of
+// a human making or revoking a chat token: detail {"name"}, the token's name.
+const (
+	EventChatTokenMade    = "chat_token_made"
+	EventChatTokenRevoked = "chat_token_revoked"
+)
+
 // The pulse's own events, historical kinds: the pulse band the console
 // once showed under a project's status line had a cheap model write it,
 // and a computation started (pulse_computing) and ended (pulse, detail:
