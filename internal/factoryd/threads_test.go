@@ -130,7 +130,7 @@ func TestPGStoreChatThreads(t *testing.T) {
 		t.Errorf("thread 2 while the turn runs = %q, want %q", got, want)
 	}
 	for _, id := range []int64{q, qp} {
-		if err := s.StartQueued(ctx, repo, login, id); err != nil {
+		if _, err := s.StartQueued(ctx, repo, login, id); err != nil {
 			t.Fatal(err)
 		}
 	}

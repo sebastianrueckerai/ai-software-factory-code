@@ -310,3 +310,31 @@ func (c *Console) resume(ctx context.Context, p factoryd.Project, login string, 
 	}
 	t.run(task.ID, "")
 }
+
+// retryTurn answers login's thread n of project p once, when the turn
+// that read its rows failed and put them back to the queue: a quiet wake
+// turn (wakeTurn), behind any turn in flight there, whose own failure
+// strands the rows for the next member turn instead of chaining retries.
+func (c *Console) retryTurn(ctx context.Context, p factoryd.Project, login string, n int64) {
+	t, err := c.wakeTurn(ctx, p, login, n)
+	if err != nil {
+		log.Printf("console: retry thread %d of %s on %s: %v", n, login, p.Repository, err)
+		return
+	}
+	t.retry = true
+	pos, wait := c.turns.enter(t.key())
+	defer c.turns.leave(t.key())
+	t.quiet()
+	t.takeTurn(pos, wait)
+	if !t.queuedRows() {
+		return // another turn of the thread took the rows back
+	}
+	release := c.turns.slot(ctx, p.Repository, t.parallelTurns())
+	defer release()
+	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, t.cfg.MonthlyEUR, time.Now())
+	if err != nil {
+		log.Printf("console: the chat task of %s: %v", p.Name, err)
+		return
+	}
+	t.run(task.ID, "")
+}

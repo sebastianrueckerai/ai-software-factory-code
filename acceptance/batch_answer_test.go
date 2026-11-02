@@ -1036,17 +1036,26 @@ func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64
 	return 0, nil, nil
 }
 
-func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[i]
 	f.msgs = slices.Delete(f.msgs, i, i+1)
 	m.ID, m.Queued, m.At = f.nextID(), false, time.Now()
 	f.msgs = append(f.msgs, m)
+	return m.ID, nil
+}
+
+func (f *accBatchChat) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id }); i >= 0 {
+		f.msgs[i].Queued = true
+	}
 	return nil
 }
 

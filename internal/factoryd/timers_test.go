@@ -53,7 +53,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 		t.Fatal(err)
 	}
 	idManual := wakeMove(t, s, "sf/manual", "t-9", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 0 {
@@ -63,7 +63,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 		t.Fatalf("the manual cursor %d stayed behind its event %d", got, idManual)
 	}
 	id1 := wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -79,7 +79,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 		t.Fatalf("the cursor %d stayed behind the event %d", got, id1)
 	}
 	id2 := wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls = starter.recorded(); len(calls) != 1 {
@@ -90,7 +90,7 @@ func TestWatchedCardWakesAtAssistedOnItsThread(t *testing.T) {
 	}
 	*clock = clock.Add(61 * time.Second)
 	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls = starter.recorded(); len(calls) != 2 {
@@ -117,7 +117,7 @@ func TestTimerFiresOnceOnItsThread(t *testing.T) {
 	if err := s.AddChatTimer(t.Context(), "sf/wake", "sebastian", conv, clock.Add(30*time.Minute), "Too early.", ""); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -129,7 +129,7 @@ func TestTimerFiresOnceOnItsThread(t *testing.T) {
 		!strings.Contains(c.text, "Check the build.") {
 		t.Fatalf("the wake = %+v, want wake-proj sebastian on %d carrying the note", c, conv)
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls = starter.recorded(); len(calls) != 1 {
@@ -137,7 +137,7 @@ func TestTimerFiresOnceOnItsThread(t *testing.T) {
 	}
 	*clock = clock.Add(30 * time.Minute)
 	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd) // a move is not the timer's thread
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls = starter.recorded()
@@ -171,7 +171,7 @@ func TestWatchesDieWithTheCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 0 {
@@ -191,7 +191,7 @@ func TestWatchesDieWithTheCard(t *testing.T) {
 		t.Fatalf("the timers after the end = %+v, want only the unbound one", due)
 	}
 	wakeMove(t, s, "sf/wake", "t-1", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 0 {
@@ -248,7 +248,7 @@ func TestWakerPassIsolatesProjects(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass returned %v, want nil: one project's error is not the sweep's", err)
 	}
 	if calls := starter.recorded(); len(calls) != 2 {
@@ -295,7 +295,7 @@ func TestNoWakeWithoutAnEventOrTimer(t *testing.T) {
 	w, _, starter, clock := newWakeRig(t, nil)
 	for range 25 {
 		*clock = clock.Add(time.Hour)
-		if err := w.Pass(t.Context()); err != nil {
+		if err := drainPass(t, w); err != nil {
 			t.Fatalf("Pass: %v", err)
 		}
 	}
