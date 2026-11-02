@@ -1078,9 +1078,9 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	// plan fact seeds this fixture, so the planning panels stay empty —
 	// measured zeros where their own panels read, absence here
 	if len(d.PlansByRounds) != 0 || len(d.PlansByRoundsSpans) != 0 || len(d.CardsByRound) != 0 ||
-		len(d.ReplansByOrigin) != 0 {
-		t.Fatalf("planning panels = %+v %+v %+v %+v, want none beside the economics",
-			d.PlansByRounds, d.PlansByRoundsSpans, d.CardsByRound, d.ReplansByOrigin)
+		len(d.ReplansByOrigin) != 0 || len(d.ReplansByOriginSpans) != 0 {
+		t.Fatalf("planning panels = %+v %+v %+v %+v %+v, want none beside the economics",
+			d.PlansByRounds, d.PlansByRoundsSpans, d.CardsByRound, d.ReplansByOrigin, d.ReplansByOriginSpans)
 	}
 	// the deck's own figures stand: the dates asked, the window's five
 	// done cards, the window's 22 ledger euros — cb5's included, whatever
@@ -1289,8 +1289,9 @@ func TestDivideConquerCutsSQL(t *testing.T) {
 // filings of the first round against later ones, and its applied replans
 // by who asked them, the rounds and the filings compared name by name
 // over the window, the equal window before it and all seven weeks
-// (PlansByRoundsSpans, CardsByRound — the unknown round an explicit
-// bucket, rounds past the first each their own name). Rounds are
+// (PlansByRoundsSpans, CardsByRound, ReplansByOriginSpans — the
+// unknown round and the unknown origin explicit buckets, rounds past
+// the first and every origin each their own name). Rounds are
 // explicit round evidence as of the first closure — a filing's stamped
 // round, a round replan's row, the plan revisions the store kept —
 // never a count of revisions, never a round a revision filed after the
@@ -1298,7 +1299,13 @@ func TestDivideConquerCutsSQL(t *testing.T) {
 // in-window, t-plan-3 after its own); a card filed again keeps its
 // original filing's round and instant wherever it was filed (e6, first
 // in the previous window); a revision filing several cards is one
-// replan; a canonical card row neither suppresses a legacy
+// replan, the replan itself the revision's original row — earliest
+// first, so a duplicate observation landing in a later window files no
+// second replan and belongs, wherever the panels read it, to the window
+// its original instant falls in, its origin resolved as of the span's
+// own end — the week's own bucket its cutoff (the origin spans' own
+// fixture below holds the duplicates); a canonical card row neither
+// suppresses a legacy
 // revision-level replan (t-plan-5) nor counts as one, and a legacy row
 // doubles no canonical one; an originless gap keeps its own unknown
 // bucket; a canonical replacement arriving after the closure and the
@@ -1448,6 +1455,43 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		dcFiling(t, s, "t-plan-far", "sf/other9", 2, ReplanPerson, 0, "", 251,
 			map[string]any{"kept": 1, "changed": 0, "dropped": 0, "added": 0, "by": "", "comment": ""}, from.AddDate(0, 0, 6))
 		dcClosed(t, s, "t-plan-far", "sf/other9", from.AddDate(0, 0, 6))
+		// the origins' own fixture, a third repository apart: one replan
+		// of each origin in the window and one of each before it, the
+		// unknown bucket the window's alone — op-person's revision files
+		// two cards beside its legacy row and stays one replan, op-cut's
+		// replan beside the console's request on the card it filed and
+		// two retained cards no row holds, each still one replan
+		dcPlan(t, s, "op-person", "sf/dc-origin", 431)
+		dcPlanChild(t, s, "op-card-1", "op-person", "sf/dc-origin", 432)
+		dcPlanChild(t, s, "op-card-2", "op-person", "sf/dc-origin", 433)
+		dcLegacyReplan(t, s, "op-person", "sf/dc-origin", 431,
+			map[string]any{"revision": 2, "origin": ReplanPerson, "by": "ana", "comment": "too wide"}, from.AddDate(0, 0, 2))
+		dcFiling(t, s, "op-person", "sf/dc-origin", 2, ReplanPerson, 432, "oc1", 432, nil, from.AddDate(0, 0, 2))
+		dcFiling(t, s, "op-person", "sf/dc-origin", 2, ReplanPerson, 433, "oc2", 433, nil, from.AddDate(0, 0, 2))
+		dcPlan(t, s, "op-cut", "sf/dc-origin", 434)
+		dcPlanChild(t, s, "op-card-3", "op-cut", "sf/dc-origin", 435)
+		dcFiling(t, s, "op-cut", "sf/dc-origin", 2, ReplanCut, 0, "", 434,
+			map[string]any{"kept": 2, "changed": 0, "dropped": 0, "added": 1, "by": "", "comment": ""}, from.AddDate(0, 0, 8))
+		dcFiling(t, s, "op-cut", "sf/dc-origin", 2, ReplanCut, 435, "oc3", 435, nil, from.AddDate(0, 0, 8))
+		dcRecord(t, s, Event{Repository: "sf/dc-origin", TaskID: "op-card-3", IssueNumber: 435,
+			Kind: EventCardReplanned, Actor: "someone", Via: ViaFactoryd,
+			Detail: map[string]any{"into": []int64{436}}}, from.AddDate(0, 0, 9))
+		dcPlan(t, s, "op-round", "sf/dc-origin", 437)
+		dcFiling(t, s, "op-round", "sf/dc-origin", 2, ReplanRound, 0, "", 437,
+			map[string]any{"round": 2, "cards": []int64{}}, from.AddDate(0, 0, 10))
+		dcPlan(t, s, "op-unknown", "sf/dc-origin", 438)
+		dcLegacyReplan(t, s, "op-unknown", "sf/dc-origin", 438,
+			map[string]any{"revision": 2, "kept": 1}, from.AddDate(0, 0, 11))
+		// the previous window's own three: each origin's earliest
+		dcPlan(t, s, "op-early-person", "sf/dc-origin", 441)
+		dcLegacyReplan(t, s, "op-early-person", "sf/dc-origin", 441,
+			map[string]any{"revision": 2, "origin": ReplanPerson, "by": "ana"}, from.AddDate(0, 0, -12))
+		dcPlan(t, s, "op-early-cut", "sf/dc-origin", 442)
+		dcFiling(t, s, "op-early-cut", "sf/dc-origin", 2, ReplanCut, 0, "", 442,
+			map[string]any{"kept": 1, "changed": 0, "dropped": 0, "added": 1, "by": "", "comment": ""}, from.AddDate(0, 0, -6))
+		dcPlan(t, s, "op-early-round", "sf/dc-origin", 443)
+		dcFiling(t, s, "op-early-round", "sf/dc-origin", 2, ReplanRound, 0, "", 443,
+			map[string]any{"round": 2, "cards": []int64{}}, from.AddDate(0, 0, -11))
 	}
 	r, err := s.ProjectMetrics(context.Background(), "sf/dc9", from, to)
 	if err != nil {
@@ -1533,6 +1577,20 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		d.ReplansByOrigin[3] != (NamedCount{Name: "unknown", Count: 1}) {
 		t.Fatalf("replans by origin = %+v, want cut and person thrice each, round once and one unknown", d.ReplansByOrigin)
 	}
+	// the same origins compared over the window, the equal window before
+	// it and all seven weeks: alphabetical, the unknown bucket among
+	// them, a measured zero wherever an origin holds no replan, and
+	// round the previous window's alone (Sep 16, bucket 3) beside the
+	// window's own (Oct 6, bucket 6)
+	wantReplanSpans := []NamedFigure{
+		{Name: ReplanCut, Figure: Figure{Value: 3, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 2}}},
+		{Name: ReplanPerson, Figure: Figure{Value: 3, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 2}}},
+		{Name: ReplanRound, Figure: Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 1}}},
+		{Name: "unknown", Figure: Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
+	}
+	if !slices.Equal(d.ReplansByOriginSpans, wantReplanSpans) {
+		t.Fatalf("replans by origin spans = %+v, want %+v", d.ReplansByOriginSpans, wantReplanSpans)
+	}
 	// the same definitions answer the previous window: its closures
 	// (t-plan-3 Sep 20, t-plan-8 Sep 18) ran two rounds and three — its
 	// replans are the round's alone — and its filings carry e6's
@@ -1556,6 +1614,52 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 	if rp.DivideConquer.CardsFirstRound.Value != d.CardsFirstRound.Prev || rp.DivideConquer.CardsLaterRounds.Value != d.CardsLaterRounds.Prev {
 		t.Fatalf("previous filings %+v / %+v disagree with the report's own prev %v / %v",
 			rp.DivideConquer.CardsFirstRound, rp.DivideConquer.CardsLaterRounds, d.CardsFirstRound.Prev, d.CardsLaterRounds.Prev)
+	}
+	// the origins' own fixture, a repository apart: one replan of each
+	// origin in the window and one of each before it, the unknown bucket
+	// the window's alone — the several-cards revision one replan, the
+	// console's request and the retained cards adding nothing — so each
+	// origin's name answers one beside an equal previous, and every week
+	// carries its own instant alone
+	rOrigin, err := s.ProjectMetrics(context.Background(), "sf/dc-origin", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rOrigin.DivideConquer.ReplansByOrigin; len(got) != 4 ||
+		got[0] != (NamedCount{Name: ReplanCut, Count: 1}) || got[1] != (NamedCount{Name: ReplanPerson, Count: 1}) ||
+		got[2] != (NamedCount{Name: ReplanRound, Count: 1}) || got[3] != (NamedCount{Name: "unknown", Count: 1}) {
+		t.Fatalf("dc-origin replans by origin = %+v, want each origin once and the unknown separate", got)
+	}
+	wantOriginSpans := []NamedFigure{
+		{Name: ReplanCut, Figure: Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 1, 0, 1}}},
+		{Name: ReplanPerson, Figure: Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 1, 0}}},
+		{Name: ReplanRound, Figure: Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 1}}},
+		{Name: "unknown", Figure: Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
+	}
+	if !slices.Equal(rOrigin.DivideConquer.ReplansByOriginSpans, wantOriginSpans) {
+		t.Fatalf("dc-origin replans by origin spans = %+v, want %+v", rOrigin.DivideConquer.ReplansByOriginSpans, wantOriginSpans)
+	}
+	// the previous window's own report answers the equal previous: each
+	// origin one replan there, the unknown a measured zero alone
+	oprev, err := s.ProjectMetrics(context.Background(), "sf/dc-origin", prevFrom, prevTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := oprev.DivideConquer.ReplansByOrigin; len(got) != 3 ||
+		got[0] != (NamedCount{Name: ReplanCut, Count: 1}) || got[1] != (NamedCount{Name: ReplanPerson, Count: 1}) ||
+		got[2] != (NamedCount{Name: ReplanRound, Count: 1}) {
+		t.Fatalf("dc-origin previous replans by origin = %+v, want each origin once", got)
+	}
+	for _, nf := range rOrigin.DivideConquer.ReplansByOriginSpans {
+		if nf.Name == "unknown" {
+			if nf.Figure.Prev != 0 {
+				t.Fatalf("dc-origin unknown previous = %v, want the measured zero", nf.Figure.Prev)
+			}
+			continue
+		}
+		if nf.Figure.Value != 1 || nf.Figure.Prev != 1 {
+			t.Fatalf("dc-origin %s = %+v, want one replan beside an equal previous", nf.Name, nf.Figure)
+		}
 	}
 	// and one week of the spark, [Sep 29, Oct 6): t-plan-1 closes
 	// inside it at two rounds, t-plan-2's Oct 6 closure stays outside;
@@ -1592,6 +1696,23 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		t.Fatalf("sf/other9 filings %v replans %+v, want its own alone",
 			ro.DivideConquer.CardsFirstRound.Value, ro.DivideConquer.ReplansByOrigin)
 	}
+	// the origins' own later evidence: a duplicate observation of
+	// op-early-person's revision lands in the window naming another
+	// origin, its canonical replacement arrives after the previous
+	// window's own end — as does another repository's row on
+	// op-unknown's revision — and none of it refiles anything: the
+	// revision stays the previous window's replan wherever the panels
+	// read it, its origin the one the older spans named
+	dcLegacyReplan(t, s, "op-early-person", "sf/dc-origin", 441,
+		map[string]any{"revision": 2, "origin": ReplanCut}, from.AddDate(0, 0, 12))
+	dcFiling(t, s, "op-early-person", "sf/dc-origin", 2, ReplanRound, 0, "", 441,
+		map[string]any{"round": 9, "cards": []int64{}}, from.AddDate(0, 0, 12))
+	if id := dcRecord(t, s, Event{Repository: "sf/other-origin", TaskID: "op-unknown", IssueNumber: 438,
+		Kind: EventPlanReplanned, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail:      map[string]any{"revision": 2, "origin": ReplanPerson},
+		IdentityKey: identityKey(EventPlanReplanned, "op-unknown", "2")}, from.AddDate(0, 0, 13)); id == 0 {
+		t.Fatal("the other repository's replacement recorded no row")
+	}
 	// the canonical replacement of t-plan-6's revision 3 arrives after
 	// the window and the closure, naming a round the plan never ran:
 	// no earlier answer moves — the revision-level origin stays counted
@@ -1605,13 +1726,51 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 	}
 	a := again.DivideConquer
 	if !slices.Equal(a.PlansByRounds, d.PlansByRounds) || !slices.Equal(a.PlansByRoundsSpans, d.PlansByRoundsSpans) ||
-		!slices.Equal(a.ReplansByOrigin, d.ReplansByOrigin) {
-		t.Fatalf("after the late replacement: plans %+v spans %+v replans %+v, want the older answers %+v %+v %+v",
-			a.PlansByRounds, a.PlansByRoundsSpans, a.ReplansByOrigin, d.PlansByRounds, d.PlansByRoundsSpans, d.ReplansByOrigin)
+		!slices.Equal(a.ReplansByOrigin, d.ReplansByOrigin) || !slices.Equal(a.ReplansByOriginSpans, d.ReplansByOriginSpans) {
+		t.Fatalf("after the late replacement: plans %+v spans %+v replans %+v %+v, want the older answers %+v %+v %+v %+v",
+			a.PlansByRounds, a.PlansByRoundsSpans, a.ReplansByOrigin, a.ReplansByOriginSpans,
+			d.PlansByRounds, d.PlansByRoundsSpans, d.ReplansByOrigin, d.ReplansByOriginSpans)
 	}
 	if a.CardsFirstRound != d.CardsFirstRound || a.CardsLaterRounds != d.CardsLaterRounds ||
 		!slices.Equal(a.CardsByRound, d.CardsByRound) {
 		t.Fatalf("after the late replacement: first %+v later %+v by round %+v, want the older answers %+v %+v %+v",
 			a.CardsFirstRound, a.CardsLaterRounds, a.CardsByRound, d.CardsFirstRound, d.CardsLaterRounds, d.CardsByRound)
+	}
+	// and the origins' answers stand after all the later evidence: the
+	// window's counts and spans identical — the re-observed revision
+	// moved nowhere, the cross-repository row won nothing — and the
+	// previous windows' own reports answer identically too, their
+	// origins and rounds never rewritten by what arrived after their
+	// ends
+	againOrigin, err := s.ProjectMetrics(context.Background(), "sf/dc-origin", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(againOrigin.DivideConquer.ReplansByOrigin, rOrigin.DivideConquer.ReplansByOrigin) ||
+		!slices.Equal(againOrigin.DivideConquer.ReplansByOriginSpans, rOrigin.DivideConquer.ReplansByOriginSpans) {
+		t.Fatalf("after the later evidence: dc-origin replans %+v spans %+v, want the older answers %+v %+v",
+			againOrigin.DivideConquer.ReplansByOrigin, againOrigin.DivideConquer.ReplansByOriginSpans,
+			rOrigin.DivideConquer.ReplansByOrigin, rOrigin.DivideConquer.ReplansByOriginSpans)
+	}
+	againPrev, err := s.ProjectMetrics(context.Background(), "sf/dc-origin", prevFrom, prevTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(againPrev.DivideConquer.ReplansByOrigin, oprev.DivideConquer.ReplansByOrigin) ||
+		!slices.Equal(againPrev.DivideConquer.ReplansByOriginSpans, oprev.DivideConquer.ReplansByOriginSpans) {
+		t.Fatalf("after the later evidence: dc-origin previous replans %+v spans %+v, want the older answers %+v %+v",
+			againPrev.DivideConquer.ReplansByOrigin, againPrev.DivideConquer.ReplansByOriginSpans,
+			oprev.DivideConquer.ReplansByOrigin, oprev.DivideConquer.ReplansByOriginSpans)
+	}
+	againPP, err := s.ProjectMetrics(context.Background(), "sf/dc9", prevFrom, prevTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(againPP.DivideConquer.PlansByRounds, rp.DivideConquer.PlansByRounds) ||
+		!slices.Equal(againPP.DivideConquer.ReplansByOrigin, rp.DivideConquer.ReplansByOrigin) ||
+		!slices.Equal(againPP.DivideConquer.ReplansByOriginSpans, rp.DivideConquer.ReplansByOriginSpans) {
+		t.Fatalf("after the later evidence: sf/dc9 previous rounds %+v replans %+v spans %+v, want the older answers %+v %+v %+v",
+			againPP.DivideConquer.PlansByRounds, againPP.DivideConquer.ReplansByOrigin, againPP.DivideConquer.ReplansByOriginSpans,
+			rp.DivideConquer.PlansByRounds, rp.DivideConquer.ReplansByOrigin, rp.DivideConquer.ReplansByOriginSpans)
 	}
 }

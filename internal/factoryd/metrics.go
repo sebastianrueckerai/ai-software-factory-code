@@ -598,6 +598,11 @@ type DivideConquer struct {
 	// window or a weekly bucket holds is not lost.
 	PlansByRoundsSpans []NamedFigure `json:"plans_by_rounds_spans"`
 	CardsByRound       []NamedFigure `json:"cards_by_round"`
+	// ReplansByOriginSpans compares panel 12's named counts over the
+	// window, the equal window before it and all seven weeks: the
+	// origins alphabetical, the unknown bucket among them, and a name
+	// only the previous window or a weekly bucket holds is not lost.
+	ReplansByOriginSpans []NamedFigure `json:"replans_by_origin_spans"`
 }
 
 // MetricsReport is every figure of one project over one window, the
@@ -1730,7 +1735,7 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 	if d.CardsFirstRound, d.CardsLaterRounds, d.CardsByRound, err = metricDivideCardFilings(ctx, db, repo, w); err != nil {
 		return d, err
 	}
-	if d.ReplansByOrigin, err = metricDivideReplans(ctx, db, repo, w); err != nil {
+	if d.ReplansByOrigin, d.ReplansByOriginSpans, err = metricDivideReplans(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	return d, nil
@@ -2286,39 +2291,80 @@ func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w met
 }
 
 // metricDivideReplans — panel 12: the window's applied replans by who
-// asked them — a person, a cut, a round. A replan is the revision's own
-// plan_replanned row, one per plan and revision however many cards the
-// revision filed; the cards' rows answer the filings panel, not this
-// one, and never suppress a revision's own. Only the repository's own
-// rows are eligible, scoped before the deduplication: a row another
-// repository recorded on the same task — its task's reach holds it —
-// neither wins the revision's origin nor replaces the local one. A row
-// the identity contract never covered, one no canonical revision-level
-// row of its revision holds as of the window's own end, keeps the
-// origin its detail names — or its own unknown bucket where it names
-// none; nothing guesses a name, and a canonical replacement arriving
-// after the window never rewrites the older answer.
-func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
-	rows, err := db.QueryContext(ctx, `SELECT r.name, count(*)::float8 FROM (
-			SELECT DISTINCT ON (e.task_id, e.detail->>'revision')
-				CASE WHEN e.detail->>'origin' IN ('`+ReplanPerson+`', '`+ReplanCut+`', '`+ReplanRound+`')
-					THEN e.detail->>'origin' ELSE 'unknown' END AS name
+// asked them — a person, a cut, a round — one aggregation behind the
+// window's own names and the whole named comparison. A replan is one
+// logical transition of a plan's revision: its original row, selected
+// over the repository's own history before any cohort bound — earliest
+// first — so a revision re-observed in a later window files no second
+// replan, and the transition belongs, wherever the panels read it, to
+// the window its original instant falls in. A card's own canonical
+// filing row is a separate identity, never a stand-in for the
+// transition; a row another repository recorded on the same plan — the
+// task's reach holds it — neither wins the revision's origin nor
+// replaces the local evidence. The origin a span names is the canonical
+// revision-level row of the same revision the span's own end saw — a
+// replacement arriving later never rewrites the older answer, each
+// weekly bucket its own end its cutoff — and where none arrived, the
+// original row's own words; what neither names keeps the unknown
+// bucket, never a guess.
+func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, []NamedFigure, error) {
+	// transitions reads each plan revision's original row, bounded above
+	// by the cohort's own end — a row after it can never be the original
+	// of a cohort count — and names the origin at the cutoff the
+	// caller's span holds: the canonical revision-level row of the same
+	// revision the cutoff saw, else the original row's own.
+	transitions := func(cutoff string) string {
+		return `SELECT DISTINCT ON (e.task_id, e.detail->>'revision') e.at,
+				COALESCE((
+					SELECT CASE WHEN k.detail->>'origin' IN ('` + ReplanPerson + `', '` + ReplanCut + `', '` + ReplanRound + `')
+						THEN k.detail->>'origin' ELSE 'unknown' END
+					FROM events k
+					WHERE k.task_id = e.task_id AND k.repository = e.repository AND k.kind = 'plan_replanned'
+						AND k.identity_key IS NOT NULL AND k.detail->>'card' IS NULL
+						AND k.detail->>'revision' = e.detail->>'revision' AND k.at < ` + cutoff + `
+					ORDER BY k.at, k.id LIMIT 1
+				),
+				CASE WHEN e.detail->>'origin' IN ('` + ReplanPerson + `', '` + ReplanCut + `', '` + ReplanRound + `')
+					THEN e.detail->>'origin' ELSE 'unknown' END) AS name
 			FROM events e JOIN tasks t ON t.id = e.task_id
-			WHERE `+dcCardReach+` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
-				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling("k.at < $3")+`)
-			ORDER BY e.task_id, e.detail->>'revision', e.identity_key IS NULL, e.at, e.id
-		) r GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To) // #nosec G202 -- the query is built from the package's constant fragments
+			WHERE ` + dcCardReach + ` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
+				AND e.at < $3
+			ORDER BY e.task_id, e.detail->>'revision', e.at, e.id`
+	}
+	counts := func(t string) string {
+		return fmt.Sprintf(`SELECT r.name, count(*)::float8 FROM (%s) r
+			WHERE r.at >= $2 AND r.at < $3 GROUP BY 1`, t)
+	}
+	cur, err := dcRoundCounts(ctx, db, repo, counts(transitions("$3")), w.From, w.To)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer rows.Close()
-	var out []NamedCount
-	for rows.Next() {
-		var nc NamedCount
-		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
-			return nil, err
+	prev, err := dcRoundCounts(ctx, db, repo, counts(transitions("$3")), w.PrevFrom, w.PrevTo)
+	if err != nil {
+		return nil, nil, err
+	}
+	namedWeeks, err := metricNamedWeeks(ctx, db, fmt.Sprintf(
+		`SELECT %s, r.name, count(*)::float8 FROM (%s) r
+			WHERE r.at >= $2 AND r.at < $3 GROUP BY 1, 2`,
+		metricBucketFrom("r.at", "$2"), transitions(metricBucketEnd("e.at", "$2"))), repo, w.SparkFrom, w.To)
+	if err != nil {
+		return nil, nil, err
+	}
+	// the window's own names, the heaviest origin first and alphabetical
+	// among equals — the order the named counts always answered
+	var scalar []NamedCount
+	for name, n := range cur {
+		scalar = append(scalar, NamedCount{Name: name, Count: n})
+	}
+	sort.Slice(scalar, func(i, j int) bool {
+		if scalar[i].Count != scalar[j].Count {
+			return scalar[i].Count > scalar[j].Count
 		}
-		out = append(out, nc)
-	}
-	return out, rows.Err()
+		return scalar[i].Name < scalar[j].Name
+	})
+	// the origins carry no order of their own: alphabetical, the unknown
+	// bucket among them, deterministic whatever the origins were
+	figs := dcNamedFigures(cur, prev, namedWeeks)
+	sort.Slice(figs, func(i, j int) bool { return figs[i].Name < figs[j].Name })
+	return scalar, figs, nil
 }
