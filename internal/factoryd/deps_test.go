@@ -619,7 +619,7 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 				t.Fatalf("started %q, signals %q; want the replacement started and dep_ended to B", wf.started, wf.signals)
 			}
 			want := []string{"GET issues", "POST issues", "PUT issues/9/labels", "GET fork branch factory/" + n.ID, "POST fork branches factory/" + n.ID,
-				"POST issues/5/comments", "PATCH issues/5"}
+				"POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5"}
 			if !slices.Equal(fj.calls, want) {
 				t.Fatalf("forgejo calls\n%q\nwant\n%q", fj.calls, want)
 			}

@@ -825,7 +825,11 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			if r.Method == "GET" {
 				var list []map[string]any
 				for _, d := range f.issues[n].deps {
-					list = append(list, map[string]any{"number": d})
+					state := "open"
+					if is := f.issues[d]; is != nil {
+						state = is.state
+					}
+					list = append(list, map[string]any{"number": d, "state": state})
 				}
 				json.NewEncoder(w).Encode(list)
 				break
@@ -833,8 +837,14 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			if body["owner"] != "linkshort" || body["repo"] != "linkshort" {
 				t.Errorf("dependency body %v", body)
 			}
-			f.issues[n].deps = append(f.issues[n].deps, int64(body["index"].(float64)))
+			dep := int64(body["index"].(float64))
 			call = fmt.Sprintf("%s %v", call, body["index"])
+			if r.Method == "DELETE" {
+				f.issues[n].deps = slices.DeleteFunc(f.issues[n].deps, func(d int64) bool { return d == dep })
+				w.Write([]byte(`{}`))
+				break
+			}
+			f.issues[n].deps = append(f.issues[n].deps, dep)
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{}`))
 		case r.Method == "GET" && len(parts) == 3 && parts[2] == "comments":
@@ -861,6 +871,10 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode([]any{})
 		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
+			if body["state"] == "closed" && slices.ContainsFunc(f.issues[n].deps, func(d int64) bool { return f.issues[d] == nil || f.issues[d].state == "open" }) {
+				http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
+				break
+			}
 			f.issues[n].state = body["state"].(string)
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{}`))

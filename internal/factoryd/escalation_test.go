@@ -822,7 +822,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatal(err)
 	}
-	check("fresh", store, fj, []string{comment}, "closed", true, "POST issues/5/comments", "PATCH issues/5")
+	check("fresh", store, fj, []string{comment}, "closed", true, "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
 	if got := recorded(store); !reflect.DeepEqual(got, intent(comment)) {
 		t.Fatalf("intake events %+v, want %+v", got, intent(comment))
 	}
@@ -832,12 +832,12 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
 		t.Fatal("a failed close returned no error")
 	}
-	check("close failed", store, fj, []string{comment}, "open", false, "POST issues/5/comments", "PATCH issues/5")
+	check("close failed", store, fj, []string{comment}, "open", false, "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
 	fj.calls = nil
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatal(err)
 	}
-	check("close retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "PATCH issues/5")
+	check("close retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
 	if got := recorded(store); !reflect.DeepEqual(got, intent(comment)) {
 		t.Fatalf("intake events %+v, want one intent %+v", got, intent(comment))
 	}
@@ -847,7 +847,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, ""); err != nil {
 		t.Fatal(err)
 	}
-	check("no comment", store, fj, nil, "closed", true, "PATCH issues/5")
+	check("no comment", store, fj, nil, "closed", true, "GET issues/5/dependencies", "PATCH issues/5")
 	if got := recorded(store); !reflect.DeepEqual(got, intent("")) {
 		t.Fatalf("intake events %+v, want %+v", got, intent(""))
 	}
@@ -863,7 +863,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, "factoryd: closing this issue for another reason."); err != nil {
 		t.Fatal(err)
 	}
-	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5")
+	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
 
 	// (e) Forgejo refuses the comment: the issue closes without it
 	store, fj, f = rig("POST issues/5/comments")
@@ -871,7 +871,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatalf("a refused comment: %v, want the close", err)
 	}
-	check("comment refused", store, fj, nil, "closed", true, "POST issues/5/comments", "PATCH issues/5")
+	check("comment refused", store, fj, nil, "closed", true, "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
 
 	// (f) a record from before the comment was kept has none to post
 	store, fj, f = rig("")
@@ -879,7 +879,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatal(err)
 	}
-	check("record without a comment", store, fj, nil, "closed", true, "PATCH issues/5")
+	check("record without a comment", store, fj, nil, "closed", true, "GET issues/5/dependencies", "PATCH issues/5")
 
 	// the record fails: nothing is posted or closed
 	store, fj, f = rig("")
@@ -888,4 +888,20 @@ func TestCloseIssueAsFactory(t *testing.T) {
 		t.Fatal("a failed record returned no error")
 	}
 	check("record failed", store, fj, nil, "open", false)
+}
+
+// An ending card waits on nothing: closeIssueAsFactory drops the issue's
+// dependencies on open issues, which Forgejo's close refuses while one
+// stands (412), and keeps those on closed issues as history.
+func TestCloseIssueAsFactoryDropsOpenDependencies(t *testing.T) {
+	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open", deps: []int64{6, 7}}, 6: {state: "open"}, 7: {state: "closed"}}}
+	f := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	store := newFakeStore()
+	if err := closeIssueAsFactory(context.Background(), store, f, Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"GET issues/5/dependencies", "DELETE issues/5/dependencies 6", "PATCH issues/5"}; !slices.Equal(fj.calls, want) ||
+		!slices.Equal(fj.issues[5].deps, []int64{7}) || fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] {
+		t.Fatalf("calls %q, #5 on %v and %s; want %q, #5 on #7 alone and closed, the close confirmed", fj.calls, fj.issues[5].deps, fj.issues[5].state, want)
+	}
 }

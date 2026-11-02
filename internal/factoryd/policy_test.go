@@ -570,7 +570,7 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 			json.NewEncoder(w).Encode(append([]map[string]any{}, open...)) // #nosec G104 -- test stub
 			return
 		}
-		if r.Method == http.MethodGet && fmtScan(path, "issues/%d/comments", new(int64)) {
+		if r.Method == http.MethodGet && (fmtScan(path, "issues/%d/comments", new(int64)) || fmtScan(path, "issues/%d/dependencies", new(int64))) {
 			io.WriteString(w, `[]`)
 			return
 		}

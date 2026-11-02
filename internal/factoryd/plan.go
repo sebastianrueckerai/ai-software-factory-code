@@ -3408,7 +3408,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			return nil, err
 		}
 		for _, d := range dependsOn(order, edges, c.Key) {
-			if dep := cards[d]; !slices.Contains(have, dep.IssueNumber) {
+			if dep := cards[d]; have[dep.IssueNumber] == "" {
 				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.IssueNumber); err != nil {
 					return nil, err
 				}
@@ -3439,18 +3439,19 @@ func (f *Forgejo) EditIssueComment(ctx context.Context, owner, repo string, id i
 	return err
 }
 
-// IssueDependencies are the numbers of the issues issue number depends on
-// (Forgejo's blocking dependencies), all pages.
-func (f *Forgejo) IssueDependencies(ctx context.Context, owner, repo string, number int64) ([]int64, error) {
+// IssueDependencies are the issues issue number depends on (Forgejo's
+// blocking dependencies), all pages: each number's state, open or closed.
+func (f *Forgejo) IssueDependencies(ctx context.Context, owner, repo string, number int64) (map[int64]string, error) {
 	deps, err := GetPages[struct {
-		Number int64 `json:"number"`
+		Number int64  `json:"number"`
+		State  string `json:"state"`
 	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies?", owner, repo, number))
 	if err != nil {
 		return nil, err
 	}
-	out := make([]int64, 0, len(deps))
+	out := make(map[int64]string, len(deps))
 	for _, d := range deps {
-		out = append(out, d.Number)
+		out[d.Number] = d.State
 	}
 	return out, nil
 }
@@ -3469,20 +3470,26 @@ func (f *Forgejo) AddIssueDependency(ctx context.Context, repo Repo, number, dep
 // SetIssueDependency makes issue number of repo depend on issue
 // dependency, or with remove no longer, as the bot; an issue already as
 // asked is left alone, so a retry or a change made in Forgejo fails
-// nothing. The delete takes any 2xx (swagger issueRemoveIssueDependencies
-// says 200, where the add answers 201).
+// nothing.
 func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dependency int64, remove bool) error {
 	have, err := f.IssueDependencies(ctx, repo.Owner, repo.Name, number)
 	if err != nil {
 		return err
 	}
-	has := slices.Contains(have, dependency)
+	_, has := have[dependency]
 	switch {
 	case has && !remove, !has && remove:
 		return nil
 	case !remove:
 		return f.AddIssueDependency(ctx, repo, number, dependency)
 	}
+	return f.RemoveIssueDependency(ctx, repo, number, dependency)
+}
+
+// RemoveIssueDependency drops issue number's dependency on issue
+// dependency of the same repository (swagger issueRemoveIssueDependencies
+// says 200, where the add answers 201, so any 2xx).
+func (f *Forgejo) RemoveIssueDependency(ctx context.Context, repo Repo, number, dependency int64) error {
 	payload, err := json.Marshal(map[string]any{"owner": repo.Owner, "repo": repo.Name, "index": dependency})
 	if err != nil {
 		return err
