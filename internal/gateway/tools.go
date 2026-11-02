@@ -1175,7 +1175,7 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxImagePath))
 	case len(in.CardImage) > maxCardImage:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("card_image is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
-	case len(in.Ask) > maxImageAsk:
+	case utf8.RuneCountInString(in.Ask) > maxImageAsk:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters", maxImageAsk))
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), imageLookTimeout)

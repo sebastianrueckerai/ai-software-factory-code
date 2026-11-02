@@ -378,7 +378,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   repository). `factoryd-project` also carries registration's Secrets and
   is never bound in a seed namespace.
 - `analyze_image` (exactly one of `path` and `card_image`, an optional
-  `ask` of at most 2000 bytes): free, listed as `analyze_image: {}` by a
+  `ask` of at most 2000 characters): free, listed as `analyze_image: {}` by a
   class that names `vision_model` (the loader refuses one without). The
   look is one call of the class's vision alias on the card's account
   (purpose `vision`, the chat's door): it books as a model call and the

@@ -229,8 +229,10 @@ func (c *checkinServe) under(path string) (string, error) {
 	return p, nil
 }
 
-// serveRead answers {"path"} with the bytes read reads of that workspace
-// file, typed as they sniff; a refusal is read's sentence and status.
+// serveRead answers {"path"} with that workspace file's bytes as read
+// returns them, typed as they sniff; a refusal is read's sentence and
+// status. The body holds a path the gateway admits, 4096 bytes, even with
+// every byte JSON-escaped to six.
 func serveRead(authorized func(http.ResponseWriter, *http.Request) bool, read func(string) ([]byte, int, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
@@ -239,7 +241,7 @@ func serveRead(authorized func(http.ResponseWriter, *http.Request) bool, read fu
 		var in struct {
 			Path string `json:"path"`
 		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Path == "" {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&in); err != nil || in.Path == "" {
 			http.Error(w, `want {"path": "..."}`, http.StatusBadRequest)
 			return
 		}
@@ -310,8 +312,10 @@ func (c *checkinServe) read(path string, max int, dir string) ([]byte, int, erro
 	defer root.Close() // #nosec G307 -- a read-only root's close failure is not worth an answer
 	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		return nil, http.StatusNotFound, fmt.Errorf("no file %s in the workspace", path)
+	case errors.Is(err, syscall.ENAMETOOLONG), errors.Is(err, syscall.EINVAL):
+		return nil, http.StatusBadRequest, fmt.Errorf("%s is not a path a file can have: name a file of the workspace", path)
 	case errors.Is(err, os.ErrPermission):
 		return nil, http.StatusForbidden, fmt.Errorf("%s cannot be read", path)
 	case err != nil:

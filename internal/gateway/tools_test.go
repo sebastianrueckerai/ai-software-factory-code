@@ -1649,13 +1649,14 @@ func TestAnalyzeImageToolRefusesBadArguments(t *testing.T) {
 	for _, ok := range []map[string]any{
 		{"path": strings.Repeat("a", 4096)},
 		{"card_image": strings.Repeat("a", 512), "ask": strings.Repeat("a", 2000)},
+		{"card_image": "img1", "ask": strings.Repeat("é", 2000)},
 	} {
 		if text, isErr := e.call(t, policy.ToolAnalyzeImage, ok); isErr {
 			t.Errorf("refused: %q", text)
 		}
 	}
-	if len(e.looker.calls) != 2 {
-		t.Fatalf("calls = %d, want only the two valid ones", len(e.looker.calls))
+	if len(e.looker.calls) != 3 {
+		t.Fatalf("calls = %d, want only the three valid ones", len(e.looker.calls))
 	}
 }
 

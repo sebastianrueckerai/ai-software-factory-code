@@ -324,7 +324,11 @@ func postImage(t *testing.T, h http.Handler, auth, path string) (int, string, st
 
 func postRead(t *testing.T, h http.Handler, route, auth, path string) (int, string, string) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, route, strings.NewReader(fmt.Sprintf(`{"path":%q}`, path)))
+	body, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, route, bytes.NewReader(body))
 	req.Header.Set("Authorization", auth)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -428,6 +432,11 @@ func TestFileEndpoint(t *testing.T) {
 	}
 	h := checkinHandler(t, newCheckinServe(ws))
 	const auth = "Bearer session-secret"
+	// the gateway admits a path of 4096 bytes: in short names, in one name
+	// over the file system's 255, and in bytes JSON escapes to six each
+	longPath := strings.Repeat("a/", 2047) + "aa"
+	longName := strings.Repeat("n", 300)
+	quoted := strings.Repeat("\x01", 4096)
 
 	for name, tc := range map[string]struct {
 		path   string
@@ -446,6 +455,11 @@ func TestFileEndpoint(t *testing.T) {
 		"an image":              {"shot.png", 415, "shot.png is not UTF-8 text, which a digest reads\n"},
 		"a NUL byte":            {"nul.txt", 415, "nul.txt is not UTF-8 text, which a digest reads\n"},
 		"not UTF-8":             {"latin1.txt", 415, "latin1.txt is not UTF-8 text, which a digest reads\n"},
+		"under a file":          {"docs/plan.md/x", 404, "no file docs/plan.md/x in the workspace\n"},
+		"a name too long":       {longName, 400, longName + " is not a path a file can have: name a file of the workspace\n"},
+		"a NUL in the path":     {"docs/plan\x00.md", 400, "docs/plan\x00.md is not a path a file can have: name a file of the workspace\n"},
+		"the longest path":      {longPath, 404, "no file " + longPath + " in the workspace\n"},
+		"escaped to the limit":  {quoted, 400, quoted + " is not a path a file can have: name a file of the workspace\n"},
 	} {
 		code, _, body := postRead(t, h, "/file", auth, tc.path)
 		if code != tc.status || body != tc.body {

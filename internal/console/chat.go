@@ -1813,7 +1813,7 @@ func (t *turn) imageNamed(name string) (*factoryd.ChatAttachment, error) {
 // image under in.Name, looked at once by the vision model on the chat
 // task's account.
 func (t *turn) lookImage(in toolInput) (string, error) {
-	if ask := strings.TrimSpace(in.Ask); len(ask) > 2000 {
+	if ask := strings.TrimSpace(in.Ask); utf8.RuneCountInString(ask) > 2000 {
 		return "", refuse(http.StatusBadRequest, "ask: what to look for, at most 2000 characters")
 	}
 	found, err := t.imageNamed(in.Name)
