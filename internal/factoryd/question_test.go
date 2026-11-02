@@ -18,6 +18,8 @@ func TestShapedQuestionFamilies(t *testing.T) {
 	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
 	timeFacts := facts
 	timeFacts.CheckinTime = 5 * time.Minute
+	prFacts := facts
+	prFacts.PR = 1482
 	for name, tt := range map[string]struct {
 		reason string
 		facts  QuestionFacts
@@ -42,6 +44,13 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
 			whyHas: []string{"€4.10 of its €5.00 budget"},
 			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
+			values: []string{AnswerGrant, AnswerPark, AnswerClose},
+		},
+		"check-in share spent, pull request open": {
+			reason: checkinSpendAsk + CheckinShareSpent,
+			facts:  prFacts,
+			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
+			info:   "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in time cap": {

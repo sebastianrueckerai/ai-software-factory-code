@@ -314,7 +314,9 @@ func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
 	info := continueInfo
-	if f.CheckinGrant > 0 {
+	// with the pull request open the answer verifies its head again and
+	// grants nothing (versionCheckinSpend)
+	if f.CheckinGrant > 0 && f.PR == 0 {
 		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f) and starts the session again with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
 	}
 	q := &HumanQuestion{
