@@ -736,6 +736,19 @@ func rerunQuestion(index int64, sha, failed string, lost []string, why string) H
 	}
 }
 
+// stillRedQuestion is the human card of a red main whose remedy merged
+// while main's push run index at sha, at link, is red still.
+func stillRedQuestion(index int64, sha, remedy, link string) HumanQuestion {
+	return HumanQuestion{
+		Ask: askOf(fmt.Sprintf("main is still red at %s after %s merged", sha[:min(7, len(sha))], remedy), ": a person decides."),
+		Why: fmt.Sprintf("Main CI's push run %d of %s failed after %s merged. factoryd files one automatic remedy for a red main, "+
+			"the fix-forward card or the revert after it, and main stayed red after it, so a person decides.", index, sha, remedy),
+		Info: "The run: " + link + "\n\nRead its log, then fix main or revert by hand. The project's merge queue is paused until a push run of " +
+			"main is green: that run ends the pause, and factoryd closes this issue.",
+		Choices: []QuestionChoice{{AnswerClose, "Fixed, close"}},
+	}
+}
+
 // configRejectedQuestion is the card of a configuration tree dir factoryd
 // refused at commit short: stays says which version holds, link is the
 // tree, reasons the loader's refusal.
