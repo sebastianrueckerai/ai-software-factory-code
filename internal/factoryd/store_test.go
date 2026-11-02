@@ -4519,3 +4519,88 @@ func TestUnnamedOpenPlansListsOnlyNamelessOpenPlans(t *testing.T) {
 		t.Fatalf("UnnamedOpenPlans = %q, want %q", ids, want)
 	}
 }
+
+const endedIssuesBackfill = "factoryd/20261113100000_ended_card_issues.sql"
+
+// The backfill hands the issues of ended cards that stood open to the heal
+// pass, once. The factory's closes of closed cards stand unconfirmed again
+// (c-1 and c-2, dropped cards Forgejo refused to close: 412), a closed
+// card's close of an older issue too, so the heal pass reads each issue;
+// d-1's close of a done card stays confirmed. A merged factory-PR card of
+// the agent lane gets the close its done end now writes (#1157 and #1333
+// as reverts, a template update in merged), one with a close keeps it;
+// a human-lane schema copy, a failed revert and a card with no issue get
+// none. A plan with plan_closed gets a close with no comment (#495), a
+// plan without none. A second run changes nothing.
+func TestEndedCardIssuesBackfill(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_ended_card_issues"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, pr_number, finished_at) VALUES
+			('c-1', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 1355, 0, now()),
+			('c-2', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 1356, 0, now()),
+			('c-3', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'direct', 1400, 0, now()),
+			('d-1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'direct', 1401, 0, now()),
+			('rv-1157', 1, 0, 'done', 'sf/r', 'agent', 'revert', 'direct', 1157, 1156, now()),
+			('rv-1333', 1, 0, 'done', 'sf/r', 'agent', 'revert', 'direct', 1333, 1332, now()),
+			('tu-6', 1, 0, 'merged', 'sf/r', 'agent', 'template-update', 'direct', 6, 5, now()),
+			('tu-8', 1, 0, 'done', 'sf/r', 'agent', 'template-update', 'direct', 8, 7, now()),
+			('sc-9', 1, 0, 'done', 'sf/r', 'human', 'schema-copy', 'direct', 9, 10, now()),
+			('rv-11', 1, 0, 'failed', 'sf/r', 'agent', 'revert', 'direct', 11, 12, now()),
+			('gs-0', 1, 0, 'done', 'sf/r', 'agent', 'github-sync', 'direct', 0, 13, now()),
+			('p-495', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 495, 0, now()),
+			('p-496', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 496, 0, now())`,
+		`INSERT INTO intake_events (task_id, kind, author, body, comment_id, created_at, confirmed_at) VALUES
+			('c-1', 'factory_closed', 'factoryd', 'factoryd: task c-1 closed: the plan''s revision 10 drops it', 1355, '2026-11-01 09:00+00', '2026-11-01 09:06+00'),
+			('c-2', 'factory_closed', 'factoryd', 'factoryd: task c-2 closed: the plan''s revision 10 drops it', 1356, '2026-11-01 09:00+00', '2026-11-01 09:06+00'),
+			('c-3', 'factory_closed', 'factoryd', 'factoryd: Retried as #1400.', 1399, '2026-10-30 09:00+00', '2026-10-30 09:00+00'),
+			('d-1', 'factory_closed', 'factoryd', 'factoryd: the alert cleared', 1401, '2026-10-30 09:00+00', '2026-10-30 09:00+00'),
+			('tu-8', 'factory_closed', 'factoryd', 'factoryd: an older close', 8, '2026-10-30 09:00+00', '2026-10-30 09:00+00')`,
+		`INSERT INTO events (repository, task_id, issue_number, kind, actor, via, detail) VALUES
+			('sf/r', 'p-495', 495, 'plan_closed', 'factoryd', 'factoryd', '{"criteria": 0}')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	want := []string{
+		"c-1 1355 confirmed false: factoryd: task c-1 closed: the plan's revision 10 drops it",
+		"c-2 1356 confirmed false: factoryd: task c-2 closed: the plan's revision 10 drops it",
+		"c-3 1399 confirmed false: factoryd: Retried as #1400.",
+		"d-1 1401 confirmed true: factoryd: the alert cleared",
+		"p-495 495 confirmed false: ",
+		"rv-1157 1157 confirmed false: factoryd: pull request #1156 merged; this card ends with it.",
+		"rv-1333 1333 confirmed false: factoryd: pull request #1332 merged; this card ends with it.",
+		"tu-6 6 confirmed false: factoryd: pull request #5 merged; this card ends with it.",
+		"tu-8 8 confirmed true: factoryd: an older close",
+	}
+	for run := 1; run <= 2; run++ {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE name = $1`, endedIssuesBackfill); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Migrate(ctx, s.db); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || comment_id || ' confirmed ' || (confirmed_at IS NOT NULL) || ': ' || body
+			FROM intake_events WHERE kind = 'factory_closed' ORDER BY task_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for rows.Next() {
+			var r string
+			if err := rows.Scan(&r); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, r)
+		}
+		rows.Close()
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: factory closes\n%s\nwant\n%s", run, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
+	}
+}
