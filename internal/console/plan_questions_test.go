@@ -270,6 +270,25 @@ func TestChatAnswersAllPlanQuestionsAtOnce(t *testing.T) {
 	}
 }
 
+// A refusal whose error factoryd names carries that error and the next
+// step to the chat, not the factoryd log: the agent reads why the answers
+// did not land and answers again from the plan.
+func TestAnswerToolRefusalNamesTheError(t *testing.T) {
+	r, _ := batchAnswerRig(t)
+	_, s := r.loggedIn(t)
+	r.c.cfg.AnswerPlanQuestions = func(context.Context, string, int, []factoryd.PlanAnswer, string) error {
+		return errors.New("plan t-x revision 1: idx 2 out of range")
+	}
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	tool, _ := r.c.chatTool("answer")
+	args := `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"30 days"}]}`
+	in := toolInput{TaskID: "t-p", Revision: 1, Answers: []PlanAnswerInput{{Question: 1, Text: "60 seconds"}, {Question: 2, Text: "30 days"}}}
+	equal(t, "the tool result", trn.runTool(tool, args, in),
+		"Refused: The answers could not be recorded: plan t-x revision 1: idx 2 out of range. "+
+			"Read the plan (the plan tool) and answer the open questions of its newest revision.")
+}
+
 // q1Line and q2Line are the rig's two questions as the plan read numbers
 // them with their choices.
 func q1Line() string {

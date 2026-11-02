@@ -42,7 +42,7 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("Card #%d asks nothing in the chat; escalate files an ask when you need a person.", k.IssueNumber))
 	case err != nil:
 		log.Printf("console: the analysis of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		return "", refuse(http.StatusBadGateway, "The analysis could not be recorded; see the factoryd log.")
+		return "", refuse(http.StatusBadGateway, fmt.Sprintf("The analysis could not be recorded: %v. Attach the analysis again.", err))
 	}
 	return fmt.Sprintf("Recorded the analysis inside the ask of #%d; the humans read it with the ask.", k.IssueNumber), nil
 }
