@@ -286,7 +286,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 			met = append(met, "the model review approves and finds the change a strict improvement with no drawback")
 		}
 	case "":
-		unmet = append(unmet, "no model review verdict: "+rv.Note)
+		unmet = append(unmet, noVerdictLine+rv.Note)
 	default:
 		unmet = append(unmet, "the model review's verdict is "+rv.Verdict)
 	}
@@ -1303,17 +1303,65 @@ func invalidNote(why, content string) string {
 	return "model review answer invalid (" + why + "): " + textutil.Truncate(content, 300)
 }
 
+// refusedByGateway opens callNote's note of a call the gateway refused,
+// its decision next.
+const refusedByGateway = "model review refused by the gateway ("
+
 // callNote says why a review call has no answer: the gateway refused it,
 // or it failed; "" when it answered.
 func callNote(err error) string {
 	var refusal *policy.Refusal
 	switch {
 	case errors.As(err, &refusal):
-		return "model review refused by the gateway (" + refusal.Decision + "): " + refusal.Reason
+		return refusedByGateway + refusal.Decision + "): " + refusal.Reason
 	case err != nil:
 		return "model review failed: " + textutil.Truncate(err.Error(), 500)
 	}
 	return ""
+}
+
+// reviewUnblocks are what lifts each money refusal of the gateway, in the
+// month-cap question's sentence.
+var reviewUnblocks = map[string]string{
+	policy.RefusedMonthCap:   "The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.",
+	policy.RefusedProjectCap: "The gateway refuses every further call of the project (refused_project_cap) until the project's cap is raised or the month ends.",
+	policy.RefusedDayCap:     "The gateway refuses every further call (refused_day_cap) until the day cap is raised or the UTC day ends.",
+	policy.RefusedPremiumCap: "The gateway refuses every further premium call (refused_premium_cap) until the premium cap is raised or the month ends.",
+	policy.RefusedBudget:     "The gateway refuses the card's further calls (refused_budget) until its budget is raised.",
+}
+
+// refusalOf is the gateway's decision a review note names, "" for a note
+// of no refusal.
+func refusalOf(note string) string {
+	_, rest, ok := strings.Cut(note, refusedByGateway)
+	if !ok {
+		return ""
+	}
+	decision, _, _ := strings.Cut(rest, ")")
+	return decision
+}
+
+// notRunReason joins the note of a review that did not run to a merge
+// ask's reason.
+const notRunReason = ". The model review did not run: "
+
+// noVerdictLine opens AutoMerge's unmet line of a review without a verdict.
+const noVerdictLine = "no model review verdict: "
+
+// namedReview is a merge ask's reason and why-human lines with rv named
+// when it did not run: its note on the reason, and first in why a human
+// decides one fixed line with what lifts a money refusal, in place of the
+// auto merge's bare no-verdict line. A review with no note leaves both.
+func namedReview(reason string, whyHuman []string, rv Review) (string, []string) {
+	if rv.Note == "" {
+		return reason, whyHuman
+	}
+	line := "The model review did not run: " + strings.TrimSuffix(rv.Note, ".") + "."
+	if unblock := reviewUnblocks[refusalOf(rv.Note)]; unblock != "" {
+		line += " " + unblock
+	}
+	rest := slices.DeleteFunc(slices.Clone(whyHuman), func(l string) bool { return l == noVerdictLine+rv.Note })
+	return reason + notRunReason + rv.Note, append([]string{line}, rest...)
 }
 
 // reviewAnswer is one review call's answer: the parsed verdict, or a note
@@ -1632,6 +1680,9 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		}
 	}
 	g := in.Gates.Policy
+	reason, whyHuman := namedReview(fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
+		in.WhyHuman, in.Review)
+	in.WhyHuman = whyHuman
 	if g.Factory {
 		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
 		if !mechanicalSource(t.Source) {
@@ -1650,8 +1701,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		return err
 	}
 	id, err := r.store.OpenApproval(ctx, ApprovalRequest{
-		Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: in.PR.Number, Spec: spec,
-		Reason: fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
+		Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: in.PR.Number, Spec: spec, Reason: reason,
 	})
 	if err != nil {
 		return err

@@ -493,6 +493,51 @@ func TestIntegrationReviewBudgetRefusalIsANote(t *testing.T) {
 	}
 }
 
+// Pinned at HEAD: the integration card's review the month cap refuses
+// leaves its trace on the pull request (the comment with the note), the
+// timeline (the model_review step) and the facts (the attempt, never
+// reviewed), and writes no verdict row.
+func TestRefusedIntegrationReviewLeavesItsTrace(t *testing.T) {
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey, task.IssueNumber = SourcePlan, "t-plan", "I", 9
+	fj := &gateForgejo{diffs: featureDiffs}
+	r, store, objects := newGateRunner(t, task, fj)
+	b, err := json.Marshal(featurePlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	for k, pr := range map[string]int64{"A": 11, "B": 12} {
+		store.tasks["t-"+k] = Task{ID: "t-" + k, Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: k, PRNumber: pr, Status: "done"}
+	}
+	facts := &fakeEventRecorder{}
+	r.timeline.Events = facts
+	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedMonthCap}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	const opening = "model review refused by the gateway (refused_month_cap)"
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, opening) {
+		t.Fatalf("review = %+v", rv)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], rv.Note) {
+		t.Errorf("comments = %q, want one naming the note", fj.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "model_review"); step["note"] != rv.Note {
+		t.Errorf("model_review step = %v, want the note", step)
+	}
+	i := slices.IndexFunc(facts.rows, func(e Event) bool { return e.Kind == EventModelReview })
+	if i < 0 || facts.rows[i].Detail["reviewed"] != false || !strings.HasPrefix(fmt.Sprint(facts.rows[i].Detail["reason"]), opening) {
+		t.Errorf("fact rows = %+v, want the attempt unreviewed with the note", facts.rows)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("rows = %v, want none", rows)
+	}
+}
+
 // A feature card's diff past the 8 MiB bound, or the feature's diffs past
 // it together (5 MiB and 5 MiB beside the card's own): the review notes
 // it, makes no call and writes no row.

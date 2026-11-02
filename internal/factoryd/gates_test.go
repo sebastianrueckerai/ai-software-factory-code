@@ -1377,6 +1377,56 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 	}
 }
 
+// A review that did not run is named on the merge ask: its note on the
+// reason, and one fixed why-human line with what lifts a money refusal,
+// in place of the auto merge's bare no-verdict line. Without a note the
+// ask reads as before.
+func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
+	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
+	month := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	day := "parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR."
+	invalid := "model review answer invalid (no summary): {}"
+	for _, c := range []struct {
+		name   string
+		review Review
+		why    []string
+		reason string
+		lines  []string
+	}{
+		{"month cap", Review{Note: month}, []string{"the project's merge rule is human", "no model review verdict: " + month},
+			base + ". The model review did not run: " + month,
+			[]string{"The model review did not run: " + month + ". The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.",
+				"the project's merge rule is human"}},
+		{"day cap of the parts", Review{Note: day}, nil,
+			base + ". The model review did not run: " + day,
+			[]string{"The model review did not run: parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR. " +
+				"The gateway refuses every further call (refused_day_cap) until the day cap is raised or the UTC day ends."}},
+		{"no money refusal", Review{Note: invalid}, []string{"schema migration"},
+			base + ". The model review did not run: " + invalid,
+			[]string{"The model review did not run: " + invalid + ".", "schema migration"}},
+		{"a review that ran", Review{Verdict: "approve", Summary: "fine"}, []string{"schema migration"},
+			base, []string{"schema migration"}},
+	} {
+		r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+		in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "c1", Gates: GateResults{Policy: PolicyGate{Class: "normal", PolicyVersion: 7}},
+			Review: c.review, WhyHuman: c.why}
+		if _, err := execActivity(t, r, ActivityRequestApproval, "t1", in); err != nil {
+			t.Fatal(err)
+		}
+		pending, _ := store.ApprovalRequests(context.Background(), "pending")
+		var spec MergeSpec
+		if len(pending) != 1 || json.Unmarshal(pending[0].Spec, &spec) != nil {
+			t.Fatalf("%s: requests %+v", c.name, pending)
+		}
+		if pending[0].Reason != c.reason {
+			t.Errorf("%s: reason =\n%q\nwant\n%q", c.name, pending[0].Reason, c.reason)
+		}
+		if !slices.Equal(spec.WhyHuman, c.lines) {
+			t.Errorf("%s: why human =\n%q\nwant\n%q", c.name, spec.WhyHuman, c.lines)
+		}
+	}
+}
+
 // The merge commit's message names the approver, and its trailers the
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).
