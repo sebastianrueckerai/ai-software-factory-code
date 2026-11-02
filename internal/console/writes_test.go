@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -971,7 +972,12 @@ func TestPoolProposalAccess(t *testing.T) {
 // A corrected top-up grows the standing pool by the corrected amount
 // alone and the month's usage stands; a project file that moved since the
 // proposal answers 409 without a write — the attempt was valid, its token
-// is spent — and the replay is 404.
+// is spent — and the replay is 404. An ask's bound pool choice runs the
+// same captured change on one press: the binding stores the offer's
+// capture — operation, reason, source and pool — and the press confirms
+// it in the original conversation, no second proposal, no model turn, no
+// fresh read; a file that moved since the offer answers 409 with no
+// rebase, its attempt spent, and the replay is 404.
 func TestPoolProposalTopUp(t *testing.T) {
 	r, g, infra := poolChatRig(t, 10, 3)
 	poolChatReload(r, 14)
@@ -1010,6 +1016,104 @@ func TestPoolProposalTopUp(t *testing.T) {
 	if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound {
 		t.Fatalf("the stale attempt's replay = %d, want 404", code)
 	}
+
+	// the ask-bound pool choice carries the offer's capture: one press
+	// of it confirms the change in the original conversation, as the
+	// member's own session, and the row names them
+	bound := `{"ask":"Top the month pool up by 4 EUR?","choices":["top it up by 4 EUR","hold"],"tool":"set_pool","args":{"action":"top_up","eur":4,"reason":"a second finding"},"choice":"top it up by 4 EUR"}`
+	askRow := func() (id int64, token string) {
+		t.Helper()
+		rows, err := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range rows {
+			if m.Kind == factoryd.MessageAsk {
+				id, token = m.ID, m.Proposal
+			}
+		}
+		if id == 0 || token == "" {
+			t.Fatalf("no bound ask row among %d rows", len(rows))
+		}
+		return
+	}
+	g.replies = [][]string{{call(1, "ask", bound)}}
+	_, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"offer the top-up for my press"}})
+	equal(t, "the bound ask", events, []string{
+		`tool {"arguments":` + bound + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. Pressing “top it up by 4 EUR” runs Set the pool, the pool stands at 10.00 EUR, top it up by 4.00 EUR, reason a second finding, it would stand at 14.00 EUR; another press answers it."}`,
+		`done {}`})
+	ask, token := askRow()
+	if p, ok := r.chat.proposal(token); !ok || p.Choice != "top it up by 4 EUR" || p.Login != "sebastian" || p.Conversation != 1 ||
+		p.Pool == nil || p.Pool.Action != poolTopUp || p.Pool.Reason != "a second finding" ||
+		p.Pool.Source != "blob2" || p.Pool.From != 1000 || p.Pool.EUR != 4 {
+		t.Fatalf("the ask binding's capture = %+v", p)
+	}
+	g.replies = nil
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	if code != http.StatusOK {
+		t.Fatalf("the bound press = %d: %v", code, events)
+	}
+	const landed = "The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."
+	equal(t, "the one-click confirmation", events, []string{
+		`tool {"arguments":{"action":"top_up","eur":4,"reason":"a second finding"},"duration_ms":0,"name":"set_pool","result":"` + landed + `"}`,
+		`applied {"result":"` + landed + `","tool":"set_pool"}`, `done {}`})
+	if n := len(g.calls()); n != 3 {
+		t.Fatalf("%d model calls, want the offers' alone: the press confirmed the change in code", n)
+	}
+	if got, _ := infra.contents[1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool +4.00 EUR\n") {
+		t.Errorf("the press's commit message = %q", got)
+	}
+	rows = r.events.all()
+	e = rows[len(rows)-1]
+	equal(t, "the press's row", []any{e.Kind, e.Actor}, []any{factoryd.EventPoolChanged, "sebastian"})
+	equal(t, "the press's detail", e.Detail, map[string]any{"action": "top_up", "from_eur": 10.0, "confirmed_eur": 4.0, "to_eur": 14.0,
+		"reason": "a second finding", "pr": "sf/infra#12"})
+
+	// a bound offer whose file moved since the offer answers 409 before
+	// the stream, nothing written and nothing rebased onto the moved
+	// file, the attempt valid and its token spent; the replay is 404
+	g.replies = [][]string{{call(1, "ask", bound)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"offer the top-up once more"}})
+	ask, token = askRow()
+	infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob3"}
+	code, body, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	equal(t, "the stale bound press", []any{code, body[0]}, []any{http.StatusConflict,
+		"projects/ai-software-factory-code.yaml changed since the change was proposed (its blob is now blob3): read it again and propose the change anew"})
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
+		t.Fatalf("the stale bound press wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	equal(t, "the stale attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+
+	// a file that moves in the press's own gap — after the pre-stream
+	// guard read it, before the writer's locked recheck — answers the
+	// same 409 before the stream, never an SSE refusal: the attempt is
+	// valid, its token spent, nothing is rebased onto the moved file
+	// and nothing written; the replay is 404
+	g.replies = [][]string{{call(1, "ask", bound)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"offer the top-up once more, between the guard and the write"}})
+	ask, token = askRow()
+	g.replies = nil
+	infra.mu.Lock()
+	guard := len(infra.reads)
+	infra.shaOnRead = func(n int) string {
+		if n > guard+1 {
+			return "blob4"
+		}
+		return ""
+	}
+	infra.mu.Unlock()
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	equal(t, "the press in the guard's gap", []any{code, body[0]}, []any{http.StatusConflict,
+		"projects/ai-software-factory-code.yaml changed since the change was proposed (its blob is now blob4): read it again and propose the change anew"})
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
+		t.Fatalf("the press in the gap wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+	if n := len(g.calls()); n != 5 {
+		t.Fatalf("%d model calls after the gap's refusal, want the offers' alone", n)
+	}
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	equal(t, "the gap attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason

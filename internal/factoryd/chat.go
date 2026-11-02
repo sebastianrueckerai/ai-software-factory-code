@@ -1353,19 +1353,21 @@ type ChatProposal struct {
 	// Choice is the ask binding's choice: the one of the ask row's
 	// choices whose press runs Tool, as the ask tool bound it.
 	Choice string
-	// Pool is the pool change a set_pool proposal captured: what the row
-	// itself holds, so the member's Do it — the amount the one thing it
-	// may correct — writes the operation, the reason and the baseline the
-	// proposal read, not ones a request names. nil for every other row
-	// and a row stored before the pool carried captures.
+	// Pool is the pool change a set_pool row captured, a proposal's or
+	// an ask binding's: what the row itself holds, so the member's Do
+	// it — the amount the one thing it may correct — or their one
+	// press of the bound choice writes the operation, the reason and
+	// the baseline the offer read, not ones a request names. nil for
+	// every other row and a row stored before the pool carried
+	// captures.
 	Pool *PoolCapture
 }
 
-// PoolCapture is the pool change a set_pool proposal carries: the action,
-// the suggested amount and the reason of the call, with the blob sha of
-// the project file and the pool in cents the proposal read — the
-// baseline the member's Do it writes against and a correction's amount
-// is judged with.
+// PoolCapture is the pool change a set_pool offer carries, a proposal's
+// or an ask binding's: the action, the suggested amount and the reason
+// of the call, with the blob sha of the project file and the pool in
+// cents the offer read — the baseline the member's Do it or bound press
+// writes against and a correction's amount is judged with.
 type PoolCapture struct {
 	Action string  `json:"action"`
 	Reason string  `json:"reason"`
