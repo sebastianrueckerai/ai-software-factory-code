@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -703,6 +704,105 @@ func TestPoolProposal(t *testing.T) {
 	equal(t, "the event", []any{e.Kind, e.Actor}, []any{factoryd.EventPoolChanged, "sebastian"})
 	equal(t, "the event's detail", e.Detail, map[string]any{"action": "set", "from_eur": 8.0, "confirmed_eur": 12.0, "to_eur": 12.0,
 		"reason": "Allow two small verified follow-ups", "pr": "sf/infra#12"})
+
+	// the typed pool press's outcomes: each refusal is a real HTTP status
+	// with its exact wording and no refused write; a valid stale press
+	// consumes the token and its replay is 404; pending 503 and repair 500
+	// identify the already-merged PR, consume once and replay 404 with no
+	// second PR
+	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 12\n"
+	tableHead := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 8\n"
+	infra.mu.Lock()
+	infra.files["factory/projects/ai-software-factory-code.yaml"] = head
+	infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob1"}
+	infra.mu.Unlock()
+	r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 12
+	poolChatReload(r, 12)
+	for _, row := range []struct {
+		name   string
+		seat   func(*testing.T)
+		code   int
+		body   string
+		writes int // commits added by this press alone
+	}{
+		{"stale source 409", func(t *testing.T) {
+			infra.mu.Lock()
+			infra.shas["factory/projects/ai-software-factory-code.yaml"] = "blob2"
+			infra.mu.Unlock()
+		}, http.StatusConflict,
+			"projects/ai-software-factory-code.yaml changed since the change was proposed (its blob is now blob2): read it again and propose the change anew",
+			0},
+		{"candidate refusal 422", func(t *testing.T) {
+			infra.mu.Lock()
+			infra.shas["factory/projects/ai-software-factory-code.yaml"] = "blob1"
+			infra.mu.Unlock()
+			r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) {
+				return []string{"discretionary_eur exceeds the policy's bound"}, nil
+			}
+		}, http.StatusUnprocessableEntity,
+			"The project file would not load: discretionary_eur exceeds the policy's bound",
+			0},
+		{"missing prerequisite 409", func(t *testing.T) {
+			r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) { return nil, nil }
+			infra.mu.Lock()
+			infra.files["factory/projects/ai-software-factory-code.yaml"] = "# empty budget\nbudget:\n  discretionary_eur: 12\n"
+			infra.mu.Unlock()
+		}, http.StatusConflict,
+			"projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)",
+			0},
+		{"pending 503", func(t *testing.T) {
+			r.c.cfg.PolicyReload = func(context.Context) error { return nil }
+		}, http.StatusServiceUnavailable,
+			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it.",
+			1},
+		{"repair 500", func(t *testing.T) {
+			r.c.cfg.PolicyReload = func(context.Context) error {
+				r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 12
+				return nil
+			}
+			r.events.fail = errors.New("the events store is down")
+		}, http.StatusInternalServerError,
+			"The pool change is merged as sf/infra#12, but its pool_changed row could not be written: the events store is down. The change stands: write the missing row (action set, from_eur 8.00, confirmed_eur 12.00, to_eur 12.00, reason \"Allow two small verified follow-ups\") and do not repeat the change.",
+			1},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			infra.mu.Lock()
+			infra.files["factory/projects/ai-software-factory-code.yaml"] = tableHead
+			infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob1"}
+			infra.mu.Unlock()
+			r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 8
+			r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) { return nil, nil }
+			g.replies = [][]string{{call(1, "set_pool", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`)}}
+			_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
+			row.seat(t)
+			// a landed press commits, opens and merges one pull request;
+			// a refused press touches nothing
+			before, pullsBefore, mergesBefore := len(infra.contents), len(infra.pulls), len(infra.merges)
+			if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":12}}`); code != row.code || body[0] != row.body {
+				t.Fatalf("%s = %d %q, want %d %q", row.name, code, body, row.code, row.body)
+			}
+			if got, prs, mrg := len(infra.contents)-before, len(infra.pulls)-pullsBefore, len(infra.merges)-mergesBefore; got != row.writes || prs != row.writes || mrg != row.writes {
+				t.Fatalf("%s wrote %d commits, %d pull requests, %d merges, want %d each", row.name, got, prs, mrg, row.writes)
+			}
+			pressed, pulls, merges := len(infra.contents), len(infra.pulls), len(infra.merges)
+			if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound {
+				t.Fatalf("%s replay = %d, want 404", row.name, code)
+			}
+			if len(infra.contents) != pressed || len(infra.pulls) != pulls || len(infra.merges) != merges {
+				t.Fatalf("%s replay wrote again: %d commits, %d pull requests, %d merges, want %d, %d, %d",
+					row.name, len(infra.contents), len(infra.pulls), len(infra.merges), pressed, pulls, merges)
+			}
+		})
+	}
+	r.events.fail = nil
+}
+
+// bindFailChat fails the current-conversation read of the Chat it wraps,
+// so a press whose proposal holds no thread answers the read's refusal.
+type bindFailChat struct{ Chat }
+
+func (bindFailChat) CurrentConversation(context.Context, string, string) (int64, error) {
+	return 0, errors.New("the store is down")
 }
 
 // The pool's confirmation is the member's press and only theirs: full
@@ -712,7 +812,8 @@ func TestPoolProposal(t *testing.T) {
 // the proposal for its owner, an expired or used one is 404, and a wrong
 // correction — malformed, a forbidden field, an amount the pool cannot
 // take, a press against another tool's proposal — is 400 with the
-// proposal left usable. The row's actor is the pressing member's, from
+// proposal left usable. A revoked approver's and an unbindable thread's
+// press write nothing. The row's actor is the pressing member's, from
 // the session alone.
 func TestPoolProposalAccess(t *testing.T) {
 	r, g, infra := poolChatRig(t, 10, 3)
@@ -825,6 +926,42 @@ func TestPoolProposalAccess(t *testing.T) {
 	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusBadRequest ||
 		body[0] != "A set_autonomy proposal takes no correction: only the pool's amount may be corrected." {
 		t.Fatalf("the correction of a set_autonomy proposal = %d %q, want 400", code, body)
+	}
+
+	// a revoked approver's press answers a real pre-stream 403 with zero
+	// writes: the authority the proposal-time admission granted was
+	// revoked since, and the typed press refuses it before anything runs
+	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool once more"}})
+	r.ledger.approvers = nil
+	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusForbidden ||
+		body[0] != "Only the approvers of project ai-software-factory-code may change the discretionary pool." {
+		t.Fatalf("the revoked approver's press = %d %q, want 403", code, body)
+	}
+
+	// a press whose thread cannot bind writes nothing: the bind runs
+	// before the press's write, so the store's refusal answers the press
+	// and the pool stands until a new proposal
+	r.ledger.approvers = []string{"alice"}
+	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool once more"}})
+	r.chat.mu.Lock()
+	for _, p := range r.chat.proposals {
+		if p.Token == tokens[0] {
+			p.Conversation = 0
+		}
+	}
+	r.chat.mu.Unlock()
+	plain, commits, pulls, merges := r.c.cfg.Chat, len(infra.contents), len(infra.pulls), len(infra.merges)
+	r.c.cfg.Chat = bindFailChat{plain}
+	code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`)
+	r.c.cfg.Chat = plain
+	if code != http.StatusInternalServerError || body[0] != "cannot read the conversation" {
+		t.Fatalf("the press of a thread that cannot bind = %d %q, want 500", code, body)
+	}
+	if len(infra.contents) != commits || len(infra.pulls) != pulls || len(infra.merges) != merges {
+		t.Fatalf("the press of a thread that cannot bind wrote: %d commits, %d pull requests, %d merges, want %d, %d, %d",
+			len(infra.contents), len(infra.pulls), len(infra.merges), commits, pulls, merges)
 	}
 	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
 		t.Fatalf("the refusals aside, %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
