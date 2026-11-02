@@ -168,9 +168,10 @@ type turn struct {
 	trail string
 	// pool is the set_pool call this turn last captured: the change with
 	// the project file's blob and pool the proposal read, which its Do it
-	// — the amount the one thing a correction may change — writes
-	// against. nil until a set_pool call describes one, and again once its
-	// proposal is stored or the call moves on.
+	// — the amount the one thing a correction may change — or an ask's
+	// bound press writes against. nil until a set_pool call describes
+	// one, and again once its proposal or ask binding is stored or the
+	// call moves on.
 	pool *factoryd.PoolCapture
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
