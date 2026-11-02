@@ -87,8 +87,11 @@ type fakeStore struct {
 	// spends are the gateway's audit rows SpendBetween and CallsBetween
 	// read
 	spends []fakeSpend
-	// cases are CasesOf's rows, oldest first
-	cases []Case
+	// cases are CasesOf's rows, oldest first; caseSteps CaseSteps' by case
+	cases     []Case
+	caseSteps map[int64][]CaseStep
+	// enforced is Enforced's answer
+	enforced policy.Enforced
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
@@ -1201,7 +1204,41 @@ func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) 
 }
 
 func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
-	return nil, nil
+	return s.caseSteps[caseID], nil
+}
+
+// BoardTasks are repository's live cards as BoardTasks reads them, by
+// priority and id; a chat task is no card.
+func (s *fakeStore) BoardTasks(ctx context.Context, repository string) ([]BoardTask, error) {
+	var out []BoardTask
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind != KindChat && !factorydFinal(t.Status) {
+			out = append(out, BoardTask{Task: t})
+		}
+	}
+	slices.SortFunc(out, func(a, b BoardTask) int {
+		return cmp.Or(cmp.Compare(b.Priority, a.Priority), strings.Compare(a.ID, b.ID))
+	})
+	return out, nil
+}
+
+func (s *fakeStore) Enforced(ctx context.Context, at time.Time) (policy.Enforced, error) {
+	return s.enforced, nil
+}
+
+// OpenPlans are repository's plan cards without a plan_closed event, in
+// filing order.
+func (s *fakeStore) OpenPlans(ctx context.Context, repository string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if _, closed := s.closed[t.ID]; t.Repository == repository && t.Track == policy.TrackPlan && !closed {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int {
+		return cmp.Or(a.CreatedAt.Compare(b.CreatedAt), cmp.Compare(a.IssueNumber, b.IssueNumber), strings.Compare(a.ID, b.ID))
+	})
+	return out, nil
 }
 
 func (s *fakeStore) OpenCasesIn(ctx context.Context, repository string) ([]Case, error) {
@@ -4667,6 +4704,49 @@ func TestOpenPlanNamesExcludesClosedOtherProjectsAndSelf(t *testing.T) {
 	}
 	if want := []string{"name of p-open"}; !slices.Equal(names, want) {
 		t.Fatalf("OpenPlanNames(sf/r, p-self) = %q, want %q", names, want)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). OpenPlans
+// lists the project's plans without a plan_closed event in filing order,
+// a failed one too; a closed plan, another project's plan and a direct
+// card are not among them.
+func TestOpenPlansListsTheProjectsPlansWithoutAClose(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	for _, p := range []Task{
+		{ID: "p-new", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 2, CreatedAt: old.Add(time.Hour)},
+		{ID: "p-old", Status: "done", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1, CreatedAt: old},
+		{ID: "p-failed", Status: "failed", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 3, CreatedAt: old.Add(2 * time.Hour)},
+		{ID: "p-shut", Status: "done", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 4, CreatedAt: old.Add(-time.Hour)},
+		{ID: "p-elsewhere", Status: "queued", Repository: "sf/other", Kind: "agent", Track: "plan", IssueNumber: 1, CreatedAt: old},
+		{ID: "t-direct", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "direct", IssueNumber: 5, CreatedAt: old},
+	} {
+		if err := s.CreateTask(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "p-shut", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.OpenPlans(ctx, "sf/r")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if want := []string{"p-old", "p-new", "p-failed"}; !slices.Equal(ids, want) {
+		t.Fatalf("OpenPlans(sf/r) = %q, want %q", ids, want)
 	}
 }
 

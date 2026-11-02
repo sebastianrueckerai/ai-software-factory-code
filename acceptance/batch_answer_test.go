@@ -615,6 +615,15 @@ func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Eve
 func (s *accBatchStore) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
 	panic("unused")
 }
+func (s *accBatchStore) BoardTasks(context.Context, string) ([]factoryd.BoardTask, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenPlans(context.Context, string) ([]factoryd.Task, error) {
+	panic("unused")
+}
+func (s *accBatchStore) Enforced(context.Context, time.Time) (policy.Enforced, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }

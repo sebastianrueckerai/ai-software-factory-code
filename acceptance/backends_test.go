@@ -512,6 +512,19 @@ func (s *acceptanceStore) CallsBetween(context.Context, string, time.Time, time.
 	return 0, nil
 }
 
+// BoardTasks, OpenPlans and Enforced: the acceptance store reads no board.
+func (s *acceptanceStore) BoardTasks(context.Context, string) ([]factoryd.BoardTask, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) OpenPlans(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) Enforced(context.Context, time.Time) (policy.Enforced, error) {
+	return policy.Enforced{}, nil
+}
+
 // TaskEvents: the acceptance store keeps no event rows.
 func (s *acceptanceStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
 	return nil, nil

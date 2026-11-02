@@ -51,32 +51,44 @@ func (d CardDigest) Render() string {
 	var b strings.Builder
 	b.WriteString(strings.Join(append(head, statusText(h.Status, h.Gate)), " · ") + "\n")
 	for _, s := range d.Folded() {
-		label := s.Kind
-		switch {
-		case s.Actor == "":
-		case s.Kind == "session" || s.Kind == "checkin":
-			label += " " + s.Actor
-		default:
-			label += " by " + s.Actor
-		}
-		outcome := s.Outcome
-		if s.Count > 1 {
-			outcome += fmt.Sprintf(" ×%d", s.Count)
-		}
-		if s.calls > 0 {
-			outcome += fmt.Sprintf(", %.2f EUR, %s", s.CostEUR, textutil.Plural(s.calls, "call", "calls"))
-		}
-		fmt.Fprintf(&b, " %-6s  %-22s → %s\n", offsetText(s.Offset), label, outcome)
+		b.WriteString(digestLine(s))
 	}
-	flags := make([]string, len(d.Flags))
-	for i, f := range d.Flags {
-		flags[i] = f.Name
-		if f.Detail != "" {
-			flags[i] += "(" + f.Detail + ")"
-		}
-	}
-	b.WriteString("flags: " + cmp.Or(strings.Join(flags, ", "), "none") + "\n")
+	b.WriteString("flags: " + cmp.Or(flagsText(d.Flags), "none") + "\n")
 	return b.String()
+}
+
+// digestLine is step s as one line of the digest: its offset, its kind
+// with its actor, and its outcome, with the run's length and a session's
+// cost and calls.
+func digestLine(s DigestStep) string {
+	label := s.Kind
+	switch {
+	case s.Actor == "":
+	case s.Kind == "session" || s.Kind == "checkin":
+		label += " " + s.Actor
+	default:
+		label += " by " + s.Actor
+	}
+	outcome := s.Outcome
+	if s.Count > 1 {
+		outcome += fmt.Sprintf(" ×%d", s.Count)
+	}
+	if s.calls > 0 {
+		outcome += fmt.Sprintf(", %.2f EUR, %s", s.CostEUR, textutil.Plural(s.calls, "call", "calls"))
+	}
+	return fmt.Sprintf(" %-6s  %-22s → %s\n", offsetText(s.Offset), label, outcome)
+}
+
+// flagsText is flags by name, each with its detail in brackets.
+func flagsText(flags []DigestFlag) string {
+	out := make([]string, len(flags))
+	for i, f := range flags {
+		out[i] = f.Name
+		if f.Detail != "" {
+			out[i] += "(" + f.Detail + ")"
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 // statusText is a status and its gate as the digest prints them.

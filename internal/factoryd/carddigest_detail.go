@@ -1,0 +1,289 @@
+package factoryd
+
+import (
+	"bytes"
+	"cmp"
+	"context"
+	"encoding/json"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+)
+
+// CardStep returns one step of the card's digest in full: a session's steps, a gate's full result,
+// a check-in's record with its calls, an ask's five parts and its answer, a funding event's detail.
+// n is the step's number before the fold.
+func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, error) {
+	rows, err := r.readCard(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	d, err := r.cardDigest(ctx, rows)
+	if err != nil {
+		return "", err
+	}
+	if n < 1 || n > len(d.Steps) {
+		return "", fmt.Errorf("no step %d on #%d", n, d.Head.Issue)
+	}
+	s := d.Steps[n-1]
+	var b strings.Builder
+	fmt.Fprintf(&b, "#%d step %d of %d at %s\n%s", d.Head.Issue, n, len(d.Steps), s.At.UTC().Format("2006-01-02 15:04:05 UTC"), digestLine(s))
+	lines := bytes.Split(rows.timeline, []byte("\n"))
+	line, _ := strconv.Atoi(s.Ref.Step)
+	switch {
+	case s.Kind == "filed":
+		filedDetail(&b, s.Actor, rows.task, d.Head, rows.deps)
+	case s.Kind == "criteria":
+		criteriaDetail(&b, s, rows.verdicts)
+	case s.Kind == "session":
+		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At)
+	case s.Kind == "ask":
+		if err := r.askDetail(ctx, &b, s, rows); err != nil {
+			return "", err
+		}
+	case s.Ref.Event != "":
+		if i := eventIndex(rows.events, s.Ref.Event); i >= 0 {
+			writeFields(&b, rows.events[i].Detail)
+		}
+	case s.Kind == "checkin":
+		checkinDetail(&b, lines[line-1])
+	default:
+		writeFields(&b, lineFields(lines[line-1]))
+	}
+	return b.String(), nil
+}
+
+// filedDetail is the card's filing: by whom, its track, size, rung and
+// budget, its plan, its dependencies and its objective.
+func filedDetail(b *strings.Builder, by string, t Task, h DigestHead, deps []Dependency) {
+	parts := []string{"filed by " + by}
+	for _, f := range [][2]string{{"track", t.Track}, {"size", t.Size}, {"rung", t.Rung}} {
+		if f[1] != "" {
+			parts = append(parts, f[0]+" "+f[1])
+		}
+	}
+	fmt.Fprintf(b, "%s, budget %.2f EUR\n", strings.Join(parts, ", "), t.BudgetEUR)
+	var plan []string
+	if h.Plan > 0 {
+		plan = append(plan, strings.TrimSpace(fmt.Sprintf("plan #%d %s", h.Plan, h.PlanName)))
+	}
+	if t.PlanRevision > 0 {
+		plan = append(plan, fmt.Sprintf("revision %d", t.PlanRevision))
+	}
+	if len(plan) > 0 {
+		b.WriteString(strings.Join(plan, ", ") + "\n")
+	}
+	if len(deps) > 0 {
+		on := make([]string, len(deps))
+		for i, d := range deps {
+			on[i] = fmt.Sprintf("#%d (%s)", d.Issue, d.Status)
+		}
+		b.WriteString("depends on " + strings.Join(on, ", ") + "\n")
+	}
+	if t.Objective != "" {
+		b.WriteString("objective:\n" + t.Objective + "\n")
+	}
+}
+
+// sessionDetail is session id's timeline lines, one each, at their
+// offsets from the card's start.
+func sessionDetail(b *strings.Builder, id string, lines [][]byte, start time.Time) {
+	var out []string
+	for i, raw := range lines {
+		m := lineFields(raw)
+		if m == nil || m["session"] != id {
+			continue
+		}
+		at, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(m["time"]))
+		text := fmt.Sprintf(" %-6s  line %d  %v", offsetText(at.Sub(start)), i+1, m["step"])
+		var fields []string
+		for _, k := range slices.Sorted(maps.Keys(m)) {
+			if k != "step" && k != "time" && k != "session" {
+				fields = append(fields, k+" "+strings.Join(strings.Fields(valueText(m[k])), " "))
+			}
+		}
+		if len(fields) > 0 {
+			text += ": " + strings.Join(fields, ", ")
+		}
+		out = append(out, text)
+	}
+	fmt.Fprintf(b, "session %s, %s:\n", id, textutil.Plural(len(out), "timeline line", "timeline lines"))
+	for _, l := range out {
+		b.WriteString(l + "\n")
+	}
+}
+
+// askDetail is the ask's five parts, the answer that came before the next
+// ask, and its case with the case's steps.
+func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep, rows cardRows) error {
+	i := eventIndex(rows.events, s.Ref.Event)
+	if i < 0 {
+		return nil
+	}
+	e := rows.events[i]
+	word := func(k string) string { v, _ := e.Detail[k].(string); return cmp.Or(v, "none") }
+	var choices []string
+	switch c := e.Detail["choices"].(type) {
+	case []string:
+		choices = c
+	case []any:
+		for _, v := range c {
+			choices = append(choices, fmt.Sprint(v))
+		}
+	}
+	fmt.Fprintf(b, "Ask: %s\nWhy: %s\nInfo: %s\nRecommendation: %s\nChoices: %s\n", cmp.Or(askSentence(e), "none"), word("why"), word("info"),
+		word("recommendation"), cmp.Or(strings.Join(choices, "; "), "none"))
+	b.WriteString(askAnswer(rows.events[i+1:]) + "\n")
+	c := slices.IndexFunc(rows.cases, func(c Case) bool { return strconv.FormatInt(c.ID, 10) == s.Ref.Case })
+	if c < 0 {
+		return nil
+	}
+	k := rows.cases[c]
+	fmt.Fprintf(b, "case %d %s, %s", k.ID, k.Kind, k.Status)
+	if res := k.Resolution; res != nil {
+		b.WriteString(" by " + res.By)
+		if res.Action != "" {
+			b.WriteString(": " + res.Action)
+		}
+	}
+	b.WriteString("\n")
+	steps, err := r.store.CaseSteps(ctx, k.ID)
+	if err != nil {
+		return err
+	}
+	for _, st := range steps {
+		fmt.Fprintf(b, " rung %d by %s → %s", st.Rung, st.Actor, st.Outcome)
+		if st.Decision != "" {
+			b.WriteString(", " + st.Decision)
+		}
+		b.WriteString("\n")
+	}
+	return nil
+}
+
+// askAnswer is the answer among events, those after an ask, that came
+// before the next ask.
+func askAnswer(events []Event) string {
+	for _, e := range events {
+		word := func(k string) string { v, _ := e.Detail[k].(string); return v }
+		switch e.Kind {
+		case EventQuestionAsked:
+			return "Answer: none"
+		case EventQuestionAnswered:
+			return fmt.Sprintf("Answer by %s: %s", e.Actor, cmp.Or(word("answer"), word("decision"), "answered"))
+		case EventQuestionWithdrawn:
+			return "Withdrawn: " + cmp.Or(word("reason"), "no reason given")
+		}
+	}
+	return "Answer: none yet"
+}
+
+// checkinDetail is a check-in's line: its moment, decision, calls and
+// cost, its reason, its verdict on each finding with the evidence, and the
+// calls its record holds.
+func checkinDetail(b *strings.Builder, raw []byte) {
+	var l timelineLine
+	_ = json.Unmarshal(raw, &l)
+	moment, decision := l.Moment, l.Decision
+	var rec CheckInRecord
+	if l.Record != nil {
+		rec = *l.Record
+		moment, decision = cmp.Or(rec.Moment, moment), rec.Decision
+	}
+	fmt.Fprintf(b, "moment %s, decision %s, %s, %.2f EUR\n", moment, cmp.Or(decision, "none"),
+		textutil.Plural(rec.ToolCalls, "tool call", "tool calls"), rec.CostEUR)
+	if rec.Reason != "" {
+		reason := rec.Reason
+		if rec.ReasonKind != "" {
+			reason = rec.ReasonKind + ": " + reason
+		}
+		b.WriteString("reason: " + reason + "\n")
+	}
+	texts := slices.SortedFunc(maps.Keys(l.Verdicts), func(a, c string) int { return strings.Compare(findingID(a), findingID(c)) })
+	for _, text := range texts {
+		v := l.Verdicts[text]
+		fmt.Fprintf(b, "- %s %s: %s\n", findingID(text), v.State, text)
+		if v.Evidence != "" {
+			b.WriteString("  evidence: " + v.Evidence + "\n")
+		}
+	}
+	if len(rec.Calls) > 0 {
+		b.WriteString("calls:\n")
+	}
+	for _, c := range rec.Calls {
+		fmt.Fprintf(b, "- %s, %d bytes, %s\n", strings.TrimSpace(c.Name+" "+c.Args), c.ResultBytes, c.Duration)
+	}
+}
+
+// criteriaDetail is the criteria verdicts of step s's write: each
+// criterion's verdict, evidence and fix.
+func criteriaDetail(b *strings.Builder, s DigestStep, verdicts []CriterionVerdict) {
+	for _, v := range verdicts {
+		if !v.CreatedAt.Equal(s.At) || v.DecidedBy != s.Actor {
+			continue
+		}
+		fmt.Fprintf(b, "%s %s, source %s\n", v.Criterion, cmp.Or(v.Verdict, "undecided"), v.Source)
+		for _, f := range [][2]string{{"evidence", v.Evidence}, {"fix", v.Fix}} {
+			if f[1] != "" {
+				b.WriteString("  " + f[0] + ": " + f[1] + "\n")
+			}
+		}
+	}
+}
+
+// writeFields writes m's fields but step and time, by key, one per line:
+// a string as it stands, a list of findings one per line with its id, any
+// other value as JSON.
+func writeFields(b *strings.Builder, m map[string]any) {
+	for _, k := range slices.Sorted(maps.Keys(m)) {
+		if k == "step" || k == "time" {
+			continue
+		}
+		items, isList := m[k].([]any)
+		if k != "findings" || !isList {
+			b.WriteString(k + ": " + valueText(m[k]) + "\n")
+			continue
+		}
+		b.WriteString("findings:\n")
+		for _, f := range items {
+			text, ok := f.(string)
+			shown := text
+			if !ok {
+				item, _ := f.(map[string]any)
+				text, shown = fmt.Sprint(item["item"]), valueText(f)
+			}
+			fmt.Fprintf(b, "- %s %s\n", findingID(text), shown)
+		}
+	}
+}
+
+// lineFields is a timeline line's fields, nil when it does not parse.
+func lineFields(raw []byte) map[string]any {
+	var m map[string]any
+	if json.Unmarshal(raw, &m) != nil {
+		return nil
+	}
+	return m
+}
+
+// eventIndex is the index of the event of id among events, -1 for none.
+func eventIndex(events []Event, id string) int {
+	return slices.IndexFunc(events, func(e Event) bool { return strconv.FormatInt(e.ID, 10) == id })
+}
+
+// valueText is v as text: a string as it stands, anything else as JSON.
+func valueText(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(v)
+	return strings.TrimSuffix(b.String(), "\n")
+}

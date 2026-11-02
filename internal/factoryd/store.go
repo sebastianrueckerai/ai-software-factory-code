@@ -333,6 +333,9 @@ type Store interface {
 	// created_at ties (Forgejo stamps whole seconds) break by issue
 	// number, the filing sequence, so a same-second burst keeps its order.
 	ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error)
+	// BoardTasks lists repository's live cards, as the console's board
+	// reads them (console_store.go).
+	BoardTasks(ctx context.Context, repository string) ([]BoardTask, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
 	// within the last `within`, on the store's clock, and have no open model
 	// hold: a call still streaming books its own cost, and settling it too
@@ -579,6 +582,9 @@ type Store interface {
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// OpenPlans are repository's open plans: its plan-track cards without
+	// a plan_closed event, whatever their status, in filing order.
+	OpenPlans(ctx context.Context, repository string) ([]Task, error)
 	// OpenGroups are the groups open on main, by repository, the earliest
 	// FirstMerge first, then by plan: the plans with a merged card (a merge
 	// commit or a pull_request_merged event) and no plan_closed event.
@@ -637,6 +643,9 @@ type Store interface {
 	// MonthSpend is the whole factory's ledger spend in the UTC month of
 	// at, as the month cap counts it.
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
+	// Enforced is the spend the day and month caps count at at, the
+	// ledger's with the open holds (policy.LedgerEnforced).
+	Enforced(ctx context.Context, at time.Time) (policy.Enforced, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
@@ -1066,31 +1075,28 @@ func (s *PGStore) SetPlanName(ctx context.Context, id, name string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-// OpenPlanNames are the names project's open plans hold — its plan-track
-// tasks without a plan_closed event — every one but excludeID's, the plan
-// the naming pass is naming: what a new name must not repeat.
+func (s *PGStore) OpenPlans(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE repository = $1 AND track = 'plan'
+			AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = tasks.id AND kind = 'plan_closed')
+		ORDER BY created_at, issue_number, id`, repository)
+}
+
+// OpenPlanNames are the names project's open plans hold (OpenPlans),
+// every one but excludeID's, the plan the naming pass is naming: what a
+// new name must not repeat.
 func (s *PGStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(plan_name, '') FROM tasks
-		WHERE repository = $1 AND track = 'plan' AND id <> $2 AND COALESCE(plan_name, '') <> ''
-		ORDER BY created_at, issue_number, id`, projectID, excludeID)
+	plans, err := s.OpenPlans(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []string
-	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return nil, err
+	for _, p := range plans {
+		if p.ID != excludeID && p.PlanName != "" {
+			out = append(out, p.PlanName)
 		}
-		if _, closed, err := s.PlanClosed(ctx, id); err != nil {
-			return nil, err
-		} else if closed {
-			continue
-		}
-		out = append(out, name)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // UnnamedOpenPlans are the open plans — plan-track tasks without a
