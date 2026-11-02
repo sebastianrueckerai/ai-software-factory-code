@@ -17,8 +17,8 @@ import (
 // The oversized needs-you card, held fixed at the construction point:
 // every part a merge approval's face carries is bounded where the face
 // is assembled, and the stylesheet clamps whatever a board face shows,
-// so no field or card kind can grow the column's copy again (ruling
-// 295). The lane face holds no part of the ask — only the brief, at
+// so no field or card kind can grow the column's copy again.
+// The lane face holds no part of the ask — only the brief, at
 // one line, when the ask carries one — and the drawer keeps the whole
 // text (the 2026-10-17 card).
 func TestMergeFaceWhispers(t *testing.T) {

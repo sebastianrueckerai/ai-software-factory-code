@@ -2671,8 +2671,8 @@ func providerHarness(t *testing.T, results ...SessionResult) (h *workflowHarness
 var refusedSession = SessionResult{Outcome: OutcomeProviderRefused, SessionID: "s0", Status: 429, Reason: "DashscopeException: budget exhausted (status 429)",
 	Findings: []string{"previous session ended without a pushed commit: DashscopeException: budget exhausted (status 429)"}}
 
-// A provider's refusal at a session's first call is no attempt (ruling
-// 267): the task waits on the provider 2 minutes, then 4, in gate provider
+// A provider's refusal at a session's first call is no attempt:
+// the task waits on the provider 2 minutes, then 4, in gate provider
 // (ProviderWait), and runs the session again with the same input; the log
 // says so once at the first refusal and once at the recovery.
 func TestWorkflowProviderRefusalIsNoAttempt(t *testing.T) {

@@ -186,8 +186,8 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		log.Printf("console: approval request %d: %v", a.ID, err)
 	}
 	// the board's copy whispers: every part of the ask its first line,
-	// the top findings alone — the drawer carries the whole text (ruling
-	// 295). This is the one place a merge face is assembled, so a field
+	// the top findings alone — the drawer carries the whole text.
+	// This is the one place a merge face is assembled, so a field
 	// that grows cannot grow the column's card.
 	if face && k.Kind == factoryd.ApprovalMerge {
 		for i, w := range k.Merge.WhyHuman {

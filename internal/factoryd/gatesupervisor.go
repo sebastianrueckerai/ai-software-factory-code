@@ -21,8 +21,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The gate supervisor's actions on a machine gate past its bound (ruling
-// 141); escalate is the session supervisor's.
+// The gate supervisor's actions on a machine gate past its bound;
+// escalate is the session supervisor's.
 const (
 	ActionWait   SupervisorAction = "wait"   // extend the run's bound once by its own length
 	ActionRetry  SupervisorAction = "retry"  // stop the attempt; the retry policy runs it again

@@ -239,8 +239,8 @@ type TaskConfig struct {
 	// StrongerAfter overrides WorkflowConfig's for the task when above 0:
 	// 1 for a medium or large card (roadmap 222, item 5)
 	StrongerAfter int
-	// NoAudit: the task's project does not switch the audit on (ruling
-	// 188), so the audit stage is skipped at its turn and starts nothing
+	// NoAudit: the task's project does not switch the audit on,
+	// so the audit stage is skipped at its turn and starts nothing
 	// beside the checks (versionAuditBeside).
 	NoAudit bool
 	// Sessions overrides WorkflowConfig.MaxSessions for the task when
@@ -757,8 +757,8 @@ const (
 	// escalation, whose answer buys a session after a session and runs a
 	// gate again (a merge with its approval).
 	versionGateSupervisor workflow.Version = 1
-	// versionGateSupervisorRace (change id "gate-supervisor-race", ruling
-	// 171): the gate supervisor's call runs beside the gate; a gate that
+	// versionGateSupervisorRace (change id "gate-supervisor-race"):
+	// the gate supervisor's call runs beside the gate; a gate that
 	// ends first wins and the late answer is dropped (SuperviseGate notes
 	// it on the alert).
 	versionGateSupervisorRace workflow.Version = 1
