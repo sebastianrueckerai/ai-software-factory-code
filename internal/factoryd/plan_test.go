@@ -3955,23 +3955,51 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 // A planner session the day cap refused at its first call is no attempt
 // (roadmap 240): the plan escalates with the refusal, waits for the day's
 // turn on its own and runs the planner again with the same findings; no
-// "no plan" round. A month's cap waits on a writer, whose comment the
-// planner gets, and the refused session counts.
+// "no plan" round. The session from 20:43 ends at 20:48, when the check
+// before the ask runs.
 func TestPlanLoopWaitsOnACap(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &dayRefusal},
 		PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.env.SetStartTime(oct(14, 20, 43))
-	var turns []time.Time
-	h.env.OnActivity(ActivityDayResume, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-			if turned {
-				turns = append(turns, h.env.Now())
-			}
-			return turned, nil
-		})
+	run := &capRun{}
+	run.onChecks(h.workflowHarness)
 	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || !sameTimes(turns, []time.Time{oct(15, 0, 0)}) {
-		t.Fatalf("final %q, escalations %q, turns %v; want the day cap asked and the turn at 00:00", final, h.escalated, turns)
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
+		t.Fatalf("final %q, escalations %q, turns %v; want the day cap asked and the turn at 00:00", final, h.escalated, run.turns)
+	}
+	if !sameTimes(run.asks, []time.Time{oct(14, 20, 48)}) || !isCheck(run.inputs[0], "factory/big", policy.RefusedDayCap, oct(14, 20, 43)) {
+		t.Fatalf("checks before the ask %v, first input %+v; want one at 20:48 on the stronger rung about the 20:43 refusal", run.asks, run.inputs[0])
+	}
+	if len(h.plans) != 2 || h.plans[0] != nil || h.plans[1] != nil {
+		t.Fatalf("plans %q, want two sessions with no findings", h.plans)
+	}
+	if u := h.usage[len(h.usage)-1]; h.usage[0].Attempts != 0 || u.Attempts != 1 || u.AgentTime != planSession {
+		t.Fatalf("usage %+v, want the refused session no attempt, the second one", h.usage)
+	}
+}
+
+// At versionCapWait a month's cap waits on its own too: the planner
+// session from 21:10 ends at 21:15, refused at its first call, and is no
+// attempt; the check before the ask finds the month spent, and the hourly
+// check at 22:15, past the 22:00 raise, runs the planner again with the
+// same findings, no human's answer. A run from before the change waits on
+// a writer, whose comment the planner gets, and the refused session
+// counts.
+func TestPlanLoopWaitsOnAMonthCap(t *testing.T) {
+	refused := monthRefusal
+	refused.At = oct31(21, 10, 0)
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &refused},
+		PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run := &capRun{funded: oct31(22, 0, 0)}
+	run.onChecks(h.workflowHarness)
+	h.file = map[int]bool{1: true}
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap's wait asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 15, 0)}) || !sameTimes(run.checks, []time.Time{oct31(22, 15, 0)}) || len(run.turns) != 0 ||
+		!isCheck(run.inputs[1], "factory/big", policy.RefusedMonthCap, time.Time{}) {
+		t.Fatalf("checks before the ask %v, checks %v, turns %v, inputs %+v; want 21:15, then the month's check at 22:15", run.asks, run.checks, run.turns, run.inputs)
 	}
 	if len(h.plans) != 2 || h.plans[0] != nil || h.plans[1] != nil {
 		t.Fatalf("plans %q, want two sessions with no findings", h.plans)
@@ -3983,10 +4011,13 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
 	h = newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &month},
 		PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
+	run = &capRun{}
+	run.onChecks(h.workflowHarness)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) {
-		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) || len(run.inputs) != 0 {
+		t.Fatalf("final %q, escalations %q, checks %+v; want the month cap asked and no check", final, h.escalated, run.inputs)
 	}
 	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: go on"}) || h.usage[0].Attempts != 1 {
 		t.Fatalf("plans %q, usage %+v; want the writer's comment for the second session, the first counted", h.plans, h.usage)

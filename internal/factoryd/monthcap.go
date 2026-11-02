@@ -73,24 +73,6 @@ type CapRefusal struct {
 	Allowed bool `json:",omitempty"`
 }
 
-// until is when the refusal's cap resets on its own: the day cap's at the
-// UTC day's turn; zero for a month's cap, which only a human raises.
-func (c CapRefusal) until() time.Time {
-	if c.Decision != policy.RefusedDayCap {
-		return time.Time{}
-	}
-	return dayTurn(c.At)
-}
-
-// reason is the card's escalation: a month's cap waits for a human, the
-// day's resumes on its own (capWaitReason).
-func (c CapRefusal) reason() string {
-	if c.Decision != policy.RefusedDayCap {
-		return capRefused(c.Refusal)
-	}
-	return capWaitReason(c.Decision, capGateway(c.Decision), c.Reason, c.until())
-}
-
 // dayTurn is when the UTC day of at ends: the day cap counts the ledger's
 // UTC day (budget.day_eur), so it resets then.
 func dayTurn(at time.Time) time.Time {

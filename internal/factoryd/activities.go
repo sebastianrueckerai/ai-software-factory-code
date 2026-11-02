@@ -544,7 +544,7 @@ var capRefusals = map[string]string{
 
 // CapDecision is the decision of the cap whose attempt floor refusal why
 // is: every cap resets on its own, so the console takes an answer, and the
-// workflow waits at the day cap (awaitDay).
+// workflow waits on the cap (capWait).
 func CapDecision(why string) (decision string, ok bool) {
 	for decision, opening := range capRefusals {
 		if strings.HasPrefix(why, opening) {
@@ -1025,9 +1025,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})
 	}
 	if res.Outcome != OutcomePushed {
-		// no later session could spend: at a month cap a human raises it
-		// or waits for the month to end; at the day cap the card waits for
-		// the day's headroom
+		// no later session could spend: the card waits on the cap
+		// (awaitCap). A month's or a project's stays an escalation, which a
+		// run from before versionCapWait leaves to a human
 		refused, err := r.store.CapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
@@ -1037,7 +1037,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		case refused.Decision == policy.RefusedDayCap:
 			res.Outcome, res.Capped = OutcomeDayCap, refused
 		default:
-			res.Outcome, res.Reason, res.Capped = OutcomeEscalate, refused.reason(), refused
+			res.Outcome, res.Reason, res.Capped = OutcomeEscalate, capRefused(refused.Refusal), refused
 		}
 	}
 	if res.Outcome == OutcomeNoPush {

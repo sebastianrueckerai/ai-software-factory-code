@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -70,6 +71,9 @@ const (
 	// its approval on a companion pin (versionCompanions): the companion
 	// reached its pin, so the gates read again and the merge can go.
 	SignalCompanionLanded = "companion_landed"
+	// SignalPolicyLoaded is the policy loader's wake of a card waiting on
+	// a cap (versionCapWait): a new policy version is in force.
+	SignalPolicyLoaded = "policy_loaded"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -608,6 +612,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
 	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
 	run.resumeHold = workflow.GetVersion(ctx, "resume-hold", workflow.DefaultVersion, versionResumeHold)
+	run.capWaits = workflow.GetVersion(ctx, "cap-wait", workflow.DefaultVersion, versionCapWait)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -657,7 +662,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded} {
+		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1248,6 +1253,20 @@ const (
 	// keeps the old merge on every press, which the merge guard holds;
 	// requested changes bring it a new head, whose review judges.
 	versionReviewHoldsMerge workflow.Version = 1
+	// versionCapWait (change id "cap-wait"): a code, plan or report session
+	// the gateway refused at the month's or the project's cap, or an
+	// attempt its floor refused there, waits as one at the day cap does:
+	// the card asks with the refusal and runs the next session on its own
+	// once the cap no longer binds one (CapResume, every monthCheck) or the
+	// UTC month turns, or sooner on an answer, and a session refused at its
+	// first call is no attempt. Before it asks, a check reads the cap in
+	// force, and a refusal the version in force already lifted asks
+	// nothing. A policy load wakes every cap's wait, which checks
+	// gateway.PolicyTTL later (SignalPolicyLoaded); a healed run's wait
+	// checks at once. A run from before the change waits on a human at
+	// the month's and the project's cap, and its day cap's wait checks
+	// every dayCheck alone (DayResume).
+	versionCapWait workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1388,6 +1407,7 @@ type taskRun struct {
 	switched          *programEnd      // the run's end once the card switched to the plan track, which finish returns (switchToPlan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
+	capWaits          workflow.Version // every cap's wait ends on its own and wakes on a policy load (versionCapWait)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
 	pendingPods       int              // sessions in a row whose pod never started (versionPodWait)
 	pr                PullRequest
@@ -1708,9 +1728,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			setFindings(answer, "changes")
 		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.Cap != "":
-			// the day cap's wait, its own end included
+			// the cap's wait, its own end included
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitDay(st.Cap, st.CapUntil, model)
+			final, why, answer := t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: model, decision: capWaitDecision(st.Cap), restored: true})
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1877,12 +1897,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the session is refused before it starts: no session, no key,
 			// no failure round, and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
-				if d, ok := CapDecision(why); ok && d == policy.RefusedDayCap {
-					// a spent day cap resets on its own: the day cap's
-					// wait, not a human's, and no session ran
+				if d, ok := CapDecision(why); ok && (d == policy.RefusedDayCap || t.capWaits >= versionCapWait) {
+					// a spent cap resets on its own: the cap's wait, not a
+					// human's, and no session ran
 					_, state, _ := strings.Cut(why, "\n")
-					until := dayTurn(workflow.Now(t.ctx))
-					if final, end := held(t.awaitDay(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, until), until, model)); final != "" {
+					until := capTurn(d, workflow.Now(t.ctx))
+					if final, end := held(t.awaitCapWait(capWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
 						return t.finish(final, end)
 					}
 					continue
@@ -2021,8 +2041,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		}
-		dayCapped := t.dayCap >= versionDayCap && err == nil && !decided && res.Outcome == OutcomeDayCap && res.Capped != nil && res.Acceptance == nil
-		if dayCapped && !res.Capped.Allowed {
+		// at versionCapWait a month's or a project's cap takes the day
+		// cap's path, before the escalation its outcome is
+		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil && res.Acceptance == nil &&
+			(res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
+		if capped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
@@ -2118,12 +2141,18 @@ func (t *taskRun) lifecycle() (string, error) {
 					if res.Capped == nil || res.Capped.Allowed {
 						t.deadFrom = res.SessionID
 					}
+				case OutcomeEscalate:
+					if capped {
+						// a month's or a project's cap stopped a session
+						// that made calls, as the day's does
+						t.deadFrom = res.SessionID
+					}
 				}
 			} else if midNote {
 				handoverNote = res.CheckIn.Handover
 			}
 		}
-		if dayCapped {
+		if capped {
 			// it made calls before the cap refused one: an attempt
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
@@ -3865,8 +3894,8 @@ func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why
 	return t.awaitAnswer(question, nil)
 }
 
-// waitEnd ends a wait for a human on its own, with no answer: the day
-// cap's turn (dayWait) or an image's arrival (imageReady).
+// waitEnd ends a wait for a human on its own, with no answer: a cap's
+// own end (capWait) or an image's arrival (imageReady).
 type waitEnd interface {
 	start(t *taskRun)
 	add(sel workflow.Selector)
@@ -3972,23 +4001,78 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	}
 }
 
-// awaitCap escalates a session the gateway refused at cap c and waits for
-// a human, at the day cap also for the wait's own end (awaitDay).
-func (t *taskRun) awaitCap(c CapRefusal, model string) (final, why string, answer []string) {
-	if until := c.until(); !until.IsZero() {
-		return t.awaitDay(c.reason(), until, model)
+// capUntil is when cap refusal c resets on its own, at the turn of its
+// period: the UTC day's at the day cap, the UTC month's at the month's and
+// the project's; zero at those in a run from before versionCapWait, whose
+// wait only a human ends.
+func (t *taskRun) capUntil(c CapRefusal) time.Time {
+	if c.Decision != policy.RefusedDayCap && t.capWaits < versionCapWait {
+		return time.Time{}
 	}
-	return t.awaitHuman(c.reason(), nil)
+	return capTurn(c.Decision, c.At)
 }
 
-// awaitDay escalates a session the day cap stopped with reason and waits
-// for an answer or the wait's own end; a day that turned at until already
-// waits for nothing.
-func (t *taskRun) awaitDay(reason string, until time.Time, model string) (final, why string, answer []string) {
+// capReason is the card's escalation of cap refusal c: a wait that ends
+// on its own says when (capWaitReason), one only a human ends asks as a
+// run from before versionCapWait asks (capRefused).
+func (t *taskRun) capReason(c CapRefusal) string {
+	until := t.capUntil(c)
+	if until.IsZero() {
+		return capRefused(c.Refusal)
+	}
+	return capWaitReason(c.Decision, capGateway(c.Decision), c.Reason, until)
+}
+
+// capAsk is the question about cap refusal c of a session on model and
+// the wait that ends on its own (nil: only a human ends it). "" asks
+// nothing: the cap's period turned, or, at versionCapWait, the check
+// before the ask (CapResume with RefusedAt) finds the cap lifted by a
+// version the refusal came before; a check that fails asks. That check
+// also says when the version in force binds at the gateway, the wait's
+// first check at the latest (settles).
+func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait) {
+	until := t.capUntil(c)
+	if until.IsZero() {
+		return t.capReason(c), nil
+	}
 	if !workflow.Now(t.ctx).Before(until) {
+		return "", nil
+	}
+	w = &capWait{until: until, model: model, decision: c.Decision}
+	if t.capWaits >= versionCapWait {
+		var res CapResumed
+		in := CapCheck{TaskID: t.taskID, Model: model, Decision: c.Decision, RefusedAt: c.At}
+		if err := workflow.ExecuteActivity(t.short, ActivityCapResume, in).Get(t.ctx, &res); err != nil {
+			workflow.GetLogger(t.ctx).Warn("cap check before the ask", "task", t.taskID, "cap", c.Decision, "error", err)
+		} else if res.Resume {
+			return "", nil
+		}
+		w.settles = res.Settles
+	}
+	return t.capReason(c), w
+}
+
+// awaitCap escalates a session the gateway refused at cap c, unless
+// capAsk asks nothing, and waits for a human or the wait's own end.
+func (t *taskRun) awaitCap(c CapRefusal, model string) (final, why string, answer []string) {
+	reason, w := t.capAsk(c, model)
+	switch {
+	case reason == "":
+		return "", "", nil
+	case w == nil:
+		return t.awaitHuman(reason, nil)
+	}
+	return t.awaitCapWait(reason, w)
+}
+
+// awaitCapWait escalates a card a cap stopped with reason and waits for
+// an answer or w's own end; a period that turned at w.until already waits
+// for nothing.
+func (t *taskRun) awaitCapWait(reason string, w *capWait) (final, why string, answer []string) {
+	if !workflow.Now(t.ctx).Before(w.until) {
 		return "", "", nil
 	}
-	return t.awaitHumanUntil(reason, nil, &dayWait{until: until, model: model})
+	return t.awaitHumanUntil(reason, nil, w)
 }
 
 // dayCheck is how often a wait on the day cap reads the day's free
@@ -3997,68 +4081,155 @@ func (t *taskRun) awaitDay(reason string, until time.Time, model string) (final,
 // day's wait takes at most 288 checks into the run's history.
 const dayCheck = 5 * time.Minute
 
-// dayWait is a wait on the day cap (versionDayCap): it ends on its own at
-// until, the UTC day's turn, or at a DayResume check, every dayCheck, that
-// finds the day's free headroom funds a session's start on model. A nil
-// wait never ends on its own.
-type dayWait struct {
-	until  time.Time
-	model  string
-	t      *taskRun
-	ctx    workflow.Context
-	cancel workflow.CancelFunc
-	// next is the next check's timer, or the check that runs (checking);
-	// turned: that check is the day's turn's
-	next             workflow.Future
-	checking, turned bool
-	ended            bool
+// monthCheck is how often a wait on the month's or the project's cap
+// checks (versionCapWait): a 31-day wait at dayCheck would write about
+// 8,900 checks into one run's history against Temporal's limit of 51,200
+// events; hourly writes at most 744.
+const monthCheck = time.Hour
+
+// capWait is a wait on a cap (versionDayCap): it ends on its own at until,
+// the turn of the cap's period, or at a check, every dayCheck at the day
+// cap and every monthCheck at the month's and the project's, that finds
+// the cap no longer binds a session's start on model (CapResume). A
+// policy load wakes it (SignalPolicyLoaded): its next check comes
+// gateway.PolicyTTL later, once the gateway enforces the loaded version.
+// A run from before versionCapWait waits on the day cap alone, checks
+// through DayResume and takes no wake. A nil wait never ends on its own.
+type capWait struct {
+	until    time.Time
+	model    string
+	decision string    // the cap that refused (versionCapWait)
+	settles  time.Time // when the version in force binds at the gateway: no later check while it lies ahead (versionCapWait)
+	restored bool      // a healed run's wait, whose first check runs at once (versionCapWait)
+	t        *taskRun
+	ctx      workflow.Context
+	cancel   workflow.CancelFunc
+	// next is the next check's timer, which disarm cancels, or the check
+	// that runs (checking); turned: that check is the period's turn's;
+	// woken: a policy load came while it ran
+	next                    workflow.Future
+	disarm                  workflow.CancelFunc
+	checking, turned, woken bool
+	ended                   bool
 }
 
-// start arms the wait's first check.
-func (d *dayWait) start(t *taskRun) {
+// start arms the wait's first check. At versionCapWait it drops the
+// policy loads signalled before it, and a restored wait checks at once.
+func (d *capWait) start(t *taskRun) {
 	if d == nil {
 		return
 	}
 	d.t = t
 	d.ctx, d.cancel = workflow.WithCancel(t.ctx)
-	d.arm()
+	if t.capWaits >= versionCapWait {
+		for workflow.GetSignalChannel(d.ctx, SignalPolicyLoaded).ReceiveAsync(nil) {
+		}
+		if d.restored {
+			d.check()
+			return
+		}
+	}
+	d.arm(d.every())
 }
 
-// arm sets the timer of the next check, the day's turn's at the latest.
-func (d *dayWait) arm() {
+// every is the time between the wait's checks.
+func (d *capWait) every() time.Duration {
+	if d.t.capWaits < versionCapWait || d.decision == policy.RefusedDayCap {
+		return dayCheck
+	}
+	return monthCheck
+}
+
+// arm sets the timer of the next check in place of the last, after, at
+// the period's turn at the latest, and at settles while it lies ahead.
+// Cancelling a timer that fired issues no command.
+func (d *capWait) arm(after time.Duration) {
 	d.checking = false
-	d.next = workflow.NewTimer(d.ctx, min(dayCheck, d.until.Sub(workflow.Now(d.ctx))))
+	now := workflow.Now(d.ctx)
+	after = min(after, d.until.Sub(now))
+	if d.settles.After(now) {
+		after = min(after, d.settles.Sub(now))
+	}
+	if d.disarm != nil {
+		d.disarm()
+	}
+	var timer workflow.Context
+	timer, d.disarm = workflow.WithCancel(d.ctx)
+	d.next = workflow.NewTimer(timer, after)
+}
+
+// check runs the wait's check, the turn's once the period turned.
+func (d *capWait) check() {
+	d.checking, d.turned = true, !workflow.Now(d.ctx).Before(d.until)
+	opts := workflow.WithActivityOptions(d.ctx, finishOptions())
+	if d.t.capWaits < versionCapWait {
+		d.next = workflow.ExecuteActivity(opts, ActivityDayResume, d.t.taskID, d.model, d.turned)
+		return
+	}
+	d.next = workflow.ExecuteActivity(opts, ActivityCapResume, CapCheck{TaskID: d.t.taskID, Model: d.model, Decision: d.decision, Turned: d.turned})
+}
+
+// resumed reads check f: whether it ends the wait. One that failed waits
+// on; one that finds the version in force not yet binding at the gateway
+// sets settles.
+func (d *capWait) resumed(f workflow.Future) bool {
+	if d.t.capWaits < versionCapWait {
+		var funded bool
+		if err := f.Get(d.ctx, &funded); err != nil {
+			workflow.GetLogger(d.ctx).Warn("day cap check", "task", d.t.taskID, "error", err)
+		}
+		return funded
+	}
+	var res CapResumed
+	if err := f.Get(d.ctx, &res); err != nil {
+		workflow.GetLogger(d.ctx).Warn("cap check", "task", d.t.taskID, "cap", d.decision, "error", err)
+		return false
+	}
+	d.settles = res.Settles
+	return res.Resume
 }
 
 // add makes sel wake on the wait's next step: a timer starts a check; a
-// check that finds the session's start funded, or the turn's, ends the
-// wait, and any other arms the next.
-func (d *dayWait) add(sel workflow.Selector) {
+// check that finds the cap no longer binding, or the turn's, ends the
+// wait, and any other arms the next. At versionCapWait a policy load wakes
+// it too: the next check comes gateway.PolicyTTL after the load, or after
+// the check that runs.
+func (d *capWait) add(sel workflow.Selector) {
 	if d == nil || d.ended {
 		return
 	}
 	sel.AddFuture(d.next, func(f workflow.Future) {
 		if !d.checking {
-			d.checking, d.turned = true, !workflow.Now(d.ctx).Before(d.until)
-			opts := workflow.WithActivityOptions(d.ctx, finishOptions())
-			d.next = workflow.ExecuteActivity(opts, ActivityDayResume, d.t.taskID, d.model, d.turned)
+			d.check()
 			return
 		}
-		var funded bool
-		if err := f.Get(d.ctx, &funded); err != nil {
-			workflow.GetLogger(d.ctx).Warn("day cap check", "task", d.t.taskID, "error", err)
+		if d.ended = d.resumed(f) || d.turned; d.ended {
+			return
 		}
-		if d.ended = funded || d.turned; !d.ended {
-			d.arm()
+		after := d.every()
+		if d.woken {
+			d.woken, after = false, gateway.PolicyTTL
 		}
+		d.arm(after)
+	})
+	if d.t.capWaits < versionCapWait {
+		return
+	}
+	sel.AddReceive(workflow.GetSignalChannel(d.ctx, SignalPolicyLoaded), func(c workflow.ReceiveChannel, _ bool) {
+		c.Receive(d.ctx, nil)
+		if d.checking {
+			d.woken = true
+			return
+		}
+		d.arm(gateway.PolicyTTL)
 	})
 }
 
 // over says the wait ended on its own.
-func (d *dayWait) over() bool { return d != nil && d.ended }
+func (d *capWait) over() bool { return d != nil && d.ended }
 
 // stop cancels the wait's timer and its running check.
-func (d *dayWait) stop() {
+func (d *capWait) stop() {
 	if d != nil && d.cancel != nil {
 		d.cancel()
 	}
