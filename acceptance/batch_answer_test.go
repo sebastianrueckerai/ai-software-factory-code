@@ -1482,7 +1482,7 @@ func newBatchRig(t *testing.T) *batchRig {
 	t.Cleanup(gwsrv.Close)
 	r := &batchRig{tasks: tasks, apprs: apprs, evs: evs, gw: gw, fg: fg}
 	wf := batchWorkflows{rig: r}
-	c, err := console.New(console.Config{
+	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fgsrv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: newAcceptSessions(), Tasks: tasks, Timelines: acceptObjects{},
@@ -1505,7 +1505,9 @@ func newBatchRig(t *testing.T) *batchRig {
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)
 		},
-	})
+	}
+	cardReads(&cfg, tasks)
+	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

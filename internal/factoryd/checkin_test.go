@@ -613,10 +613,12 @@ func TestCheckinCardFactsLeadsWithTheDigest(t *testing.T) {
 
 // The check-in's card_step is one step of the card's digest in full, by
 // the number its line carries, read in factoryd; a number the digest
-// lacks is an error the model reads.
+// lacks is an error the model reads. A step of the check-in's parent
+// session points at transcript_read, which reads that session's record;
+// another session's step names no transcript read the check-in holds.
 func TestCheckinCardStepReturnsOneStep(t *testing.T) {
 	g := skeletonRig(t)
-	tools := &runnerTools{r: g.r, taskID: "t1410"}
+	tools := &runnerTools{r: g.r, taskID: "t1410", ask: &CheckInAsk{ParentSession: "s-1-41"}}
 	out, cut, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 1.0})
 	want := "#1410 step 1 of 8 at 2026-11-01 00:00:00 UTC\n" +
 		"   1 +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
@@ -626,8 +628,16 @@ func TestCheckinCardStepReturnsOneStep(t *testing.T) {
 	if out != want || cut || err != nil {
 		t.Fatalf("card_step 1 = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)
 	}
-	if _, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 9.0}); err == nil || err.Error() != "no step 9 on #1410" {
-		t.Fatalf("card_step 9 = %v, want no step 9 on #1410", err)
+	if _, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 9.0}); err == nil || err.Error() != "#1410 has steps 1 to 8; the card read numbers them" {
+		t.Fatalf("card_step 9 = %v, want the range of steps", err)
+	}
+	parent, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 2.0})
+	if err != nil || !strings.HasSuffix(parent, " line 3  pushed: branch factory/t1410, commit a1b2c3d4e5f6a7b8\ntranscript: transcript_read (this session's record)\n") {
+		t.Fatalf("card_step 2 = (%v)\n%s\nwant the parent session's lines and transcript_read", err, parent)
+	}
+	other, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 8.0})
+	if err != nil || !strings.Contains(other, "session s-5-600, ") || strings.Contains(other, "transcript:") {
+		t.Fatalf("card_step 8 = (%v)\n%s\nwant session s-5-600's lines and no transcript read", err, other)
 	}
 }
 

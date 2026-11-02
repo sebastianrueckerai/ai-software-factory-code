@@ -1271,15 +1271,16 @@ func newRig(t *testing.T) *rig {
 			return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
 				Status: k.Status, Gate: k.Gate}}, err
 		},
-		CardStep: func(ctx context.Context, taskID string, n int) (string, error) {
+		CardStep: func(ctx context.Context, taskID string, n int, _ factoryd.TranscriptPointer) (string, error) {
 			k, _, err := r.tasks.Task(ctx, taskID)
 			if err != nil {
 				return "", err
 			}
-			if steps := r.cardSteps[taskID]; n >= 1 && n <= len(steps) {
+			steps := r.cardSteps[taskID]
+			if n >= 1 && n <= len(steps) {
 				return steps[n-1], nil
 			}
-			return "", factoryd.ErrNoStep(fmt.Sprintf("no step %d on #%d", n, k.IssueNumber))
+			return "", factoryd.ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; the card read numbers them", k.IssueNumber, len(steps)))
 		},
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
@@ -1611,6 +1612,23 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 	}
 	if _, err := New(Config{SessionKey: []byte("short")}); err == nil {
 		t.Fatal("a session key under 32 bytes was accepted")
+	}
+}
+
+// The card reads have no meaning when nil: New refuses a Config without
+// one and names it.
+func TestNewRefusesAMissingCardRead(t *testing.T) {
+	r := newRig(t)
+	for name, drop := range map[string]func(*Config){
+		"CardDigest":  func(c *Config) { c.CardDigest = nil },
+		"CardStep":    func(c *Config) { c.CardStep = nil },
+		"BoardDigest": func(c *Config) { c.BoardDigest = nil },
+	} {
+		cfg := r.c.cfg
+		drop(&cfg)
+		if _, err := New(cfg); err == nil || err.Error() != "console: no "+name {
+			t.Errorf("New without %s = %v, want it named", name, err)
+		}
 	}
 }
 

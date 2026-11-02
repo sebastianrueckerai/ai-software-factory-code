@@ -332,9 +332,10 @@ type Config struct {
 	// CardDigest is a card's digest (factoryd's Runner.CardDigest), which
 	// the card read leads with; CardStep one step of it in full, a step
 	// the digest lacks factoryd.ErrNoStep (Runner.CardStep); BoardDigest
-	// a project's board in a few lines (Runner.BoardDigest).
+	// a project's board in a few lines (Runner.BoardDigest). New refuses
+	// a Config without any of them.
 	CardDigest  func(ctx context.Context, taskID string) (factoryd.CardDigest, error)
-	CardStep    func(ctx context.Context, taskID string, n int) (string, error)
+	CardStep    func(ctx context.Context, taskID string, n int, transcript factoryd.TranscriptPointer) (string, error)
 	BoardDigest func(ctx context.Context, repository string) (factoryd.BoardDigest, error)
 	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
 	// "" when the task's free headroom can fund a session's opening calls and
@@ -588,6 +589,14 @@ func New(cfg Config) (*Console, error) {
 	}
 	if cfg.Sessions == nil {
 		return nil, errors.New("console: no session store")
+	}
+	switch {
+	case cfg.CardDigest == nil:
+		return nil, errors.New("console: no CardDigest")
+	case cfg.CardStep == nil:
+		return nil, errors.New("console: no CardStep")
+	case cfg.BoardDigest == nil:
+		return nil, errors.New("console: no BoardDigest")
 	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}

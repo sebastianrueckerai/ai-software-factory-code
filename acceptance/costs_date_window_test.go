@@ -1176,7 +1176,7 @@ func newRig(t *testing.T) *rig {
 	gwsrv := httptest.NewServer(gw)
 	t.Cleanup(gwsrv.Close)
 
-	c, err := console.New(console.Config{
+	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fgsrv.URL, ForgejoPublicURL: fgsrv.URL,
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: newAcceptSessions(), Tasks: tasks, Timelines: acceptObjects{}, Policies: led, Costs: led,
@@ -1194,12 +1194,9 @@ func newRig(t *testing.T) *rig {
 		Events: evs, Bus: evs.bus, Chat: ch,
 		Mirrors:  &acceptMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
-		CardDigest: func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
-			k, _, err := tasks.Task(ctx, taskID)
-			return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
-				Status: k.Status, Gate: k.Gate}}, err
-		},
-	})
+	}
+	cardReads(&cfg, tasks)
+	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -20,10 +20,16 @@ type ErrNoStep string
 
 func (e ErrNoStep) Error() string { return string(e) }
 
+// TranscriptPointer names the read of session's transcript that a session
+// step's detail ends with, n the session's place among the card's session
+// starts, oldest first, 0 when the timeline holds no start for it; ""
+// leaves the line out. Each caller names a tool its own agent holds.
+type TranscriptPointer func(session string, n int) string
+
 // CardStep returns one step of the card's digest in full: a session's steps, a gate's full result,
 // a check-in's record with its calls, an ask's five parts and its answer, a funding event's detail.
 // n is the step's number before the fold; one the digest lacks is ErrNoStep.
-func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, error) {
+func (r *Runner) CardStep(ctx context.Context, taskID string, n int, transcript TranscriptPointer) (string, error) {
 	rows, err := r.readCard(ctx, taskID)
 	if err != nil {
 		return "", err
@@ -33,7 +39,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, er
 		return "", err
 	}
 	if n < 1 || n > len(d.Steps) {
-		return "", ErrNoStep(fmt.Sprintf("no step %d on #%d", n, d.Head.Issue))
+		return "", ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; the card read numbers them", d.Head.Issue, len(d.Steps)))
 	}
 	s := d.Steps[n-1]
 	var b strings.Builder
@@ -46,7 +52,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, er
 	case s.Kind == "criteria":
 		criteriaDetail(&b, s, rows.verdicts)
 	case s.Kind == "session":
-		sessionDetail(&b, rows.task.ID, s.Ref.Session, lines, d.Steps[0].At)
+		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At, transcript)
 	case s.Kind == "ask":
 		if err := r.askDetail(ctx, &b, s, rows); err != nil {
 			return "", err
@@ -96,10 +102,10 @@ func filedDetail(b *strings.Builder, by string, t Task, h DigestHead, deps []Dep
 }
 
 // sessionDetail is session id's timeline lines, one each, at their
-// offsets from the card's start, and, when the timeline holds its start,
-// the session_steps call that reads its transcript: n is its place among
-// the card's session starts, oldest first, as session_steps counts them.
-func sessionDetail(b *strings.Builder, taskID, id string, lines [][]byte, start time.Time) {
+// offsets from the card's start, and the read of its transcript that
+// transcript names: n is its place among the card's session starts,
+// oldest first, as the chat's session_steps counts them.
+func sessionDetail(b *strings.Builder, id string, lines [][]byte, start time.Time, transcript TranscriptPointer) {
 	var out []string
 	starts, n := 0, 0
 	for i, raw := range lines {
@@ -130,8 +136,8 @@ func sessionDetail(b *strings.Builder, taskID, id string, lines [][]byte, start 
 	for _, l := range out {
 		b.WriteString(l + "\n")
 	}
-	if n > 0 {
-		fmt.Fprintf(b, "transcript: session_steps task %s n %d\n", taskID, n)
+	if read := transcript(id, n); read != "" {
+		b.WriteString("transcript: " + read + "\n")
 	}
 }
 

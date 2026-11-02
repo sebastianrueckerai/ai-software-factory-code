@@ -1255,7 +1255,12 @@ var tools = []chatTool{
 			if err != nil {
 				return "", nil, err
 			}
-			s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step)
+			s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step, func(_ string, n int) string {
+				if n == 0 {
+					return ""
+				}
+				return fmt.Sprintf("session_steps task %s n %d", k.ID, n)
+			})
 			if no := factoryd.ErrNoStep(""); errors.As(err, &no) {
 				return "", nil, refuse(http.StatusNotFound, string(no))
 			}

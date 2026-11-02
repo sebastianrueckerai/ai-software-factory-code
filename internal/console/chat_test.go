@@ -2067,8 +2067,16 @@ func TestChatCardStepReturnsOneStep(t *testing.T) {
 	r, _, g := newChatRig(t)
 	filed := "#5 step 1 of 1 at 2026-10-11 09:00:00 UTC\n   1 +0:00   filed by sebastian     → queued\nfiled by sebastian, size small, budget 3.00 EUR\n"
 	r.cardSteps = map[string][]string{"t-m": {filed}}
+	var pointer factoryd.TranscriptPointer
+	read := r.c.cfg.CardStep
+	r.c.cfg.CardStep = func(ctx context.Context, taskID string, n int, transcript factoryd.TranscriptPointer) (string, error) {
+		pointer = transcript
+		return read(ctx, taskID, n, transcript)
+	}
 	equal(t, "the step reads", reads(t, r, g, "card_step", `{"task_id":"#5","step":1}`, "card_step", `{"task_id":"#5","step":2}`),
-		[]string{filed, "Refused: no step 2 on #5"})
+		[]string{filed, "Refused: #5 has steps 1 to 1; the card read numbers them"})
+	equal(t, "the transcript read of the card's second session", pointer("s-2", 2), "session_steps task t-m n 2")
+	equal(t, "the transcript read of a session with no start", pointer("s-x", 0), "")
 }
 
 // board_digest is the chat project's board in a few lines.
