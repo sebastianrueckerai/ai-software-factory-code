@@ -137,8 +137,9 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 			return c.chatSend(r.Context(), call, in)
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_read", Description: "Read a conversation with the project agent of " + call.p.Name +
-		": its last 40 messages, or those after a message id, each with its id, role, text, time, source (console, or the name " +
-		"of the chat token that wrote it) and a proposal's state. Without a conversation it reads this token's own. Reading marks nothing read."},
+		": its last 40 messages, or with after at most 40 messages after that message id, oldest first; for more, call again with the " +
+		"last id it answered. Each message has its id, role, text, time, source (console, or the name of the chat token that wrote it) " +
+		"and its proposals' states. Without a conversation it reads this token's own. Reading marks nothing read."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in readInput) (*mcp.CallToolResult, any, error) {
 			return c.chatRead(ctx, call, in)
 		})
@@ -180,7 +181,7 @@ type sendInput struct {
 // readInput is chat_read's arguments.
 type readInput struct {
 	Conversation int64 `json:"conversation,omitempty" jsonschema:"a conversation's number from chat_threads; without one, this token's own"`
-	After        int64 `json:"after,omitempty" jsonschema:"answer only the messages after this message id"`
+	After        int64 `json:"after,omitempty" jsonschema:"answer at most 40 messages after this message id, oldest first; for more, call again with the last id answered"`
 }
 
 // tokenThread is the thread a token's tool works in: n, which must be
@@ -218,7 +219,8 @@ func (c *Console) ownThread(ctx context.Context, call tokenCall) (int64, error) 
 	}
 	got, claim := c.cfg.ChatTokens.ClaimChatTokenConversation(ctx, call.row.ID, n)
 	if claim != nil || got != n {
-		if _, _, err := c.cfg.Chat.DeleteConversation(ctx, call.row.Repository, call.row.Login, n); err != nil {
+		// a client that left mid-claim must not leave the thread behind
+		if _, _, err := c.cfg.Chat.DeleteConversation(context.WithoutCancel(ctx), call.row.Repository, call.row.Login, n); err != nil {
 			log.Printf("console: drop thread %d of chat token %d: %v", n, call.row.ID, err)
 		}
 	}

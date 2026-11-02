@@ -221,11 +221,17 @@ func TestDeleteConversationFreesItsChatToken(t *testing.T) {
 	own := addChatToken(t, s, "h1", "sebastian")
 	other := addChatToken(t, s, "h2", "sebastian")
 	alices := addChatToken(t, s, "h3", "alice")
+	elsewhere := newChatToken("h4", "sebastian")
+	elsewhere.Repository = "acme/web"
+	elsewhereID, err := s.AddChatToken(ctx, elsewhere)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, c := range []struct {
-		id, n int64
-		login string
-	}{{own, 2, "sebastian"}, {other, 3, "sebastian"}, {alices, 2, "alice"}} {
-		if _, err := s.AddChatMessage(ctx, "acme/app", c.login, ChatMessage{Role: "user", Content: "hi", Conversation: c.n}); err != nil {
+		id, n             int64
+		repository, login string
+	}{{own, 2, "acme/app", "sebastian"}, {other, 3, "acme/app", "sebastian"}, {alices, 2, "acme/app", "alice"}, {elsewhereID, 2, "acme/web", "sebastian"}} {
+		if _, err := s.AddChatMessage(ctx, c.repository, c.login, ChatMessage{Role: "user", Content: "hi", Conversation: c.n}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.ClaimChatTokenConversation(ctx, c.id, c.n); err != nil {
@@ -235,7 +241,7 @@ func TestDeleteConversationFreesItsChatToken(t *testing.T) {
 	if _, _, err := s.DeleteConversation(ctx, "acme/app", "sebastian", 2); err != nil {
 		t.Fatal(err)
 	}
-	for hash, want := range map[string]int64{"h1": 0, "h2": 3, "h3": 2} {
+	for hash, want := range map[string]int64{"h1": 0, "h2": 3, "h3": 2, "h4": 2} {
 		if got, _, err := s.ChatTokenByHash(ctx, hash); err != nil || got.Conversation != want {
 			t.Errorf("token %s's conversation = %d, %v; want %d", hash, got.Conversation, err, want)
 		}

@@ -743,6 +743,7 @@ func TestMCPChatSendJoinsTheRunningTurn(t *testing.T) {
 		t.Fatalf("the first chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
 	<-g.arrived
+	chatSendWait = wait
 	if got := answerOf(t, session, "chat_send", map[string]any{"message": "and more"}); got != sent(2, "", "", false) {
 		t.Fatalf("the joining chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
@@ -914,4 +915,51 @@ func TestMCPChatReadPagesForward(t *testing.T) {
 	equal(t, "the last 40", ids(map[string]any{"conversation": 2}), span(6, 45))
 	equal(t, "40 after 1", ids(map[string]any{"conversation": 2, "after": 1}), span(2, 41))
 	equal(t, "after 41", ids(map[string]any{"conversation": 2, "after": 41}), span(42, 45))
+}
+
+// leavingClaim is the rig's chat token store whose claim finds its
+// client gone: it ends the context and fails, as the store does on a
+// cancelled one.
+type leavingClaim struct {
+	*fakeChatTokens
+	leave context.CancelFunc
+}
+
+func (l leavingClaim) ClaimChatTokenConversation(ctx context.Context, _, _ int64) (int64, error) {
+	l.leave()
+	return 0, ctx.Err()
+}
+
+// cancelledChat is the rig's chat store whose thread delete fails on an
+// ended context, as the store's does.
+type cancelledChat struct{ *fakeChat }
+
+func (c cancelledChat) DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, nil, err
+	}
+	return c.fakeChat.DeleteConversation(ctx, repository, login, n)
+}
+
+// A client that leaves between the side thread and its claim leaves no
+// empty thread titled with the token's name behind.
+func TestMCPOwnThreadDropsItsThreadWhenTheClientLeaves(t *testing.T) {
+	r := newRig(t)
+	r.chatTokenOf(t, "sebastian", "sf/code", nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cfg := r.c.cfg
+	cfg.ChatTokens, cfg.Chat = leavingClaim{r.chatTokens, cancel}, cancelledChat{r.chat}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.chatTokens.mu.Lock()
+	row := r.chatTokens.rows[0]
+	r.chatTokens.mu.Unlock()
+	if n, err := c.ownThread(ctx, tokenCall{row: row}); err == nil || err.Error() != "cannot open the token's conversation" {
+		t.Fatalf("ownThread = %d, %v; want the refusal", n, err)
+	}
+	if list, _ := r.chat.Conversations(t.Context(), "sf/code", "sebastian"); len(list) != 0 {
+		t.Fatalf("the human's threads = %+v, want none", list)
+	}
 }
