@@ -649,6 +649,9 @@ func (s *accBatchStore) ProjectByRepository(ctx context.Context, repository stri
 func (s *accBatchStore) SetTaskUsage(ctx context.Context, id string, u factoryd.TaskUsage) error {
 	panic("unused")
 }
+func (s *accBatchStore) ResetTaskUsage(ctx context.Context, id string) error {
+	panic("unused")
+}
 func (s *accBatchStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
 	panic("unused")
 }

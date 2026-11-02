@@ -575,11 +575,22 @@ func (s *acceptanceStore) ProjectByRepository(context.Context, string) (factoryd
 	return factoryd.Project{}, false, nil
 }
 
+// SetTaskUsage keeps the console's raises, as the store does.
 func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.TaskUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
+	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
 	t.Usage = u
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *acceptanceStore) ResetTaskUsage(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Usage = factoryd.TaskUsage{}
 	s.tasks[id] = t
 	return nil
 }

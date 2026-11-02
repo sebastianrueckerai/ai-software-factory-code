@@ -920,9 +920,9 @@ func planRollup(cards []card) string {
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
 
-// extendForm is an approver's Extend action beside a card's answer box,
-// where its question offers the exit: the stated sessions, lines and EUR
-// raise the card's caps, and the note answers the stop. Cap, Bound,
+// extendForm is an approver's Extend action on a live card: the stated
+// sessions, lines and EUR raise the card's caps, and on a waiting card the
+// note answers the stop. Cap, Bound,
 // Budget and Left are the card's numbers the raise starts from.
 type extendForm struct {
 	CSRF       string
@@ -2006,6 +2006,14 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
 		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
 	}
+	// the Extend action is offered on every live agent card, to its
+	// approvers, with its numbers the raise starts from
+	if v.approves(t.Repository) && extendable(t) {
+		k.Extend = &extendForm{CSRF: v.csrf,
+			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
+			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
+			Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
+	}
 	if v.escalated(t) {
 		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
@@ -2018,15 +2026,6 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
 			k.Fund = &fundForm{CSRF: v.csrf}
-		}
-		// the Extend action is offered where the card's question offers
-		// the exit, a stop that names the owner's decision: the same
-		// card, to its approvers, with its numbers the raise starts from
-		if v.approves(t.Repository) && bt.Question != nil && bt.Question.Offers(factoryd.AnswerExtend) {
-			k.Extend = &extendForm{CSRF: v.csrf,
-				Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.ExtraAttempts,
-				Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
-				Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
 		}
 		// the acceptance close is offered where the card's own trail
 		// proves the work (roadmap 208): the same card, to its approvers
@@ -3304,6 +3303,9 @@ type drawerData struct {
 	// reads it (C38), nil while the chain holds nothing to say.
 	Chain *chainReadout
 }
+
+// Suffix is the drawer's id suffix on the fields of the forms it shares with the column's copy.
+func (drawerData) Suffix() string { return "-d" }
 
 // chainReadout is the Chain section of a merged or done card's Activity
 // tab and timeline (C38): the chain behind its change in the drawer's

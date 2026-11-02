@@ -424,6 +424,7 @@ type RunState struct {
 	// signal and its next session starts one with them.
 	Findings []string
 	Usage    TaskUsage // what earlier runs used of the caps and were granted
+	Size     string    // the card's size, "" before the sizing step or for a card no size binds
 	// Answers are the human's answers to the task's escalations rebuilt
 	// from the intake events, newest first, and Question the
 	// question of its last escalation, which a healed run asks again with
@@ -613,6 +614,8 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
 	run.resumeHold = workflow.GetVersion(ctx, "resume-hold", workflow.DefaultVersion, versionResumeHold)
 	run.capWaits = workflow.GetVersion(ctx, "cap-wait", workflow.DefaultVersion, versionCapWait)
+	run.raiseReload = workflow.GetVersion(ctx, "raise-reload", workflow.DefaultVersion, versionRaiseReload)
+	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1267,6 +1270,21 @@ const (
 	// the month's and the project's cap, and its day cap's wait checks
 	// every dayCheck alone (DayResume).
 	versionCapWait workflow.Version = 1
+	// versionRaiseReload (change id "raise-reload"): the lifecycle reads
+	// the console's raises from the row (readRaise) before each session's
+	// cap check and after every answer wake, so an Extend made while the
+	// card ran or waited at any stop — the session cap, the agent time, a
+	// gate — reaches the run. The raises live in columns the workflow
+	// never writes (TaskUsage.RaisedSessions, ExtraLines), so no usage
+	// record writes them away. A run from before the change reloads the
+	// whole row at the check-in's stop alone (versionExtendRaise).
+	versionRaiseReload workflow.Version = 1
+	// versionSizeTime (change id "size-time"): a card's agent time follows
+	// its size as its budget and line bound do (policy.SizeAgentTime): half the
+	// class's time for a small card, one and a half for a large one, set
+	// when the sizing step writes the size and read from the row on a
+	// later run. A run from before the change keeps the class's time.
+	versionSizeTime workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1408,6 +1426,9 @@ type taskRun struct {
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
 	capWaits          workflow.Version // every cap's wait ends on its own and wakes on a policy load (versionCapWait)
+	raiseReload       workflow.Version // the console's raises are read before each cap check and after each answer (versionRaiseReload)
+	sizeTime          workflow.Version // the agent time follows the card's size (versionSizeTime)
+	agentTimeBase     time.Duration    // the class's agent time, which the size scales (sizeAgentTime)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
 	pendingPods       int              // sessions in a row whose pod never started (versionPodWait)
 	pr                PullRequest
@@ -1474,6 +1495,7 @@ type verdict struct {
 
 func (t *taskRun) lifecycle() (string, error) {
 	drained := t.v >= versionSignalsDrained
+	t.agentTimeBase = t.cfg.WallClockCap
 	if err := workflow.ExecuteActivity(t.short, ActivityEnsureIssue, t.taskID).Get(t.ctx, nil); err != nil {
 		return t.finish("failed", "ensure issue: "+errMessage(err))
 	}
@@ -1509,7 +1531,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// capAnswer is what an answer at a cap buys: an attempt only at the
 	// session cap, else the agent time alone (versionSessionLadder)
 	capAnswer := func() {
-		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.ExtraAttempts {
+		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.SessionsAdded() {
 			t.grantTime(&u)
 			return
 		}
@@ -1532,7 +1554,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
 			capAnswer()
 			return true
 		}
@@ -1548,10 +1570,13 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.grant(&u)
 	}
 	// held ends every wait for a human of this loop: the task's final state
-	// when the wait decided one, else the change requests that answered it join
-	// the next session's findings (the human's comments are in t.answers)
+	// when the wait decided one, else the console's raises are read from
+	// the row (versionRaiseReload) and the change requests that answered
+	// it join the next session's findings (the human's comments are in
+	// t.answers)
 	held := func(final, why string, answer []string) (string, string) {
 		if final == "" {
+			t.readRaise(&u)
 			addFindings(answer, "changes")
 			if len(answer) > 0 {
 				t.gateFindings = true
@@ -1606,7 +1631,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
+		capHead := timeCapReached
+		if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
+			capHead = capReached
+		}
+		if final, why := held(t.awaitHuman(t.sessionCapCard(capHead, reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
 		}
 		capAnswer()
@@ -1620,6 +1649,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v5 >= versionPersistUsage {
 			u = st.Usage
 		}
+		t.sizeAgentTime(st.Size)
 		if t.v7 >= versionAnswers {
 			t.answers = st.Answers
 		}
@@ -1757,6 +1787,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
+			t.readRaise(&u)
 			setFindings(answer, "changes")
 			switch {
 			case t.v5 < versionPersistUsage:
@@ -1780,7 +1811,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// rides the findings the review weighs instead. A head
 				// the agent moved past the gates is held, not died on
 				// (versionResumeHold)
-				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 				v := t.resumeVerify(&st.Head)
 				startRef = st.Head
 				if v.final != "" {
@@ -1804,7 +1835,7 @@ func (t *taskRun) lifecycle() (string, error) {
 					apply(verdict{findings: answer, reason: "changes requested", requested: true})
 					break
 				}
-				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 				v := t.resumeVerify(&st.Head)
 				startRef = st.Head
 				if v.final != "" {
@@ -1846,7 +1877,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
 			t.pr, startRef = st.PR, st.Head
-			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 			v := t.verify(st.Head)
 			if v.final != "" {
 				return t.finish(v.final, v.reason)
@@ -1892,6 +1923,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// session, in a run from before versionSessionLadder
 	taken := 0
 	for {
+		t.readRaise(&u)
 		attempt := u.Attempts + 1 + taken
 		if t.attemptFunded >= versionAttemptFunded {
 			// the session is refused before it starts: no session, no key,
@@ -1920,7 +1952,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				continue
 			}
 		}
-		if attempt > t.cfg.MaxSessions+u.ExtraAttempts {
+		if attempt > t.cfg.MaxSessions+u.SessionsAdded() {
 			if t.v18 < versionSessionCap {
 				break
 			}
@@ -1932,7 +1964,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
+				if final, why := held(t.awaitHuman(t.sessionCapCard(capReached, reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
 				t.grant(&u)
@@ -1988,7 +2020,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res SessionResult
 		in := SessionInput{
-			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
+			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
@@ -2087,7 +2119,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if drained && isTerminal(err) {
 			return t.finish("failed", "session: "+errMessage(err))
 		}
-		last := attempt >= t.cfg.MaxSessions+u.ExtraAttempts
+		last := attempt >= t.cfg.MaxSessions+u.SessionsAdded()
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
 			if final, why := askUnanswered(); final != "" {
@@ -2204,7 +2236,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			if t.extendRaise >= versionExtendRaise {
+			if t.extendRaise >= versionExtendRaise && t.raiseReload < versionRaiseReload {
 				// the row holds what the console's Extend raised while the
 				// card waited; the wake's grant and the next stop's marks
 				// read it, or the usage the next session records would write
@@ -2217,7 +2249,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// session the close makes pointless
 				return t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review))
 			}
-			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
+			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && (res.Reason == checkinCallCapStop || res.Reason == checkinTimeCapStop) {
 				// the call cap's stop falls through to buy(), never the
 				// verify break: the answer buys the session
 				t.lastCheckinStop.Granted = true
@@ -2322,7 +2354,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		apply(v)
 	}
-	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.ExtraAttempts, reason))
+	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.SessionsAdded(), reason))
 }
 
 // providerRefused takes a session the provider refused: the task waits
@@ -2679,9 +2711,25 @@ func (t *taskRun) grantTime(u *TaskUsage) {
 // keeps WorkflowConfig.AnswerSlice instead.
 func (t *taskRun) answerTime() time.Duration {
 	if t.answerSlice >= versionAnswerSlice {
-		return max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
+		return answerSlice(t.cfg.WallClockCap)
 	}
 	return min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
+}
+
+// answerSlice is the agent time an answer leaves the next session under
+// the cap: a quarter of it, never under the 5 minutes a session needs to
+// start, never over the cap itself.
+func answerSlice(cap time.Duration) time.Duration {
+	return max(cap/4, min(minSession, cap))
+}
+
+// sizeAgentTime sets the card's agent time by its size (versionSizeTime):
+// the class's time halved for a small card, raised by half for a large
+// one (policy.SizeAgentTime). A card no size binds keeps the class's.
+func (t *taskRun) sizeAgentTime(size string) {
+	if t.sizeTime >= versionSizeTime && size != "" {
+		t.cfg.WallClockCap = policy.SizeAgentTime(size, t.agentTimeBase)
+	}
 }
 
 // grantPoster is grant for an answer to an information request, up to
@@ -2719,6 +2767,18 @@ func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
 		return held
 	}
 	return u
+}
+
+// readRaise takes the console's raises from the row into u
+// (versionRaiseReload): the sessions and lines an Extend added, which the
+// workflow never writes, so the row's numbers are the truth and the rest
+// of u stays the run's own.
+func (t *taskRun) readRaise(u *TaskUsage) {
+	if t.raiseReload < versionRaiseReload {
+		return
+	}
+	row := t.readUsage(*u)
+	u.RaisedSessions, u.ExtraLines = row.RaisedSessions, row.ExtraLines
 }
 
 // verify takes a pushed commit through its pull request, the checks and

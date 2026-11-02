@@ -2679,6 +2679,46 @@ func TestRunSessionReattachesToTheLivePod(t *testing.T) {
 	}
 }
 
+// A pod that finished while factoryd was stopping still holds the result
+// the old factoryd had not read: the retry reattaches to it, reads the log
+// to its end and takes the result, and starts no new pod.
+func TestRunSessionReattachesToAFinishedPod(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(true, "pushed") + "\n"
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	kube.mu.Lock()
+	kube.pods[first.Namespace+"/"+first.Pod].phase = "Succeeded"
+	kube.mu.Unlock()
+
+	res, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Outcome != OutcomePushed || res.Commit != "c-wip" || res.SessionID != first.SessionID {
+		t.Fatalf("result = %+v, want the finished session's push as its own", res)
+	}
+	if len(kube.podOrder) != 1 {
+		t.Fatalf("pods created %d, want only the first factoryd's", len(kube.podOrder))
+	}
+	if _, ok := store.liveSessions["t2"]; ok {
+		t.Fatal("the live row survived the session's end")
+	}
+	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_reattached"`) || strings.Count(timeline, `"step":"session_start"`) != 1 {
+		t.Fatalf("timeline = %s, want one start and a reattach", timeline)
+	}
+}
+
 // A live row whose pod is gone (a crash took it) starts the attempt over
 // as before: a new pod, and the row replaced by the new session's.
 func TestRunSessionReattachFindsNoPodAndStartsOver(t *testing.T) {

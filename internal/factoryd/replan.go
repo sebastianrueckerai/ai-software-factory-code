@@ -160,7 +160,7 @@ func (r *Runner) requeuePlan(ctx context.Context, p Task, openIssue bool) error 
 	if err := r.store.TransitionTask(ctx, p.ID, reopenFrom, "queued"); err != nil {
 		return err
 	}
-	if err := r.store.SetTaskUsage(ctx, p.ID, TaskUsage{}); err != nil {
+	if err := r.store.ResetTaskUsage(ctx, p.ID); err != nil {
 		return err
 	}
 	if err := r.fundPlanner(ctx, p.ID); err != nil {

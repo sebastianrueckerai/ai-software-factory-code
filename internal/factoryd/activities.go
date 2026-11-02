@@ -929,12 +929,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// a session the stopped factoryd detached from runs on in its pod:
 	// this retry reattaches to it; a dead pod's row goes and the attempt
-	// starts over from the branch
+	// starts over from the branch; a pod that finished while factoryd was
+	// away still holds the result line the old factoryd had not read
 	var live *LiveSession
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
 	} else if ok {
-		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending") {
+		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
 			live = &l
 			s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.parentDeadEnd, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.ParentDeadEnd, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
@@ -1785,7 +1786,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
+	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
 		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true

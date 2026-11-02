@@ -350,6 +350,9 @@ type Limits struct {
 	// its last call carries no tools and asks for the answer. Absent:
 	// DefaultCheckinCalls.
 	CheckinCalls int `yaml:"checkin_calls,omitempty" json:"checkin_calls,omitempty"`
+	// CheckinTime is how long one check-in conversation may run before
+	// its ask goes to a human; 0 means DefaultCheckinTime.
+	CheckinTime time.Duration `yaml:"checkin_time,omitempty" json:"checkin_time,omitempty"`
 	// CheckinShare is the most percent of the card's budget the check-in's
 	// calls may spend. Absent: DefaultCheckinShare.
 	CheckinShare int `yaml:"checkin_share,omitempty" json:"checkin_share,omitempty"`
@@ -423,6 +426,7 @@ func (l Limits) NoPushShare() float64 {
 // version pinned before they existed (the escalation ladder's plan D).
 const (
 	DefaultCheckinCalls         = 20
+	DefaultCheckinTime          = 5 * time.Minute
 	DefaultCheckinShare         = 10
 	DefaultCheckinTailKiB       = 24
 	DefaultCheckinHandoverChars = 2000
@@ -433,6 +437,10 @@ const (
 // CheckinSessionCount are the keys, their defaults where unset;
 // CheckinShareOf is CheckinShare as a share of a card's budget.
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
+
+// CheckinTimeCap is how long one check-in conversation may run,
+// limits.checkin_time or DefaultCheckinTime.
+func (l Limits) CheckinTimeCap() time.Duration { return cmp.Or(l.CheckinTime, DefaultCheckinTime) }
 
 // CheckinShareOf is CheckinShare as a share of budget, its default
 // where unset.
@@ -521,14 +529,19 @@ type limitsJSON struct {
 	// PlanWarnAt is limits.plan_warn_at, left out when 0.
 	PlanWarnAt int `json:"plan_warn_at,omitempty"`
 	// NoPushSpend is limits.no_push_spend, left out when 0.
-	NoPushSpend int `json:"no_push_spend,omitempty"`
+	NoPushSpend int    `json:"no_push_spend,omitempty"`
+	CheckinTime string `json:"checkin_time,omitempty"`
 }
 
 // MarshalJSON is Limits as limitsJSON, its durations as strings, as in
 // the YAML.
 func (l Limits) MarshalJSON() ([]byte, error) {
+	checkinTime := ""
+	if l.CheckinTime != 0 {
+		checkinTime = l.CheckinTime.String()
+	}
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
-		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend})
+		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, checkinTime})
 }
 
 // UnmarshalJSON reads limitsJSON back into Limits, its duration strings
@@ -545,7 +558,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
-	}{{j.AgentTime, &out.AgentTime}, {j.CheckIn, &out.CheckIn}, {j.SupervisorTimeout, &out.SupervisorTimeout}} {
+	}{{j.AgentTime, &out.AgentTime}, {j.CheckIn, &out.CheckIn}, {j.SupervisorTimeout, &out.SupervisorTimeout}, {j.CheckinTime, &out.CheckinTime}} {
 		if d.s == "" {
 			continue
 		}
@@ -609,6 +622,8 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
 	case l.CheckinCalls != 0 && (l.CheckinCalls < 1 || l.CheckinCalls > 48):
 		return fmt.Errorf("policy: limits.checkin_calls must be 0 or lie between 1 and 48, is %d", l.CheckinCalls)
+	case l.CheckinTime != 0 && (l.CheckinTime < time.Minute || l.CheckinTime > 30*time.Minute):
+		return fmt.Errorf("policy: limits.checkin_time must be 0 or lie between 1m and 30m, is %s", l.CheckinTime)
 	case l.CheckinShare != 0 && (l.CheckinShare < 1 || l.CheckinShare > 100):
 		return fmt.Errorf("policy: limits.checkin_share must be 0 or lie between 1 and 100, is %d", l.CheckinShare)
 	case l.CheckinTailKiB != 0 && (l.CheckinTailKiB < 4 || l.CheckinTailKiB > 64):
@@ -784,7 +799,7 @@ func (d Document) PartsBound(activity string, parts int) time.Duration {
 	switch {
 	case ok:
 	case activity == "RunSession" || activity == "RunReport" || activity == "RunPlan":
-		return d.Limits.AgentTime + time.Minute
+		return SizeAgentTime("large", d.Limits.AgentTime) + time.Minute
 	case activity == "Screen" || activity == "SizeCard":
 		// a screening's or a sizing's report session, and its pod start
 		return d.Limits.AgentTime + 2*time.Minute
@@ -1506,6 +1521,19 @@ func (b Budget) ClampBudget(requested float64) float64 {
 
 // CardSizes are the sizes a card may have.
 var CardSizes = []string{"small", "medium", "large"}
+
+// SizeAgentTime is the agent time a card of size gets under base, the
+// class's: half of it for a small card, base for a medium one, one and a
+// half for a large one. A card no size binds keeps base.
+func SizeAgentTime(size string, base time.Duration) time.Duration {
+	switch size {
+	case "small":
+		return base / 2
+	case "large":
+		return base + base/2
+	}
+	return base
+}
 
 // sizeEUR is a card's budget by its size.
 var sizeEUR = map[string]float64{"small": 4, "medium": 5, "large": 10}

@@ -754,7 +754,7 @@ func TestRunSessionNamesACostHoldCrossing(t *testing.T) {
 			}
 			var run taskRun
 			run.remember("session", 13, res.Findings)
-			card := run.sessionCapCard(res.Summary, nil)
+			card := run.sessionCapCard(capReached, res.Summary, nil)
 			if !strings.Contains(card, "\nlast: "+tc.want+"\n") || !strings.HasSuffix(card, "\n- session, attempt 13: "+line) {
 				t.Fatalf("card = %q, want the state as its last line and its newest finding", card)
 			}

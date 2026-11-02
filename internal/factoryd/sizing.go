@@ -19,7 +19,10 @@ var sizedSources = []string{"webhook", "api"}
 
 // SizeResult is SizeCard's answer: ToPlan is the switch of a card that is
 // not small, nil when the card stays direct.
-type SizeResult struct{ ToPlan *PlanSwitch }
+type SizeResult struct {
+	ToPlan *PlanSwitch
+	Size   string // the card's size after the step, "" for a card no size binds
+}
 
 // sizedSwitch sends a card of size, which is not small, to the planner
 // with the files the sizing expects the change to touch.
@@ -135,6 +138,7 @@ func (r *Runner) sizing(ctx context.Context, t Task) (map[string]any, error) {
 // carries one, and answers from the step. A budget that moved since the
 // step read it stays.
 func (r *Runner) sized(ctx context.Context, taskID string, step map[string]any) (SizeResult, error) {
+	size, _ := step["size"].(string)
 	if held, ok := step["held_cents"].(float64); ok {
 		sized, _ := step["sized"].(string)
 		budget, _ := step["budget_eur"].(float64)
@@ -143,9 +147,8 @@ func (r *Runner) sized(ctx context.Context, taskID string, step map[string]any) 
 		}
 	}
 	if plan, _ := step["plan"].(bool); !plan {
-		return SizeResult{}, nil
+		return SizeResult{Size: size}, nil
 	}
-	size, _ := step["size"].(string)
 	reason, _ := step["reason"].(string)
 	var files []string
 	listed, _ := step["files"].([]any)
@@ -154,5 +157,5 @@ func (r *Runner) sized(ctx context.Context, taskID string, step map[string]any) 
 			files = append(files, f)
 		}
 	}
-	return SizeResult{ToPlan: sizedSwitch(size, reason, files)}, nil
+	return SizeResult{ToPlan: sizedSwitch(size, reason, files), Size: size}, nil
 }

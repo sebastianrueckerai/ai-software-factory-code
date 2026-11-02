@@ -426,7 +426,7 @@ func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
 		t.Errorf("note = %q, want %q", note, want)
 	}
 	task, _, _ := r.tasks.Task(t.Context(), "t-e")
-	if task.BudgetEUR != 4 || task.Usage.ExtraAttempts != 1 || task.Usage.ExtraLines != 500 {
+	if task.BudgetEUR != 4 || task.Usage.RaisedSessions != 1 || task.Usage.ExtraLines != 500 {
 		t.Errorf("the card after the extend = budget %v, usage %+v, want 4 EUR, one extra session, 500 extra lines", task.BudgetEUR, task.Usage)
 	}
 	var rows []factoryd.Event
@@ -504,6 +504,88 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
 		}
+	}
+}
+
+// setStatus puts card t-e of fundRig in status.
+func setStatus(r *rig, status string) {
+	r.tasks.set("", factoryd.Task{ID: "t-e", Kind: "agent", Status: status,
+		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
+}
+
+// A live card that is not waiting takes the raise too: the caps move, the
+// event is recorded and nothing is posted, for the run reads the raise at
+// its next cap check.
+func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
+	for _, status := range []string{"queued", "running"} {
+		r := fundRig(t)
+		setStatus(r, status)
+		_, s := r.loggedIn(t)
+		note, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "")
+		if err != nil {
+			t.Fatalf("%s: extend: %v", status, err)
+		}
+		if want := "Extended #13: +1 session, +500 lines, +2.00 EUR (budget 2.00 to 4.00); the card reads the raise at its next cap check."; note != want {
+			t.Errorf("%s: note = %q, want %q", status, note, want)
+		}
+		task, _, _ := r.tasks.Task(t.Context(), "t-e")
+		if task.BudgetEUR != 4 || task.Usage.RaisedSessions != 1 || task.Usage.ExtraAttempts != 0 || task.Usage.ExtraLines != 500 {
+			t.Errorf("%s: the card after the extend = budget %v, usage %+v, want 4 EUR, one raised session, 500 extra lines", status, task.BudgetEUR, task.Usage)
+		}
+		rows := 0
+		for _, e := range r.events.all() {
+			if e.Kind == factoryd.EventCardExtended {
+				rows++
+			}
+		}
+		if rows != 1 {
+			t.Errorf("%s: card_extended rows = %d, want 1", status, rows)
+		}
+		r.fg.mu.Lock()
+		if len(r.fg.comments) != 0 {
+			t.Errorf("%s: the extend posted %q", status, r.fg.comments)
+		}
+		r.fg.mu.Unlock()
+	}
+}
+
+// A card past its end refuses the extend and changes nothing.
+func TestExtendRefusesADoneCard(t *testing.T) {
+	r := fundRig(t)
+	setStatus(r, "done")
+	_, s := r.loggedIn(t)
+	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "")
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusConflict {
+		t.Fatalf("extend of a done card = %v, want a 409 refusal", err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || task.Usage != (factoryd.TaskUsage{}) {
+		t.Errorf("a refused extend moved the card: budget %v, usage %+v", task.BudgetEUR, task.Usage)
+	}
+}
+
+// A running card's drawer offers the Extend form to an approver, its
+// status left where it is, and offers none to a viewer who is not one.
+func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
+	r := fundRig(t)
+	setStatus(r, "running")
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="sessions"`, `name="lines"`, `name="eur"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("the running card's drawer lacks %s", want)
+		}
+	}
+	form := body[strings.Index(body, `action="/tasks/t-e/extend"`):]
+	if form = form[:strings.Index(form, ">")]; strings.Contains(form, "data-to") {
+		t.Errorf("the extend form of a running card moves it: %s", form)
+	}
+
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "morgan")
+	r.forgetWriters()
+	mk, _ := memberLogin(t, r, "morgan")
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), mk).Body.String(); strings.Contains(body, `/extend"`) {
+		t.Error("a non-approver's drawer offers the extend form")
 	}
 }
 

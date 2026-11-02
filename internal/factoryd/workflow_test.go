@@ -1300,7 +1300,7 @@ func TestSessionCapCardIsBounded(t *testing.T) {
 	for i := range 20 {
 		run.history = append(run.history, fmt.Sprintf("%02d", i)+strings.Repeat("x", 1498))
 	}
-	card := run.sessionCapCard(strings.Repeat("y", 1500), []string{"new"})
+	card := run.sessionCapCard(capReached, strings.Repeat("y", 1500), []string{"new"})
 	lines := strings.Split(card, "\n")
 	// each history line is "- " + 1000 bytes + "…": 1006 bytes with its
 	// newline, "- new" 6; 7 history lines and "new" fit 8000, 8 do not
@@ -1586,7 +1586,7 @@ func TestTimeCapFindingsGoToTheOneCard(t *testing.T) {
 	if want := []string{"pr c1 after 0 cards", "session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	if want := []string{capReached + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+	if want := []string{timeCapReached + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 	if !slices.Equal(h.sessions[0].Findings, []string{"gosec G706"}) {
@@ -1614,7 +1614,7 @@ func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
 	if want := []string{"session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
 		t.Fatalf("steps = %v, want %v", steps, want)
 	}
-	if want := []string{capReached + "\nlast: no session produced a result\n- " + change}; !slices.Equal(h.escalated, want) {
+	if want := []string{timeCapReached + "\nlast: no session produced a result\n- " + change}; !slices.Equal(h.escalated, want) {
 		t.Fatalf("escalations = %q, want %q", h.escalated, want)
 	}
 }
@@ -1777,14 +1777,17 @@ func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
 		sessions []timedSession
 		attempts []int
 		granted  TaskUsage // the usage the answer records
+		head     string    // the cap the card names
 	}{
 		"restarted": {
+			head:     timeCapReached,
 			used:     TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1},
 			sessions: []timedSession{{time.Minute, pushed("s2", "c2")}},
 			attempts: []int{2},
 			granted:  TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute},
 		},
 		"restarted, before the gate": {
+			head:     timeCapReached,
 			pinned:   true,
 			used:     TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1},
 			sessions: []timedSession{{time.Minute, pushed("s2", "c2")}},
@@ -1792,6 +1795,7 @@ func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
 			granted:  TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1},
 		},
 		"at the session cap": {
+			head:     capReached,
 			used:     TaskUsage{AgentTime: 15 * time.Minute, Attempts: 2},
 			sessions: []timedSession{{5 * time.Minute, wallClock("s3", "c1")}, {time.Minute, pushed("s4", "c2")}},
 			attempts: []int{3, 4},
@@ -1817,7 +1821,7 @@ func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
 		for _, in := range h.sessions {
 			attempts = append(attempts, in.Attempt)
 		}
-		if !slices.Equal(attempts, tc.attempts) || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+		if !slices.Equal(attempts, tc.attempts) || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], tc.head) {
 			t.Fatalf("%s: attempts = %v, escalations %q; want %v after the one cap card", name, attempts, h.escalated, tc.attempts)
 		}
 		if i := slices.Index(h.usage, tc.granted); i < 0 || i != len(h.usage)-2 {
@@ -2759,7 +2763,7 @@ func TestWorkflowWallClockSessionResetsTheProviderBackoff(t *testing.T) {
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.signalAfter(61*time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 
-	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], capReached) {
+	if final := h.run(t); final != "closed" || len(h.escalated) != 1 || !strings.HasPrefix(h.escalated[0], timeCapReached) {
 		t.Fatalf("final = %q, escalations %q; want closed after the cap card", final, h.escalated)
 	}
 	if !slices.Equal(backoffs, []int{120, 120}) {
@@ -5745,9 +5749,9 @@ func TestReplanRefusedAtTheStartVerifiesAgain(t *testing.T) {
 }
 
 // An extend answer raises the limits the guard reads: the row the extend
-// form raised reaches the run when the answer wakes it (change id
-// "extend-raise"), so the stop after an extend is an ordinary ask, not
-// the deadlock headline again.
+// form raised while the card waited reaches the run when the answer wakes
+// it, so the stop after an extend is an ordinary ask, not the deadlock
+// headline again.
 func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.taskConfig = askTaskConfig()
@@ -5759,9 +5763,15 @@ func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
 		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
 			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	// the extend lands while the card waits at its first stop
 	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
 		func(ctx context.Context, taskID string) (TaskUsage, error) {
-			return TaskUsage{ExtraLines: 500}, nil
+			if len(h.escalated) == 0 {
+				return h.rowUsage, nil
+			}
+			raised := h.rowUsage
+			raised.ExtraLines = 500
+			return raised, nil
 		})
 	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
@@ -5778,5 +5788,78 @@ func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
 	}
 	if strings.Contains(h.escalated[1], "No reply can change this") || !strings.Contains(h.escalated[1], CheckinShareSpent) {
 		t.Errorf("the ask after the extend = %q, want the ordinary share ask: the raise changed the limits", h.escalated[1])
+	}
+}
+
+// A card's agent time follows its size (change id "size-time"): the
+// sizing step's large card gets one and a half of the class's 20 minutes,
+// so a 25-minute session that pushes is within its time, where the class's
+// time alone would have reached the cap; a small card gets half, so a
+// 12-minute session without a push reaches it.
+func TestSizedCardAgentTimeFollowsItsSize(t *testing.T) {
+	for name, tc := range map[string]struct {
+		size   string
+		took   time.Duration
+		result SessionResult
+		final  string
+	}{
+		"large": {"large", 25 * time.Minute, pushed("s1", "c1"), "done"},
+		"small": {"small", 12 * time.Minute, SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}, "failed"},
+	} {
+		h := newWorkflowHarness(t)
+		h.taskConfig = askTaskConfig()
+		h.taskConfig.PlanShape = &policy.PlanShape{}
+		h.state = RunState{Status: "running", Source: "webhook"}
+		h.env.OnActivity(ActivitySizeCard, mock.Anything, "t1").Return(
+			func(ctx context.Context, taskID string) (SizeResult, error) { return SizeResult{Size: tc.size}, nil })
+		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(tc.took).Return(
+			func(ctx context.Context, in SessionInput) (SessionResult, error) {
+				h.sessions = append(h.sessions, in)
+				return tc.result, nil
+			})
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != tc.final || len(h.sessions) != 1 {
+			t.Fatalf("%s: final = %q after %d sessions, finals = %v; want %s after one session", name, final, len(h.sessions), h.finals, tc.final)
+		}
+		if tc.final == "failed" && h.finals[0][1] != "wall-clock cap reached" {
+			t.Fatalf("%s: reason = %q, want the cap", name, h.finals[0][1])
+		}
+	}
+}
+
+// The console's Extend reaches a running card (change id "raise-reload"):
+// the session it ran during ends at the policy's cap of 3, but the cap
+// check reads the raised session from the row first, so a fourth session
+// runs with no human asked, and the usage the run records leaves the
+// raise for the row to keep.
+func TestRaiseDuringASessionReachesTheCapCheck(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		SessionResult{Outcome: OutcomeNoPush, SessionID: "s3", Summary: "no changes to push"},
+		pushed("s4", "c4"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	// the Extend lands while the third session runs
+	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (TaskUsage, error) {
+			row := h.rowUsage
+			if len(h.sessions) >= 3 {
+				row.RaisedSessions, row.ExtraLines = 1, 150
+			}
+			return row, nil
+		})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals = %v, escalations %q", final, h.finals, h.escalated)
+	}
+	if len(h.sessions) != 4 || len(h.escalated) != 0 || h.sessions[3].Attempt != 4 || h.sessions[3].Sessions != 4 {
+		t.Fatalf("sessions = %d, escalations %q, fourth %+v; want a fourth session of 4 and no ask", len(h.sessions), h.escalated, h.sessions[len(h.sessions)-1])
+	}
+	if last := h.usage[len(h.usage)-1]; last.Attempts != 4 || last.ExtraAttempts != 0 {
+		t.Fatalf("usage = %+v, want four attempts and no grant: the raise bought the fourth", last)
 	}
 }

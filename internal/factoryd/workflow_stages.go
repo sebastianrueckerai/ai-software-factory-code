@@ -66,8 +66,18 @@ const capReached = "the session cap is reached: every finding sent to the agent 
 // what an agent's card would go back with (versionFactoryPRFindings).
 const noAgent = "factoryd opened this pull request and no agent works on it: the findings meant for an agent go to a human"
 
-// AtSessionCap: escalation is the card of a task at its session cap.
-func AtSessionCap(escalation string) bool { return strings.HasPrefix(escalation, capReached) }
+// timeCapReached heads the card of a task whose agent time ran out with
+// sessions of its cap still left.
+const timeCapReached = "the agent time is used up: every finding sent to the agent so far goes to a human"
+
+// AtSessionCap: escalation is the card of a task at its session cap or its
+// agent-time cap, the stops whose answer buys the next session.
+func AtSessionCap(escalation string) bool {
+	return strings.HasPrefix(escalation, capReached) || AtTimeCap(escalation)
+}
+
+// AtTimeCap: escalation is the card of a task at its agent-time cap.
+func AtTimeCap(escalation string) bool { return strings.HasPrefix(escalation, timeCapReached) }
 
 // checkinShareStop heads the card of a check-in stopped on its spent
 // share of the budget, not its call cap: the share a human's answer
@@ -112,6 +122,10 @@ const checkinSpendAsk = "check-in: " + CheckSpend + ": "
 // calls.
 const checkinCallCapStop = "check-in call cap reached"
 
+// checkinTimeCapStop is the reason a check-in gave no answer within its
+// time (limits.checkin_time): the card stops as at the call cap.
+const checkinTimeCapStop = "check-in time cap reached"
+
 // atCheckinSpend: escalation is a check-in stopped under spend, at its
 // call cap or on the budget's share. The share stop's answer verifies the
 // head again, no session, for one would stop at the same share before any
@@ -120,11 +134,11 @@ func atCheckinSpend(escalation string) bool {
 	return strings.HasPrefix(escalation, checkinSpendAsk)
 }
 
-// atCheckinCallCap: escalation is a check-in stopped at its call cap,
-// not the budget's share (versionCheckinRaise): the answer buys the
-// session, whose check-in runs with the policy's calls.
+// atCheckinCallCap: escalation is a check-in stopped at its call cap or
+// its time cap, not the budget's share (versionCheckinRaise): the answer
+// buys the session, whose check-in runs with the policy's calls and time.
 func atCheckinCallCap(escalation string) bool {
-	return atCheckinSpend(escalation) && strings.Contains(escalation, checkinCallCapStop)
+	return atCheckinSpend(escalation) && (strings.Contains(escalation, checkinCallCapStop) || strings.Contains(escalation, checkinTimeCapStop))
 }
 
 // The session cap's card (versionSessionCap) holds at most maxCard bytes of
@@ -472,10 +486,11 @@ func (t *taskRun) sessionReturn(res SessionResult, attempt int, last bool) (stro
 	return t.returns[stage] > t.strongerAfter()
 }
 
-// sessionCapCard is the escalation of sessions at the cap: last is how
-// the last round ended, findings those the next session would get; the
-// history, then each of them no history line holds, newest kept.
-func (t *taskRun) sessionCapCard(last string, findings []string) string {
+// sessionCapCard is the escalation of sessions at the cap: head names the
+// cap, capReached or timeCapReached, last is how the last round ended,
+// findings those the next session would get; the history, then each of
+// them no history line holds, newest kept.
+func (t *taskRun) sessionCapCard(head, last string, findings []string) string {
 	lines := slices.Clone(t.history)
 	for _, f := range findings {
 		if !slices.ContainsFunc(t.history, func(h string) bool { return strings.HasSuffix(h, ": "+f) }) {
@@ -483,7 +498,7 @@ func (t *taskRun) sessionCapCard(last string, findings []string) string {
 		}
 	}
 	packed, leftOut := packCardLines(lines)
-	head := capReached + "\nlast: " + textutil.Truncate(last, maxCardLine)
+	head += "\nlast: " + textutil.Truncate(last, maxCardLine)
 	if leftOut > 0 {
 		head += fmt.Sprintf("\n- (%d earlier findings left out)", leftOut)
 	}
@@ -1224,6 +1239,7 @@ func (t *taskRun) size() (final, why string, findings []string, toPlan *PlanSwit
 		}
 		return "", "", nil, nil
 	}
+	t.sizeAgentTime(res.Size)
 	return "", "", nil, res.ToPlan
 }
 

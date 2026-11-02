@@ -263,6 +263,21 @@ func (c *scriptedChat) Call(ctx context.Context, _, alias string, in CheckinRequ
 
 type scriptedTools struct{ out map[string]string }
 
+// A conversation past its time cap stops as at the call cap: the call in
+// flight is cut, no further call is made, and the human ask carries the
+// time stop.
+func TestCheckinTimeCapAsksAHuman(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
+	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
+	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != checkinTimeCapStop {
+		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's human ask", out.Decision, out.ReasonKind, out.Reason)
+	}
+	if chat.calls != 1 || out.Record.Reason != checkinTimeCapStop || len(out.Record.Calls) != 1 {
+		t.Fatalf("calls = %d, record %+v; want the one call the cap cut", chat.calls, out.Record)
+	}
+}
+
 func (t scriptedTools) Tool(_ context.Context, name string, _ map[string]any) (string, bool, error) {
 	o, _ := t.out[name]
 	return o, false, nil
@@ -278,7 +293,7 @@ func TestCheckinRunnerDropsWithEvidence(t *testing.T) {
 		{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"}],"decision":"handover","handover":"the finding is false; build and test as usual"}`, UsageEUR: 0.5},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, []byte("the tail"), chat,
-		scriptedTools{out: map[string]string{"grep": grepOut}}, 12, 1.5, 1, 2000)
+		scriptedTools{out: map[string]string{"grep": grepOut}}, 12, 1.5, 1, 2000, time.Hour)
 	if out.Decision != CheckHandover {
 		t.Fatalf("decision = %q, want handover", out.Decision)
 	}
@@ -326,7 +341,7 @@ func TestCheckinRunnerDropsWithEvidence(t *testing.T) {
 
 	t.Run("the handover is cut at the cap", func(t *testing.T) {
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"}],"decision":"handover","handover":"` + strings.Repeat("k", 2500) + `"}`}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 		if n := utf8.RuneCountInString(out.Handover); n != 2000 {
 			t.Fatalf("handover holds %d runes, want the cap's 2000 runes", n)
 		}
@@ -357,7 +372,7 @@ func TestCheckinRunnerGuardsUpgradeToHuman(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{c.finding}}
 			out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
-				&scriptedChat{answers: []CheckinResponse{{Text: c.answer}}}, scriptedTools{}, 12, 1.5, 1, 2000)
+				&scriptedChat{answers: []CheckinResponse{{Text: c.answer}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 			if out.Decision != CheckHuman {
 				t.Fatalf("decision = %q, want human", out.Decision)
 			}
@@ -371,7 +386,7 @@ func TestCheckinRunnerGuardsUpgradeToHuman(t *testing.T) {
 func TestCheckinRunnerRefusedCallsEndTheConversation(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}
 	chat := &scriptedChat{} // the provider refuses every call
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 	if out.Decision != CheckHandover || out.Handover != "" || len(out.Verdicts) != 0 {
 		t.Fatalf("outcome = %+v, want a handover with no note and no verdicts: the round runs as if no check-in existed", out)
 	}
@@ -392,7 +407,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 	unreadable := func(t *testing.T, text, want string) {
 		t.Helper()
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: text}, {Text: text}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 		if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
 			t.Fatalf("outcome = %q %q, want a human over the unreadable answer", out.Decision, out.Reason)
 		}
@@ -420,7 +435,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 			{Text: "not json"},
 			{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"handover","handover":"drop one, fix the other"}`},
 		}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 		if out.Decision != CheckHandover || out.Verdicts["no test covers the handler"].State != CheckConfirmed {
 			t.Fatalf("outcome = %+v, want the repaired answer to stand", out)
 		}
@@ -430,7 +445,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 	})
 	t.Run("a mixed dropped_all is a handover", func(t *testing.T) {
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"` + goodDrop + `"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"dropped_all"}`}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 		if out.Decision != CheckHandover {
 			t.Fatalf("decision = %q, want handover: a set with a finding left standing verifies nothing", out.Decision)
 		}
@@ -439,7 +454,7 @@ func TestCheckinRunnerFinalAnswerShape(t *testing.T) {
 		conflict := conflictVerdict("the branch conflicts with its base").findings[0]
 		ask := &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: conflict, Source: "changes"}}}
 		chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"findings":[{"id":"f1","text":"the PR stopped merging into main because main moved under it (Forgejo: the branch conflicts with its base). Merge origin/main into the branch, resolve every conflict keeping both main's changes and the task's, run the tests of the touched packages, and end the session. No rebase; leave .forgejo/ as the merge brings it.","verdict":"confirmed"}],"decision":"handover","handover":"merge main into the branch first"}`}}}
-		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 		if out.Decision != CheckHandover || chat.calls != 1 {
 			t.Fatalf("outcome %q after %d calls, want the paraphrased verdict read on the first answer", out.Decision, chat.calls)
 		}
@@ -497,7 +512,7 @@ func TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer(t *testing.T) {
 		{Text: `{"decision":"continue","reason":"research"}`},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
-		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000)
+		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
 	if len(chat.gots) != 2 {
 		t.Fatalf("calls = %d, want the tool round and the answer", len(chat.gots))
 	}
@@ -524,7 +539,7 @@ func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
-		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000)
+		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
 	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached" {
 		t.Fatalf("outcome = %+v, want the cap's human ask under spend", out)
 	}
@@ -541,7 +556,7 @@ func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000)
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
 	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || out.Reason == "check-in call cap reached" {
 		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
 	}
@@ -561,7 +576,7 @@ func TestCheckinSessionHandoverNeedsItsNote(t *testing.T) {
 		{Text: `{"decision":"handover","reason":"the agent circles"}`},
 		{Text: `{"decision":"handover","reason":"the agent circles","handover":"start from the failing test"}`},
 	}}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000)
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
 	if out.Decision != CheckHandover || out.Handover != "start from the failing test" {
 		t.Fatalf("outcome = %+v, want the second answer's handover", out)
 	}

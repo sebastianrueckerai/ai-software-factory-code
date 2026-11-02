@@ -397,7 +397,7 @@ func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines i
 	s.mu.Lock()
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
-			s.tasks[i].Usage.ExtraAttempts += sessions
+			s.tasks[i].Usage.RaisedSessions += sessions
 			s.tasks[i].Usage.ExtraLines += lines
 		}
 	}
