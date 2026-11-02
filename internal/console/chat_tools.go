@@ -36,6 +36,7 @@ type toolInput struct {
 	Text        string   `json:"text,omitempty"`
 	EUR         float64  `json:"eur,omitempty"`
 	Question    int      `json:"question,omitempty"`
+	Decision    string   `json:"decision,omitempty"`
 	Note        string   `json:"note,omitempty"`
 	Minutes     int      `json:"minutes,omitempty"`
 	Action      string   `json:"action,omitempty"`
@@ -148,10 +149,12 @@ type toolInput struct {
 }
 
 // PlanAnswerInput is one answer of the answer tool's answers list: the
-// question's number on the plan card and its text.
+// question's number on the plan card, its text, and the decision when the
+// question is the plan's confirmation.
 type PlanAnswerInput struct {
 	Question int    `json:"question"`
 	Text     string `json:"text"`
+	Decision string `json:"decision,omitempty"`
 }
 
 // setNote is a set tool's result on issue: field is set, or on an undo
@@ -559,10 +562,17 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 				parts = append(parts, "question "+factoryd.QuestionLine(in.Question, qs[in.Question-1]))
 			}
 		}
+		if in.Decision != "" {
+			parts = append(parts, "decision "+in.Decision)
+		}
 		if len(in.Answers) > 0 {
 			lines := make([]string, 0, len(in.Answers))
 			for _, ans := range in.Answers {
-				lines = append(lines, fmt.Sprintf("question %d: %s", ans.Question, textutil.Truncate(strings.Join(strings.Fields(ans.Text), " "), 120)))
+				w := strings.Join(strings.Fields(ans.Text), " ")
+				if ans.Decision != "" {
+					w = ans.Decision + ": " + w
+				}
+				lines = append(lines, fmt.Sprintf("question %d: %s", ans.Question, textutil.Truncate(w, 120)))
 			}
 			parts = append(parts, strings.Join(lines, ", "))
 		}
@@ -711,7 +721,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" })
+	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() })
 	switch {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
@@ -722,8 +732,8 @@ func (t *turn) answer(in toolInput) (string, error) {
 		if len(in.Answers) > 0 {
 			return t.c.doAnswerPlanQuestions(ctx, t.a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Text)
-	case in.Question > 0:
+		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
+	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
@@ -1427,15 +1437,19 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
+		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
 		"revision": map[string]any{"type": "integer", "description": "the plan's revision, for a plan's questions", "minimum": 1},
 		"answers": map[string]any{"type": "array", "description": "every open question's answer at once",
 			"items": map[string]any{"type": "object", "properties": map[string]any{
 				"question": map[string]any{"type": "integer", "description": "the question's number", "minimum": 1},
-				"text":     map[string]any{"type": "string", "description": "its answer"}},
-				"required": []string{"question", "text"}}}},
+				"text":     map[string]any{"type": "string", "description": "its answer"},
+				"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+					"description": "its decision when this one is the plan's confirmation"}},
+				"required": []string{"question"}}}},
 		required: []string{"task_id"},
-		about:    "Answer the question a card waits on, or every open question of a plan at once.",
+		about:    "Answer a card's question or a plan's open ones, the plan's confirmation by your own decision.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)
 			return note, nil, err

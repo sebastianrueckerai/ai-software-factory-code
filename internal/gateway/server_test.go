@@ -1954,7 +1954,7 @@ func TestFactorydReviewCall(t *testing.T) {
 				t.Fatalf("upstream calls = %d, want %d", len(auths), tc.want.upstream)
 			}
 			if tc.want.upstream > 0 {
-				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,supervisor" || calls[0].taskID != "42" {
+				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor" || calls[0].taskID != "42" {
 					t.Fatalf("mints = %+v, want one key for task 42 on the factory aliases only", calls)
 				}
 			}
@@ -2052,7 +2052,7 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 		t.Fatalf("agent call = %d", rr.Code)
 	}
 	calls := minter.mintCalls()
-	if len(calls) != 2 || calls[0].models != "big,small" || calls[1].models != "big,supervisor" {
+	if len(calls) != 2 || calls[0].models != "big,small" || calls[1].models != "big,small,supervisor" {
 		t.Fatalf("mints = %+v, want the session's key and factoryd's", calls)
 	}
 	if b := minter.blockedKeys(); len(b) != 0 {
@@ -2852,7 +2852,7 @@ func TestFactorydVisionCallOnACodersTask(t *testing.T) {
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusOK {
 		t.Fatalf("the vision call = %d: %s", rr.Code, rr.Body)
 	}
-	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,supervisor,vision" {
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor,vision" {
 		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases", calls)
 	}
 
@@ -2862,6 +2862,33 @@ func TestFactorydVisionCallOnACodersTask(t *testing.T) {
 		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice, "vision": testPrice}})
 	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
 		t.Fatalf("a class without vision_model = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+}
+
+// A session's digest is factoryd's Small call on the card's own task,
+// whatever its classes: small is the one alias it may name, on the key
+// beside the class's other factoryd models.
+func TestFactorydDigestCallOnACodersTask(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0001"}})
+	store := newMemStore(Task{Classes: []string{"coder"}, ModelAlias: "small", ID: "42", BudgetEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice}})
+	h := s.Routes("test")
+	digest := func(model string) string {
+		return `{"messages":[{"role":"user","content":"which cards?\n\n# Plan"}],"model":"` + model + `"}`
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeDigest, digest("small")); rr.Code != http.StatusOK {
+		t.Fatalf("the digest call = %d: %s", rr.Code, rr.Body)
+	}
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor" {
+		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases, small among them", calls)
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeDigest, digest("big")); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
+		t.Fatalf("a digest on big = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
 	}
 }
 

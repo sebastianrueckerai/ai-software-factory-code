@@ -991,8 +991,8 @@ func TestGuidesCarryNoCheckedRule(t *testing.T) {
 		"feature":       featureGuide(RoleFeature, nil, nil),
 		"integration":   featureGuide(RoleIntegration, nil, nil),
 		"end":           guideEnd(nil, nil),
-		"plan":          planGuide(testShape, testLimits, nil),
-		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits, nil),
+		"plan":          planGuide(testShape, testLimits, nil, nil),
+		"plan-features": planGuide(policy.PlanShape{MaxCards: 12}, testLimits, nil, nil),
 	}
 	rules := []string{
 		// the worker's push guard refuseMisnamedMigrations, pinned by
@@ -1243,7 +1243,7 @@ func TestGuideEndSandboxSentence(t *testing.T) {
 // No guide asks for a build without -race any more (stage12-design 5.2):
 // the sandbox now has gcc.
 func TestGuideEndNoLongerForbidsRace(t *testing.T) {
-	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(testShape, testLimits, nil)} {
+	for _, g := range []string{workGuide(nil, nil), featureGuide(RoleFeature, nil, nil), planGuide(testShape, testLimits, nil, nil)} {
 		if strings.Contains(g, "without -race") {
 			t.Fatalf("guide still forbids -race: %q", g)
 		}

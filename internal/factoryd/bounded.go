@@ -79,6 +79,12 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 	if t.Kind != "agent" || t.Unbound() || t.Status != "queued" || t.AdmittedAt != nil {
 		return true, nil
 	}
+	// a plan files its card row first and its issue last; the half-made
+	// card holds no slot until its issue is filed, and the next sweep
+	// starts it. A report card never reaches here: it is unbound.
+	if t.IssueNumber == 0 {
+		return false, nil
+	}
 	deps, err := w.Store.OpenDependencies(ctx, taskID)
 	if err != nil {
 		return false, err

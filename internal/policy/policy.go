@@ -963,6 +963,10 @@ var LookTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 // MaxLookBytes is the largest image a look takes.
 const MaxLookBytes = 8 << 20
 
+// MaxDigestBytes is the largest file a session's digest reads: about 40K
+// tokens of text, which one Small call takes beside the ask.
+const MaxDigestBytes = 128 << 10
+
 // Purposes are the factoryd purposes the gateway admits.
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeResearch, PurposeBrief}
 
@@ -1053,6 +1057,10 @@ const (
 	// the card's issue or a file in the workspace; the look spends on the
 	// card's account as a model call.
 	ToolAnalyzeImage = "analyze_image"
+	// ToolDigest has the Small model answer an ask over one text file of
+	// the workspace: the answer enters the session, the file's bytes never
+	// do.
+	ToolDigest = "digest"
 )
 
 // SourceToolRequest is the source of a tool card, which adds a tool an
@@ -1091,7 +1099,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {
@@ -1406,20 +1414,23 @@ const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// project agent's (operator) is the chat block's; the compaction's, the
-// digest's and the thread naming's are Small, for a chat task only; a
-// chat task's look is the chat block's vision model, a session's its
-// class's.
+// digest's is Small, on a chat's task and a session's alike. The
+// project agent's (operator) is the chat block's; the compaction's and
+// the thread naming's are Small, for a chat task only; a chat task's
+// look is the chat block's vision model, a session's its class's.
 func (d Document) FactoryModel(classes []string, purpose string) string {
 	chat := slices.Contains(classes, ClassChat)
+	if purpose == PurposeDigest {
+		return Small
+	}
 	if purpose == PurposeVision && chat {
 		return d.ChatOf(ProjectConfig{}).VisionModel
 	}
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeDigest || purpose == PurposeTitle || purpose == PurposeResearch {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeTitle || purpose == PurposeResearch {
 		switch {
 		case !chat:
 			return ""
-		case purpose == PurposeCompact, purpose == PurposeDigest, purpose == PurposeTitle:
+		case purpose == PurposeCompact, purpose == PurposeTitle:
 			return Small
 		case purpose == PurposeResearch:
 			return Big

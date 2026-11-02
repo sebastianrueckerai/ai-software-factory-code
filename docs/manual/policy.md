@@ -378,7 +378,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   repository). `factoryd-project` also carries registration's Secrets and
   is never bound in a seed namespace.
 - `analyze_image` (exactly one of `path` and `card_image`, an optional
-  `ask` of at most 2000 bytes): free, listed as `analyze_image: {}` by a
+  `ask` of at most 2000 characters): free, listed as `analyze_image: {}` by a
   class that names `vision_model` (the loader refuses one without). The
   look is one call of the class's vision alias on the card's account
   (purpose `vision`, the chat's door): it books as a model call and the
@@ -401,6 +401,25 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   session, a session's worker from before the read, comments past 1 MiB,
   a class without `vision_model`, or a refused hold, 413, 415, 502 a read
   or the model did not answer), the agent's tool error.
+- `digest` (`path`, required, at most 4096 bytes, and an optional `ask`
+  of at most 2000 characters; none asks for a summary): free, listed as
+  `digest: {}`, and needs no model key: the call is one Small call on the
+  card's account (purpose `digest`, the chat's `OperatorModel.Digest`),
+  booked as a model call. Only its answer enters the session, labelled
+  `path: answer`; the file's bytes never do. The gateway checks the
+  arguments and posts the digest to factoryd's `POST /internal/digest`
+  (bearer `gateway-factoryd`, `{task_id, path, ask}`), which answers
+  `{"text"}`. The `path` is a file of the running session's workspace,
+  absolute under `/workspace` or relative to the repository, which
+  factoryd asks the pod's worker for (`POST /file` under the session's
+  message bearer), through the same `os.Root` open as `POST /image`. The
+  file must be UTF-8 text without a NUL byte, not empty, of at most
+  128 KiB (`policy.MaxDigestBytes`); a bigger one refuses naming the read
+  tool's offset and limit. A refusal is one sentence (400, 403 outside the
+  workspace, 404 no such file, 409 a final task, no live session, a
+  session's worker from before the read, or a refused hold, 413, 415, 502
+  a read or the model did not answer, or the model answered nothing), the
+  agent's tool error.
 - `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
   required, each one line without control characters): free, through the
   class's tool list (`request_tool: {}`), never a tool card's session; a

@@ -2646,3 +2646,90 @@ func TestReplanWaitsForThePlannersRevert(t *testing.T) {
 		t.Fatalf("steps %+v, reopens %+v, plan %s; want nothing done", steps, g.wf.reopens, g.store.tasks["p"].Status)
 	}
 }
+
+// impasseRig is replanRig with its child c failed and its sibling s
+// queued waiting on c: the stuck board of a failed card with a live
+// dependent.
+func impasseRig(t *testing.T) (*Runner, *fakeStore, *prForgejo) {
+	t.Helper()
+	r, store, fj := replanRig(t, "done", 2)
+	c := store.tasks["c"]
+	c.Status = "failed"
+	store.tasks["c"] = c
+	s := store.tasks["s"]
+	s.Status = "queued"
+	store.tasks["s"] = s
+	return r, store, fj
+}
+
+// A failed card with a live dependent goes to its plan's planner: the
+// impasse pass cuts it as the person's cut does, and the waiting card of
+// the plan waits on the plan.
+func TestImpasseSendsADeadCardToThePlanner(t *testing.T) {
+	r, store, _ := impasseRig(t)
+	r.ImpassePass(context.Background())
+	want := []ReplanStep{{Origin: ReplanCut, Card: "c", Work: impasseWork, Stops: []string{"c"}, Revision: 2, Time: replanAt}}
+	if got := replanSteps(t, r, "p"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the plan's replan steps %+v, want %+v", got, want)
+	}
+	if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
+		t.Fatalf("s depends on %v, want the plan", deps)
+	}
+	if got := reopens(r); !reflect.DeepEqual(got, []reopenCall{{taskID: "p"}}) {
+		t.Fatalf("reopens %+v, want the plan's", got)
+	}
+	if n := len(stepsNamed(t, r, "c", stepImpasse)); n != 1 {
+		t.Fatalf("the child's %s steps: %d, want 1", stepImpasse, n)
+	}
+}
+
+// The impasse fires once per card: a second pass finds the marker and
+// sends nothing.
+func TestImpasseFiresOncePerCard(t *testing.T) {
+	r, _, _ := impasseRig(t)
+	r.ImpassePass(context.Background())
+	r.ImpassePass(context.Background())
+	if got := replanSteps(t, r, "p"); len(got) != 1 {
+		t.Fatalf("the plan's replan steps after the second pass: %+v, want the first alone", got)
+	}
+	if got := reopens(r); len(got) != 1 {
+		t.Fatalf("reopens after the second pass: %+v, want one", got)
+	}
+}
+
+// A failed card with nothing live waiting on it is no impasse: its
+// retry path is its own.
+func TestImpasseLeavesALoneFailureAlone(t *testing.T) {
+	r, store, _ := impasseRig(t)
+	delete(store.deps, "s")
+	delete(store.deps, "d")
+	r.ImpassePass(context.Background())
+	if got := replanSteps(t, r, "p"); len(got) != 0 {
+		t.Fatalf("the plan's replan steps %+v, want none", got)
+	}
+	if got := reopens(r); len(got) != 0 {
+		t.Fatalf("reopens %+v, want none", got)
+	}
+	if n := len(stepsNamed(t, r, "c", stepImpasse)); n != 0 {
+		t.Fatalf("the child's %s steps: %d, want none", stepImpasse, n)
+	}
+}
+
+// A plan that can take no replan refuses, and the refusal lands as a
+// comment on the failed card's issue, naming the plan's state and the
+// fitting action; once, like the send.
+func TestImpasseRefusalNamesTheState(t *testing.T) {
+	r, store, fj := impasseRig(t)
+	store.closed["p"] = time.Now().UTC()
+	r.ImpassePass(context.Background())
+	r.ImpassePass(context.Background())
+	if got := replanSteps(t, r, "p"); len(got) != 0 {
+		t.Fatalf("the plan's replan steps %+v, want none", got)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Plan #10 is closed") {
+		t.Fatalf("comments = %q, want the refusal once", fj.comments)
+	}
+	if n := len(stepsNamed(t, r, "c", stepImpasse)); n != 1 {
+		t.Fatalf("the child's %s steps: %d, want 1", stepImpasse, n)
+	}
+}

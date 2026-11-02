@@ -518,18 +518,29 @@ func (s *fakeTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdo
 	return slices.Clone(s.holdouts[id]), nil
 }
 
-// answer is factoryd.PGStore.AnswerPlanQuestion on the fake's questions.
-func (s *fakeTasks) answer(id string, revision, idx int, answer, by string) error {
+// answer is factoryd.AnswerPlanQuestion on the fake's questions: the
+// confirmation is decided, a real question answered, either once.
+func (s *fakeTasks) answer(id string, revision, idx int, decision, answer, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
 	switch {
 	case idx < 1 || idx > len(qs):
 		return factoryd.ErrNotFound
-	case qs[idx-1].Answer != "":
-		return factoryd.ErrAnswered
 	}
-	qs[idx-1].Answer, qs[idx-1].AnsweredBy = answer, by
+	q := &qs[idx-1]
+	confirming := q.Kind == factoryd.QuestionConfirmation
+	switch {
+	case q.Answered():
+		return factoryd.ErrAnswered
+	case !confirming && decision != "":
+		return factoryd.ErrDecisionReserved
+	case confirming && decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise:
+		return factoryd.ErrDecisionRequired
+	case confirming && decision == factoryd.DecisionRevise && strings.TrimSpace(answer) == "":
+		return factoryd.ErrReviseWords
+	}
+	q.Answer, q.Decision, q.AnsweredBy = answer, decision, by
 	return nil
 }
 
@@ -539,7 +550,7 @@ func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, q := range s.questions[fmt.Sprintf("%s %d", id, round)] {
-		if q.Kind == factoryd.QuestionConfirmation && q.Answer != "" {
+		if q.Kind == factoryd.QuestionConfirmation && q.Decision != "" {
 			return factoryd.ErrAnswered
 		}
 	}
@@ -1212,11 +1223,11 @@ func newRig(t *testing.T) *rig {
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL changes_requested %s #%d by %s: %s", taskID, pr, by, words))
 			return r.signalErr
 		},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
 			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
-			if err := r.tasks.answer(taskID, revision, idx, answer, by); err != nil {
+			if err := r.tasks.answer(taskID, revision, idx, decision, answer, by); err != nil {
 				return err
 			}
 			fg.mu.Lock()
@@ -1229,7 +1240,7 @@ func newRig(t *testing.T) *rig {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
 			for _, a := range answers {
-				if err := r.tasks.answer(taskID, revision, a.Idx, a.Text, by); err != nil {
+				if err := r.tasks.answer(taskID, revision, a.Idx, a.Decision, a.Text, by); err != nil {
 					return err
 				}
 			}

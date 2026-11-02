@@ -972,6 +972,18 @@ func (s *acceptanceStore) WaitingDependents(context.Context, string) ([]string, 
 	return nil, nil
 }
 
+func (s *acceptanceStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Dependency
+	for task, deps := range s.deps {
+		if t, ok := s.tasks[task]; ok && slices.Contains(deps, id) {
+			out = append(out, factoryd.Dependency{TaskID: task, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+		}
+	}
+	return out, nil
+}
+
 func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Task) (bool, error) {
 	return false, nil
 }
@@ -1034,7 +1046,7 @@ func (s *acceptanceStore) PutPlanConfirmation(context.Context, string, int, fact
 	return 0, false, nil
 }
 
-func (s *acceptanceStore) PlanConfirmationAnswered(context.Context, string) (int, bool, error) {
+func (s *acceptanceStore) PlanConfirmed(context.Context, string) (int, bool, error) {
 	return 0, false, nil
 }
 
@@ -1046,7 +1058,7 @@ func (s *acceptanceStore) PlanQuestions(context.Context, string, int) ([]factory
 	return nil, nil
 }
 
-func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, string, string) error {
+func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, string, string, string) error {
 	return nil
 }
 

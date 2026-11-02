@@ -383,6 +383,7 @@ func main() {
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			runner.CriteriaPass(ctx)
 			runner.RevertPausePass(ctx)
+			runner.ImpassePass(ctx)
 			if err := releases.Pass(ctx); err != nil {
 				log.Printf("release pass: %v", err)
 			}
@@ -490,6 +491,9 @@ func main() {
 	// on the card's account
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
 	mux.Handle("POST /internal/image-look", requireBearer(gatewayToken, runner.ImageLookHandler(operator)))
+	// the gateway's hand-over of a session's digest: the chat's Small
+	// digest, on the card's account
+	mux.Handle("POST /internal/digest", requireBearer(gatewayToken, runner.DigestHandler(operator)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -595,8 +599,8 @@ func main() {
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
-			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, decision, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, workflows, taskID, revision, answers, by)

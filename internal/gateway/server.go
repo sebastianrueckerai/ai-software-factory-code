@@ -90,6 +90,8 @@ type ServerOptions struct {
 	DeploymentReader DeploymentReader
 	// ImageLooker is the analyze_image tool's look at factoryd.
 	ImageLooker ImageLooker
+	// Digester is the digest tool's Small call at factoryd.
+	Digester Digester
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).
