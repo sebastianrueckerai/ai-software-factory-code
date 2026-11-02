@@ -251,7 +251,18 @@
 {{with .TakeOffMain}}<p>Takes off main: {{join . ", "}}</p>
 {{end}}{{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
 <p class="links">task {{.TaskID}}: {{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>
-{{range $q := .Questions}}{{if $q.Answer}}<p class="answered">{{$q.Text}}: {{$q.Answer}} ({{$q.AnsweredBy}})</p>
+{{range $q := .Questions}}{{if $q.Answered}}<p class="answered">{{$q.Text}}: {{$q.Reply}} ({{$q.AnsweredBy}})</p>
+{{else if eq $q.Kind "confirmation"}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
+<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" hx-target="#note" hx-swap="innerHTML">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="confirm">
+<button type="submit">Confirm</button>
+</form>
+<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" hx-target="#note" hx-swap="innerHTML">
+<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="revise">
+<label for="revise-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}">Request changes: your words go to the next planner round</label>
+<input type="text" id="revise-{{$.ID}}{{$.IDSuffix}}-{{$q.Index}}" name="answer" maxlength="1000" required hx-preserve>
+<button type="submit">Request changes</button>
+</form></fieldset>
 {{else}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
 <div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">
 {{range $q.Choices}}<form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer" hx-target="#note" hx-swap="innerHTML">
@@ -281,13 +292,13 @@
 {{end}}</div>{{end}}
 </fieldset>
 {{end}}</div>{{end}}<p class="meta">{{with .Open}}{{.}}. {{end}}The answers go to the planner; its next revision with no open question files the cards.</p>
-<form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" hx-target="#note" hx-swap="innerHTML" data-to="running">
+{{if not .Confirming}}<form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" hx-target="#note" hx-swap="innerHTML" data-to="running">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <label for="changes-{{.ID}}{{.IDSuffix}}">Changes you ask for, posted on the issue as you</label>
 <textarea id="changes-{{.ID}}{{.IDSuffix}}" name="text" rows="3" required hx-preserve></textarea>
 <button type="submit" aria-label="Request changes to plan #{{.Issue}}">Request changes</button>
 </form>
-{{end}}
+{{end}}{{end}}
 
 {{define "card"}}{{if .Final}}<article class="card face final d-{{.Status}}{{with .Accent}} edge-{{.}}{{end}}" data-card="{{.ID}}" data-place="{{.Place}}">
 <p class="line1"><span class="ref">{{if .IssueNumber}}#{{.IssueNumber}}{{else}}{{.ID}}{{end}}</span> - <strong class="title" title="{{.Title}}">{{if .MayWriteSummary}}<a href="#card={{.ID}}" class="open">{{.Title}}</a>{{else}}{{.Title}}{{end}}</strong></p>

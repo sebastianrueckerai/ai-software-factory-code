@@ -295,6 +295,104 @@ func (r *Runner) ReplanChild(ctx context.Context, childID, work string) (ReplanC
 	return answer, nil
 }
 
+// stepImpasse marks a failed card sent to its plan's planner for the
+// cards that wait on it; written once, so no pass sends it twice.
+const stepImpasse = "impasse"
+
+// impasseWork is the work an impasse sends back to the planner.
+const impasseWork = "the card failed and its dependents wait on it"
+
+// impasse sends failed card t to its plan's planner when a card still
+// live waits on it: a failed card is neither done nor closed, so its
+// dependents would wait forever. ReplanChild does the sending, once per
+// card: the marker records the send whatever its outcome, so a refusal
+// comments on the card's issue once and no pass repeats it, while an
+// error that ended nothing leaves no marker and the next pass tries
+// again.
+func (r *Runner) impasse(ctx context.Context, t Task) error {
+	tl, err := r.timeline.Objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
+	if err != nil {
+		return fmt.Errorf("the timeline of %s: %w", t.ID, err)
+	}
+	if openStep(tl, stepImpasse) != nil {
+		return nil
+	}
+	// the row, not the caller's copy: a card retried between a pass's
+	// list and its send is no impasse
+	k, ok, err := r.store.Task(ctx, t.ID)
+	if err != nil || !ok {
+		return err
+	}
+	if k.Status != "failed" {
+		return nil
+	}
+	live, err := r.liveDependents(ctx, t.ID)
+	if err != nil || len(live) == 0 {
+		return err
+	}
+	answer, cerr := r.ReplanChild(ctx, t.ID, impasseWork)
+	if cerr != nil && !isTerminal(cerr) {
+		return cerr
+	}
+	if _, err := r.timeline.AppendOnce(ctx, t.ID, stepImpasse, map[string]any{"dependents": live}); err != nil {
+		return fmt.Errorf("record %s: %w", stepImpasse, err)
+	}
+	if answer.Refused == "" && cerr == nil {
+		return nil
+	}
+	return r.commentImpasse(ctx, t, answer, cerr)
+}
+
+// ImpassePass is the impasse sweep, run beside the criteria sweep, over
+// the failed cards: each with a card still live waiting on it goes to
+// its plan's planner (impasse).
+func (r *Runner) ImpassePass(ctx context.Context) {
+	ids, err := r.store.ListTasksByStatus(ctx, "failed")
+	if err != nil {
+		log.Printf("impasse pass: the failed cards: %v", err)
+		return
+	}
+	for _, t := range ids {
+		if err := r.impasse(ctx, t); err != nil {
+			log.Printf("impasse pass: task %s: %v", t.ID, err)
+		}
+	}
+}
+
+// liveDependents are the ids of the cards that wait on task id and are
+// still live: not ended, and not merged either.
+func (r *Runner) liveDependents(ctx context.Context, id string) ([]string, error) {
+	deps, err := r.store.Dependents(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, d := range deps {
+		if !Final(d.Status) && d.Status != "merged" {
+			out = append(out, d.TaskID)
+		}
+	}
+	return out, nil
+}
+
+// commentImpasse writes the refusal of a failed card's impasse on its
+// issue, naming the state and the fitting action.
+func (r *Runner) commentImpasse(ctx context.Context, t Task, answer ReplanChildResult, err error) error {
+	if t.IssueNumber == 0 {
+		return nil
+	}
+	note := answer.Refused
+	if err != nil {
+		note = "this card belongs to no plan, so no planner can take its work: clear the cards that wait on it, or close it."
+	}
+	repo, serr := SplitRepo(t.Repository)
+	if serr != nil {
+		return terminalError("%v", serr)
+	}
+	body := "factoryd: this card failed and its dependents wait on it. " + note
+	return r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, r.untrusted(t, body))
+}
+
 // ReplanWait is ReplanStopped's answer: Stopped when the planner may run,
 // else Open the stopped cards whose work still runs (stoppable); By and
 // Comment are the person's name and note of their replan, or of the one a

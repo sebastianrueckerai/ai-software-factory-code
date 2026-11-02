@@ -333,12 +333,12 @@ func (s *accBatchTasks) answerBatch(id string, revision int, answers []factoryd.
 		if a.Idx < 1 || a.Idx > len(qs) {
 			return factoryd.ErrNotFound
 		}
-		if qs[a.Idx-1].Answer != "" {
+		if qs[a.Idx-1].Answered() {
 			return factoryd.ErrAnswered
 		}
 	}
 	for _, a := range answers {
-		qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy = a.Text, by
+		qs[a.Idx-1].Answer, qs[a.Idx-1].Decision, qs[a.Idx-1].AnsweredBy = a.Text, a.Decision, by
 	}
 	s.questions[key] = qs
 	return nil
@@ -356,7 +356,7 @@ func (s *accBatchTasks) openCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, q := range s.questions[fmt.Sprintf("%s %d", planTask, planRev)] {
-		if q.Answer == "" {
+		if !q.Answered() {
 			n++
 		}
 	}
@@ -822,6 +822,9 @@ func (s *accBatchStore) OpenDependencies(ctx context.Context, id string) ([]fact
 func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]string, error) {
 	panic("unused")
 }
+func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
@@ -843,7 +846,7 @@ func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revisio
 func (s *accBatchStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q factoryd.PlanQuestion) (int, bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+func (s *accBatchStore) PlanConfirmed(ctx context.Context, id string) (int, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
@@ -851,8 +854,8 @@ func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision 
 }
 
 // AnswerPlanQuestion is factoryd.PGStore.AnswerPlanQuestion on the fixture's // rows: an unknown number answers ErrNotFound, an answered one ErrAnswered.
-func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
-	return s.tasks.answerBatch(id, revision, []factoryd.PlanAnswer{{Idx: idx, Text: answer}}, by)
+func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error {
+	return s.tasks.answerBatch(id, revision, []factoryd.PlanAnswer{{Idx: idx, Text: answer, Decision: decision}}, by)
 }
 func (s *accBatchStore) CreatePlanCard(ctx context.Context, t factoryd.Task) (factoryd.Task, error) {
 	panic("unused")
@@ -892,6 +895,10 @@ func (s *accBatchStore) EndRoutineRun(ctx context.Context, project, routine stri
 }
 func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
 	panic("unused")
+}
+
+func (*accBatchStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {
+	return factoryd.MonthSpend{}, nil
 }
 
 func (*accBatchStore) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
@@ -1029,17 +1036,26 @@ func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64
 	return 0, nil, nil
 }
 
-func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[i]
 	f.msgs = slices.Delete(f.msgs, i, i+1)
 	m.ID, m.Queued, m.At = f.nextID(), false, time.Now()
 	f.msgs = append(f.msgs, m)
+	return m.ID, nil
+}
+
+func (f *accBatchChat) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id }); i >= 0 {
+		f.msgs[i].Queued = true
+	}
 	return nil
 }
 
@@ -1415,8 +1431,8 @@ func newBatchRig(t *testing.T) *batchRig {
 			Tracks: tree.Processes["maintenance"].Tracks}}},
 		Events: evs, Bus: evs.bus, Chat: &accBatchChat{tasks: tasks},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
-			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, answer, by)
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, decision, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)

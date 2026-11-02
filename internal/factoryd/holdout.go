@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -467,8 +468,8 @@ const holdoutFixSystem = `These drafted Go tests could not run on the repository
 
 // DecideHoldout is the console's okay or drop of hold-out idx of round
 // round of plan id, as a writer of its project: the round must be the
-// newest (ErrStalePlan) and no confirmation answered at it or after
-// (ErrAnswered), as a changed spec asks the confirmation again;
+// newest (ErrStalePlan) and its confirmation undecided (ErrAnswered), as
+// a changed spec asks the confirmation again;
 // ErrHoldoutClick names a click the row's state takes not, ErrNoHoldout
 // a row the task does not hold.
 func DecideHoldout(ctx context.Context, store Store, taskID string, round, idx int, verb, by string) error {
@@ -482,9 +483,11 @@ func DecideHoldout(ctx context.Context, store Store, taskID string, round, idx i
 	if !ok || newest.Revision != round {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
-	if confirmed, answered, err := store.PlanConfirmationAnswered(ctx, taskID); err != nil {
+	qs, err := store.PlanQuestions(ctx, taskID, round)
+	if err != nil {
 		return err
-	} else if answered && confirmed >= round {
+	}
+	if slices.ContainsFunc(qs, func(q PlanQuestion) bool { return q.Kind == QuestionConfirmation && q.Answered() }) {
 		return ErrAnswered
 	}
 	state := map[string]string{"okay": HoldoutStored, "drop": HoldoutDropped}[verb]

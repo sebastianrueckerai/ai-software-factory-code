@@ -91,7 +91,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	asked := "\nQuestions:"
 	for i, q := range qs {
-		if q.Answer == "" {
+		if !q.Answered() {
 			b.WriteString(asked + "\n" + factoryd.QuestionLine(i+1, q))
 			asked = ""
 		}
@@ -275,8 +275,8 @@ func (t *turn) planText(in toolInput) (string, error) {
 	}
 	for i, q := range qs {
 		b.WriteString("\n" + factoryd.QuestionLine(i+1, q))
-		if q.Answer != "" {
-			fmt.Fprintf(&b, " answered: %s (%s)", q.Answer, q.AnsweredBy)
+		if q.Answered() {
+			fmt.Fprintf(&b, " answered: %s (%s)", q.Reply(), q.AnsweredBy)
 		}
 	}
 	for n := rev.Revision - 1; len(qs) == 0 && n > 0; n-- {
@@ -286,8 +286,8 @@ func (t *turn) planText(in toolInput) (string, error) {
 		}
 		var answers []string
 		for i, q := range earlier {
-			if q.Answer != "" {
-				answers = append(answers, fmt.Sprintf("\n%d. %s -> %s (%s)", i+1, q.Text, q.Answer, q.AnsweredBy))
+			if q.Answered() {
+				answers = append(answers, fmt.Sprintf("\n%d. %s -> %s (%s)", i+1, q.Text, q.Reply(), q.AnsweredBy))
 			}
 		}
 		if len(answers) > 0 {

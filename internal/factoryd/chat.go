@@ -944,12 +944,25 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 // StartQueued lands queued row id in its place: the row takes the next
 // id, after every row of the turns before it, and is queued no longer.
 // The row's pending delivery rows follow it to the landing id, so a
-// notification born mid-turn still names a row the console shows.
-func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) error {
-	_, err := s.db.ExecContext(ctx, `WITH landed AS (
+// notification born mid-turn still names a row the console shows. It
+// answers the landed row's new id, 0 when another turn already landed
+// it.
+func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) (int64, error) {
+	var landed int64
+	err := s.db.QueryRowContext(ctx, `WITH landed AS (
 		UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
-		WHERE id = $1 AND repository = $2 AND login = $3 AND queued RETURNING id)
-		UPDATE notify_deliveries SET message_id = (SELECT id FROM landed) WHERE message_id = $1`, id, repository, login)
+		WHERE id = $1 AND repository = $2 AND login = $3 AND queued RETURNING id),
+		moved AS (
+		UPDATE notify_deliveries SET message_id = (SELECT id FROM landed) WHERE message_id = $1)
+		SELECT coalesce(max(id), 0) FROM landed`, id, repository, login).Scan(&landed)
+	return landed, err
+}
+
+// RequeueChatMessage puts landed row id back to the queue a turn that
+// read it and failed left: the retry turn reads it first.
+func (s *PGStore) RequeueChatMessage(ctx context.Context, repository, login string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET queued = true WHERE id = $1 AND repository = $2 AND login = $3 AND NOT queued`,
+		id, repository, login)
 	return err
 }
 

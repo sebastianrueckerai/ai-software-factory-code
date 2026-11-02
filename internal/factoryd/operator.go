@@ -150,9 +150,10 @@ func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, mess
 	return answer.Content, err
 }
 
-// Digest is one summary call of text under ask on chat task taskID's
-// account: the cheap alias reads the ask and the content as one user
-// message, its answer the summary text, bounded like a compaction's.
+// Digest is one summary call of text under ask on task taskID's account,
+// a chat's asked read or a session's digest tool: the cheap alias reads
+// the ask and the content as one user message, its answer the summary
+// text, bounded like a compaction's.
 func (m *OperatorModel) Digest(ctx context.Context, taskID, thread, ask, text string) (string, error) {
 	answer, err := m.stream(ctx, policy.PurposeDigest, compactTokens, taskID, policy.Small, thread,
 		[]OperatorMessage{{Role: "user", Content: ask + "\n\n" + text}}, nil, func(string) {}, nil)

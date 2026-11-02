@@ -1639,8 +1639,8 @@ func (in *Intake) planAnswer(ctx context.Context, t Task, c IssueComment) (bool,
 		if err != nil {
 			return false, err
 		}
-		if idx <= len(qs) && qs[idx-1].Answer != "" && (qs[idx-1].AnsweredBy == c.Author || c.Author == ChatUser) &&
-			c.Body == PlanAnswerComment(idx, qs[idx-1].Answer) {
+		if idx <= len(qs) && qs[idx-1].Answered() && (qs[idx-1].AnsweredBy == c.Author || c.Author == ChatUser) &&
+			c.Body == PlanAnswerComment(idx, qs[idx-1]) {
 			return true, nil
 		}
 	}

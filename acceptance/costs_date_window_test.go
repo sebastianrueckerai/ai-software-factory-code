@@ -783,19 +783,29 @@ func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) 
 	return 0, nil, nil
 }
 
-func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) error {
+func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := repository + " " + login
 	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[k][i]
 	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
 	f.next++
 	m.ID, m.At, m.Queued = f.next, f.at.Add(time.Duration(f.next)*time.Second), false
 	f.msgs[k] = append(f.msgs[k], m)
+	return m.ID, nil
+}
+
+func (f *acceptChat) RequeueChatMessage(_ context.Context, repository, login string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	if i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id }); i >= 0 {
+		f.msgs[k][i].Queued = true
+	}
 	return nil
 }
 

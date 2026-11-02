@@ -196,10 +196,12 @@ func TestChatPlanBuiltFromAnswers(t *testing.T) {
 	r.tasks.plans["t-p"] = append(r.tasks.plans["t-p"], second)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": {
 		{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Answer: "Postgres", AnsweredBy: "sebastian"},
-		{Text: "How long are links kept?", Choices: []string{"30 days", "forever"}, Answer: "30 days", AnsweredBy: "alice"}}}
+		{Text: "How long are links kept?", Choices: []string{"30 days", "forever"}, Answer: "30 days", AnsweredBy: "alice"},
+		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?", Decision: factoryd.DecisionConfirm, AnsweredBy: "sebastian"}}}
 	r.tasks.mu.Unlock()
 	const summary = "summary: An API, then its web UI.\n"
-	const built = "built from the answers of revision 1:\n1. Which database? -> Postgres (sebastian)\n2. How long are links kept? -> 30 days (alice)\n"
+	const built = "built from the answers of revision 1:\n1. Which database? -> Postgres (sebastian)\n2. How long are links kept? -> 30 days (alice)\n" +
+		"3. Does the plan match the spec? -> confirm (sebastian)\n"
 	equal(t, "revision 2 without questions", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
 		[]string{"revision 2, sha256 6a2b\n" + summary + built + readsPlanRows})
 	r.tasks.mu.Lock()

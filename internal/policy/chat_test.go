@@ -71,14 +71,32 @@ func TestClassVisionModel(t *testing.T) {
 	if got := d.FactoryModel([]string{"coder"}, PurposeVision); got != "vision" {
 		t.Fatalf("FactoryModel(coder, vision) = %q, want vision", got)
 	}
-	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "supervisor", "vision"}) {
-		t.Fatalf("FactoryModels(coder) = %v, want [big supervisor vision]", got)
+	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "small", "supervisor", "vision"}) {
+		t.Fatalf("FactoryModels(coder) = %v, want [big small supervisor vision]", got)
 	}
 	if !d.AllowsTool([]string{"coder"}, ToolAnalyzeImage) {
 		t.Fatal("coder does not allow analyze_image")
 	}
 	if got := d.FactoryModel([]string{ClassChat}, PurposeVision); got != "vision" {
 		t.Fatalf("FactoryModel(chat, vision) = %q, want the chat block's vision", got)
+	}
+}
+
+// A class lists digest free and names no model for it: a session's
+// digest is Small on the card's own task, as the chat's is.
+func TestClassListsDigest(t *testing.T) {
+	files := fixtureTree(t)
+	files["policy.yaml"] = []byte(strings.Replace(string(files["policy.yaml"]), "    supervisor_model: supervisor\n    tools:\n",
+		"    supervisor_model: supervisor\n    tools:\n      digest: {}\n", 1))
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tree.Document.AllowsSessionTool([]string{"coder"}, "", ToolDigest) {
+		t.Fatal("coder does not allow digest")
+	}
+	if got := tree.Document.FactoryModel([]string{"coder"}, PurposeDigest); got != Small {
+		t.Fatalf("FactoryModel(coder, digest) = %q, want small", got)
 	}
 }
 

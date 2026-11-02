@@ -37,7 +37,7 @@ func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {
 func (c *Console) planAnswer(w http.ResponseWriter, r *http.Request) {
 	revision, _ := strconv.Atoi(r.PostFormValue("revision"))
 	idx, _ := strconv.Atoi(r.PostFormValue("index"))
-	note, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("answer"))
+	note, err := c.doAnswerPlanQuestion(r.Context(), button(r), r.PathValue("id"), revision, idx, r.PostFormValue("decision"), r.PostFormValue("answer"))
 	c.pressNote(w, r, note, err)
 }
 

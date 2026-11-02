@@ -113,16 +113,23 @@ func (q *HumanQuestion) Labels() []string {
 // the caller has them at hand; zero fields leave the ask with the reason's
 // own numbers or without that number.
 type QuestionFacts struct {
-	CheckinCap   int     // the policy's calls of one check-in conversation
-	CheckinSpent float64 // EUR of the check-in share spent
-	CheckinShare float64 // EUR, the policy's check-in share of the budget
-	FloorEUR     float64 // the policy's session floor of the card's rung
-	PlanTrack    bool    // the card runs the plan track: its answers steer a planner session
-	SessionCap   int     // sessions the card may run, its grants included
-	LineBound    int     // changed lines the card's size plans, its raises included
-	BudgetEUR    float64 // the card's budget
-	SpentEUR     float64 // EUR of the budget spent
-	LeftEUR      float64 // EUR of the budget left
+	CheckinCap    int     // the policy's calls of one check-in conversation
+	CheckinSpent  float64 // EUR of the check-in share spent
+	CheckinShare  float64 // EUR, the policy's check-in share of the budget, its grants included
+	CheckinGrant  float64 // EUR one granted check-in share adds
+	FloorEUR      float64 // the policy's session floor of the card's rung
+	PlanTrack     bool    // the card runs the plan track: its answers steer a planner session
+	SessionCap    int     // sessions the card may run, its grants included
+	SessionGrants int     // sessions the answers granted beyond the policy's cap
+	Attempts      int     // attempts the card has run
+	LineBound     int     // changed lines the card's size plans, its raises included
+	BudgetEUR     float64 // the card's budget
+	SpentEUR      float64 // EUR of the budget spent
+	LeftEUR       float64 // EUR of the budget left
+	PR            int64   // the pull request the card's workflow opened, 0 = none
+	MonthSpentEUR float64 // the factory's EUR spent in the UTC month
+	MonthCapEUR   float64 // the policy's month cap
+	Month         string  // the UTC month the spend counts
 }
 
 // ShapedQuestion shapes the question the escalation reason asks: by
@@ -154,11 +161,11 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 		reason == "the check-in's share of the budget is spent":
 		return checkinShareQuestion(reason, f)
 	case strings.HasPrefix(reason, capReached):
-		return sessionCapQuestion()
+		return sessionCapQuestion(reason, f)
 	case strings.HasPrefix(reason, budgetRefused):
 		return budgetQuestion(reason, f)
 	case strings.HasPrefix(reason, monthCapReached), strings.HasPrefix(reason, projectCapReached):
-		return monthCapQuestion(reason)
+		return monthCapQuestion(reason, f)
 	case strings.HasPrefix(reason, gateStopped) && strings.Contains(reason, "WaitChecks ("):
 		return waitChecksQuestion(reason)
 	case strings.HasPrefix(reason, "The card was quiet for "):
@@ -209,6 +216,9 @@ func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuest
 		default:
 			q.Source = "the factory's"
 		}
+	}
+	if !agent && strings.HasPrefix(reason, "check-in: ") && f.BudgetEUR > 0 && f.SessionCap > 0 {
+		q.Why += fmt.Sprintf(" The card has spent €%.2f of its €%.2f budget, %d attempts against its session cap of %d.", f.SpentEUR, f.BudgetEUR, f.Attempts, f.SessionCap)
 	}
 	if agent && len(choices) > 0 {
 		q.Choices = nil
@@ -264,12 +274,18 @@ func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	if f.CheckinCap > 0 {
 		ask = fmt.Sprintf("The check-in gave no answer within its %d calls. May the card go on?", f.CheckinCap)
 	}
-	return &HumanQuestion{
+	info := "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent."
+	if f.FloorEUR > 0 {
+		info = fmt.Sprintf("An answer starts the session again where the check-in stopped it, with your comment as guidance, and the card's budget must cover its rung's session floor of €%.2f. The spent budget stays spent.", f.FloorEUR)
+	}
+	q := &HumanQuestion{
 		Ask:     ask,
-		Why:     cmp.Or(reasonBody(reason), "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."),
-		Info:    "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent.",
+		Why:     spendWhy(reason, f, "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."),
+		Info:    info,
 		Choices: continueChoices(),
 	}
+	spendRecommendation(q, f, reason)
+	return q
 }
 
 func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
@@ -277,12 +293,50 @@ func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	if f.CheckinSpent > 0 || f.CheckinShare > 0 {
 		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
-	return &HumanQuestion{
+	info := continueInfo
+	if f.CheckinGrant > 0 {
+		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f) and starts the session again with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
+	}
+	q := &HumanQuestion{
 		Ask:     ask,
-		Why:     cmp.Or(reasonBody(reason), "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person."),
-		Info:    continueInfo,
+		Why:     spendWhy(reason, f, "The check-in's share of the budget is spent: the check-in stopped the session, and its checks from here go to a person."),
+		Info:    info,
 		Choices: continueChoices(),
 	}
+	spendRecommendation(q, f, reason)
+	return q
+}
+
+// spendWhy is a check-in spend stop's why: the stop's work state, then the
+// card's money, so the human reads what the stop costs against what the
+// card has already spent.
+func spendWhy(reason string, f QuestionFacts, fallback string) string {
+	why := cmp.Or(reasonBody(reason), fallback)
+	if f.BudgetEUR > 0 {
+		money := fmt.Sprintf(" The card has spent €%.2f of its €%.2f budget", f.SpentEUR, f.BudgetEUR)
+		if f.CheckinSpent > 0 || f.CheckinShare > 0 {
+			money += fmt.Sprintf(", €%.2f of it the check-in's €%.2f share", f.CheckinSpent, f.CheckinShare)
+		}
+		why += money + "."
+	}
+	return why
+}
+
+// spendRecommendation grounds a check-in spend stop's fifth part: the
+// last review's approval of the head, which rides the stop's work state.
+// The check-in itself judged nothing at these stops, its calls or its
+// share ran out first, so the source is the factory's rule on the
+// review's verdict, never the check-in's word.
+func spendRecommendation(q *HumanQuestion, f QuestionFacts, reason string) {
+	if !strings.Contains(reasonBody(reason), "review: approve") {
+		return
+	}
+	q.Recommendation = "Go on: the last review approved the head"
+	if f.BudgetEUR > 0 {
+		q.Recommendation += fmt.Sprintf(", and the card holds €%.2f of its €%.2f", f.LeftEUR, f.BudgetEUR)
+	}
+	q.Recommendation += "."
+	q.Source = "the factory's"
 }
 
 // exitChoices are the owner exits a stop that names a decision carries:
@@ -317,11 +371,25 @@ func deadlockQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 }
 
-func sessionCapQuestion() *HumanQuestion {
+func sessionCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
+	ask := "The card's session cap is reached. Grant it one more session?"
+	if f.SessionCap > 0 {
+		ask = fmt.Sprintf("The card reached its session cap of %d sessions", f.SessionCap)
+		if f.SessionGrants > 0 {
+			ask += fmt.Sprintf(", %d granted by your answers", f.SessionGrants)
+		}
+		ask += ". Grant it one more session?"
+	}
+	info := "A grant starts one more session; your comment goes with it as guidance. No answer leaves the card waiting here."
+	if f.BudgetEUR > 0 {
+		info += fmt.Sprintf(" The card holds €%.2f of its €%.2f budget.", f.LeftEUR, f.BudgetEUR)
+	}
+	// the stop site packs the last session's line and the findings; the
+	// card's question keeps them, not the constant alone
 	return &HumanQuestion{
-		Ask:  "The card's session cap is reached. Grant it one more session?",
-		Why:  capReached + ".",
-		Info: "A grant starts one more session; your comment goes with it as guidance. No answer leaves the card waiting here.",
+		Ask:  ask,
+		Why:  cmp.Or(reasonBody(reason), capReached+"."),
+		Info: info,
 		Choices: []QuestionChoice{
 			{AnswerGrant, "Grant one session"},
 			{AnswerPark, "Leave it waiting"},
@@ -426,13 +494,21 @@ func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	fund(floor)
 	fund(2)
 	q.Choices = append(q.Choices, QuestionChoice{AnswerPark, "Park it"})
+	if raise := FundRaise(reason); raise > 0 && f.PR != 0 {
+		q.Recommendation = fmt.Sprintf("Fund the €%.2f raise: the card holds pull request #%d, and the raise funds its next session.", raise, f.PR)
+		q.Source = "the factory's"
+	}
 	return q
 }
-func monthCapQuestion(reason string) *HumanQuestion {
+func monthCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	project := strings.HasPrefix(reason, projectCapReached)
 	name := "month"
 	if project {
 		name = "project's month"
+	}
+	ask := fmt.Sprintf("The %s cap is reached and the card's session was refused. Raise the cap to let it finish?", name)
+	if !project && f.MonthCapEUR > 0 {
+		ask = fmt.Sprintf("The month cap of €%.2f is reached (€%.2f spent, %s) and the card's session was refused. Raise the cap to let it finish?", f.MonthCapEUR, f.MonthSpentEUR, f.Month)
 	}
 	// the gateway's detail, with its numbers, rides as the why whole
 	detail := strings.TrimSpace(capRefusedSuffix(reason))
@@ -441,7 +517,7 @@ func monthCapQuestion(reason string) *HumanQuestion {
 		why = "The gateway refused this session: " + detail + " The gateway refuses every further call until the cap is raised or the month ends."
 	}
 	return &HumanQuestion{
-		Ask:  fmt.Sprintf("The %s cap is reached and the card's session was refused. Raise the cap to let it finish?", name),
+		Ask:  ask,
 		Why:  why,
 		Info: "Raising the cap is a commit to the month_eur line in the policy file; the cap card on the board links it. This card resumes once the cap moves.",
 		Choices: []QuestionChoice{
@@ -724,26 +800,41 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 	}
 }
 
-// questionFacts reads the numbers the spend templates fill from: the
-// check-in spend the task has made, the policy's call cap and the card's
-// share, and the exits' limits (the card's caps and money) wherever the
-// reason carries a decision. It reads nothing for a reason the templates
-// do not cover.
+// questionFacts reads the numbers the templates fill from: the check-in
+// spend the task has made, the policy's call cap and the card's shares,
+// the caps and money of the card and of the month wherever a template or
+// the plain tail shows them, and the pull request a budget stop's raise
+// funds. It reads nothing for a reason the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
 		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+		track.PR = t.PRNumber
 		return track
 	}
 	f := track
-	if strings.Contains(reason, deadlockAskMark) || strings.Contains(reason, reviewConcernsMark) {
+	if strings.Contains(reason, deadlockAskMark) || strings.Contains(reason, reviewConcernsMark) ||
+		strings.HasPrefix(reason, capReached) || strings.HasPrefix(reason, "check-in: ") {
 		if r.cfg.Policy != nil {
 			f.SessionCap = SessionCap(t, r.cfg.Policy().Document.Limits.Sessions) + t.Usage.ExtraAttempts
 			f.LineBound = EffectiveLineBound(t.Size, r.cfg.Policy().Document.Risk.LargeLines, t.Usage.ExtraLines)
 		}
+		f.SessionGrants = t.Usage.ExtraAttempts
+		f.Attempts = t.Usage.Attempts
 		f.BudgetEUR = t.BudgetEUR
 		f.SpentEUR = t.SpentEUR
 		f.LeftEUR = t.BudgetEUR - t.SpentEUR
+	}
+	if strings.HasPrefix(reason, monthCapReached) {
+		if spend, err := r.store.MonthSpend(ctx, time.Now()); err != nil {
+			log.Printf("task %s: read the month spend: %v", t.ID, err)
+		} else {
+			f.MonthSpentEUR = spend.EUR
+			f.Month = spend.Month
+		}
+		if r.cfg.Policy != nil {
+			f.MonthCapEUR = r.cfg.Policy().Document.Budget.MonthEUR
+		}
 	}
 	if !strings.HasPrefix(reason, checkinSpendAsk) {
 		return f
@@ -757,6 +848,10 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		limits := r.cfg.Policy().Document.Limits
 		f.CheckinCap = limits.CheckinCallCap()
 		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
+		f.CheckinGrant = limits.CheckinShareOf(t.BudgetEUR)
+		if t.ModelAlias != "" {
+			f.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+		}
 	}
 	return f
 }
