@@ -2885,6 +2885,10 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	bounded := fixtureVersion(t)
 	runner.cfg.Policy = func() policy.Version { return bounded }
 	ctx := context.Background()
+	ll := &fakeLiteLLM{contents: []string{`{"name":"shorten links"}`}}
+	signal := newSignalNameStore(store)
+	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
+		Current: func() policy.Version { return nameVersion() }}
 
 	over := testPlan()
 	over.Cards[1].Size = "huge" // links-api: a size the ladder does not name
@@ -2921,6 +2925,23 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	}
 	if held, ok := runner.takeFiled("t-plan"); !ok || held.Revision != 1 {
 		t.Fatalf("held for the session = %+v, %v", held, ok)
+	}
+	signal.released(t)
+	if got := store.tasks["t-plan"].PlanName; got != "shorten links" {
+		t.Fatalf("plan name %q, want the model's %q", got, "shorten links")
+	}
+	if ask := nameAsk(t, ll, 1); !strings.Contains(ask, "Issue title: Link shortener") {
+		t.Fatalf("the naming ask carries the issue title: %q", ask)
+	}
+
+	amend := testPlan()
+	amend.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	runner.takeFiled("t-plan")
+	if got := store.tasks["t-plan"].PlanName; got != "shorten links" || len(ll.chats) != 1 {
+		t.Fatalf("after revision 2 the name is %q with %d naming calls, want the first name and 1 call", got, len(ll.chats))
 	}
 
 	if err := store.TransitionTask(ctx, "t-plan", []string{"running"}, "in-review"); err != nil {
@@ -2997,6 +3018,51 @@ func TestPlanFilingStampsCompanions(t *testing.T) {
 	}
 	if !slices.Equal(auth, []string{"token config-tok", "token config-tok"}) {
 		t.Fatalf("reads = %q, want both companions through the factory-config token", auth)
+	}
+}
+
+// filePlanWithModel files the first revision of a plan whose naming runs
+// against ll, holds the naming until FilePlan has returned, and returns
+// the name the plan ends with.
+func filePlanWithModel(t *testing.T, ll *fakeLiteLLM) string {
+	t.Helper()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	bounded := fixtureVersion(t)
+	runner.cfg.Policy = func() policy.Version { return bounded }
+	signal := newSignalNameStore(store)
+	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
+		Current: func() policy.Version { return nameVersion() }}
+	b, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.FilePlan(context.Background(), "t-plan", string(b))
+	if err != nil || res.Revision != 1 || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, %v, want revision 1", res, err)
+	}
+	signal.released(t)
+	return store.tasks["t-plan"].PlanName
+}
+
+// A gateway that fails never fails a filing, nor holds its answer: the
+// plan files at once and the title's slug names it.
+func TestFilePlanFilesAtOnceWhenTheModelFails(t *testing.T) {
+	if got := filePlanWithModel(t, &fakeLiteLLM{status: http.StatusInternalServerError}); got != "link-shortener" {
+		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
+	}
+}
+
+// A gateway that hangs spends the naming budget, and the plan still ends
+// with the slug: the write has a window of its own.
+func TestFilePlanNamesWithTheSlugWhenTheModelHangs(t *testing.T) {
+	old := planNameBudget
+	planNameBudget = 200 * time.Millisecond
+	t.Cleanup(func() { planNameBudget = old })
+	if got := filePlanWithModel(t, &fakeLiteLLM{delay: time.Hour}); got != "link-shortener" {
+		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
 	}
 }
 

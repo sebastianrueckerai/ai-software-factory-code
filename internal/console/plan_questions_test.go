@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -505,5 +506,30 @@ func TestChatReadsADecidedConfirmation(t *testing.T) {
 	if card, plan := read[0], read[1]; !strings.Contains(card, "\nQuestions:\n"+q2Line()+"\n") || strings.Contains(card, "Does the plan match") ||
 		!strings.Contains(plan, "\n3. Does the plan match the spec? (decide: confirm or revise) answered: confirm (sebastian)\n") {
 		t.Fatalf("the card read =\n%s\nthe plan read =\n%s", card, plan)
+	}
+}
+
+// A confirmation answered while the round's hold-outs wait is refused by
+// name, on the card's press and in a batch: the refusal says what waits
+// and what to do, not where the log is.
+func TestTheConfirmationNamesTheOpenHoldouts(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error { return factoryd.ErrHoldoutsOpen }
+	r.c.cfg.AnswerPlanQuestions = func(context.Context, string, int, []factoryd.PlanAnswer, string) error {
+		return factoryd.ErrHoldoutsOpen
+	}
+	ck, s := r.loggedIn(t)
+	const want = "The hold-outs of plan #1 wait for your okay or drop: decide each, then the confirmation."
+	rec := r.do(post("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"1"},
+		"decision": {"confirm"}}), ck)
+	if rec.Code != http.StatusConflict || rec.Body.String() != want+"\n" {
+		t.Errorf("the press: %d %q", rec.Code, rec.Body)
+	}
+	_, err := r.c.doAnswerPlanQuestions(context.Background(), actor{s: s, via: "chat"}, "t-plan", 2, []PlanAnswerInput{{Question: 1, Decision: factoryd.DecisionConfirm}})
+	var ref *refusal
+	if !errors.As(err, &ref) || ref.status != http.StatusConflict || ref.msg != want {
+		t.Errorf("the batch: %v", err)
 	}
 }

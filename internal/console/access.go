@@ -131,7 +131,6 @@ var accessTable = map[string]accessRule{
 	"POST /resources/{id}/release":              rFactory,
 	"POST /projects":                            {need: factoryWriter | approver, scope: scFactory, what: "add a project"},
 	"POST /projects/{name}/merge":               {need: factoryWriter | approver, scope: scFactory, what: "merge a project's file"},
-	"POST /alerts/{id}/verdict":                 {need: factoryWriter | approver, scope: scFactory, what: "judge an alert"},
 	"POST /projects/{name}/chat":                rProject,
 	"POST /projects/{name}/chat/stop":           rProject,
 	"POST /projects/{name}/chat/new":            rProject,

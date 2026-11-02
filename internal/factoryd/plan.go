@@ -1630,10 +1630,16 @@ func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision i
 	case missing > 0:
 		return ErrNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plan_questions q SET answer = NULLIF(w.text, ''), decision = NULLIF(w.decision, ''), answered_by = $3, answered_at = now()
+	res, err := tx.ExecContext(ctx, `UPDATE plan_questions q SET answer = NULLIF(w.text, ''), decision = NULLIF(w.decision, ''), answered_by = $3, answered_at = now()
  		FROM (SELECT (e->>'idx')::int AS idx, e->>'text' AS text, e->>'decision' AS decision FROM jsonb_array_elements($4::jsonb) AS a(e)) AS w
- 		WHERE q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx`, id, revision, by, string(b)); err != nil {
+ 		WHERE q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx
+ 		AND ((COALESCE(q.kind, 'question') <> 'confirmation' AND q.answer IS NULL) OR (q.kind = 'confirmation' AND q.decision IS NULL))`, id, revision, by, string(b))
+	if err != nil {
 		return err
+	}
+	// an answer that landed after the check holds its row: store none
+	if n, err := res.RowsAffected(); err != nil || n != int64(open) {
+		return cmp.Or(err, ErrAnswered)
 	}
 	return tx.Commit()
 }
@@ -2607,6 +2613,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
+	if r.Namer != nil && t.PlanName == "" {
+		go r.namePlan(context.WithoutCancel(ctx), t, p)
+	}
 	if st.newest != nil && n > st.revision {
 		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
@@ -2618,6 +2627,21 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha, Gate: gate})
 	return PlanResult{Revision: n, SHA256: sha, Gate: gate}, nil
+}
+
+// planNameBudget bounds one plan's naming, whole; a test shortens it.
+var planNameBudget = 2 * time.Minute
+
+// namePlan names plan t from its first revision p, off the filing's
+// path: the file_plan answer has 30 seconds and naming may take minutes.
+func (r *Runner) namePlan(ctx context.Context, t Task, p Plan) {
+	ctx, cancel := context.WithTimeout(ctx, planNameBudget)
+	defer cancel()
+	var outcome string
+	if p.Spec != nil {
+		outcome = p.Spec.Outcome
+	}
+	r.Namer.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
 }
 
 // revisionFindings judges an amendment against the revision it changes

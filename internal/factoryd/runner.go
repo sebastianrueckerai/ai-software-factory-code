@@ -189,6 +189,8 @@ type Runner struct {
 	// (Intake.Writes), the trust rule of a person's close of a plan's
 	// issue; factoryd sets it before the minute pass starts.
 	Writes func(ctx context.Context, repository, login string) (bool, error)
+	// Namer names a plan when its first revision files; nil names none.
+	Namer *Namer
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
