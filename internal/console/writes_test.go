@@ -675,7 +675,8 @@ func TestPoolProposal(t *testing.T) {
 	equal(t, "the proposal", events, []string{
 		`proposal {"arguments":{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"},` +
 			`"description":"Set the pool, the pool stands at 8.00 EUR, set it at 10.00 EUR, reason Allow two small verified follow-ups, it would stand at 10.00 EUR",` +
-			`"id":"TOKEN","tool":"set_pool"}`,
+			`"id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":8,"to_eur":10,"reason":"Allow two small verified follow-ups"},` +
+			`"tool":"set_pool"}`,
 		`done {}`})
 	if len(tokens) != 1 {
 		t.Fatalf("the turn proposed %v", tokens)
@@ -729,7 +730,9 @@ func TestPoolProposalAccess(t *testing.T) {
 	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
 	equal(t, "the proposal at full auto", events, []string{
-		`proposal {"arguments":` + setArgs + `,"description":"Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR","id":"TOKEN","tool":"set_pool"}`,
+		`proposal {"arguments":` + setArgs + `,"description":"Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR",` +
+			`"id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":10,"to_eur":10,"reason":"the findings cost money"},` +
+			`"tool":"set_pool"}`,
 		`done {}`})
 
 	// a custom confirm list that leaves set_pool out proposes it too: the
@@ -845,7 +848,8 @@ func TestPoolProposalTopUp(t *testing.T) {
 	equal(t, "the proposal", events, []string{
 		`proposal {"arguments":` + args + `,` +
 			`"description":"Set the pool, the pool stands at 10.00 EUR, top it up by 5.00 EUR, reason a second finding, it would stand at 15.00 EUR",` +
-			`"id":"TOKEN","tool":"set_pool"}`,
+			`"id":"TOKEN","pool":{"action":"top_up","eur":5,"from_eur":10,"to_eur":15,"reason":"a second finding"},` +
+			`"tool":"set_pool"}`,
 		`done {}`})
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)
 	equal(t, "the corrected top-up", done, ran("set_pool", `{"action":"top_up","eur":4,"reason":"a second finding"}`,

@@ -1177,12 +1177,21 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 		if !reflect.DeepEqual(in, asked) {
 			raw, _ = json.Marshal(in)
 		}
+		// the preview is taken after the ask-side capture filled the
+		// change and before keep hands it to the row: the shared
+		// lifecycle stays as it is, and the stream carries the same
+		// safe display fields the stored row later answers
+		preview := t.pool.Preview()
 		id := t.keep("proposal", tool.name, raw, desc)
 		if id == "" {
 			result = "The proposal could not be stored; nothing runs."
 			break
 		}
-		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": raw, "description": desc})
+		event := map[string]any{"id": id, "tool": tool.name, "arguments": raw, "description": desc}
+		if preview != nil {
+			event["pool"] = preview
+		}
+		t.send("proposal", event)
 		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), id
 	}
 	t.block(call.Name, args, 0, result)

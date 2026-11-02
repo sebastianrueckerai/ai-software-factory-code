@@ -3,10 +3,13 @@ package console
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strings"
 	"testing"
@@ -698,5 +701,113 @@ func TestPoolPolicyFailure(t *testing.T) {
 			equal(t, "one change, never a retry", writes, []int{1, 1, 1})
 			equal(t, "the rows", r.events.count()-before, row.rows)
 		})
+	}
+}
+
+// TestPoolProposalDisplay covers the pool proposal's typed preview, live
+// and restored: the stream's proposal event and GET /chat's proposal
+// state carry the same safe display fields — the action, the suggested
+// replacement or increment, the captured allowance, the ceiling the
+// change would stand at and the fixed reason, whole cents — and never
+// the capture's source. A generic proposal's shape changes none, and
+// the captured allowance stands across a reload's current-policy move:
+// the member's corrected press previews its ceiling against what the
+// row holds, not the policy in force.
+func TestPoolProposalDisplay(t *testing.T) {
+	r, g, _ := poolChatRig(t, 10, 3)
+	poolChatReload(r, 14)
+	ck, s := r.loggedIn(t)
+	states := func() map[string]factoryd.ProposalState {
+		t.Helper()
+		var answer chatGetAnswer
+		if err := json.Unmarshal(r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck).Body.Bytes(), &answer); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]factoryd.ProposalState{}
+		for _, st := range answer.Proposals {
+			out[st.Token] = st
+		}
+		return out
+	}
+	live := func(event string) *factoryd.PoolPreview {
+		t.Helper()
+		var p struct {
+			Pool *factoryd.PoolPreview `json:"pool"`
+		}
+		data, ok := strings.CutPrefix(event, "proposal ")
+		if !ok || json.Unmarshal([]byte(data), &p) != nil {
+			t.Fatalf("the proposal event does not read: %s", event)
+		}
+		return p.Pool
+	}
+
+	// a set of EUR 10 against the standing EUR 10, then a top-up of
+	// +EUR 5 against the same pool: each live event and each restored
+	// state carry the typed preview, the top-up's ceiling EUR 15
+	for _, row := range []struct {
+		name string
+		args string
+		pool string
+		want factoryd.PoolPreview
+	}{
+		{"a set", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`,
+			`"pool":{"action":"set","eur":10,"from_eur":10,"to_eur":10,"reason":"Allow two small verified follow-ups"}`,
+			factoryd.PoolPreview{Action: "set", EUR: 10, FromEUR: 10, ToEUR: 10, Reason: "Allow two small verified follow-ups"}},
+		{"a top-up", `{"action":"top_up","eur":5,"reason":"a second finding"}`,
+			`"pool":{"action":"top_up","eur":5,"from_eur":10,"to_eur":15,"reason":"a second finding"}`,
+			factoryd.PoolPreview{Action: "top_up", EUR: 5, FromEUR: 10, ToEUR: 15, Reason: "a second finding"}},
+	} {
+		g.replies = [][]string{{call(1, "set_pool", row.args)}}
+		_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
+		if len(tokens) != 1 || len(events) != 2 {
+			t.Fatalf("%s: %d tokens, events %v", row.name, len(tokens), events)
+		}
+		if !strings.Contains(events[0], row.pool) {
+			t.Errorf("%s's live event lacks the preview %s:\n%s", row.name, row.pool, events[0])
+		}
+		if got := live(events[0]); got == nil || *got != row.want {
+			t.Errorf("%s's live preview = %+v, want %+v", row.name, got, row.want)
+		}
+		restored := states()[tokens[0]]
+		if restored.State != "pending" || restored.Pool == nil || *restored.Pool != row.want {
+			t.Errorf("%s's restored state = %+v, want pending with the same preview %+v", row.name, restored, row.want)
+		}
+		if b, err := json.Marshal(restored); err != nil ||
+			string(b) != fmt.Sprintf(`{"token":%q,"state":"pending","pool":%s}`, tokens[0], strings.TrimPrefix(row.pool, `"pool":`)) {
+			t.Errorf("%s's restored state carries more than the safe fields: %s (%v)", row.name, b, err)
+		}
+	}
+
+	// a generic proposal's shape changes none: no preview rides it
+	cardArgs := `{"title":"Cache metrics","track":"direct","track_reason":"one count"}`
+	g.replies = [][]string{{call(1, "new_card", cardArgs)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the count"}})
+	equal(t, "the generic proposal", events, []string{
+		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, track direct, track_reason one count","id":"TOKEN","tool":"new_card"}`,
+		`done {}`})
+	if st := states()[tokens[0]]; st.Pool != nil {
+		t.Errorf("a generic proposal carries a pool preview: %+v", st)
+	}
+
+	// the captured EUR 10 stands across a current-policy move: the
+	// preview keeps reading the row's capture, and the corrected +EUR 4
+	// previews its ceiling against it — EUR 14 — with no fresh read of
+	// the policy in force
+	g.replies = [][]string{{call(1, "set_pool", `{"action":"top_up","eur":5,"reason":"a second finding"}`)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"top the pool up"}})
+	want := factoryd.PoolPreview{Action: "top_up", EUR: 5, FromEUR: 10, ToEUR: 15, Reason: "a second finding"}
+	before := states()[tokens[0]]
+	if before.State != "pending" || before.Pool == nil || *before.Pool != want {
+		t.Fatalf("the top-up's restored state = %+v, want pending with %+v", before, want)
+	}
+	r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 25
+	if moved := states()[tokens[0]]; moved.Pool == nil || *moved.Pool != want {
+		t.Errorf("the preview after the current policy moved = %+v, want the captured %+v", moved.Pool, want)
+	}
+	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)
+	equal(t, "the corrected Do it", done, ran("set_pool", `{"action":"top_up","eur":4,"reason":"a second finding"}`,
+		"The pool of ai-software-factory-code is €14.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."))
+	if used := states()[tokens[0]]; used.State != "used" || used.Pool == nil || *used.Pool != want {
+		t.Errorf("the used top-up's state = %+v, want used with the captured %+v", used, want)
 	}
 }

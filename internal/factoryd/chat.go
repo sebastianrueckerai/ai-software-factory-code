@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -1251,37 +1252,49 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 }
 
 // ProposalState is a proposal's state as GET /chat answers it: pending
-// while unused and unexpired, used once taken, expired otherwise.
+// while unused and unexpired, used once taken, expired otherwise, with
+// the row's pool change as its safe preview while it holds one.
 type ProposalState struct {
 	Token string `json:"token"`
 	State string `json:"state"`
+	// Pool is the row's captured pool change as the member reads it —
+	// the display fields alone, never the capture's source. A preview
+	// rides every state of its row, pending, used or expired, and only
+	// the owner's rows answer one.
+	Pool *PoolPreview `json:"pool,omitempty"`
 }
 
 // ProposalStates is the state of each of tokens, login's proposals on
 // repository, at now, in their order; a token with no such row is expired.
 func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]ProposalState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT token, used_at, expires_at FROM chat_proposals
+	rows, err := s.db.QueryContext(ctx, `SELECT token, used_at, expires_at, pool FROM chat_proposals
 		WHERE kind = 'proposal' AND repository = $1 AND login = $2 AND token = ANY($3)`, repository, login, tokens)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	found := map[string]string{}
+	found := map[string]ProposalState{}
 	for rows.Next() {
 		var token string
 		var usedAt sql.NullTime
 		var expiresAt time.Time
-		if err := rows.Scan(&token, &usedAt, &expiresAt); err != nil {
+		var pool []byte
+		if err := rows.Scan(&token, &usedAt, &expiresAt, &pool); err != nil {
 			return nil, err
 		}
+		state := ProposalState{Token: token}
 		switch {
 		case usedAt.Valid:
-			found[token] = "used"
+			state.State = "used"
 		case expiresAt.Before(now):
-			found[token] = "expired"
+			state.State = "expired"
 		default:
-			found[token] = "pending"
+			state.State = "pending"
 		}
+		if capture, err := poolOf(pool); err == nil {
+			state.Pool = capture.Preview()
+		}
+		found[token] = state
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1290,9 +1303,9 @@ func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, 
 	for i, t := range tokens {
 		state, ok := found[t]
 		if !ok {
-			state = "expired"
+			state = ProposalState{Token: t, State: "expired"}
 		}
-		out[i] = ProposalState{Token: t, State: state}
+		out[i] = state
 	}
 	return out, nil
 }
@@ -1371,6 +1384,55 @@ func poolOf(b []byte) (*PoolCapture, error) {
 		return nil, err
 	}
 	return &p, nil
+}
+
+// poolActions are the two pool changes a capture holds, the words the
+// proposal's own tool names.
+const (
+	poolActionSet   = "set"
+	poolActionTopUp = "top_up"
+)
+
+// PoolPreview is a pool capture's safe display projection, the read-only
+// half the member reads beside a proposal: the action, the suggested
+// replacement (a set) or increment (a top-up) in EUR, the allowance the
+// capture read, the ceiling the change would stand at and the reason,
+// fixed at the capture. Derived, never stored, it exposes those five
+// alone — never the capture's source blob, file content or anything
+// else the row keeps to itself.
+type PoolPreview struct {
+	Action  string  `json:"action"`
+	EUR     float64 `json:"eur"`
+	FromEUR float64 `json:"from_eur"`
+	ToEUR   float64 `json:"to_eur"`
+	Reason  string  `json:"reason"`
+}
+
+// Preview is the capture as the display fields above, whole cents end
+// to end: the suggested amount is checked exact as cents and of its
+// action's sign before it is read back, and a top-up's ceiling is the
+// captured allowance plus it with the sum checked to fit. A capture
+// that fails a check — one no proposal's capture writes — previews nil
+// rather than rounded, wrapped or nonsensical money.
+func (p *PoolCapture) Preview() *PoolPreview {
+	if p == nil || (p.Action != poolActionSet && p.Action != poolActionTopUp) ||
+		math.IsNaN(p.EUR) || math.IsInf(p.EUR, 0) ||
+		(p.Action == poolActionSet && p.EUR < 0) || (p.Action == poolActionTopUp && p.EUR <= 0) {
+		return nil
+	}
+	cents := Cents(p.EUR)
+	if float64(cents)/100 != p.EUR {
+		return nil
+	}
+	to := cents
+	if p.Action == poolActionTopUp {
+		if cents > math.MaxInt64-p.From {
+			return nil
+		}
+		to = p.From + cents
+	}
+	return &PoolPreview{Action: p.Action, EUR: float64(cents) / 100,
+		FromEUR: float64(p.From) / 100, ToEUR: float64(to) / 100, Reason: p.Reason}
 }
 
 // TakeProposal's refusals.
