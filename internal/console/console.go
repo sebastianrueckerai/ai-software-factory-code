@@ -532,7 +532,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
 		{"POST /projects", http.HandlerFunc(c.createProject), nil},
 		{"POST /projects/{name}/merge", http.HandlerFunc(c.mergeProject), nil},
-		{"POST /alerts/{id}/verdict", http.HandlerFunc(c.verdict), nil},
 		{"POST /projects/{name}/chat", http.HandlerFunc(c.chatPost), nil},
 		{"POST /projects/{name}/chat/stop", http.HandlerFunc(c.chatStopPost), nil},
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},

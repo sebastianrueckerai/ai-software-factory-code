@@ -208,10 +208,11 @@ func TestCardFaceChips(t *testing.T) {
 	}
 }
 
-// A plan child's chip carries its key after the plan reference: "from
-// plan #1 · links-api"; a parent that has no issue number yet keeps the
-// chip with the key alone.
-func TestPlanChildChipCarriesTheKey(t *testing.T) {
+// A plan child's chip carries the plan's name after the plan reference:
+// "from plan #1 · fix prod latency"; an unnamed plan reads "from plan
+// #1"; a parent that has no issue number yet keeps the chip with the key
+// alone.
+func TestPlanChildChipCarriesTheName(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
@@ -222,14 +223,40 @@ func TestPlanChildChipCarriesTheKey(t *testing.T) {
 			Repository: "linkshort/linkshort", IssueNumber: 4, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "links-api"}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · links-api</span>`) {
-		t.Errorf("t-c4's face lacks its plan chip with the key:\n%s", face)
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) || strings.Contains(face, "links-api</span>") {
+		t.Errorf("t-c4's face lacks its bare plan chip, or shows the key:\n%s", face)
+	}
+	// a named plan: the name takes the key's slot, on the child and on the plan's own face
+	r.tasks.tasks[0].PlanName = "fix prod latency"
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · fix prod latency</span>`) || strings.Contains(face, "links-api</span>") {
+		t.Errorf("t-c4's face lacks its plan chip with the name, or still shows the key:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip plan">#1 · fix prod latency</span>`) {
+		t.Errorf("the plan's own face lacks its name chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) {
+		t.Errorf("t-c4's face lacks the bare plan chip of an unnamed plan:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-plan"); strings.Contains(face, `chip plan`) {
+		t.Errorf("an unnamed plan's own face carries a plan chip:\n%s", face)
 	}
 	// the parent filed before its issue: the chip keeps the key alone
 	r.tasks.tasks[0].IssueNumber = 0
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">links-api</span>`) || strings.Contains(face, "from plan") {
 		t.Errorf("the child of a plan without an issue number lacks the key alone on its chip:\n%s", face)
+	}
+	// named, the name outranks the key, and the plan's own chip shows no #0
+	r.tasks.tasks[0].PlanName = "fix prod latency"
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) {
+		t.Errorf("the child of a named plan without an issue number lacks the name alone on its chip:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) || strings.Contains(face, "#0") {
+		t.Errorf("a named plan without an issue number lacks the name alone on its chip:\n%s", face)
 	}
 }
 
@@ -1425,4 +1452,31 @@ func TestAskLessAndQuestionLessCardsKeepTheirForms(t *testing.T) {
 		t.Errorf("the note = %q, want it on the issue", got)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
+}
+
+// A plan that filed its cards ends done as a compact row; a named plan's
+// row carries the same chip as its live face, an unnamed plan's row none.
+func TestDonePlanRowCarriesTheName(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Track: "plan", Process: "spec", Objective: "Link shortener",
+			Repository: "linkshort/linkshort", IssueNumber: 1, PlanName: "fix prod latency"}},
+	}
+	get := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	face := faceOf(t, get(), "t-plan")
+	if !strings.Contains(face, "face final") || !strings.Contains(face, `<span class="chip plan">#1 · fix prod latency</span>`) {
+		t.Errorf("a named plan's done row lacks its chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	if face := faceOf(t, get(), "t-plan"); strings.Contains(face, "chip plan") {
+		t.Errorf("an unnamed plan's done row carries a chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName, r.tasks.tasks[0].IssueNumber = "fix prod latency", 0
+	if face := faceOf(t, get(), "t-plan"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) || strings.Contains(face, "#0") {
+		t.Errorf("a named plan without an issue number lacks the bare name or shows #0:\n%s", face)
+	}
 }

@@ -124,7 +124,7 @@ func TestFourColumnsPlaceEveryStatus(t *testing.T) {
 	}
 	needs := col(t, body, "Needs you")
 	for _, want := range []string{`<section class="column lit" aria-labelledby="col-0" id="needs-you" data-holds="waiting-human waiting-poster">`, `action="/tasks/t-esc/answer"`,
-		`<input type="hidden" name="back" value="/?project=ai-software-factory-code">`, `action="/approvals/4/approve"`} {
+		`action="/approvals/4/approve"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the board lacks %s", want)
 		}
@@ -982,18 +982,33 @@ func TestDrawerRefusals(t *testing.T) {
 	}
 }
 
-// A verdict goes back to the board it was given on, its filter kept, and
-// never to another host.
-func TestVerdictReturnsToTheFilteredBoard(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
-		{ID: 6, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for id, back := range map[string][2]string{"3": {"/?project=linkshort&view=wide", "/?project=linkshort&view=wide"}, "6": {"//evil.example/", "/"}} {
-		rec := r.do(post("/alerts/"+id+"/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {back[0]}}), ck)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != back[1] {
-			t.Errorf("verdict with back %q = %d to %q, want %q", back[0], rec.Code, rec.Header().Get("Location"), back[1])
+// No human surface asks for an escalation verdict: the escalated card
+// shows no question and no form to /alerts/, on the board and in the drawer.
+func TestEscalatedCardAsksNoVerdict(t *testing.T) {
+	r, ck := screenRig(t)
+	for _, path := range []string{"/", "/cards/t-esc/drawer"} {
+		body := r.do(httptest.NewRequest(http.MethodGet, path, nil), ck).Body.String()
+		if !strings.Contains(body, "which region?") {
+			t.Fatalf("GET %s: the escalation is not on the page", path)
 		}
+		for _, banned := range []string{"Was this escalation a real problem", "/alerts/", `name="verdict"`} {
+			if strings.Contains(body, banned) {
+				t.Errorf("GET %s offers %q", path, banned)
+			}
+		}
+	}
+	if rec := r.do(post("/alerts/7/verdict", url.Values{"verdict": {"real"}}), ck); rec.Code != http.StatusNotFound && rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("POST /alerts/7/verdict = %d, want no route", rec.Code)
+	}
+}
+
+// An alert_verdict row from before the survey went still reads on its
+// card's activity line.
+func TestOldVerdictEventsStillRender(t *testing.T) {
+	e := factoryd.Event{Kind: factoryd.EventAlertVerdict, Actor: "sebastian", Via: "board",
+		At: time.Date(2026, 9, 28, 9, 30, 0, 0, time.UTC), Detail: map[string]any{"alert": 3, "verdict": "real"}}
+	if got, want := activityLine(e), "alert verdict by sebastian via board at 09:30"; got != want {
+		t.Errorf("activityLine = %q, want %q", got, want)
 	}
 }
 
@@ -1191,7 +1206,7 @@ func TestFindNarrowsTheColumns(t *testing.T) {
 		}
 	}
 	asked := page("which region")
-	for _, want := range []string{`<input type="hidden" name="q" value="which region">`, `name="back" value="/?project=ai-software-factory-code&amp;q=which&#43;region"`} {
+	for _, want := range []string{`<input type="hidden" name="q" value="which region">`} {
 		if !strings.Contains(asked, want) {
 			t.Errorf("the escalation's forms lack %s", want)
 		}
@@ -1580,5 +1595,53 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 	if tasks.reads["BoardTasks"] != 1 || approvals.reads != 1 {
 		t.Errorf("the board read the open cards %d and the approvals %d time(s), want 1 each",
 			tasks.reads["BoardTasks"], approvals.reads)
+	}
+}
+
+// A plan's name is a find word and a plan: value: plan:558 matches the
+// cards of plan 558 and the plan's own card, by issue number exactly and never a name that merely contains 558, any
+// other value is a case-insensitive part of the name; the drawer's Plan
+// row carries the name after the linked issue.
+func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = planTasks()
+	r.tasks.tasks[0].PlanName = "Fix prod latency"
+	r.tasks.tasks[5].PlanName = "batch 1 jobs"
+	held := func(q string) []string {
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&q="+url.QueryEscape(q), nil), ck).Body.String()
+		got := append(columnItems(t, body, "Queued"), columnItems(t, body, "Done")...)
+		slices.Sort(got)
+		return got
+	}
+	for _, c := range []struct {
+		q    string
+		want []string
+	}{
+		{"plan:latency", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:LATENCY", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"prod latency", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:1", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:#1", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:", nil},
+		{"plan:#", nil},
+		{"plan:0", nil},
+		{"plan:batch", []string{"t-spec2"}},
+	} {
+		if got := held(c.q); !slices.Equal(got, c.want) {
+			t.Errorf("q=%q holds %v, want %v", c.q, got, c.want)
+		}
+	}
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?tab=overview&project=linkshort", nil), ck).Body.String()
+	}
+	const link = `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a>`
+	if d := drawer(); !strings.Contains(d, link+` · Fix prod latency · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the drawer lacks its named Plan row:\n%s", d)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	if d := drawer(); !strings.Contains(d, link+` · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the drawer lacks its unnamed Plan row:\n%s", d)
 	}
 }

@@ -43,13 +43,13 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		return 0, ""
 	}
 	// path fills pattern's {id} (a card of sf/code (t-c), its pending request,
-	// a resource, an alert, a proposal), and {project} and {name} with the
+	// a resource, a proposal), and {project} and {name} with the
 	// leg's project.
 	path := func(pattern, name string) string {
 		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
-			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			{"/approvals/", "3"}, {"/resources/", "11"}} {
 			if strings.HasPrefix(p, fill.prefix) {
 				id = fill.v
 			}
@@ -96,9 +96,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 47 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
+	if pages != 46 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
 		"POST /notifications/disconnect", "POST /notifications/level", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 47 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
+		t.Fatalf("%d POST routes driven, skipped %v: want 46 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -224,7 +224,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
-			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			{"/approvals/", "3"}, {"/resources/", "11"}} {
 			if strings.HasPrefix(p, fill.prefix) {
 				id = fill.v
 			}

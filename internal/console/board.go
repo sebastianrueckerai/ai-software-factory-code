@@ -105,7 +105,6 @@ var funcs = template.FuncMap{
 	},
 	"inc":             func(i int) int { return i + 1 },
 	"join":            strings.Join,
-	"verdictForm":     func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
 	"alertSupervisor": alertSupervisor,
 }
 
@@ -130,12 +129,6 @@ func supervisedBy(action, diagnosis, recommendation any) supervised {
 		s.Diagnosis += " Recommendation: " + rec
 	}
 	return s
-}
-
-// verdictForm is the "verdict" template's data: an alert's two buttons.
-type verdictForm struct {
-	ID         int64
-	CSRF, Back string
 }
 
 // The project screen's four columns (as C8 amends it), a view
@@ -365,7 +358,7 @@ func faceWords(k card, a *approvalCard) string {
 			}
 			return strings.Join(w, " ")
 		case factoryd.ApprovalPlan:
-			return fmt.Sprintf("plan #%d %s %s", a.Issue, a.PlanSummary, a.TaskID)
+			return fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID)
 		}
 		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
 	}
@@ -379,6 +372,7 @@ func faceWords(k card, a *approvalCard) string {
 	if k.PlanIssue > 0 {
 		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
 	}
+	w = append(w, k.PlanName, k.Task.PlanName)
 	if k.Routine() {
 		w = append(w, "routine")
 	}
@@ -427,7 +421,13 @@ func fact(k card, a *approvalCard, key, val string) (match, known bool) {
 	case "is":
 		return isState(k, val), true
 	case "plan":
-		return eq(strconv.FormatInt(k.PlanIssue, 10))
+		if val == "" {
+			return false, true
+		}
+		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return n > 0 && (k.PlanIssue == n || k.Track == policy.TrackPlan && k.IssueNumber == n), true
+		}
+		return strings.Contains(strings.ToLower(cmp.Or(k.PlanName, k.Task.PlanName)), strings.ToLower(val)), true
 	case "stage":
 		return eq(k.Stage)
 	case "status":
@@ -529,9 +529,10 @@ type card struct {
 	// names (C38), "" for a word that names none.
 	Stage, StageAge, StageURL string
 	GateText                  string
-	EscalationAlert           int64  // the escalation's open alert
 	WaitingOn                 string // a card in waiting-deps: the issues it waits on
 	PlanIssue                 int64  // a plan's card: the plan's issue
+	PlanURL                   string // a plan's card: the plan's issue on the forge
+	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
 	Plan                      []card // a done plan's cards, which its drawer lists
 	Retry                     *retry // a failed plan card's Retry, for an approver
@@ -862,18 +863,18 @@ func depsCount(list string) int {
 	return strings.Count(list, "#")
 }
 
-// planIssue is plan task id's issue: from the board's tasks, else read.
-func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) int64 {
+// planIssue is plan task id's issue, name and repository: from the board's tasks, else read.
+func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string, string) {
 	if t, ok := byID[id]; ok {
-		return t.IssueNumber
+		return t.IssueNumber, t.PlanName, t.Repository
 	}
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	if err != nil || !ok {
 		log.Printf("console: plan %s: found %v, %v", id, ok, err)
-		return 0
+		return 0, "", ""
 	}
 	byID[id] = t
-	return t.IssueNumber
+	return t.IssueNumber, t.PlanName, t.Repository
 }
 
 func plural(n int, word string) string {
@@ -1036,8 +1037,7 @@ type colMenu struct {
 }
 
 // need is an item of the human lane, or of the Needs you column: an
-// approval request, an escalated card with its answer form (CSRF, the
-// verdict for an approver and the board to go back to), or a card that
+// approval request, an escalated card with its answer form (CSRF), or a card that
 // needs the viewer; Since is when it began to wait.
 type need struct {
 	Since     time.Time
@@ -1045,8 +1045,6 @@ type need struct {
 	Card      card
 	Escalated bool
 	CSRF      string
-	Approver  bool
-	Back      string
 	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
@@ -1971,7 +1969,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
-		k.PlanIssue = c.planIssue(ctx, v.byID, t.Parent)
+		var planRepo string
+		k.PlanIssue, k.PlanName, planRepo = c.planIssue(ctx, v.byID, t.Parent)
+		if k.PlanIssue > 0 {
+			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), planRepo, k.PlanIssue)
+		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
 		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)
@@ -2005,7 +2007,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
 	}
 	if v.escalated(t) {
-		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert
+		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 		// the Fund action is offered where the fund's floor refuses a
@@ -2339,7 +2341,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
 	escalation := func(k card) need {
-		return need{Card: k, Escalated: true, CSRF: v.csrf, Approver: d.Factory && c.approver(r), Back: "/" + d.Query}
+		return need{Card: k, Escalated: true, CSRF: v.csrf}
 	}
 	// BoardTasks and readFinished read shown.Repository's cards only, so
 	// every byID lookup below stays right: a plan parent not among them
@@ -3630,7 +3632,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 			}
 		}
 		if v.escalated(bt.Task) && bt.Escalation != "" {
-			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Approver: c.approver(r), Back: "/" + k.Filter.query(), Suffix: "-d"}
+			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)

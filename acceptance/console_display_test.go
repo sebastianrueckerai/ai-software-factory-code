@@ -43,7 +43,7 @@ func TestAcceptanceCheckinDecisionInDrawer(t *testing.T) {
 
 // A plan child without a writer's summary is titled by its objective's
 // headline: the board's face carries it as the card's title, the drawer
-// heads with it, and the plan chip keeps the key after the plan's number.
+// heads with it, and the plan chip carries the plan's name after its number.
 func TestAcceptancePlanChildHeadlineAndChip(t *testing.T) {
 	r, _, _ := NewAcceptanceRig(t, false, nil)
 	ck, _ := r.Login(t)
@@ -53,7 +53,7 @@ func TestAcceptancePlanChildHeadlineAndChip(t *testing.T) {
 	r.mu.Lock()
 	r.tasks = append(r.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-plan531", Kind: "agent", Status: "running", Track: policy.TrackPlan,
-			Process: "spec", Repository: "sf/code", IssueNumber: 531, Objective: "Console: two display defects from the demo"}},
+			Process: "spec", Repository: "sf/code", IssueNumber: 531, PlanName: "display fixes", Objective: "Console: two display defects from the demo"}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-drawer", Kind: "agent", Status: "queued", Track: policy.TrackDirect,
 			Process: "spec", Repository: "sf/code", IssueNumber: 535, Source: factoryd.SourcePlan, Parent: "t-plan531",
 			PlanKey:   "drawer-files",
@@ -67,8 +67,8 @@ func TestAcceptancePlanChildHeadlineAndChip(t *testing.T) {
 	if n := strings.Count(body, ">drawer-files</a>") + strings.Count(body, ">drawer-files</strong>"); n != 0 {
 		t.Errorf("%d faces title the plan child by its bare key", n)
 	}
-	if got := strings.Count(body, `<span class="chip plan">from plan #531 · drawer-files</span>`); got != 1 {
-		t.Errorf("%d plan chips read from plan #531 · drawer-files, want the child's one:\n%s", got, body)
+	if got := strings.Count(body, `<span class="chip plan">from plan #531 · display fixes</span>`); got != 1 {
+		t.Errorf("%d plan chips read from plan #531 · display fixes, want the child's one:\n%s", got, body)
 	}
 	drawer := r.request(http.MethodGet, "/cards/t-drawer/drawer", nil, ck).Body.String()
 	if want := `<h2 tabindex="-1">` + headline + `</h2>`; !strings.Contains(drawer, want) {
