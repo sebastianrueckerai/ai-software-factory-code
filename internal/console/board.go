@@ -365,7 +365,7 @@ func faceWords(k card, a *approvalCard) string {
 			}
 			return strings.Join(w, " ")
 		case factoryd.ApprovalPlan:
-			return fmt.Sprintf("plan #%d %s %s", a.Issue, a.PlanSummary, a.TaskID)
+			return fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID)
 		}
 		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
 	}
@@ -379,6 +379,7 @@ func faceWords(k card, a *approvalCard) string {
 	if k.PlanIssue > 0 {
 		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
 	}
+	w = append(w, k.PlanName, k.Task.PlanName)
 	if k.Routine() {
 		w = append(w, "routine")
 	}
@@ -427,7 +428,13 @@ func fact(k card, a *approvalCard, key, val string) (match, known bool) {
 	case "is":
 		return isState(k, val), true
 	case "plan":
-		return eq(strconv.FormatInt(k.PlanIssue, 10))
+		if val == "" {
+			return false, true
+		}
+		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return n > 0 && (k.PlanIssue == n || k.Track == policy.TrackPlan && k.IssueNumber == n), true
+		}
+		return strings.Contains(strings.ToLower(cmp.Or(k.PlanName, k.Task.PlanName)), strings.ToLower(val)), true
 	case "stage":
 		return eq(k.Stage)
 	case "status":
@@ -532,6 +539,8 @@ type card struct {
 	EscalationAlert           int64  // the escalation's open alert
 	WaitingOn                 string // a card in waiting-deps: the issues it waits on
 	PlanIssue                 int64  // a plan's card: the plan's issue
+	PlanURL                   string // a plan's card: the plan's issue on the forge
+	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
 	Plan                      []card // a done plan's cards, which its drawer lists
 	Retry                     *retry // a failed plan card's Retry, for an approver
@@ -862,18 +871,18 @@ func depsCount(list string) int {
 	return strings.Count(list, "#")
 }
 
-// planIssue is plan task id's issue: from the board's tasks, else read.
-func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) int64 {
+// planIssue is plan task id's issue and name: from the board's tasks, else read.
+func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string) {
 	if t, ok := byID[id]; ok {
-		return t.IssueNumber
+		return t.IssueNumber, t.PlanName
 	}
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	if err != nil || !ok {
 		log.Printf("console: plan %s: found %v, %v", id, ok, err)
-		return 0
+		return 0, ""
 	}
 	byID[id] = t
-	return t.IssueNumber
+	return t.IssueNumber, t.PlanName
 }
 
 func plural(n int, word string) string {
@@ -1971,7 +1980,10 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
-		k.PlanIssue = c.planIssue(ctx, v.byID, t.Parent)
+		k.PlanIssue, k.PlanName = c.planIssue(ctx, v.byID, t.Parent)
+		if k.PlanIssue > 0 {
+			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), t.Repository, k.PlanIssue)
+		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
 		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)

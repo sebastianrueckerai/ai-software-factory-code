@@ -54,7 +54,7 @@ decimals: a task's model calls cost fractions of a cent.
   commit's tree in the infra repository, as `/policy` shows it. A card
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
-  row's `gate` and `gate_since`; a plan's card `part of plan #n`.
+  row's `gate` and `gate_since`; a plan child's drawer has a Plan row: the plan's `#n`, its name and the card's key.
 - The production hold: while a plan's group is open on the project's main,
   for the factory's own project or a project whose CI asked `/release`,
   the status strip shows the cell `production held · <time>` after the

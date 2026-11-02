@@ -1029,7 +1029,7 @@ func busyScene(now time.Time) labScene {
 
 	planDone := finished(labCard(now, 531, "done", "plan", 30*time.Hour, "Console: the card drawer",
 		"Open a card beside the board with its overview, its activity, its files and its session."), now, 26*time.Hour, 0.52)
-	planDone.BudgetEUR, planDone.ModelAlias = 5, "big"
+	planDone.BudgetEUR, planDone.ModelAlias, planDone.PlanName = 5, "big", "drawer polish"
 	exported := finished(labCard(now, 596, "done", "direct", 9*time.Hour, "Chat: the Undo of a move restores the lane",
 		"An undone move leaves the card in ready; put it back where it was."), now, 7*time.Hour, 0.33)
 	exported.GitHubPR, exported.GitHubPRURL, exported.GitHubPRState = 14, "https://github.com/sebastianrueckerai/ai-software-factory-code/pull/14", "open"
@@ -1768,10 +1768,10 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 			t.Errorf("child #%d's title %q, want its headline %q", tc.issue, got, tc.title)
 		}
 	}
-	// the one child still in play wears its key on the plan chip; the
-	// finished children's rows have none
-	if got := strings.Count(body, `<span class="chip plan">from plan #531 · drawer-files</span>`); got != 1 {
-		t.Errorf("%d chips read from plan #531 · drawer-files, want the queued child's one", got)
+	// the three children in play (#606, #617, #533) wear the plan's name on the
+	// plan chip; the finished children's rows have none
+	if got := strings.Count(body, `<span class="chip plan">from plan #531 · drawer polish</span>`); got != 3 {
+		t.Errorf("%d chips read from plan #531 · drawer polish, want the 3 children in play", got)
 	}
 	for _, key := range []string{"drawer-files", "drawer-overview", "drawer-chat", "drawer-activity"} {
 		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {

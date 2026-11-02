@@ -1582,3 +1582,51 @@ func TestFinishedPageReadsItsColumnAlone(t *testing.T) {
 			tasks.reads["BoardTasks"], approvals.reads)
 	}
 }
+
+// A plan's name is a find word and a plan: value: plan:558 matches the
+// cards of plan 558 and the plan's own card, by issue number exactly and never a name that merely contains 558, any
+// other value is a case-insensitive part of the name; the drawer's Plan
+// row carries the name after the linked issue.
+func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = planTasks()
+	r.tasks.tasks[0].PlanName = "Fix prod latency"
+	r.tasks.tasks[5].PlanName = "batch 1 jobs"
+	held := func(q string) []string {
+		body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort&q="+url.QueryEscape(q), nil), ck).Body.String()
+		got := append(columnItems(t, body, "Queued"), columnItems(t, body, "Done")...)
+		slices.Sort(got)
+		return got
+	}
+	for _, c := range []struct {
+		q    string
+		want []string
+	}{
+		{"plan:latency", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:LATENCY", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"prod latency", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:1", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:#1", []string{"t-c2", "t-c3", "t-c4", "t-c5", "t-plan"}},
+		{"plan:", nil},
+		{"plan:#", nil},
+		{"plan:0", nil},
+		{"plan:batch", []string{"t-spec2"}},
+	} {
+		if got := held(c.q); !slices.Equal(got, c.want) {
+			t.Errorf("q=%q holds %v, want %v", c.q, got, c.want)
+		}
+	}
+	drawer := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?tab=overview&project=linkshort", nil), ck).Body.String()
+	}
+	const link = `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a>`
+	if d := drawer(); !strings.Contains(d, link+` · Fix prod latency · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the drawer lacks its named Plan row:\n%s", d)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	if d := drawer(); !strings.Contains(d, link+` · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the drawer lacks its unnamed Plan row:\n%s", d)
+	}
+}
