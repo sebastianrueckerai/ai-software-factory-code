@@ -584,6 +584,15 @@ func New(cfg Config) (*Console, error) {
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
+	if cfg.Events != nil {
+		cfg.Events = stampedEvents{cfg.Events}
+	}
+	if cfg.Tasks != nil {
+		cfg.Tasks = stampedTasks{cfg.Tasks}
+	}
+	if cfg.Chat != nil {
+		cfg.Chat = stampedChat{cfg.Chat}
+	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{})}
 	gets, err := c.getRoutes()
 	if err != nil {

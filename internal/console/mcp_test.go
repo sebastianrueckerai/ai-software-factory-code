@@ -531,7 +531,7 @@ func TestMCPChatSendRaisesProposal(t *testing.T) {
 		t.Fatalf("a proposal acted: %q", r.issueDeps)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
-		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"console","proposals":[{"id":"`+p.ID+`","state":"pending"}]}]`; got != want {
+		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"laptop","proposals":[{"id":"`+p.ID+`","state":"pending"}]}]`; got != want {
 		t.Fatalf("chat_read = %s\nwant %s", got, want)
 	}
 }
@@ -571,8 +571,8 @@ func TestMCPChatSendOutlastsWait(t *testing.T) {
 		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
 	release()
-	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"console"},` +
-		`{"id":2,"role":"assistant","text":"late hello","at":"2026-10-11T09:30:02Z","source":"console"}]`
+	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"laptop"},` +
+		`{"id":2,"role":"assistant","text":"late hello","at":"2026-10-11T09:30:02Z","source":"laptop"}]`
 	got := ""
 	for deadline := time.Now().Add(5 * time.Second); got != want && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		got = answerOf(t, session, "chat_read", map[string]any{})
@@ -748,10 +748,10 @@ func TestMCPChatSendJoinsTheRunningTurn(t *testing.T) {
 		t.Fatalf("the joining chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
 	release()
-	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"console"},` +
-		`{"id":3,"role":"assistant","text":"one","at":"2026-10-11T09:30:03Z","source":"console"},` +
-		`{"id":4,"role":"user","text":"and more","at":"2026-10-11T09:30:04Z","source":"console"},` +
-		`{"id":5,"role":"assistant","text":"two","at":"2026-10-11T09:30:05Z","source":"console"}]`
+	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"laptop"},` +
+		`{"id":3,"role":"assistant","text":"one","at":"2026-10-11T09:30:03Z","source":"laptop"},` +
+		`{"id":4,"role":"user","text":"and more","at":"2026-10-11T09:30:04Z","source":"laptop"},` +
+		`{"id":5,"role":"assistant","text":"two","at":"2026-10-11T09:30:05Z","source":"laptop"}]`
 	got := ""
 	for deadline := time.Now().Add(5 * time.Second); got != want && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		got = answerOf(t, session, "chat_read", map[string]any{})
@@ -868,7 +868,7 @@ func TestMCPChatReadTwoProposalsOnARow(t *testing.T) {
 		t.Fatalf("chat_send raised %+v, want two proposals", a.Proposals)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
-		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"console","proposals":[{"id":"`+a.Proposals[0].ID+
+		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"laptop","proposals":[{"id":"`+a.Proposals[0].ID+
 			`","state":"pending"},{"id":"`+a.Proposals[1].ID+`","state":"pending"}]}]`; got != want {
 		t.Fatalf("chat_read = %s\nwant %s", got, want)
 	}
@@ -1002,7 +1002,8 @@ func TestMCPChatConfirmApplies(t *testing.T) {
 		Proposals: []mcpProposal{}, Applied: []mcpApplied{{Tool: "new_card", Result: filed}}, Ended: true})
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
 		Detail: map[string]any{"track": "direct", "reason": "a small read", "title": "Cache metrics", "size": "small", "autonomy": "manual", "merge_rule": "human",
-			"decider": "member", "chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now()), "thread": int64(2)}})
+			"decider": "member", "chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now()), "thread": int64(2),
+			"token": map[string]any{"id": int64(1), "name": "laptop"}}})
 	if p, _ := r.chat.proposal(id); p.used.IsZero() {
 		t.Fatal("the confirmed proposal is still unused")
 	}
@@ -1064,6 +1065,25 @@ func TestMCPChatConfirmRefusesNonApprover(t *testing.T) {
 		t.Fatalf("chat_confirm = %+v, reviews %v, want the button's refusal %q and nothing approved", a, r.fg.reviews, refusal)
 	}
 	equal(t, "the tools", a.Tools, []mcpTool{{Name: "approve_merge", Result: "Refused: " + refusal}})
+}
+
+// The pressed tool's refusal is the answer's error even when the follow-up
+// turn ends in an error of its own.
+func TestMCPChatConfirmRefusalOutranksTheFollowUpError(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	session := tokenSessionOf(t, r, "anna", "sf/code")
+	if err := r.chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: "p-anna-proposal", Kind: "proposal", Repository: "sf/code", Login: "anna",
+		Tool: "approve_merge", Args: json.RawMessage(`{"task_id":"t-m"}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{nil}
+	a := confirmed(t, session, "p-anna-proposal")
+	const refusal = "Only the approvers of project ai-software-factory-code may authorize spend."
+	if a.Error != refusal || len(a.Applied) != 0 {
+		t.Fatalf("chat_confirm = %+v, want the pressed tool's refusal %q as the error", a, refusal)
+	}
 }
 
 func TestMCPChatConfirmUsedOnce(t *testing.T) {
