@@ -3723,7 +3723,7 @@ func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (in
 			continue
 		}
 		for i, kind := range kinds {
-			if kind == "confirmation" && s.questions[k][i].Answer != "" && (!answered || revision > newest) {
+			if kind == "confirmation" && s.questions[k][i].Decision != "" && (!answered || revision > newest) {
 				newest, answered = revision, true
 			}
 		}
@@ -3796,46 +3796,70 @@ func (s *fakeStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, er
 func (s *fakeStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
 	k := fmt.Sprintf("%s %d", id, revision)
 	qs := slices.Clone(s.questions[k])
-	kinds := s.kinds[k]
 	for i := range qs {
-		if i < len(kinds) && kinds[i] == QuestionConfirmation {
+		if s.planKind(k, i) == QuestionConfirmation {
 			qs[i].Kind = QuestionConfirmation
 		}
 	}
 	return qs, nil
 }
 
-func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
-	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+// planKind is question i's kind in the fake's two maps.
+func (s *fakeStore) planKind(k string, i int) string {
+	if kinds := s.kinds[k]; i < len(kinds) && kinds[i] == QuestionConfirmation {
+		return QuestionConfirmation
+	}
+	return "question"
+}
+
+// planAnswered tells whether question i is answered: a confirmation by
+// its decision, every other question by its answer.
+func (s *fakeStore) planAnswered(k string, i int) bool {
+	if s.planKind(k, i) == QuestionConfirmation {
+		return s.questions[k][i].Decision != ""
+	}
+	return s.questions[k][i].Answer != ""
+}
+
+func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error {
+	k := fmt.Sprintf("%s %d", id, revision)
+	qs := s.questions[k]
 	switch {
 	case idx < 1 || idx > len(qs):
 		return ErrNotFound
-	case qs[idx-1].Answer != "":
+	case s.planAnswered(k, idx-1):
 		return ErrAnswered
 	}
-	qs[idx-1].Answer, qs[idx-1].AnsweredBy, qs[idx-1].AnsweredAt = answer, by, time.Now()
+	qs[idx-1].Decision, qs[idx-1].Answer, qs[idx-1].AnsweredBy, qs[idx-1].AnsweredAt = decision, answer, by, time.Now()
 	return nil
 }
 
 func (s *fakeStore) AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error {
-	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+	k := fmt.Sprintf("%s %d", id, revision)
+	qs := s.questions[k]
 	for _, a := range answers {
 		switch {
 		case a.Idx < 1 || a.Idx > len(qs):
 			return ErrNotFound
-		case qs[a.Idx-1].Answer != "":
+		case s.planAnswered(k, a.Idx-1):
 			return ErrAnswered
 		}
 	}
 	for _, a := range answers {
-		qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy, qs[a.Idx-1].AnsweredAt = a.Text, by, time.Now()
+		qs[a.Idx-1].Decision, qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy, qs[a.Idx-1].AnsweredAt = a.Decision, a.Text, by, time.Now()
 	}
 	return nil
 }
 
 func (s *fakeStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
-	qs, _ := s.PlanQuestions(ctx, id, revision)
-	return len(qs) - len(slices.DeleteFunc(qs, func(q PlanQuestion) bool { return q.Answer == "" })), nil
+	k := fmt.Sprintf("%s %d", id, revision)
+	open := 0
+	for i := range s.questions[k] {
+		if !s.planAnswered(k, i) {
+			open++
+		}
+	}
+	return open, nil
 }
 
 func (s *fakeStore) ConfirmationIndex(ctx context.Context, id string, revision int) (int, bool, error) {

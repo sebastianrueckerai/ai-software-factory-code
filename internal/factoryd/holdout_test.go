@@ -288,7 +288,7 @@ func TestDecideHoldout(t *testing.T) {
 		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Confirm the plan?"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "confirm", "sebastian"); err != nil {
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionConfirm, "", "sebastian"); err != nil {
 			t.Fatal(err)
 		}
 		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); !errors.Is(err, ErrAnswered) {
@@ -338,7 +338,7 @@ func TestDecideHoldout(t *testing.T) {
 			if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", revision, PlanQuestion{Text: "Confirm the plan?"}); err != nil {
 				t.Fatal(err)
 			}
-			if err := store.AnswerPlanQuestion(ctx, "t-plan", revision, 1, "okay", "sebastian"); err != nil {
+			if err := store.AnswerPlanQuestion(ctx, "t-plan", revision, 1, DecisionConfirm, "", "sebastian"); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -478,7 +478,7 @@ func TestAnswerPlanWaitsForTheHoldoutDecisions(t *testing.T) {
 	raw, sha, _ := planSHA(questionPlan())
 	store.AddPlanRevision(ctx, "t-plan", raw, sha)
 	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
-	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Does the plan hold against the spec?", Choices: []string{"confirm", "revise"}}); err != nil {
+	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Does the plan hold against the spec?"}); err != nil {
 		t.Fatal(err)
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
@@ -491,16 +491,16 @@ func TestAnswerPlanWaitsForTheHoldoutDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	wf := &signalLog{}
-	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 1, "60 seconds", "alice"); err != nil {
+	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 1, "", "60 seconds", "alice"); err != nil {
 		t.Fatalf("a normal answer waits on nothing: %v", err)
 	}
-	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 3, "confirm", "sebastian"); !errors.Is(err, ErrHoldoutsOpen) {
+	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 3, DecisionConfirm, "", "sebastian"); !errors.Is(err, ErrHoldoutsOpen) {
 		t.Fatalf("the confirming answer: %v", err)
 	}
 	if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
-	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 3, "confirm", "sebastian"); err != nil {
+	if err := AnswerPlan(ctx, store, wf, "t-plan", 1, 3, DecisionConfirm, "", "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(wf.got, []string{"t-plan plan_answered alice revision 1 index 1", "t-plan plan_answered sebastian revision 1 index 3"}) {

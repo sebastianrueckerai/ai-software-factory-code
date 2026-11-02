@@ -921,16 +921,16 @@ func newPlanRunner(t *testing.T, p Plan) (*Runner, *fakeStore, *fakeObjectStore,
 	return runner, store, runner.objects.(*fakeObjectStore), fj
 }
 
-// confirmSpec is the members' okay to the spec's confirmation (piece 5)
+// confirmSpec is the members' confirm of the spec's confirmation (piece 5)
 // on an earlier revision of t-plan: asked until answered once, so the
 // revision under test asks no question.
 func confirmSpec(t *testing.T, store *fakeStore) {
 	t.Helper()
 	ctx := context.Background()
-	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 0, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
+	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 0, PlanQuestion{Text: "Confirmation of the spec"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AnswerPlanQuestion(ctx, "t-plan", 0, 1, "okay", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 0, 1, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1311,9 +1311,9 @@ func TestPlanCommentMarker(t *testing.T) {
 		store.approvals[0].Reason != "plan revision 1 of issue #1, 4 cards, waits for 1 answers" {
 		t.Fatalf("approvals %+v", store.approvals)
 	}
-	// a member answers revision 1's confirmation: the asking ends (asked
+	// a member confirms revision 1: the asking ends (asked
 	// until answered once), revision 2 carries no question of its own
-	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "okay", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	p2 := testPlan()
@@ -1323,7 +1323,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	if ref := getInto[PlanRef](t, val, err); ref.Revision != 2 || ref.SHA256 != sha || !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || ref.Comment != 0 {
 		t.Fatalf("ref = %+v", ref)
 	}
-	if qs, _ := store.PlanQuestions(ctx, "t-plan", 1); len(qs) != 1 || qs[0].Answer != "okay" || qs[0].AnsweredBy != "alice" {
+	if qs, _ := store.PlanQuestions(ctx, "t-plan", 1); len(qs) != 1 || qs[0].Decision != DecisionConfirm || qs[0].AnsweredBy != "alice" {
 		t.Fatalf("revision 1's questions %+v, want the answered confirmation", qs)
 	}
 	if qs, _ := store.PlanQuestions(ctx, "t-plan", 2); len(qs) != 0 {
@@ -1341,11 +1341,11 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 }
 
-// A revision whose every question is the confirmation, answered with its
-// offered choice word, is confirmed: the answers resolve the plan's
-// request as the confirmation it was, and RequestPlan files its cards
-// with no planner session. A choice with words around it, or a real
-// question answered, sends the planner back.
+// A revision whose every question is the confirmation, decided confirm,
+// is confirmed: the answers resolve the plan's request as the
+// confirmation it was, and RequestPlan files its cards with no planner
+// session. A revise with its words, or a real question answered, sends
+// the planner back.
 func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
 	ctx := context.Background()
 	// the plan card running with its spec unconfirmed, so revision 1 asks
@@ -1363,7 +1363,7 @@ func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
 	if ref := requestPlan(t, r); ref.Answered || ref.Filed != nil || ref.Comment == 0 {
 		t.Fatalf("the ask: %+v", ref)
 	}
-	if err := AnswerPlanQuestions(ctx, store, r.cfg.Workflows, "t-plan", 1, []PlanAnswer{{Idx: 1, Text: "okay"}}, "alice"); err != nil {
+	if err := AnswerPlanQuestions(ctx, store, r.cfg.Workflows, "t-plan", 1, []PlanAnswer{{Idx: 1, Decision: DecisionConfirm}}, "alice"); err != nil {
 		t.Fatal(err)
 	}
 	if a := store.approvals[0]; a.Status != "denied" || a.DecisionNote != "superseded: revision 1 is confirmed, its cards file" {
@@ -1379,22 +1379,23 @@ func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
 
 	r, store, _ = rig(testPlan())
 	requestPlan(t, r)
-	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "Okay — and keep the slate clean", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionRevise, "Okay — and keep the slate clean", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	val, err = execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
 	if ref := getInto[PlanRef](t, val, err); !ref.Answered || ref.Filed != nil {
-		t.Fatalf("the padded answer: %+v", ref)
+		t.Fatalf("the revise with words: %+v", ref)
 	}
 
 	asking := testPlan()
 	asking.Questions = []PlanQuestion{{Text: "Which store backs the links?", Choices: []string{"postgres", "sqlite"}}}
 	r, store, _ = rig(asking)
 	requestPlan(t, r)
-	for idx, answer := range map[int]string{1: "postgres", 2: "okay"} {
-		if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, idx, answer, "alice"); err != nil {
-			t.Fatal(err)
-		}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "postgres", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 2, DecisionConfirm, "", "alice"); err != nil {
+		t.Fatal(err)
 	}
 	val, err = execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
 	if ref := getInto[PlanRef](t, val, err); !ref.Answered || ref.Filed != nil {
@@ -1448,10 +1449,10 @@ func TestConfirmsAgainOnAChangedSpec(t *testing.T) {
 			return n
 		}
 		add(plan(func(p *Plan) { p.Summary = "The second revision." }))
-		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
+		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of the spec"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, "okay", "alice"); err != nil {
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, DecisionConfirm, "", "alice"); err != nil {
 			t.Fatal(err)
 		}
 		last := 0

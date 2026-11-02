@@ -64,11 +64,13 @@ type PlanFiler interface {
 	FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error)
 }
 
-// PlanFiled is a plan filing's result: a stored revision, or every
-// finding the check raised, back into the same session.
+// PlanFiled is a plan filing's result: a stored revision and whether its
+// cards wait on the human's confirmation, or every finding the check
+// raised, back into the same session.
 type PlanFiled struct {
 	Revision int      `json:"revision"`
 	SHA256   string   `json:"sha256"`
+	Gate     bool     `json:"gate"`
 	Findings []string `json:"findings"`
 }
 
@@ -1150,7 +1152,9 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 
 // filePlan hands the planner's plan to factoryd, which checks the whole
 // json at once: a refusal carries every finding back into the session, a
-// filed plan is the session's answer. Free, for the classes that list it.
+// stored plan is the session's answer, and the answer names whether the
+// human's confirmation waits on the revision's cards, because storing
+// files none. Free, for the classes that list it.
 func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mcp.CallToolResult {
 	tool := policy.ToolFilePlan
 	if c.task.Status != "running" {
@@ -1174,9 +1178,14 @@ func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mc
 		return toolError("the plan was refused:\n- " + strings.Join(res.Findings, "\n- ") +
 			"\ncorrect the plan and file it again in this session")
 	}
-	s.auditTool(c, tool, "plan_filed", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
+	if res.Gate {
+		s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d, confirmation waits", res.Revision), &c.task.SpentEUR, nil)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+			Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file only after the human confirms the spec and the criteria. You may end the session; a later session carries the human's changes, if any.", res.Revision)}}}
+	}
+	s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
-		Text: fmt.Sprintf("filed as revision %d; it is this session's answer. You may end the session.", res.Revision)}}}
+		Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file with no further gate. You may end the session.", res.Revision)}}}
 }
 
 // fileVerdict hands the audit session's verdict on one hold-out to

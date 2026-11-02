@@ -1076,15 +1076,23 @@ func TestFilePlanTool(t *testing.T) {
 	if a := e.lastAudit(t); a.Decision != "plan_refused" || a.Tool != policy.ToolFilePlan {
 		t.Fatalf("audit = %+v", a)
 	}
-	e.filer.res = PlanFiled{Revision: 3, SHA256: "abc123"}
+	e.filer.res = PlanFiled{Revision: 3, SHA256: "abc123", Gate: true}
 	text, isErr = e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
-	if isErr || text != "filed as revision 3; it is this session's answer. You may end the session." {
-		t.Fatalf("filed plan = %q (%v)", text, isErr)
+	if isErr || text != "stored as revision 3; it is this session's answer. Its cards file only after the human confirms the spec and the criteria. You may end the session; a later session carries the human's changes, if any." {
+		t.Fatalf("a revision that waits = %q (%v)", text, isErr)
 	}
-	if a := e.lastAudit(t); a.Decision != "plan_filed" || a.Reason != "revision 3" {
+	if a := e.lastAudit(t); a.Decision != "plan_stored" || a.Reason != "revision 3, confirmation waits" {
 		t.Fatalf("audit = %+v", a)
 	}
-	if calls := e.filer.calls; len(calls) != 2 || !strings.HasPrefix(calls[0], "42|") {
+	e.filer.res = PlanFiled{Revision: 4, SHA256: "def456"}
+	text, isErr = e.call(t, policy.ToolFilePlan, map[string]any{"plan": plan})
+	if isErr || text != "stored as revision 4; it is this session's answer. Its cards file with no further gate. You may end the session." {
+		t.Fatalf("a revision with no gate = %q (%v)", text, isErr)
+	}
+	if a := e.lastAudit(t); a.Decision != "plan_stored" || a.Reason != "revision 4" {
+		t.Fatalf("audit = %+v", a)
+	}
+	if calls := e.filer.calls; len(calls) != 3 || !strings.HasPrefix(calls[0], "42|") {
 		t.Fatalf("filer calls = %v", calls)
 	}
 }

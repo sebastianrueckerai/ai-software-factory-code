@@ -595,8 +595,8 @@ func main() {
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
-			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, decision, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, workflows, taskID, revision, answers, by)

@@ -1046,7 +1046,7 @@ func (s *acceptanceStore) PlanQuestions(context.Context, string, int) ([]factory
 	return nil, nil
 }
 
-func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, string, string) error {
+func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, string, string, string) error {
 	return nil
 }
 

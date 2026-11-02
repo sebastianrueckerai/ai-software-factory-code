@@ -333,12 +333,13 @@ func (s *accBatchTasks) answerBatch(id string, revision int, answers []factoryd.
 		if a.Idx < 1 || a.Idx > len(qs) {
 			return factoryd.ErrNotFound
 		}
-		if qs[a.Idx-1].Answer != "" {
+		if q := qs[a.Idx-1]; q.Kind == factoryd.QuestionConfirmation && q.Decision != "" ||
+			q.Kind != factoryd.QuestionConfirmation && q.Answer != "" {
 			return factoryd.ErrAnswered
 		}
 	}
 	for _, a := range answers {
-		qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy = a.Text, by
+		qs[a.Idx-1].Answer, qs[a.Idx-1].Decision, qs[a.Idx-1].AnsweredBy = a.Text, a.Decision, by
 	}
 	s.questions[key] = qs
 	return nil
@@ -356,7 +357,11 @@ func (s *accBatchTasks) openCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, q := range s.questions[fmt.Sprintf("%s %d", planTask, planRev)] {
-		if q.Answer == "" {
+		if q.Kind == factoryd.QuestionConfirmation {
+			if q.Decision == "" {
+				n++
+			}
+		} else if q.Answer == "" {
 			n++
 		}
 	}
@@ -851,8 +856,8 @@ func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision 
 }
 
 // AnswerPlanQuestion is factoryd.PGStore.AnswerPlanQuestion on the fixture's // rows: an unknown number answers ErrNotFound, an answered one ErrAnswered.
-func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
-	return s.tasks.answerBatch(id, revision, []factoryd.PlanAnswer{{Idx: idx, Text: answer}}, by)
+func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error {
+	return s.tasks.answerBatch(id, revision, []factoryd.PlanAnswer{{Idx: idx, Text: answer, Decision: decision}}, by)
 }
 func (s *accBatchStore) CreatePlanCard(ctx context.Context, t factoryd.Task) (factoryd.Task, error) {
 	panic("unused")
@@ -1415,8 +1420,8 @@ func newBatchRig(t *testing.T) *batchRig {
 			Tracks: tree.Processes["maintenance"].Tracks}}},
 		Events: evs, Bus: evs.bus, Chat: &accBatchChat{tasks: tasks},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
-			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, answer, by)
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, decision, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)

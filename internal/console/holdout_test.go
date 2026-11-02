@@ -33,7 +33,7 @@ func holdoutsRig(r *rig, confirmation factoryd.PlanQuestion) {
 // question.
 func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	r := newRig(t)
-	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?", Choices: []string{"It does"}})
+	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
 	ck, _ := r.loggedIn(t)
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
@@ -68,7 +68,7 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 func TestPlanCardHoldoutsSettleWithTheConfirmation(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?",
-		Choices: []string{"It does"}, Answer: "It does", AnsweredBy: "sebastian"})
+		Decision: factoryd.DecisionConfirm, AnsweredBy: "sebastian"})
 	ck, s := r.loggedIn(t)
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	if !strings.Contains(card, `<legend>Hold-out 1: The door opens only for a key that fits</legend>`) ||
@@ -88,7 +88,7 @@ func TestPlanCardHoldoutsSettleWithTheConfirmation(t *testing.T) {
 // stale revision and a verb that is neither okay nor drop are refused.
 func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 	r := newRig(t)
-	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?", Choices: []string{"It does"}})
+	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
 	ck, s := r.loggedIn(t)
 	board := func() string {
 		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
@@ -126,9 +126,9 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 		drop.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("drop by htmx: %d %s", drop.Code, drop.Body)
 	}
-	answer := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"1"}, "answer": {"It does"},
+	answer := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"1"}, "decision": {"confirm"},
 		"project": {"linkshort"}}), ck)
-	if answer.Code != http.StatusOK || !strings.Contains(answer.Body.String(), `<p class="note" role="status">Answered question 1 of plan #1.</p>`) {
+	if answer.Code != http.StatusOK || !strings.Contains(answer.Body.String(), `<p class="note" role="status">Confirmed plan #1; its cards file.</p>`) {
 		t.Fatalf("the confirmation's answer by htmx: %d %s", answer.Code, answer.Body)
 	}
 	if card := board(); strings.Contains(card, `action="/tasks/t-plan/plan/holdout"`) || !strings.Contains(card, ">dropped<") {

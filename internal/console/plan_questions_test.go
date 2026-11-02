@@ -97,7 +97,7 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 	}
 	// an answer stored whose signal failed: 502, the answer recorded,
 	// request_changes the way on
-	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string) error {
+	r.c.cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error {
 		return fmt.Errorf("%w: temporal down", factoryd.ErrAnswerUnsignalled)
 	}
 	if rec := answer("2", "1", "5 minutes"); rec.Code != http.StatusBadGateway || rec.Body.String() !=
@@ -153,7 +153,7 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 		status, msg := refused(t, r, "answer", tc.in)
 		equal(t, "an answer without its revision or of another", []any{status, msg}, tc.want)
 	}
-	r.tasks.answer("t-p", 1, 2, "30 days", "sebastian")
+	r.tasks.answer("t-p", 1, 2, "", "30 days", "sebastian")
 	status, msg := refused(t, r, "answer", toolInput{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"})
 	equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
 		"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."})
@@ -315,7 +315,142 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 	if !ok || params["answers"] == nil {
 		t.Fatalf("the tool's parameters = %#v, they name no answers", def.Parameters)
 	}
-	if !strings.Contains(def.Description, "every open question of a plan at once") {
+	if !strings.Contains(def.Description, "the plan's confirmation by your own decision") {
 		t.Errorf("the tool's about = %q", def.Description)
+	}
+	if d := params["decision"].(map[string]any)["description"].(string); !strings.Contains(d, "confirm accepts the plan") {
+		t.Errorf("the decision parameter = %v", params["decision"])
+	}
+}
+
+// The confirmation question is two controls, not a choice list and not a
+// free-text form: a Confirm press stores the decision, carries the
+// revision's cards to the gate with no planner session and names it;
+// Request changes takes required words to the next planner round, and
+// bare text names the two controls and stores nothing. The answered line
+// shows the decision with its findings, and the night's words ride a
+// confirm as findings.
+func TestPlanCardDecidesTheConfirmation(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
+		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	ck, s := r.loggedIn(t)
+	board := func() string {
+		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	}
+	press := func(kv ...string) *httptest.ResponseRecorder {
+		v := url.Values{"csrf": {s.csrf}, "project": {"linkshort"}}
+		for i := 0; i+1 < len(kv); i += 2 {
+			v.Set(kv[i], kv[i+1])
+		}
+		return r.do(htmxPost("/tasks/t-plan/plan/answer", v), ck)
+	}
+	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
+	night := "okay — confirmed. Revision 15 is fine."
+	card := board()
+	for _, want := range []string{
+		"<legend>1. Does the plan match the spec?</legend>",
+		`<input type="hidden" name="decision" value="confirm">`,
+		"<button type=\"submit\">Confirm</button>",
+		`<input type="hidden" name="decision" value="revise">`,
+		"Request changes: your words go to the next planner round",
+		`name="answer" maxlength="1000" required`,
+		"<p class=\"meta\">1 question open. The answers go to the planner",
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the card lacks %q:\n%s", want, card)
+		}
+	}
+	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 2 || strings.Contains(card, `name="answer" value=`) {
+		t.Errorf("the confirmation is two forms, no choice buttons:\n%s", card)
+	}
+	// Request changes without words: refused by name, nothing stored
+	if rec := press("revision", "2", "index", "1", "decision", "revise"); rec.Code != http.StatusBadRequest ||
+		rec.Body.String() != "Request changes needs its words: they go to the next planner round.\n" ||
+		slices.Contains(r.fg.calls, "SIGNAL plan_answered t-plan 2 1 by sebastian") || len(r.fg.comments) != 0 {
+		t.Fatalf("words-less revise: %d %q, calls %v", rec.Code, rec.Body, r.fg.calls)
+	}
+	// bare text names the controls
+	if rec := press("revision", "2", "index", "1", "answer", "It does"); rec.Code != http.StatusConflict || rec.Body.String() !=
+		"Question 1 of plan #1 is its confirmation: Confirm fixes the spec and the criteria, Request changes sends your words to the planner.\n" {
+		t.Fatalf("bare text: %d %q", rec.Code, rec.Body)
+	}
+	// the night's answer: confirm with the words as findings
+	if rec := press("revision", "2", "index", "1", "decision", "confirm", "answer", night); rec.Code != http.StatusOK ||
+		rec.Body.String() != `<p class="note" role="status">Confirmed plan #1; its cards file.</p>` ||
+		!slices.Contains(r.fg.calls, "SIGNAL plan_answered t-plan 2 1 by sebastian") ||
+		r.fg.comments[comments] != "Answer 1: confirm · "+night {
+		t.Fatalf("the night's confirm: %d %q, calls %v, comment %q", rec.Code, rec.Body, r.fg.calls, r.fg.comments[comments])
+	}
+	if card = board(); !strings.Contains(card, `<p class="answered">Does the plan match the spec?: confirm · `+night+` (sebastian)</p>`) ||
+		strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) {
+		t.Errorf("the card after the confirm:\n%s", card)
+	}
+	// Request changes with words, on a fresh round
+	r.tasks.questions["t-plan 2"][0] = factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}
+	if rec := press("revision", "2", "index", "1", "decision", "revise", "answer", "keep the slate clean"); rec.Code != http.StatusOK ||
+		rec.Body.String() != `<p class="note" role="status">Your changes are on plan #1; the planner answers a new revision.</p>` ||
+		r.fg.comments[comments] != "Answer 1: revise · keep the slate clean" {
+		t.Fatalf("the revise: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[comments])
+	}
+}
+
+// The chat's answer tool decides the plan's confirmation itself: it reads
+// the human's words, sets confirm or revise and carries the reasons as
+// the text. The night's answer, confirm with the prose as findings, files
+// the revision; revise carries its words to the next planner round; text
+// with no decision is refused by name.
+func TestChatDecidesTheConfirmation(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks[slices.IndexFunc(r.tasks.tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-p" })].Status = "waiting-human"
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": {
+		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	r.tasks.mu.Unlock()
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalPlan, TaskID: "t-p", Project: "sf/code",
+		Status: "pending", Spec: []byte(`{"revision":1,"sha256":"5e1f"}`)})
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	night := "okay — confirmed. Revision 15 is fine."
+	args := `{"task_id":"t-p","revision":1,"question":1,"decision":"confirm","text":"` + night + `"}`
+	g.replies = [][]string{{call(1, "answer", args)}}
+	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"the human confirmed it"}})
+	equal(t, "stream", events, []string{`proposal {"arguments":` + args + `,"description":"Answer a card, #20 t-p \"Build the link shortener.\", text ` + night +
+		`, revision 1, question 1. Does the plan match the spec? (decide: confirm or revise), decision confirm","id":"TOKEN","tool":"answer"}`, `done {}`})
+	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
+	equal(t, "Do it", events, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"answer","result":"Confirmed plan #20; its cards file."}`,
+		`applied {"result":"Confirmed plan #20; its cards file.","tool":"answer"}`, `done {}`})
+	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/20/comments"], "Answer 1: confirm · "+night)
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-p", IssueNumber: 20,
+		Kind: factoryd.EventPlanQuestionAnswered, Detail: map[string]any{"revision": 1, "index": 1, "answer": night, "decision": "confirm"}})
+	// a fresh round: revise carries its words
+	r.tasks.mu.Lock()
+	r.tasks.questions["t-p 1"][0] = factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}
+	r.tasks.mu.Unlock()
+	rargs := `{"task_id":"t-p","revision":1,"question":1,"decision":"revise","text":"keep the slate clean"}`
+	g.replies = [][]string{{call(1, "answer", rargs)}}
+	_, _, rtokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"the human wants less"}})
+	if _, events, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+rtokens[0], nil); !slices.Contains(events,
+		`applied {"result":"Your changes are on plan #20; the planner answers a new revision.","tool":"answer"}`) {
+		t.Fatalf("the revise's events: %v", events)
+	}
+	equal(t, "the revise's comment", r.fg.comments["/api/v1/repos/sf/code/issues/20/comments"], "Answer 1: revise · keep the slate clean")
+	// text with no decision names the two controls; revise without words
+	// names its rule
+	r.tasks.mu.Lock()
+	r.tasks.questions["t-p 1"][0] = factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}
+	r.tasks.mu.Unlock()
+	for _, tc := range []struct {
+		in   toolInput
+		want []any
+	}{
+		{toolInput{TaskID: "t-p", Revision: 1, Question: 1, Text: "It does"}, []any{http.StatusConflict,
+			"Question 1 of plan #20 is its confirmation: Confirm fixes the spec and the criteria, Request changes sends your words to the planner."}},
+		{toolInput{TaskID: "t-p", Revision: 1, Question: 1, Decision: factoryd.DecisionRevise}, []any{http.StatusBadRequest,
+			"Request changes needs its words: they go to the next planner round."}},
+	} {
+		status, msg := refused(t, r, "answer", tc.in)
+		equal(t, "the confirmation answered wrong", []any{status, msg}, tc.want)
 	}
 }

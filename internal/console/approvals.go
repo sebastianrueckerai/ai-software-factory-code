@@ -264,11 +264,13 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	open := 0
 	for i, q := range qs {
 		k.Questions = append(k.Questions, planQuestion{Index: i + 1, PlanQuestion: q})
-		if q.Answer == "" {
-			open++
-		}
+		answered := q.Answer != ""
 		if q.Kind == factoryd.QuestionConfirmation {
-			confirming = q.Answer == ""
+			answered = q.Decision != ""
+			confirming = !answered
+		}
+		if !answered {
+			open++
 		}
 	}
 	if open > 0 {

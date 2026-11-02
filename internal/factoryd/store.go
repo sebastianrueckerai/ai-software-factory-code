@@ -655,15 +655,18 @@ type Store interface {
 	// PlanQuestions are revision's questions of plan task id in order,
 	// each with its answer once given.
 	PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error)
-	// AnswerPlanQuestion records by's answer to question idx of revision:
-	// ErrAnswered when it has one, ErrNotFound when there is no such
-	// question.
-	AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error
+	// AnswerPlanQuestion records by's answer to question idx of revision,
+	// the confirmation's decision with its findings, a real question's
+	// answer: ErrAnswered when it has one (a confirmation's is its
+	// decision), ErrNotFound when there is no such question.
+	AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error
 	// AnswerPlanQuestions records by's answers to plan task id's revision
 	// in one statement: ErrAnswered when any question has an answer,
 	// ErrNotFound when there is no such question; none is stored then.
 	AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error
-	// OpenPlanQuestions is how many of revision's questions have no answer.
+	// OpenPlanQuestions is how many of revision's questions wait: a
+	// confirmation until its decision, every other question until its
+	// answer.
 	OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error)
 	// ConfirmationIndex is revision's confirmation question's index, and
 	// whether it has one.

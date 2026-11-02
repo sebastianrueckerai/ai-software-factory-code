@@ -153,8 +153,12 @@ type PlanQuestion struct {
 	// Kind marks the confirmation question (kind confirmation), whose
 	// answer fixes the spec and the criteria; every other question's kind
 	// is question.
-	Kind       string    `json:"kind,omitempty"`
-	Origin     string    `json:"origin,omitempty"`
+	Kind   string `json:"kind,omitempty"`
+	Origin string `json:"origin,omitempty"`
+	// Decision is the confirmation's closed answer: confirm files the
+	// revision, revise sends the planner back with the words as findings.
+	// Every other question never holds one.
+	Decision   string    `json:"-"`
 	Answer     string    `json:"-"`
 	AnsweredBy string    `json:"-"`
 	AnsweredAt time.Time `json:"-"`
@@ -162,6 +166,12 @@ type PlanQuestion struct {
 
 // QuestionConfirmation is the confirmation question's kind.
 const QuestionConfirmation = "confirmation"
+
+// The confirmation's decisions.
+const (
+	DecisionConfirm = "confirm"
+	DecisionRevise  = "revise"
+)
 
 // PlanCard is one card of a plan: one pull request, one session.
 type PlanCard struct {
@@ -220,6 +230,9 @@ type PlanResult struct {
 	Revision int
 	SHA256   string
 	Findings []string
+	// Gate: the stored revision's cards wait on the human's
+	// confirmation of the spec and the criteria; storing files none.
+	Gate     bool `json:",omitempty"`
 	Escalate string
 	// Refused: the provider refused the session's first call (Status 0:
 	// it did not).
@@ -992,6 +1005,12 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 // QuestionLine is question n of a plan as its comment and the project
 // agent list it.
 func QuestionLine(n int, q PlanQuestion) string {
+	if q.Kind == QuestionConfirmation {
+		return fmt.Sprintf("%d. %s (decide: confirm or revise)", n, q.Text)
+	}
+	if len(q.Choices) == 0 {
+		return fmt.Sprintf("%d. %s", n, q.Text)
+	}
 	return fmt.Sprintf("%d. %s (choices: %s)", n, q.Text, strings.Join(q.Choices, " / "))
 }
 
@@ -1239,12 +1258,12 @@ func (e ErrStalePlan) Error() string {
 var ErrAnswerUnsignalled = errors.New("the answer is recorded, but the plan's workflow was not signalled")
 
 // AnswerPlan is the console's answer by a member to question idx of plan
-// revision revision, which must be the newest (ErrStalePlan): the answer
-// is stored (ErrAnswered for a second one), then the plan task's workflow
-// signalled, which sends the planner back once none is open. The last
-// answer resolves the plan's request as superseded: the planner revises
-// the revision with the answers.
-func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision, idx int, answer, by string) error {
+// revision revision, which must be the newest (ErrStalePlan): the decision
+// and the answer are stored (ErrAnswered for a second one), then the plan
+// task's workflow signalled, which sends the planner back once none is
+// open. The last answer resolves the plan's request as superseded: the
+// planner revises the revision with the answers.
+func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, revision, idx int, decision, answer, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
 	}
@@ -1255,8 +1274,12 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	if !ok || newest.Revision != revision {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
-	confirming, err := confirmationAnswer(ctx, store, taskID, revision, []int{idx})
+	ci, hasConfirm, err := store.ConfirmationIndex(ctx, taskID, revision)
 	if err != nil {
+		return err
+	}
+	confirming := hasConfirm && idx == ci
+	if err := checkPlanDecision(confirming, decision, answer); err != nil {
 		return err
 	}
 	if confirming {
@@ -1267,7 +1290,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 			return err
 		}
 	}
-	if err := store.AnswerPlanQuestion(ctx, taskID, revision, idx, answer, by); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, taskID, revision, idx, decision, answer, by); err != nil {
 		return err
 	}
 	if confirming {
@@ -1284,20 +1307,21 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 	return resolveAnswered(ctx, store, taskID, revision)
 }
 
-// confirmationAnswer tells whether any of idxs names revision's
-// confirmation question: its answer fixes the criteria, so the round's
-// hold-outs must carry their clicks first and sweep after.
-func confirmationAnswer(ctx context.Context, store Store, taskID string, revision int, idxs []int) (bool, error) {
-	ci, ok, err := store.ConfirmationIndex(ctx, taskID, revision)
-	if err != nil || !ok {
-		return false, err
-	}
-	for _, i := range idxs {
-		if i == ci {
-			return true, nil
+// checkPlanDecision holds the decision contract: a confirmation is
+// answered by its decision alone, a revise carrying its words; a real
+// question never takes one.
+func checkPlanDecision(confirming bool, decision, answer string) error {
+	switch {
+	case !confirming:
+		if decision != "" {
+			return ErrDecisionReserved
 		}
+	case decision != DecisionConfirm && decision != DecisionRevise:
+		return ErrDecisionRequired
+	case decision == DecisionRevise && strings.TrimSpace(answer) == "":
+		return ErrReviseWords
 	}
-	return false, nil
+	return nil
 }
 
 // AnswerPlanQuestions is the console's batch answer by a member to every
@@ -1319,14 +1343,16 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 	if !ok || newest.Revision != revision {
 		return ErrStalePlan{Newest: newest.Revision}
 	}
-	idxs := make([]int, len(answers))
-	for i, a := range answers {
-		idxs[i] = a.Idx
-	}
-	confirming, err := confirmationAnswer(ctx, store, taskID, revision, idxs)
+	ci, hasConfirm, err := store.ConfirmationIndex(ctx, taskID, revision)
 	if err != nil {
 		return err
 	}
+	for _, a := range answers {
+		if err := checkPlanDecision(hasConfirm && a.Idx == ci, a.Decision, a.Text); err != nil {
+			return err
+		}
+	}
+	confirming := hasConfirm && slices.ContainsFunc(answers, func(a PlanAnswer) bool { return a.Idx == ci })
 	if confirming {
 		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
 			if err == nil {
@@ -1391,15 +1417,30 @@ func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevis
 }
 
 // PlanAnswer is one member's answer to question Idx (from 1) of a plan
-// revision, as the batch store method and AnswerPlanQuestions take them.
-// The tags name the keys the store's one statement reads back.
+// revision, as the batch store method and AnswerPlanQuestions take them:
+// Decision on the confirmation alone, Text the findings a revise carries
+// (a real question's answer). The tags name the keys the store's one
+// statement reads back.
 type PlanAnswer struct {
-	Idx  int    `json:"idx"`
-	Text string `json:"text"`
+	Idx      int    `json:"idx"`
+	Text     string `json:"text"`
+	Decision string `json:"decision,omitempty"`
 }
 
 // ErrAnswered refuses a second answer to a plan's question.
 var ErrAnswered = errors.New("the question is answered already")
+
+// ErrDecisionRequired refuses a confirmation answered with words alone:
+// the words are findings, the decision is the field.
+var ErrDecisionRequired = errors.New("the confirmation takes a decision, confirm or revise")
+
+// ErrDecisionReserved refuses a decision on a real question: the field is
+// the confirmation's alone.
+var ErrDecisionReserved = errors.New("a decision belongs to the confirmation question")
+
+// ErrReviseWords refuses a revise without words: they go to the next
+// planner round as findings.
+var ErrReviseWords = errors.New("a revise carries its words to the next planner round")
 
 func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []PlanQuestion) (bool, error) {
 	b, err := json.Marshal(qs)
@@ -1420,15 +1461,11 @@ func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int,
 // last question the revision holds, nothing when it has it already (an
 // activity retry).
 func (s *PGStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q PlanQuestion) (int, bool, error) {
-	choices, err := json.Marshal(q.Choices)
-	if err != nil {
-		return 0, false, err
-	}
 	var idx int
-	err = s.db.QueryRowContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind)
-		SELECT $1, $2, COALESCE(MAX(idx), 0) + 1, $3, $4, 'confirmation' FROM plan_questions WHERE task_id = $1 AND revision = $2
+	err := s.db.QueryRowContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind)
+		SELECT $1, $2, COALESCE(MAX(idx), 0) + 1, $3, '[]'::jsonb, 'confirmation' FROM plan_questions WHERE task_id = $1 AND revision = $2
 		HAVING NOT EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND revision = $2 AND kind = 'confirmation')
-		RETURNING idx`, id, revision, q.Text, choices).Scan(&idx)
+		RETURNING idx`, id, revision, q.Text).Scan(&idx)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, false, nil
 	}
@@ -1439,11 +1476,11 @@ func (s *PGStore) PutPlanConfirmation(ctx context.Context, id string, revision i
 }
 
 // PlanConfirmationAnswered is the newest of plan task id's revisions whose
-// confirmation question is answered, and whether there is one: a later
-// revision is judged against it.
+// confirmation question holds a decision, and whether there is one: a
+// later revision is judged against it.
 func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
 	var revision sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT max(revision) FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND answer IS NOT NULL`, id).Scan(&revision)
+	err := s.db.QueryRowContext(ctx, `SELECT max(revision) FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND decision IS NOT NULL`, id).Scan(&revision)
 	return int(revision.Int64), revision.Valid, err
 }
 
@@ -1481,7 +1518,7 @@ func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, k
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(kind, 'question'), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
 		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
 	if err != nil {
 		return nil, err
@@ -1492,7 +1529,7 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 		var q PlanQuestion
 		var choices []byte
 		var at sql.NullTime
-		if err := rows.Scan(&q.Text, &choices, &q.Kind, &q.Answer, &q.AnsweredBy, &at); err != nil {
+		if err := rows.Scan(&q.Text, &choices, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(choices, &q.Choices); err != nil {
@@ -1504,12 +1541,16 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 	return out, rows.Err()
 }
 
-func (s *PGStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
+// AnswerPlanQuestion records by's answer to question idx of revision: the
+// confirmation's decision and the findings (the words a revise carries),
+// a real question's answer. ErrAnswered for a second one — a
+// confirmation's is its decision, a real question's its answer.
+func (s *PGStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error {
 	var answered, asked bool
-	err := s.db.QueryRowContext(ctx, `WITH done AS (UPDATE plan_questions SET answer = $4, answered_by = $5, answered_at = now()
-			WHERE task_id = $1 AND revision = $2 AND idx = $3 AND answer IS NULL RETURNING 1)
+	err := s.db.QueryRowContext(ctx, `WITH done AS (UPDATE plan_questions SET answer = NULLIF($4, ''), decision = NULLIF($5, ''), answered_by = $6, answered_at = now()
+			WHERE task_id = $1 AND revision = $2 AND idx = $3 AND answer IS NULL AND (COALESCE(kind, 'question') <> 'confirmation' OR decision IS NULL) RETURNING 1)
 		SELECT EXISTS (SELECT 1 FROM done), EXISTS (SELECT 1 FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3)`,
-		id, revision, idx, answer, by).Scan(&answered, &asked)
+		id, revision, idx, answer, decision, by).Scan(&answered, &asked)
 	switch {
 	case err != nil || answered:
 		return err
@@ -1520,9 +1561,9 @@ func (s *PGStore) AnswerPlanQuestion(ctx context.Context, id string, revision, i
 }
 
 // AnswerPlanQuestions stores every answer in one statement: any bad entry
-// — an idx with an answer (ErrAnswered) or without a question
-// (ErrNotFound) — refuses the whole batch, so none is stored. Duplicate
-// entries count once.
+// — an idx with an answer (ErrAnswered, a confirmation's being its
+// decision) or without a question (ErrNotFound) — refuses the whole
+// batch, so none is stored. Duplicate entries count once.
 func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error {
 	if len(answers) == 0 {
 		return nil
@@ -1538,7 +1579,8 @@ func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision i
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	var missing, answered, open int
 	if err := tx.QueryRowContext(ctx, `WITH want (idx) AS (SELECT DISTINCT (e->>'idx')::int FROM jsonb_array_elements($3::jsonb) AS a(e)),
- 		have AS (SELECT w.idx, q.answer IS NOT NULL AS done FROM want w
+ 		have AS (SELECT w.idx, ((COALESCE(q.kind, 'question') <> 'confirmation' AND q.answer IS NOT NULL)
+ 			OR (q.kind = 'confirmation' AND q.decision IS NOT NULL)) AS done FROM want w
  			JOIN plan_questions q ON q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx),
  		miss AS (SELECT count(*) AS n FROM want w WHERE NOT EXISTS (SELECT 1 FROM have h WHERE h.idx = w.idx)),
  		got AS (SELECT count(*) AS n FROM have h WHERE h.done),
@@ -1555,17 +1597,20 @@ func (s *PGStore) AnswerPlanQuestions(ctx context.Context, id string, revision i
 	case missing > 0:
 		return ErrNotFound
 	}
-	if _, err := tx.ExecContext(ctx, `UPDATE plan_questions q SET answer = w.text, answered_by = $3, answered_at = now()
- 		FROM (SELECT (e->>'idx')::int AS idx, e->>'text' AS text FROM jsonb_array_elements($4::jsonb) AS a(e)) AS w
+	if _, err := tx.ExecContext(ctx, `UPDATE plan_questions q SET answer = NULLIF(w.text, ''), decision = NULLIF(w.decision, ''), answered_by = $3, answered_at = now()
+ 		FROM (SELECT (e->>'idx')::int AS idx, e->>'text' AS text, e->>'decision' AS decision FROM jsonb_array_elements($4::jsonb) AS a(e)) AS w
  		WHERE q.task_id = $1 AND q.revision = $2 AND q.idx = w.idx`, id, revision, by, string(b)); err != nil {
 		return err
 	}
 	return tx.Commit()
 }
 
+// OpenPlanQuestions is how many of revision's questions wait: a
+// confirmation until its decision, every other question until its answer.
 func (s *PGStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plan_questions WHERE task_id = $1 AND revision = $2 AND answer IS NULL`, id, revision).Scan(&n)
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM plan_questions WHERE task_id = $1 AND revision = $2
+		AND ((kind = 'confirmation' AND decision IS NULL) OR (COALESCE(kind, 'question') <> 'confirmation' AND answer IS NULL))`, id, revision).Scan(&n)
 	return n, err
 }
 
@@ -2053,17 +2098,16 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 }
 
 // confirmedByAnswers tells whether every question of a revision is
-// answered and each was the confirmation answered with its offered
-// choice word: the answers fixed the spec and the criteria, and the
-// revision files with no planner session. Any other answer — a real
-// question's, a choice with words around it — goes back to a planner
+// answered and each was the confirmation decided confirm: the decisions
+// fixed the spec and the criteria, and the revision files with no planner
+// session. A revise, or a real question answered, goes back to a planner
 // session.
 func confirmedByAnswers(qs []PlanQuestion) bool {
 	if len(qs) == 0 {
 		return false
 	}
 	for _, q := range qs {
-		if q.Kind != QuestionConfirmation || !slices.Contains(q.Choices, strings.TrimSpace(q.Answer)) {
+		if q.Kind != QuestionConfirmation || q.Decision != DecisionConfirm {
 			return false
 		}
 	}
@@ -2503,8 +2547,12 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		if err != nil {
 			return PlanResult{}, err
 		}
-		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256})
-		return PlanResult{Revision: st.revision, SHA256: rev.SHA256}, nil
+		gate, err := r.confirms(ctx, t, p)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate})
+		return PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate}, nil
 	}
 	if st.newest != nil {
 		found = revisionFindings(*st.newest, p)
@@ -2525,8 +2573,12 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.restartChildren(ctx, t, repo, n, p)
 	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
-	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha})
-	return PlanResult{Revision: n, SHA256: sha}, nil
+	gate, err := r.confirms(ctx, t, p)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha, Gate: gate})
+	return PlanResult{Revision: n, SHA256: sha, Gate: gate}, nil
 }
 
 // revisionFindings judges an amendment against the revision it changes
@@ -2892,8 +2944,8 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 
 // askConfirmation appends the confirmation question to revision's stored
 // questions (the spec-intake concept, piece 5): the spec and the criteria
-// shown to the members in Needs you, an okay fixes the criteria, an
-// answer with changes carries them to the next planner round, a comment
+// shown to the members in Needs you, a confirm fixes the criteria, a
+// revise with its words carries them to the next planner round, a comment
 // on the issue starts one too. Asked until answered once, and again for a
 // revision that changes the spec or a criterion (confirms). A plan
 // without criteria carries no spec to confirm.
@@ -2901,13 +2953,13 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	if confirm, err := r.confirms(ctx, t, p); err != nil || !confirm {
 		return err
 	}
-	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p)), Choices: []string{"okay"}}
+	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
 	if err != nil || !inserted {
 		return err
 	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-		map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": idx, "kind": "confirmation"})
+		map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"})
 	return nil
 }
 
@@ -2952,7 +3004,7 @@ func specChanged(prev, next Plan) bool {
 // later rounds plan, and where the whole plan reads.
 func confirmationQuestion(revision int, p Plan) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: answer okay to confirm them, or answer with what changes; the criteria are fixed only when this is answered.",
+	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round. The criteria are fixed only when this is decided.",
 		revision)
 	if p.Spec != nil {
 		if o := strings.TrimSpace(p.Spec.Outcome); o != "" {
