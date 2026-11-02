@@ -31,6 +31,7 @@ type approvalCard struct {
 	IDSuffix string // on the item's ids: "-d" in the drawer, so the column's copy keeps its own
 	IssueURL string
 	Issue    int64
+	PlanName string // a plan approval: the plan's name
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
@@ -140,7 +141,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
 	t, ok := tasks[a.TaskID]
-	k.TaskStatus = t.Status
+	k.TaskStatus, k.PlanName = t.Status, t.PlanName
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
@@ -178,7 +179,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		if err = c.planOf(ctx, &k); err != nil {
 			k.Problem = "the plan could not be read; see the factoryd log"
 		}
-	case factoryd.ApprovalCriteria:
+	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		err = c.criteriaOf(ctx, &k)
 	}
 	if err != nil {

@@ -95,7 +95,7 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 			t.Errorf("GET %s as bob = %d, want 403", path, rec.Code)
 		}
 	}
-	for _, path := range []string{"/tasks", "/alerts/1/verdict", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
+	for _, path := range []string{"/tasks", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
 		if rec := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "project": {"ai-software-factory-code"}, "title": {"x"},
 			"track": {"direct"}}), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("POST %s as bob = %d, want 403", path, rec.Code)

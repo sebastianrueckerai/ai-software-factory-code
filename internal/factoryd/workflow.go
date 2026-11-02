@@ -117,6 +117,8 @@ const (
 	ActivityMerge                       = "Merge"
 	ActivityReportMergeFailure          = "ReportMergeFailure"
 	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
+	ActivityUnjudgedCriteria            = "UnjudgedCriteria"
+	ActivityHoldMerge                   = "HoldMerge"
 	ActivitySuperviseGate               = "SuperviseGate"
 	ActivityDropTrip                    = "DropTrip"
 	ActivityAutoMergeNote               = "AutoMergeNote"
@@ -1233,6 +1235,17 @@ const (
 	// t-6eadec8912ab's answer re-entered the gate on PR #1385's moved head
 	// and the task died, its fix unmerged).
 	versionResumeHold workflow.Version = 1
+	// versionReviewHoldsMerge (change id "review-holds-merge"): a press
+	// that would merge a plan's integration card whose criteria no review
+	// judged runs the model review again first (rejudge): findings go back
+	// to the sessions, a review that did not run again holds the merge
+	// and asks again (HoldMerge), a judging review merges. Read at the
+	// press, not at the run's start, so a run waiting on its approval at
+	// the roll takes it on its next press. A change id's version is fixed
+	// by its first read: a run whose history pressed before the change
+	// keeps the old merge on every press, which the merge guard holds;
+	// requested changes bring it a new head, whose review judges.
+	versionReviewHoldsMerge workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -2836,7 +2849,7 @@ func (t *taskRun) gate(commit string) verdict {
 	if t.v11 >= versionGateStarted {
 		t.approvalRequested = workflow.Now(t.ctx)
 	}
-	return t.awaitApproval(commit, nil)
+	return t.awaitApproval(commit, g, nil)
 }
 
 // autoMerge merges on the project's merge rule auto (versionAutoMerge):
@@ -2888,8 +2901,10 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 // keeps the wait, but a queue head's red checks take it back through its
 // turn while re-runs are left (versionRedHeadRestage); one that fails
 // otherwise keeps the approval and is tried again after mergeRetryAfter
-// (versionGatesPinned).
-func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
+// (versionGatesPinned). A press on a plan's integration card whose
+// criteria no review judged runs the review on g again first
+// (versionReviewHoldsMerge).
+func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) verdict {
 	approver := ""
 	var retry workflow.Future
 	var cancelRetry workflow.CancelFunc
@@ -2963,6 +2978,20 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		cancelRetry = nil
 		retry = nil
+		if signalled && t.source == SourcePlan &&
+			workflow.GetVersion(t.ctx, "review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge) >= versionReviewHoldsMerge {
+			v, stop, held := t.rejudge(commit, g, approver)
+			if stop {
+				return v
+			}
+			if held {
+				approver = ""
+				if t.v11 >= versionGateStarted {
+					t.approvalRequested = workflow.Now(t.ctx)
+				}
+				continue
+			}
+		}
 		opts := finishOptions()
 		if t.v8 >= versionGatesPinned {
 			opts = mergeOptions()
@@ -3035,6 +3064,58 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 			}
 		}
 	}
+}
+
+// rejudge runs the model review again, with the stage's inputs, on a
+// press that would merge a plan's integration card whose criteria no
+// review judged (versionReviewHoldsMerge): stop with findings not
+// overruled sends the card back to its sessions, held is a review that
+// did not run again, whose merge holds asking again with its note
+// (HoldMerge), and neither lets the merge go, whose guard reads the rows
+// again. A failed read of the criteria leaves the decision to that guard.
+func (t *taskRun) rejudge(commit string, g GateResults, approver string) (v verdict, stop, held bool) {
+	var never []string
+	if err := workflow.ExecuteActivity(t.short, ActivityUnjudgedCriteria, t.taskID).Get(t.ctx, &never); err != nil {
+		workflow.GetLogger(t.ctx).Warn("unjudged criteria", "task", t.taskID, "error", err)
+		return verdict{}, false, false
+	}
+	if len(never) == 0 {
+		return verdict{}, false, false
+	}
+	var review Review
+	v, decided, err := t.gateActivity(true, fanOutOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g, lastVerdict(t.reviews), len(t.reviews)+1)
+	if decided {
+		return v, true, false
+	}
+	if err != nil {
+		review = Review{Note: "model review failed: " + errMessage(err)}
+		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "note": review.Note, "round": len(t.reviews) + 1}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "model_review", detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record the failed review", "error", err)
+		}
+	}
+	t.reviews = append(t.reviews, review)
+	if final, why, ok := t.decided(); ok {
+		return verdict{final: final, reason: why}, true, false
+	}
+	switch review.Verdict {
+	case "":
+		if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
+			// the press decided the request, so a hold that failed leaves
+			// the card waiting with no ask to press: the log names it
+			workflow.GetLogger(t.ctx).Error("hold the merge: the ask may be off the human's surface", "task", t.taskID, "error", err)
+		}
+		return verdict{}, false, true
+	case "concerns":
+		findings := review.Findings
+		if t.adjudicated >= versionAdjudicated {
+			findings = slices.DeleteFunc(slices.Clone(findings), t.overruled)
+		}
+		if len(findings) > 0 {
+			return verdict{findings: findings, reason: "the model review run again at the approval has concerns"}, true, false
+		}
+	}
+	return verdict{}, false, false
 }
 
 // awaitSessionGap is a roll's wait for a session gap before its merge

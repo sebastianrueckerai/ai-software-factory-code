@@ -719,6 +719,10 @@ func (s *acceptanceStore) ApprovalRequests(context.Context, string) ([]factoryd.
 	return nil, nil
 }
 
+func (s *acceptanceStore) NewestApproval(context.Context, string, string) (factoryd.ApprovalRequest, bool, error) {
+	return factoryd.ApprovalRequest{}, false, nil
+}
+
 func (s *acceptanceStore) SetGate(_ context.Context, id, gate string, since time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

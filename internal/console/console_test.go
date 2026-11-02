@@ -3212,67 +3212,53 @@ func TestTimelineClosedGateIsNotOpen(t *testing.T) {
 	}
 }
 
-// /alerts lists the alerts newest first; an open human alert takes a
-// verdict from an approver, on the page and on the escalation's card.
-// The alerts page is gone: the open human escalation's verdict buttons
-// ride its board card, and POST /alerts/{id}/verdict keeps its rules.
-func TestAlertVerdicts(t *testing.T) {
+// The agent's verdict tool is the one path that judges an escalation: an
+// unknown verdict is refused, the first verdict on an open escalation takes
+// and counts once as a human intervention, an agent-decided one does not
+// count, a second one and one on a machine alert find no open human alert.
+func TestAlertVerdictAction(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
-	resolved := raised.Add(time.Minute)
+	_, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: raised.Add(2 * time.Hour)},
-		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: "t-e", RaisedAt: raised.Add(time.Hour),
-			ResolvedAt: &resolved, Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor"},
-		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600},
+		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c"},
 	}
-	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
-	r.tasks.tasks[0].EscalationAlert = 3
-	if rec := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck); rec.Code != http.StatusNotFound {
-		t.Errorf("GET /alerts = %d, want 404: the page is gone", rec.Code)
+	a := actor{s: s, via: factoryd.ViaChat}
+	status := func(err error) int {
+		var ref *refusal
+		if errors.As(err, &ref) {
+			return ref.status
+		}
+		return 0
 	}
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Count(board, `action="/alerts/3/verdict"`) != 2 {
-		t.Error("the escalation card lacks the two verdict buttons")
+	ctx := context.Background()
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, "maybe"); status(err) != http.StatusBadRequest {
+		t.Fatalf("an unknown verdict: %v, want 400", err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"maybe"}}), ck); rec.Code != http.StatusBadRequest {
-		t.Fatalf("an unknown verdict = %d, want 400", rec.Code)
+	if note, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictReal); err != nil || note != "Alert 3 is judged real." {
+		t.Fatalf("verdict = %q, %v", note, err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {"/"}}), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
-		t.Fatalf("verdict = %d to %q", rec.Code, rec.Header().Get("Location"))
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+		t.Fatalf("a second verdict: %v, want 409", err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
-		t.Fatalf("a second verdict = %d, want 409", rec.Code)
-	}
-	if rec := r.do(post("/alerts/1/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
-		t.Fatalf("a verdict on a machine alert = %d, want 409", rec.Code)
+	if _, err := r.c.doAlertVerdict(ctx, a, 1, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+		t.Fatalf("a verdict on a machine alert: %v, want 409", err)
 	}
 	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
-}
-
-// Only the factory's approvers judge alerts: no buttons on the board,
-// and a 403.
-func TestAlertVerdictNeedsAnApprover(t *testing.T) {
-	r := newRig(t)
-	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
-	r.forgetWriters()
-	ck, s := r.loggedIn(t)
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Now()}}
-	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
-	r.tasks.tasks[0].EscalationAlert = 3
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Contains(board, "/verdict") {
-		t.Fatal("a non-approver is offered the verdict buttons")
+	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("interventions = %v, want %v", got, want)
 	}
-	for _, v := range []string{"real", "maybe"} {
-		if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {v}}), ck); rec.Code != http.StatusForbidden {
-			t.Fatalf("verdict %q by a non-approver = %d, want 403", v, rec.Code)
-		}
+	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 4, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"})
+	a.decider = "agent"
+	if _, err := r.c.doAlertVerdict(ctx, a, 4, factoryd.VerdictNoise); err != nil {
+		t.Fatal(err)
 	}
-	if len(r.alerts.verdicts) != 0 {
+	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the agent's own verdict, interventions = %v, want %v", got, want)
+	}
+	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian", "4 noise agent"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
 }
@@ -3470,9 +3456,9 @@ func (r *rig) interventions(t *testing.T) map[string]int64 {
 	return out
 }
 
-// The console counts only the verdict click, once, when it took effect:
-// its merge-card decisions act as the human in Forgejo and are counted by
-// the intake, like the same decisions made in Forgejo.
+// The console counts no click of its own: its merge-card decisions act as
+// the human in Forgejo and are counted by the intake, like the same
+// decisions made in Forgejo.
 func TestConsoleCountsInterventions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -3492,13 +3478,8 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("resource approve = %d", rec.Code)
 	}
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for range 2 {
-		r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck)
-	}
-	want := map[string]int64{"alert_verdict_click none none": 1}
-	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
-		t.Fatalf("interventions = %v, want %v", got, want)
+	if got := r.interventions(t); len(got) != 0 {
+		t.Fatalf("interventions = %v, want none", got)
 	}
 }
 

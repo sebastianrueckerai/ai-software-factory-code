@@ -493,6 +493,51 @@ func TestIntegrationReviewBudgetRefusalIsANote(t *testing.T) {
 	}
 }
 
+// Pinned at HEAD: the integration card's review the month cap refuses
+// leaves its trace on the pull request (the comment with the note), the
+// timeline (the model_review step) and the facts (the attempt, never
+// reviewed), and writes no verdict row.
+func TestRefusedIntegrationReviewLeavesItsTrace(t *testing.T) {
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey, task.IssueNumber = SourcePlan, "t-plan", "I", 9
+	fj := &gateForgejo{diffs: featureDiffs}
+	r, store, objects := newGateRunner(t, task, fj)
+	b, err := json.Marshal(featurePlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	for k, pr := range map[string]int64{"A": 11, "B": 12} {
+		store.tasks["t-"+k] = Task{ID: "t-" + k, Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: k, PRNumber: pr, Status: "done"}
+	}
+	facts := &fakeEventRecorder{}
+	r.timeline.Events = facts
+	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedMonthCap}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	const opening = "model review refused by the gateway (refused_month_cap)"
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, opening) {
+		t.Fatalf("review = %+v", rv)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], rv.Note) {
+		t.Errorf("comments = %q, want one naming the note", fj.comments)
+	}
+	if step := timelineStep(t, objects, "t1", "model_review"); step["note"] != rv.Note {
+		t.Errorf("model_review step = %v, want the note", step)
+	}
+	i := slices.IndexFunc(facts.rows, func(e Event) bool { return e.Kind == EventModelReview })
+	if i < 0 || facts.rows[i].Detail["reviewed"] != false || !strings.HasPrefix(fmt.Sprint(facts.rows[i].Detail["reason"]), opening) {
+		t.Errorf("fact rows = %+v, want the attempt unreviewed with the note", facts.rows)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("rows = %v, want none", rows)
+	}
+}
+
 // A feature card's diff past the 8 MiB bound, or the feature's diffs past
 // it together (5 MiB and 5 MiB beside the card's own): the review notes
 // it, makes no call and writes no row.
@@ -794,6 +839,82 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	(&Runner{store: s3, timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
+	}
+}
+
+// The close tells a judgement that never happened from one that failed:
+// with the cards final, criteria without a row file one criteria_rerun
+// ask naming the integration card's review and its note, the unmet ones
+// named beside them; unmet rows alone file today's gap ask. A pending ask
+// of either kind stops the other, and the close resolves both.
+func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
+	ctx := context.Background()
+	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	for _, c := range []struct {
+		name, note, kind, reason string
+		rows                     []CriterionVerdict
+	}{
+		{"an empty table, no review", "", ApprovalCriteriaRerun,
+			"criteria never judged: the review of card #1380 did not run (the review never ran): c1, c2, c3", nil},
+		{"an empty table, a refused review", note, ApprovalCriteriaRerun,
+			"criteria never judged: the review of card #1380 did not run (" + note + "): c1, c2, c3", nil},
+		{"mixed", note, ApprovalCriteriaRerun,
+			"criteria never judged: the review of card #1380 did not run (" + note + "): c2, c3; not met: c1",
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "times out"}}},
+		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}},
+	} {
+		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+		integration := s.tasks["t-int"]
+		integration.IssueNumber = 1380
+		s.tasks["t-int"] = integration
+		// merged without a review, as #1380 did: its open group is what
+		// brings a plan without a verdict row to the pass
+		mergeCard(s, "t-int")
+		objs := &fakeObjectStore{}
+		r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+		if c.note != "" || c.name == "mixed" {
+			r.record(ctx, "t-int", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
+		}
+		if c.rows != nil {
+			if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, c.rows); err != nil {
+				t.Fatal(err)
+			}
+		}
+		r.CriteriaPass(ctx)
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if len(pending) != 1 || pending[0].Kind != c.kind || pending[0].TaskID != "t-plan" || pending[0].Reason != c.reason {
+			t.Fatalf("%s: pending %+v, want one %s ask reading %q", c.name, pending, c.kind, c.reason)
+		}
+		var spec CriteriaSpec
+		if err := json.Unmarshal(pending[0].Spec, &spec); err != nil || spec.Task != "t-int" {
+			t.Errorf("%s: spec %s (%v), want the integration card's rows", c.name, pending[0].Spec, err)
+		}
+		if c.name != "mixed" {
+			continue
+		}
+		// rows for every criterion, some unmet, leave the rerun ask nothing
+		// to run: it is resolved, and the gap ask names what stays open;
+		// met or waived every one, the close resolves that
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}); err != nil {
+			t.Fatal(err)
+		}
+		r.CriteriaPass(ctx)
+		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 1 || again[0].Kind != ApprovalCriteria ||
+			again[0].Reason != "criteria not met with the plan's cards done: c1, c2, c3" {
+			t.Fatalf("mixed: pending %+v, want the gap ask alone", again)
+		}
+		if resolved, _ := s.ApprovalRequests(ctx, "approved"); len(resolved) != 1 || resolved[0].ID != pending[0].ID || resolved[0].DecidedBy != FactoryDecider {
+			t.Fatalf("mixed: approved %+v, want the rerun ask resolved by factoryd", resolved)
+		}
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{
+			{Criterion: "c1", Verdict: "waived"}, {Criterion: "c2", Verdict: "met"}, {Criterion: "c3", Verdict: "waived"}}); err != nil {
+			t.Fatal(err)
+		}
+		r.CriteriaPass(ctx)
+		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 0 || closeRows(s) != 1 {
+			t.Fatalf("mixed: pending %+v, closes %d: want the plan closed and its rerun ask resolved", again, closeRows(s))
+		}
 	}
 }
 
@@ -1312,6 +1433,7 @@ func TestClosedPlanCardDeniesItsCriteriaApproval(t *testing.T) {
 	setStatus(s, "t-plan", "failed")
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
 		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant},
 	}); err != nil {
 		t.Fatal(err)

@@ -2049,6 +2049,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
 		return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
+	case factoryd.ApprovalCriteriaRerun:
+		// no task can pay for the review that never judged them: the
+		// gateway takes no hold of a finished card
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards.", q.TaskID))
 	case factoryd.ApprovalMerge:
 		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 		if err != nil {
@@ -2156,11 +2160,14 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeDenied, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Denied the resource.", nil
-	case factoryd.ApprovalCriteria:
+	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		if err := c.decide(ctx, a, q, "denied", note); err != nil {
 			return "", err
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "denied"})
+		if q.Kind == factoryd.ApprovalCriteriaRerun {
+			return "Denied the ask; waive a criterion instead if it should not hold.", nil
+		}
 		return "Denied the grant; waive a criterion instead if it should not hold.", nil
 	case factoryd.ApprovalMerge:
 	default:
@@ -2223,7 +2230,7 @@ func (c *Console) doWaive(ctx context.Context, a actor, id int64, cid, reason st
 	if err != nil {
 		return "", err
 	}
-	if q.Kind != factoryd.ApprovalCriteria {
+	if q.Kind != factoryd.ApprovalCriteria && q.Kind != factoryd.ApprovalCriteriaRerun {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which waives nothing", q.ID, q.Kind))
 	}
 	switch err := c.cfg.DecideCriterion(ctx, q.TaskID, cid, "waived", a.s.user, reason); {
@@ -2252,7 +2259,7 @@ func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line
 	if err != nil {
 		return "", err
 	}
-	if q.Kind != factoryd.ApprovalCriteria {
+	if q.Kind != factoryd.ApprovalCriteria && q.Kind != factoryd.ApprovalCriteriaRerun {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which confirms nothing", q.ID, q.Kind))
 	}
 	n, err := c.cfg.ConfirmDeliveredCriteria(ctx, q.TaskID, a.s.user, line)

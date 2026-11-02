@@ -106,6 +106,9 @@ type Task struct {
 	Track, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
+	// PlanName is a plan's short name, the naming pass's answer once the
+	// plan is filed; "" until then.
+	PlanName string
 	// PlanRevision is the plan revision the card's first session ran
 	// against (roadmap 291); 0 while the card has not started.
 	PlanRevision int
@@ -535,6 +538,9 @@ type Store interface {
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
+	// NewestApproval is the task's newest request of kind, whatever its
+	// status; false when it has none.
+	NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error)
 	// SetGate records that the task entered gate at since; a finished
 	// task enters none.
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
@@ -756,6 +762,12 @@ const (
 	// approver grants one more bounded card or waives (Spec a
 	// criteriaSpec).
 	ApprovalCriteria = "criteria"
+	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
+	// no verdict row holds, a review that never judged them: the approver
+	// waives, or confirms the delivered cards (Spec a CriteriaSpec). No
+	// Approve runs that review: the gateway takes no hold of a finished
+	// card.
+	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -1015,6 +1027,63 @@ func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task,
 		repository, SourcePlan, "waiting-human", GateApproval)
 }
 
+// SetPlanName records plan id's short name; the naming pass is its sole
+// writer. The write stands as given: the read of the open plans' names,
+// not the schema, carries the name's uniqueness.
+func (s *PGStore) SetPlanName(ctx context.Context, id, name string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET plan_name = NULLIF($2, '') WHERE id = $1`, id, name)
+	return oneRow(res, err, "task "+id)
+}
+
+// OpenPlanNames are the names project's open plans hold — its plan-track
+// tasks without a plan_closed event — every one but excludeID's, the plan
+// the naming pass is naming: what a new name must not repeat.
+func (s *PGStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(plan_name, '') FROM tasks
+		WHERE repository = $1 AND track = 'plan' AND id <> $2 AND COALESCE(plan_name, '') <> ''
+		ORDER BY created_at, issue_number, id`, projectID, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		if _, closed, err := s.PlanClosed(ctx, id); err != nil {
+			return nil, err
+		} else if closed {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// UnnamedOpenPlans are the open plans — plan-track tasks without a
+// plan_closed event — that hold no name yet, oldest first: the naming
+// pass's queue.
+func (s *PGStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
+	candidates, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE track = 'plan' AND COALESCE(plan_name, '') = ''
+		ORDER BY created_at, issue_number, id`)
+	if err != nil {
+		return nil, err
+	}
+	var out []Task
+	for _, t := range candidates {
+		if _, closed, err := s.PlanClosed(ctx, t.ID); err != nil {
+			return nil, err
+		} else if closed {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 // SetTaskPlanRevision records the plan revision a card first runs
 // against; the WHERE plan_revision = 0 makes it once, the card's start
 // (roadmap 291). RunSession is its sole caller.
@@ -1057,7 +1126,7 @@ func defaultKind(kind string) string {
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress, COALESCE(roadmap_item, 0)`
@@ -1073,7 +1142,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
+		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
 		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem); err != nil {
 		return Task{}, err
@@ -2281,26 +2350,47 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 // the console's board, chat and answer pages and factoryd's senders,
 // gates and plan passes read them. Rows are read whole, spec included.
 func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
-		        status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error
-		 FROM approval_requests WHERE status = $1 ORDER BY id`, status)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalColumns+` FROM approval_requests WHERE status = $1 ORDER BY id`, status)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ApprovalRequest
 	for rows.Next() {
-		var a ApprovalRequest
-		var spec []byte
-		if err := rows.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
-			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError); err != nil {
+		a, err := scanApproval(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.Spec = spec
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// NewestApproval is task taskID's newest request of kind, whatever its
+// status; false when it has none. The merge hold reads the request a
+// press decided.
+func (s *PGStore) NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error) {
+	a, err := scanApproval(s.db.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approval_requests
+		WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, taskID, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApprovalRequest{}, false, nil
+	}
+	return a, err == nil, err
+}
+
+// approvalColumns are an approval request's columns, in scanApproval's
+// order.
+const approvalColumns = `id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
+	status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error`
+
+// scanApproval reads one row of approvalColumns.
+func scanApproval(row interface{ Scan(...any) error }) (ApprovalRequest, error) {
+	var a ApprovalRequest
+	var spec []byte
+	err := row.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
+		&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError)
+	a.Spec = spec
+	return a, err
 }
 
 // RollRecorded reports whether a roll of sha on image is recorded. The

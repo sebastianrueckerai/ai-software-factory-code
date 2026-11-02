@@ -250,6 +250,40 @@ func (s *fakeStore) ExtendCard(ctx context.Context, id string, sessions, lines i
 	return from, t.BudgetEUR, err
 }
 
+func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	t.PlanName = name
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
+	var out []string
+	for _, t := range s.tasks {
+		if t.Repository == projectID && t.Track == policy.TrackPlan && t.ID != excludeID && t.PlanName != "" {
+			if _, closed := s.closed[t.ID]; !closed {
+				out = append(out, t.PlanName)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+func (s *fakeStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if _, closed := s.closed[t.ID]; t.Track == policy.TrackPlan && t.PlanName == "" && !closed {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},
@@ -1237,6 +1271,15 @@ func (s *fakeStore) ReopenApproval(ctx context.Context, taskID, kind, note strin
 		}
 	}
 	return nil
+}
+
+func (s *fakeStore) NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error) {
+	for i := len(s.approvals) - 1; i >= 0; i-- {
+		if a := s.approvals[i]; a.TaskID == taskID && a.Kind == kind {
+			return a, true, nil
+		}
+	}
+	return ApprovalRequest{}, false, nil
 }
 
 func (s *fakeStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
@@ -2495,6 +2538,44 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != marked {
 		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal and the terminal failure stay marked, the briefed row is done", rows, marked)
+	}
+}
+
+// NewestApproval is the task's newest request of the kind, whatever its
+// status: a superseded one gives way to its successor, decided or not.
+func TestPGStoreNewestApproval(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.NewestApproval(ctx, "a1", ApprovalMerge); err != nil || ok {
+		t.Fatalf("before any request: ok %v, %v; want none", ok, err)
+	}
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "a1", Project: "sf/r", PRNumber: 9, Reason: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "a1", Project: "sf/r", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c2"}`), Reason: "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DecideApproval(ctx, second, ApprovalMerge, "approved", "sebastian", "approved in the console"); err != nil {
+		t.Fatal(err)
+	}
+	q, ok, err := s.NewestApproval(ctx, "a1", ApprovalMerge)
+	if err != nil || !ok || q.ID != second || q.Status != "approved" || q.Reason != "r2" || q.PRNumber != 9 || string(q.Spec) != `{"head_sha": "c2"}` {
+		t.Fatalf("newest = %+v, %v, %v; want the approved second", q, ok, err)
+	}
+	if _, ok, err := s.NewestApproval(ctx, "a1", ApprovalPlan); err != nil || ok {
+		t.Fatalf("another kind: ok %v, %v; want none", ok, err)
 	}
 }
 
@@ -4313,5 +4394,128 @@ func TestRecentSessions(t *testing.T) {
 	}
 	if got, err := s.RecentSessions(ctx, "t3", at.Add(time.Hour), 2); err != nil || len(got) != 0 {
 		t.Fatalf("RecentSessions of a task without sessions = %+v, %v; want none", got, err)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). SetPlanName
+// writes a plan's name and Task reads it back; a plan never named reads
+// the empty string.
+func TestSetPlanNameRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "p-name", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Task(ctx, "p-name"); err != nil || !ok || got.PlanName != "" {
+		t.Fatalf("unnamed plan's name = (%q, %v, %v), want (\"\", true, nil)", got.PlanName, ok, err)
+	}
+	if err := s.SetPlanName(ctx, "p-name", "Harden the gate"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Task(ctx, "p-name")
+	if err != nil || !ok {
+		t.Fatalf("Task = (%v, %v), want (true, nil)", ok, err)
+	}
+	if got.PlanName != "Harden the gate" {
+		t.Fatalf("plan's name = %q, want %q", got.PlanName, "Harden the gate")
+	}
+	if err := s.SetPlanName(ctx, "p-name", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Task(ctx, "p-name"); err != nil || !ok || got.PlanName != "" {
+		t.Fatalf("cleared plan's name = (%q, %v, %v), want (\"\", true, nil)", got.PlanName, ok, err)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). OpenPlanNames
+// lists the project's named open plans; a plan with a plan_closed event,
+// another project's plan and the excluded id's own are not among them.
+func TestOpenPlanNamesExcludesClosedOtherProjectsAndSelf(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []Task{
+		{ID: "p-open", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1},
+		{ID: "p-shut", Status: "done", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 2},
+		{ID: "p-self", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 3},
+		{ID: "p-blank", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 4},
+		{ID: "p-elsewhere", Status: "queued", Repository: "sf/other", Kind: "agent", Track: "plan", IssueNumber: 1},
+	} {
+		if err := s.CreateTask(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// p-blank stays nameless: an open plan of the project without a name
+	for _, id := range []string{"p-open", "p-shut", "p-self", "p-elsewhere"} {
+		if err := s.SetPlanName(ctx, id, "name of "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "p-shut", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	names, err := s.OpenPlanNames(ctx, "sf/r", "p-self")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"name of p-open"}; !slices.Equal(names, want) {
+		t.Fatalf("OpenPlanNames(sf/r, p-self) = %q, want %q", names, want)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+// UnnamedOpenPlans lists the open plans that hold no name, oldest first;
+// a named plan, a closed one and a direct-track card are not listed.
+func TestUnnamedOpenPlansListsOnlyNamelessOpenPlans(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	for _, p := range []Task{
+		{ID: "p-old", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1, CreatedAt: old},
+		{ID: "p-new", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 2, CreatedAt: old.Add(time.Hour)},
+		{ID: "p-named", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 3, CreatedAt: old.Add(2 * time.Hour)},
+		{ID: "p-closed", Status: "done", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 4, CreatedAt: old.Add(-time.Hour)},
+		{ID: "t-direct", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "direct", IssueNumber: 5, CreatedAt: old},
+	} {
+		if err := s.CreateTask(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetPlanName(ctx, "p-named", "The named one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "p-closed", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.UnnamedOpenPlans(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if want := []string{"p-old", "p-new"}; !slices.Equal(ids, want) {
+		t.Fatalf("UnnamedOpenPlans = %q, want %q", ids, want)
 	}
 }

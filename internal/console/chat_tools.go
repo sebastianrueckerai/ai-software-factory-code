@@ -871,8 +871,8 @@ func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	return all[i], nil
 }
 
-// criteriaRequest is the pending criteria approval request of plan id in
-// the chat's project.
+// criteriaRequest is the pending criteria or criteria_rerun approval
+// request of plan id in the chat's project.
 func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	k, err := t.card(in)
 	if err != nil {
@@ -884,7 +884,7 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
 	}
 	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalCriteria && q.Project == t.p.Repository
+		return q.TaskID == k.ID && (q.Kind == factoryd.ApprovalCriteria || q.Kind == factoryd.ApprovalCriteriaRerun) && q.Project == t.p.Repository
 	})
 	if i < 0 {
 		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
@@ -1549,7 +1549,7 @@ var tools = []chatTool{
 			"criterion": str("the criterion the waiver names, cN"),
 			"reason":    str("the waiver's one-line reason")},
 		required: []string{"task_id", "action"},
-		about:    "Decide a plan's criteria gap on the human's word: waive, grant, or confirm.",
+		about:    "Decide a plan's criteria ask on the human's word: waive, grant, or confirm.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			line, ok, err := t.humanAnswerLine()
 			if err != nil {

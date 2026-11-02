@@ -369,6 +369,14 @@ func main() {
 		Timeline: runner.Timeline(), OpenBao: registrar.OpenBao}
 	runner.Imager = imager
 	go imager.Run(ctx, time.Minute)
+	// a plan is named when its first revision files; the open plans this
+	// build inherits are named once now, off the startup path
+	runner.Namer = &factoryd.Namer{Store: store, Model: supervisorModel(gatewayURL, gatewayToken), Current: policyLoader.Current}
+	go func() {
+		sweepCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		runner.Namer.NameOpenPlans(sweepCtx)
+	}()
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
