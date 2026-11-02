@@ -1067,22 +1067,63 @@ func TestMCPChatConfirmRefusesNonApprover(t *testing.T) {
 	equal(t, "the tools", a.Tools, []mcpTool{{Name: "approve_merge", Result: "Refused: " + refusal}})
 }
 
-// The pressed tool's refusal is the answer's error even when the follow-up
-// turn ends in an error of its own.
-func TestMCPChatConfirmRefusalOutranksTheFollowUpError(t *testing.T) {
-	r, _, g := newChatRig(t)
+// annasRefusedProposal is a proposal of anna's that approve_merge refuses
+// her.
+func annasRefusedProposal(t *testing.T, r *rig) {
+	t.Helper()
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
 	r.forgetWriters()
-	session := tokenSessionOf(t, r, "anna", "sf/code")
 	if err := r.chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: "p-anna-proposal", Kind: "proposal", Repository: "sf/code", Login: "anna",
 		Tool: "approve_merge", Args: json.RawMessage(`{"task_id":"t-m"}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+const annasRefusal = "Only the approvers of project ai-software-factory-code may authorize spend."
+
+// The pressed tool's refusal is the answer's error even when the follow-up
+// turn ends in an error of its own.
+func TestMCPChatConfirmRefusalOutranksTheFollowUpError(t *testing.T) {
+	r, _, g := newChatRig(t)
+	annasRefusedProposal(t, r)
 	g.replies = [][]string{nil}
-	a := confirmed(t, session, "p-anna-proposal")
-	const refusal = "Only the approvers of project ai-software-factory-code may authorize spend."
-	if a.Error != refusal || len(a.Applied) != 0 {
-		t.Fatalf("chat_confirm = %+v, want the pressed tool's refusal %q as the error", a, refusal)
+	a := confirmed(t, tokenSessionOf(t, r, "anna", "sf/code"), "p-anna-proposal")
+	if a.Error != annasRefusal || len(a.Applied) != 0 {
+		t.Fatalf("chat_confirm = %+v, want the pressed tool's refusal %q as the error", a, annasRefusal)
+	}
+}
+
+// The same when the human stops the follow-up turn.
+func TestMCPChatConfirmRefusalOutranksTheFollowUpStop(t *testing.T) {
+	r, _, g := newChatRig(t)
+	annasRefusedProposal(t, r)
+	session := tokenSessionOf(t, r, "anna", "sf/code")
+	ck, s := memberLogin(t, r, "anna")
+	g.replies = [][]string{{say("never said")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	defer close(g.hold)
+	answer := make(chan string, 1)
+	go func() {
+		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": "p-anna-proposal"})
+		if err != nil || refused {
+			t.Errorf("chat_confirm = %q, %v", text, err)
+		}
+		answer <- text
+	}()
+	select {
+	case <-g.arrived:
+	case got := <-answer:
+		t.Fatalf("chat_confirm answered %q before its follow-up call", got)
+	}
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"1"}}); code != http.StatusNoContent {
+		t.Fatalf("the stop = %d %q", code, body)
+	}
+	var a sendAnswer
+	if err := json.Unmarshal([]byte(<-answer), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Error != annasRefusal || len(a.Applied) != 0 {
+		t.Fatalf("chat_confirm = %+v, want the pressed tool's refusal %q as the error, not the stop's", a, annasRefusal)
 	}
 }
 

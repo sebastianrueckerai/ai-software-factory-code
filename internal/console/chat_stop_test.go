@@ -369,3 +369,33 @@ func TestChatStopSecondPressStopsTheNextWaitingTurn(t *testing.T) {
 		t.Fatalf("the presses' event rows = %+v", after)
 	}
 }
+
+// A stop ends the follow-up turn of a pressed proposal too: the tool's
+// refusal row stays, the stream answers stopped and ends, and the stop row
+// lands after it.
+func TestChatStopEndsAPressedProposalsFollowUp(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	annasRefusedProposal(t, r)
+	ck, s := memberLogin(t, r, "anna")
+	g.replies = [][]string{{say("never said")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	defer close(g.hold)
+
+	stream := chatStream(t, r, ck, s, chatPath+"/proposals/p-anna-proposal", nil)
+	<-g.arrived
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"1"}}); code != http.StatusNoContent {
+		t.Fatalf("the stop = %d %q", code, body)
+	}
+	var events []string
+	for e := range stream {
+		events = append(events, e)
+	}
+	if n := len(events); n < 2 || !strings.HasPrefix(events[n-2], `stopped {"message":{"id":`) ||
+		!strings.Contains(events[n-2], `"content":"Stopped by anna."`) || events[n-1] != "done {}" {
+		t.Fatalf("the stream = %v, want it to end with stopped, then done", events)
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "anna", 1, 10)
+	if len(rows) != 2 || rows[0].ToolCalls[0].Name != "approve_merge" || rows[1].Kind != factoryd.MessageStop || rows[1].Content != "Stopped by anna." {
+		t.Fatalf("rows = %+v, want the refused tool's row, then the stop row", rows)
+	}
+}

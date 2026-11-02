@@ -1674,7 +1674,17 @@ func (t *turn) apply(p factoryd.ChatProposal, fix *poolCorrection) {
 		t.send("done", struct{}{})
 		return
 	}
-	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
+	// the follow-up turn is stoppable as a sent message's turn is; the
+	// applied tool stands
+	sctx, cancel := context.WithCancel(t.r.Context())
+	defer cancel()
+	t.sctx, t.stopEntry = sctx, t.c.stops.enter(t.key(), cancel)
+	defer t.c.stops.leave(t.key(), t.stopEntry)
+	release := t.c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
+	if release == nil {
+		t.stopEnd("")
+		return
+	}
 	defer release()
 	task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
