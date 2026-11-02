@@ -1075,6 +1075,44 @@ func TestMCPChatReadCapsItsText(t *testing.T) {
 	}
 }
 
+// chat_read's bound holds for the answer's bytes, not the text's: a page
+// of markup answers its < as they are, and a quote's escape counts. Two
+// 30 KiB pages of < answer one (each 30,722 bytes as JSON; two pass
+// 61,440 by 4), then the second with 1 KiB of quotes (2,050 bytes).
+func TestMCPChatReadCapsItsAnswerBytes(t *testing.T) {
+	r, srv, bearer := mcpRig(t)
+	for _, text := range []string{strings.Repeat("<", 30<<10), strings.Repeat("<", 30<<10), strings.Repeat(`"`, 1<<10)} {
+		if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: 2, Role: "assistant", Content: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := opened(t, srv, &door{auth: "Bearer " + bearer})
+	for _, c := range []struct {
+		after int64
+		ids   []int64
+		more  bool
+	}{{0, []int64{1}, true}, {1, []int64{2, 3}, false}} {
+		text := answerOf(t, session, "chat_read", map[string]any{"conversation": 2, "after": c.after})
+		if len(text) > chatReadBytes+1<<10 {
+			t.Errorf("after %d: the answer holds %d bytes, past the bound of %d", c.after, len(text), chatReadBytes)
+		}
+		var a struct {
+			Messages []struct{ ID int64 }
+			More     bool
+		}
+		if err := json.Unmarshal([]byte(text), &a); err != nil {
+			t.Fatal(err)
+		}
+		var got []int64
+		for _, m := range a.Messages {
+			got = append(got, m.ID)
+		}
+		if !slices.Equal(got, c.ids) || a.More != c.more {
+			t.Errorf("after %d: messages %v, more %v; want %v, more %v", c.after, got, a.More, c.ids, c.more)
+		}
+	}
+}
+
 // leavingClaim is the rig's chat token store whose claim finds its
 // client gone: it ends the context and fails, as the store does on a
 // cancelled one.

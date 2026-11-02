@@ -44,13 +44,14 @@ func chatTokenHash(bearer string) string {
 
 // checkForgejoToken refuses a Forgejo token that is not login's, that
 // Forgejo lets read the admin API or the notification API, or that lacks
-// write:issue or write:repository on repo. The two reads catch a token
-// wider than read:user, write:repository and write:issue only where it
-// holds an admin or a notification scope. The two writes write nothing:
-// each POSTs an empty body, and Forgejo judges the token's scope before it
-// binds the body, so 403 says the scope is missing, and 422, for the
-// fields the body lacks, says it is there.
-func (c *Console) checkForgejoToken(ctx context.Context, login string, repo factoryd.Repo, tok string) error {
+// write:issue or write:repository on project p. The two reads catch a
+// token wider than read:user, write:repository and write:issue only where
+// it holds an admin or a notification scope. The two writes POST [],
+// which no create option decodes: Forgejo judges the token's scope before
+// it binds the body, so 403 says the scope is missing and 422, the failed
+// binding, says it is there, whatever the option's field rules. A 2xx
+// means Forgejo filed something after all, which a human must clear.
+func (c *Console) checkForgejoToken(ctx context.Context, login string, p factoryd.Project, tok string) error {
 	var me struct {
 		Login string `json:"login"`
 	}
@@ -72,17 +73,22 @@ func (c *Console) checkForgejoToken(ctx context.Context, login string, repo fact
 			return refuse(http.StatusBadRequest, "Forgejo refused this token")
 		}
 	}
+	repo := p.Repo()
 	base := "/api/v1/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name)
 	for _, probe := range []struct{ path, scope string }{
-		{base + "/issues", "write:issue"},     // an issue with no title
-		{base + "/pulls", "write:repository"}, // a pull request with no head and no base
+		{base + "/issues", "write:issue"},
+		{base + "/pulls", "write:repository"},
 	} {
-		_, err := c.call(ctx, tok, http.MethodPost, probe.path, struct{}{}, http.StatusUnprocessableEntity, answerMax)
+		_, err := c.call(ctx, tok, http.MethodPost, probe.path, []any{}, http.StatusUnprocessableEntity, answerMax)
 		var ae *apiError
 		switch {
 		case err == nil:
 		case errors.As(err, &ae) && ae.status == http.StatusForbidden:
 			return refuse(http.StatusBadRequest, "this Forgejo token lacks "+probe.scope+"; make one with read:user, write:repository and write:issue")
+		case errors.As(err, &ae) && ae.status >= 200 && ae.status < 300:
+			log.Printf("console: the Forgejo token probe of %s on %s answered %d: %s", login, p.Repository, ae.status, ae.body)
+			return refuse(http.StatusBadGateway, "Forgejo accepted an empty probe on "+p.Name+
+				"; check the project for a stray issue or pull request and tell the factory's owner")
 		default:
 			log.Printf("console: the Forgejo token of %s: %v", login, err)
 			return refuse(http.StatusBadRequest, "Forgejo refused this token")
@@ -135,7 +141,7 @@ func (c *Console) makeChatToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	forgejo := strings.TrimSpace(r.PostFormValue("forgejo"))
-	if err := c.checkForgejoToken(r.Context(), s.user, p.Repo(), forgejo); err != nil {
+	if err := c.checkForgejoToken(r.Context(), s.user, p, forgejo); err != nil {
 		c.fail(w, r, err)
 		return
 	}

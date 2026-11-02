@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -500,8 +501,9 @@ type mcpProposalState struct {
 	State string `json:"state"`
 }
 
-// chatReadMax bounds chat_read's rows, chatReadBytes their text: Claude
-// Code cuts a tool's answer at 25,000 tokens by default.
+// chatReadMax bounds chat_read's rows, chatReadBytes their text as the
+// answer's JSON holds it: Claude Code cuts a tool's answer at 25,000
+// tokens by default.
 const (
 	chatReadMax   = 40
 	chatReadBytes = 60 << 10
@@ -516,8 +518,9 @@ type readAnswer struct {
 
 // chatRead answers a thread's last chatReadMax rows, or as many after
 // in.After, from the store: it never marks the thread seen nor opens it.
-// It stops at a whole row before the text passes chatReadBytes, the first
-// row always answered, so a read after the last one always moves on.
+// It stops at a whole row before the text, as JSON, passes chatReadBytes,
+// the first row always answered, so a read after the last one always
+// moves on.
 func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*mcp.CallToolResult, any, error) {
 	th, err := c.tokenThread(ctx, call, in.Conversation)
 	if err != nil {
@@ -542,7 +545,11 @@ func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*
 	}
 	size := 0
 	for i, m := range rows {
-		if size += len(m.Content); i > 0 && size > chatReadBytes {
+		text, err := encoded(m.Content)
+		if err != nil {
+			return nil, nil, err
+		}
+		if size += len(text); i > 0 && size > chatReadBytes {
 			rows, out.More = rows[:i], true
 			break
 		}
@@ -580,9 +587,21 @@ func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*
 
 // jsonAnswer is v as a tool's answer: one text block of JSON.
 func jsonAnswer(v any) (*mcp.CallToolResult, any, error) {
-	b, err := json.Marshal(v)
+	b, err := encoded(v)
 	if err != nil {
 		return nil, nil, err
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
+}
+
+// encoded is v as one line of JSON that keeps <, > and & as they are: the
+// \u003c form would make a page of markup six times its size.
+func encoded(v any) ([]byte, error) {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(b.Bytes(), []byte("\n")), nil
 }

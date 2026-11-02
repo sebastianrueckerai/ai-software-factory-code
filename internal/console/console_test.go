@@ -74,12 +74,14 @@ type fakeForgejo struct {
 	adminReach        bool
 	notificationReach bool
 	probeStatus       int // when set, the probes answer it
-	// lacks is the write scope a token misses on the write probes, each an
-	// empty-body POST, which Forgejo answers 403 without the scope and 422
-	// with it, as it judges the scope before it binds the body; probes
-	// are the probes asked, "path body"
-	lacks  string
-	probes []string
+	// lacks is the write scope a token misses on the write probes, each a
+	// POST of [], which Forgejo answers 403 without the scope and 422 with
+	// it, as it judges the scope before it binds the body; probeFiles
+	// answers them 201, as if Forgejo filed something; probes are the
+	// probes asked, "path body"
+	lacks      string
+	probeFiles bool
+	probes     []string
 
 	reviews    []map[string]string
 	failReview bool
@@ -175,17 +177,22 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/issues") || strings.HasSuffix(r.URL.Path, "/pulls")) {
 		body, _ := io.ReadAll(r.Body)
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		if string(body) == "{}" {
+		if string(body) == "[]" {
 			f.probes = append(f.probes, r.URL.Path+" "+string(body))
 			scope := "write:repository"
 			if strings.HasSuffix(r.URL.Path, "/issues") {
 				scope = "write:issue"
 			}
-			if f.lacks == scope {
+			switch {
+			case f.lacks == scope:
 				http.Error(w, `{"message":"token does not have at least one of required scope(s): [`+scope+`]"}`, http.StatusForbidden)
-				return
+			case f.probeFiles:
+				w.WriteHeader(http.StatusCreated)
+				io.WriteString(w, `{"number":43}`)
+			default:
+				http.Error(w, `[{"classification":"DeserializationError","message":"json: cannot unmarshal array into Go value of type api.CreateIssueOption"}]`,
+					http.StatusUnprocessableEntity)
 			}
-			http.Error(w, `[{"fieldNames":["Title"],"classification":"RequiredError","message":"Required"}]`, http.StatusUnprocessableEntity)
 			return
 		}
 	}

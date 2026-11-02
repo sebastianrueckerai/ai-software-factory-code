@@ -167,7 +167,7 @@ func TestMakeChatTokenShowsItOnce(t *testing.T) {
 	if err != nil || opened != "fj-secret" {
 		t.Fatalf("Open = %q, %v", opened, err)
 	}
-	equal(t, "the write probes", r.fg.probes, []string{"/api/v1/repos/sf/code/issues {}", "/api/v1/repos/sf/code/pulls {}"})
+	equal(t, "the write probes", r.fg.probes, []string{"/api/v1/repos/sf/code/issues []", "/api/v1/repos/sf/code/pulls []"})
 	if len(r.fg.issues) != 0 {
 		t.Fatalf("the probes filed %+v", r.fg.issues)
 	}
@@ -206,6 +206,8 @@ func TestMakeChatTokenRefuses(t *testing.T) {
 			"this Forgejo token lacks write:issue; make one with read:user, write:repository and write:issue"},
 		{"no write:repository", func(f *fakeForgejo, _ url.Values) { f.lacks = "write:repository" }, http.StatusBadRequest,
 			"this Forgejo token lacks write:repository; make one with read:user, write:repository and write:issue"},
+		{"probe filed", func(f *fakeForgejo, _ url.Values) { f.probeFiles = true }, http.StatusBadGateway,
+			"Forgejo accepted an empty probe on ai-software-factory-code; check the project for a stray issue or pull request and tell the factory's owner"},
 		{"empty name", func(_ *fakeForgejo, form url.Values) { form.Set("name", "  ") }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 		{"long name", func(_ *fakeForgejo, form url.Values) { form.Set("name", strings.Repeat("ä", 65)) }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 	}
