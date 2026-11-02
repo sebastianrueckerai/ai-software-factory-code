@@ -2990,7 +2990,7 @@ func TestWorkflowDayCapPastItsTurnRunsAtOnce(t *testing.T) {
 // cap's reason, not the restart's, and resumes on its own.
 func TestWorkflowDayCapWaitSurvivesAHeal(t *testing.T) {
 	h, run := dayCapHarness(t, 0, pushed("s1", "c1"))
-	h.state = RunState{Status: "waiting-human", Question: dayQuestion, DayCap: dayReason, DayCapUntil: oct(15, 0, 0)}
+	h.state = RunState{Status: "waiting-human", Question: dayQuestion, Cap: dayReason, CapUntil: oct(15, 0, 0)}
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
@@ -3170,13 +3170,13 @@ func TestWorkflowReportWaitsOnACap(t *testing.T) {
 	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
 	h, began, _ = reportHarness(t, ReportResult{Capped: &month}, ReportResult{})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "raised", Comment: 700})
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) || len(*began) != 2 {
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) || len(*began) != 2 {
 		t.Fatalf("final %q, escalations %q, %d sessions; want done after a human's answer", final, h.escalated, len(*began))
 	}
 
 	h, _, _ = reportHarness(t, ReportResult{Capped: &month})
 	h.env.OnGetVersion("day-cap", workflow.DefaultVersion, versionDayCap).Return(workflow.DefaultVersion)
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "report session: the report session ended without a report: "+monthCapReached+"spent" {
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "report session: the report session ended without a report: "+capRefused(month.Refusal) {
 		t.Fatalf("finals %v, want the report task failed", h.finals)
 	}
 }

@@ -1636,7 +1636,7 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 	}
 }
 
-// A new policy version is in force within policyTTL, and the store is read
+// A new policy version is in force within PolicyTTL, and the store is read
 // at most once per TTL.
 func TestPolicyCachedForAtMost30s(t *testing.T) {
 	stub := newStubUpstream(t)
@@ -1705,7 +1705,7 @@ func TestKeyRemintedOnPolicyVersion(t *testing.T) {
 	next := testPolicy(2, 20)
 	next.Document.Classes["coder"] = policy.Class{Models: []string{"small"}}
 	store.setPolicy(next)
-	now = now.Add(policyTTL)
+	now = now.Add(PolicyTTL)
 	call() // version 2: only small
 
 	want := []mintCall{
@@ -1788,7 +1788,7 @@ func TestSupersededKeyBlockedAfterItsCalls(t *testing.T) {
 	<-started // the first call runs on key 1
 	store.setPolicy(testPolicy(2, 20))
 	clock.Lock()
-	now = now.Add(policyTTL) // version 2: key 2
+	now = now.Add(PolicyTTL) // version 2: key 2
 	clock.Unlock()
 	if rr := doChat(t, s.Routes("test"), chatBody("small")); rr.Code != http.StatusOK {
 		t.Fatalf("call under the new version = %d", rr.Code)

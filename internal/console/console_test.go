@@ -2157,6 +2157,27 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 	}
 }
 
+// An answer to a card whose session floor refuses at the month cap, or at
+// the project's, is taken the same way: the cap resets on its own.
+func TestAnswerTakenAtAMonthCap(t *testing.T) {
+	for _, why := range []string{
+		"the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free",
+		"the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
+	} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		r.tasks.set("cannot reach the database", []factoryd.Task{
+			{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
+		}...)
+		r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return why, nil }
+		if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
+			t.Fatalf("answer at %q = %d %s, %d comments; want it taken", why[:30], rec.Code, rec.Body, len(r.fg.comments))
+		}
+	}
+}
+
 func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	r := newRig(t)
 	r.fg.expiresIn = 30 // under the one-minute margin

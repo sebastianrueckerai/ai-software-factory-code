@@ -3985,7 +3985,7 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 		PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) {
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) {
 		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
 	}
 	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: go on"}) || h.usage[0].Attempts != 1 {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -17,20 +18,48 @@ import (
 // cap is reached.
 const SourceMonthCap = "month_cap"
 
-// monthCapReached and projectCapReached open the escalation of a session
-// the gateway refused at the month cap or at its project's.
+// monthCapReached and projectCapReached open the escalation of a card
+// stopped at the month cap or at its project's, dayCapReached the day
+// cap's.
 const (
-	monthCapReached   = "the month cap is reached: the gateway refused this task's spend (refused_month_cap): "
-	projectCapReached = "the project's month cap is reached: the gateway refused this task's spend (refused_project_cap): "
+	monthCapReached   = "the month cap is reached"
+	projectCapReached = "the project's month cap is reached"
+	dayCapReached     = "the day cap is reached"
 )
 
+// monthCapResumes, projectCapResumes and dayCapResumes open the reason of a
+// card the cap stopped, whose wait ends on its own (capWaitReason).
+const (
+	monthCapResumes   = monthCapReached + ": the card resumes on its own"
+	projectCapResumes = projectCapReached + ": the card resumes on its own"
+	dayCapResumes     = dayCapReached + ": the card resumes on its own"
+)
+
+// capOpenings is, by the refusal's decision, the opening of the reasons of
+// a card stopped at the cap (waiting for a human, and resuming on its own),
+// the source of its escalation alerts and its period.
+var capOpenings = map[string]struct{ waits, resumes, source, period string }{
+	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day"},
+	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month"},
+	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month"},
+}
+
+// capGateway and capFloor say what refused at the cap decision, which
+// opens the second line of the reason: the gateway a session's call, or
+// the attempt's floor the attempt before it started.
+func capGateway(decision string) string {
+	return "the gateway refused this task's spend (" + decision + ")"
+}
+
+func capFloor(decision string) string {
+	return "the attempt's floor refused the attempt before it started (" + decision + ")"
+}
+
 // capRefused is the escalation reason of a session the gateway refused at
-// a month cap.
+// a month cap, which waits for a human: the reason of a run from before
+// the cap resumes on its own.
 func capRefused(r policy.Refusal) string {
-	if r.Decision == policy.RefusedProjectCap {
-		return projectCapReached + r.Reason
-	}
-	return monthCapReached + r.Reason
+	return capOpenings[r.Decision].waits + ": " + capGateway(r.Decision) + ": " + r.Reason
 }
 
 // CapRefusal is the gateway's refusal of a model call of a task's session
@@ -53,24 +82,13 @@ func (c CapRefusal) until() time.Time {
 }
 
 // reason is the card's escalation: a month's cap waits for a human, the
-// day's resumes on its own (dayCapRefused).
+// day's resumes on its own (capWaitReason).
 func (c CapRefusal) reason() string {
 	if c.Decision != policy.RefusedDayCap {
 		return capRefused(c.Refusal)
 	}
-	return dayCapRefused(dayCapGateway, c.Reason, c.until())
+	return capWaitReason(c.Decision, capGateway(c.Decision), c.Reason, c.until())
 }
-
-// dayCapReached opens the reason of a card the day cap stopped.
-const dayCapReached = "the day cap is reached"
-
-// What refused at the day cap, which opens the reason's second line: the
-// gateway a session's call, or the attempt's floor the attempt before it
-// started.
-const (
-	dayCapGateway = "the gateway refused this task's spend (refused_day_cap)"
-	dayCapFloor   = "the attempt's floor refused the attempt before it started (refused_day_cap)"
-)
 
 // dayTurn is when the UTC day of at ends: the day cap counts the ledger's
 // UTC day (budget.day_eur), so it resets then.
@@ -79,28 +97,63 @@ func dayTurn(at time.Time) time.Time {
 	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 }
 
-// dayCapResumes opens the reason of a card the day cap stopped, whose
-// wait ends on its own (dayWait).
-const dayCapResumes = dayCapReached + ": the card resumes on its own"
-
-// dayCapRefused is the reason of a card by (dayCapGateway, dayCapFloor)
-// refused at the day cap, which resets at until: its first line is the
-// card's question row (escalationQuestion), with the actions; the second
-// names by and its state.
-func dayCapRefused(by, state string, until time.Time) string {
-	return fmt.Sprintf("%s once the day's free headroom funds a session, at the latest when the UTC day turns at %s. "+
-		"Raise budget.day_eur in policy.yaml to resume it sooner, or close the card.\n%s: %s", dayCapResumes, stamp(until), by, state)
+// monthTurn is when the UTC month of at ends: the month and the project
+// caps count the ledger's UTC month (policy.MonthSpentSQL).
+func monthTurn(at time.Time) time.Time {
+	y, m, _ := at.UTC().Date()
+	return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
 }
 
-// dayCapWait is the wait on the day cap the task's last escalation holds:
-// its reason and the turn of its UTC day; "" when it asks otherwise.
-func dayCapWait(events []IntakeEvent) (reason string, until time.Time) {
+// capTurn is when the cap decision refused resets on its own after at.
+func capTurn(decision string, at time.Time) time.Time {
+	if decision == policy.RefusedDayCap {
+		return dayTurn(at)
+	}
+	return monthTurn(at)
+}
+
+// projectFile matches the project file a state names.
+var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
+
+// capWaitReason is the reason of a card by (capGateway, capFloor) refused
+// at the cap decision, which resets at until: its first line is the card's
+// question row (escalationQuestion), with the actions; the second names by
+// and its state.
+func capWaitReason(decision, by, state string, until time.Time) string {
+	var what, key, file string
+	switch decision {
+	case policy.RefusedDayCap:
+		what, key, file = "the day's free headroom", "budget.day_eur", "policy.yaml"
+	case policy.RefusedMonthCap:
+		what, key, file = "the month's free headroom", "budget.month_eur", "policy.yaml"
+	default:
+		what, key, file = "the project's free month headroom", "budget.month_eur", cmp.Or(projectFile.FindString(state), "the project's file")
+	}
+	o := capOpenings[decision]
+	return fmt.Sprintf("%s once %s funds a session, at the latest when the UTC %s turns at %s. "+
+		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), key, file, by, state)
+}
+
+// capWaitDecision is the decision whose resumes opening reason starts
+// with, "" for none.
+func capWaitDecision(reason string) string {
+	for decision, o := range capOpenings {
+		if strings.HasPrefix(reason, o.resumes) {
+			return decision
+		}
+	}
+	return ""
+}
+
+// capWaitOf is the wait on a cap the task's last escalation holds: its
+// reason and the turn of the cap's period; "" when it asks otherwise.
+func capWaitOf(events []IntakeEvent) (reason string, until time.Time) {
 	for _, e := range slices.Backward(events) {
 		if e.Kind != IntakeEscalation {
 			continue
 		}
-		if strings.HasPrefix(e.Body, dayCapResumes) {
-			return e.Body, dayTurn(e.CreatedAt)
+		if d := capWaitDecision(e.Body); d != "" {
+			return e.Body, capTurn(d, e.CreatedAt)
 		}
 		break
 	}

@@ -544,8 +544,11 @@ func TestRunSessionParksAtTheMonthCap(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Outcome != OutcomeEscalate || res.Reason != monthCapReached+refusal {
+	if res.Outcome != OutcomeEscalate || res.Reason != capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: refusal}) {
 		t.Fatalf("result = %+v, want escalate with the month cap's refusal", res)
+	}
+	if res.Capped == nil || res.Capped.Decision != policy.RefusedMonthCap || res.Capped.Reason != refusal {
+		t.Fatalf("capped = %+v, want the month cap's refusal", res.Capped)
 	}
 	if got := escalationSource(res.Reason); got != "month_cap" {
 		t.Fatalf("escalation source = %q, want month_cap", got)
@@ -772,6 +775,9 @@ func TestProjectCapRefusalEscalates(t *testing.T) {
 	}
 	if want := "the project's month cap is reached: the gateway refused this task's spend (refused_project_cap): " + refusal; res.Outcome != OutcomeEscalate || res.Reason != want {
 		t.Fatalf("result = %+v, want escalate with %q", res, want)
+	}
+	if res.Capped == nil || res.Capped.Decision != policy.RefusedProjectCap || res.Capped.Reason != refusal {
+		t.Fatalf("capped = %+v, want the project cap's refusal", res.Capped)
 	}
 	if got := escalationSource(res.Reason); got != "project_cap" {
 		t.Fatalf("escalation source = %q, want project_cap", got)

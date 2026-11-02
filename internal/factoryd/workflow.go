@@ -145,6 +145,7 @@ const (
 	ActivitySessionFunded               = "SessionFunded"
 	ActivitySessionAnswered             = "SessionAnswered"
 	ActivityDayResume                   = "DayResume"
+	ActivityCapResume                   = "CapResume"
 	ActivityParkForTool                 = "ParkForTool"
 	ActivityImageArrived                = "ImageArrived"
 	ActivityLeaveImagePark              = "LeaveImagePark"
@@ -388,7 +389,7 @@ type SessionResult struct {
 	// 0 (roadmap 208), when it ran one; a card it proves closes done on
 	// the fact, no model verdict and no human's answer owed.
 	Acceptance *AcceptanceHit
-	// Capped is a day_cap session's refusal.
+	// Capped is the refusal of the cap that stopped the session, at any cap.
 	Capped *CapRefusal `json:",omitempty"`
 	// Started is when the session began, its pod's first start for a
 	// session reattached after a restart: the since of its answer read.
@@ -472,11 +473,12 @@ type RunState struct {
 	// DepStarted: a human started the card despite a dependency that ended
 	// failed or closed (stepDepsStarted), with the reason (versionDepWait).
 	DepStarted string
-	// DayCap is the reason of the task's last escalation when the day cap
-	// stopped it, DayCapUntil the turn of that escalation's UTC day: a
-	// healed run waits on (versionDayCap).
-	DayCap      string
-	DayCapUntil time.Time `json:",omitzero"`
+	// Cap is the reason of the task's last escalation when a cap stopped it
+	// and the card resumes on its own, CapUntil the turn of that cap's
+	// period after the escalation: a healed run waits on (versionDayCap).
+	// The names of the JSON keys are those of the day cap's wait.
+	Cap      string    `json:"DayCap"`
+	CapUntil time.Time `json:"DayCapUntil,omitzero"`
 	// Source is the task row's arrival (alert-precheck, roadmap 181 item
 	// 3.12): an alert card checks its alert still fires before its first
 	// model call.
@@ -1705,10 +1707,10 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			setFindings(answer, "changes")
-		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.DayCap != "":
+		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.Cap != "":
 			// the day cap's wait, its own end included
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitDay(st.DayCap, st.DayCapUntil, model)
+			final, why, answer := t.awaitDay(st.Cap, st.CapUntil, model)
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1875,12 +1877,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			// the session is refused before it starts: no session, no key,
 			// no failure round, and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
-				if DayCapped(why) {
+				if d, ok := CapDecision(why); ok && d == policy.RefusedDayCap {
 					// a spent day cap resets on its own: the day cap's
 					// wait, not a human's, and no session ran
 					_, state, _ := strings.Cut(why, "\n")
 					until := dayTurn(workflow.Now(t.ctx))
-					if final, end := held(t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)); final != "" {
+					if final, end := held(t.awaitDay(capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), state, until), until, model)); final != "" {
 						return t.finish(final, end)
 					}
 					continue

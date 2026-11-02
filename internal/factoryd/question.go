@@ -528,12 +528,12 @@ func monthCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 }
 
-// capRefusedSuffix is the gateway's detail after the refusal's opening.
+// capRefusedSuffix is the refusal's state, after the "): " that closes what
+// refused: in the one-line reason of a run from before the cap resumed on
+// its own (capRefused) and in the second line of capWaitReason.
 func capRefusedSuffix(reason string) string {
-	if strings.HasPrefix(reason, projectCapReached) {
-		return strings.TrimPrefix(reason, projectCapReached)
-	}
-	return strings.TrimPrefix(reason, monthCapReached)
+	_, state, _ := strings.Cut(reason, "): ")
+	return state
 }
 
 // waitShape parses the gate stop of the checks: "WaitChecks (attempt %d)

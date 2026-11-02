@@ -23,6 +23,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -143,6 +144,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityDayResume:                   r.DayResume,
+		ActivityCapResume:                   r.CapResume,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,
@@ -540,10 +542,17 @@ var capRefusals = map[string]string{
 	policy.RefusedProjectCap: "the project's month cap cannot fund a call",
 }
 
-// DayCapped reports whether why is an attempt floor's refusal at the day
-// cap, which resets on its own: the workflow waits for the day (awaitDay),
-// and the console takes an answer.
-func DayCapped(why string) bool { return strings.HasPrefix(why, capRefusals[policy.RefusedDayCap]) }
+// CapDecision is the decision of the cap whose attempt floor refusal why
+// is: every cap resets on its own, so the console takes an answer, and the
+// workflow waits at the day cap (awaitDay).
+func CapDecision(why string) (decision string, ok bool) {
+	for decision, opening := range capRefusals {
+		if strings.HasPrefix(why, opening) {
+			return decision, true
+		}
+	}
+	return "", false
+}
 
 // floorUnread opens the floor's refusal of a model it cannot price.
 const floorUnread = "the attempt's floor on "
@@ -756,36 +765,74 @@ func startFits(f policy.Free, taskID, model string, price policy.Price) bool {
 	return err == nil
 }
 
-// DayResume reports whether a wait on the day cap ends (versionDayCap): at
-// the UTC day's turn (turned), or once the day's free headroom under the
-// budget.day_eur in force, every outstanding hold netted as the gateway
-// nets it, fits a session's start on model (startFits). An unpriced model
-// waits for the turn. An end resolves the task's open day-cap escalation
-// alerts, real and the factory's, and is on the timeline.
-func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-	why := "the UTC day turned"
-	if !turned {
+// CapCheck is a wait on the cap Decision refused: Turned says its period
+// turned, RefusedAt is set by the check before an ask to the refusal it
+// would ask about.
+type CapCheck struct {
+	TaskID, Model, Decision string
+	Turned                  bool
+	RefusedAt               time.Time `json:",omitzero"`
+}
+
+// CapResumed is a wait's verdict: Resume ends it, Settles is when the
+// version in force binds at the gateway, if not yet.
+type CapResumed struct {
+	Resume  bool
+	Settles time.Time `json:",omitzero"`
+}
+
+// CapResume reports whether a wait on a cap ends: at the period's turn, or
+// once the cap no longer binds the session that runs next. The gateway may
+// enforce the previous policy version for PolicyTTL after a load, so no
+// wait ends before the version in force settles (Settles), nor on a
+// refusal that came after it did: the cap as enforced refused it, and a
+// floor that funds meanwhile would loop sessions with no wait. Past that,
+// the session's start must be funded as SessionFunded reads it, every
+// outstanding hold netted as the gateway nets it; the cap still refusing,
+// or a model that cannot be priced, waits for the turn, and any other
+// refusal ends the wait, the attempt's own floor asking its question. An
+// end resolves the task's open escalation alerts of the cap, real and the
+// factory's, and is on the timeline.
+func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
+	o := capOpenings[in.Decision]
+	why := "the UTC " + o.period + " turned"
+	if !in.Turned {
 		if r.cfg.Prices == nil {
-			return false, nil
+			return CapResumed{}, nil
 		}
-		price, err := r.price(ctx, aliasOf(model))
+		v := r.cfg.Policy()
+		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); time.Now().Before(settles) {
+			return CapResumed{Settles: settles}, nil
+		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
+			return CapResumed{}, nil
+		}
+		refusal, err := r.funded(ctx, in.TaskID, in.Model, true)
 		if err != nil {
-			return false, nil
+			return CapResumed{}, err
 		}
-		free, err := r.store.DayFree(ctx, r.cfg.Policy().Document.Budget.DayEUR)
-		if err != nil {
-			return false, err
+		if strings.HasPrefix(refusal, floorUnread) {
+			return CapResumed{}, nil
 		}
-		if !startFits(policy.Free{Task: math.Inf(1), Day: free, Month: math.Inf(1), Project: math.Inf(1)}, taskID, model, price) {
-			return false, nil
+		if d, _ := CapDecision(refusal); refusal != "" && d == in.Decision {
+			return CapResumed{}, nil
 		}
-		why = fmt.Sprintf("the day's free headroom of %.6f EUR funds a session", free)
+		why = fmt.Sprintf("the %s cap no longer binds a session (policy version %d)", o.period, v.ID)
+		if refusal != "" {
+			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
+		}
 	}
-	if err := r.store.JudgeEscalations(ctx, taskID, EscalationFilter{Source: "day_cap"}, VerdictReal, FactoryDecider); err != nil {
-		return false, err
+	if err := r.store.JudgeEscalations(ctx, in.TaskID, EscalationFilter{Source: o.source}, VerdictReal, FactoryDecider); err != nil {
+		return CapResumed{}, err
 	}
-	r.record(ctx, taskID, "day_cap_resumed", map[string]any{"why": why})
-	return true, nil
+	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
+	return CapResumed{Resume: true}, nil
+}
+
+// DayResume is CapResume at the day cap, for a run from before the month
+// and the project caps resumed on their own.
+func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
+	res, err := r.CapResume(ctx, CapCheck{TaskID: taskID, Model: model, Decision: policy.RefusedDayCap, Turned: turned})
+	return res.Resume, err
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
@@ -994,7 +1041,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		case refused.Decision == policy.RefusedDayCap:
 			res.Outcome, res.Capped = OutcomeDayCap, refused
 		default:
-			res.Outcome, res.Reason = OutcomeEscalate, refused.reason()
+			res.Outcome, res.Reason, res.Capped = OutcomeEscalate, refused.reason(), refused
 		}
 	}
 	if res.Outcome == OutcomeNoPush {
@@ -1301,7 +1348,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		// no answer can run: the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
 	}
-	if strings.HasPrefix(reason, dayCapResumes) {
+	if capWaitDecision(reason) != "" {
 		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	}
 	if strings.HasPrefix(reason, leftQueue) {
@@ -1809,7 +1856,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		}
 	}
 	st.Answers, st.Question, st.Choices = answersFrom(events)
-	st.DayCap, st.DayCapUntil = dayCapWait(events)
+	st.Cap, st.CapUntil = capWaitOf(events)
 	st.Screening = waitsOnScreening(events)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)

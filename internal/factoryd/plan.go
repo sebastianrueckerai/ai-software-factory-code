@@ -1878,8 +1878,8 @@ func (t *taskRun) planLoop() (string, error) {
 			ask = healedReason
 		}
 	}
-	if healed && t.dayCap >= versionDayCap && st.DayCap != "" && workflow.Now(t.ctx).Before(st.DayCapUntil) {
-		ask, day = st.DayCap, &dayWait{until: st.DayCapUntil, model: t.cfg.Models.Stronger}
+	if healed && t.dayCap >= versionDayCap && st.Cap != "" && workflow.Now(t.ctx).Before(st.CapUntil) {
+		ask, day = st.Cap, &dayWait{until: st.CapUntil, model: t.cfg.Models.Stronger}
 	}
 	// the comment the running or next session answers: writers' comments
 	// newer than it ask for changes

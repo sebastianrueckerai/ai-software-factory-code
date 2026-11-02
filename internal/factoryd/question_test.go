@@ -59,14 +59,14 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			rec:    []string{"Fund the €0.20 raise: the card holds pull request #4711"},
 		},
 		"month cap": {
-			reason: monthCapReached + "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR",
+			reason: capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR"}),
 			facts:  QuestionFacts{MonthSpentEUR: 544.12, MonthCapEUR: 600, Month: "2026-11"},
 			askHas: []string{"month cap of €600.00 is reached", "€544.12 spent", "2026-11", "session was refused"},
 			whyHas: []string{"0.300000 EUR", "0.100000 EUR"},
 			values: []string{AnswerFund, AnswerPark, AnswerClose},
 		},
 		"project cap": {
-			reason: projectCapReached + "a session call needs 0.300000 EUR but the project's remaining headroom is 0.100000 EUR",
+			reason: capRefused(policy.Refusal{Decision: policy.RefusedProjectCap, Reason: "a session call needs 0.300000 EUR but the project's remaining headroom is 0.100000 EUR"}),
 			askHas: []string{"project's month cap is reached", "session was refused"},
 			values: []string{AnswerFund, AnswerPark, AnswerClose},
 		},

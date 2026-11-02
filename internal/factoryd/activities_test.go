@@ -2160,6 +2160,22 @@ func TestEscalateRecordsTheEscalation(t *testing.T) {
 	}
 }
 
+// A reason that resumes on its own, at any cap, tells the card so.
+func TestEscalateNamesAWaitThatEndsOnItsOwn(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}}
+	r, _, _ := newActivityRunner(t, prTask, fj)
+	const next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
+	until := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
+		if _, err := execActivity(t, r, ActivityEscalate, "t1", capWaitReason(decision, capGateway(decision), "spent", until), []string(nil)); err != nil {
+			t.Fatal(err)
+		}
+		if got := fj.comments[len(fj.comments)-1]; !strings.HasSuffix(got, next) {
+			t.Errorf("%s: comment = %q, want it to end with %q", decision, got, next)
+		}
+	}
+}
+
 // The intake escalation row is the ask's durable anchor: when the row
 // cannot be written the escalation fails, and the card never moves to
 // waiting-human ahead of its row. The ask's comment is posted first, so
@@ -2871,66 +2887,365 @@ type stubPrices struct {
 
 func (p stubPrices) Price(context.Context, string) (policy.Price, error) { return p.price, p.err }
 
-// A wait on the day cap ends at the day's turn, or once the day's free
-// headroom, every hold netted, fits a session's start: 1024 output tokens
-// at 1.5e-5 EUR, 0.01536 EUR. The end resolves the task's open day-cap
-// escalations, real and the factory's, and leaves its other ones open.
-// Hand-derived for a day cap of 40: 39.99 spent leaves 0.01, which fits
-// 666 tokens, too few; 39.98 leaves 0.02, 1333 tokens.
-func TestDayResume(t *testing.T) {
-	store := newFakeStore()
-	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "agent", TaskID: "t1"},
-		{ID: 3, Kind: AlertEscalation, Source: "day_cap", TaskID: "t2"}}
-	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{DayEUR: 40}, Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"big": 32768}}}}}
-	r := &Runner{store: store, cfg: RunnerConfig{Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}}, Policy: func() policy.Version { return v }}}
-	ctx := context.Background()
-	verdicts := func() []string {
-		var out []string
-		for _, a := range store.alertRows() {
-			out = append(out, a.Verdict+"/"+a.ResolvedBy)
-		}
-		return out
+// capRig is a Runner waiting on a cap: the version in force v, the task t1
+// (5 EUR budget, 2 spent) of repository sf/app, and the day's, the month's
+// and the project's month spend, which check turns into the free headroom
+// the ledger would answer under v's caps.
+type capRig struct {
+	r       *Runner
+	store   *fakeStore
+	objects *fakeObjectStore
+	v       *policy.Version
+	day     float64
+	month   float64
+	project float64
+}
+
+// newCapRig is a rig whose version has day cap 40, month cap 544 and a
+// project cap of 3 for sf/app, whose rung floors are 0.60 EUR. The
+// cheapest call of factory/big is 1024 output tokens at 1.5e-5 EUR,
+// 0.01536 EUR.
+func newCapRig(t *testing.T) *capRig {
+	t.Helper()
+	store, objects := newFakeStore(), &fakeObjectStore{}
+	if err := store.CreateTask(context.Background(), Task{ID: "t1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2, Track: "direct"}); err != nil {
+		t.Fatal(err)
 	}
-	store.daySpent = 39.99
-	if ok, err := r.DayResume(ctx, "t1", "factory/big", false); err != nil || ok || !slices.Equal(verdicts(), []string{"/", "/", "/"}) {
-		t.Fatalf("0.01 EUR free: (%v, %v), alerts %q; want the wait on, no alert judged", ok, err, verdicts())
+	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "month_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"},
+		{ID: 3, Kind: AlertEscalation, Source: "month_cap", TaskID: "t2"}, {ID: 4, Kind: AlertEscalation, Source: "project_cap", TaskID: "t1"}}
+	v := &policy.Version{ID: 7, ActivatedAt: time.Now().Add(-time.Hour), Tree: policy.Tree{
+		Document: policy.Document{
+			Budget: policy.Budget{DayEUR: 40, MonthEUR: 544, SessionFloorFrontierEUR: 0.6},
+			Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"big": 32768}},
+		},
+		Projects: map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Budget: &policy.ProjectBudget{MonthEUR: 3}}},
+	}}
+	cfg := RunnerConfig{Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}, Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return *v }}
+	return &capRig{r: &Runner{store: store, cfg: cfg, timeline: &Timeline{Objects: objects}}, store: store, objects: objects, v: v}
+}
+
+// check is CapResume for decision after the rig's spend, free under the
+// caps of the version in force.
+func (g *capRig) check(t *testing.T, in CapCheck) CapResumed {
+	t.Helper()
+	g.store.capsFree = &policy.Free{Day: g.v.Document.Budget.DayEUR - g.day, Month: g.v.Document.Budget.MonthEUR - g.month}
+	g.store.capsFree.Project = g.v.Projects["app"].Budget.MonthEUR - g.project
+	in.TaskID, in.Model = "t1", "factory/big"
+	res, err := g.r.CapResume(context.Background(), in)
+	if err != nil {
+		t.Fatalf("CapResume: %v", err)
 	}
-	store.daySpent = 39.98
-	if ok, err := r.DayResume(ctx, "t1", "factory/big", false); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "/"}) {
-		t.Fatalf("0.02 EUR free: (%v, %v), alerts %q; want the wait's end and t1's day-cap alert judged", ok, err, verdicts())
+	return res
+}
+
+// verdicts is the alert rows' verdict and judge in id order.
+func (g *capRig) verdicts() []string {
+	var out []string
+	for _, a := range g.store.alertRows() {
+		out = append(out, a.Verdict+"/"+a.ResolvedBy)
 	}
-	store.daySpent = 63.44
-	if ok, err := r.DayResume(ctx, "t2", "factory/big", true); err != nil || !ok || !slices.Equal(verdicts(), []string{"real/factoryd", "/", "real/factoryd"}) {
-		t.Fatalf("the turn: (%v, %v), alerts %q; want the wait's end however spent the old day", ok, err, verdicts())
+	return out
+}
+
+// The day cap's wait ends only once the free headroom funds the session
+// that runs next, its rung's floor too: with 0.10 EUR of the day free the
+// cheapest call (0.01536) fits but the frontier floor (0.60) does not, so
+// the wait goes on; DayResume ended it there and the card asked again
+// every five minutes. At 40 - 39.30 = 0.70 EUR free the floor fits.
+func TestCapResumeDayFloor(t *testing.T) {
+	g := newCapRig(t)
+	g.day = 39.90
+	if res := g.check(t, CapCheck{Decision: policy.RefusedDayCap}); res.Resume {
+		t.Fatalf("0.10 EUR free: %+v, want the wait on: the floor of 0.60 EUR does not fit", res)
 	}
-	r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
-	store.daySpent = 0
-	if ok, err := r.DayResume(ctx, "t1", "factory/big", false); err != nil || ok {
-		t.Fatalf("unpriced: (%v, %v), want the wait on to the turn", ok, err)
+	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || ok {
+		t.Fatalf("DayResume at 0.10 EUR free = (%v, %v), want the wait on", ok, err)
+	}
+	g.day = 39.30
+	g.store.capsFree = &policy.Free{Day: 40 - g.day, Month: math.Inf(1), Project: math.Inf(1)}
+	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", false); err != nil || !ok {
+		t.Fatalf("DayResume at 0.70 EUR free = (%v, %v), want the wait's end", ok, err)
+	}
+	if got := g.verdicts(); !slices.Equal(got, []string{"/", "real/factoryd", "/", "/"}) {
+		t.Fatalf("alerts %q, want the task's day-cap alert judged", got)
+	}
+	step := timelineStep(t, g.objects, "t1", "cap_resumed")
+	if step["cap"] != policy.RefusedDayCap || step["why"] != "the day cap no longer binds a session (policy version 7)" {
+		t.Fatalf("cap_resumed = %v", step)
 	}
 }
 
-// A healed run reads the day cap's wait from the task's last escalation:
-// its reason, and the turn of the escalation's UTC day; any later
+// A month cap raised from 544 to 600 EUR ends the wait once the raise binds
+// at the gateway: 544 spent leaves 0, 600 leaves 56, far over the floor.
+// The end judges the task's month-cap alerts alone.
+func TestCapResumeMonthRaise(t *testing.T) {
+	g := newCapRig(t)
+	g.month = 544
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); res.Resume || !res.Settles.IsZero() {
+		t.Fatalf("544 of 544 EUR spent: %+v, want the wait on", res)
+	}
+	g.v.Document.Budget.MonthEUR, g.v.ID, g.v.ActivatedAt = 600, 8, time.Now().Add(-time.Minute)
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); !res.Resume {
+		t.Fatalf("raised to 600: %+v, want the wait's end", res)
+	}
+	if got := g.verdicts(); !slices.Equal(got, []string{"real/factoryd", "/", "/", "/"}) {
+		t.Fatalf("alerts %q, want t1's month-cap alert judged alone", got)
+	}
+	step := timelineStep(t, g.objects, "t1", "cap_resumed")
+	if step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 8)" {
+		t.Fatalf("cap_resumed = %v", step)
+	}
+}
+
+// The gateway may enforce the previous version for 30 s after a load: a
+// raise activated 10 s ago has not settled, and the answer says when it
+// does. A refusal at or after that moment came under the version in
+// force, so the cap as enforced refused it and a floor that funds does not
+// end the wait; one before the activation is lifted by it.
+func TestCapResumeWaitsForTheVersionToSettle(t *testing.T) {
+	g := newCapRig(t)
+	g.month = 544
+	activated := time.Now().Add(-10 * time.Second)
+	g.v.Document.Budget.MonthEUR, g.v.ActivatedAt = 600, activated
+	res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap})
+	if res.Resume || !res.Settles.Equal(activated.Add(30*time.Second)) {
+		t.Fatalf("raise activated 10 s ago: %+v, want the wait on and Settles at activation + 30 s", res)
+	}
+
+	activated = time.Now().Add(-time.Minute)
+	g.v.ActivatedAt = activated
+	settles := activated.Add(30 * time.Second)
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap, RefusedAt: settles.Add(20 * time.Second)}); res.Resume || !res.Settles.IsZero() {
+		t.Fatalf("refused 20 s after the version settled: %+v, want the wait on", res)
+	}
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap, RefusedAt: activated.Add(-time.Second)}); !res.Resume {
+		t.Fatalf("refused before the activation: %+v, want the wait's end", res)
+	}
+}
+
+// A project's wait ends on a raise of the project's own month cap: 3 EUR
+// spent of 3 leaves 0 whatever the factory's month_eur, which 100 EUR
+// leaves 97 free; the project's 5 EUR leaves 2.
+func TestCapResumeProjectCap(t *testing.T) {
+	g := newCapRig(t)
+	g.month, g.project = 3, 3
+	g.v.Document.Budget.MonthEUR = 100
+	if res := g.check(t, CapCheck{Decision: policy.RefusedProjectCap}); res.Resume {
+		t.Fatalf("the factory's cap raised: %+v, want the project's wait on", res)
+	}
+	g.v.Projects["app"].Budget.MonthEUR = 5
+	if res := g.check(t, CapCheck{Decision: policy.RefusedProjectCap}); !res.Resume {
+		t.Fatalf("the project's cap raised: %+v, want the wait's end", res)
+	}
+	if got := g.verdicts(); !slices.Equal(got, []string{"/", "/", "/", "real/factoryd"}) {
+		t.Fatalf("alerts %q, want t1's project-cap alert judged", got)
+	}
+}
+
+// A wait ends when the floor now refuses for another reason, which its own
+// question names: 5 - 4.9 = 0.10 EUR of the task's budget is under the
+// floor of 0.60 while the month has 56 EUR free. An unpriced model, and a
+// factory with no prices, wait for the turn, which ends a wait however
+// spent the period.
+func TestCapResumeOtherRefusalsAndTheTurn(t *testing.T) {
+	g := newCapRig(t)
+	g.v.Document.Budget.MonthEUR = 600
+	g.month = 544
+	task := g.store.tasks["t1"]
+	task.SpentEUR = 4.9
+	g.store.tasks["t1"] = task
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); !res.Resume {
+		t.Fatalf("the task's budget refuses: %+v, want the wait's end", res)
+	}
+	if why := timelineStep(t, g.objects, "t1", "cap_resumed")["why"].(string); !strings.HasPrefix(why, "the attempt's floor refuses otherwise: "+budgetRefused) {
+		t.Fatalf("why = %q, want the budget's refusal", why)
+	}
+
+	g = newCapRig(t)
+	g.month = 600
+	g.r.cfg.Prices = stubPrices{err: errors.New("LiteLLM has no model")}
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); res.Resume {
+		t.Fatalf("unpriced model: %+v, want the wait on to the turn", res)
+	}
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap, Turned: true}); !res.Resume {
+		t.Fatalf("the turn: %+v, want the wait's end", res)
+	}
+	if why := timelineStep(t, g.objects, "t1", "cap_resumed")["why"]; why != "the UTC month turned" {
+		t.Fatalf("why = %v", why)
+	}
+	g.r.cfg.Prices = nil
+	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); res.Resume {
+		t.Fatalf("no prices: %+v, want the wait on", res)
+	}
+}
+
+// A wait on the day cap ends at the turn of the day, resolving the task's
+// day-cap alerts: DayResume answers CapResume's verdict.
+func TestDayResumeTurn(t *testing.T) {
+	g := newCapRig(t)
+	g.day = 63.44
+	if ok, err := g.r.DayResume(context.Background(), "t1", "factory/big", true); err != nil || !ok {
+		t.Fatalf("the turn: (%v, %v), want the wait's end however spent the old day", ok, err)
+	}
+	if got := g.verdicts(); !slices.Equal(got, []string{"/", "real/factoryd", "/", "/"}) {
+		t.Fatalf("alerts %q, want t1's day-cap alert judged", got)
+	}
+}
+
+// A healed run reads a cap's wait from the task's last escalation: its
+// reason, and the turn of the cap's period after the escalation; any later
 // escalation asks otherwise.
-func TestDayCapWait(t *testing.T) {
-	reason := dayCapRefused(dayCapGateway, "spent", oct(15, 0, 0))
+func TestCapWaitOf(t *testing.T) {
+	day := capWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
+	month := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
+	project := capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "spent", time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC))
 	esc := func(body string, at time.Time) IntakeEvent {
 		return IntakeEvent{Kind: IntakeEscalation, Author: "factoryd", Body: body, CreatedAt: at}
 	}
 	comment := IntakeEvent{Kind: "issue_comment", Body: "hm", CreatedAt: oct(14, 21, 0)}
+	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 	for name, tc := range map[string]struct {
 		events []IntakeEvent
 		reason string
 		until  time.Time
 	}{
-		"the day cap's":     {[]IntakeEvent{esc("The agent asks: x", oct(14, 18, 0)), esc(reason, oct(14, 20, 43)), comment}, reason, oct(15, 0, 0)},
-		"a later question":  {[]IntakeEvent{esc(reason, oct(14, 20, 43)), esc("The agent asks: x", oct(14, 22, 0))}, "", time.Time{}},
+		"the day cap's":     {[]IntakeEvent{esc("The agent asks: x", oct(14, 18, 0)), esc(day, oct(14, 20, 43)), comment}, day, oct(15, 0, 0)},
+		"the month cap's":   {[]IntakeEvent{esc(month, time.Date(2026, 10, 31, 23, 51, 0, 0, time.UTC)), comment}, month, nov1},
+		"the project's":     {[]IntakeEvent{esc(project, oct(20, 9, 0))}, project, nov1},
+		"a later question":  {[]IntakeEvent{esc(month, oct(14, 20, 43)), esc("The agent asks: x", oct(14, 22, 0))}, "", time.Time{}},
+		"a human's wait":    {[]IntakeEvent{esc(capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}), oct(14, 20, 43))}, "", time.Time{}},
 		"no escalation yet": {[]IntakeEvent{comment}, "", time.Time{}},
 	} {
-		if got, until := dayCapWait(tc.events); got != tc.reason || !until.Equal(tc.until) {
+		if got, until := capWaitOf(tc.events); got != tc.reason || !until.Equal(tc.until) {
 			t.Errorf("%s: (%q, %v), want (%q, %v)", name, got, until, tc.reason, tc.until)
 		}
+	}
+}
+
+// The month turns at the first instant of the next UTC month, whatever the
+// zone of the instant given: 23:28 UTC on 31 October, 00:28 on 1 November
+// in UTC+1, is November's turn at 00:00 UTC; December turns into January.
+func TestMonthTurn(t *testing.T) {
+	plus1 := time.FixedZone("UTC+1", 3600)
+	nov1, jan1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct{ at, want time.Time }{
+		{time.Date(2026, 10, 31, 23, 28, 0, 0, time.UTC), nov1},
+		{time.Date(2026, 10, 31, 23, 28, 0, 0, time.UTC).In(plus1), nov1},
+		{time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC), jan1},
+	} {
+		if got := monthTurn(tc.at); !got.Equal(tc.want) {
+			t.Errorf("monthTurn(%v) = %v, want %v", tc.at, got, tc.want)
+		}
+	}
+	if got := capTurn(policy.RefusedDayCap, oct(14, 20, 43)); !got.Equal(oct(15, 0, 0)) {
+		t.Errorf("capTurn at the day cap = %v, want the day's turn", got)
+	}
+	for _, d := range []string{policy.RefusedMonthCap, policy.RefusedProjectCap} {
+		if got := capTurn(d, time.Date(2026, 12, 31, 23, 59, 0, 0, time.UTC)); !got.Equal(jan1) {
+			t.Errorf("capTurn(%s) = %v, want January 1", d, got)
+		}
+	}
+}
+
+// The reasons of a wait on a cap, written out: the day's is the pinned
+// dayReason, and a project's names its file from the state, else "the
+// project's file". The first line is the card's question row, cut at 300
+// characters, for a project of a realistic name.
+func TestCapWaitReason(t *testing.T) {
+	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	day := "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
+	if got := capWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), day, oct(15, 0, 0)); got != dayReason {
+		t.Errorf("day reason = %q, want %q", got, dayReason)
+	}
+	const month = "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
+		"the gateway refused this task's spend (refused_month_cap): spent"
+	if got := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", nov1); got != month {
+		t.Errorf("month reason = %q, want %q", got, month)
+	}
+	state := "0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/linkshort.yaml) is free"
+	const project = "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+		"the attempt's floor refused the attempt before it started (refused_project_cap): "
+	got := capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), state, nov1)
+	if got != project+state {
+		t.Errorf("project reason = %q, want %q", got, project+state)
+	}
+	if q := escalationQuestion(got); len(q) > 300 || !strings.HasSuffix(q, "or close the card.") {
+		t.Errorf("project question row = %q (%d), want the actions within 300 characters", q, len(q))
+	}
+	noFile := capWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), "spent", nov1)
+	if want := "Raise budget.month_eur in the project's file to resume it sooner"; !strings.Contains(noFile, want) {
+		t.Errorf("project reason without a file = %q, want %q", noFile, want)
+	}
+}
+
+// Every reason a card stopped at a cap carries reads alike: the source, the
+// decision of its wait, and the refusal's state, in the one-line reason of a
+// wait on a human and the second line of a wait that ends on its own.
+func TestCapReasonReaders(t *testing.T) {
+	nov1 := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	for _, decision := range []string{policy.RefusedDayCap, policy.RefusedMonthCap, policy.RefusedProjectCap} {
+		source := capOpenings[decision].source
+		resumes := capWaitReason(decision, capGateway(decision), "the state: x", nov1)
+		if got := escalationSource(resumes); got != source {
+			t.Errorf("%s: source of the wait on its own = %q, want %q", decision, got, source)
+		}
+		if got := capWaitDecision(resumes); got != decision {
+			t.Errorf("%s: capWaitDecision = %q", decision, got)
+		}
+		if got := capRefusedSuffix(resumes); got != "the state: x" {
+			t.Errorf("%s: suffix of the wait on its own = %q", decision, got)
+		}
+		if decision == policy.RefusedDayCap {
+			continue
+		}
+		human := capRefused(policy.Refusal{Decision: decision, Reason: "the state: x"})
+		if got := escalationSource(human); got != source {
+			t.Errorf("%s: source of the wait on a human = %q, want %q", decision, got, source)
+		}
+		if got := capWaitDecision(human); got != "" {
+			t.Errorf("%s: capWaitDecision of the wait on a human = %q, want none", decision, got)
+		}
+		if got := capRefusedSuffix(human); got != "the state: x" {
+			t.Errorf("%s: suffix of the wait on a human = %q", decision, got)
+		}
+	}
+	if want := "the month cap is reached: the gateway refused this task's spend (refused_month_cap): why"; capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "why"}) != want {
+		t.Errorf("capRefused changed its string")
+	}
+	if strings.HasPrefix(monthCapReached, projectCapReached) || strings.HasPrefix(projectCapReached, monthCapReached) {
+		t.Errorf("the month and the project openings match each other")
+	}
+}
+
+// CapDecision names the cap whose attempt floor refusal it reads, and no
+// other refusal.
+func TestCapDecision(t *testing.T) {
+	for why, want := range map[string]string{
+		"the day cap cannot fund a call: Answer.\nx":            policy.RefusedDayCap,
+		"the month cap cannot fund a call: Raise.\nx":           policy.RefusedMonthCap,
+		"the project's month cap cannot fund a call: Raise.\nx": policy.RefusedProjectCap,
+		budgetRefused + ": raise the budget":                    "",
+		floorUnread + "factory/big cannot be read: no price":    "",
+		"": "",
+	} {
+		if got, ok := CapDecision(why); got != want || ok != (want != "") {
+			t.Errorf("CapDecision(%q) = (%q, %v), want %q", why, got, ok, want)
+		}
+	}
+}
+
+// A recorded Reconcile result of a running history carries the keys of the
+// day cap's wait.
+func TestRunStateDecodesTheCapKeys(t *testing.T) {
+	var st RunState
+	if err := json.Unmarshal([]byte(`{"DayCap":"r","DayCapUntil":"2026-11-01T00:00:00Z"}`), &st); err != nil {
+		t.Fatal(err)
+	}
+	if st.Cap != "r" || !st.CapUntil.Equal(time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)) {
+		t.Fatalf("state = %+v, want the cap and its turn", st)
 	}
 }
 
@@ -3221,8 +3536,8 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 // 0.01536, which the fund's floor prices too with no opening recorded. The
 // refusal names the cap and the commit that raises it; no raise of the
 // task's budget answers it, so the board offers no Fund, while the card's
-// escalation counts as one for money; the day cap's is DayCapped, which
-// the workflow waits out and the console's answer passes.
+// escalation counts as one for money; CapDecision names its cap, which
+// the console's answer passes and the workflow waits out at the day cap.
 func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 	frontier := policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}
 	store := newFakeStore()
@@ -3266,8 +3581,8 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 			if want := tc.opening + answerTail; err != nil || why != want {
 				t.Fatalf("the answer path's floor = (%q, %v), want %q", why, err, want)
 			}
-			if DayCapped(why) != (tc.decision == policy.RefusedDayCap) {
-				t.Fatalf("DayCapped = %v for %s", DayCapped(why), tc.decision)
+			if d, ok := CapDecision(why); !ok || d != tc.decision {
+				t.Fatalf("CapDecision = (%q, %v), want %s", d, ok, tc.decision)
 			}
 		})
 	}
