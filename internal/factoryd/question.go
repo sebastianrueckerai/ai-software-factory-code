@@ -882,13 +882,13 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // questionFacts reads the numbers the templates fill from: the check-in
 // spend the task has made, the policy's call cap and the card's shares,
 // the caps and money of the card and of the month wherever a template or
-// the plain tail shows them, and the pull request a budget stop's raise
-// funds. It reads nothing for a reason the templates do not cover.
+// the plain tail shows them, and the card's pull request, which a budget
+// stop's raise funds and a check-in share stop's answer verifies. It reads
+// nothing for a reason the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
-	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
+	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan, PR: t.PRNumber}
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
 		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
-		track.PR = t.PRNumber
 		return track
 	}
 	f := track
