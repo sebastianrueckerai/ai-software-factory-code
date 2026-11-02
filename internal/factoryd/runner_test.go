@@ -3680,6 +3680,34 @@ func TestSessionFactsSpendIncludesHolds(t *testing.T) {
 	}
 }
 
+// A running session's pace and spend watch read the spend the gateway
+// counts from the card's row: 4.50 settled and 0.40 held of 5.00 is 4.90
+// spent, so the pace reads 4.90, the budget warning says 98 percent with
+// 0.10 left, and the no-push trip names 4.90 of 5.00.
+func TestPaceAndSpendWatchNetHolds(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base",
+		BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, Track: "direct"}, kube, &fakeObjectStore{})
+	ctx := context.Background()
+	s := sessionSpec{id: "s1", attempt: 1, sessions: 3, messageToken: "tok"}
+	if p := runner.pace(ctx, Task{ID: "t1"}, s, 0, 0, time.Now(), time.Now().Add(time.Hour)); p == nil || p.SpentEUR != 4.9 {
+		t.Fatalf("pace = %+v, want 4.90 spent", p)
+	}
+	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour), spendSupervisor(t, nil))
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.10 of 5.00 EUR are left. ") {
+		t.Fatalf("worker got %q, want the budget warning at 4.90 of 5.00", texts)
+	}
+	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "4.90 of the card's 5.00 EUR are spent (98 percent, the line is 60) and no work is pushed" {
+		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
+	}
+}
+
 func TestRunSessionStatesTheCardsSizeInTheFacts(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, Track: "direct", Size: "medium"}
 	kube := newFakeKube()

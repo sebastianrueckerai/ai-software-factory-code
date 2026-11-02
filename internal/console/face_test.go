@@ -144,6 +144,22 @@ func TestCardFaceSpend(t *testing.T) {
 	}
 }
 
+// The near-budget flag counts the holds: 3.80 settled of 5.00 is 76
+// percent, under the 80 percent line, and 3.80 with a 0.40 hold is 84
+// percent, over it.
+func TestNearBudgetNetsHolds(t *testing.T) {
+	r := newRig(t)
+	held := factoryd.Task{ID: "t-held", Kind: "agent", Status: "running", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 3.8, HeldEUR: 0.4}
+	settled := held
+	settled.ID, settled.HeldEUR = "t-settled", 0
+	if !r.c.card(held).NearBudget {
+		t.Error("4.20 of 5.00 with the hold is not near its budget")
+	}
+	if r.c.card(settled).NearBudget {
+		t.Error("3.80 of 5.00 with no hold is near its budget")
+	}
+}
+
 // The card's money nets the gateway's holds, the figure its caps and
 // floor count: 4.50 settled and 0.40 held of 5.00 shows 4.90 spent on
 // the face and in the drawer, and the Extend form starts from 0.10 left.
