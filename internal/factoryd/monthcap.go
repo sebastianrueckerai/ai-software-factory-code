@@ -220,17 +220,15 @@ func (a *MonthAlarm) Loop(ctx context.Context, every time.Duration) {
 func (a *MonthAlarm) Check(ctx context.Context) error {
 	v := a.Current()
 	limit := v.Document.Budget.MonthEUR
-	if limit <= 0 {
-		return nil
-	}
 	m, err := a.Store.MonthSpend(ctx, time.Now())
 	if err != nil {
 		return err
 	}
-	refused := m.Refusal != "" && !m.RefusedAt.Before(v.ActivatedAt.Add(gateway.PolicyTTL))
-	if err := a.closeLifted(ctx, v, m, limit); err != nil {
-		return err
+	closeErr := a.closeLifted(ctx, v, m, limit)
+	if limit <= 0 {
+		return closeErr
 	}
+	refused := m.Refusal != "" && !m.RefusedAt.Before(v.ActivatedAt.Add(gateway.PolicyTTL))
 	for _, pct := range []int{50, 80, 100} {
 		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && refused) {
 			continue
@@ -241,40 +239,42 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 		}
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertMonthCap, fp)
 		if err != nil {
-			return err
+			return errors.Join(err, closeErr)
 		}
 		if !ok {
 			detail := map[string]any{"month": m.Month, "spent_eur": m.EUR, "cap_eur": limit, "refusal": m.Refusal, "policy_version": v.ID}
 			if row.ID, err = a.Store.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: strconv.Itoa(pct), Fingerprint: fp,
 				Verdict: VerdictReal, ResolvedBy: "factoryd", Detail: detail}); err != nil {
-				return err
+				return errors.Join(err, closeErr)
 			}
 			log.Printf("month cap: %s spent %.2f EUR of %.2f EUR, %d percent alert", m.Month, m.EUR, limit, pct)
 		}
 		if pct == 100 && row.TaskID == "" && row.ID != 0 {
 			if err := a.file(ctx, v, m, row.ID); err != nil {
-				return err
+				return errors.Join(err, closeErr)
 			}
 		}
 	}
-	return nil
+	return closeErr
 }
 
 // closeLifted closes every open cap card whose month has ended, and those of
-// this month whose cap a raise lifted above the cap's alert, the spend
-// being below the cap in force.
+// this month whose cap a raise lifted above the card's. A card that fails to
+// close does not stop the others; the failures are joined.
 func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthSpend, limit float64) error {
 	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return err
 	}
+	var errs []error
 	for _, t := range open {
 		if t.Source != SourceMonthCap {
 			continue
 		}
 		row, ok, err := a.Store.AlertByTask(ctx, AlertMonthCap, t.ID)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		if !ok {
 			continue
@@ -285,21 +285,23 @@ func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthS
 		switch {
 		case month < m.Month:
 			msg = fmt.Sprintf("The UTC month %s ended: the cap card closes.", month)
-		case month == m.Month && limit > capEUR && m.EUR < limit:
+		case month == m.Month && limit > capEUR:
 			msg = fmt.Sprintf("budget.month_eur is %s in policy version %d: the cap card closes.", strconv.FormatFloat(limit, 'f', -1, 64), v.ID)
 		default:
 			continue
 		}
 		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		countOutcome(ctx, a.Metrics, a.Store, t, "done")
 		log.Printf("month cap: %s closed issue #%d of task %s", msg, t.IssueNumber, t.ID)
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // file opens the cap's human-lane issue and links it to alert id.

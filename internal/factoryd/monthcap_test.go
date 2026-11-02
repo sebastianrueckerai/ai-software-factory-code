@@ -18,9 +18,10 @@ import (
 
 const proxyRefusal = "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): Budget has been exceeded! Current cost: 55.0123, Max budget: 55.0"
 
-// monthPolicy is a policy.yaml whose month_eur is on line 7.
+// refusedAt is when the tests' gateway refusal was made.
 var refusedAt = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
 
+// monthPolicy is a policy.yaml whose month_eur is on line 7.
 const monthPolicy = "# yaml-language-server: $schema=schema/policy.schema.json\nversion: 1\n\nbudget:\n  task_default_eur: 2\n  day_eur: 20\n  month_eur: 50\n"
 
 func monthAlarm(t *testing.T, store *fakeStore, monthEUR float64) (*MonthAlarm, *alertForgejo) {
@@ -437,5 +438,99 @@ func TestMonthAlarmClosesLastMonthsCard(t *testing.T) {
 	}
 	if got := closeComments(t, store, card.ID); !slices.Equal(got, []string{"The UTC month 2026-09 ended: the cap card closes."}) {
 		t.Fatalf("close comments = %q", got)
+	}
+}
+
+func versionAt(id int64, limit float64, activated time.Time) func() policy.Version {
+	return func() policy.Version {
+		return policy.Version{ID: id, Commit: "c9", ActivatedAt: activated,
+			Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{MonthEUR: limit}}}}
+	}
+}
+
+// Hand-derived: a September card (cap 50) and an October card (cap 544) are
+// open; the October card's filing check had September's close fail. At 600
+// with 605 spent, a close fails for one of the two cards: the other still
+// closes, the 600 card and alert are filed, and Check returns the error.
+func TestMonthAlarmCloseFailureStopsNothing(t *testing.T) {
+	ctx := context.Background()
+	captureLog(t)
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 50)
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 50}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	sept := taskOf(t, store, "2026-09/100/50")
+	alarm.Current = versionAt(4, 544, time.Now().Add(-time.Hour))
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+	fj.failClose = 1
+	if err := alarm.Check(ctx); err == nil {
+		t.Fatal("a failed close returned no error")
+	}
+	oct := taskOf(t, store, "2026-10/100/544")
+	if oct.Status != "waiting-human" || taskOf(t, store, "2026-09/100/50").Status != "waiting-human" {
+		t.Fatalf("after the failed close: September %s, October %s, want both waiting", taskOf(t, store, "2026-09/100/50").Status, oct.Status)
+	}
+	alarm.Current = versionAt(5, 600, time.Now().Add(-time.Minute))
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 605}
+	fj.failClose = 1
+	if err := alarm.Check(ctx); err == nil {
+		t.Fatal("a failed close returned no error")
+	}
+	done := 0
+	for _, id := range []string{sept.ID, oct.ID} {
+		if tk, _, _ := store.Task(ctx, id); tk.Status == "done" {
+			done++
+		}
+	}
+	if done != 1 {
+		t.Fatalf("%d of the two old cards closed, want 1", done)
+	}
+	if got := taskOf(t, store, "2026-10/100/600"); got.Status != "waiting-human" {
+		t.Fatalf("600 card = %+v", got)
+	}
+	if _, ok, _ := store.AlertByFingerprint(ctx, AlertMonthCap, "2026-10/100/600"); !ok {
+		t.Fatal("no 600 alert")
+	}
+}
+
+// A raise to 600 with the spend already at 605 closes the 544 card and
+// files the 600 card in the same check.
+func TestMonthAlarmClosesTheOldCardWhenTheNewCapIsPassed(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 544)
+	alarm.Current = versionAt(4, 544, time.Now().Add(-time.Hour))
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	alarm.Current = versionAt(5, 600, time.Now().Add(-time.Minute))
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 605}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if taskOf(t, store, "2026-10/100/544").Status != "done" || taskOf(t, store, "2026-10/100/600").Status != "waiting-human" || len(fj.issues) != 2 {
+		t.Fatalf("old %s, new %s, issues %d", taskOf(t, store, "2026-10/100/544").Status, taskOf(t, store, "2026-10/100/600").Status, len(fj.issues))
+	}
+}
+
+// Under a cap of 0 nothing is raised, but a card of an ended month closes.
+func TestMonthAlarmClosesAnEndedMonthsCardUnderACapOfZero(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, _ := monthAlarm(t, store, 50)
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 50}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	alarm.Current = versionAt(6, 0, time.Now().Add(-time.Hour))
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 3}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, store, "2026-09/100/50"); got.Status != "done" || len(monthAlerts(store)) != 3 {
+		t.Fatalf("September's card = %s, alerts %v", got.Status, monthAlerts(store))
 	}
 }
