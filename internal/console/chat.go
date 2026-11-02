@@ -174,6 +174,14 @@ type turn struct {
 	pool *factoryd.PoolCapture
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
+	// landed are the ids of the rows this turn landed out of the queue
+	// (their ids after landing), failed says it failed with rows read —
+	// they go back to the queue for one retry turn — and retry marks
+	// that turn, whose own failure strands the rows for the next member
+	// turn instead of chaining retries.
+	landed []int64
+	failed bool
+	retry  bool
 	// sctx is the context of the turn's model calls and of its waits for
 	// the thread's turn and a model slot, which a member's stop ends (the
 	// chat-stop plan); nil: the request's own. stopEntry is the turn's
@@ -231,6 +239,7 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 // quiet turn, whose stream no member reads, leaves the failure in its
 // thread as a row too, so it never ends unseen.
 func (t *turn) fail(msg string) {
+	t.failed = true
 	t.send("error", map[string]string{"message": msg})
 	if !t.unread {
 		return
@@ -743,9 +752,17 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if pos > 0 {
-		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id); err != nil {
+		landed, err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id)
+		if err != nil {
 			log.Printf("console: start the queued turn of %s on %s: %v", t.owner, t.p.Repository, err)
 			t.fail("The queued message could not start its turn; send it again.")
+			return
+		}
+		if landed == 0 {
+			// a turn of the thread already read the message: its answer is
+			// this POST's end
+			t.send("joined", map[string]int64{"id": id})
+			t.send("done", struct{}{})
 			return
 		}
 	}
@@ -927,8 +944,9 @@ func scrubTokens(text string) (string, bool) {
 // then model calls on chat task id, each ending its tool calls, until an
 // answer calls none or proposes one and no message came meanwhile. A
 // message the member sends while it runs joins it and the next call
-// reads it; one still unread when the turn fails lands unanswered. A call
-// the gateway refuses for money ends the turn on a stop row (stop).
+// reads it; one the turn read but failed to answer goes back to the
+// queue for one retry turn of the server. A call the gateway refuses for
+// money ends the turn on a stop row (stop).
 func (t *turn) run(id, notice string) {
 	t.task = id
 	ctx := t.r.Context()
@@ -938,8 +956,25 @@ func (t *turn) run(id, notice string) {
 		if sctx.Err() != nil {
 			return // a stopped turn leaves the messages that joined it unread
 		}
+		var stranded []int64
 		for ids := t.c.turns.heard(t.key(), true); len(ids) > 0; ids = t.c.turns.heard(t.key(), true) {
+			if t.failed {
+				stranded = append(stranded, ids...) // their rows stay queued for the retry
+				continue
+			}
 			t.land(ids)
+		}
+		if !t.failed {
+			return
+		}
+		ctx := context.WithoutCancel(t.r.Context())
+		for _, id := range t.landed {
+			if err := t.c.cfg.Chat.RequeueChatMessage(ctx, t.p.Repository, t.owner, id); err != nil {
+				log.Printf("console: requeue the message %d of %s on %s: %v", id, t.owner, t.p.Repository, err)
+			}
+		}
+		if !t.retry && (len(stranded) > 0 || len(t.landed) > 0) {
+			go t.c.retryTurn(ctx, t.p, t.owner, t.conv)
 		}
 	}()
 	t.landUnread()
@@ -1109,11 +1144,18 @@ func (t *turn) questionTurn(row factoryd.ChatMessage) {
 }
 
 // land puts the messages that joined the turn, rows ids, after the rows
-// it stored so far, where the context reads them.
+// it stored so far, where the context reads them. A row another turn
+// already landed lands nowhere: its id comes back 0 and the turn did not
+// read it.
 func (t *turn) land(ids []int64) {
 	for _, id := range ids {
-		if err := t.c.cfg.Chat.StartQueued(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, id); err != nil {
+		landed, err := t.c.cfg.Chat.StartQueued(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, id)
+		if err != nil {
 			log.Printf("console: land the joined message %d of %s on %s: %v", id, t.owner, t.p.Repository, err)
+			continue
+		}
+		if landed > 0 {
+			t.landed = append(t.landed, landed)
 		}
 	}
 }
@@ -1134,6 +1176,18 @@ func (t *turn) landUnread() {
 		}
 	}
 	t.land(ids)
+}
+
+// queuedRows says the thread still holds rows in the queue; a read that
+// fails says yes, so its caller's turn rather than a skip settles them.
+func (t *turn) queuedRows() bool {
+	ctx := context.WithoutCancel(t.r.Context())
+	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, compactRead)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return true
+	}
+	return slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Queued })
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's

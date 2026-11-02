@@ -15,7 +15,7 @@ import (
 // check-in, the caps, the gates and the sweep compose, with their
 // numbers; a reason no template covers shapes nothing.
 func TestShapedQuestionFamilies(t *testing.T) {
-	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90}
+	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
 	for name, tt := range map[string]struct {
 		reason string
 		facts  QuestionFacts
@@ -24,35 +24,44 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		info   string // the whole info, where the row pins it
 		values []string
 		source string
+		rec    []string
 	}{
 		"call cap": {
 			reason: checkinSpendAsk + "check-in call cap reached",
 			facts:  facts,
 			askHas: []string{"no answer within its 20 calls"},
-			whyHas: []string{"spent its calls on evidence and gave no decision"},
-			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent.",
+			whyHas: []string{"spent its calls on evidence and gave no decision", "€4.10 of its €5.00 budget", "€0.84 of it the check-in's €0.90 share"},
+			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance, and the card's budget must cover its rung's session floor of €0.20. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in share spent": {
-			reason: checkinSpendAsk + "the check-in's share of the budget is spent",
+			reason: checkinSpendAsk + CheckinShareSpent,
 			facts:  facts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
-			info:   "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent.",
+			whyHas: []string{"€4.10 of its €5.00 budget"},
+			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"session cap": {
-			reason: capReached,
-			askHas: []string{"session cap is reached", "one more session"},
+			reason: capReached + "\nlast: no push: the tests fail\n- the flag is read before it is set",
+			facts:  QuestionFacts{SessionCap: 6, SessionGrants: 2, BudgetEUR: 5, LeftEUR: 1.6},
+			askHas: []string{"session cap of 6 sessions", "2 granted by your answers", "one more session"},
+			whyHas: []string{"no push: the tests fail", "the flag is read before it is set"},
+			info:   "A grant starts one more session; your comment goes with it as guidance. No answer leaves the card waiting here. The card holds €1.60 of its €5.00 budget.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"budget too low": {
 			reason: budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR",
+			facts:  QuestionFacts{PR: 4711},
 			askHas: []string{"€0.100 of its €2.000 budget", "factory/small needs €0.300000"},
 			values: []string{FundChoiceValue(0.2), FundChoiceValue(2), AnswerPark},
+			source: "the factory's",
+			rec:    []string{"Fund the €0.20 raise: the card holds pull request #4711"},
 		},
 		"month cap": {
 			reason: monthCapReached + "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR",
-			askHas: []string{"month cap is reached", "session was refused"},
+			facts:  QuestionFacts{MonthSpentEUR: 544.12, MonthCapEUR: 600, Month: "2026-11"},
+			askHas: []string{"month cap of €600.00 is reached", "€544.12 spent", "2026-11", "session was refused"},
 			whyHas: []string{"0.300000 EUR", "0.100000 EUR"},
 			values: []string{AnswerFund, AnswerPark, AnswerClose},
 		},
@@ -116,7 +125,98 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			if q.Source != tt.source {
 				t.Errorf("source %q, want %q", q.Source, tt.source)
 			}
+			for _, want := range tt.rec {
+				if !strings.Contains(q.Recommendation, want) {
+					t.Errorf("the recommendation %q misses %q", q.Recommendation, want)
+				}
+			}
 		})
+	}
+}
+
+// The spend stops' fifth part rides the work state the stop already
+// carries: an approved head recommends going on with its money held, a
+// concerned or missing verdict recommends nothing.
+func TestSpendStopsRecommendFromTheApproveVerdict(t *testing.T) {
+	f := QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90, BudgetEUR: 5, LeftEUR: 0.9}
+	want := "Go on: the last review approved the head, and the card holds €0.90 of its €5.00."
+	for _, family := range []string{checkinSpendAsk + "check-in call cap reached", checkinSpendAsk + CheckinShareSpent} {
+		q := ShapedQuestion(family+"\n- the head is green\n- review: approve", f, nil)
+		if q.Recommendation != want {
+			t.Errorf("%s: recommendation %q, want %q", family, q.Recommendation, want)
+		}
+		if q.Source != "the factory's" {
+			t.Errorf("%s: source %q, want the factory's", family, q.Source)
+		}
+		for _, body := range []string{"\n- review: concerns", "\n- the head is green"} {
+			if q := ShapedQuestion(family+body, f, nil); q.Recommendation != "" {
+				t.Errorf("%s with %q: recommendation %q, want none", family, body, q.Recommendation)
+			}
+		}
+	}
+}
+
+// The budget stop recommends the raise only when a pull request waits on
+// it: without one the money alone grounds nothing.
+func TestBudgetRaiseRecommendationNamesThePullRequest(t *testing.T) {
+	reason := budgetRefused + ": 0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR"
+	if q := ShapedQuestion(reason, QuestionFacts{}, nil); q.Recommendation != "" {
+		t.Errorf("recommendation without a pull request = %q, want none", q.Recommendation)
+	}
+	q := ShapedQuestion(reason, QuestionFacts{PR: 4711}, nil)
+	want := "Fund the €0.20 raise: the card holds pull request #4711, and the raise funds its next session."
+	if q.Recommendation != want {
+		t.Errorf("recommendation = %q, want %q", q.Recommendation, want)
+	}
+}
+
+// The plain check-in tail carries its pace: the card's spend against its
+// caps, read at the stop. Other stops carry no such line.
+func TestPlainCheckinStopCarriesThePace(t *testing.T) {
+	f := QuestionFacts{BudgetEUR: 5, SpentEUR: 4.1, SessionCap: 6, Attempts: 3}
+	q := ShapedQuestion("check-in: goal conflict: the card edits the wrong module\n- finding one", f, nil)
+	want := "The card has spent €4.10 of its €5.00 budget, 3 attempts against its session cap of 6."
+	if !strings.HasSuffix(q.Why, want) {
+		t.Errorf("why %q misses the pace %q", q.Why, want)
+	}
+	if q := ShapedQuestion(gateStopped+"something else\nWhy: x", f, nil); strings.Contains(q.Why, "3 attempts") {
+		t.Errorf("a gate stop carries the check-in pace: %q", q.Why)
+	}
+}
+
+// The stop templates' numbers, read per prefix: the month's spend and
+// cap at a month-cap stop, the card's caps, grants and money at the
+// caps and the plain check-in tail, the pull request at a budget stop,
+// the grant's share at the check-in spend stops.
+func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
+	store := newFakeStore()
+	store.checkinSpent = map[string]float64{"t1": 1.2}
+	store.monthSpend = MonthSpend{Month: "2026-11", EUR: 544.12}
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{
+		Limits: policy.Limits{CheckinShare: 20, Sessions: 3},
+		Risk:   policy.Risk{LargeLines: 1000},
+		Budget: policy.Budget{MonthEUR: 600},
+	}}}
+	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", Size: "small", ModelAlias: "factory/small", BudgetEUR: 5, SpentEUR: 4.5, PRNumber: 4711, Usage: TaskUsage{ExtraAttempts: 1}}
+
+	if f := r.questionFacts(context.Background(), task, monthCapReached+"detail"); f.MonthSpentEUR != 544.12 || f.MonthCapEUR != 600 || f.Month != "2026-11" {
+		t.Errorf("month numbers = %v of %v (%s), want 544.12 of 600 (2026-11)", f.MonthSpentEUR, f.MonthCapEUR, f.Month)
+	}
+	if f := r.questionFacts(context.Background(), task, projectCapReached+"detail"); f.MonthCapEUR != 0 {
+		t.Errorf("a project cap stop reads the factory month: %v", f.MonthCapEUR)
+	}
+	if f := r.questionFacts(context.Background(), task, capReached+"\nlast: x"); f.SessionCap != 4 || f.SessionGrants != 1 || f.Attempts != 0 || f.LeftEUR != 0.5 {
+		t.Errorf("cap numbers = cap %d grants %d attempts %d left %v, want 4, 1, 0, 0.5", f.SessionCap, f.SessionGrants, f.Attempts, f.LeftEUR)
+	}
+	if f := r.questionFacts(context.Background(), task, "check-in: goal conflict: x"); f.BudgetEUR != 5 || f.SessionCap != 4 {
+		t.Errorf("the plain check-in tail reads no money or cap: %+v", f)
+	}
+	if f := r.questionFacts(context.Background(), task, budgetRefused+": detail"); f.PR != 4711 {
+		t.Errorf("the budget stop reads no pull request: %d", f.PR)
+	}
+	if f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent); f.CheckinGrant != 1 {
+		t.Errorf("CheckinGrant = %v, want the base share 1", f.CheckinGrant)
 	}
 }
 

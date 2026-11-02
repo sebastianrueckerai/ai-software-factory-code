@@ -185,7 +185,7 @@ func TestPGStorePokeDeliveries(t *testing.T) {
 	}
 	equalStrings(t, "the landed rows before the landing", loginsOf(late), []string{"bob", "dana"})
 	for _, id := range line.landed["sebastian"] {
-		if err := s.StartQueued(ctx, "sf/code", "sebastian", id); err != nil {
+		if _, err := s.StartQueued(ctx, "sf/code", "sebastian", id); err != nil {
 			t.Fatal(err)
 		}
 	}

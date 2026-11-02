@@ -95,7 +95,7 @@ func TestBoundedStartAdmitsUnderTheBound(t *testing.T) {
 	ctx := context.Background()
 	store, rec, bounded := boundedFixture(t, 2,
 		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 2})
 	if err := bounded.Start(ctx, "t-q"); err != nil {
 		t.Fatal(err)
 	}
@@ -171,9 +171,9 @@ func TestPullQueuedAdmitsInFilingOrder(t *testing.T) {
 	// queued cards start, the third stays
 	store, rec, bounded := boundedFixture(t, 3,
 		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", CreatedAt: base},
-		Task{ID: "t-q3", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(3 * time.Minute)},
-		Task{ID: "t-q1", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(1 * time.Minute)},
-		Task{ID: "t-q2", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(2 * time.Minute)})
+		Task{ID: "t-q3", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(3 * time.Minute), IssueNumber: 3},
+		Task{ID: "t-q1", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(1 * time.Minute), IssueNumber: 1},
+		Task{ID: "t-q2", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(2 * time.Minute), IssueNumber: 2})
 	pullQueued(ctx, store, bounded, "demo/app")
 	if !slices.Equal(rec.starts, []string{"t-q1", "t-q2"}) {
 		t.Fatalf("starts = %v, want the two oldest, the third over the bound", rec.starts)
@@ -209,7 +209,7 @@ func TestTaskEndedHandsTheFreedSlotToTheOldestQueuedCard(t *testing.T) {
 	base := time.Now()
 	store, rec, bounded := boundedFixture(t, 1,
 		Task{ID: "t-done", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "done", CreatedAt: base},
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(time.Minute)})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(time.Minute), IssueNumber: 2})
 	taskEnded(ctx, &Timeline{Objects: &fakeObjectStore{}}, store, nil, bounded, store.tasks["t-done"], "done", "")
 	if !slices.Equal(rec.starts, []string{"t-q"}) {
 		t.Fatalf("starts = %v, want the freed slot to start the queued card", rec.starts)
@@ -262,7 +262,7 @@ func TestPullQueuedAdmitsWhileAWaitingHumanCardParks(t *testing.T) {
 	store, rec, bounded := boundedFixture(t, 2,
 		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", CreatedAt: base},
 		Task{ID: "t-wh", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "waiting-human", CreatedAt: base},
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(time.Minute)})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", CreatedAt: base.Add(time.Minute), IssueNumber: 3})
 	pullQueued(ctx, store, bounded, "demo/app")
 	if !slices.Equal(rec.starts, []string{"t-q"}) {
 		t.Fatalf("starts = %v, want the queued card in the slot the parked card freed", rec.starts)
@@ -330,7 +330,7 @@ func TestBoundedStartWaitsForAnOpenDependency(t *testing.T) {
 		t.Run(status, func(t *testing.T) {
 			store, rec, bounded := boundedFixture(t, 3,
 				Task{ID: "t-dep", Repository: "demo/app", Kind: "agent", Track: "direct", Status: status},
-				Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+				Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 2})
 			store.AddTaskDeps(ctx, "t-q", []string{"t-dep"})
 			if err := bounded.Start(ctx, "t-q"); err != nil {
 				t.Fatal(err)
@@ -360,7 +360,7 @@ func TestBoundedStartAdmitsACardWhoseDependencyClosed(t *testing.T) {
 	store, rec, bounded := boundedFixture(t, 1,
 		Task{ID: "t-dep", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "closed"},
 		Task{ID: "t-other", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 3})
 	store.AddTaskDeps(ctx, "t-q", []string{"t-dep", "t-other"})
 	bounded.Policy = func() policy.Tree {
 		return policy.Tree{Projects: map[string]policy.ProjectConfig{"demo": {Repository: "demo/app", WorkInProgress: 2}}}
@@ -378,7 +378,7 @@ func TestBoundedStartAdmitsACardWhoseDependencyClosed(t *testing.T) {
 func TestBoundedStartAdmitsNothingAtTheProjectBudget(t *testing.T) {
 	ctx := context.Background()
 	store, rec, bounded := boundedFixture(t, 2,
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 1})
 	bounded.Policy = func() policy.Tree {
 		return policy.Tree{Projects: map[string]policy.ProjectConfig{
 			"demo": {Repository: "demo/app", WorkInProgress: 2, Budget: &policy.ProjectBudget{MonthEUR: 10}}}}
@@ -422,5 +422,35 @@ func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
 				t.Fatalf("starts %v, admitted at %v: want the parked card's slot to start the queued one", rec.starts, q.AdmittedAt)
 			}
 		})
+	}
+}
+
+// A plan files its card row first and its issue last; in between a sweep
+// must not start the half-made card: the bound declines it without
+// failing, and the next sweep starts it once its issue is filed.
+func TestBoundedStartLeavesAHalfFiledCard(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 2,
+		Task{ID: "t-half", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+	if err := bounded.Start(ctx, "t-half"); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.starts) != 0 {
+		t.Fatalf("starts = %v, want none for a card with no issue", rec.starts)
+	}
+	if q, _, _ := store.Task(ctx, "t-half"); q.AdmittedAt != nil {
+		t.Fatal("a half-filed card was stamped admitted")
+	}
+	if listed, err := store.ListQueuedByRepository(ctx, "demo/app"); err != nil || len(listed) != 0 {
+		t.Fatalf("queued of demo/app = %v (err %v); want the half-made card unlisted", listed, err)
+	}
+	q, _, _ := store.Task(ctx, "t-half")
+	q.IssueNumber = 7
+	store.tasks["t-half"] = q
+	if err := bounded.Start(ctx, "t-half"); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(rec.starts, "t-half") {
+		t.Fatalf("starts = %v, want the card once its issue is filed", rec.starts)
 	}
 }

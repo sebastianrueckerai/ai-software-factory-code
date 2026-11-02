@@ -827,6 +827,9 @@ func (s *accBatchStore) OpenDependencies(ctx context.Context, id string) ([]fact
 func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]string, error) {
 	panic("unused")
 }
+func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
@@ -897,6 +900,10 @@ func (s *accBatchStore) EndRoutineRun(ctx context.Context, project, routine stri
 }
 func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
 	panic("unused")
+}
+
+func (*accBatchStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {
+	return factoryd.MonthSpend{}, nil
 }
 
 func (*accBatchStore) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
@@ -1034,17 +1041,26 @@ func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64
 	return 0, nil, nil
 }
 
-func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[i]
 	f.msgs = slices.Delete(f.msgs, i, i+1)
 	m.ID, m.Queued, m.At = f.nextID(), false, time.Now()
 	f.msgs = append(f.msgs, m)
+	return m.ID, nil
+}
+
+func (f *accBatchChat) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id }); i >= 0 {
+		f.msgs[i].Queued = true
+	}
 	return nil
 }
 

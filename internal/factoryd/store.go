@@ -315,7 +315,8 @@ type Store interface {
 	// the queued cards not yet admitted, the complement of CountAdmitted's
 	// slots (roadmap 239's queue cap).
 	CountQueue(ctx context.Context, repository string) (int, error)
-	// ListQueuedByRepository lists repository's queued cards in filing
+	// ListQueuedByRepository lists repository's queued cards with an
+	// issue, in filing
 	// order, the oldest first: the order a freed slot admits them in.
 	// created_at ties (Forgejo stamps whole seconds) break by issue
 	// number, the filing sequence, so a same-second burst keeps its order.
@@ -615,11 +616,17 @@ type Store interface {
 	// ProjectMonthSpend is repository's ledger spend in the UTC month of
 	// at, as the gateway's project headroom counts it.
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error)
+	// MonthSpend is the whole factory's ledger spend in the UTC month of
+	// at, as the month cap counts it.
+	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
 	// WaitingDependents are the tasks in waiting-deps that wait on id.
 	WaitingDependents(ctx context.Context, id string) ([]string, error)
+	// Dependents are the cards that depend on task id, each with its
+	// status, by issue number.
+	Dependents(ctx context.Context, id string) ([]Dependency, error)
 	// ReplaceFailedCard puts plan card t in failed card id's place in one
 	// transaction: id lets go of its key, which t holds; t is inserted with
 	// every dependency of id, and every task waiting on id waits on t.
@@ -1824,10 +1831,12 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 // ListQueuedByRepository lists repository's bound queued cards in filing
 // order, the oldest first: created_at, then issue number (Forgejo stamps
 // whole seconds, the number keeps a same-second burst's order), then id.
-// pullQueued, the bound's admission pass, is its sole caller.
+// A card with no issue, half filed by a plan (its row first, its issue
+// last), waits for its issue: it holds no slot. pullQueued, the bound's
+// admission pass, is its sole caller.
 func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+`
-		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued'
+		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued' AND issue_number > 0
 		ORDER BY created_at, issue_number, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
