@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"log"
@@ -80,9 +79,7 @@ func (n *Namer) Name(ctx context.Context, t Task, title, outcome, summary string
 		taken = nil
 	}
 	v := n.Current()
-	// the policy names the title alias for chat threads only; a plan
-	// names through the same small tier
-	alias := cmp.Or(v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeTitle), policy.Small)
+	alias := v.Document.FactoryModel(t.RequiredCapabilities, policy.PurposeTitle)
 	for attempt := 1; attempt <= nameAttempts; attempt++ {
 		answer, _, err := n.Model.Chat(ctx, t.ID, alias, policy.PurposeTitle,
 			v.Document.Limits.SupervisorTimeout, namerPrompt, nameFacts(title, outcome, summary, taken, attempt))

@@ -945,8 +945,9 @@ const (
 	// member pasted, a session's analyze_image at a card's image or a
 	// workspace file. The only purpose an image part may ride.
 	PurposeVision = "vision"
-	// PurposeTitle is a chat thread's naming call (roadmap 304): one
-	// cheap call that writes the thread's title from its first message.
+	// PurposeTitle is a naming call: a chat thread's (roadmap 304), one
+	// cheap call that writes the thread's title from its first message,
+	// and a plan's, which names the plan from its first revision.
 	PurposeTitle = "title"
 	// PurposeResearch is the chat's research subagent: the bounded loop
 	// behind the research tool, on the class below premium, hard-coded.
@@ -1414,23 +1415,23 @@ const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// digest's is Small, on a chat's task and a session's alike. The
-// project agent's (operator) is the chat block's; the compaction's and
-// the thread naming's are Small, for a chat task only; a chat task's
-// look is the chat block's vision model, a session's its class's.
+// digest's and the naming's are Small, on any task. The project agent's
+// (operator) is the chat block's; the compaction's is Small, for a chat
+// task only; a chat task's look is the chat block's vision model, a
+// session's its class's.
 func (d Document) FactoryModel(classes []string, purpose string) string {
 	chat := slices.Contains(classes, ClassChat)
-	if purpose == PurposeDigest {
+	if purpose == PurposeDigest || purpose == PurposeTitle {
 		return Small
 	}
 	if purpose == PurposeVision && chat {
 		return d.ChatOf(ProjectConfig{}).VisionModel
 	}
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeTitle || purpose == PurposeResearch {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeResearch {
 		switch {
 		case !chat:
 			return ""
-		case purpose == PurposeCompact, purpose == PurposeTitle:
+		case purpose == PurposeCompact:
 			return Small
 		case purpose == PurposeResearch:
 			return Big

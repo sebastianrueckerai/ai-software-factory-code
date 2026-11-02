@@ -2892,6 +2892,28 @@ func TestFactorydDigestCallOnACodersTask(t *testing.T) {
 	}
 }
 
+// A plan's naming is factoryd's Small title call on the plan's own task,
+// whatever its classes, booked under the task; no other alias names it.
+func TestFactorydTitleCallOnAPlansTask(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0001"}})
+	store := newMemStore(Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice}})
+	h := s.Routes("test")
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeTitle, chatBody(policy.Small)); rr.Code != http.StatusOK {
+		t.Fatalf("the naming call = %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+	if want := []ledgerRow{{"42", "title/small", 0.0001, policy.KindModel}}; !reflect.DeepEqual(store.ledger, want) {
+		t.Fatalf("ledger = %+v, want %+v", store.ledger, want)
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeTitle, chatBody(policy.Big)); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
+		t.Fatalf("a naming call on big = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+}
+
 // The sniffer reads legal headers a strict walk would refuse: JPEG's
 // fill bytes between markers, and the VP8X canvas's size-minus-one.
 func TestImageDimsReadsFillBytesAndTheTrueCanvas(t *testing.T) {

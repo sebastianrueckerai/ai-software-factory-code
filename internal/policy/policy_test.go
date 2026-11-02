@@ -841,7 +841,8 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{"coder"}, PurposeDigest, Small},
 		{[]string{"plain"}, PurposeDigest, Small},
 		{[]string{ClassChat}, PurposeDigest, Small},
-		{[]string{"coder"}, PurposeTitle, ""},
+		{[]string{"coder"}, PurposeTitle, Small},
+		{[]string{"planner"}, PurposeTitle, Small},
 		{[]string{ClassChat}, PurposeTitle, Small},
 	} {
 		if got := d.FactoryModel(tc.classes, tc.purpose); got != tc.want {
