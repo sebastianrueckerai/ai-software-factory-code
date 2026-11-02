@@ -425,6 +425,12 @@ type Roller struct {
 	// applied that commit or a newer one (judgedLive, setFlux). A restart
 	// forgets it, and the commit, still unjudged, takes the same path again.
 	fluxWaiting ActionRun
+	// stall is the main run stalledMain last saw blocked with a red job,
+	// and since when
+	stall struct {
+		run  int64
+		seen time.Time
+	}
 }
 
 // Run polls until ctx ends. A failed poll logs once until it recovers.

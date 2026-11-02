@@ -40,6 +40,10 @@ const (
 	// plain git revert conflicts (RevertGroup).
 	SourceGroupRevert = "group-revert"
 	mainRedBound      = 2 * time.Hour
+	// stallGrace is how long a main run stays blocked with a red job
+	// before stalledMain takes it as stalled: a runner that reports its
+	// job's failure has Forgejo free the jobs that need it within a second
+	stallGrace = 5 * time.Minute
 )
 
 // QueuePause is a project's paused merge queue: main is red since the run.
@@ -157,10 +161,14 @@ func (s *PGStore) ClearRevertPause(ctx context.Context, project, revertTask stri
 // hold with no card.
 // While the newest runs or waits (a red one's re-run too), or ended
 // neither green nor red otherwise, nothing changes: an older run says
-// nothing of main's head. runs are the poll's, newest first by id.
+// nothing of main's head. A stalled run (stalledMain) is the exception: it
+// holds main's CI lane, so it is red to the queue as a red newest is, its
+// failed jobs re-run once, unless a card of the pause stands.
+// runs are the poll's, newest first by id.
 func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	newest := newestMain(runs)
-	if newest == nil || (newest.Status != "success" && newest.Status != "failure" && newest.Status != "cancelled") {
+	stalled := r.stalledMain(ctx, runs)
+	if stalled == nil && (newest == nil || (newest.Status != "success" && newest.Status != "failure" && newest.Status != "cancelled")) {
 		return nil
 	}
 	project := r.Repo.String()
@@ -170,6 +178,16 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	}
 	if pause.Plan != "" {
 		return nil
+	}
+	if stalled != nil {
+		if paused && pause.FixTask != "" {
+			return nil
+		}
+		since := time.Now()
+		if paused {
+			since = pause.Since
+		}
+		return r.pause(ctx, *stalled, since)
 	}
 	switch {
 	case newest.Status == "success" && paused:
@@ -284,6 +302,38 @@ func newestMain(runs []ActionRun) *ActionRun {
 	return newest
 }
 
+// stalledMain answers main's oldest push run blocked with a failed or
+// cancelled job for stallGrace: Forgejo's zombie sweep failed the job of a
+// runner that died and never freed the jobs that need it, so the run
+// never ends, holds main's CI lane (concurrency ci-main), and every newer
+// run waits behind it (main's run 2317 on 2026-11-02: 2 h 22 min, until a
+// person re-ran it). nil for none, and while Forgejo does not list the
+// run's jobs.
+func (r *Roller) stalledMain(ctx context.Context, runs []ActionRun) *ActionRun {
+	var oldest *ActionRun
+	for i := range runs {
+		if x := &runs[i]; x.PrettyRef == prBase && x.Status == "blocked" && (oldest == nil || x.ID < oldest.ID) {
+			oldest = x
+		}
+	}
+	if oldest == nil {
+		r.stall.run = 0
+		return nil
+	}
+	jobs, err := r.Forgejo.ActionRunJobs(ctx, r.Token, r.Repo.Owner, r.Repo.Name, oldest.ID)
+	if err != nil || !slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Status == "failure" || j.Status == "cancelled" }) {
+		r.stall.run = 0
+		return nil
+	}
+	if r.stall.run != oldest.ID {
+		r.stall.run, r.stall.seen = oldest.ID, time.Now()
+	}
+	if time.Since(r.stall.seen) < stallGrace {
+		return nil
+	}
+	return oldest
+}
+
 // pause pauses the queue on the red run since since, a standing pause's
 // or now, then re-runs each of its failed jobs once, a job's attempt
 // telling its re-run (2 and up) from its first run. The pause goes first,
@@ -316,7 +366,8 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 	}
 	var redJobs []ActionJob
 	for _, j := range jobs {
-		if !doneStatus(j.Status) {
+		// a stalled run's blocked jobs wait on its red ones: none will run
+		if !doneStatus(j.Status) && (run.Status != "blocked" || j.Status != "blocked") {
 			return nil
 		}
 		if j.Status == "failure" || j.Status == "cancelled" {

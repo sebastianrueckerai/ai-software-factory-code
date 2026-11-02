@@ -1309,6 +1309,88 @@ func TestRollerWaitsOnMainsNewestRun(t *testing.T) {
 	}
 }
 
+// Forgejo's zombie sweep failed run 1208's test job with its dead runner
+// and left the image job that needs it blocked: the run never ends, and
+// run 59 waits behind it for main's CI lane. Inside stallGrace the roller
+// leaves it; past it the run is red to the queue: the queue pauses with no
+// card and the test job re-runs once. While the re-run runs the pause
+// holds; the re-run stalled the same way files the human card to re-run
+// it, and the stall then files and re-runs nothing more.
+func TestRollerReRunsAMainRunLeftBlocked(t *testing.T) {
+	f, roller, store, wf := lostMain(t)
+	f.runs = []map[string]any{pushRun(59, commitC3, "waiting"), run1208("blocked"), pushRun(57, commitC1, "success")}
+	f.jobs[58] = []map[string]any{actionJob(5801, "test", "failure", 1), actionJob(5802, "image", "blocked", 1)}
+	ctx := context.Background()
+	poll := func() {
+		t.Helper()
+		if err := roller.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	poll()
+	if p, ok := store.pauses[codeRepo]; ok || len(f.reruns) != 0 || len(f.issues) != 0 {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want none inside the grace", p, ok, f.reruns, f.issues)
+	}
+	roller.stall.seen = time.Now().Add(-stallGrace - time.Minute)
+	poll()
+	pause, ok := store.pauses[codeRepo]
+	if !ok || pause.RunID != 58 || pause.SHA != commitC2 || pause.FixTask != "" || pause.RevertTask != "" {
+		t.Fatalf("pause = %+v (%v), want run 58's with no card", pause, ok)
+	}
+	if !slices.Equal(f.reruns, []string{"actions-tok 5801"}) || len(f.issues) != 0 || len(wf.started) != 0 {
+		t.Fatalf("re-runs %q, issues %q, workflows started %q; want job 5801 re-run, no card, no agent", f.reruns, f.issues, wf.started)
+	}
+
+	// the re-run runs
+	f.runs[1] = run1208("running")
+	f.jobs[58] = []map[string]any{actionJob(5801, "test", "running", 2), actionJob(5802, "image", "blocked", 2)}
+	poll()
+	if p, ok := store.pauses[codeRepo]; !ok || !reflect.DeepEqual(p, pause) || len(f.reruns) != 1 || len(f.issues) != 0 {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want the pause alone", p, ok, f.reruns, f.issues)
+	}
+
+	// the re-run's runner dies too: seen anew, the stall waits out the grace
+	f.runs[1] = run1208("blocked")
+	f.jobs[58][0]["status"] = "failure"
+	poll()
+	if len(f.reruns) != 1 || len(f.issues) != 0 {
+		t.Fatalf("re-runs %q, issues %q; want nothing inside the grace", f.reruns, f.issues)
+	}
+	roller.stall.seen = time.Now().Add(-stallGrace - time.Minute)
+	poll()
+	pause, ok = store.pauses[codeRepo]
+	if !ok || pause.RunID != 58 || pause.FixTask == "" {
+		t.Fatalf("pause = %+v (%v), want run 58's with its card", pause, ok)
+	}
+	if len(f.reruns) != 1 || len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is red at c2c2c2c: re-run ci / test (push), its runner was lost.") {
+		t.Fatalf("re-runs %q, issues %q; want one re-run and the re-run card", f.reruns, f.issues)
+	}
+	if fix := store.tasks[pause.FixTask]; fix.Source != SourceRerun || fix.Kind != "human" {
+		t.Fatalf("card %+v, want the human re-run card", fix)
+	}
+
+	// the card stands
+	poll()
+	if p := store.pauses[codeRepo]; !reflect.DeepEqual(p, pause) || len(f.reruns) != 1 || len(f.issues) != 1 {
+		t.Fatalf("pause = %+v, re-runs %q, issues %q; want the card's pause alone", p, f.reruns, f.issues)
+	}
+}
+
+// A run blocked with no red job sits between a green job and the jobs
+// that need it: no stall, however long it reads so.
+func TestRollerLeavesABlockedMainRunWithNoRedJob(t *testing.T) {
+	f, roller, store, _ := lostMain(t)
+	f.runs = []map[string]any{run1208("blocked"), pushRun(57, commitC1, "success")}
+	f.jobs[58] = []map[string]any{actionJob(5801, "test", "success", 1), actionJob(5802, "image", "blocked", 1)}
+	roller.stall.run, roller.stall.seen = 58, time.Now().Add(-stallGrace-time.Minute)
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if p, ok := store.pauses[codeRepo]; ok || len(f.reruns) != 0 || len(f.issues) != 0 {
+		t.Fatalf("pause = %+v (%v), re-runs %q, issues %q; want none", p, ok, f.reruns, f.issues)
+	}
+}
+
 // runnerLost tells a job that lost its runner from one that failed a
 // step, on the last lines of real job logs and the time Forgejo recorded
 // each failure: run 1208's test job died with its runner's evicted pod,
