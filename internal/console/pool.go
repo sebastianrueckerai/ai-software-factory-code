@@ -3,6 +3,7 @@ package console
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math"
@@ -279,6 +280,73 @@ func (t *turn) capturePool(in toolInput) error {
 	}
 	t.pool = &factoryd.PoolCapture{Action: in.Action, Reason: in.Reason, Source: blob, From: from, EUR: in.EUR}
 	return nil
+}
+
+// poolPress is one confirmed pool press's typed outcome: the captured
+// change ran once through the guarded writer, and it either landed — the
+// result and the applied line the stream answers — or refused with the
+// status and words the press answers: a stale source 409, a candidate
+// the change check refuses 422, a missing prerequisite 409, a Forgejo
+// refusal, the PR-bearing pending 503 or the repair 500. Never an SSE
+// refusal text.
+type poolPress struct {
+	res   poolResult
+	words string
+	err   error
+}
+
+// readmit re-admits the human pressing a pool proposal through the
+// tool's own access rule — approver over the chat's project — before
+// anything writes: the authority the proposal-time admission granted may
+// have been revoked since, and the press answers a real 403, never an
+// SSE refusal.
+func (t *turn) readmit(tool string) error {
+	return t.admitTool(tool, toolInput{})
+}
+
+// poolPress is the confirmed pool press's one write: the captured change
+// with the amount the member confirmed, theirs when they corrected it,
+// through the guarded writer once — no second approval, no fresh source
+// read, no replay, and no second call inside apply or runTool. The
+// guarded writer's own guard answers the stale source; its refusals are
+// the press's typed outcome.
+func (t *turn) poolPress(p factoryd.ChatProposal, fix *poolCorrection) poolPress {
+	eur := p.Pool.EUR
+	if fix != nil {
+		eur = fix.eur
+	}
+	ch := poolChange{action: p.Pool.Action, eur: eur, reason: p.Pool.Reason, source: p.Pool.Source}
+	res, err := t.c.doSetPool(t.r.Context(), t.p.Name, ch, t.a)
+	if err != nil {
+		return poolPress{err: err}
+	}
+	return poolPress{res: res, words: fmt.Sprintf(
+		"The pool of %s is €%.2f now, was €%.2f: %s#%d carries the change and the policy in force holds it.",
+		t.p.Name, res.to, res.from, t.c.cfg.InfraRepo, res.pr)}
+}
+
+// landed streams a pool press's already-landed result: the tool block and
+// the applied line of the write that happened before the stream opened,
+// the row in the conversation naming the member who pressed, and done.
+// Nothing writes here.
+func (t *turn) landed(p factoryd.ChatProposal, fix *poolCorrection, pr poolPress) {
+	t.a.decider = "member"
+	start := time.Now()
+	args := string(p.Args)
+	if fix != nil {
+		if b, err := json.Marshal(poolArgs{Action: p.Pool.Action, EUR: fix.eur, Reason: p.Pool.Reason}); err == nil {
+			args = string(b)
+		}
+	}
+	t.freshRead = time.Now()
+	if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
+		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: args, Result: pr.words, At: start,
+			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead}}}); !ok {
+		return
+	}
+	t.block(p.Tool, args, time.Since(start), pr.words)
+	t.send("applied", map[string]string{"tool": p.Tool, "result": pr.words})
+	t.send("done", struct{}{})
 }
 
 // poolDesc is the set_pool proposal's line for the member: the standing
