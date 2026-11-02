@@ -56,8 +56,9 @@ const (
 // (kind undo) of tool with args for the member on the project, for
 // chatTTL under a fresh token, which it answers, and forgets the expired
 // ones but a used proposal; "" when the store fails. A proposal holds
-// what its call captured beside its arguments; an undo and an ask
-// binding hold none.
+// what its call captured beside its arguments, an undo nothing, and an
+// ask binding is stored by askBinding, which carries a set_pool offer's
+// capture the same way.
 func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
 	p := factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
 		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv}
