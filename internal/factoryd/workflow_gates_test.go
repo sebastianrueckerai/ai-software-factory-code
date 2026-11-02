@@ -1007,6 +1007,115 @@ func TestWorkflowRefusedReviewIsTheCardNeverAMerge(t *testing.T) {
 	}
 }
 
+// rejudgeHarness is a plan card's gate harness whose review the month
+// cap refused, then reviews in order, with UnjudgedCriteria answering
+// never per call, the last repeating; holds records HoldMerge's calls.
+func rejudgeHarness(t *testing.T, never [][]string, reviews ...Review) (g *gateHarness, unjudged *int, holds *[]string) {
+	g = newGateHarness(t, func(g *gateHarness) {
+		g.reviews = append([]Review{{Note: refusedMonthNote}}, reviews...)
+	})
+	g.state.Source = SourcePlan
+	unjudged, holds = new(int), &[]string{}
+	g.env.OnActivity(ActivityUnjudgedCriteria, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) ([]string, error) {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			*unjudged++
+			return never[min(*unjudged, len(never))-1], nil
+		})
+	g.env.OnActivity(ActivityHoldMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.steps = append(g.steps, "hold")
+			*holds = append(*holds, fmt.Sprintf("%d %s %s", pr, commit, approver))
+			return nil
+		})
+	return g, unjudged, holds
+}
+
+const refusedMonthNote = "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+
+// A press on an integration card whose criteria no review judged runs the
+// model review again, with the stage's inputs, before the merge: a review
+// that judges merges on the one press, as its approver.
+func TestWorkflowPressReviewsAnUnjudgedCardBeforeItsMerge(t *testing.T) {
+	g, unjudged, holds := rejudgeHarness(t, [][]string{{"c1", "c3"}}, Review{Verdict: "approve", Summary: "judged"})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, review c1, merge"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s", g.steps, want)
+	}
+	if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || *unjudged != 1 || len(*holds) != 0 {
+		t.Fatalf("merges %v, unjudged reads %d, holds %v", g.merges, *unjudged, *holds)
+	}
+	// the stage's inputs: round 2, the gates, and lastVerdict's earlier,
+	// none, the refused review having no verdict
+	if !slices.Equal(g.rounds, []int{1, 2}) || g.reviewGates[1].Policy.Class != "normal" || !g.reviewGates[1].ChecksPassed || len(g.earlier[1]) != 0 {
+		t.Fatalf("rounds %v, gates %+v, earlier %+v: want the stage's inputs", g.rounds, g.reviewGates, g.earlier)
+	}
+}
+
+// The review run again that still does not run merges nothing: the merge
+// holds, asking again with the note, and the approval waits on.
+func TestWorkflowPressHoldsWhileTheReviewStillDoesNotRun(t *testing.T) {
+	g, _, holds := rejudgeHarness(t, [][]string{{"c1"}}, Review{Note: refusedMonthNote})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, review c1, hold"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s", g.steps, want)
+	}
+	if len(g.merges) != 0 || !slices.Equal(*holds, []string{"9 c1 sebastian"}) {
+		t.Fatalf("merges %v, holds %v: want the one hold, no merge", g.merges, *holds)
+	}
+}
+
+// Concerns of the review run again send the card back to its sessions
+// with their findings, as at the gate; the next head's press merges.
+func TestWorkflowPressReviewConcernsGoBackToTheSessions(t *testing.T) {
+	finding := "criterion c1 not met (unmet): no test of a"
+	g, _, _ := rejudgeHarness(t, [][]string{{"c1"}, nil},
+		Review{Verdict: "concerns", Summary: "a gap", Findings: []string{finding}}, Review{Verdict: "approve", Summary: "judged"})
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(g.merges, []string{"9 c2 sebastian"}) {
+		t.Fatalf("merges = %v, want c2 alone", g.merges)
+	}
+	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{finding}) {
+		t.Fatalf("sessions %d, the second's findings %v", len(g.sessions), g.sessions[1].Findings)
+	}
+}
+
+// A run from before the change merges on the press, the review not run
+// again: the merge guard holds it on its own.
+func TestWorkflowBeforeReviewHoldsMergeMergesOnThePress(t *testing.T) {
+	g, unjudged, _ := rejudgeHarness(t, [][]string{{"c1"}})
+	g.env.OnGetVersion("review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge).Return(workflow.DefaultVersion)
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q", final)
+	}
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, merge"; strings.Join(g.steps, ", ") != want || *unjudged != 0 {
+		t.Fatalf("steps = %v, unjudged reads %d; want %s and none", g.steps, *unjudged, want)
+	}
+}
+
 // A review whose every finding the grep dropped starts no session: the
 // pull request goes to the approval card with the drops, and the verdict
 // stays concerns, so the merge rule auto does not merge it.

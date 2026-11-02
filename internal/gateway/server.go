@@ -90,6 +90,8 @@ type ServerOptions struct {
 	DeploymentReader DeploymentReader
 	// ImageLooker is the analyze_image tool's look at factoryd.
 	ImageLooker ImageLooker
+	// Digester is the digest tool's Small call at factoryd.
+	Digester Digester
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).
@@ -166,9 +168,9 @@ type Server struct {
 	polAt time.Time // when pol was read; zero = never
 }
 
-// policyTTL bounds how long the gateway enforces a policy version after
+// PolicyTTL bounds how long the gateway enforces a policy version after
 // reading it: a new version is in force within this time.
-const policyTTL = 30 * time.Second
+const PolicyTTL = 30 * time.Second
 
 func NewServer(opts ServerOptions) *Server {
 	if opts.HTTP == nil {
@@ -182,12 +184,12 @@ func NewServer(opts ServerOptions) *Server {
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
-// policyTTL ago. The gateway never parses the policy file: factoryd loads
+// PolicyTTL ago. The gateway never parses the policy file: factoryd loads
 // it, and an unreadable current version refuses every call.
 func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 	s.polMu.Lock()
 	defer s.polMu.Unlock()
-	if !s.polAt.IsZero() && s.now().Sub(s.polAt) < policyTTL {
+	if !s.polAt.IsZero() && s.now().Sub(s.polAt) < PolicyTTL {
 		v := s.pol
 		return &v, nil
 	}

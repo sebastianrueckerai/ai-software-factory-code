@@ -107,7 +107,7 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	case "sizing":
 		b.Report = sizingGuide(sizeLines(v.Document.Risk.LargeLines))
 	case "planner":
-		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil)
+		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
 	case "holdout-audit":
 		b.Report = auditGuide(agentDocPlan(), agentDocLoopHoldout(),
 			"came back red: it wanted the skipped row counted, it got 0")

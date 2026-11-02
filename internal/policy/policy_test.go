@@ -838,9 +838,11 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{ClassChat}, PurposeOperator, Big},
 		{[]string{"coder"}, PurposeCompact, ""},
 		{[]string{ClassChat}, PurposeCompact, Small},
-		{[]string{"coder"}, PurposeDigest, ""},
+		{[]string{"coder"}, PurposeDigest, Small},
+		{[]string{"plain"}, PurposeDigest, Small},
 		{[]string{ClassChat}, PurposeDigest, Small},
-		{[]string{"coder"}, PurposeTitle, ""},
+		{[]string{"coder"}, PurposeTitle, Small},
+		{[]string{"planner"}, PurposeTitle, Small},
 		{[]string{ClassChat}, PurposeTitle, Small},
 	} {
 		if got := d.FactoryModel(tc.classes, tc.purpose); got != tc.want {
@@ -850,10 +852,10 @@ func TestFactoryModel(t *testing.T) {
 	if d.AllowsModel([]string{"coder"}, "checkin") || d.AllowsModel([]string{"coder"}, "supervisor") {
 		t.Fatal("a factory model is not an agent model")
 	}
-	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"big", "review-cheap", "supervisor"}) {
+	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"big", "review-cheap", "small", "supervisor"}) {
 		t.Fatalf("FactoryModels = %v", got)
 	}
-	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "checkin", "supervisor"}) {
+	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "checkin", "small", "supervisor"}) {
 		t.Fatalf("FactoryModels(coder) = %v, want the check-in alias once", got)
 	}
 }

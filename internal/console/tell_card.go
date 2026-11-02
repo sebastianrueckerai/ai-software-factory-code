@@ -95,7 +95,7 @@ func (t *turn) tellAnswer(in toolInput, k factoryd.Task) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" }) {
+	if slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() }) {
 		return t.answer(in)
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)

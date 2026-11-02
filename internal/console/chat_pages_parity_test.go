@@ -271,7 +271,7 @@ func TestPageWritesRefuseNonWriters(t *testing.T) {
 	words := "Only the writers of the factory's own code see the factory's pages."
 	for _, policies := range []Policies{r.ledger, noPolicy{r.ledger}} {
 		r.c.cfg.Policies = policies
-		for _, path := range []string{"/alerts/7/verdict", "/resources/11/promote", "/resources/11/release"} {
+		for _, path := range []string{"/resources/11/promote", "/resources/11/release"} {
 			page := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck)
 			equal(t, path, []any{page.Code, strings.TrimSpace(page.Body.String())}, []any{http.StatusForbidden, words})
 		}

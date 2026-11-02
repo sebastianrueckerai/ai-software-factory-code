@@ -428,14 +428,34 @@ func TestValidatePlanOneCard(t *testing.T) {
 	}
 }
 
+// The guide maps before it reads and keeps the conventions sentence; it
+// names digest only to a session whose tools hold it.
+func TestPlanGuideReadDiscipline(t *testing.T) {
+	conventions := "The issue's text tells what to build; every card follows the repository's conventions. "
+	mapFirst := "Map the repository before you read it: grep and glob find where things are, and the task tool's explore agent searches it on the cheaper model. " +
+		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
+	digest := "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
+	with := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan, policy.ToolDigest})
+	if !strings.Contains(with, conventions+mapFirst+digest+"Draft the spec before the cards") {
+		t.Fatalf("planGuide with digest = %q, want %q", with, conventions+mapFirst+digest)
+	}
+	without := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan})
+	if !strings.Contains(without, conventions+mapFirst+"Draft the spec before the cards") || strings.Contains(strings.ToLower(without), "digest") {
+		t.Fatalf("planGuide without digest = %q, want the map-first passage and no digest", without)
+	}
+	if strings.Contains(with, "Read it and the repository") {
+		t.Fatal("planGuide still asks to read the repository")
+	}
+}
+
 // The guide tells the planner a change that fits one card answers one
 // card when the process allows it, and stays quiet when it does not.
 func TestPlanGuideOneCard(t *testing.T) {
 	want := "A change that fits one card answers one card, its own integration, citing every criterion."
-	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want no one-card sentence under a two-card minimum", got)
 	}
 }
@@ -472,11 +492,11 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium", "fonts-liberation"}}}
 	want := "Images: browser (chromium, fonts-liberation), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
-	got := planGuide(testShape, testLimits, pins)
+	got := planGuide(testShape, testLimits, pins, nil)
 	if !strings.Contains(got, want) || !strings.Contains(got, `"rung_reason": "one line", "image": "..."}`) {
 		t.Fatalf("planGuide = %q, want the image field and %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
+	if got := planGuide(testShape, testLimits, nil, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
 		t.Fatalf("planGuide without pins = %q, want no image field and no Images line", got)
 	}
 }
@@ -485,7 +505,7 @@ func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 // step budget (the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -494,7 +514,7 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 // and in the field rules. The line figures are readPlan's size
 // findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
 		!strings.Contains(got, "size: small, medium or large; anything bigger is two cards.") {
 		t.Fatalf("planGuide = %q, want the three sizes", got)
@@ -507,7 +527,7 @@ func TestPlanGuideSizes(t *testing.T) {
 // works on (the spec-intake concept, piece 2).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
 	want := "acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -516,7 +536,7 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 // dictates the criteria block's json shape, the kinds' field rules, the
 // citation rule, and the integration card's one item per criterion.
 func TestPlanGuideCriteria(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
 		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human"`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
@@ -547,7 +567,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 // confirmation that fixes the criteria, and the planner's one attack on
 // its own draft.
 func TestPlanGuideSpec(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order"`,
 		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
@@ -568,7 +588,7 @@ func TestPlanGuideSpec(t *testing.T) {
 // out, so the planner answers it again, not the whole plan. A shape
 // without a foundation card reads no foundation in the paragraph.
 func TestPlanGuideRounds(t *testing.T) {
-	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil)
+	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil, nil)
 	want := "A feature too big for one round of cards is planned in rounds: file the first round's cards and keep the rest in outline; " +
 		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
 		"The merged cards of earlier rounds are not in your last plan. " +
@@ -576,7 +596,7 @@ func TestPlanGuideRounds(t *testing.T) {
 	if !strings.Contains(bare, want) || strings.Contains(bare, "foundation first") || strings.Contains(bare, "but a foundation") {
 		t.Fatalf("planGuide without a foundation = %q, want %q and no foundation in it", bare, want)
 	}
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
 		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
@@ -600,10 +620,10 @@ func TestPlanGuideRounds(t *testing.T) {
 func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 	want := "The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
 		"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise)."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil), want) {
+	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil, nil), want) {
 		t.Fatal("a shape with no foundation card still gets the foundation's contracts sentence")
 	}
 }
@@ -612,7 +632,7 @@ func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 // bash check, so it never asks a card to verify some other way.
 func TestPlanGuideBashCheckLine(t *testing.T) {
 	want := "Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -621,7 +641,7 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 // the planner's guide does not ask for it.
 func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 	for _, shape := range []policy.PlanShape{testShape, {MaxCards: 12}} {
-		if got := planGuide(shape, testLimits, nil); strings.Contains(got, "AGENTS.md") {
+		if got := planGuide(shape, testLimits, nil, nil); strings.Contains(got, "AGENTS.md") {
 			t.Fatalf("planGuide = %q, want no AGENTS.md", got)
 		}
 	}
@@ -632,7 +652,7 @@ func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 // so this sentence is the rule's only carrier.
 func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 	want := "Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -641,7 +661,7 @@ func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 // (defect 178): RunPlan refuses a session that ends without filing one.
 func TestPlanGuideFilesThroughTheTool(t *testing.T) {
 	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -805,7 +825,11 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			if r.Method == "GET" {
 				var list []map[string]any
 				for _, d := range f.issues[n].deps {
-					list = append(list, map[string]any{"number": d})
+					state := "open"
+					if is := f.issues[d]; is != nil {
+						state = is.state
+					}
+					list = append(list, map[string]any{"number": d, "state": state})
 				}
 				json.NewEncoder(w).Encode(list)
 				break
@@ -813,8 +837,14 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			if body["owner"] != "linkshort" || body["repo"] != "linkshort" {
 				t.Errorf("dependency body %v", body)
 			}
-			f.issues[n].deps = append(f.issues[n].deps, int64(body["index"].(float64)))
+			dep := int64(body["index"].(float64))
 			call = fmt.Sprintf("%s %v", call, body["index"])
+			if r.Method == "DELETE" {
+				f.issues[n].deps = slices.DeleteFunc(f.issues[n].deps, func(d int64) bool { return d == dep })
+				w.Write([]byte(`{}`))
+				break
+			}
+			f.issues[n].deps = append(f.issues[n].deps, dep)
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{}`))
 		case r.Method == "GET" && len(parts) == 3 && parts[2] == "comments":
@@ -841,6 +871,10 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode([]any{})
 		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
+			if body["state"] == "closed" && slices.ContainsFunc(f.issues[n].deps, func(d int64) bool { return f.issues[d] == nil || f.issues[d].state == "open" }) {
+				http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
+				break
+			}
 			f.issues[n].state = body["state"].(string)
 			w.WriteHeader(http.StatusCreated)
 			w.Write([]byte(`{}`))
@@ -921,16 +955,16 @@ func newPlanRunner(t *testing.T, p Plan) (*Runner, *fakeStore, *fakeObjectStore,
 	return runner, store, runner.objects.(*fakeObjectStore), fj
 }
 
-// confirmSpec is the members' okay to the spec's confirmation (piece 5)
+// confirmSpec is the members' confirm of the spec's confirmation (piece 5)
 // on an earlier revision of t-plan: asked until answered once, so the
 // revision under test asks no question.
 func confirmSpec(t *testing.T, store *fakeStore) {
 	t.Helper()
 	ctx := context.Background()
-	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 0, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
+	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 0, PlanQuestion{Text: "Confirmation of the spec"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AnswerPlanQuestion(ctx, "t-plan", 0, 1, "okay", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 0, 1, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -1311,9 +1345,9 @@ func TestPlanCommentMarker(t *testing.T) {
 		store.approvals[0].Reason != "plan revision 1 of issue #1, 4 cards, waits for 1 answers" {
 		t.Fatalf("approvals %+v", store.approvals)
 	}
-	// a member answers revision 1's confirmation: the asking ends (asked
+	// a member confirms revision 1: the asking ends (asked
 	// until answered once), revision 2 carries no question of its own
-	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "okay", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	p2 := testPlan()
@@ -1323,7 +1357,7 @@ func TestPlanCommentMarker(t *testing.T) {
 	if ref := getInto[PlanRef](t, val, err); ref.Revision != 2 || ref.SHA256 != sha || !slices.Equal(ref.Filed, []int64{2, 3, 4, 5}) || ref.Comment != 0 {
 		t.Fatalf("ref = %+v", ref)
 	}
-	if qs, _ := store.PlanQuestions(ctx, "t-plan", 1); len(qs) != 1 || qs[0].Answer != "okay" || qs[0].AnsweredBy != "alice" {
+	if qs, _ := store.PlanQuestions(ctx, "t-plan", 1); len(qs) != 1 || qs[0].Decision != DecisionConfirm || qs[0].AnsweredBy != "alice" {
 		t.Fatalf("revision 1's questions %+v, want the answered confirmation", qs)
 	}
 	if qs, _ := store.PlanQuestions(ctx, "t-plan", 2); len(qs) != 0 {
@@ -1341,11 +1375,11 @@ func TestPlanCommentMarker(t *testing.T) {
 	}
 }
 
-// A revision whose every question is the confirmation, answered with its
-// offered choice word, is confirmed: the answers resolve the plan's
-// request as the confirmation it was, and RequestPlan files its cards
-// with no planner session. A choice with words around it, or a real
-// question answered, sends the planner back.
+// A revision whose every question is the confirmation, decided confirm,
+// is confirmed: the answers resolve the plan's request as the
+// confirmation it was, and RequestPlan files its cards with no planner
+// session. A revise with its words, or a real question answered, sends
+// the planner back.
 func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
 	ctx := context.Background()
 	// the plan card running with its spec unconfirmed, so revision 1 asks
@@ -1363,7 +1397,7 @@ func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
 	if ref := requestPlan(t, r); ref.Answered || ref.Filed != nil || ref.Comment == 0 {
 		t.Fatalf("the ask: %+v", ref)
 	}
-	if err := AnswerPlanQuestions(ctx, store, r.cfg.Workflows, "t-plan", 1, []PlanAnswer{{Idx: 1, Text: "okay"}}, "alice"); err != nil {
+	if err := AnswerPlanQuestions(ctx, store, r.cfg.Workflows, "t-plan", 1, []PlanAnswer{{Idx: 1, Decision: DecisionConfirm}}, "alice"); err != nil {
 		t.Fatal(err)
 	}
 	if a := store.approvals[0]; a.Status != "denied" || a.DecisionNote != "superseded: revision 1 is confirmed, its cards file" {
@@ -1379,22 +1413,23 @@ func TestRequestPlanFilesAConfirmedRevision(t *testing.T) {
 
 	r, store, _ = rig(testPlan())
 	requestPlan(t, r)
-	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "Okay — and keep the slate clean", "alice"); err != nil {
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionRevise, "Okay — and keep the slate clean", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	val, err = execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
 	if ref := getInto[PlanRef](t, val, err); !ref.Answered || ref.Filed != nil {
-		t.Fatalf("the padded answer: %+v", ref)
+		t.Fatalf("the revise with words: %+v", ref)
 	}
 
 	asking := testPlan()
 	asking.Questions = []PlanQuestion{{Text: "Which store backs the links?", Choices: []string{"postgres", "sqlite"}}}
 	r, store, _ = rig(asking)
 	requestPlan(t, r)
-	for idx, answer := range map[int]string{1: "postgres", 2: "okay"} {
-		if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, idx, answer, "alice"); err != nil {
-			t.Fatal(err)
-		}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "postgres", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 2, DecisionConfirm, "", "alice"); err != nil {
+		t.Fatal(err)
 	}
 	val, err = execActivity(t, r, ActivityRequestPlan, "t-plan", 1, int64(7))
 	if ref := getInto[PlanRef](t, val, err); !ref.Answered || ref.Filed != nil {
@@ -1448,10 +1483,10 @@ func TestConfirmsAgainOnAChangedSpec(t *testing.T) {
 			return n
 		}
 		add(plan(func(p *Plan) { p.Summary = "The second revision." }))
-		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of the spec", Choices: []string{"okay"}}); err != nil {
+		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of the spec"}); err != nil {
 			t.Fatal(err)
 		}
-		if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, "okay", "alice"); err != nil {
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, DecisionConfirm, "", "alice"); err != nil {
 			t.Fatal(err)
 		}
 		last := 0
@@ -2583,8 +2618,9 @@ func TestPGStoreCatches(t *testing.T) {
 }
 
 // A planner session that ends without filing a plan says so, with its
-// last message and the files it read beside the finding; a filing an
-// earlier session left is stale, not this session's answer.
+// last message and the files it read beside the finding, which points a
+// class that lists digest at it, as its guide does; a filing an earlier
+// session left is stale, not this session's answer.
 func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -2592,6 +2628,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
 	pinned := fixtureVersion(t)
+	pinned.Document.Classes["planner"].Tools[policy.ToolDigest] = policy.ToolCap{}
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	runner.noteFiled("t-plan", PlanResult{Revision: 9}) // a session already ended on this
 	said := "I need to know whether accounts use passwords or magic links before I can split this."
@@ -2610,13 +2647,14 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said,
-		"the planner session read 1 files before it ended: /workspace/repo/go.mod. File the plan from what they hold; read a file again only where the plan needs a detail."}
+		"the planner session read 1 files before it ended: /workspace/repo/go.mod. Their text ended with it: " +
+			"digest the files where the plan needs their detail, and read raw only the part a digest points at."}
 	if !slices.Equal(res.Findings, want) || res.Revision != 0 || res.Escalate != "" {
 		t.Fatalf("result %+v, want findings %q", res, want)
 	}
 	env := podEnv(kube.podAt(0))
 	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "You are the planner") ||
-		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") ||
+		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") || !strings.Contains(env["REPORT_GUIDE"], digestBig) ||
 		env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
 	}
@@ -2861,6 +2899,10 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	bounded := fixtureVersion(t)
 	runner.cfg.Policy = func() policy.Version { return bounded }
 	ctx := context.Background()
+	ll := &fakeLiteLLM{contents: []string{`{"name":"shorten links"}`}}
+	signal := newSignalNameStore(store)
+	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
+		Current: func() policy.Version { return nameVersion() }}
 
 	over := testPlan()
 	over.Cards[1].Size = "huge" // links-api: a size the ladder does not name
@@ -2897,6 +2939,23 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	}
 	if held, ok := runner.takeFiled("t-plan"); !ok || held.Revision != 1 {
 		t.Fatalf("held for the session = %+v, %v", held, ok)
+	}
+	signal.released(t)
+	if got := store.tasks["t-plan"].PlanName; got != "shorten links" {
+		t.Fatalf("plan name %q, want the model's %q", got, "shorten links")
+	}
+	if ask := nameAsk(t, ll, 1); !strings.Contains(ask, "Issue title: Link shortener") {
+		t.Fatalf("the naming ask carries the issue title: %q", ask)
+	}
+
+	amend := testPlan()
+	amend.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	runner.takeFiled("t-plan")
+	if got := store.tasks["t-plan"].PlanName; got != "shorten links" || len(ll.chats) != 1 {
+		t.Fatalf("after revision 2 the name is %q with %d naming calls, want the first name and 1 call", got, len(ll.chats))
 	}
 
 	if err := store.TransitionTask(ctx, "t-plan", []string{"running"}, "in-review"); err != nil {
@@ -2973,6 +3032,51 @@ func TestPlanFilingStampsCompanions(t *testing.T) {
 	}
 	if !slices.Equal(auth, []string{"token config-tok", "token config-tok"}) {
 		t.Fatalf("reads = %q, want both companions through the factory-config token", auth)
+	}
+}
+
+// filePlanWithModel files the first revision of a plan whose naming runs
+// against ll, holds the naming until FilePlan has returned, and returns
+// the name the plan ends with.
+func filePlanWithModel(t *testing.T, ll *fakeLiteLLM) string {
+	t.Helper()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	bounded := fixtureVersion(t)
+	runner.cfg.Policy = func() policy.Version { return bounded }
+	signal := newSignalNameStore(store)
+	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
+		Current: func() policy.Version { return nameVersion() }}
+	b, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.FilePlan(context.Background(), "t-plan", string(b))
+	if err != nil || res.Revision != 1 || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, %v, want revision 1", res, err)
+	}
+	signal.released(t)
+	return store.tasks["t-plan"].PlanName
+}
+
+// A gateway that fails never fails a filing, nor holds its answer: the
+// plan files at once and the title's slug names it.
+func TestFilePlanFilesAtOnceWhenTheModelFails(t *testing.T) {
+	if got := filePlanWithModel(t, &fakeLiteLLM{status: http.StatusInternalServerError}); got != "link-shortener" {
+		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
+	}
+}
+
+// A gateway that hangs spends the naming budget, and the plan still ends
+// with the slug: the write has a window of its own.
+func TestFilePlanNamesWithTheSlugWhenTheModelHangs(t *testing.T) {
+	old := planNameBudget
+	planNameBudget = 200 * time.Millisecond
+	t.Cleanup(func() { planNameBudget = old })
+	if got := filePlanWithModel(t, &fakeLiteLLM{delay: time.Hour}); got != "link-shortener" {
+		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
 	}
 }
 
@@ -3434,7 +3538,8 @@ func TestFilePlanReadsTheRecordOnce(t *testing.T) {
 
 // PlanFileHandler answers the gateway's file_plan with the shape the
 // gateway reads: a refused plan 200 with its findings, a valid one its
-// revision, a body that is not the pair 400.
+// revision and whether the human's confirmation waits on its cards, a
+// body that is not the pair 400.
 func TestPlanFileHandler(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -3460,11 +3565,12 @@ func TestPlanFileHandler(t *testing.T) {
 	over := testPlan()
 	over.Cards[1].Size = "huge"
 	if rec := post(marshal("t-plan", over)); rec.Code != http.StatusOK ||
-		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"]}` {
+		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"],"gate":false}` {
 		t.Fatalf("refused plan: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := post(marshal("t-plan", testPlan()))
-	if rec.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"revision":1,"sha256":"`) {
+	if body := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || !strings.HasPrefix(body, `{"revision":1,"sha256":"`) ||
+		!strings.HasSuffix(body, `"findings":null,"gate":true}`) {
 		t.Fatalf("filed plan: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := post(marshal("no-such-task", testPlan())); rec.Code != http.StatusNotFound {
@@ -3863,23 +3969,53 @@ func TestRunPlanNamesACostHoldCrossing(t *testing.T) {
 // A planner session the day cap refused at its first call is no attempt
 // (roadmap 240): the plan escalates with the refusal, waits for the day's
 // turn on its own and runs the planner again with the same findings; no
-// "no plan" round. A month's cap waits on a writer, whose comment the
-// planner gets, and the refused session counts.
+// "no plan" round. The session from 20:43 ends at 20:48, when the check
+// before the ask runs.
 func TestPlanLoopWaitsOnACap(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &dayRefusal},
 		PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.env.SetStartTime(oct(14, 20, 43))
-	var turns []time.Time
-	h.env.OnActivity(ActivityDayResume, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-			if turned {
-				turns = append(turns, h.env.Now())
-			}
-			return turned, nil
-		})
+	run := &capRun{}
+	run.onChecks(h.workflowHarness)
 	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || !sameTimes(turns, []time.Time{oct(15, 0, 0)}) {
-		t.Fatalf("final %q, escalations %q, turns %v; want the day cap asked and the turn at 00:00", final, h.escalated, turns)
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
+		t.Fatalf("final %q, escalations %q, turns %v; want the day cap asked and the turn at 00:00", final, h.escalated, run.turns)
+	}
+	if !sameTimes(run.asks, []time.Time{oct(14, 20, 48)}) || !isCheck(run.inputs[0], "factory/big", policy.RefusedDayCap, oct(14, 20, 43)) {
+		t.Fatalf("checks before the ask %v, first input %+v; want one at 20:48 on the stronger rung about the 20:43 refusal", run.asks, run.inputs[0])
+	}
+	if len(h.plans) != 2 || h.plans[0] != nil || h.plans[1] != nil {
+		t.Fatalf("plans %q, want two sessions with no findings", h.plans)
+	}
+	if u := h.usage[len(h.usage)-1]; h.usage[0].Attempts != 0 || u.Attempts != 1 || u.AgentTime != planSession {
+		t.Fatalf("usage %+v, want the refused session no attempt, the second one", h.usage)
+	}
+}
+
+// At versionCapWait a month's cap waits on its own too: the planner
+// session from 21:10 ends at 21:15, refused at its first call, and is no
+// attempt; the check before the ask finds the month spent, and the hourly
+// check at 22:15, past the 22:00 raise, runs the planner again with the
+// same findings, no human's answer. A run from before the change waits on
+// a writer, whose comment the planner gets, and the refused session
+// counts.
+func TestPlanLoopWaitsOnAMonthCap(t *testing.T) {
+	refused := monthRefusal
+	refused.At = oct31(21, 10, 0)
+	h := newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &refused},
+		PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run := &capRun{funded: oct31(22, 0, 0)}
+	run.onChecks(h.workflowHarness)
+	h.file = map[int]bool{1: true}
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap's wait asked", final, h.escalated)
+	}
+	// the check before the ask runs at the session's 21:15 end about the
+	// 21:10 refusal; the wait's check an hour after the ask
+	if !sameTimes(run.asks, []time.Time{oct31(21, 15, 0)}) || !isCheck(run.inputs[0], "factory/big", policy.RefusedMonthCap, oct31(21, 10, 0)) ||
+		!sameTimes(run.checks, []time.Time{oct31(22, 15, 0)}) || len(run.turns) != 0 || !isCheck(run.inputs[1], "factory/big", policy.RefusedMonthCap, time.Time{}) {
+		t.Fatalf("checks before the ask %v, checks %v, turns %v, inputs %+v; want 21:15 about the 21:10 refusal, then the month's check at 22:15", run.asks, run.checks, run.turns, run.inputs)
 	}
 	if len(h.plans) != 2 || h.plans[0] != nil || h.plans[1] != nil {
 		t.Fatalf("plans %q, want two sessions with no findings", h.plans)
@@ -3891,10 +4027,13 @@ func TestPlanLoopWaitsOnACap(t *testing.T) {
 	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
 	h = newPlanHarness(t, PlanResult{Findings: []string{"plan: the session ended without a last message: refused"}, Capped: &month},
 		PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
+	run = &capRun{}
+	run.onChecks(h.workflowHarness)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 	h.file = map[int]bool{1: true}
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) {
-		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) || len(run.inputs) != 0 {
+		t.Fatalf("final %q, escalations %q, checks %+v; want the month cap asked and no check", final, h.escalated, run.inputs)
 	}
 	if len(h.plans) != 2 || !slices.Equal(h.plans[1], []string{"writer sebastian asked for changes to the plan: go on"}) || h.usage[0].Attempts != 1 {
 		t.Fatalf("plans %q, usage %+v; want the writer's comment for the second session, the first counted", h.plans, h.usage)
@@ -3995,10 +4134,18 @@ func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 }
 
 func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
-	got := readsFinding([]string{"/workspace/repo/a.go", "/workspace/docs/b.md"})
-	want := "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. File the plan from what they hold; read a file again only where the plan needs a detail."
+	paths := []string{"/workspace/repo/a.go", "/workspace/docs/b.md"}
+	got := readsFinding(paths, []string{policy.ToolFilePlan, policy.ToolDigest})
+	want := "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. Their text ended with it: " +
+		"digest the files where the plan needs their detail, and read raw only the part a digest points at."
 	if got != want {
 		t.Fatalf("readsFinding = %q, want %q", got, want)
+	}
+	got = readsFinding(paths, []string{policy.ToolFilePlan})
+	want = "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. Their text ended with it: " +
+		"grep the files for what the plan needs, and read only that part."
+	if got != want {
+		t.Fatalf("readsFinding without digest = %q, want %q", got, want)
 	}
 }
 
@@ -4009,7 +4156,7 @@ func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
 // time top the next session up to half the cap (10m + 2m grace); the
 // human's 5m neither block that nor grow.
 func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
-	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. File the plan from what they hold; read a file again only where the plan needs a detail."}
+	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. Their text ended with it: grep the files for what the plan needs, and read only that part."}
 	h := newPlanHarness(t, PlanResult{Findings: found}, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, Attempts: 1}}
 	var budgets []time.Duration

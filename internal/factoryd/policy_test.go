@@ -325,6 +325,54 @@ func TestPolicyLoaderSettlesEachLoadedHead(t *testing.T) {
 	}
 }
 
+// A loaded head runs Loaded and then Wake, once; a Wake that fails leaves
+// the head unsettled, so the next load runs both again until it succeeds;
+// a loader without Wake settles on Loaded alone.
+func TestPolicyLoaderWakesEachLoadedHead(t *testing.T) {
+	ctx := context.Background()
+	src := &memSource{}
+	var calls []string
+	var fail error
+	l := &PolicyLoader{Source: src, Store: &memPolicy{}, Rejected: (&rejections{}).raise,
+		Loaded: func(_ context.Context, v policy.Version) error {
+			calls = append(calls, "loaded "+v.Commit)
+			return nil
+		},
+		Wake: func(_ context.Context, v policy.Version) error {
+			calls = append(calls, "wake "+v.Commit)
+			return fail
+		}}
+	src.push("c1", testFiles(testPolicyYAML))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fail = errors.New("temporal down")
+	src.push("c2", testFiles(testPolicyYAML))
+	if err := l.Load(ctx); err == nil {
+		t.Fatal("Load with a failing Wake = nil, want the failure")
+	}
+	fail = nil
+	if err := l.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"loaded c1", "wake c1", "loaded c2", "wake c2", "loaded c2", "wake c2"}
+	if !slices.Equal(calls, want) {
+		t.Fatalf("calls = %v, want %v", calls, want)
+	}
+
+	calls = nil
+	bare := &PolicyLoader{Source: src, Store: &memPolicy{}, Loaded: func(_ context.Context, v policy.Version) error {
+		calls = append(calls, "loaded "+v.Commit)
+		return nil
+	}}
+	if err := bare.Boot(ctx); err != nil || !slices.Equal(calls, []string{"loaded c2"}) {
+		t.Fatalf("without Wake: err %v, calls %v, want Loaded once", err, calls)
+	}
+}
+
 // Ten reads in a row that fail (a revoked token, Forgejo down: about five
 // minutes) raise one alert; a read that works starts the count again.
 func TestPolicyLoaderRaisesAStreakOfReadFailures(t *testing.T) {
@@ -570,7 +618,7 @@ func infraForgejo(t *testing.T, files map[string][]byte) (*Forgejo, *alertForgej
 			json.NewEncoder(w).Encode(append([]map[string]any{}, open...)) // #nosec G104 -- test stub
 			return
 		}
-		if r.Method == http.MethodGet && fmtScan(path, "issues/%d/comments", new(int64)) {
+		if r.Method == http.MethodGet && (fmtScan(path, "issues/%d/comments", new(int64)) || fmtScan(path, "issues/%d/dependencies", new(int64))) {
 			io.WriteString(w, `[]`)
 			return
 		}

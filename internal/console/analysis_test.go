@@ -75,3 +75,12 @@ func TestAttachAnalysisTool(t *testing.T) {
 		}
 	}
 }
+
+// An ask's noun reads as words, its kind's underscore a space.
+func TestAskNounReadsAsWords(t *testing.T) {
+	for kind, want := range map[string]string{factoryd.ApprovalMerge: "merge request", factoryd.ApprovalCriteriaRerun: "criteria rerun request", "": "question"} {
+		if got := askNoun(kind); got != want {
+			t.Errorf("askNoun(%q) = %q, want %q", kind, got, want)
+		}
+	}
+}

@@ -76,7 +76,7 @@ const mustHave = {
     "↻ routines", "within", "Weekly bump", "Template pass", "Dependency update", "Audit", "every Monday 06:00", "after 6 more merges",
     "Skip once", "Run now", "#779"],
   idle: ["idle", "0 working", "0 need you", "€144.16", "#455", "#178", "Done", "#618", "#597", "failed"],
-  fire: ["#610", "Grant one session with this answer", "Fund", "real problem", "nothing for over", "2 waiting on the provider",
+  fire: ["#610", "Grant one session with this answer", "Fund", "nothing for over", "2 waiting on the provider",
     "#620", "€1.95", "#615", "#621", "#604", "#609", "failed", "Resource request", "cx33", "load test of the event stream",
     "beyond the envelope", "#623", "waiting on #610", "#602"],
   quiet: ["4 working", "0 need you", "€4.10", "#624", "#625", "#622", "#621", "#620", "done",
@@ -1113,6 +1113,23 @@ async function text(page) {
       if (new URL(nsp.url()).searchParams.get("done-only") !== "failed") fails.push("menus: without script Apply does not apply the choice (" + nsp.url() + ")");
       if (!(await nsp.locator("#board .col-state").allInnerTexts()).some((t) => t.includes("failed only"))) fails.push("menus: without script Apply leaves no state line");
       await ns.close();
+    }
+    if (sc === "busy") {
+      // a plan's name: the children's chip, the parent's chip and the approval header
+      await p.page.goto(base + "/", { waitUntil: "load" });
+      await p.page.waitForTimeout(600);
+      const chipOf = (id) => p.page.locator('#board [data-card="' + labID(id) + '"] .chip.plan');
+      for (const [child, want] of [[606, "from plan #531 · card chips"], [617, "from plan #531 · card chips"], [533, "from plan #531 · card chips"], [537, "#537 · quota guard"], [531, "#531 · card chips"]]) {
+        const got = (await chipOf(child).allInnerTexts()).map((t) => t.trim());
+        if (got.length !== 1 || got[0] !== want) fails.push("plan name: card #" + child + "'s plan chip reads " + JSON.stringify(got) + ", want " + JSON.stringify(want));
+      }
+      if (!(await p.page.locator('#board [data-card="' + labID(527) + '"]').count())) fails.push("plan name: the closed plan #527 is not on the board");
+      const closedChips = await chipOf(527).allInnerTexts();
+      if (closedChips.length !== 0) fails.push("plan name: the unnamed closed plan #527 wears a plan chip: " + JSON.stringify(closedChips));
+      const headEl = p.page.locator("#needs-you h4#approval-52");
+      if ((await headEl.count()) !== 1) fails.push("plan name: want one plan approval header #approval-52 in Needs you, found " + (await headEl.count()));
+      const head = (await headEl.first().innerText()).replace(/\s+/g, " ").trim();
+      if (head !== "Plan #558 · activity feed, revision 1") fails.push("plan name: the approval header reads " + JSON.stringify(head) + ", want \"Plan #558 · activity feed, revision 1\"");
     }
     if (sc === "busy") {
       // the routines (C16): every ghost at the foot of Queued, Needs you holds only the

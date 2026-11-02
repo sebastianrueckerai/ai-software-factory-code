@@ -53,6 +53,8 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for your answers: revision 2, 6 cards; the planner revises it with them.`}, true},
 		{"a criteria gap", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria"}}, plan,
 			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.`}, true},
+		{"criteria never judged", Event{Kind: EventApprovalRequested, TaskID: "t-plan", Detail: map[string]any{"kind": "criteria_rerun"}}, plan,
+			ChatMessage{Kind: MessageEscalation, Content: `Plan #558 "Members page" waits for you: its cards are done and criteria were never judged. Waive one with your reason, or confirm the delivered cards satisfy them.`}, true},
 		{"a failure", Event{Kind: EventTaskEnded, TaskID: "t-1", Detail: map[string]any{"state": "failed",
 			"reason": "policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 failed: policy: policy version 669: risk class forbidden is forbidden to agents: .forgejo/workflows/ci.yml, .forgejo/workflows/pr.yml.",

@@ -50,8 +50,8 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 // words with request, a question's own word.
 func askNoun(kind string) string {
 	switch kind {
-	case factoryd.ApprovalMerge, factoryd.ApprovalPlan, factoryd.ApprovalCriteria:
-		return kind + " request"
+	case factoryd.ApprovalMerge, factoryd.ApprovalPlan, factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
+		return strings.ReplaceAll(kind, "_", " ") + " request"
 	}
 	return "question"
 }

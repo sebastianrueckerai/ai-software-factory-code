@@ -76,6 +76,29 @@ func TestChatGrantsTheCriteriaCardOnTheHumansWord(t *testing.T) {
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "granted"}})
 }
 
+// On a criteria_rerun ask the chat's grant refuses naming the answers the
+// ask has: it grants no card and runs no review.
+func TestChatGrantOnCriteriaNeverJudgedRefuses(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	r.c.cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) {
+		t.Error("a grant on the criteria never judged reached GrantCriteria")
+		return 0, nil
+	}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {say("It cannot.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more card"}})
+	refusal := "Refused: Plan t-plan's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + refusal + `"}`,
+		`text {"text":"It cannot."}`, `done {}`})
+	if a := r.approvals.get(30); a.Status != "pending" {
+		t.Errorf("the refused grant left the request %+v", a)
+	}
+}
+
 // The chat confirms the delivered cards on the human's word: their line
 // in the thread is the evidence the confirmation records.
 func TestChatConfirmsTheDeliveredCriteriaOnTheHumansWord(t *testing.T) {

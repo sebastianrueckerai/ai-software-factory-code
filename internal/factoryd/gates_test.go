@@ -833,6 +833,28 @@ func TestModelReviewTheCardCannotPayForIsANote(t *testing.T) {
 	}
 }
 
+// An integration card's review the card cannot pay for names the budget
+// as the remedy: approving its merge holds until the plan's criteria are
+// judged, so the merge card's Approve or Deny is no way on.
+func TestModelReviewAnIntegrationCardCannotPayForNamesTheBudget(t *testing.T) {
+	r, _, ll := fundedReview(t, 0.01, 1e-9, 1e-5, nil)
+	store := r.store.(*fakeStore)
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	card := store.tasks["t1"]
+	card.Source, card.Parent, card.PlanKey = SourcePlan, "t-plan", "integration"
+	store.tasks["t1"] = card
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	want := " Raise the card's budget, then approve again: its merge waits on the review of the plan's criteria."
+	if !strings.HasPrefix(rv.Note, "model review not run: ") || !strings.HasSuffix(rv.Note, want) || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v after %d calls, want a note ending %q", rv, len(ll.chats), want)
+	}
+}
+
 // The estimate reads the requests' bytes as the gateway does: four parts
 // of 40 KiB of diff each are over 160 KiB of request, over 0.16 EUR at
 // 1e-6 EUR a byte uncalibrated, past 0.15 EUR free. A settled call on
@@ -1377,6 +1399,197 @@ func TestRequestApprovalOfAFactoryPullRequest(t *testing.T) {
 	}
 }
 
+// A review that did not run is named on the merge ask: its note on the
+// reason, and one fixed why-human line with what lifts a money refusal,
+// in place of the auto merge's bare no-verdict line. Without a note the
+// ask reads as before.
+func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
+	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
+	month := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	day := "parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR."
+	invalid := "model review answer invalid (no summary): {}"
+	unpaid := "model review not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it."
+	for _, c := range []struct {
+		name   string
+		review Review
+		why    []string
+		reason string
+		lines  []string
+	}{
+		{"month cap", Review{Note: month}, []string{"the project's merge rule is human", "no model review verdict: " + month},
+			base + ". The model review did not run: " + month,
+			[]string{"The model review did not run: " + month + ". The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.",
+				"the project's merge rule is human"}},
+		{"day cap of the parts", Review{Note: day}, nil,
+			base + ". The model review did not run: " + day,
+			[]string{"The model review did not run: parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR. " +
+				"The gateway refuses every further call (refused_day_cap) until the day cap is raised or the UTC day ends."}},
+		{"no money refusal", Review{Note: invalid}, []string{"schema migration"},
+			base + ". The model review did not run: " + invalid,
+			[]string{"The model review did not run: " + invalid + ".", "schema migration"}},
+		{"a review not started", Review{Note: unpaid}, nil,
+			base + ". The model review did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it.",
+			[]string{"The model review did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it."}},
+		{"a review that ran", Review{Verdict: "approve", Summary: "fine"}, []string{"schema migration"},
+			base, []string{"schema migration"}},
+	} {
+		r, store, _ := newGateRunner(t, gateTask, &gateForgejo{})
+		in := ApprovalInput{PR: PullRequest{Number: 9}, Commit: "c1", Gates: GateResults{Policy: PolicyGate{Class: "normal", PolicyVersion: 7}},
+			Review: c.review, WhyHuman: c.why}
+		if _, err := execActivity(t, r, ActivityRequestApproval, "t1", in); err != nil {
+			t.Fatal(err)
+		}
+		pending, _ := store.ApprovalRequests(context.Background(), "pending")
+		var spec MergeSpec
+		if len(pending) != 1 || json.Unmarshal(pending[0].Spec, &spec) != nil {
+			t.Fatalf("%s: requests %+v", c.name, pending)
+		}
+		if pending[0].Reason != c.reason {
+			t.Errorf("%s: reason =\n%q\nwant\n%q", c.name, pending[0].Reason, c.reason)
+		}
+		if !slices.Equal(spec.WhyHuman, c.lines) {
+			t.Errorf("%s: why human =\n%q\nwant\n%q", c.name, spec.WhyHuman, c.lines)
+		}
+	}
+}
+
+// The merge of a plan's integration card holds while a criterion of its
+// revision has no verdict row from any source: the refusal names the
+// count and the last review's note, and the merge ask is on the human's
+// surface again with the refused review named — filed anew from the
+// pressed request's spec, or re-opened when it names the note already.
+// A row for every criterion, whatever its verdict, merges.
+func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
+	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
+	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	named := base + ". The model review did not run: " + note
+	for _, c := range []struct {
+		name    string
+		note    string // the last model_review step's
+		reason  string // the pressed request's
+		rows    []CriterionVerdict
+		refusal string
+		asks    int // merge requests filed in all
+		ask     string
+	}{
+		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 2, named},
+		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 1, named},
+		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged by a model review", 1, base},
+		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "met"}}, "", 1, base},
+	} {
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		r, store, _ := newGateRunner(t, task, fj)
+		ctx := context.Background()
+		b, _ := json.Marshal(criteriaPlan())
+		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+			t.Fatal(err)
+		}
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+		// the press met the human criterion
+		if err := store.PutCriteriaVerdicts(ctx, "t1", "approver", "sebastian", append(c.rows, CriterionVerdict{Criterion: "c2", Verdict: "met"})); err != nil {
+			t.Fatal(err)
+		}
+		r.record(ctx, "t1", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
+		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1", Review: Review{Verdict: "approve", Summary: "fine"}, WhyHuman: []string{"schema migration"}})
+		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec, Reason: c.reason})
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+			t.Fatal(err)
+		}
+		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+		res := getInto[MergeResult](t, val, err)
+		if c.refusal == "" {
+			if !res.Merged || len(fj.merges) != 1 {
+				t.Errorf("%s: result %+v, merges %d: want merged", c.name, res, len(fj.merges))
+			}
+			continue
+		}
+		if res.Merged || res.Refusal != c.refusal || len(fj.merges) != 0 {
+			t.Errorf("%s: result %+v, merges %d: want the refusal %q", c.name, res, len(fj.merges), c.refusal)
+		}
+		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], c.refusal) {
+			t.Errorf("%s: comments %q, want one naming the hold", c.name, fj.comments)
+		}
+		if len(store.approvals) != c.asks {
+			t.Errorf("%s: %d merge requests, want %d", c.name, len(store.approvals), c.asks)
+		}
+		pending, _ := store.ApprovalRequests(ctx, "pending")
+		if len(pending) != 1 || pending[0].Reason != c.ask || pending[0].DecisionNote != "waiting: "+c.refusal {
+			t.Fatalf("%s: pending %+v, want one ask reading %q, noted with the hold", c.name, pending, c.ask)
+		}
+		var got MergeSpec
+		if err := json.Unmarshal(pending[0].Spec, &got); err != nil {
+			t.Fatal(err)
+		}
+		if c.asks == 2 && (got.Review.Note != note || got.VerdictSummary != note || got.HeadSHA != "c1" ||
+			!slices.Equal(got.WhyHuman, []string{"The model review did not run: " + note + ". The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.", "schema migration"}) ||
+			len(got.EarlierReviews) != 1 || got.EarlierReviews[0].Verdict != "approve") {
+			t.Errorf("%s: the filed spec = %+v, want the refused review named and the judged one kept as earlier", c.name, got)
+		}
+		if tk, _, _ := store.Task(ctx, "t1"); tk.Gate != GateApproval {
+			t.Errorf("%s: gate %q, want approval", c.name, tk.Gate)
+		}
+	}
+}
+
+// The press's read names the integration card's criteria without a row,
+// none for any other card; HoldMerge holds without trying the merge and
+// files the ask naming the note.
+func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+	r, store, _ := newGateRunner(t, task, fj)
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-found"] = Task{ID: "t-found", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation"}
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it"}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityUnjudgedCriteria, "t1")
+	if ids := getInto[[]string](t, val, err); !slices.Equal(ids, []string{"c1", "c3"}) {
+		t.Fatalf("unjudged = %v, want c1 and c3", ids)
+	}
+	val, err = execActivity(t, r, ActivityUnjudgedCriteria, "t-found")
+	if ids := getInto[[]string](t, val, err); len(ids) != 0 {
+		t.Fatalf("a feature card's unjudged = %v, want none", ids)
+	}
+	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	r.record(ctx, "t1", "model_review", map[string]any{"note": note})
+	spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
+	id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
+		Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
+	if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, r, ActivityHoldMerge, "t1", int64(9), "c1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := store.ApprovalRequests(ctx, "pending")
+	if len(fj.merges) != 0 || len(pending) != 1 || !strings.HasSuffix(pending[0].Reason, ". The model review did not run: "+note) ||
+		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the model review did not run ("+note+")" {
+		t.Fatalf("merges %d, pending %+v: want no merge and the ask naming the note", len(fj.merges), pending)
+	}
+	// rows that landed between the read and the hold leave nothing held:
+	// the ask says so and asks for the press again
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c3", Verdict: "met"}}); err != nil {
+		t.Fatal(err)
+	}
+	comments := len(fj.comments)
+	if _, err := execActivity(t, r, ActivityHoldMerge, "t1", int64(9), "c1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ = store.ApprovalRequests(ctx, "pending"); len(pending) != 1 || len(fj.comments) != comments ||
+		pending[0].DecisionNote != "waiting: every criterion has a verdict row now: approve again to merge" {
+		t.Fatalf("pending %+v, %d comments more: want the ask asking for the press again", pending, len(fj.comments)-comments)
+	}
+}
+
 // The merge commit's message names the approver, and its trailers the
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).
@@ -1862,6 +2075,49 @@ func TestMergeReadsTheCheckedHead(t *testing.T) {
 	res := getInto[MergeResult](t, val, err)
 	if !res.Merged || !slices.Equal(fj.statusReads, []string{"c1"}) || len(fj.merges) != 1 || fj.merges[0]["head_commit_id"] != "m1" {
 		t.Fatalf("result %+v, status reads %v, merges %v; want m1 merged on c1's green", res, fj.statusReads, fj.merges)
+	}
+}
+
+// A revert of a red main gives way to the pause's fix-forward card whose
+// merge runs or ran: a red main gets one remedy at a time, so the revert
+// does not merge, and its refusal names the fix card. A fix card that
+// ended without its merge leaves the revert to merge. A revert no standing
+// pause names merges nothing: main turned green, and a merge retry or a
+// green end that missed it would revert a commit on a green main.
+func TestMergeRefusesARevertWhoseFixForwardCardLanded(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fix     Task
+		noPause bool
+		refusal string
+	}{
+		{"merged", Task{Status: "merged", MergeCommit: "m9"}, false, "fix-forward card #40 (fix1)"},
+		{"merging", Task{Status: "in-review", Gate: GateMerge}, false, "fix-forward card #40 (fix1)"},
+		{"closed", Task{Status: "closed"}, false, ""},
+		{"the pause ended", Task{Status: "closed"}, true, "no pause of the merge queue names this revert"},
+	} {
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		task := gateTask
+		task.Source = SourceRevert
+		r, store, _ := newGateRunner(t, task, fj)
+		fix := tc.fix
+		fix.ID, fix.Source, fix.Kind, fix.Repository, fix.IssueNumber = "fix1", SourceMainFix, "agent", task.Repository, 40
+		store.tasks["fix1"] = fix
+		if !tc.noPause {
+			store.pauses = map[string]QueuePause{task.Repository: {Project: task.Repository, RunID: 58, SHA: "bad1bad", Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "t1"}}
+		}
+		store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+		res := getInto[MergeResult](t, val, err)
+		if tc.refusal == "" {
+			if !res.Merged || len(fj.merges) != 1 {
+				t.Errorf("%s: result %+v, merges %d; want the revert merged", tc.name, res, len(fj.merges))
+			}
+			continue
+		}
+		if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, tc.refusal) {
+			t.Errorf("%s: result %+v, merges %d; want a refusal naming %q and no merge", tc.name, res, len(fj.merges), tc.refusal)
+		}
 	}
 }
 

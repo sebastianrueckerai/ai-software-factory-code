@@ -641,19 +641,32 @@ func (f *fakeChat) MarkCleared(_ context.Context, repository, login string, n in
 	return nil
 }
 
-func (f *fakeChat) StartQueued(_ context.Context, repository, login string, id int64) error {
+func (f *fakeChat) StartQueued(_ context.Context, repository, login string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := repository + " " + login
 	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[k][i]
 	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
 	f.next++
 	m.ID, m.At, m.Queued = f.next, f.stamp(), false
 	f.msgs[k] = append(f.msgs[k], m)
+	return m.ID, nil
+}
+
+func (f *fakeChat) RequeueChatMessage(_ context.Context, repository, login string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	for i, m := range f.msgs[k] {
+		if m.ID == id && !m.Queued {
+			f.msgs[k][i].Queued = true
+			return nil
+		}
+	}
 	return nil
 }
 
@@ -1523,6 +1536,250 @@ func TestChatTextReply(t *testing.T) {
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}],` +
 			`"open_question":"what is open?"}`})
+}
+
+// A due timer's wake parks behind the thread's turn in flight, and the
+// member's message sent then joins that turn from behind the wake's
+// place: the turn reads and answers it, the wake's note still gets its
+// own turn, and no second model turn runs for the message. Before the
+// fix the wake's place kept the message out, the wake's turn answered
+// it, and the message's own turn then answered it again.
+func TestChatWakeBehindATurnDoesNotKeepTheMemberUnread(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	g.lenient = true
+	g.replies = [][]string{{call(1, "board", `{}`)}, {say("both read")}, {say("the timer ran")}}
+	first := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"first"}})
+		if err != nil {
+			t.Error(err)
+		}
+		first <- events
+	}()
+	<-g.arrived
+	wake := make(chan error, 1)
+	go func() {
+		wake <- r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", 1, "wake_timer", "Timer: check the build.")
+	}()
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		chat.mu.Lock()
+		parked := slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool {
+			return m.Queued && strings.HasPrefix(m.Content, "Timer:")
+		})
+		chat.mu.Unlock()
+		if parked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the wake's message never parked behind the turn in flight")
+		}
+	}
+	second := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"second"}})
+		if err != nil {
+			t.Error(err)
+		}
+		second <- events
+	}()
+	var id int64
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		chat.mu.Lock()
+		i := slices.IndexFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Queued && m.Content == "second" })
+		if i >= 0 {
+			id = chat.msgs["sf/code sebastian"][i].ID
+		}
+		chat.mu.Unlock()
+		if id > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("\"second\" never reached the thread while the turn listened")
+		}
+	}
+	close(g.hold)
+	<-first
+	equal(t, "the second stream", <-second, []string{fmt.Sprintf(`joined {"id":%d}`, id), `done {}`})
+	if err := <-wake; err != nil {
+		t.Fatalf("the wake: %v", err)
+	}
+	if calls := g.calls(); len(calls) != 3 {
+		t.Fatalf("%d model calls, want 3 (the turn's two, the wake's one)", len(calls))
+	}
+	msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range msgs {
+		order = append(order, m.Role+":"+m.Content)
+	}
+	equal(t, "the thread", order, []string{"user:first", "assistant:", "user:second", "assistant:both read", "user:Timer: check the build.", "assistant:the timer ran"})
+}
+
+// A message that parks behind a turn of its thread not yet listening
+// (here: one still waiting for the project's only model turn) is landed
+// and answered by that turn, and its own POST then ends joined without a
+// second model turn.
+func TestChatQueuedMessageAnotherTurnLandedEndsJoined(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	r.ledger.chat = &policy.ChatConfig{ParallelTurns: 1}
+	g.lenient = true
+	g.replies = [][]string{{say("seed")}, {say("over there")}, {say("both read")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	seed := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"seed"}})
+		if err != nil {
+			t.Error(err)
+		}
+		seed <- events
+	}()
+	<-g.arrived
+	close(g.hold)
+	<-seed
+	chatPost(t, r, ck, s, chatPath+"/new", nil)
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	other := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"over there"}, "conversation": {"2"}})
+		if err != nil {
+			t.Error(err)
+		}
+		other <- events
+	}()
+	<-g.arrived
+	waitRow := func(content string) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+			chat.mu.Lock()
+			stored := slices.ContainsFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool {
+				return m.Content == content && m.Conversation == 1
+			})
+			chat.mu.Unlock()
+			if stored {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%q never reached the thread while its turn waited", content)
+			}
+		}
+	}
+	first := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"first"}, "conversation": {"1"}})
+		if err != nil {
+			t.Error(err)
+		}
+		first <- events
+	}()
+	waitRow("first")
+	second := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"second"}, "conversation": {"1"}})
+		if err != nil {
+			t.Error(err)
+		}
+		second <- events
+	}()
+	var id int64
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		chat.mu.Lock()
+		i := slices.IndexFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool {
+			return m.Queued && m.Content == "second" && m.Conversation == 1
+		})
+		if i >= 0 {
+			id = chat.msgs["sf/code sebastian"][i].ID
+		}
+		chat.mu.Unlock()
+		if id > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("\"second\" never parked behind the turn in flight")
+		}
+	}
+	close(g.hold)
+	<-first
+	<-other
+	equal(t, "the second stream", <-second, []string{`queued {"position":1}`, fmt.Sprintf(`joined {"id":%d}`, id), `done {}`})
+	if calls := g.calls(); len(calls) != 3 {
+		t.Fatalf("%d model calls, want 3 (the seed's, the other thread's, the first turn's)", len(calls))
+	}
+	msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var order []string
+	for _, m := range msgs {
+		order = append(order, m.Role+":"+m.Content)
+	}
+	equal(t, "the thread", order, []string{"user:seed", "assistant:seed", "user:first", "user:second", "assistant:both read"})
+}
+
+// A turn the model fails mid-loop puts the messages it had landed back
+// to queued, and one quiet retry turn of the server answers them; a
+// retry that fails itself starts no further one.
+func TestChatFailedTurnRequeuesWhatItReadForOneRetry(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
+	g.lenient = true
+	g.replies = [][]string{{call(1, "board", `{}`)}}
+	first := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"first"}})
+		if err != nil {
+			t.Error(err)
+		}
+		first <- events
+	}()
+	<-g.arrived
+	second := make(chan []string, 1)
+	go func() {
+		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"second"}})
+		if err != nil {
+			t.Error(err)
+		}
+		second <- events
+	}()
+	events := <-second
+	chat.mu.Lock()
+	i := slices.IndexFunc(chat.msgs["sf/code sebastian"], func(m factoryd.ChatMessage) bool { return m.Content == "second" })
+	var id int64
+	if i >= 0 {
+		id = chat.msgs["sf/code sebastian"][i].ID
+	}
+	chat.mu.Unlock()
+	equal(t, "the second stream", events, []string{fmt.Sprintf(`joined {"id":%d}`, id), `done {}`})
+	close(g.hold)
+	fe := <-first
+	if !slices.ContainsFunc(fe, func(e string) bool { return strings.HasPrefix(e, "error ") }) {
+		t.Fatalf("the first stream showed no failure: %v", fe)
+	}
+	g.replies = append(g.replies, []string{say("retry: both read")})
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(msgs, func(m factoryd.ChatMessage) bool { return m.Content == "retry: both read" }) {
+			continue
+		}
+		var order []string
+		for _, m := range msgs {
+			order = append(order, m.Role+":"+m.Content)
+		}
+		equal(t, "the thread", order, []string{"user:first", "assistant:", "user:second", "assistant:retry: both read"})
+		if calls := g.calls(); len(calls) != 3 {
+			t.Fatalf("%d model calls, want 3 (the failed turn's two, the retry's one)", len(calls))
+		}
+		return
+	}
+	t.Fatal("no retry turn answered the message the failed turn had read")
 }
 
 // The project-now block names today: the date line the turn builds from
@@ -4557,5 +4814,9 @@ func TestChatAnalyzeImageAskIsBounded(t *testing.T) {
 	}
 	if len(g.visions) != 0 {
 		t.Fatalf("%d vision calls, want none", len(g.visions))
+	}
+	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img1","ask":"`+strings.Repeat("é", 2000)+`"}`)}, {say("Seen.")}}
+	if _, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is in img1?"}}); len(g.visions) != 1 {
+		t.Fatalf("an ask of 2000 characters in 4000 bytes = %v, %d vision calls, want one", events, len(g.visions))
 	}
 }

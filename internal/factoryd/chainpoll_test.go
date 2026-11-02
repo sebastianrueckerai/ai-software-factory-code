@@ -552,6 +552,8 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			f.comments = append(f.comments, repo+"#"+strings.TrimSuffix(strings.TrimPrefix(p, "/issues/"), "/comments")+" "+in["body"])
 			w.WriteHeader(http.StatusCreated)
 			reply(map[string]any{"id": len(f.comments)})
+		case r.Method == "GET" && strings.HasPrefix(p, "/issues/") && strings.HasSuffix(p, "/dependencies"):
+			reply([]any{})
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/") && f.closeFail != 0:
 			http.Error(w, "refused", f.closeFail)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):

@@ -1143,7 +1143,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 		}
 		t.approvalRequested = workflow.Now(t.ctx)
-		if v = t.awaitApproval(commit, covered); !v.reask {
+		if v = t.awaitApproval(commit, g, covered); !v.reask {
 			break
 		}
 	}
@@ -1364,7 +1364,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		}
 		return t.report(stronger, refusals)
 	case res.Capped != nil && t.dayCap < versionDayCap:
-		return t.finish("failed", "report session: the report session ended without a report: "+res.Capped.reason())
+		return t.finish("failed", "report session: the report session ended without a report: "+t.capReason(*res.Capped))
 	case res.Capped != nil:
 		if final, why, _ := t.awaitCap(*res.Capped, model); final != "" {
 			return t.finish(final, why)

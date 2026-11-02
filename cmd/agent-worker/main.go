@@ -872,20 +872,22 @@ func gitEnv(extra []string) []string {
 	}, extra...)
 }
 
-// runGitCtx scrubs the token from failures, because worker stderr reaches
-// the factoryd log.
+// runGitCtx answers git's stdout: a warning git prints on success, such as
+// commit-tree's "duplicate parent ... ignored", stays out of the commit id
+// a caller reads. A failure carries both streams, the token scrubbed,
+// because worker stderr reaches the factoryd log.
 func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, gitBin, append(append([]string(nil), safeGit...), args...)...) // #nosec G204 -- exec.CommandContext, no shell; args are fixed git subcommands plus this worker's own task-scoped values
 	if dir != "" {
 		cmd.Dir = dir
 	}
 	cmd.Env = append(gitEnv(e.gitTrace), env...)
-	out := &capBuffer{max: maxGitOutput}
-	cmd.Stdout, cmd.Stderr = out, out
+	out, errOut := &capBuffer{max: maxGitOutput}, &capBuffer{max: maxGitOutput}
+	cmd.Stdout, cmd.Stderr = out, errOut
 	err := cmd.Run()
 	if err != nil {
 		scrub := redact.New(e.repoToken, e.pushToken).String
-		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(out.String()))
+		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
 	}
 	return strings.TrimSpace(out.String()), nil
 }
@@ -1099,8 +1101,9 @@ func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound
 		return h, mainHead, err
 	}
 	merged, mErr := mergedTree(e, send, mb, head, mainHead)
-	// the faithful sync: the tree is what a merge with main would give
-	if mErr == nil && merged == tree && fits(e, send, mainHead, tree, bound) {
+	// the faithful sync: the tree is what a merge with main would give, on
+	// a branch main has moved past; one that holds main already has none
+	if mErr == nil && mb != mainHead && merged == tree && fits(e, send, mainHead, tree, bound) {
 		return merge(tree)
 	}
 	if billed <= bound {

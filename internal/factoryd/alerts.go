@@ -207,6 +207,16 @@ func (s *PGStore) AlertByFingerprint(ctx context.Context, kind, fingerprint stri
 	return a, err == nil, err
 }
 
+// AlertByTask is the newest alert of kind linked to task taskID.
+func (s *PGStore) AlertByTask(ctx context.Context, kind, taskID string) (Alert, bool, error) {
+	a, err := scanAlert(s.db.QueryRowContext(ctx,
+		`SELECT `+alertColumns+` FROM alerts WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, taskID, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Alert{}, false, nil
+	}
+	return a, err == nil, err
+}
+
 // AlertByID is alerts row id; false when there is none. The console reads
 // it for the repository an event about the alert belongs to.
 func (s *PGStore) AlertByID(ctx context.Context, id int64) (Alert, bool, error) {

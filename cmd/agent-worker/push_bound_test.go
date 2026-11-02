@@ -221,3 +221,76 @@ func TestTheSyncMergeBillsMainToMain(t *testing.T) {
 		t.Fatalf("the pull request bills %q, want only the card's own files: main's history must not bill to the card", got)
 	}
 }
+
+// A card's first session starts on main's head, so its merge base with main
+// is main itself and there is nothing to sync: the push is one commit on
+// main, whatever the bound, and nothing git prints beside a commit's id is
+// read as one.
+func TestFirstPushOnMainsHeadFitsTheBound(t *testing.T) {
+	run := func(args ...string) string {
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %s: %v: %s", strings.Join(args, " "), err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "keep.txt"), []byte("keep\n"), 0o644)
+	run("-C", seed, "add", "-A")
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "-m", "m0")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	m0 := run("-C", seed, "rev-parse", "HEAD")
+
+	e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "o", repoSHA: m0,
+		branch: "factory/t-first", repoURL: remote, pushURL: fork, lineBound: 100}
+	dir := filepath.Join(t.TempDir(), "repo")
+	if err := cloneBase(e, dir); err != nil {
+		t.Fatal(err)
+	}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil || base != m0 || mainHead != m0 {
+		t.Fatalf("base %s main %s (%v), want both %s", base, mainHead, err, m0)
+	}
+	os.WriteFile(filepath.Join(dir, "own.txt"), []byte("own\n"), 0o644)
+
+	commit, err := commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := run("-C", fork, "rev-list", "--parents", "-n", "1", "refs/heads/factory/t-first"); got != commit+" "+m0 {
+		t.Fatalf("pushed commit and parents = %q, want %q", got, commit+" "+m0)
+	}
+	if got := run("-C", fork, "diff", "--name-only", m0, commit); got != "own.txt" {
+		t.Fatalf("change against main = %q, want own.txt", got)
+	}
+}
+
+// A git command that succeeds with a warning on stderr answers its stdout
+// alone: commit-tree with one parent named twice prints "duplicate parent
+// ... ignored" and the new commit's id, and the caller reads the id.
+func TestRunGitAnswersStdoutAlone(t *testing.T) {
+	dir := t.TempDir()
+	var e workerEnv
+	if _, err := e.git("", "init", "-q", dir); err != nil {
+		t.Fatal(err)
+	}
+	tree, err := e.git(dir, "write-tree")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, err := e.runGit(dir, botIdentity, "commit-tree", tree, "-m", "root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := e.runGit(dir, botIdentity, "commit-tree", tree, "-p", root, "-p", root, "-m", "twice")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.git(dir, "rev-parse", "--verify", id+"^{commit}"); err != nil || got != id {
+		t.Fatalf("commit-tree answered %q, not a commit id (%v)", id, err)
+	}
+}

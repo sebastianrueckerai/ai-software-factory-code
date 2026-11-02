@@ -381,6 +381,8 @@ func approvalPoke(e Event, t Task) (string, []string, bool) {
 		return fmt.Sprintf("Plan %s %q waits for your answers: revision %d, %d cards; the planner revises it with them.", ref, CardTitle(t), num("revision"), num("cards")), nil, true
 	case ApprovalCriteria:
 		return fmt.Sprintf("Plan %s %q waits for you: its cards ran out with a criterion still unmet. Waive one with your reason, grant one more bounded card, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
+	case ApprovalCriteriaRerun:
+		return fmt.Sprintf("Plan %s %q waits for you: its cards are done and criteria were never judged. Waive one with your reason, or confirm the delivered cards satisfy them.", ref, CardTitle(t)), nil, true
 	}
 	return "", nil, false
 }

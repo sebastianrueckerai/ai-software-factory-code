@@ -210,9 +210,9 @@ type Config struct {
 	// so every Record fans out without polling the table (factoryd.EventBus).
 	Bus *factoryd.EventBus
 	// AnswerPlan signals a plan task's workflow with a writer's answer to
-	// one question of the revision that waits for its answers
-	// (factoryd.AnswerPlan).
-	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, answer, by string) error
+	// one question of the revision that waits for its answers, the
+	// confirmation's decision with its findings (factoryd.AnswerPlan).
+	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error
 	// AnswerPlanQuestions signals a plan task's workflow with every answer
 	// of one turn at once (factoryd.AnswerPlanQuestions).
 	AnswerPlanQuestions func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error
@@ -532,7 +532,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
 		{"POST /projects", http.HandlerFunc(c.createProject), nil},
 		{"POST /projects/{name}/merge", http.HandlerFunc(c.mergeProject), nil},
-		{"POST /alerts/{id}/verdict", http.HandlerFunc(c.verdict), nil},
 		{"POST /projects/{name}/chat", http.HandlerFunc(c.chatPost), nil},
 		{"POST /projects/{name}/chat/stop", http.HandlerFunc(c.chatStopPost), nil},
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},

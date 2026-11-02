@@ -1312,17 +1312,26 @@ func (a *AcceptanceRig) AbandonChatMessage(context.Context, string, string, int6
 	return nil, nil
 }
 
-func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := a.msgs[i]
 	a.msgs = slices.Delete(a.msgs, i, i+1)
 	m.ID, m.Queued, m.At = a.nextID(), false, time.Now()
 	a.msgs = append(a.msgs, m)
+	return m.ID, nil
+}
+
+func (a *AcceptanceRig) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id }); i >= 0 {
+		a.msgs[i].Queued = true
+	}
 	return nil
 }
 
