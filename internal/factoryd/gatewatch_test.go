@@ -366,20 +366,22 @@ func TestPinnedBound(t *testing.T) {
 		parts    int
 		want     time.Duration
 	}{
-		{ActivityRunSession, 7, policy.ReviewParts, 31 * time.Minute},
+		// a session's bound is a large card's agent time and a minute
+		{ActivityRunSession, 7, policy.ReviewParts, 46 * time.Minute},
 		{ActivitySuperviseGate, 7, policy.ReviewParts, 12 * time.Minute},
-		{ActivityRunSession, 0, policy.ReviewParts, 21 * time.Minute},
+		{ActivityRunSession, 0, policy.ReviewParts, 31 * time.Minute},
 		// an unreadable pin falls back to the current version: a bound is
 		// an alert threshold, never a reason to fail the activity
-		{ActivityRunSession, 99, policy.ReviewParts, 21 * time.Minute},
+		{ActivityRunSession, 99, policy.ReviewParts, 31 * time.Minute},
 		// a roll's waits end at their own bound, the longest agent time in
-		// force and half an hour: the alert only past that and the slack
-		{ActivityAwaitSessionGap, 0, policy.ReviewParts, 55 * time.Minute},
-		{ActivityAwaitRollHold, 0, policy.ReviewParts, 55 * time.Minute},
+		// force as a large card holds it and half an hour: the alert only
+		// past that and the slack
+		{ActivityAwaitSessionGap, 0, policy.ReviewParts, 65 * time.Minute},
+		{ActivityAwaitRollHold, 0, policy.ReviewParts, 65 * time.Minute},
 		{ActivityModelReview, 7, 1, 12 * time.Minute},
 		{ActivityGateAudit, 7, 2, 22 * time.Minute},
 		{ActivityModelReview, 7, 3, 32 * time.Minute},
-		{ActivityRunSession, 7, 1, 31 * time.Minute},
+		{ActivityRunSession, 7, 1, 46 * time.Minute},
 	} {
 		if got := bound(ctx, tc.activity, tc.pin, tc.parts); got != tc.want {
 			t.Errorf("bound(%s, pin %d, %d parts) = %s, want %s", tc.activity, tc.pin, tc.parts, got, tc.want)
@@ -417,7 +419,7 @@ func TestPinnedBoundStaysUnderTheFanOutsAttempt(t *testing.T) {
 		{ActivityModelReview, 100, 350 * time.Minute},
 		{ActivityGateAudit, 100, 350 * time.Minute},
 		{ActivityModelReview, 60, 302 * time.Minute},
-		{ActivityRunSession, 100, 401 * time.Minute},
+		{ActivityRunSession, 100, 601 * time.Minute},
 	} {
 		if got := bound(context.Background(), tc.activity, 0, tc.waves); got != tc.want {
 			t.Errorf("bound(%s, %d waves) = %s, want %s", tc.activity, tc.waves, got, tc.want)

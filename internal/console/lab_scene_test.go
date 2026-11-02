@@ -290,7 +290,7 @@ func TestLabSceneFilesIssue(t *testing.T) {
 	ck, sess := r.loggedIn(t)
 	rec := r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Waitlist"},
 		"body": {"Guests wait for a free slot.\n\nAcceptance:\n- A freed slot goes to the first guest"}, "track": {"direct"}}), ck)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=103&project=nord-booking" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=nord-booking" {
 		t.Fatalf("POST /tasks = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
 	code, events, _ := chatPost(t, r, ck, sess, "/projects/nord-booking/chat/proposals/"+token, nil)
@@ -298,7 +298,7 @@ func TestLabSceneFilesIssue(t *testing.T) {
 		t.Fatalf("Do it = %d %q, want #104 filed", code, events)
 	}
 	rec = r.do(post("/tasks", url.Values{"csrf": {sess.csrf}, "project": {"nord-booking"}, "title": {"Call the venue"}, "track": {"human"}}), ck)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed=105&project=nord-booking" {
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=nord-booking" {
 		t.Fatalf("POST /tasks of a human card = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
 	r.fg.mu.Lock()

@@ -55,7 +55,7 @@ func seedAsk(t *testing.T, s *PGStore, repository, taskID string, issue int64, q
 	}
 	if _, err := s.AddChatMessage(t.Context(), repository, "sebastian", ChatMessage{Role: "assistant",
 		Conversation: conv, Kind: MessageEscalation, TaskID: taskID, BirthKind: EventQuestionAsked,
-		Content: fmt.Sprintf("#%d - %s needs you: %s", issue, question, question), Choices: []string{"Yes", "No"}}); err != nil {
+		Content: fmt.Sprintf("#%d - %s needs you: %s\nWhy: the card cannot go on", issue, question, question), Choices: []string{"Yes", "No"}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -99,7 +99,7 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := askRow(t, s, "sf/wake", "t-1"),
-		"#40 - Use a replica? needs you: Use a replica?\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Keep one replica"; got != want {
+		"#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Keep one replica"; got != want {
 		t.Fatalf("the ask's row = %q, want %q", got, want)
 	}
 	rows := analyses(t, s, "t-1")
@@ -132,6 +132,36 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 	}
 }
 
+// A session cap's stop takes the analysis too: its row is the budget stop's
+// words with the why under them, and the analysis follows the why.
+func TestAttachAnalysisEnrichesCapStop(t *testing.T) {
+	s := newAskStore(t)
+	if err := s.CreateTask(t.Context(), Task{ID: "t-1", Kind: "agent", Status: "waiting-human",
+		Repository: "sf/wake", IssueNumber: 40, Objective: "Land the rounds", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40,
+		Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"question": "Grant it one more session?", "why": "review findings went back to the agent", "source": "cap"}}); err != nil {
+		t.Fatal(err)
+	}
+	conv, err := s.EnsureInbox(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := "#40 - Land the rounds is stopped by its budget: Grant it one more session?\nWhy: review findings went back to the agent"
+	if _, err := s.AddChatMessage(t.Context(), "sf/wake", "sebastian", ChatMessage{Role: "assistant",
+		Conversation: conv, Kind: MessageEscalation, TaskID: "t-1", BirthKind: EventQuestionAsked, Content: row}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "One finding is open.", "Grant one session", "sebastian"); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	if got, want := askRow(t, s, "sf/wake", "t-1"), row+"\nAnalysis: One finding is open.\nRecommendation: Grant one session"; got != want {
+		t.Fatalf("the ask's row = %q, want %q", got, want)
+	}
+}
+
 // An ask a settling event answered takes no analysis: AskSettledError with
 // the ask's kind, the word and the actor, the row unchanged, no analysis
 // row on the spine.
@@ -147,7 +177,7 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 	if !errors.As(err, &se) || se.Kind != "question" || se.Word != "answered" || se.By != "sebastian" {
 		t.Fatalf("the refusal = %v, want the question answered by sebastian", err)
 	}
-	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?"; got != want {
+	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on"; got != want {
 		t.Fatalf("the answered ask's row changed: %q, want %q", got, want)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 0 {
@@ -231,7 +261,7 @@ func TestAttachAnalysisReturnsItsRowsCloseError(t *testing.T) {
 	if !errors.Is(err, errHeldClose) {
 		t.Fatalf("AttachAnalysis = %v, want the rows' close failure", err)
 	}
-	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?"; got != want {
+	if got, want := askRow(t, s, "sf/wake", "t-1"), "#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on"; got != want {
 		t.Fatalf("the ask's row changed: %q, want %q", got, want)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 0 {
@@ -302,7 +332,7 @@ func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 		approvalAskRow+"\nAnalysis: The replica adds 12 ms of lag; the board reads it fine.\nRecommendation: Waive c1"; got != want {
 		t.Fatalf("the request's row = %q, want %q", got, want)
 	}
-	if got, want := rowContent(t, s, "sf/wake", "t-1", EventQuestionAsked), "#40 - Use a replica? needs you: Use a replica?"; got != want {
+	if got, want := rowContent(t, s, "sf/wake", "t-1", EventQuestionAsked), "#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on"; got != want {
 		t.Fatalf("the answered question's row = %q, want %q", got, want)
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 1 || rows[0].Detail["found"] != "The replica adds 12 ms of lag; the board reads it fine." {

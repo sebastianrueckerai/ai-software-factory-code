@@ -229,15 +229,22 @@ not moved the task out of review or the human wait within 15 minutes is
 signalled again every pass, since its claim may have outlived a factoryd
 that died before signalling it. A failure comments its reason on the
 issue; `Finish` retries for a day, and a workflow that still fails is
-restarted by the heal pass. The wall-clock cap (20 min) bounds the agent's working time
-summed over the attempts; waiting on checks or reviewers does not count.
-The used time and the attempts are recorded on the task row
+restarted by the heal pass. The wall-clock cap (the class's `agent_time`,
+halved for a small card and raised by half for a large one) bounds the
+agent's working time summed over the attempts; waiting on checks or
+reviewers does not count. Its stop says the agent time is used up, apart
+from the session cap's stop, and a grant buys the next session a quarter
+of the cap. The used time and the attempts are recorded on the task row
 (`RecordUsage` after every session), so a new workflow run for the same
 task (a resubmitted issue, a run restarted by hand) resumes the count
-instead of starting a fresh cap. A stopping factoryd stops a running
-`RunSession` gracefully: the worker pushes its work in progress, the
-session ends `stopped` and Temporal retries the attempt on the new pod,
-which continues from the pushed branch with the stop report as findings.
+instead of starting a fresh cap. The console's Extend raises sessions and
+lines in columns the workflow never writes; the workflow reads them before
+each cap check and after every answer, so an Extend on a running or
+queued card stands. A stopping factoryd detaches from a running
+`RunSession`: the pod runs on, and the next factoryd's retry reattaches to
+it, a pod that finished meanwhile included, and reads its log from where
+the old factoryd stopped. A pod that is gone starts the attempt over from
+the pushed branch.
 A crashed factoryd answers no push request, so a running pod's
 unpushed work in progress is lost; the retry removes the
 dead session's namespace, pod and credentials and starts a new session

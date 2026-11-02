@@ -16,6 +16,8 @@ import (
 // numbers; a reason no template covers shapes nothing.
 func TestShapedQuestionFamilies(t *testing.T) {
 	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
+	timeFacts := facts
+	timeFacts.CheckinTime = 5 * time.Minute
 	for name, tt := range map[string]struct {
 		reason string
 		facts  QuestionFacts
@@ -40,6 +42,22 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
 			whyHas: []string{"€4.10 of its €5.00 budget"},
 			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
+			values: []string{AnswerGrant, AnswerPark, AnswerClose},
+		},
+		"check-in time cap": {
+			reason: checkinSpendAsk + checkinTimeCapStop,
+			facts:  timeFacts,
+			askHas: []string{"no answer within its 5 minutes"},
+			whyHas: []string{"spent its time on evidence and gave no decision", "€4.10 of its €5.00 budget"},
+			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance, and the card's budget must cover its rung's session floor of €0.20. The spent budget stays spent.",
+			values: []string{AnswerGrant, AnswerPark, AnswerClose},
+		},
+		"time cap": {
+			reason: timeCapReached + "\nlast: review findings went back to the agent\n- the query lacks the repository",
+			facts:  QuestionFacts{SessionCap: 3, Attempts: 2, BudgetEUR: 15, LeftEUR: 9.68, GrantTime: 30 * time.Minute},
+			askHas: []string{"used up its agent time after 2 of its 3 sessions", "one more session"},
+			whyHas: []string{"review findings went back to the agent", "the query lacks the repository"},
+			info:   "A grant starts one more session with 30 minutes of agent time; your comment goes with it as guidance. No answer leaves the card waiting here. The card holds €9.68 of its €15.00 budget.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"session cap": {

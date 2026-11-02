@@ -122,13 +122,12 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 	}
 	drop := r.do(htmxPost("/tasks/t-plan/plan/holdout", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"3"}, "verb": {"drop"},
 		"project": {"linkshort"}}), ck)
-	if drop.Code != http.StatusOK || drop.Body.String() != `<p class="note" role="status">Hold-out 3 of plan #1 dropped.</p>` ||
-		drop.Header().Get("HX-Trigger") != "board-refresh" {
+	if !pressRefreshes(drop) {
 		t.Fatalf("drop by htmx: %d %s", drop.Code, drop.Body)
 	}
 	answer := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"1"}, "decision": {"confirm"},
 		"project": {"linkshort"}}), ck)
-	if answer.Code != http.StatusOK || !strings.Contains(answer.Body.String(), `<p class="note" role="status">Confirmed plan #1; its cards file.</p>`) {
+	if !pressRefreshes(answer) {
 		t.Fatalf("the confirmation's answer by htmx: %d %s", answer.Code, answer.Body)
 	}
 	if card := board(); strings.Contains(card, `action="/tasks/t-plan/plan/holdout"`) || !strings.Contains(card, ">dropped<") {

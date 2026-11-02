@@ -397,7 +397,7 @@ func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines i
 	s.mu.Lock()
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
-			s.tasks[i].Usage.ExtraAttempts += sessions
+			s.tasks[i].Usage.RaisedSessions += sessions
 			s.tasks[i].Usage.ExtraLines += lines
 		}
 	}
@@ -1912,13 +1912,12 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 	for _, tc := range []struct {
 		project, track, priority, body, size string
 		labels                               []any
-		filed                                string
 	}{
-		{"ai-software-factory-code", "direct", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}, "41"},
-		{"ai-software-factory-code", "human", "priority/p1", "details", "", []any{2.0, 7.0}, "41"},
-		{"linkshort", "plan", "", "details\n\nAcceptance:\n- It works", "small", []any{24.0}, "42"},
-		{"linkshort", "direct", "", "details", "", []any{21.0}, "42"},
-		{"linkshort", "human", "", "details", "", []any{22.0}, "42"},
+		{"ai-software-factory-code", "direct", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}},
+		{"ai-software-factory-code", "human", "priority/p1", "details", "", []any{2.0, 7.0}},
+		{"linkshort", "plan", "", "details\n\nAcceptance:\n- It works", "small", []any{24.0}},
+		{"linkshort", "direct", "", "details", "", []any{21.0}},
+		{"linkshort", "human", "", "details", "", []any{22.0}},
 	} {
 		wantBody := tc.body
 		if tc.size != "" {
@@ -1927,7 +1926,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 		r.fg.issues, r.fg.calls = nil, nil
 		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {tc.body},
 			"track": {tc.track}, "priority": {tc.priority}, "size": {tc.size}}), ck)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed+"&project="+tc.project {
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project="+tc.project {
 			t.Fatalf("%s %s: POST /tasks = %d to %q: %s", tc.project, tc.track, rec.Code, rec.Header().Get("Location"), rec.Body)
 		}
 		got := r.fg.issues[0]

@@ -305,9 +305,9 @@ func TestRoutineDrawerSaysWhatItCouldNotRead(t *testing.T) {
 }
 
 // An act pressed in the drawer answers the drawer on the tab it was
-// pressed on, read again after the act, with the act's note; the board's
-// ghost keeps answering the board. A pending Skip once leads the Next row
-// and turns the act into its undo, which posts undo=1.
+// pressed on, read again after the act and holding no note; the board's
+// ghost answers the board's refresh alone. A pending Skip once leads the
+// Next row and turns the act into its undo, which posts undo=1.
 func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{soonBump()}
@@ -323,7 +323,7 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	d := rec.Body.String()
 	for _, want := range []string{
 		`<div class="drawer-content" data-routine-drawer="` + bumpKey + `:overview">`,
-		`<div id="drawer-panel" class="drawer-body" role="tabpanel">` + "\n" + `<p class="note" role="status">Skipped once · next Mon 26 Oct 06:00</p>`,
+		`<div id="drawer-panel" class="drawer-body" role="tabpanel">`,
 		"<dt>Next</dt><dd>skipped once · next Mon 26 Oct 06:00 · in 7 d</dd>\n",
 		`<input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="overview"><input type="hidden" name="undo" value="1">` +
 			`<input type="hidden" name="project" value="ai-software-factory-code"><button type="submit" class="xs" aria-label="Undo the skip of Weekly bump">Undo skip</button>`,
@@ -332,8 +332,8 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 			t.Fatalf("the drawer's skip = %d, lacks\n%s\n%s", rec.Code, want, d)
 		}
 	}
-	if strings.Contains(d, `id="board"`) {
-		t.Fatalf("the drawer's skip answers the board:\n%s", d)
+	if strings.Contains(d, `id="board"`) || strings.Contains(d, `class="note"`) {
+		t.Fatalf("the drawer's skip answers the board or a note:\n%s", d)
 	}
 
 	// the undo from the Runs tab answers the Runs tab, its acts on it
@@ -342,7 +342,6 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	d = rec.Body.String()
 	for _, want := range []string{
 		`<div class="drawer-content" data-routine-drawer="` + bumpKey + `:runs">`,
-		`<p class="note" role="status">Skip once undone</p>`,
 		`<input type="hidden" name="from" value="drawer"><input type="hidden" name="tab" value="runs"><input type="hidden" name="project" value="ai-software-factory-code">` +
 			`<button type="submit" class="xs" aria-label="Skip Weekly bump once">Skip once</button>`,
 	} {
@@ -357,8 +356,7 @@ func TestRoutineDrawerActsAnswerTheDrawer(t *testing.T) {
 	if d := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "from": {"drawer"}, "tab": {"nope"}}), ck).Body.String(); !strings.Contains(d, `data-routine-drawer="`+bumpKey+`:overview"`) {
 		t.Fatalf("an unknown tab:\n%s", d)
 	}
-	if note := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck); note.Code != http.StatusOK ||
-		!strings.HasPrefix(note.Body.String(), `<p class="note" role="status">Skipped once`) || note.Header().Get("HX-Trigger") != "board-refresh" {
-		t.Fatalf("the ghost's skip answers no note:\n%s", note.Body)
+	if ghost := r.do(htmxPost("/routines/"+bumpKey+"/skip", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck); !pressRefreshes(ghost) {
+		t.Fatalf("the ghost's skip = %d, want the board's refresh alone:\n%s", ghost.Code, ghost.Body)
 	}
 }

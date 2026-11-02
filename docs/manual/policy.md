@@ -84,10 +84,13 @@ intake, the approvers, the bounds of the other activities,
 `envelope_default` and `project_default`.
 
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
-(2h, the wall-clock cap across a task's sessions, at most 72h),
+(2h, the wall-clock cap across a task's sessions, at most 72h; a sized
+card gets half of it when small and one and a half when large),
 `supervisor_calls` (6, decides nothing since plan E, kept so a pinned
 policy loads), `checkin_calls` (20, also when absent: the model calls of
-one check-in conversation, the last without tools), `checkin_share` (10,
+one check-in conversation, the last without tools), `checkin_time` (5m,
+also when absent: how long one check-in conversation may run before its
+ask goes to a human, 1m to 30m), `checkin_share` (10,
 also when absent: the percent of the card's budget all its check-ins may
 spend), `supervisor_timeout` (6m per supervisor or review call, at most
 15m), `review_diff_kib` (48, also when absent, at most 1024: the size of
@@ -104,7 +107,7 @@ running session the message "You repeated the same call three times
 (<tool>). Change approach, then continue." and a `nudge` timeline step,
 once per repetition, counted only when the session took it; the next such
 run trips `same_call` to the check-in. A harness without messages gets the redirect with that text,
-decided in code. The activity bound of `RunSession` is the agent time plus a minute, of
+decided in code. The activity bound of `RunSession` is a large card's agent time (one and a half of `agent_time`) plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 

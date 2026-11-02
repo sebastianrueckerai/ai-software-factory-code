@@ -96,11 +96,12 @@ func rollGapRunner(t *testing.T, task Task) (*Runner, *fakeStore, *gapClock) {
 var rollTask = Task{ID: "r1", Kind: "agent", Source: SourceRoll, Status: "in-review", Repository: "sf/repo", Track: "direct"}
 
 // The bound is the longest agent time in force, at any level a task's
-// agent time can come from, plus half an hour.
+// agent time can come from, as a large card holds it (one and a half),
+// plus half an hour.
 func TestGapBound(t *testing.T) {
 	v := testPolicyVersion()
-	if got := gapBound(v); got != 40*time.Minute {
-		t.Fatalf("bound of limits.agent_time 10m alone = %s, want 40m", got)
+	if got := gapBound(v); got != 45*time.Minute {
+		t.Fatalf("bound of limits.agent_time 10m alone = %s, want 45m", got)
 	}
 	coder := v.Document.Classes["coder"]
 	coder.Time = &policy.Time{AgentTime: 40 * time.Minute}
@@ -109,12 +110,12 @@ func TestGapBound(t *testing.T) {
 	p.Time = &policy.Time{AgentTime: time.Hour}
 	v.Processes = map[string]policy.Process{"maintenance": p}
 	v.Projects = map[string]policy.ProjectConfig{"a": {Time: &policy.Time{AgentTime: 2 * time.Hour}}, "b": {}}
-	if got := gapBound(v); got != 2*time.Hour+30*time.Minute {
-		t.Fatalf("bound with a 2h project = %s, want 2h30m", got)
+	if got := gapBound(v); got != 3*time.Hour+30*time.Minute {
+		t.Fatalf("bound with a 2h project = %s, want 3h30m", got)
 	}
 	v.Projects = nil
-	if got := gapBound(v); got != time.Hour+30*time.Minute {
-		t.Fatalf("bound with a 1h process = %s, want 1h30m", got)
+	if got := gapBound(v); got != 2*time.Hour {
+		t.Fatalf("bound with a 1h process = %s, want 2h", got)
 	}
 }
 
@@ -143,8 +144,8 @@ func TestAwaitSessionGapWaitsForTheLastSession(t *testing.T) {
 	if got := stepsOf(t, r, "r1", "live", "waited_s"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps = %v, want %v", got, want)
 	}
-	if h := store.holds["r1"]; !h.Since.Equal(gapStart) || !h.Until.Equal(gapStart.Add(40*time.Minute)) {
-		t.Fatalf("hold = %+v, want 12:00 to 12:40 (agent time 10m + 30m)", h)
+	if h := store.holds["r1"]; !h.Since.Equal(gapStart) || !h.Until.Equal(gapStart.Add(45*time.Minute)) {
+		t.Fatalf("hold = %+v, want 12:00 to 12:45 (agent time 10m as a large card's 15m + 30m)", h)
 	}
 }
 
@@ -176,16 +177,16 @@ func TestAwaitSessionGapMergesAtTheBound(t *testing.T) {
 	if err := runActivity(t, r, ActivityAwaitSessionGap, "r1"); err != nil {
 		t.Fatal(err)
 	}
-	if c.sleeps != 160 || !c.at.Equal(gapStart.Add(40*time.Minute)) {
-		t.Fatalf("slept %d times, until %s; want 160 polls to the 40m bound", c.sleeps, c.at)
+	if c.sleeps != 180 || !c.at.Equal(gapStart.Add(45*time.Minute)) {
+		t.Fatalf("slept %d times, until %s; want 180 polls to the 45m bound", c.sleeps, c.at)
 	}
-	if !strings.Contains(logs.String(), "roll r1: no session gap within 40m0s: merging with [a] running") {
+	if !strings.Contains(logs.String(), "roll r1: no session gap within 45m0s: merging with [a] running") {
 		t.Fatalf("log = %q", logs.String())
 	}
 	if h, ok, _ := store.RollHold(context.Background(), c.at); ok {
 		t.Fatalf("hold %+v still in force at the bound", h)
 	}
-	want := []map[string]any{{"step": "roll_waiting", "live": []any{"a"}}, {"step": "roll_gap", "waited_s": float64(2400)}}
+	want := []map[string]any{{"step": "roll_waiting", "live": []any{"a"}}, {"step": "roll_gap", "waited_s": float64(2700)}}
 	if got := stepsOf(t, r, "r1", "live", "waited_s"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("steps = %v, want %v", got, want)
 	}

@@ -920,9 +920,9 @@ func planRollup(cards []card) string {
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
 
-// extendForm is an approver's Extend action beside a card's answer box,
-// where its question offers the exit: the stated sessions, lines and EUR
-// raise the card's caps, and the note answers the stop. Cap, Bound,
+// extendForm is an approver's Extend action on a live card: the stated
+// sessions, lines and EUR raise the card's caps, and on a waiting card the
+// note answers the stop. Cap, Bound,
 // Budget and Left are the card's numbers the raise starts from.
 type extendForm struct {
 	CSRF       string
@@ -1371,10 +1371,9 @@ type level struct {
 }
 
 type boardData struct {
-	User  string
-	CSRF  string
-	Filed string
-	Page  string // the layout marks the bar's current destination: the board
+	User string
+	CSRF string
+	Page string // the layout marks the bar's current destination: the board
 	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
@@ -1657,7 +1656,6 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	d.Filed = r.URL.Query().Get("filed")
 	name := "page.html"
 	if r.URL.Path == "/board" {
 		name = "board-fragment"
@@ -1796,11 +1794,11 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	return col, true
 }
 
-// pressNote answers a press: the note at once into the page's note
-// outlet, the board's own re-render behind the board-refresh trigger, so
-// the press never waits on the board's reads. A form post without htmx
-// keeps the redirect to the whole page.
-func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string, err error) {
+// pressed answers a press with no content and the board-refresh trigger:
+// the board's re-render is the answer, so the press never waits on the
+// board's reads. A form post without htmx keeps the redirect to the
+// whole page.
+func (c *Console) pressed(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -1810,7 +1808,7 @@ func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string,
 		return
 	}
 	w.Header().Set("HX-Trigger", "board-refresh")
-	c.render(w, "note-fragment", note)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // boardView is what the cards of one render share: the viewer, the
@@ -2006,6 +2004,14 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
 		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
 	}
+	// the Extend action is offered on every live agent card, to its
+	// approvers, with its numbers the raise starts from
+	if v.approves(t.Repository) && extendable(t) {
+		k.Extend = &extendForm{CSRF: v.csrf,
+			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
+			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
+			Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
+	}
 	if v.escalated(t) {
 		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
@@ -2018,15 +2024,6 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			log.Printf("console: task %s's remaining budget: %v", t.ID, err)
 		} else if v.approves(t.Repository) && factoryd.BudgetRefusal(why) {
 			k.Fund = &fundForm{CSRF: v.csrf}
-		}
-		// the Extend action is offered where the card's question offers
-		// the exit, a stop that names the owner's decision: the same
-		// card, to its approvers, with its numbers the raise starts from
-		if v.approves(t.Repository) && bt.Question != nil && bt.Question.Offers(factoryd.AnswerExtend) {
-			k.Extend = &extendForm{CSRF: v.csrf,
-				Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.ExtraAttempts,
-				Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
-				Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
 		}
 		// the acceptance close is offered where the card's own trail
 		// proves the work (roadmap 208): the same card, to its approvers
@@ -3116,12 +3113,12 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0)
+	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}, "filed": {strconv.FormatInt(issue, 10)}}.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}}.Encode(), http.StatusSeeOther)
 }
 
 // answer posts the human's answer to an escalation (doAnswer). Words that
@@ -3142,7 +3139,7 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	c.pressNote(w, r, note, nil)
+	c.pressed(w, r, nil)
 }
 
 // extendCard raises a waiting card's caps (doExtend).
@@ -3162,8 +3159,8 @@ func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
 		return
 	}
-	note, err := c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, eur, r.PostFormValue("reason"))
-	c.pressNote(w, r, note, err)
+	_, err = c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, eur, r.PostFormValue("reason"))
+	c.pressed(w, r, err)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -3173,8 +3170,8 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
-	c.pressNote(w, r, note, err)
+	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
+	c.pressed(w, r, err)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
@@ -3284,7 +3281,6 @@ type drawerData struct {
 	Session                    *sessionRef
 	Said                       []said
 	Steers                     bool   // the session runs and takes the member's messages
-	Note                       string // what the member's action did
 	Problem                    string // what the tab could not read
 	// Runs are the card's life for the Time section (C10) and Life its
 	// at-a-glance line; Need is the open question with its actions when
@@ -3304,6 +3300,9 @@ type drawerData struct {
 	// reads it (C38), nil while the chain holds nothing to say.
 	Chain *chainReadout
 }
+
+// Suffix is the drawer's id suffix on the fields of the forms it shares with the column's copy.
+func (drawerData) Suffix() string { return "-d" }
 
 // chainReadout is the Chain section of a merged or done card's Activity
 // tab and timeline (C38): the chain behind its change in the drawer's
@@ -3480,7 +3479,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab must be overview, activity, files or chat", http.StatusBadRequest)
 		return
 	}
-	c.drawer(w, r, tab, "")
+	c.drawer(w, r, tab)
 }
 
 // cardThreadStart answers POST /cards/{id}/thread, the card door: the
@@ -3571,19 +3570,17 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 }
 
 // steerCard hands the member's message from the drawer's Chat to card
-// id's running session (doSteer) and answers the tab again with its note.
+// id's running session (doSteer) and answers the tab again.
 func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text"))
-	if err != nil {
+	if _, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text")); err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	c.drawer(w, r, "chat", note)
+	c.drawer(w, r, "chat")
 }
 
-// drawer renders the card drawer on tab, "" for the card's default, with
-// note, what the member's action did.
-func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note string) {
+// drawer renders the card drawer on tab, "" for the card's default.
+func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	bt, k, v, ok := c.writableCard(w, r)
 	if !ok {
 		return
@@ -3595,7 +3592,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		}
 	}
 	ctx := r.Context()
-	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs, Note: note}
+	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
 	// the drawer's head carries the title as filed, whole: the objective's
 	// first line, unless a writer's summary names the card
 	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" {

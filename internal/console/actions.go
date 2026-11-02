@@ -114,7 +114,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 	if t.Status != "waiting-human" && t.Status != "in-review" {
 		return capFacts{}
 	}
-	f := capFacts{attempts: t.Usage.Attempts, sessions: factoryd.SessionCap(t, sessions), extra: t.Usage.ExtraAttempts}
+	f := capFacts{attempts: t.Usage.Attempts, sessions: factoryd.SessionCap(t, sessions), extra: t.Usage.SessionsAdded()}
 	for _, q := range pending {
 		f.merge = f.merge || q.TaskID == t.ID && q.Kind == factoryd.ApprovalMerge
 		f.plan = f.plan || q.TaskID == t.ID && q.Kind == factoryd.ApprovalPlan
@@ -947,11 +947,11 @@ func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
 }
 
 // doExtend raises card id's caps — its granted sessions, its line bound
-// and its budget — the approver's answer to a stop that offers the exits:
-// one store transaction raises the three, and the note (or, when none, a
-// line naming the raise) is posted as the card's answer, so the raise and
-// the resume are one press and the run reloads the row when the answer
-// wakes it.
+// and its budget — on any live agent card: one store transaction raises
+// the three. On a waiting card the note (or, when none, a line naming the
+// raise) is posted as the card's answer, so the raise and the resume are
+// one press and the run reloads the row when the answer wakes it; any
+// other live card reads the raise at its next cap check and gets no post.
 func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines int, eur float64, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
@@ -967,8 +967,8 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 	if err != nil {
 		return "", err
 	}
-	if t.Kind != "agent" || t.Status != "waiting-human" || t.IssueNumber == 0 {
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a question to extend")
+	if !extendable(t) {
+		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
 	}
 	from, to, err := c.cfg.Tasks.ExtendCard(ctx, t.ID, sessions, lines, eur,
 		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardExtended, map[string]any{"reason": note}))
@@ -980,11 +980,19 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 		return "", refuse(http.StatusInternalServerError, "The card could not be extended; see the factoryd log.")
 	}
 	log.Printf("console: %s extended %s by %s (%.2f to %.2f EUR) via %s: %s", a.s.user, t.ID, raiseLine(sessions, lines, eur), from, to, a.via, note)
+	if t.Status != "waiting-human" {
+		return fmt.Sprintf("Extended #%d: %s (budget %.2f to %.2f); the card reads the raise at its next cap check.", t.IssueNumber, raiseLine(sessions, lines, eur), from, to), nil
+	}
 	if err := c.answerCard(ctx, a, t, cmp.Or(note, formed)); err != nil {
 		log.Printf("console: %s extended %s, the answer failed: %v", a.s.user, t.ID, err)
 		return "", refuse(http.StatusBadGateway, fmt.Sprintf("Extended #%d: %s (budget %.2f to %.2f), but Forgejo refused the note as the answer; answer the card on the board.", t.IssueNumber, raiseLine(sessions, lines, eur), from, to))
 	}
 	return fmt.Sprintf("Extended #%d: %s (budget %.2f to %.2f), and posted your note as the answer; the card resumes.", t.IssueNumber, raiseLine(sessions, lines, eur), from, to), nil
+}
+
+// extendable: t is an agent card with an issue, in a status short of its end.
+func extendable(t factoryd.Task) bool {
+	return t.Kind == "agent" && t.IssueNumber != 0 && slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
 }
 
 // raiseLine names an extend's raise: the sessions, lines and EUR it adds.

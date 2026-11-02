@@ -220,11 +220,20 @@ type TaskUsage struct {
 	// can run its own check-in moments while the card's own budget stays
 	// the cap and an unspent share stops no card that was never answered.
 	ExtraCheckinShare int
-	// ExtraLines is the line-bound raise the card's extend answers added:
-	// the effective bound every line-bound check reads is the size's plan
-	// plus this.
+	// ExtraLines is the line-bound raise the console's Extend added: the
+	// effective bound every line-bound check reads is the size's plan
+	// plus this. The console alone writes it; the workflow's snapshot
+	// (SetTaskUsage) leaves it, so a raise on a running card stands.
 	ExtraLines int
+	// RaisedSessions are the sessions the console's Extend added, beside
+	// the ExtraAttempts the workflow's own grants count: the console alone
+	// writes them, the workflow reads them at each cap check (readRaise).
+	RaisedSessions int
 }
+
+// SessionsAdded is every session added to the policy's cap: the grants
+// the workflow's answers bought and the raises the console's Extend made.
+func (u TaskUsage) SessionsAdded() int { return u.ExtraAttempts + u.RaisedSessions }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
 // request merged or closed) recorded against a task's issue or pull
@@ -475,6 +484,7 @@ type Store interface {
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
+	ResetTaskUsage(ctx context.Context, id string) error
 	// SetTaskSizeBudget sets the task's size, and its budget to eur when it
 	// still holds heldCents, in one statement. A task that already has the
 	// size has had its write: nothing changes and the call succeeds.
@@ -1122,7 +1132,7 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, raised_sessions, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -1137,7 +1147,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.RaisedSessions,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1416,14 +1426,22 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 	return oneRow(res, err, "task "+id)
 }
 
-// SetTaskUsage overwrites task id's usage counters with the snapshot u.
-// RunSession's RecordUsage writes them; BecomePlan and a replan's
-// reopen reset them to zero. oneRow answers ErrNotFound for an unknown
-// task.
+// SetTaskUsage overwrites task id's usage counters with the snapshot u,
+// the workflow's own: the console's raises (ExtraLines, RaisedSessions)
+// it leaves as they stand. RunSession's RecordUsage writes it. oneRow
+// answers ErrNotFound for an unknown task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
-		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9, extra_lines = $10 WHERE id = $1`,
-		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare, u.ExtraLines)
+		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
+		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
+	return oneRow(res, err, "task "+id)
+}
+
+// ResetTaskUsage zeroes every usage counter of task id, the console's
+// raises included: BecomePlan and a replan's reopen start the card over.
+func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
+		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, raised_sessions = 0 WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -1721,7 +1739,7 @@ func (s *PGStore) ExtendCard(ctx context.Context, id string, sessions, lines int
 		e.Detail = map[string]any{}
 	}
 	err = tx.QueryRowContext(ctx,
-		`UPDATE tasks SET extra_attempts = extra_attempts + $2, extra_lines = extra_lines + $3,
+		`UPDATE tasks SET raised_sessions = raised_sessions + $2, extra_lines = extra_lines + $3,
 			   budget_eur = budget_eur + $4
 		 WHERE id = $1
 		 RETURNING (budget_eur - $4::numeric)::float8, budget_eur::float8`,

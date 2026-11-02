@@ -72,7 +72,7 @@ func wantSizingStep(t *testing.T, objects *fakeObjectStore, want map[string]any)
 func TestSizeCardKeepsASmallCardDirect(t *testing.T) {
 	r, store, objects, wf := sizingRig(t, sizingCard(), "done",
 		`{"size": "small", "reason": "one handler and its test", "files": ["internal/x/h.go", "internal/x/h_test.go"]}`)
-	if res := sizeCard(t, r); res != (SizeResult{}) {
+	if res := sizeCard(t, r); res != (SizeResult{Size: "small"}) {
 		t.Fatalf("result = %+v, want the card to stay direct", res)
 	}
 	if card := store.tasks["t1"]; card.Size != "small" || card.BudgetEUR != 4 {
@@ -138,7 +138,7 @@ func TestSizeCardSizesAnOutsidersCard(t *testing.T) {
 	card := sizingCard()
 	card.Author, card.AuthorWriter, card.Size, card.Rung, card.BudgetEUR = "mallory", false, "large", RungFrontier, 10
 	r, store, objects, wf := sizingRig(t, card, "done", `{"size": "small", "reason": "one handler", "files": ["h.go"]}`)
-	if res := sizeCard(t, r); res != (SizeResult{}) || len(wf.started) != 1 {
+	if res := sizeCard(t, r); res != (SizeResult{Size: "small"}) || len(wf.started) != 1 {
 		t.Fatalf("result %+v, started %v, want one sizing and the card to stay direct", res, wf.started)
 	}
 	if got := store.tasks["t1"]; got.Size != "small" || got.BudgetEUR != 5 {
@@ -200,7 +200,7 @@ func TestSizeCardIsRetrySafe(t *testing.T) {
 	if err := r.timeline.Append(context.Background(), "t1", StepSizing, map[string]any{"size": "small", "reason": "one file", "plan": false}); err != nil {
 		t.Fatal(err)
 	}
-	if res := sizeCard(t, r); res != (SizeResult{}) || len(wf.started) != 0 || len(sizingSteps(t, objects)) != 1 {
+	if res := sizeCard(t, r); res != (SizeResult{Size: "small"}) || len(wf.started) != 0 || len(sizingSteps(t, objects)) != 1 {
 		t.Fatalf("a card sized small: result %+v, started %v, steps %v", res, wf.started, sizingSteps(t, objects))
 	}
 }

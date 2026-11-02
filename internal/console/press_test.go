@@ -2,29 +2,39 @@ package console
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
 
-// A press answers at once: the note and nothing else into the note
-// outlet, the board's re-render behind the board-refresh trigger, so the
-// press never waits on the board's reads.
-func TestPlanAnswerPressAnswersWithTheNoteAlone(t *testing.T) {
+// pressRefreshes reports whether rec answers an htmx press as it should:
+// no content and the board-refresh trigger.
+func pressRefreshes(rec *httptest.ResponseRecorder) bool {
+	return rec.Code == http.StatusNoContent && rec.Body.Len() == 0 && rec.Header().Get("HX-Trigger") == "board-refresh"
+}
+
+// A press answers at once: no content and the board-refresh trigger, so
+// the board's re-render is the answer and the press never waits on the
+// board's reads.
+func TestPlanAnswerPressAnswersWithTheBoardAlone(t *testing.T) {
 	r := newRig(t)
 	questionsRig(r)
 	ck, s := r.loggedIn(t)
 	rec := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "revision": {"2"}, "index": {"1"}, "answer": {"60 seconds"},
 		"project": {"linkshort"}}), ck)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("answer = %d:\n%s", rec.Code, rec.Body)
-	}
-	if got, want := rec.Body.String(), `<p class="note" role="status">Answered question 1 of plan #1.</p>`; got != want {
-		t.Fatalf("body = %q, want only the note %q", got, want)
+	if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+		t.Fatalf("answer = %d %q, want 204 with no body", rec.Code, rec.Body)
 	}
 	if rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("HX-Trigger = %q, want board-refresh", rec.Header().Get("HX-Trigger"))
+	}
+	const comments = "/api/v1/repos/linkshort/linkshort/issues/1/comments"
+	if r.fg.comments[comments] != "Answer 1: 60 seconds" || !slices.Contains(r.fg.calls, "SIGNAL plan_answered t-plan 2 1 by sebastian") {
+		t.Fatalf("comment %q, calls %v, want the answer posted and signalled", r.fg.comments[comments], r.fg.calls)
 	}
 }
 
@@ -41,8 +51,8 @@ func TestPlanAnswerPressWithoutHtmxRedirects(t *testing.T) {
 	}
 }
 
-// A refused press names its refusal into the note outlet; the board
-// stays as it is.
+// A refused press names its refusal with its status; the board stays as
+// it is.
 func TestPlanAnswerPressRefusalNamesTheRefusal(t *testing.T) {
 	r := newRig(t)
 	questionsRig(r)
@@ -54,22 +64,34 @@ func TestPlanAnswerPressRefusalNamesTheRefusal(t *testing.T) {
 	}
 }
 
-// The press wiring on disk: every posting form targets the note outlet,
-// the reads (find and menus) keep the board, the board itself re-renders
-// on board-refresh, and the page holds the outlet a screen reader hears.
+// The press wiring on disk: no template or script names a note outlet, a
+// posting form targets nothing but the drawer, the reads (find and menus)
+// keep the board, and the board itself re-renders on board-refresh.
 func TestPressWiringConstruction(t *testing.T) {
+	templates, err := filepath.Glob("templates/*")
+	if err != nil || len(templates) == 0 {
+		t.Fatalf("templates = %v, %v", templates, err)
+	}
+	for _, name := range append(templates, "static/console.js") {
+		b, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), "#note") {
+			t.Errorf("FIX MISSING: %s still names the note outlet", name)
+		}
+	}
 	for _, name := range []string{"templates/board.html", "templates/drawer.html"} {
 		b, err := os.ReadFile(name)
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, line := range strings.Split(string(b), "\n") {
-			if !strings.Contains(line, "hx-post=") || strings.Contains(line, "hx-select=") ||
-				strings.Contains(line, `hx-target="#drawer"`) || strings.Contains(line, "routine-act-target") {
+			if !strings.Contains(line, "hx-post=") || strings.Contains(line, "hx-select=") || strings.Contains(line, "routine-act-target") {
 				continue
 			}
-			if !strings.Contains(line, `hx-target="#note" hx-swap="innerHTML"`) {
-				t.Errorf("FIX MISSING: %s posts to the board, want the note outlet:\n%s", name, line)
+			if strings.Contains(line, "hx-target=") && !strings.Contains(line, `hx-target="#drawer"`) {
+				t.Errorf("FIX MISSING: %s posts to a target other than the drawer:\n%s", name, line)
 			}
 		}
 	}
@@ -80,30 +102,13 @@ func TestPressWiringConstruction(t *testing.T) {
 	if !strings.Contains(string(board), `hx-trigger="board-refresh from:body"`) || !strings.Contains(string(board), `hx-get="/board{{.Query}}"`) {
 		t.Errorf("FIX MISSING: the board div carries no board-refresh trigger with its GET")
 	}
-	if !strings.Contains(string(board), `{{else}}hx-target="#note" hx-swap="innerHTML"{{end}}`) {
-		t.Errorf("FIX MISSING: a routine act outside the drawer posts to the board, want the note outlet")
+	if !strings.Contains(string(board), `{{define "routine-act-target"}}{{if .Drawer}} hx-target="#drawer" hx-swap="innerHTML"{{end}}{{end}}`) {
+		t.Errorf("FIX MISSING: a routine act targets the drawer from the drawer and nothing else")
 	}
 	for _, want := range []string{`<form class="find"`, `class="menu-pop auto-submit" hx-get="/"`} {
 		if !strings.Contains(string(board), want) {
 			t.Errorf("FIX MISSING: the board lost its read form %q", want)
 		}
-	}
-	page, err := os.ReadFile("templates/page.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(page), `<div id="note" aria-live="polite"></div>`) {
-		t.Errorf("FIX MISSING: the page holds no note outlet")
-	}
-	if !strings.Contains(string(page), `<div id="board-col"><div id="note" aria-live="polite"></div>{{template "board" .}}</div>`) {
-		t.Errorf("FIX MISSING: the note outlet sits in the screen grid, not in the board's cell")
-	}
-	css, err := os.ReadFile("static/console.css")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(css), "#board-col { display: flex") {
-		t.Errorf("FIX MISSING: the board's cell is no flex column, so the note cannot share it")
 	}
 }
 

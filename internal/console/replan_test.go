@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -70,7 +69,7 @@ func TestReplanCard(t *testing.T) {
 		return rec.Body.String()
 	}
 	form := `<details class="sec" data-sec="replan"><summary>Replan</summary><div class="sec-body">` +
-		`<form method="post" action="/tasks/t-r/replan" hx-post="/tasks/t-r/replan" hx-target="#note" hx-swap="innerHTML">` +
+		`<form method="post" action="/tasks/t-r/replan" hx-post="/tasks/t-r/replan">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `">` +
 		`<label for="replan-t-r">Why it goes back to the planner, posted on the issue as you</label>` +
 		`<textarea id="replan-t-r" name="note" rows="2" maxlength="2000" required></textarea>` +
@@ -109,7 +108,7 @@ func TestReplanCard(t *testing.T) {
 	req := post("/tasks/t-r/replan", url.Values{"csrf": {s.csrf}, "note": {"  " + note + "\n"}})
 	req.Header.Set("HX-Request", "true")
 	rec := r.do(req, ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), html.EscapeString(said)) {
+	if !pressRefreshes(rec) {
 		t.Fatalf("the button = %d:\n%s", rec.Code, rec.Body)
 	}
 	equal(t, "asked", asked, []string{"t-r by sebastian: " + note})

@@ -932,11 +932,23 @@ func (s *fakeStore) ProjectByRepository(ctx context.Context, repository string) 
 	return Project{}, false, nil
 }
 
+func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Usage = TaskUsage{}
+	s.tasks[id] = t
+	return nil
+}
+
+// SetTaskUsage keeps the console's raises, as the store does.
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
+	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1950,6 +1962,25 @@ func TestPGStore(t *testing.T) {
 	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
+	}
+	// the console's Extend raises columns the workflow's snapshot leaves:
+	// a snapshot written after the raise, holding none of it, keeps it
+	if _, _, err := s.ExtendCard(ctx, "t1", 1, 150, 0, Event{Repository: "sf/code", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
+		t.Fatal(err)
+	}
+	raised := usage
+	raised.RaisedSessions, raised.ExtraLines = 1, 150
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.SessionsAdded() != 2 {
+		t.Fatalf("usage after the raise and a snapshot = %+v, want %+v: the snapshot keeps the raise", got.Usage, raised)
+	}
+	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{}) {
+		t.Fatalf("usage after the reset = %+v, want every counter zero, the raises too", got.Usage)
 	}
 	// t1 holds 10 EUR: a write that read 1000 cents sets the budget, one
 	// that read 200 sets the size and leaves it

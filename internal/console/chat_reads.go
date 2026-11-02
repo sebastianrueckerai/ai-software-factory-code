@@ -65,9 +65,13 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if k.IssueNumber > 0 {
 		fmt.Fprintf(&b, "\nissue %s/issues/%d", base, k.IssueNumber)
 	}
-	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, factoryd.SessionCap(k, v.Document.Limits.Sessions)+k.Usage.ExtraAttempts)
+	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, factoryd.SessionCap(k, v.Document.Limits.Sessions)+k.Usage.SessionsAdded())
 	if f := capFactsFrom(k, v.Document.Limits.Sessions, bt.Escalation, all); f.capped {
-		fmt.Fprintf(&b, "\nat its session cap: %d of %d sessions used, %d granted", f.attempts, f.sessions, f.extra)
+		capName := "session cap"
+		if factoryd.AtTimeCap(bt.Escalation) {
+			capName = "agent-time cap"
+		}
+		fmt.Fprintf(&b, "\nat its %s: %d of %d sessions used, %d granted", capName, f.attempts, f.sessions, f.extra)
 	}
 	calls, err := t.c.cfg.Costs.ModelCalls(ctx, k.ID)
 	if err != nil {

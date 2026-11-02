@@ -1886,8 +1886,8 @@ func (t *taskRun) planLoop() (string, error) {
 	floor := t.escalation
 	stopsAwaited := t.replan < versionReplan
 	for {
-		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts {
-			ask = t.sessionCapCard(reason, findings)
+		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
+			ask = t.sessionCapCard(capReached, reason, findings)
 			if healed {
 				ask = healedReason
 			}
@@ -1927,7 +1927,7 @@ func (t *taskRun) planLoop() (string, error) {
 			// out of time, its automatic session used or the cap too short
 			// for one, buys agent time (versionPlannerRetry); an answer on
 			// a cap's wait that ended on its own buys nothing
-			if u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts && !onCap.over() {
+			if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() && !onCap.over() {
 				t.grant(&u)
 			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !onCap.over() {
 				t.grantTime(&u)

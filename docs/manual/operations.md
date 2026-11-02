@@ -565,7 +565,8 @@ roll watcher records the rows. The merge waits for a session gap (ruling
 every running session. `AwaitSessionGap` holds new sessions (a
 `roll_holds` row) and polls every 15 s until no session runs in factoryd,
 the roll's own aside, or until the longest agent time in force (limits,
-classes, processes, projects) plus 30 minutes, when it merges anyway and
+classes, processes, projects), as a large card holds it (one and a
+half), plus 30 minutes, when it merges anyway and
 logs so; steps `roll_waiting` (the live tasks) and `roll_gap`
 (`waited_s`). Every code and plan session first waits in `AwaitRollHold`
 while a hold is in force, before its agent time starts (one `held` step;

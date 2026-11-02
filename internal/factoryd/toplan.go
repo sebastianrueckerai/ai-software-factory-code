@@ -106,7 +106,7 @@ func (r *Runner) BecomePlan(ctx context.Context, taskID string, sw PlanSwitch) (
 			return PlanSwitchResult{}, fmt.Errorf("record %s: %w", stepToPlan, err)
 		}
 	}
-	if err := r.store.SetTaskUsage(ctx, taskID, TaskUsage{}); err != nil {
+	if err := r.store.ResetTaskUsage(ctx, taskID); err != nil {
 		return PlanSwitchResult{}, err
 	}
 	note := fmt.Sprintf("factoryd: card #%d went back to the planner; its branch stays.", t.IssueNumber)
