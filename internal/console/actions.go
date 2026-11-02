@@ -619,6 +619,8 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Question %d of plan #%d takes an answer, not a decision.", idx, t.IssueNumber))
 	case errors.Is(err, factoryd.ErrReviseWords):
 		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
+	case errors.Is(err, factoryd.ErrHoldoutsOpen):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The hold-outs of plan #%d wait for your okay or drop: decide each, then the confirmation.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
@@ -708,6 +710,8 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", refuse(http.StatusConflict, "One of those questions takes an answer, not a decision.")
 	case errors.Is(err, factoryd.ErrReviseWords):
 		return "", refuse(http.StatusBadRequest, "Request changes needs its words: they go to the next planner round.")
+	case errors.Is(err, factoryd.ErrHoldoutsOpen):
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The hold-outs of plan #%d wait for your okay or drop: decide each, then the confirmation.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrAnswerUnsignalled):
 		log.Printf("console: %s answered %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
