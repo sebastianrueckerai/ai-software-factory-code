@@ -1046,7 +1046,7 @@ func (s *acceptanceStore) PutPlanConfirmation(context.Context, string, int, fact
 	return 0, false, nil
 }
 
-func (s *acceptanceStore) PlanConfirmationAnswered(context.Context, string) (int, bool, error) {
+func (s *acceptanceStore) PlanConfirmed(context.Context, string) (int, bool, error) {
 	return 0, false, nil
 }
 

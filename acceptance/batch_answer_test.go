@@ -333,8 +333,7 @@ func (s *accBatchTasks) answerBatch(id string, revision int, answers []factoryd.
 		if a.Idx < 1 || a.Idx > len(qs) {
 			return factoryd.ErrNotFound
 		}
-		if q := qs[a.Idx-1]; q.Kind == factoryd.QuestionConfirmation && q.Decision != "" ||
-			q.Kind != factoryd.QuestionConfirmation && q.Answer != "" {
+		if qs[a.Idx-1].Answered() {
 			return factoryd.ErrAnswered
 		}
 	}
@@ -357,11 +356,7 @@ func (s *accBatchTasks) openCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, q := range s.questions[fmt.Sprintf("%s %d", planTask, planRev)] {
-		if q.Kind == factoryd.QuestionConfirmation {
-			if q.Decision == "" {
-				n++
-			}
-		} else if q.Answer == "" {
+		if !q.Answered() {
 			n++
 		}
 	}
@@ -851,7 +846,7 @@ func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revisio
 func (s *accBatchStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q factoryd.PlanQuestion) (int, bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+func (s *accBatchStore) PlanConfirmed(ctx context.Context, id string) (int, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {

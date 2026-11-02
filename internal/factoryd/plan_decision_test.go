@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The confirmation is a decision field with closed values (the decision
-// plan, register fault 2): confirm files the revision, revise sends the
-// planner back with the words as findings, and no string anywhere decides.
+// The confirmation is a decision field with closed values: confirm files
+// the revision, revise sends the planner back with the words as findings,
+// and no string anywhere decides.
 // The night of 2026-10-31 answered "okay — confirmed. Revision 15 is
 // fine." and the choice-word rule filed nothing: the words are findings
 // now, the decision is the field.
@@ -72,7 +75,7 @@ func TestFlavouredConfirmationFilesThroughDecision(t *testing.T) {
 	if qs[0].Decision != DecisionConfirm || qs[0].Answer != night || qs[0].AnsweredBy != "sebastian" {
 		t.Fatalf("the answered confirmation: %+v", qs[0])
 	}
-	if rev, ok, _ := store.PlanConfirmationAnswered(ctx, "t-plan"); !ok || rev != 1 {
+	if rev, ok, _ := store.PlanConfirmed(ctx, "t-plan"); !ok || rev != 1 {
 		t.Fatalf("the answered confirmation's revision %d %v", rev, ok)
 	}
 	if n, _ := store.OpenPlanQuestions(ctx, "t-plan", 1); n != 0 {
@@ -172,5 +175,59 @@ func TestFilePlanNamesTheGateItReached(t *testing.T) {
 	res, err = runner.FilePlan(ctx, "t-plan", string(b))
 	if err != nil || res.Revision != 1 || res.Gate {
 		t.Fatalf("the spec unchanged under a confirmed revision = %+v, %v; want no gate", res, err)
+	}
+}
+
+// The console's comment of a decided confirmation is its echo, whatever
+// the decision carries: a bare confirm, a confirm with words, a revise
+// with words. Intake records each as signalled and sends no change
+// request; a comment that only looks like one, the old choice word on a
+// confirmed row, is a change request.
+func TestIntakeKnowsADecidedConfirmation(t *testing.T) {
+	ctx := context.Background()
+	in, store, _ := newTestIntake(t)
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", IssueNumber: 20, Status: "waiting-human", Kind: "agent", Track: policy.TrackPlan}
+	for n, d := range []struct{ decision, words string }{{DecisionConfirm, ""}, {DecisionRevise, "keep the slate clean"}, {DecisionConfirm, "fine as is"}} {
+		store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"one"}`), fmt.Sprintf("sha-%d", n+1))
+		store.PutPlanConfirmation(ctx, "t-plan", n+1, PlanQuestion{Text: "Confirm the plan?"})
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", n+1, 1, d.decision, d.words, "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	in.Timeline = &Timeline{Objects: &fakeObjectStore{}, Events: &fakeEventRecorder{}, Store: store}
+	for i, body := range []string{"Answer 1: confirm", "Answer 1: revise · keep the slate clean", "Answer 1: confirm · fine as is", "Answer 1: okay"} {
+		b, _ := json.Marshal(map[string]any{"action": "created", "issue": map[string]any{"number": 20}, "repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+			"comment": map[string]any{"id": 91 + i, "user": map[string]string{"login": "sebastian"}, "body": body}})
+		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("comment %q: status %d", body, rr.Code)
+		}
+	}
+	want := []string{"t-plan human_comment sebastian #0 c94: Answer 1: okay"}
+	if got, ev := workflowsOf(in).signals, store.intakeEvents; !slices.Equal(got, want) || len(ev) != 4 || !ev[0].Signalled || !ev[1].Signalled || !ev[2].Signalled {
+		t.Fatalf("signals %q, want %q; intake events %+v", got, want, ev)
+	}
+}
+
+// Request changes fixes nothing: the spec and the criteria are fixed only
+// by a confirm, so a revision after a revise that keeps the spec asks the
+// confirmation again.
+func TestAReviseFixesNoSpec(t *testing.T) {
+	ctx := context.Background()
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort"}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	runner.cfg.Policy = func() policy.Version { return fixtureVersion(t) }
+	p := testPlan()
+	b, _ := json.Marshal(p)
+	if res, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || res.Revision != 1 || !res.Gate {
+		t.Fatalf("revision 1: %+v, %v", res, err)
+	}
+	store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Confirm the plan?"})
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionRevise, "keep the slate clean", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	p.Summary = "The same spec, the cards cut finer."
+	b, _ = json.Marshal(p)
+	if res, err := runner.FilePlan(ctx, "t-plan", string(b)); err != nil || res.Revision != 2 || !res.Gate {
+		t.Fatalf("revision 2 after the revise: %+v, %v; want the confirmation to wait", res, err)
 	}
 }

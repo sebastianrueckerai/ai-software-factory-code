@@ -173,6 +173,28 @@ const (
 	DecisionRevise  = "revise"
 )
 
+// Answered is whether q holds its answer: a confirmation its decision,
+// every other question its words.
+func (q PlanQuestion) Answered() bool {
+	if q.Kind == QuestionConfirmation {
+		return q.Decision != ""
+	}
+	return q.Answer != ""
+}
+
+// Reply is q's answer on one line, as the issue comment, the card and the
+// planner's next round read it: the decision first, then the words a
+// confirmation carries beside it.
+func (q PlanQuestion) Reply() string {
+	switch {
+	case q.Decision == "":
+		return q.Answer
+	case q.Answer == "":
+		return q.Decision
+	}
+	return q.Decision + " · " + q.Answer
+}
+
 // PlanCard is one card of a plan: one pull request, one session.
 type PlanCard struct {
 	Key         string     `json:"key"`
@@ -1239,10 +1261,10 @@ func EffectiveLineBound(size string, largeLines, extraLines int) int {
 }
 
 // PlanAnswerComment is the console's comment, as the member, on the plan's
-// issue when they answer question idx: intake knows it for no change
-// request by the answer stored before it.
-func PlanAnswerComment(idx int, answer string) string {
-	return fmt.Sprintf("Answer %d: %s", idx, answer)
+// issue when they answer question idx with q's reply: intake knows it for
+// no change request by the answer stored before it.
+func PlanAnswerComment(idx int, q PlanQuestion) string {
+	return fmt.Sprintf("Answer %d: %s", idx, q.Reply())
 }
 
 // ErrStalePlan refuses an answer to a revision that is no longer the
@@ -1475,12 +1497,12 @@ func (s *PGStore) PutPlanConfirmation(ctx context.Context, id string, revision i
 	return idx, true, nil
 }
 
-// PlanConfirmationAnswered is the newest of plan task id's revisions whose
-// confirmation question holds a decision, and whether there is one: a
+// PlanConfirmed is the newest of plan task id's revisions whose
+// confirmation question is decided confirm, and whether there is one: a
 // later revision is judged against it.
-func (s *PGStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+func (s *PGStore) PlanConfirmed(ctx context.Context, id string) (int, bool, error) {
 	var revision sql.NullInt64
-	err := s.db.QueryRowContext(ctx, `SELECT max(revision) FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND decision IS NOT NULL`, id).Scan(&revision)
+	err := s.db.QueryRowContext(ctx, `SELECT max(revision) FROM plan_questions WHERE task_id = $1 AND kind = 'confirmation' AND decision = 'confirm'`, id).Scan(&revision)
 	return int(revision.Int64), revision.Valid, err
 }
 
@@ -2389,8 +2411,8 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			return PlanResult{}, err
 		}
 		for _, q := range qs {
-			if q.Answer != "" {
-				answers = append(answers, q.Text+": "+q.Answer)
+			if q.Answered() {
+				answers = append(answers, q.Text+": "+q.Reply())
 			}
 		}
 	}
@@ -2745,7 +2767,8 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 
 // PlanFileHandler answers the gateway's file_plan tool: the running
 // planner session's complete plan json, checked and stored as the
-// session's answer. A plan the check refuses answers 200 with its
+// session's answer, and whether the human's confirmation waits on its
+// cards. A plan the check refuses answers 200 with its
 // findings — the refusal belongs in the session, not in a status.
 func PlanFileHandler(runner *Runner) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -2776,7 +2799,8 @@ func PlanFileHandler(runner *Runner) http.HandlerFunc {
 			Revision int      `json:"revision"`
 			SHA256   string   `json:"sha256"`
 			Findings []string `json:"findings"`
-		}{res.Revision, res.SHA256, res.Findings}) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
+			Gate     bool     `json:"gate"`
+		}{res.Revision, res.SHA256, res.Findings, res.Gate}) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
 	}
 }
 
@@ -2971,9 +2995,9 @@ func (r *Runner) confirms(ctx context.Context, t Task, p Plan) (bool, error) {
 	if len(p.Criteria) == 0 {
 		return false, nil
 	}
-	confirmed, answered, err := r.store.PlanConfirmationAnswered(ctx, t.ID)
-	if err != nil || !answered || confirmed < 1 {
-		return err == nil && !answered, err
+	confirmed, ok, err := r.store.PlanConfirmed(ctx, t.ID)
+	if err != nil || !ok || confirmed < 1 {
+		return err == nil && !ok, err
 	}
 	prev, _, err := r.planAt(ctx, t.ID, confirmed)
 	return err == nil && prev != nil && specChanged(*prev, p), err
@@ -3004,7 +3028,7 @@ func specChanged(prev, next Plan) bool {
 // later rounds plan, and where the whole plan reads.
 func confirmationQuestion(revision int, p Plan) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round. The criteria are fixed only when this is decided.",
+	fmt.Fprintf(&b, "Confirmation of the spec and the criteria of plan revision %d: Confirm fixes the spec and the criteria; Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.",
 		revision)
 	if p.Spec != nil {
 		if o := strings.TrimSpace(p.Spec.Outcome); o != "" {

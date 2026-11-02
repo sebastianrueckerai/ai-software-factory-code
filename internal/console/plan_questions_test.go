@@ -111,8 +111,8 @@ func TestPlanCardAsksTheQuestions(t *testing.T) {
 // numbered with their choices, and answers one by its revision and number:
 // the proposal names the question, Do it answers it as the member, one row
 // via chat. An answer without its revision, or to another one, is refused;
-// with no question open, an answer to one is refused with the plan's
-// actions.
+// with no question open, an answer to one, or a decision, is refused with
+// the plan's actions.
 func TestChatAnswersAPlanQuestion(t *testing.T) {
 	r, g := newReadsRig(t)
 	r.tasks.mu.Lock()
@@ -154,9 +154,11 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 		equal(t, "an answer without its revision or of another", []any{status, msg}, tc.want)
 	}
 	r.tasks.answer("t-p", 1, 2, "", "30 days", "sebastian")
-	status, msg := refused(t, r, "answer", toolInput{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"})
-	equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
-		"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."})
+	for _, in := range []toolInput{{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"}, {TaskID: "t-p", Decision: factoryd.DecisionConfirm, Text: "fine"}} {
+		status, msg := refused(t, r, "answer", in)
+		equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
+			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."})
+	}
 }
 
 // batchAnswerRig is the reads rig with plan t-p #20 waiting on a human at
@@ -278,7 +280,8 @@ func q2Line() string {
 }
 
 // The answer tool's params hold answers: an array whose items each carry
-// a question and a text; task_id alone is required, since only a plan's
+// a question and a text, the question alone required, since a confirm
+// carries no words; task_id alone is required, since only a plan's
 // question takes a revision, which its answer refuses without.
 func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 	r := newRig(t)
@@ -308,6 +311,7 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 			t.Errorf("answers item %q is %v, want %s", name, p["type"], want)
 		}
 	}
+	equal(t, "an item's required arguments", items["required"], []string{"question"})
 	equal(t, "the required arguments", tool.required, []string{"task_id"})
 	def := tool.def(false)
 	schema, _ := def.Parameters.(map[string]any)
@@ -327,9 +331,10 @@ func TestChatAnswerToolSchemaHasAnswersArray(t *testing.T) {
 // free-text form: a Confirm press stores the decision, carries the
 // revision's cards to the gate with no planner session and names it;
 // Request changes takes required words to the next planner round, and
-// bare text names the two controls and stores nothing. The answered line
-// shows the decision with its findings, and the night's words ride a
-// confirm as findings.
+// bare text names the two controls and stores nothing. While the
+// confirmation is open its Request changes is the card's only one. The
+// answered line shows the decision with its findings, and the night's
+// words ride a confirm as findings.
 func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -365,6 +370,9 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	if strings.Count(card, `action="/tasks/t-plan/plan/answer"`) != 2 || strings.Contains(card, `name="answer" value=`) {
 		t.Errorf("the confirmation is two forms, no choice buttons:\n%s", card)
 	}
+	if strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
+		t.Errorf("the open confirmation's Request changes is the card's only one:\n%s", card)
+	}
 	// Request changes without words: refused by name, nothing stored
 	if rec := press("revision", "2", "index", "1", "decision", "revise"); rec.Code != http.StatusBadRequest ||
 		rec.Body.String() != "Request changes needs its words: they go to the next planner round.\n" ||
@@ -384,7 +392,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 		t.Fatalf("the night's confirm: %d %q, calls %v, comment %q", rec.Code, rec.Body, r.fg.calls, r.fg.comments[comments])
 	}
 	if card = board(); !strings.Contains(card, `<p class="answered">Does the plan match the spec?: confirm · `+night+` (sebastian)</p>`) ||
-		strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) {
+		strings.Contains(card, `action="/tasks/t-plan/plan/answer"`) || !strings.Contains(card, `action="/tasks/t-plan/plan/changes"`) {
 		t.Errorf("the card after the confirm:\n%s", card)
 	}
 	// Request changes with words, on a fresh round
@@ -452,5 +460,50 @@ func TestChatDecidesTheConfirmation(t *testing.T) {
 	} {
 		status, msg := refused(t, r, "answer", tc.in)
 		equal(t, "the confirmation answered wrong", []any{status, msg}, tc.want)
+	}
+}
+
+// A Confirm on a revision that also asked real questions files nothing
+// yet: the answers go to the planner's next revision, and the note says
+// so. A bare confirm in a batch is the decision alone: no words, the
+// note and the comment name the decision.
+func TestConfirmBesideRealQuestions(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {
+		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Answer: "30 days", AnsweredBy: "sebastian"},
+		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	ck, s := r.loggedIn(t)
+	rec := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"2"},
+		"decision": {"confirm"}}), ck)
+	if rec.Code != http.StatusOK || rec.Body.String() != `<p class="note" role="status">Confirmed plan #1; the answers go to the next planner round.</p>` ||
+		r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"] != "Answer 2: confirm" {
+		t.Fatalf("the confirm beside a real question: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"])
+	}
+	r.tasks.questions["t-plan 2"] = []factoryd.PlanQuestion{{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}},
+		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}
+	a := actor{s: s, via: "chat"}
+	note, err := r.c.doAnswerPlanQuestions(context.Background(), a, "t-plan", 2, []PlanAnswerInput{{Question: 1, Text: "7 days"}, {Question: 2, Decision: factoryd.DecisionConfirm}})
+	if err != nil || note != "Answered question 1: 7 days, question 2: confirm of plan #1." ||
+		r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"] != "Answer 2: confirm" {
+		t.Fatalf("the batch with a bare confirm: %q, %v, comment %q", note, err, r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"])
+	}
+}
+
+// The project agent reads a decided confirmation as answered: the card
+// lists it under no open question, and the plan read shows its decision.
+func TestChatReadsADecidedConfirmation(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks[slices.IndexFunc(r.tasks.tasks, func(k factoryd.BoardTask) bool { return k.ID == "t-p" })].Status = "waiting-human"
+	qs := askedQuestions()
+	qs[0].Answer, qs[0].AnsweredBy = "60 seconds", "sebastian"
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": append(qs,
+		factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?", Decision: factoryd.DecisionConfirm, AnsweredBy: "sebastian"})}
+	r.tasks.mu.Unlock()
+	read := reads(t, r, g, "card", `{"task_id":"t-p"}`, "plan", `{"task_id":"t-p"}`)
+	if card, plan := read[0], read[1]; !strings.Contains(card, "\nQuestions:\n"+q2Line()+"\n") || strings.Contains(card, "Does the plan match") ||
+		!strings.Contains(plan, "\n3. Does the plan match the spec? (decide: confirm or revise) answered: confirm (sebastian)\n") {
+		t.Fatalf("the card read =\n%s\nthe plan read =\n%s", card, plan)
 	}
 }

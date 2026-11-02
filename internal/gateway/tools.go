@@ -502,7 +502,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 			return s.delegate(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFilePlan, Description: "File the plan: hand the complete plan json over and it is checked at once. " +
-		"A refusal names every finding; correct the plan and file it again in this session. A filed plan is this session's answer; end the session. Free."},
+		"A refusal names every finding; correct the plan and file it again in this session. A stored plan is this session's answer; end the session. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
 			return s.filePlan(ctx, c, in), nil, nil
 		})

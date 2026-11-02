@@ -136,13 +136,13 @@ func TestPGStorePlanQuestions(t *testing.T) {
 			t.Fatalf("confirmation put %d: idx %d inserted %v (%v), want inserted %v at idx 3", i+1, idx, inserted, err, want)
 		}
 	}
-	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered || rev != 0 {
+	if rev, answered, err := s.PlanConfirmed(ctx, "t-plan"); err != nil || answered || rev != 0 {
 		t.Fatalf("answered %v at revision %d (%v), want not yet", answered, rev, err)
 	}
 	if err := s.AnswerPlanQuestion(ctx, "t-plan", 1, 3, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 1 {
+	if rev, answered, err := s.PlanConfirmed(ctx, "t-plan"); err != nil || !answered || rev != 1 {
 		t.Fatalf("answered %v at revision %d (%v), want revision 1", answered, rev, err)
 	}
 	if got, _ := s.PlanQuestions(ctx, "t-plan", 1); len(got) != 3 || got[2].Decision != DecisionConfirm {
@@ -159,14 +159,27 @@ func TestPGStorePlanQuestions(t *testing.T) {
 	if _, _, err := s.PutPlanConfirmation(ctx, "t-plan", 2, confirm); err != nil {
 		t.Fatal(err)
 	}
-	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 1 {
+	if rev, answered, err := s.PlanConfirmed(ctx, "t-plan"); err != nil || !answered || rev != 1 {
 		t.Fatalf("revision 2 asked: answered %v at revision %d (%v), want revision 1", answered, rev, err)
 	}
 	if err := s.AnswerPlanQuestion(ctx, "t-plan", 2, 1, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if rev, answered, err := s.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 2 {
+	if rev, answered, err := s.PlanConfirmed(ctx, "t-plan"); err != nil || !answered || rev != 2 {
 		t.Fatalf("revision 2 answered: answered %v at revision %d (%v), want revision 2", answered, rev, err)
+	}
+	// a revise fixes nothing: revision 2 stays the confirmed one
+	if _, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary": "three"}`), "s3"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, "t-plan", 3, confirm); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerPlanQuestion(ctx, "t-plan", 3, 1, DecisionRevise, "keep the slate clean", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if rev, answered, err := s.PlanConfirmed(ctx, "t-plan"); err != nil || !answered || rev != 2 {
+		t.Fatalf("revision 3 revised: confirmed %v at revision %d (%v), want revision 2", answered, rev, err)
 	}
 }
 
@@ -242,7 +255,7 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 		}
 	}
 	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm fixes the spec and the criteria; " +
-		"Request changes sends your words to the next planner round. The criteria are fixed only when this is decided.\n" +
+		"Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
 		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
 		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
 		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +
@@ -260,7 +273,7 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 	if !slices.Equal(rows, []string{"1 3 confirmation"}) {
 		t.Fatalf("confirmation rows %q", rows)
 	}
-	if rev, answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || answered || rev != 0 {
+	if rev, answered, err := store.PlanConfirmed(ctx, "t-plan"); err != nil || answered || rev != 0 {
 		t.Fatalf("answered %v at revision %d (%v), want not yet", answered, rev, err)
 	}
 	// the confirm ends the asking: revision 2, filed with the answers, asks
@@ -268,7 +281,7 @@ func TestRequestPlanAsksTheConfirmation(t *testing.T) {
 	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 3, DecisionConfirm, "", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if rev, answered, err := store.PlanConfirmationAnswered(ctx, "t-plan"); err != nil || !answered || rev != 1 {
+	if rev, answered, err := store.PlanConfirmed(ctx, "t-plan"); err != nil || !answered || rev != 1 {
 		t.Fatalf("answered %v at revision %d (%v), want revision 1", answered, rev, err)
 	}
 	p2 := questionPlan()
@@ -404,8 +417,9 @@ func TestAnswerPlan(t *testing.T) {
 }
 
 // The planner session after the members' answers gets them as the brief's
-// answers, "<question>: <answer>" in the questions' order, beside its last
-// plan; its plan_revision step names them.
+// answers, "<question>: <answer>" in the questions' order, the decided
+// confirmation's decision among them, beside its last plan; its
+// plan_revision step names them.
 func TestRunPlanTakesTheAnswers(t *testing.T) {
 	ctx := context.Background()
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
@@ -420,6 +434,8 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 	store.PutPlanQuestions(ctx, "t-plan", 1, questionPlan().Questions)
 	store.AnswerPlanQuestion(ctx, "t-plan", 1, 2, "", "30 days", "bob")
 	store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "60 seconds", "alice")
+	store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Confirm the plan?"})
+	store.AnswerPlanQuestion(ctx, "t-plan", 1, 3, DecisionConfirm, "", "alice")
 	var res PlanResult
 	done := make(chan error)
 	go func() {
@@ -445,7 +461,7 @@ func TestRunPlanTakesTheAnswers(t *testing.T) {
 		t.Fatalf("RunPlan: %+v, %v", res, err)
 	}
 	env := podEnv(kube.podAt(0))
-	want := `["How often does the checker probe a site?: 60 seconds","How long are the results kept?: 30 days"]`
+	want := `["How often does the checker probe a site?: 60 seconds","How long are the results kept?: 30 days","Confirm the plan?: confirm"]`
 	if env["ANSWERS"] != want || !strings.Contains(env["FINDINGS"], "your last plan, revision 1") {
 		t.Fatalf("ANSWERS %s, want %s; FINDINGS %s", env["ANSWERS"], want, env["FINDINGS"])
 	}
@@ -679,11 +695,11 @@ func TestIntakeKnowsAPlanAnswer(t *testing.T) {
 			t.Fatalf("comment %d: status %d", id, rr.Code)
 		}
 	}
-	for i, body := range []string{PlanAnswerComment(1, "60 seconds"), "Answer 2: 30 days", "Answer 1: 5 minutes", "split the web card"} {
+	for i, body := range []string{PlanAnswerComment(1, PlanQuestion{Answer: "60 seconds"}), "Answer 2: 30 days", "Answer 1: 5 minutes", "split the web card"} {
 		comment(91+i, body)
 	}
 	store.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"two"}`), "sha-2")
-	comment(95, PlanAnswerComment(1, "60 seconds"))
+	comment(95, PlanAnswerComment(1, PlanQuestion{Answer: "60 seconds"}))
 	want := []string{"t-plan human_comment sebastian #0 c92: Answer 2: 30 days", "t-plan human_comment sebastian #0 c93: Answer 1: 5 minutes",
 		"t-plan human_comment sebastian #0 c94: split the web card"}
 	if got := workflowsOf(in).signals; !slices.Equal(got, want) || len(store.intakeEvents) != 5 || !store.intakeEvents[0].Signalled || !store.intakeEvents[4].Signalled ||
@@ -707,7 +723,7 @@ func TestIntakeKnowsAWakesPlanAnswerByTheChatBot(t *testing.T) {
 	store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "60 seconds", "sebastian")
 	for i, author := range []string{ChatUser, "bob"} {
 		b, _ := json.Marshal(map[string]any{"action": "created", "issue": map[string]any{"number": 20}, "repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
-			"comment": map[string]any{"id": 91 + i, "user": map[string]string{"login": author}, "body": PlanAnswerComment(1, "60 seconds")}})
+			"comment": map[string]any{"id": 91 + i, "user": map[string]string{"login": author}, "body": PlanAnswerComment(1, PlanQuestion{Answer: "60 seconds"})}})
 		if rr := postWebhook(in, "issue_comment", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
 			t.Fatalf("comment by %s: status %d", author, rr.Code)
 		}

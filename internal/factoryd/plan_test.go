@@ -3435,7 +3435,8 @@ func TestFilePlanReadsTheRecordOnce(t *testing.T) {
 
 // PlanFileHandler answers the gateway's file_plan with the shape the
 // gateway reads: a refused plan 200 with its findings, a valid one its
-// revision, a body that is not the pair 400.
+// revision and whether the human's confirmation waits on its cards, a
+// body that is not the pair 400.
 func TestPlanFileHandler(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -3461,11 +3462,12 @@ func TestPlanFileHandler(t *testing.T) {
 	over := testPlan()
 	over.Cards[1].Size = "huge"
 	if rec := post(marshal("t-plan", over)); rec.Code != http.StatusOK ||
-		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"]}` {
+		strings.TrimSpace(rec.Body.String()) != `{"revision":0,"sha256":"","findings":["plan: card links-api: size huge: split it; a card is one package, one page or one set of endpoints"],"gate":false}` {
 		t.Fatalf("refused plan: %d %s", rec.Code, rec.Body.String())
 	}
 	rec := post(marshal("t-plan", testPlan()))
-	if rec.Code != http.StatusOK || !strings.HasPrefix(strings.TrimSpace(rec.Body.String()), `{"revision":1,"sha256":"`) {
+	if body := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusOK || !strings.HasPrefix(body, `{"revision":1,"sha256":"`) ||
+		!strings.HasSuffix(body, `"findings":null,"gate":true}`) {
 		t.Fatalf("filed plan: %d %s", rec.Code, rec.Body.String())
 	}
 	if rec := post(marshal("no-such-task", testPlan())); rec.Code != http.StatusNotFound {

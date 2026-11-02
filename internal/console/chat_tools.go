@@ -721,12 +721,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool {
-		if q.Kind == factoryd.QuestionConfirmation {
-			return q.Decision == ""
-		}
-		return q.Answer == ""
-	})
+	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() })
 	switch {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
@@ -738,7 +733,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 			return t.c.doAnswerPlanQuestions(ctx, t.a, in.TaskID, in.Revision, in.Answers)
 		}
 		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
-	case in.Question > 0:
+	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
@@ -1452,7 +1447,7 @@ var tools = []chatTool{
 				"text":     map[string]any{"type": "string", "description": "its answer"},
 				"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 					"description": "its decision when this one is the plan's confirmation"}},
-				"required": []string{"question", "text"}}}},
+				"required": []string{"question"}}}},
 		required: []string{"task_id"},
 		about:    "Answer a card's question or a plan's open ones, the plan's confirmation by your own decision.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

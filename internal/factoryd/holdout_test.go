@@ -295,6 +295,18 @@ func TestDecideHoldout(t *testing.T) {
 			t.Fatalf("after the confirmation: %v", err)
 		}
 	})
+	t.Run("the confirmation revised", func(t *testing.T) {
+		store := newStore(t)
+		if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Confirm the plan?"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionRevise, "keep the slate clean", "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); !errors.Is(err, ErrAnswered) {
+			t.Fatalf("after the revise: %v", err)
+		}
+	})
 	t.Run("no such verb", func(t *testing.T) {
 		store := newStore(t)
 		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 1, proposed()); err != nil {

@@ -627,29 +627,24 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusConflict, "The answer could not be recorded; see the factoryd log.")
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
-	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, decisionWords(decision, answer)), nil); err != nil {
+	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
 		return "", &forgejoRefusal{"post the answer on the issue (the answer is recorded)", err}
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
 	switch decision {
 	case factoryd.DecisionConfirm:
+		qs, err := c.cfg.Tasks.PlanQuestions(ctx, t.ID, revision)
+		if err != nil {
+			log.Printf("console: questions of revision %d of plan %s: %v", revision, t.ID, err)
+		}
+		if slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Kind != factoryd.QuestionConfirmation }) {
+			return fmt.Sprintf("Confirmed plan #%d; the answers go to the next planner round.", t.IssueNumber), nil
+		}
 		return fmt.Sprintf("Confirmed plan #%d; its cards file.", t.IssueNumber), nil
 	case factoryd.DecisionRevise:
 		return fmt.Sprintf("Your changes are on plan #%d; the planner answers a new revision.", t.IssueNumber), nil
 	}
 	return fmt.Sprintf("Answered question %d of plan #%d.", idx, t.IssueNumber), nil
-}
-
-// decisionWords is the answer as the issue comment and the card show it:
-// a decision with its findings, the words alone for a real question.
-func decisionWords(decision, answer string) string {
-	switch {
-	case decision == "":
-		return answer
-	case answer == "":
-		return decision
-	}
-	return decision + " · " + answer
 }
 
 // decisionDetail is the answer event's detail, the decision beside the
@@ -723,7 +718,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
 			decisionDetail(revision, ans.Idx, ans.Decision, ans.Text))
-		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, decisionWords(ans.Decision, ans.Text)), nil); err != nil {
+		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
 			return "", &forgejoRefusal{"post the answer on the issue (the answers are recorded)", err}
 		}
 	}
@@ -736,7 +731,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 func batchLines(batch []factoryd.PlanAnswer) []string {
 	lines := make([]string, len(batch))
 	for i, ans := range batch {
-		lines[i] = fmt.Sprintf("question %d: %s", ans.Idx, ans.Text)
+		lines[i] = fmt.Sprintf("question %d: %s", ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}.Reply())
 	}
 	return lines
 }

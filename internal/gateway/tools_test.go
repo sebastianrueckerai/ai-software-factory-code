@@ -377,6 +377,23 @@ func TestEscalateDescriptionReachesAHuman(t *testing.T) {
 	}
 }
 
+// The file_plan description names what a call does: it stores the plan,
+// which is the session's answer; it files no cards, so no "filed".
+func TestFilePlanDescriptionSaysStored(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolFilePlan })
+	if i < 0 {
+		t.Fatal("file_plan is not listed")
+	}
+	if d := res.Tools[i].Description; !strings.Contains(d, "A stored plan is this session's answer") || strings.Contains(d, "filed") {
+		t.Errorf("file_plan: description %q", d)
+	}
+}
+
 // tools/list shows only what the task's classes may call, from the same
 // check that decides a call: a hidden tool called anyway is refused and
 // audited like any tool the class lacks.
@@ -1063,7 +1080,7 @@ func TestFactorydFilePlanClient(t *testing.T) {
 
 // file_plan is the planner's answer in the session it runs in: a plan the
 // check refuses comes back as every finding, the session goes on and the
-// corrected plan files in the same session; only a filed plan ends it.
+// corrected plan is stored in the same session; only a stored plan ends it.
 func TestFilePlanTool(t *testing.T) {
 	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	plan := `{"summary":"s","cards":[{"key":"links-api","role":"code","title":"t","brief":"b","size":"large"}]}`

@@ -607,7 +607,7 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 		t.Fatalf("round 1's confirmation:\n%s", got)
 	}
 	want := "Confirmation of the spec and the criteria of plan revision 1: Confirm fixes the spec and the criteria; " +
-		"Request changes sends your words to the next planner round. The criteria are fixed only when this is decided.\n" +
+		"Request changes sends your words to the next planner round. The criteria are fixed only when this is confirmed.\n" +
 		"Outcome: A link shortener: links with slugs that redirect and count clicks.\n" +
 		"Glossary: slug: the short key a link gets; click: one redirect served\n" +
 		"Criteria: links_crud (test), redirect_302 (test), all_green (invariant).\n" +

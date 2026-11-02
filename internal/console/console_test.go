@@ -531,7 +531,7 @@ func (s *fakeTasks) answer(id string, revision, idx int, decision, answer, by st
 	q := &qs[idx-1]
 	confirming := q.Kind == factoryd.QuestionConfirmation
 	switch {
-	case confirming && q.Decision != "", !confirming && q.Answer != "":
+	case q.Answered():
 		return factoryd.ErrAnswered
 	case !confirming && decision != "":
 		return factoryd.ErrDecisionReserved

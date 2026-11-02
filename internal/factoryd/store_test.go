@@ -3720,7 +3720,7 @@ func (s *fakeStore) PutPlanConfirmation(ctx context.Context, id string, revision
 	return len(s.questions[k]), true, nil
 }
 
-func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+func (s *fakeStore) PlanConfirmed(ctx context.Context, id string) (int, bool, error) {
 	newest, answered := 0, false
 	for k, kinds := range s.kinds {
 		var revision int
@@ -3728,7 +3728,7 @@ func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (in
 			continue
 		}
 		for i, kind := range kinds {
-			if kind == "confirmation" && s.questions[k][i].Decision != "" && (!answered || revision > newest) {
+			if kind == "confirmation" && s.questions[k][i].Decision == DecisionConfirm && (!answered || revision > newest) {
 				newest, answered = revision, true
 			}
 		}
