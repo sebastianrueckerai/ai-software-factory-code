@@ -1302,7 +1302,10 @@ func TestDivideConquerCutsSQL(t *testing.T) {
 // revision-level replan (t-plan-5) nor counts as one, and a legacy row
 // doubles no canonical one; an originless gap keeps its own unknown
 // bucket; a canonical replacement arriving after the closure and the
-// window (t-plan-6's round 9) rewrites no older answer. The same
+// window (t-plan-6's round 9) rewrites no older answer, one recorded
+// exactly at the window's own exclusive end (t-plan-9) suppresses
+// nothing it cannot count, and one another repository recorded
+// (t-plan-10) suppresses no round or origin evidence here. The same
 // definitions answer the previous window and a week of the spark.
 // [planning_rounds_origins]
 func TestDivideConquerPlanningSQL(t *testing.T) {
@@ -1409,6 +1412,33 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		dcPlan(t, s, "t-plan-8", "sf/dc9", 208)
 		dcFiling(t, s, "t-plan-8", "sf/dc9", 2, ReplanCut, 144, "j1", 144, map[string]any{"round": 3}, from.AddDate(0, 0, -12))
 		dcClosed(t, s, "t-plan-8", "sf/dc9", from.AddDate(0, 0, -10))
+		// t-plan-9, never closed: its revision 2 replan a legacy row
+		// alone (Oct 9, a person's), the canonical replacement recorded
+		// exactly at the window's exclusive end Oct 12 — outside the
+		// cohort, so it suppresses nothing it cannot count: the person's
+		// replan stays counted, and no closure ever reads the plan
+		dcPlan(t, s, "t-plan-9", "sf/dc9", 209)
+		dcLegacyReplan(t, s, "t-plan-9", "sf/dc9", 209,
+			map[string]any{"revision": 2, "origin": ReplanPerson, "round": 2}, from.AddDate(0, 0, 11))
+		dcFiling(t, s, "t-plan-9", "sf/dc9", 2, ReplanPerson, 0, "", 209,
+			map[string]any{"kept": 1, "changed": 0, "dropped": 0, "added": 0, "by": "", "comment": ""}, to.AddDate(0, 0, 1))
+		// t-plan-10, closed Oct 7 with its round evidence a legacy row
+		// alone (round 2, Oct 5): a canonical revision-level row of the
+		// same revision recorded under another repository's name (Oct 4,
+		// before the closure) suppresses no round evidence here — the
+		// plan keeps the two rounds its own row names, and the revision
+		// counts once as a replan, on the canonical row its task's
+		// reach holds
+		dcPlan(t, s, "t-plan-10", "sf/dc9", 210)
+		dcLegacyReplan(t, s, "t-plan-10", "sf/dc9", 210,
+			map[string]any{"revision": 2, "origin": ReplanCut, "round": 2}, from.AddDate(0, 0, 7))
+		if id := dcRecord(t, s, Event{Repository: "sf/other9", TaskID: "t-plan-10", IssueNumber: 260,
+			Kind: EventPlanReplanned, Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail:      map[string]any{"revision": 2, "origin": ReplanRound},
+			IdentityKey: identityKey(EventPlanReplanned, "t-plan-10", "2")}, from.AddDate(0, 0, 6)); id == 0 {
+			t.Fatal("the other repository's replacement recorded no row")
+		}
+		dcClosed(t, s, "t-plan-10", "sf/dc9", from.AddDate(0, 0, 9))
 		// the other project's plan answers its report alone
 		dcPlan(t, s, "t-plan-far", "sf/other9", 251)
 		dcFiling(t, s, "t-plan-far", "sf/other9", 1, "", 151, "g1", 151, map[string]any{"round": 1}, from.AddDate(0, 0, 6))
@@ -1421,13 +1451,14 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := r.DivideConquer
-	// t-plan-2 ran one round to its closure, t-plan-1, t-plan-5 and
-	// t-plan-6 two, t-plan-7 none any row names; t-plan-3's duplicate
-	// close moved it nowhere and t-plan-4 never closed
+	// t-plan-2 ran one round to its closure, t-plan-1, t-plan-5,
+	// t-plan-6 and t-plan-10 two, t-plan-7 none any row names; t-plan-3's
+	// duplicate close moved it nowhere, t-plan-4 and t-plan-9 never
+	// closed, and the other repository's replacement moved no round
 	if len(d.PlansByRounds) != 3 || d.PlansByRounds[0] != (NamedCount{Name: "1", Count: 1}) ||
-		d.PlansByRounds[1] != (NamedCount{Name: "2", Count: 3}) ||
+		d.PlansByRounds[1] != (NamedCount{Name: "2", Count: 4}) ||
 		d.PlansByRounds[2] != (NamedCount{Name: "unknown", Count: 1}) {
-		t.Fatalf("plans by rounds = %+v, want one plan of one round, three of two and one unknown", d.PlansByRounds)
+		t.Fatalf("plans by rounds = %+v, want one plan of one round, four of two and one unknown", d.PlansByRounds)
 	}
 	// the same names compared over the window, the equal window before
 	// it and all seven weeks: explicit rounds fewest first, unknown
@@ -1436,7 +1467,7 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 	// empty span a zero, never an absence
 	wantPlanSpans := []NamedFigure{
 		{Name: "1", Figure: Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
-		{Name: "2", Figure: Figure{Value: 3, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 3}}},
+		{Name: "2", Figure: Figure{Value: 4, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 4}}},
 		{Name: "3", Figure: Figure{Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0}}},
 		{Name: "unknown", Figure: Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
 	}
@@ -1485,16 +1516,18 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 	if totals["1"] != 8 || totals["2"] != 4 || totals["unknown"] != 2 {
 		t.Fatalf("round totals = %+v, want round 1's eight, round 2's four and the two unknown", totals)
 	}
-	// two replans by a person (t-plan-1's canonical row, t-plan-5's
-	// legacy one its card row never suppresses), two by a cut (t-plan-3's
-	// multi-card revision once, t-plan-6's legacy row), one by a round
-	// and the lost origin of t-plan-4's revision 3 its own unknown
+	// three replans by a person (t-plan-1's canonical row, t-plan-5's
+	// legacy one its card row never suppresses, t-plan-9's legacy one the
+	// replacement at the window's own end cannot), two by a cut (t-plan-3's
+	// multi-card revision once, t-plan-6's legacy row), two by a round
+	// (t-plan-4's, t-plan-10's canonical row of another repository's
+	// name) and the lost origin of t-plan-4's revision 3 its own unknown
 	// bucket — the legacy double of revision 2 dropped
-	if len(d.ReplansByOrigin) != 4 || d.ReplansByOrigin[0] != (NamedCount{Name: ReplanCut, Count: 2}) ||
-		d.ReplansByOrigin[1] != (NamedCount{Name: ReplanPerson, Count: 2}) ||
-		d.ReplansByOrigin[2] != (NamedCount{Name: ReplanRound, Count: 1}) ||
+	if len(d.ReplansByOrigin) != 4 || d.ReplansByOrigin[0] != (NamedCount{Name: ReplanPerson, Count: 3}) ||
+		d.ReplansByOrigin[1] != (NamedCount{Name: ReplanCut, Count: 2}) ||
+		d.ReplansByOrigin[2] != (NamedCount{Name: ReplanRound, Count: 2}) ||
 		d.ReplansByOrigin[3] != (NamedCount{Name: "unknown", Count: 1}) {
-		t.Fatalf("replans by origin = %+v, want person and cut twice each, the round once and one unknown", d.ReplansByOrigin)
+		t.Fatalf("replans by origin = %+v, want person thrice, cut and round twice each and one unknown", d.ReplansByOrigin)
 	}
 	// the same definitions answer the previous window: its closures
 	// (t-plan-3 Sep 20, t-plan-8 Sep 18) ran two rounds and three — its
@@ -1534,9 +1567,13 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		t.Fatalf("weekly filings = %+v / %+v, want four first and two later",
 			rw.DivideConquer.CardsFirstRound, rw.DivideConquer.CardsLaterRounds)
 	}
-	if got := rw.DivideConquer.ReplansByOrigin; len(got) != 3 || got[0] != (NamedCount{Name: ReplanCut, Count: 1}) ||
-		got[1] != (NamedCount{Name: ReplanPerson, Count: 1}) || got[2] != (NamedCount{Name: "unknown", Count: 1}) {
-		t.Fatalf("weekly replans by origin = %+v, want cut, person and the unknown, no round", got)
+	// the week's replans: the cut, the person and the unknown above,
+	// the round's Oct 6 row outside — and t-plan-10's cross-repository
+	// canonical row of Oct 4 inside, the revision once on it alone
+	if got := rw.DivideConquer.ReplansByOrigin; len(got) != 4 || got[0] != (NamedCount{Name: ReplanCut, Count: 1}) ||
+		got[1] != (NamedCount{Name: ReplanPerson, Count: 1}) || got[2] != (NamedCount{Name: ReplanRound, Count: 1}) ||
+		got[3] != (NamedCount{Name: "unknown", Count: 1}) {
+		t.Fatalf("weekly replans by origin = %+v, want cut, person, round and the unknown once each", got)
 	}
 	// the other project's plan answers its report alone
 	ro, err := s.ProjectMetrics(context.Background(), "sf/other9", from, to)

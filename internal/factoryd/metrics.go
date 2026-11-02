@@ -2032,17 +2032,21 @@ func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricW
 // dcLegacyFiling keeps a plan_replanned row of the identity contract's
 // era apart from one producers wrote before it: an identity-less row
 // survives only where no canonical revision-level row of its own
-// revision holds the replan as of cutoff, so explicit persisted legacy
-// rows supplement gaps without doubling a fact the identity already
-// keeps. A card's own canonical filing row never suppresses a
-// revision-level one — the two are separate identities — and a
-// canonical replacement arriving after the cutoff, a closure or a
-// window's end, never rewrites the older answer.
-func dcLegacyFiling(cutoff string) string {
+// repository holds the replan as of asOf — a predicate on k.at the
+// caller phrases in its span's own bounds, a closure reading inclusive
+// (evidence the closure itself recorded holds the replan as of it) and
+// a window's end exclusive, the bound its own cohort keeps, so a
+// replacement exactly at the end — outside the cohort — suppresses
+// nothing it cannot count, and one arriving later never rewrites the
+// older answer. A replacement another repository recorded, however
+// near, suppresses nothing here. A card's own canonical filing row
+// never suppresses a revision-level one — the two are separate
+// identities.
+func dcLegacyFiling(asOf string) string {
 	return `e.identity_key IS NOT NULL OR NOT EXISTS (
-	SELECT 1 FROM events k WHERE k.task_id = e.task_id AND k.kind = 'plan_replanned'
+	SELECT 1 FROM events k WHERE k.task_id = e.task_id AND k.repository = e.repository AND k.kind = 'plan_replanned'
 		AND k.identity_key IS NOT NULL AND k.detail->>'card' IS NULL
-		AND k.detail->>'revision' = e.detail->>'revision' AND k.at <= ` + cutoff + `)`
+		AND k.detail->>'revision' = e.detail->>'revision' AND ` + asOf + `)`
 }
 
 // dcRoundOf reads the round a filing row names, 0 where it names none —
@@ -2170,7 +2174,7 @@ func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w m
 		SELECT c.closed_at, GREATEST(
 			COALESCE((SELECT max(` + dcRoundOf + `) FROM events e
 				WHERE e.task_id = c.task_id AND e.kind = 'plan_replanned' AND e.at <= c.closed_at
-					AND (` + dcLegacyFiling("c.closed_at") + `)), 0),
+					AND (` + dcLegacyFiling("k.at <= c.closed_at") + `)), 0),
 			COALESCE((SELECT max((v.plan->>'round')::int) FROM plan_revisions v
 				WHERE v.task_id = c.task_id AND (v.plan->>'round') ~ '^[0-9]+$' AND v.created_at <= c.closed_at), 0)
 		) AS rounds
@@ -2293,7 +2297,7 @@ func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricW
 					THEN e.detail->>'origin' ELSE 'unknown' END AS name
 			FROM events e JOIN tasks t ON t.id = e.task_id
 			WHERE `+dcCardReach+` AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
-				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling("$3")+`)
+				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling("k.at < $3")+`)
 			ORDER BY e.task_id, e.detail->>'revision', e.identity_key IS NULL, e.at, e.id
 		) r GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To) // #nosec G202 -- the query is built from the package's constant fragments
 	if err != nil {
