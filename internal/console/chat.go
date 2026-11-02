@@ -1287,9 +1287,11 @@ func (t *turn) sentence(err error) string {
 // and judged against the stored proposal before the token is spent, so a
 // wrong correction leaves the proposal usable. A pool press writes once,
 // before any stream: the human is re-admitted through the tool's own
-// approver rule, the guarded writer runs once for a valid press, and only
-// the successful already-landed result streams — every other outcome is
-// the typed press's real HTTP status, never an SSE refusal.
+// approver rule and the conversation binds first, so a refused admission
+// or a failed bind answers before anything writes; the guarded writer
+// runs once for a valid press, and only the successful already-landed
+// result streams — every other outcome is the typed press's real HTTP
+// status, never an SSE refusal.
 func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -1321,13 +1323,13 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 			c.fail(w, r, err)
 			return
 		}
+		if err := t.inThread(p.Conversation); err != nil {
+			c.fail(w, r, err)
+			return
+		}
 		pr := t.poolPress(p, fix)
 		if pr.err != nil {
 			c.fail(w, r, pr.err)
-			return
-		}
-		if err := t.inThread(p.Conversation); err != nil {
-			c.fail(w, r, err)
 			return
 		}
 		pos, wait := c.turns.enter(t.key())

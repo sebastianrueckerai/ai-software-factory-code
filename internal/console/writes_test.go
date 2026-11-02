@@ -775,19 +775,34 @@ func TestPoolProposal(t *testing.T) {
 			g.replies = [][]string{{call(1, "set_pool", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`)}}
 			_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
 			row.seat(t)
-			before := len(infra.contents)
+			// a landed press commits, opens and merges one pull request;
+			// a refused press touches nothing
+			before, pullsBefore, mergesBefore := len(infra.contents), len(infra.pulls), len(infra.merges)
 			if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":12}}`); code != row.code || body[0] != row.body {
 				t.Fatalf("%s = %d %q, want %d %q", row.name, code, body, row.code, row.body)
 			}
-			if got := len(infra.contents) - before; got != row.writes {
-				t.Fatalf("%s wrote %d commits, want %d", row.name, got, row.writes)
+			if got, prs, mrg := len(infra.contents)-before, len(infra.pulls)-pullsBefore, len(infra.merges)-mergesBefore; got != row.writes || prs != row.writes || mrg != row.writes {
+				t.Fatalf("%s wrote %d commits, %d pull requests, %d merges, want %d each", row.name, got, prs, mrg, row.writes)
 			}
+			pressed, pulls, merges := len(infra.contents), len(infra.pulls), len(infra.merges)
 			if code, _, _ := chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil); code != http.StatusNotFound {
 				t.Fatalf("%s replay = %d, want 404", row.name, code)
+			}
+			if len(infra.contents) != pressed || len(infra.pulls) != pulls || len(infra.merges) != merges {
+				t.Fatalf("%s replay wrote again: %d commits, %d pull requests, %d merges, want %d, %d, %d",
+					row.name, len(infra.contents), len(infra.pulls), len(infra.merges), pressed, pulls, merges)
 			}
 		})
 	}
 	r.events.fail = nil
+}
+
+// bindFailChat fails the current-conversation read of the Chat it wraps,
+// so a press whose proposal holds no thread answers the read's refusal.
+type bindFailChat struct{ Chat }
+
+func (bindFailChat) CurrentConversation(context.Context, string, string) (int64, error) {
+	return 0, errors.New("the store is down")
 }
 
 // The pool's confirmation is the member's press and only theirs: full
@@ -797,7 +812,8 @@ func TestPoolProposal(t *testing.T) {
 // the proposal for its owner, an expired or used one is 404, and a wrong
 // correction — malformed, a forbidden field, an amount the pool cannot
 // take, a press against another tool's proposal — is 400 with the
-// proposal left usable. The row's actor is the pressing member's, from
+// proposal left usable. A revoked approver's and an unbindable thread's
+// press write nothing. The row's actor is the pressing member's, from
 // the session alone.
 func TestPoolProposalAccess(t *testing.T) {
 	r, g, infra := poolChatRig(t, 10, 3)
@@ -921,6 +937,31 @@ func TestPoolProposalAccess(t *testing.T) {
 	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusForbidden ||
 		body[0] != "Only the approvers of project ai-software-factory-code may change the discretionary pool." {
 		t.Fatalf("the revoked approver's press = %d %q, want 403", code, body)
+	}
+
+	// a press whose thread cannot bind writes nothing: the bind runs
+	// before the press's write, so the store's refusal answers the press
+	// and the pool stands until a new proposal
+	r.ledger.approvers = []string{"alice"}
+	g.replies = [][]string{{call(1, "set_pool", setArgs)}}
+	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool once more"}})
+	r.chat.mu.Lock()
+	for _, p := range r.chat.proposals {
+		if p.Token == tokens[0] {
+			p.Conversation = 0
+		}
+	}
+	r.chat.mu.Unlock()
+	plain, commits, pulls, merges := r.c.cfg.Chat, len(infra.contents), len(infra.pulls), len(infra.merges)
+	r.c.cfg.Chat = bindFailChat{plain}
+	code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`)
+	r.c.cfg.Chat = plain
+	if code != http.StatusInternalServerError || body[0] != "cannot read the conversation" {
+		t.Fatalf("the press of a thread that cannot bind = %d %q, want 500", code, body)
+	}
+	if len(infra.contents) != commits || len(infra.pulls) != pulls || len(infra.merges) != merges {
+		t.Fatalf("the press of a thread that cannot bind wrote: %d commits, %d pull requests, %d merges, want %d, %d, %d",
+			len(infra.contents), len(infra.pulls), len(infra.merges), commits, pulls, merges)
 	}
 	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
 		t.Fatalf("the refusals aside, %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
