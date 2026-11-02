@@ -1783,7 +1783,7 @@ func TestChatFailedTurnRequeuesWhatItReadForOneRetry(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 4)
 	g.lenient = true
-	g.replies = [][]string{{call(1, "board", `{}`)}}
+	g.replies = [][]string{{call(1, "board", `{}`)}, nil, {say("retry: both read")}}
 	first := make(chan []string, 1)
 	go func() {
 		_, events, _, err := postStream(r, ck, s, chatPath, url.Values{"message": {"first"}})
@@ -1815,7 +1815,6 @@ func TestChatFailedTurnRequeuesWhatItReadForOneRetry(t *testing.T) {
 	if !slices.ContainsFunc(fe, func(e string) bool { return strings.HasPrefix(e, "error ") }) {
 		t.Fatalf("the first stream showed no failure: %v", fe)
 	}
-	g.replies = append(g.replies, []string{say("retry: both read")})
 	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		msgs, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
 		if err != nil {
