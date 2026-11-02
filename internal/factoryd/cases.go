@@ -276,7 +276,7 @@ func (s *PGStore) WithdrawCase(ctx context.Context, id int64, reason string) err
 }
 
 func withdrawCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
-	return endCase(ctx, q, id, CaseWithdrawn, StepWithdrawn, CaseResolution{By: "factory", Rung: 0, Action: "withdraw", Reason: reason})
+	return endCase(ctx, q, id, CaseWithdrawn, StepWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: reason})
 }
 
 func endCase(ctx context.Context, q rowQuerier, id int64, status, outcome string, r CaseResolution) error {

@@ -191,7 +191,7 @@ func TestWithdrawCaseRecordsItsReason(t *testing.T) {
 		t.Fatalf("CaseByID: %v", err)
 	}
 	if got.Status != CaseWithdrawn || got.ResolvedAt == nil ||
-		!reflect.DeepEqual(got.Resolution, &CaseResolution{By: "factory", Rung: 0, Action: "withdraw", Reason: "card ended done"}) {
+		!reflect.DeepEqual(got.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "card ended done"}) {
 		t.Fatalf("withdrawn case = %+v, resolution %+v", got, got.Resolution)
 	}
 	steps, err := s.CaseSteps(ctx, a.ID)

@@ -142,7 +142,7 @@ func acceptanceHit(events []harness.Event, acceptance []string) *AcceptanceHit {
 			continue
 		}
 		command, _ := ev.Detail["command"].(string)
-		exit, ok := commandExit(ev.Detail)
+		exit, ok := toInt(ev.Detail["exit"])
 		if !ok || exit != 0 {
 			continue
 		}
@@ -154,20 +154,6 @@ func acceptanceHit(events []harness.Event, acceptance []string) *AcceptanceHit {
 		}
 	}
 	return hit
-}
-
-// commandExit is a command event's exit code: a JSON number arrives as a
-// float64, a record built in Go as an int.
-func commandExit(detail map[string]any) (int, bool) {
-	switch n := detail["exit"].(type) {
-	case float64:
-		return int(n), true
-	case int:
-		return n, true
-	case int64:
-		return int(n), true
-	}
-	return 0, false
 }
 
 // runsAcceptance is whether run ran acceptance command item, so that the

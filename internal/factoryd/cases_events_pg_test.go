@@ -144,6 +144,33 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 	}
 }
 
+func TestAHealedAskWithNoLiveAskOpensAnOtherCase(t *testing.T) {
+	s := caseEventStore(t)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
+		"question": capReached, "comment": int64(27002), "source": "supervisor", "reason": healedReason})
+
+	c := onlyOpenCase(t, s)
+	if c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != capReached || c.CommentID != 27002 {
+		t.Fatalf("case = %+v; want the restart's ask at the human as other", c)
+	}
+	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Found != "asked again after a restart" || steps[0].Outcome != StepInProgress {
+		t.Fatalf("steps = %+v; want one running step found asked again after a restart", steps)
+	}
+}
+
+func TestAnAskWithNoWordsKeepsItsEventAndOpensNoCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "agent", "comment": int64(27001)})
+
+	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
+		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+	}
+	if evs, err := s.TaskEvents(ctx, caseTask, 5); err != nil || len(evs) != 1 || evs[0].Kind != EventQuestionAsked {
+		t.Fatalf("TaskEvents = %+v, %v; want the ask", evs, err)
+	}
+}
+
 func TestAnAnswerResolvesTheNewestOpenAskCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -176,6 +203,43 @@ func TestAnAnswerResolvesTheNewestOpenAskCase(t *testing.T) {
 	grant := &CaseResolution{By: "sebastian", Rung: 3, Action: "answer", Args: map[string]any{"answer": "", "comment": float64(27004)}}
 	if all[2].Status != CaseResolved || !reflect.DeepEqual(all[2].Resolution, grant) {
 		t.Fatalf("granted case = %+v, resolution %+v; want %+v", all[2], all[2].Resolution, grant)
+	}
+}
+
+// The console's grant and the webhook's answer name the same comment:
+// the events' index on the card's answer comment drops the second row,
+// so it ends no second case.
+func TestOneAnswerCommentEndsOneCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	if err := s.CreateTask(ctx, Task{ID: "t1411", Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "sf/r",
+		IssueNumber: 1411, Track: "direct", BudgetEUR: 5}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	askAgent(t, s, "Which file should change?", 27001)
+	askCap(t, s, 27002)
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t1411", IssueNumber: 1411, Kind: EventQuestionAsked, Actor: FactoryDecider,
+		Via: ViaFactoryd, Detail: map[string]any{"question": "Which test is flaky?", "ask": "Which test is flaky?", "comment": int64(27003),
+			"source": "agent", "reason": AgentAsks + "Which test is flaky?"}}); err != nil {
+		t.Fatalf("Record the other card's ask: %v", err)
+	}
+	recordCaseEvent(t, s, EventSessionGranted, "sebastian", ViaButton, map[string]any{"comment": int64(27004)})
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaWebhook, map[string]any{"answer": "Grant one session", "comment": int64(27004)})
+
+	var resolved []Case
+	for _, task := range []string{caseTask, "t1411"} {
+		cs, err := s.CasesOf(ctx, task)
+		if err != nil {
+			t.Fatalf("CasesOf %s: %v", task, err)
+		}
+		for _, c := range cs {
+			if c.Status == CaseResolved {
+				resolved = append(resolved, c)
+			}
+		}
+	}
+	if len(resolved) != 1 || resolved[0].Kind != CaseSessionCap || resolved[0].TaskID != caseTask {
+		t.Fatalf("resolved cases = %+v; want only the cap's", resolved)
 	}
 }
 
@@ -274,9 +338,13 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 	first := onlyOpenCase(t, s)
 	b := openMerge(t, s, "h2")
 	second := onlyOpenCase(t, s)
-	superseded := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "deny", Reason: "superseded by a newer request"}
-	if got := caseByID(t, s, first.ID); got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, superseded) {
-		t.Fatalf("superseded case = %+v, resolution %+v; want %+v", got, got.Resolution, superseded)
+	// the factory's denial withdraws: no one decided the merge
+	superseded := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "superseded by a newer request"}
+	if got := caseByID(t, s, first.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, superseded) {
+		t.Fatalf("superseded case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, superseded)
+	}
+	if steps := caseStepsOf(t, s, first.ID); len(steps) != 1 || steps[0].Outcome != StepWithdrawn {
+		t.Fatalf("superseded case's steps = %+v; want the one step withdrawn", steps)
 	}
 	if second.StateKey != "pr:1479@h2" || second.Follows != first.ID {
 		t.Fatalf("second merge case = %+v; want pr:1479@h2 following %d", second, first.ID)

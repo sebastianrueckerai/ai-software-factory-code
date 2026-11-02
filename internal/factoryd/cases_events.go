@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"slices"
 	"strings"
@@ -34,8 +35,9 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 			return err
 		}
 		answer, _ := e.Detail["answer"].(string)
+		comment, _ := toInt(e.Detail["comment"])
 		return caseEnded(resolveCase(ctx, tx, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer",
-			Args: map[string]any{"answer": answer, "comment": detailInt64(e.Detail, "comment")}}))
+			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
 		id, err := newestAskCase(ctx, tx, e.TaskID)
 		if id == 0 {
@@ -46,7 +48,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 	case EventPlanQuestionAnswered:
 		return resolvePlanCase(ctx, tx, e)
 	case EventApprovalRequested:
-		return openMergeCase(ctx, tx, detailInt64(e.Detail, "approval"))
+		id, _ := toInt(e.Detail["approval"])
+		return openMergeCase(ctx, tx, int64(id))
 	}
 	return nil
 }
@@ -69,7 +72,9 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) error {
 	}
 	c, err := caseFromAsk(t, e, head)
 	if err != nil {
-		return err
+		// an ask with no words opens no case: its event stands
+		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
+		return nil
 	}
 	step := CaseStep{Rung: 3, Actor: "factory"}
 	healed := e.Detail["reason"] == healedReason
@@ -111,13 +116,15 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		return Case{}, fmt.Errorf("task %s: question_asked names no ask", t.ID)
 	}
 	str := func(k string) string { s, _ := e.Detail[k].(string); return s }
+	revision, _ := toInt(e.Detail["revision"])
+	comment, _ := toInt(e.Detail["comment"])
 	facts := map[string]any{}
 	maps.Copy(facts, e.Detail)
 	var kind CaseKind
 	switch {
-	case detailInt64(e.Detail, "revision") > 0 && str("kind") == QuestionConfirmation:
+	case revision > 0 && str("kind") == QuestionConfirmation:
 		kind, head = CasePlanConfirmation, ""
-	case detailInt64(e.Detail, "revision") > 0:
+	case revision > 0:
 		kind, head = CasePlanQuestion, ""
 	default:
 		var named map[string]any
@@ -128,7 +135,7 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 		}
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: caseStateKey(kind, ask, head), Status: CaseAtHuman,
-		Problem: ask, Facts: facts, CommentID: detailInt64(e.Detail, "comment")}
+		Problem: ask, Facts: facts, CommentID: int64(comment)}
 	if slices.Contains(cardMoneyKinds, kind) {
 		c.Money = &CaseMoney{Kind: string(kind), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR}
 	}
@@ -192,8 +199,10 @@ func caseStateKey(kind CaseKind, ask, head string) string {
 // plan_question_answered event e answers.
 func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	var text, kind string
+	revision, _ := toInt(e.Detail["revision"])
+	index, _ := toInt(e.Detail["index"])
 	err := q.QueryRowContext(ctx, `SELECT text, COALESCE(kind, '') FROM plan_questions WHERE task_id = $1 AND revision = $2 AND idx = $3`,
-		e.TaskID, detailInt64(e.Detail, "revision"), detailInt64(e.Detail, "index")).Scan(&text, &kind)
+		e.TaskID, revision, index).Scan(&text, &kind)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -255,8 +264,10 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) error {
 	return err
 }
 
-// endMergeCase resolves task taskID's live merge case by its request's
-// decision: status approved or denied, by whom, with note.
+// endMergeCase ends task taskID's live merge case by its request's
+// decision: status approved or denied, by whom, with note. The factory's
+// denial (a superseded head, an ended card, a queue left) decides no
+// merge: it withdraws the case with note.
 func endMergeCase(ctx context.Context, q rowQuerier, taskID, status, by, note string) error {
 	var id int64
 	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`,
@@ -266,6 +277,9 @@ func endMergeCase(ctx context.Context, q rowQuerier, taskID, status, by, note st
 	}
 	if err != nil {
 		return err
+	}
+	if by == FactoryDecider && status == "denied" {
+		return caseEnded(withdrawCase(ctx, q, id, note))
 	}
 	action := "deny"
 	if status == "approved" {
@@ -313,18 +327,4 @@ func caseEnded(err error) error {
 		return nil
 	}
 	return err
-}
-
-// detailInt64 is the number k of an event's detail: a float64 once read
-// back from the store, an int or an int64 as its writer built it.
-func detailInt64(d map[string]any, k string) int64 {
-	switch n := d[k].(type) {
-	case float64:
-		return int64(n)
-	case int64:
-		return n
-	case int:
-		return int64(n)
-	}
-	return 0
 }
