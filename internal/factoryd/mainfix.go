@@ -221,13 +221,21 @@ func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun) 
 		return humanPauseCard(fix), err
 	}
 	remedy := ""
-	if fix.MergeCommit != "" || fix.Status == "merged" {
+	if merged, err := remedyMerged(ctx, r.Forgejo, fix); err != nil {
+		return false, err
+	} else if merged {
 		remedy = fmt.Sprintf("the fix-forward card #%d", fix.IssueNumber)
 	}
-	if rev, ok, err := r.Store.Task(ctx, pause.RevertTask); err != nil {
+	rev, ok, err := r.Store.Task(ctx, pause.RevertTask)
+	if err != nil {
 		return false, err
-	} else if ok && pause.RevertTask != "" && (rev.MergeCommit != "" || rev.Status == "merged") {
-		remedy = fmt.Sprintf("the revert #%d", rev.IssueNumber)
+	}
+	if ok {
+		if merged, err := remedyMerged(ctx, r.Forgejo, rev); err != nil {
+			return false, err
+		} else if merged {
+			remedy = fmt.Sprintf("the revert #%d", rev.IssueNumber)
+		}
 	}
 	if remedy == "" {
 		return false, nil
@@ -428,28 +436,43 @@ func (r *Roller) failedLogs(ctx context.Context, red []ActionJob) string {
 // that ended or is ending; a re-run's pause has none.
 func (r *Roller) endPauseCard(ctx context.Context, pause QueuePause, run ActionRun) error {
 	green := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d)", run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
-	var errs []error
-	if t, ok, err := r.Store.Task(ctx, pause.FixTask); err != nil {
-		errs = append(errs, err)
-	} else if ok {
-		switch {
-		case humanPauseCard(t) && t.Status == "waiting-human":
-			errs = append(errs, closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue."))
-		case t.Source == SourceMainFix && (t.Status == "failed" || !Final(t.Status) && t.Status != "merged" && t.Status != "closing"):
-			errs = append(errs, closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the red this card was filed for is gone. Closing this issue."))
-		}
-	}
-	rev, ok, err := r.Store.Task(ctx, pause.RevertTask)
+	return errors.Join(r.endFixCard(ctx, pause, green), r.endRevertCard(ctx, pause, green))
+}
+
+// endFixCard ends the pause's own card for endPauseCard: the human card
+// of a person, or a fix-forward card at work or failed whose pull request
+// did not merge.
+func (r *Roller) endFixCard(ctx context.Context, pause QueuePause, green string) error {
+	t, ok, err := r.Store.Task(ctx, pause.FixTask)
 	switch {
-	case err != nil:
-		errs = append(errs, err)
-	case !ok || !stoppable(rev) || landing(rev):
-	case rev.Kind == "human":
-		errs = append(errs, r.closeRevertPR(ctx, rev, green+": main is green without this revert. Closing this pull request."))
-	default:
-		errs = append(errs, closeIssueAsFactory(ctx, r.Store, r.Forgejo, rev, green+": main is green without this revert. Closing this issue."))
+	case err != nil || !ok:
+		return err
+	case humanPauseCard(t) && t.Status == "waiting-human":
+		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
+	case t.Source != SourceMainFix || t.Status != "failed" && !stoppable(t):
+		return nil
 	}
-	return errors.Join(errs...)
+	if merged, err := remedyMerged(ctx, r.Forgejo, t); err != nil || merged {
+		return err
+	}
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the red this card was filed for is gone. Closing this issue.")
+}
+
+// endRevertCard ends the pause's revert for endPauseCard while it is at
+// work and its merge neither runs nor ran (landing): an agent-lane one
+// through its issue's close, a human-lane one through its pull request's.
+func (r *Roller) endRevertCard(ctx context.Context, pause QueuePause, green string) error {
+	rev, ok, err := r.Store.Task(ctx, pause.RevertTask)
+	if err != nil || !ok || !stoppable(rev) {
+		return err
+	}
+	if landed, err := landing(ctx, r.Forgejo, rev); err != nil || landed {
+		return err
+	}
+	if rev.Kind == "human" {
+		return r.closeRevertPR(ctx, rev, green+": main is green without this revert. Closing this pull request.")
+	}
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, rev, green+": main is green without this revert. Closing this issue.")
 }
 
 // closeRevertPR closes human-lane revert card t's pull request as the bot
@@ -590,8 +613,13 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 	if err != nil {
 		return err
 	}
-	if pause.FixTask == "" || ok && (humanPauseCard(fix) || landing(fix)) {
+	if pause.FixTask == "" || ok && humanPauseCard(fix) {
 		return nil
+	}
+	if ok {
+		if landed, err := landing(ctx, r.Forgejo, fix); err != nil || landed {
+			return err
+		}
 	}
 	taskID := pause.RevertTask
 	if taskID == "" {
@@ -661,9 +689,36 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 }
 
 // landing tells a remedy card of a red main whose merge runs (its gate is
-// merge) or ran.
-func landing(t Task) bool {
-	return t.MergeCommit != "" || t.Status == "merged" || !Final(t.Status) && t.Gate == GateMerge
+// merge) or ran (remedyMerged).
+func landing(ctx context.Context, forgejo *Forgejo, t Task) (bool, error) {
+	if !Final(t.Status) && t.Gate == GateMerge {
+		return true, nil
+	}
+	return remedyMerged(ctx, forgejo, t)
+}
+
+// remedyMerged tells whether remedy card t's pull request merged: its
+// recorded merge or its status say so, else the forge answers, where a
+// person can merge it while the card still reads in-review, before its
+// workflow takes the merge. A pull request the forge refuses to show
+// reads as unmerged.
+func remedyMerged(ctx context.Context, forgejo *Forgejo, t Task) (bool, error) {
+	if t.MergeCommit != "" || t.Status == "merged" {
+		return true, nil
+	}
+	if t.PRNumber == 0 {
+		return false, nil
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return false, err
+	}
+	pr, err := forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+	if forgejoTerminal(err) {
+		log.Printf("task %s: pull request #%d: %v: read as unmerged", t.ID, t.PRNumber, err)
+		return false, nil
+	}
+	return pr.Merged, err
 }
 
 // landedFix is the fix-forward card of the main-red pause whose revert is
@@ -677,7 +732,11 @@ func (r *Runner) landedFix(ctx context.Context, t Task) (Task, bool, error) {
 		return Task{}, false, err
 	}
 	fix, ok, err := r.store.Task(ctx, p.FixTask)
-	return fix, ok && landing(fix), err
+	if err != nil || !ok {
+		return Task{}, false, err
+	}
+	landed, err := landing(ctx, r.forgejo, fix)
+	return fix, landed, err
 }
 
 // replaceFix ends the pause's fix-forward card fix, which the revert card
